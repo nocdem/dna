@@ -16,12 +16,10 @@ This repository contains the CPUNK cryptocurrency platform, a "Quantum-Safe MEME
 
 ## Repository Configuration
 
-- **CPUNK Platform Repository**: Private repository at https://github.com/nocdem/cpunk-platform.git
-- **GitHub Authentication**: Using SSH deploy keys:
-  - `~/.ssh/cpunk_deploy_key` for cpunk-platform repository
+- **CPUNK Repository**: Public repository at https://github.com/nocdem/cpunk.git
+- **GitHub Authentication**: Using GitHub token for HTTPS authentication
 - **Server Authentication**: Using SSH deploy keys (stored in ~/.ssh/cpunk_deploy_user)
 - **SSH Config**: Custom host configurations in ~/.ssh/config:
-  - "github.com-cpunk" for CPUNK Platform (uses cpunk_deploy_key)
   - "cpunk-deploy" for server deployment (uses cpunk_deploy_user)
 - **Git User**: [configured per user]
 
