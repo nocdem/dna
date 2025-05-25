@@ -1,0 +1,488 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CPUNK - Quantum-Safe MEME Coin</title>
+    <style>
+        /* Reset and base styles */
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+        
+        /* Cyberpunk color palette */
+        :root {
+            --neon-blue: #00FFFF;
+            --electro-purple: #8A2BE2;
+            --acid-green: #39FF14;
+            --bright-orange: #FF4500;
+            --hot-pink: #FF1493;
+            --charcoal: #2E2E2E;
+            --dark-charcoal: #1E1E1E;
+            --white: #FFFFFF;
+            --light-gray: #CCCCCC;
+            --mid-gray: #888888;
+        }
+        
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+            font-family: 'Courier New', monospace;
+            background-color: var(--dark-charcoal);
+            color: var(--white);
+            line-height: 1.6;
+            min-height: 100vh;
+        }
+        
+        /* Main container */
+        .container {
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 30px;
+            background-color: var(--charcoal);
+            border-radius: 12px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(0, 255, 255, 0.1);
+        }
+        
+        .container::before {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 3px;
+            background: linear-gradient(90deg, var(--neon-blue), var(--electro-purple), var(--acid-green));
+            background-size: 200% 100%;
+            animation: gradientFlow 3s linear infinite;
+        }
+        
+        @keyframes gradientFlow {
+            0% { background-position: 0% 50%; }
+            50% { background-position: 100% 50%; }
+            100% { background-position: 0% 50%; }
+        }
+        
+        /* Typography */
+        h1, h2, h3 {
+            margin-bottom: 15px;
+        }
+        
+        h1 {
+            color: var(--neon-blue);
+            text-align: center;
+            font-size: 2rem;
+            text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+        }
+        
+        h2 {
+            color: var(--neon-blue);
+            font-size: 1.5rem;
+            text-shadow: 0 0 5px rgba(0, 255, 255, 0.5);
+            border-bottom: 1px solid var(--neon-blue);
+            padding-bottom: 5px;
+            margin-top: 20px;
+        }
+        
+        h3 {
+            color: var(--electro-purple);
+            font-size: 1.3rem;
+            text-shadow: 0 0 5px rgba(138, 43, 226, 0.5);
+            margin-top: 15px;
+        }
+        
+        p {
+            margin-bottom: 15px;
+        }
+        
+        /* Navigation */
+        .navbar {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--neon-blue);
+        }
+        
+        .navbar-logo {
+            display: flex;
+            align-items: center;
+        }
+        
+        .navbar-logo img {
+            height: 40px;
+            margin-right: 10px;
+        }
+        
+        .navbar-logo-text {
+            font-size: 1.5rem;
+            font-weight: bold;
+            color: var(--neon-blue);
+            text-shadow: 0 0 10px rgba(0, 255, 255, 0.5);
+        }
+        
+        .navbar-links {
+            display: flex;
+            gap: 15px;
+        }
+        
+        .navbar-links a {
+            color: var(--white);
+            text-decoration: none;
+            padding: 5px 10px;
+            border-radius: 4px;
+            transition: all 0.3s ease;
+        }
+        
+        .navbar-links a:hover {
+            background-color: rgba(0, 255, 255, 0.1);
+            color: var(--neon-blue);
+            text-shadow: 0 0 5px var(--neon-blue);
+        }
+        
+        /* Content sections */
+        .section {
+            background-color: rgba(46, 46, 46, 0.7);
+            border: 1px solid var(--neon-blue);
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            position: relative;
+            overflow: hidden;
+            box-shadow: 0 0 15px rgba(0, 255, 255, 0.1);
+        }
+        
+        .section::after {
+            content: "";
+            position: absolute;
+            top: 0;
+            left: -150%;
+            width: 150%;
+            height: 1px;
+            background-color: var(--neon-blue);
+            opacity: 0.5;
+            animation: scanline 3s linear infinite;
+        }
+        
+        @keyframes scanline {
+            0% { top: 0; left: -150%; }
+            100% { top: 100%; left: 100%; }
+        }
+        
+        /* Grid layouts */
+        .grid-container {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin-bottom: 20px;
+        }
+        
+        /* Stats styling */
+        .stats-box {
+            background-color: rgba(30, 30, 30, 0.7);
+            border: 1px solid var(--neon-blue);
+            border-radius: 8px;
+            padding: 15px;
+            text-align: center;
+        }
+        
+        .stats-value {
+            font-size: 1.5rem;
+            color: var(--acid-green);
+            margin: 10px 0;
+            text-shadow: 0 0 8px rgba(57, 255, 20, 0.5);
+        }
+        
+        /* Detail items */
+        .detail-item {
+            margin: 5px 0;
+            line-height: 1.4;
+        }
+        
+        /* Data display */
+        .data-row {
+            display: flex;
+            justify-content: space-between;
+            border-bottom: 1px dotted rgba(0, 255, 255, 0.2);
+            padding: 5px 0;
+        }
+        
+        .data-label {
+            color: var(--neon-blue);
+            font-weight: bold;
+        }
+        
+        .data-value {
+            color: var(--white);
+        }
+        
+        /* Loading and status indicators */
+        .loading {
+            color: var(--neon-blue);
+            text-align: center;
+            font-style: italic;
+            animation: pulse 1.5s infinite;
+        }
+        
+        @keyframes pulse {
+            0% { opacity: 0.5; }
+            50% { opacity: 1; }
+            100% { opacity: 0.5; }
+        }
+        
+        .price-change {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 12px;
+            margin-left: 10px;
+            font-size: 0.9rem;
+        }
+        
+        .price-up {
+            background-color: rgba(57, 255, 20, 0.2);
+            color: var(--acid-green);
+        }
+        
+        .price-down {
+            background-color: rgba(255, 69, 0, 0.2);
+            color: var(--bright-orange);
+        }
+        
+        /* Footer */
+        .footer {
+            text-align: center;
+            margin-top: 30px;
+            padding-top: 15px;
+            border-top: 1px solid var(--neon-blue);
+            font-size: 0.9rem;
+            color: var(--light-gray);
+        }
+        
+        /* Responsive styles */
+        @media (max-width: 768px) {
+            .container {
+                padding: 15px;
+                margin: 10px;
+            }
+            
+            .grid-container {
+                grid-template-columns: 1fr;
+            }
+            
+            .navbar {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            
+            .navbar-links {
+                margin-top: 10px;
+                flex-wrap: wrap;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="navbar">
+            <div class="navbar-logo">
+                <img src="logo.png" alt="CPUNK Logo" onerror="this.src='data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMjAiIGN5PSIyMCIgcj0iMTgiIGZpbGw9IiMwMEZGRkYiLz48dGV4dCB4PSIyMCIgeT0iMjUiIGZvbnQtZmFtaWx5PSJDb3VyaWVyIE5ldyIgZm9udC1zaXplPSIxNCIgdGV4dC1hbmNob3I9Im1pZGRsZSIgZmlsbD0iIzJFMkUyRSI+Q1A8L3RleHQ+PC9zdmc+'" />
+                <div class="navbar-logo-text">CPUNK</div>
+            </div>
+            <div class="navbar-links">
+                <a href="index.html">Home</a>
+                <a href="register.html">Register DNA</a>
+                <a href="delegate.html">Delegate</a>
+                <a href="network.html">Network</a>
+            </div>
+        </div>
+
+        <h1>Quantum-Safe MEME Coin</h1>
+        
+        <div class="section">
+            <h3>🚀 Welcome to ChipPunk ($CPUNK)</h3>
+            <p>The world's first Quantum-Safe MEME Coin built on the Cellframe blockchain. We combine the fun of meme culture with cutting-edge quantum-resistant technology.</p>
+            <p>Join our community of innovators, enthusiasts, and visionaries who believe in the power of decentralization and quantum-safe security.</p>
+        </div>
+        
+        <div class="grid-container">
+            <div class="stats-box">
+                <h2>Total Delegation Rewards</h2>
+                <div class="stats-value" id="rewards">Loading...</div>
+            </div>
+            <div class="stats-box">
+                <h2>Treasury Status</h2>
+                <div id="treasury">
+                    <div class="data-row">
+                        <span class="data-label">CELL Balance:</span>
+                        <span class="data-value" id="cell-balance">Loading...</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">CPUNK Balance:</span>
+                        <span class="data-value" id="cpunk-balance">Loading...</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">Stake Value:</span>
+                        <span class="data-value" id="stake-value">Loading...</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="grid-container">
+            <div class="section">
+                <h3>🎯 Token Details</h3>
+                <div class="data-row">
+                    <span class="data-label">Circulating Supply:</span>
+                    <span class="data-value">1,000,000,000 CPUNK</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Total Supply:</span>
+                    <span class="data-value">1,000,000,000 CPUNK</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Market Cap:</span>
+                    <span class="data-value" id="market-cap">Loading...</span>
+                </div>
+                <div class="data-row">
+                    <span class="data-label">Ownership:</span>
+                    <span class="data-value">100% Community</span>
+                </div>
+            </div>
+            
+            <div class="section">
+                <h3>💰 Token Price</h3>
+                <div id="token-price">
+                    <div class="loading">Loading price data...</div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h3>🌐 Delegation Status</h3>
+            <div class="detail-item">Active Delegations: Coming Soon...</div>
+            <div class="detail-item">Total Staked: Coming Soon...</div>
+        </div>
+        
+        <div class="section">
+            <h3>📢 Updates</h3>
+            <div id="updates-content">
+                <div class="loading">Loading updates...</div>
+            </div>
+        </div>
+        
+        <div class="section">
+            <h3>🎉 Latest News</h3>
+            <div id="news-content">
+                <div class="loading">Loading news...</div>
+            </div>
+        </div>
+        
+        <div class="footer">
+            <p>© 2025 CPUNK - Quantum-Safe MEME Coin | Built on Cellframe Blockchain</p>
+        </div>
+    </div>
+
+    <script>
+        // Simulate data for demonstration
+        function formatNumber(number) {
+            if (typeof number === 'string') number = parseFloat(number);
+            if (isNaN(number)) return '0.00';
+            if (number < 0.0001) return number.toFixed(8);
+            return new Intl.NumberFormat('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 6
+            }).format(number);
+        }
+
+        // Simulate loading data
+        document.addEventListener('DOMContentLoaded', function() {
+            // Simulation data
+            const demoData = {
+                rewards: 12458.35,
+                cellBalance: 15789.25,
+                cpunkBalance: 532145.89,
+                stakeValue: 9871.45,
+                price: 0.00731,
+                priceChange: +12.3,
+                marketCap: 7310000,
+                high24h: 0.00745,
+                low24h: 0.00701,
+                volume24h: 845923
+            };
+            
+            // Update rewards
+            setTimeout(() => {
+                document.getElementById('rewards').textContent = `${formatNumber(demoData.rewards)} CELL`;
+            }, 800);
+            
+            // Update treasury status
+            setTimeout(() => {
+                document.getElementById('cell-balance').textContent = formatNumber(demoData.cellBalance);
+                document.getElementById('cpunk-balance').textContent = formatNumber(demoData.cpunkBalance);
+                document.getElementById('stake-value').textContent = `${formatNumber(demoData.stakeValue)} MCELL`;
+            }, 1200);
+            
+            // Update market cap and price
+            setTimeout(() => {
+                document.getElementById('market-cap').textContent = `${formatNumber(demoData.marketCap)} USD`;
+                
+                // Create price display
+                const priceContainer = document.getElementById('token-price');
+                const priceDirection = demoData.priceChange >= 0 ? 'price-up' : 'price-down';
+                const priceChangeText = demoData.priceChange >= 0 ? `+${demoData.priceChange}%` : `${demoData.priceChange}%`;
+                
+                priceContainer.innerHTML = `
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                        <span style="font-size: 1.2rem;">${formatNumber(demoData.price)} USDT</span>
+                        <span class="price-change ${priceDirection}">${priceChangeText}</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">24h High:</span>
+                        <span class="data-value">${formatNumber(demoData.high24h)} USDT</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">24h Low:</span>
+                        <span class="data-value">${formatNumber(demoData.low24h)} USDT</span>
+                    </div>
+                    <div class="data-row">
+                        <span class="data-label">24h Volume:</span>
+                        <span class="data-value">${formatNumber(demoData.volume24h)} USDT</span>
+                    </div>
+                    <div style="margin-top: 10px; font-size: 0.8rem; color: #888;">
+                        Updated: ${new Date().toLocaleTimeString()}
+                    </div>
+                `;
+            }, 1500);
+            
+            // Add demo news and updates
+            setTimeout(() => {
+                const updatesContent = document.getElementById('updates-content');
+                updatesContent.innerHTML = `
+                    <div class="detail-item">- Mainnet staking rewards increased by 15% for all delegators</div>
+                    <div class="detail-item">- New partnership with quantum computing lab announced</div>
+                    <div class="detail-item">- Governance voting platform launching next week</div>
+                    <div style="margin-top: 10px; font-size: 0.8rem; color: #888;">
+                        Last updated: ${new Date().toLocaleString()}
+                    </div>
+                `;
+                
+                const newsContent = document.getElementById('news-content');
+                newsContent.innerHTML = `
+                    <div class="detail-item">- CPUNK listed on major exchange, trading volume up 300%</div>
+                    <div class="detail-item">- Community AMA session scheduled for Friday, 8PM UTC</div>
+                    <div class="detail-item">- Development roadmap for Q3 2025 released</div>
+                    <div class="detail-item">- Quantum-resistant features highlighted in crypto media</div>
+                    <div style="margin-top: 10px; font-size: 0.8rem; color: #888;">
+                        Last updated: ${new Date().toLocaleString()}
+                    </div>
+                `;
+            }, 2000);
+        });
+    </script>
+</body>
+</html>

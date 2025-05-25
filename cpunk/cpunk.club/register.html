@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK DNA Registration</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/register-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar placeholder -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+
+        <div class="highlight-box">
+            <div class="pricing-tiers">
+                <div class="pricing-tier">
+                    <div class="tier-header">3 Characters</div>
+                    <div class="tier-price"><span class="tier-cpunk">500</span> CPUNK</div>
+                    <div>Premium Short Names</div>
+                </div>
+                <div class="pricing-tier">
+                    <div class="tier-header">4 Characters</div>
+                    <div class="tier-price"><span class="tier-cpunk">100</span> CPUNK</div>
+                    <div>Popular Length</div>
+                </div>
+                <div class="pricing-tier">
+                    <div class="tier-popular">BEST VALUE</div>
+                    <div class="tier-header">5+ Characters</div>
+                    <div class="tier-price"><span class="tier-cpunk">5</span> CPUNK</div>
+                    <div>Standard Names</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="intro-section">
+            <p>Register your DNA (Distributed Naming & Addressing) by connecting to your local Cellframe dashboard and completing the following steps:</p>
+            <div class="registration-steps">
+                <div class="step-item" id="step1">
+                    <div class="step-number">1</div>
+                    <div class="step-text">Connect to your local Cellframe dashboard</div>
+                    <div class="step-check">✓</div>
+                </div>
+                <div class="step-item" id="step2">
+                    <div class="step-number">2</div>
+                    <div class="step-text">Select a wallet to associate with your DNA</div>
+                    <div class="step-check">✓</div>
+                </div>
+                <div class="step-item" id="step3">
+                    <div class="step-number">3</div>
+                    <div class="step-text">Choose a unique DNA nickname</div>
+                    <div class="step-check">✓</div>
+                </div>
+                <div class="step-item" id="step4">
+                    <div class="step-number">4</div>
+                    <div class="step-text">Confirm registration with a CPUNK payment</div>
+                    <div class="step-check">✓</div>
+                </div>
+                <div class="step-item" id="step5">
+                    <div class="step-number">5</div>
+                    <div class="step-text">Wait for transaction verification</div>
+                    <div class="step-check">✓</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="status-header" style="margin-bottom: 0;">
+                <span>Dashboard Status:</span>
+                <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+            </div>
+            <button id="connectButton" class="help-button" style="margin: 0; width: auto;">Connect</button>
+            <div class="session-details" id="sessionDetails" style="display: none;"></div>
+        </div>
+
+        <div id="walletsSection" class="section" style="display: none;">
+            <h2>Select a Wallet</h2>
+            <p>Choose the wallet you want to associate with your DNA nickname:</p>
+
+            <div id="walletsList" class="wallets-container"></div>
+        </div>
+
+        <div id="registrationSection" class="section" style="display: none;">
+            <h2>Choose Your DNA Nickname</h2>
+            
+            <div class="requirements-list">
+                <div class="requirements-title">Nickname Requirements</div>
+                <ul>
+                    <li>Length: 3-36 characters</li>
+                    <li>Only letters, numbers, underscore (_), hyphen (-), and period (.)</li>
+                    <li>Cannot contain special characters or spaces</li>
+                    <li>Shorter names cost more CPUNK tokens (see pricing above)</li>
+                </ul>
+            </div>
+            
+            <div class="form-group">
+                <label for="dnaInput">Enter DNA Nickname:</label>
+                <input type="text" id="dnaInput" class="form-control" placeholder="Enter your desired nickname">
+                <div id="dnaValidationStatus" class="validation-message"></div>
+            </div>
+
+            <div id="selectedWalletDisplay" class="selected-wallet">
+                <h3>Selected Wallet</h3>
+                <div class="wallet-name">No wallet selected</div>
+                <div class="wallet-balances"></div>
+            </div>
+
+            <div id="currentPrice" class="price-display" style="display: none;">
+                Registration Fee: <span id="priceAmount" class="price-amount">1</span> CPUNK
+            </div>
+            
+            <div class="help-button-container">
+                <button id="registerButton" class="help-button" disabled>Register DNA</button>
+            </div>
+        </div>
+
+        <div id="transactionSection" class="section" style="display: none;">
+            <h2>Transaction in Progress</h2>
+            <div id="txProcessingContainer" class="tx-processing-container">
+                <div class="tx-processing-animation">
+                    <div class="tx-processing-spinner"></div>
+                </div>
+                <div id="transactionStatus" class="tx-status">Processing your registration transaction. Please wait...</div>
+                <div class="error-message" id="txError" style="display: none;"></div>
+                <div class="success-message" id="txSuccess" style="display: none;"></div>
+                <div id="transactionHash" class="hash-container"></div>
+                <div class="tx-note">
+                    <strong>⚠️ WARNING: DO NOT CLOSE THIS PAGE!</strong> Your transaction is being verified. Closing this page before verification completes may result in your funds being spent without registering your DNA nickname.
+                </div>
+                <div class="tx-details">
+                    Transaction verification runs at increasing intervals to confirm your registration. Please be patient during this process.
+                </div>
+            </div>
+        </div>
+
+        <div id="resultSection" class="section" style="display: none;">
+            <h2>Registration Result</h2>
+            <div id="registrationResult" class="result-container"></div>
+            <div id="supportMessage" class="support-message" style="display: none;"></div>
+        </div>
+
+        <div id="errorMessage" class="error-message" style="display: none;"></div>
+        <div id="loadingIndicator" class="loading" style="display: none;">Processing</div>
+
+        <!-- Debug panel for API requests and responses - shown only on errors -->
+        <div id="debugPanel" class="debug-panel" style="display: none;">
+            <h2>Support Information</h2>
+            <div class="debug-controls">
+                <button id="copyDebugBtn" class="debug-button">Copy All for Support</button>
+                <button id="closeDebugBtn" class="debug-button">Close</button>
+            </div>
+            <div class="debug-message">
+                If you're experiencing issues, please copy this information and send it to support at <a href="mailto:support@cpunk.club">support@cpunk.club</a>
+            </div>
+            <div id="debugContent" class="debug-content">
+                <div id="debugLog"></div>
+            </div>
+        </div>
+
+        <!-- Navigation now handled by navbar-template.html -->
+    </div>
+
+    <!-- Core utilities -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/dashboardConnector.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    
+    <!-- Script to load navbar template -->
+    <script src="js/navbar.js"></script>
+    
+    <!-- Page specific script -->
+    <script src="js/register.js"></script>
+</body>
+</html>

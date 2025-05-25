@@ -1,0 +1,441 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CPUNK - The world's first Quantum-Safe MEME Coin built on the Cellframe blockchain. Join our community of innovators, enthusiasts, and visionaries.">
+    <meta name="keywords" content="CPUNK, cryptocurrency, quantum-safe, meme coin, Cellframe, blockchain, crypto">
+    <meta name="author" content="CPUNK">
+    <meta name="robots" content="index, follow">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <link rel="canonical" href="https://cpunk.club/">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://cpunk.club/">
+    <meta property="og:title" content="CPUNK - Quantum-Safe MEME Coin">
+    <meta property="og:description" content="The world's first Quantum-Safe MEME Coin built on the Cellframe blockchain. Join our community of innovators, enthusiasts, and visionaries.">
+    <meta property="og:image" content="https://cpunk.club/logo.png">
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://cpunk.club/">
+    <meta property="twitter:title" content="CPUNK - Quantum-Safe MEME Coin">
+    <meta property="twitter:description" content="The world's first Quantum-Safe MEME Coin built on the Cellframe blockchain. Join our community of innovators, enthusiasts, and visionaries.">
+    <meta property="twitter:image" content="https://cpunk.club/logo.png">
+    
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+    <title>CPUNK - Quantum-Safe MEME Coin | Built on Cellframe</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/index-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    
+    <!-- JSON-LD structured data for search engines -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "Organization",
+      "name": "CPUNK",
+      "url": "https://cpunk.club/",
+      "logo": "https://cpunk.club/logo.png",
+      "description": "The world's first Quantum-Safe MEME Coin built on the Cellframe blockchain.",
+      "sameAs": [
+        "https://t.me/cpunkclub",
+        "https://twitter.com/cpunkclub"
+      ]
+    }
+    </script>
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebSite",
+      "url": "https://cpunk.club/",
+      "name": "CPUNK - Quantum-Safe MEME Coin",
+      "description": "The world's first Quantum-Safe MEME Coin built on the Cellframe blockchain."
+    }
+    </script>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template (located in external JS file) -->
+        <script src="js/navbar.js"></script>
+
+        <header class="highlight-box" id="intro-section">
+            <h1>🚀 Welcome to ChipPunk ($CPUNK)</h1>
+            <div class="updates-content">
+                <div class="detail-item">- The world's first Quantum-Safe MEME Coin built on the Cellframe blockchain. We combine the fun of meme culture with cutting-edge quantum-resistant technology.</div>
+                <div class="detail-item">- Join our community of innovators, enthusiasts, and visionaries who believe in the power of decentralization and quantum-safe security.</div>
+            </div>
+        </header>
+
+        <section class="stats-grid">
+            <div class="stats-box">
+                <h2>Total Delegation Rewards</h2>
+                <div id="rewards" class="rewards-value">Loading...</div>
+            </div>
+            <div class="stats-box">
+                <h2>Treasury Status</h2>
+                <div id="treasury" class="treasury-info">
+                    <div class="treasury-item">
+                        <span class="treasury-label">CELL Balance:</span>
+                        <span class="treasury-value">Loading...</span>
+                    </div>
+                    <div class="treasury-item">
+                        <span class="treasury-label">CPUNK Balance:</span>
+                        <span class="treasury-value">Loading...</span>
+                    </div>
+                    <div class="treasury-item">
+                        <span class="treasury-label">Stake Value:</span>
+                        <span class="treasury-value">Loading...</span>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="info-grid">
+            <article class="info-item">
+                <h3>🎯 Token Details</h3>
+                <div class="price-details">
+                    <div class="price-detail-item">
+                        <span>Circulating Supply:</span>
+                        <span>1,000,000,000 CPUNK</span>
+                    </div>
+                    <div class="price-detail-item">
+                        <span>Total Supply:</span>
+                        <span>1,000,000,000 CPUNK</span>
+                    </div>
+                    <div class="price-detail-item" id="marketCap">
+                        <span>Market Cap:</span>
+                        <span id="marketCapValue">Loading...</span>
+                    </div>
+                    <div class="price-detail-item">
+                        <span>Ownership:</span>
+                        <span>100% Community</span>
+                    </div>
+                </div>
+            </article>
+            <article class="info-item">
+                <h3>💰 Token Price</h3>
+                <div id="tokenPrice" class="token-price-container">Loading...</div>
+            </article>
+        </section>
+
+        <section class="info-item" style="margin-top: 20px;">
+            <h3>🌐 Delegation Status</h3>
+            <div class="network-stats">
+                <div class="detail-item">Active Delegations: Coming Soon...</div>
+                <div class="detail-item">Total Staked: Coming Soon...</div>
+            </div>
+        </section>
+
+        <section class="highlight-box" id="updates-section">
+            <h3>📢 Updates</h3>
+            <div class="updates-content" id="updates-content">
+                <div class="detail-item loading">Loading updates...</div>
+            </div>
+        </section>
+
+        <section class="highlight-box" id="news-section">
+            <h3>🎉 Latest News</h3>
+            <div class="updates-content" id="news-content">
+                <div class="detail-item loading">Loading news...</div>
+            </div>
+        </section>
+    </div>
+
+    <footer>
+        <div class="footer-content" style="text-align: center; margin-top: 30px; padding: 10px; font-size: 0.8em; color: #888;">
+            © 2025 CPUNK - All rights reserved
+        </div>
+    </footer>
+
+    <!-- Core utilities - loaded on all pages for consistency -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    
+    <script>
+        function formatNumber(number) {
+            if (number < 0.0001) {
+                // For very small numbers, use scientific notation or fixed decimal places
+                return number.toFixed(8);
+            }
+            return new Intl.NumberFormat('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 6
+            }).format(number);
+        }
+
+        async function updateStats() {
+            try {
+                // Log API request if console is available
+                if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
+                    CpunkAPIConsole.log('Treasury data request', { endpoint: 'data.txt', type: 'local_file' });
+                }
+                
+                // Fetch data from local file for treasury info
+                const response = await fetch('data.txt');
+                const text = await response.text();
+                const lines = text.split('\n');
+
+                // Parse values using more specific patterns
+                const parseValue = (line, prefix) => {
+                    const match = line.match(new RegExp(`${prefix}:\\s*([\\d.]+)`));
+                    return match ? parseFloat(match[1]) : 0;
+                };
+
+                const parseTimestamp = (line) => {
+                    const match = line.match(/Timestamp:\s*(.*)/);
+                    return match ? match[1] : '';
+                };
+
+                const timestamp = parseTimestamp(lines[0]);
+                const cellBalance = parseValue(lines[1], 'CELL balance');
+                const cpunkBalance = parseValue(lines[2], 'CPUNK balance');
+                const stakeValue = parseValue(lines[3], 'Stake value');
+                const rewardCoins = parseValue(lines[4], 'Reward coins');
+                
+                // Log the parsed data response
+                if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
+                    CpunkAPIConsole.log('Treasury data response', {
+                        timestamp,
+                        cellBalance,
+                        cpunkBalance,
+                        stakeValue,
+                        rewardCoins
+                    });
+                }
+
+                // Update rewards
+                document.getElementById('rewards').textContent = `${formatNumber(rewardCoins)} CELL`;
+                document.getElementById('rewards').style.color = '#f97834';
+
+                // Update treasury with timestamp
+                const treasuryDiv = document.getElementById('treasury');
+                treasuryDiv.innerHTML = `
+                    <div class="treasury-item">
+                        <span class="treasury-label">CELL Balance:</span>
+                        <span class="treasury-value">${formatNumber(cellBalance)}</span>
+                    </div>
+                    <div class="treasury-item">
+                        <span class="treasury-label">CPUNK Balance:</span>
+                        <span class="treasury-value">${formatNumber(cpunkBalance)}</span>
+                    </div>
+                    <div class="treasury-item">
+                        <span class="treasury-label">Staked Value:</span>
+                        <span class="treasury-value">${formatNumber(stakeValue)} MCELL</span>
+                    </div>
+                    <div class="treasury-item">
+                        <span class="updated-time">Snapshot: ${timestamp}</span>
+                    </div>
+                `;
+
+                // Fetch price from BitcoinTry API
+                await updateCEXPrice();
+            } catch (error) {
+                console.error('Error updating stats:', error);
+                document.getElementById('rewards').textContent = 'Unable to load rewards';
+                document.getElementById('rewards').style.color = '#ff4444';
+                document.getElementById('treasury').innerHTML = '<div class="error-message">Unable to load treasury data</div>';
+            }
+        }
+
+        async function updateCEXPrice() {
+            try {
+                // Log API request if console is available
+                if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
+                    CpunkAPIConsole.log('CEX price API request', { 
+                        endpoint: 'https://api.bitcointry.com/api/v2/ticker',
+                        params: { pair: 'CPUNK_USDT' },
+                        type: 'external_api' 
+                    });
+                }
+                
+                const apiResponse = await fetch('https://api.bitcointry.com/api/v2/ticker?pair=CPUNK_USDT');
+                const data = await apiResponse.json();
+
+                if (data && data.CPUNK_USDT) {
+                    const ticker = data.CPUNK_USDT;
+                    const lastPrice = parseFloat(ticker.last_price);
+                    const priceChange = parseFloat(ticker.price_change_percent_24h);
+                    const high24h = parseFloat(ticker.highest_price_24h);
+                    const low24h = parseFloat(ticker.lowest_price_24h);
+                    const quoteVolume = parseFloat(ticker.quote_volume);
+
+                    // Calculate market cap (price * circulating supply)
+                    const circulatingSupply = 1000000000; // 1 billion
+                    const marketCap = lastPrice * circulatingSupply;
+                    
+                    // Log API response if console is available
+                    if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
+                        CpunkAPIConsole.log('CEX price API response', { 
+                            lastPrice,
+                            priceChange,
+                            high24h,
+                            low24h,
+                            quoteVolume,
+                            marketCap
+                        });
+                    }
+
+                    // Update market cap in token details
+                    document.getElementById('marketCapValue').textContent = `${formatNumber(marketCap)} USD`;
+
+                    // Format the price change with + sign for positive changes
+                    const priceChangeFormatted = priceChange >= 0 ? `+${priceChange}%` : `${priceChange}%`;
+
+                    // Determine price change class
+                    const priceChangeClass = priceChange >= 0 ? 'price-up' : 'price-down';
+
+                    // Update token price with more detailed information
+                    const tokenPriceDiv = document.getElementById('tokenPrice');
+                    tokenPriceDiv.innerHTML = `
+                        <p class="price-value">
+                            <span>${formatNumber(lastPrice)} USDT</span>
+                            <span class="price-change ${priceChangeClass}">${priceChangeFormatted} (24h)</span>
+                        </p>
+                        <div class="price-details">
+                            <div class="price-detail-item">
+                                <span>24h High:</span>
+                                <span>${formatNumber(high24h)} USDT</span>
+                            </div>
+                            <div class="price-detail-item">
+                                <span>24h Low:</span>
+                                <span>${formatNumber(low24h)} USDT</span>
+                            </div>
+                            <div class="price-detail-item">
+                                <span>24h Volume:</span>
+                                <span>${formatNumber(quoteVolume)} USDT</span>
+                            </div>
+                        </div>
+                        <span class="updated-time">Updated: ${new Date().toLocaleTimeString()}</span>
+                    `;
+                } else {
+                    throw new Error('Invalid API response format');
+                }
+            } catch (error) {
+                console.error('Error fetching CEX price:', error);
+                document.getElementById('tokenPrice').innerHTML = `
+                    <div class="error-message">Unable to load price data</div>
+                    <p>Please check back later</p>
+                `;
+            }
+        }
+
+        // Function to load and display news and updates from text files
+        async function loadNewsAndUpdates() {
+            try {
+                // Log API request if console is available
+                if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
+                    CpunkAPIConsole.log('Updates API request', { 
+                        endpoint: 'get_updates.php',
+                        type: 'local_api' 
+                    });
+                }
+                
+                // Use PHP wrappers to prevent caching
+                // Load updates from PHP wrapper
+                const updatesResponse = await fetch('get_updates.php');
+                const updatesText = await updatesResponse.text();
+                
+                // Log API request if console is available
+                if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
+                    CpunkAPIConsole.log('News API request', { 
+                        endpoint: 'get_news.php',
+                        type: 'local_api' 
+                    });
+                }
+                
+                // Load news from PHP wrapper
+                const newsResponse = await fetch('get_news.php');
+                const newsText = await newsResponse.text();
+                
+                // Parse updates content
+                const updatesItems = updatesText.split('\n')
+                    .filter(line => line.trim().startsWith('-')) // Only get lines that start with a dash
+                    .map(line => line.trim());
+                
+                // Parse news content
+                const newsItems = newsText.split('\n')
+                    .filter(line => line.trim().startsWith('-')) // Only get lines that start with a dash
+                    .map(line => line.trim());
+                    
+                // Log API responses if console is available
+                if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
+                    CpunkAPIConsole.log('Updates API response', { 
+                        itemCount: updatesItems.length,
+                        items: updatesItems
+                    });
+                    
+                    CpunkAPIConsole.log('News API response', { 
+                        itemCount: newsItems.length,
+                        items: newsItems
+                    });
+                }
+                
+                // Function to convert basic markdown links to HTML
+                function parseMarkdownLinks(text) {
+                    // Replace [text](url) with <a href="url">text</a>
+                    return text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+                }
+                
+                // Update the updates section in the HTML
+                const updatesContent = document.getElementById('updates-content');
+                if (updatesItems.length > 0) {
+                    updatesContent.innerHTML = updatesItems
+                        .map(item => `<div class="detail-item">- ${parseMarkdownLinks(item.substring(2))}</div>`)
+                        .join('');
+                } else {
+                    updatesContent.innerHTML = '<div class="detail-item">No updates available at this time.</div>';
+                }
+                
+                // Update the news section in the HTML
+                const newsContent = document.getElementById('news-content');
+                if (newsItems.length > 0) {
+                    newsContent.innerHTML = newsItems
+                        .map(item => `<div class="detail-item">- ${parseMarkdownLinks(item.substring(2))}</div>`)
+                        .join('');
+                } else {
+                    newsContent.innerHTML = '<div class="detail-item">No news available at this time.</div>';
+                }
+                
+                // Add last updated timestamp to both sections
+                const timestamp = new Date().toLocaleString();
+                updatesContent.innerHTML += `<div class="updated-time">Last updated: ${timestamp}</div>`;
+                newsContent.innerHTML += `<div class="updated-time">Last updated: ${timestamp}</div>`;
+                
+            } catch (error) {
+                console.error('Error loading news and updates:', error);
+                document.getElementById('updates-content').innerHTML = 
+                    '<div class="error-message">Error loading updates. Please try again later.</div>';
+                document.getElementById('news-content').innerHTML = 
+                    '<div class="error-message">Error loading news. Please try again later.</div>';
+            }
+        }
+
+        // Initial updates
+        updateStats();
+        loadNewsAndUpdates();
+
+        // Update stats and price every 2 minutes
+        setInterval(updateStats, 120000);
+        
+        // Update price more frequently (every 30 seconds)
+        setInterval(updateCEXPrice, 30000);
+        
+        // Update news and updates every 5 minutes
+        setInterval(loadNewsAndUpdates, 300000);
+    </script>
+</body>
+</html>

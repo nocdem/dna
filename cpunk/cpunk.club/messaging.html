@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK - DNA Messaging</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/messaging-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/user-settings-page.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/navbar.js"></script>
+
+        <h1>CPUNK DNA Messaging</h1>
+
+        <div class="beta-badge">BETA</div>
+
+        <div class="info-section">
+            <p>Send and receive secure messages to other CPUNK DNA users. Your messages are linked to your DNA identity and can only be accessed with your wallet.</p>
+        </div>
+
+        <!-- Connection Section -->
+        <div id="connectionSection">
+            <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="status-header" style="margin-bottom: 0;">
+                    <span>Dashboard Status:</span>
+                    <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+                </div>
+                <button id="connectButton" class="help-button" style="margin: 0; width: auto;">Connect</button>
+                <div class="session-details" id="sessionDetails" style="display: none;"></div>
+                <div class="error-message" id="connectionError" style="display: none;"></div>
+            </div>
+        </div>
+
+        <!-- Wallet Selection Section -->
+        <div id="walletSection" class="section" style="display: none;">
+            <h2>Select Your Wallet</h2>
+            <p>Choose the wallet associated with your DNA registration:</p>
+
+            <div id="walletsList" class="wallets-container">
+                <div class="loading">Loading wallets...</div>
+            </div>
+
+            <div class="error-message" id="walletError"></div>
+        </div>
+
+        <!-- DNA Selection Section -->
+        <div id="dnaSection" class="section" style="display: none;">
+            <h2>Select Your DNA Nickname</h2>
+            <p>Choose a DNA nickname linked to your wallet:</p>
+            
+            <div id="dnaList" class="dna-container"></div>
+            
+            <div class="error-message" id="dnaError"></div>
+            
+            <div id="dnaDetails" style="display:none;">
+                <div class="profile-preview">
+                    <div class="profile-header">
+                        <div class="profile-avatar" id="profileAvatar">C</div>
+                        <div class="profile-info">
+                            <div class="profile-nickname" id="profileNickname">CPUNK_User</div>
+                            <div class="nickname-tags" id="profileNicknames"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Messaging UI Section -->
+        <div id="messagingSection" class="section" style="display: none;">
+            <div class="messaging-container">
+                <!-- Left Panel - Contacts/Conversations -->
+                <div class="contacts-panel">
+                    <div class="search-container">
+                        <input type="text" id="searchInput" placeholder="Search or enter DNA...">
+                        <button id="searchButton" class="icon-button">
+                            <span class="search-icon">🔍</span>
+                        </button>
+                    </div>
+                    
+                    <!-- User Profile Header -->
+                    <div class="user-profile">
+                        <div class="profile-avatar" id="userAvatar"></div>
+                        <div class="profile-info">
+                            <div class="profile-name" id="userName">Loading...</div>
+                            <div class="profile-status">Online</div>
+                        </div>
+                        <div class="menu-button" id="profileMenuButton">
+                            <span class="menu-icon">⋮</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Conversations List -->
+                    <div class="conversations-list" id="conversationsList">
+                        <!-- Conversations will be loaded here -->
+                        <div class="placeholder-message">No conversations yet</div>
+                    </div>
+                    
+                    <!-- New Message Button -->
+                    <button id="newMessageButton" class="new-message-button">
+                        <span class="new-message-icon">✎</span>
+                    </button>
+                </div>
+                
+                <!-- Right Panel - Message Area -->
+                <div class="message-panel">
+                    <!-- Chat Header -->
+                    <div class="chat-header" id="chatHeader">
+                        <div class="contact-info">
+                            <div class="contact-avatar" id="contactAvatar"></div>
+                            <div class="contact-details">
+                                <div class="contact-name" id="contactName">Select a conversation</div>
+                                <div class="contact-status" id="contactStatus"></div>
+                            </div>
+                        </div>
+                        <div class="chat-actions">
+                            <button class="icon-button" id="refreshButton">
+                                <span class="refresh-icon">↻</span>
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <!-- Messages Area -->
+                    <div class="messages-container" id="messagesContainer">
+                        <!-- Messages will be loaded here -->
+                        <div class="welcome-message">
+                            <div class="welcome-icon">💬</div>
+                            <h3>Welcome to CPUNK DNA Messaging</h3>
+                            <p>Select a conversation to start messaging or create a new one.</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Message Input Area -->
+                    <div class="message-input-container" id="messageInputContainer">
+                        <input type="text" id="messageInput" placeholder="Type a message..." disabled>
+                        <button id="sendButton" class="send-button" disabled>
+                            <span class="send-icon">➤</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- New Conversation Modal -->
+        <div id="newConversationModal" class="modal">
+            <div class="modal-content">
+                <span class="modal-close">&times;</span>
+                <h3>New Conversation</h3>
+                <div class="modal-body">
+                    <div class="form-group">
+                        <label for="recipientDna">Recipient DNA:</label>
+                        <input type="text" id="recipientDna" class="form-control" placeholder="Enter DNA nickname...">
+                        <div class="help-text">Enter the DNA nickname of the person you want to message</div>
+                        <div id="recipientValidation" class="validation-message"></div>
+                    </div>
+                    <button id="startConversationButton" class="action-button">Start Conversation</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- No footer navigation needed - provided by navbar.js -->
+    </div>
+
+    <!-- Core utilities -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <!-- Backwards compatibility - will be phased out -->
+    <script src="js/dashboardConnector.js"></script>
+    <!-- Page specific script -->
+    <script src="js/messaging.js"></script>
+</body>
+</html>

@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CPUNK Network Statistics - View real-time data about the CPUNK network, token metrics, and blockchain analytics.">
+    <meta name="keywords" content="CPUNK, cryptocurrency, network stats, blockchain analytics, token metrics">
+    <meta name="author" content="CPUNK">
+    <meta name="robots" content="index, follow">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <link rel="canonical" href="https://cpunk.club/network-stats.html">
+    
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://cpunk.club/network-stats.html">
+    <meta property="og:title" content="CPUNK Network Statistics">
+    <meta property="og:description" content="View real-time data about the CPUNK network, token metrics, and blockchain analytics.">
+    <meta property="og:image" content="https://cpunk.club/logo.png">
+    
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:url" content="https://cpunk.club/network-stats.html">
+    <meta property="twitter:title" content="CPUNK Network Statistics">
+    <meta property="twitter:description" content="View real-time data about the CPUNK network, token metrics, and blockchain analytics.">
+    <meta property="twitter:image" content="https://cpunk.club/logo.png">
+    
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+    <title>CPUNK Network Statistics | Blockchain Analytics</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/network-stats-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    
+    <!-- JSON-LD structured data for search engines -->
+    <script type="application/ld+json">
+    {
+      "@context": "https://schema.org",
+      "@type": "WebPage",
+      "name": "CPUNK Network Statistics",
+      "description": "View real-time data about the CPUNK network, token metrics, and blockchain analytics.",
+      "url": "https://cpunk.club/network-stats.html",
+      "isPartOf": {
+        "@type": "WebSite",
+        "name": "CPUNK - Quantum-Safe MEME Coin",
+        "url": "https://cpunk.club/"
+      }
+    }
+    </script>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template (located in external JS file) -->
+        <script src="js/navbar.js"></script>
+
+        <header class="highlight-box" id="stats-header">
+            <h1>🔍 CPUNK Network Statistics</h1>
+            <p class="stats-header-description">Real-time analytics and metrics for the CPUNK network and token ecosystem</p>
+        </header>
+
+        <section class="stats-grid">
+            <div class="stats-box" id="token-stats">
+                <h2>Token Metrics</h2>
+                <div class="stats-content">
+                    <div class="stats-row">
+                        <div class="stat-label">Price (USDT):</div>
+                        <div class="stat-value" id="token-price">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">24h Change:</div>
+                        <div class="stat-value" id="price-change">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Market Cap:</div>
+                        <div class="stat-value" id="market-cap">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Total Supply:</div>
+                        <div class="stat-value">1,000,000,000 CPUNK</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Circulating Supply:</div>
+                        <div class="stat-value" id="circulating-supply">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">24h Volume:</div>
+                        <div class="stat-value" id="trading-volume">Loading...</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stats-box" id="network-health">
+                <h2>Network Health</h2>
+                <div class="stats-content">
+                    <div class="stats-row">
+                        <div class="stat-label">Active Nodes:</div>
+                        <div class="stat-value" id="active-nodes">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Block Height:</div>
+                        <div class="stat-value" id="block-height">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Network Status:</div>
+                        <div class="stat-value" id="network-status">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="stats-grid">
+            <div class="stats-box" id="treasury-info">
+                <h2>Treasury Status</h2>
+                <div class="stats-content">
+                    <div class="stats-row">
+                        <div class="stat-label">CELL Balance:</div>
+                        <div class="stat-value" id="treasury-cell">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">CPUNK Balance:</div>
+                        <div class="stat-value" id="treasury-cpunk">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Staked Value:</div>
+                        <div class="stat-value" id="treasury-staked">Loading...</div>
+                    </div>
+                    <div class="stats-row timestamp-row">
+                        <div class="updated-time" id="treasury-updated">Last updated: --</div>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="stats-box" id="delegation-stats">
+                <h2>Delegation Statistics</h2>
+                <div class="stats-content">
+                    <div class="stats-row">
+                        <div class="stat-label">Active Delegations:</div>
+                        <div class="stat-value" id="active-delegations">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Total Staked:</div>
+                        <div class="stat-value" id="total-staked">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Total Rewards:</div>
+                        <div class="stat-value" id="total-rewards">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Average APY:</div>
+                        <div class="stat-value" id="average-apy">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section class="stats-box" id="recent-transactions">
+            <div class="section-header">
+                <h2><span class="header-icon">👑</span> Top CPUNK Holders</h2>
+                <div class="section-subtitle">Addresses with the largest CPUNK balances and their DNA names</div>
+            </div>
+            <div class="holders-container" id="transactions-list">
+                <div class="loading-message">Loading top CPUNK holders...</div>
+            </div>
+        </section>
+
+        <section class="stats-box" id="dna-registry">
+            <h2>CPUNK Circulation Stats</h2>
+            <div class="stats-content">
+                <div class="stats-row">
+                    <div class="stat-label">Active Addresses:</div>
+                    <div class="stat-value" id="total-registrations">Loading...</div>
+                </div>
+                <div class="stats-row">
+                    <div class="stat-label">Total CPUNK:</div>
+                    <div class="stat-value" id="registry-revenue">Loading...</div>
+                </div>
+            </div>
+        </section>
+
+        <section class="stats-grid network-resources">
+            <div class="stats-box" id="network-resources">
+                <h2>Network Resources</h2>
+                <div class="resource-links">
+                    <a href="network.html" class="resource-link">
+                        <span class="resource-icon">🖥️</span>
+                        <span class="resource-text">Install CPUNK Network</span>
+                    </a>
+                    <a href="https://explorer.cellframe.net/#/status" target="_blank" class="resource-link">
+                        <span class="resource-icon">🔍</span>
+                        <span class="resource-text">Blockchain Explorer</span>
+                    </a>
+                    <a href="https://api.bitcointry.com/api/v2/ticker?pair=CPUNK_USDT" target="_blank" class="resource-link">
+                        <span class="resource-icon">📊</span>
+                        <span class="resource-text">Market API Data</span>
+                    </a>
+                </div>
+            </div>
+            
+            <div class="stats-box" id="social-stats">
+                <h2>Community Growth</h2>
+                <div class="stats-content">
+                    <div class="stats-row">
+                        <div class="stat-label">Telegram Members:</div>
+                        <div class="stat-value" id="telegram-members">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Twitter Followers:</div>
+                        <div class="stat-value" id="twitter-followers">Loading...</div>
+                    </div>
+                    <div class="stats-row">
+                        <div class="stat-label">Community Growth:</div>
+                        <div class="stat-value" id="community-growth">Loading...</div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <div class="info-note">
+            <p>Note: Statistics are updated every 2 minutes. DNA lookup data is cached for improved performance. Last refresh: <span id="last-refresh-time">--</span></p>
+        </div>
+    </div>
+
+    <footer>
+        <div class="footer-content" style="text-align: center; margin-top: 30px; padding: 10px; font-size: 0.8em; color: #888;">
+            © 2025 CPUNK - All rights reserved
+        </div>
+    </footer>
+
+    <!-- Core utilities - loaded on all pages for consistency -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    
+    <!-- Network statistics specific script -->
+    <script src="js/network-stats.js"></script>
+</body>
+</html>

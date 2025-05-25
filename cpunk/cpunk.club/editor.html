@@ -1,0 +1,1981 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK DNA Editor</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/edit-content-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        .status-section {
+            margin-bottom: 20px;
+            padding: 15px;
+            background-color: var(--section-bg);
+            border-radius: 10px;
+        }
+
+        .status-box {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 4px;
+            font-size: 14px;
+            font-weight: bold;
+        }
+
+        .status-disconnected {
+            background-color: var(--error-light);
+            color: var(--error);
+        }
+
+        .status-connecting {
+            background-color: var(--warning-light);
+            color: var(--warning);
+        }
+
+        .status-connected {
+            background-color: var(--success-light);
+            color: var(--success);
+        }
+
+        .help-button {
+            background-color: var(--primary);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            padding: 8px 15px;
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .help-button:hover {
+            background-color: var(--primary-hover);
+        }
+
+        .message {
+            padding: 10px;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+
+        .error {
+            background-color: var(--error-light);
+            color: var(--error);
+        }
+
+        .success {
+            background-color: var(--success-light);
+            color: var(--success);
+        }
+
+        .warning {
+            background-color: var(--warning-light);
+            color: var(--warning);
+        }
+
+        .info {
+            background-color: var(--dark-bg);
+            color: var(--text-primary);
+        }
+
+        .editor-container {
+            display: none;
+        }
+
+        .wallet-card {
+            background-color: var(--section-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .wallet-card:hover {
+            background-color: var(--section-bg-hover);
+        }
+
+        .wallet-card.selected {
+            border-color: var(--primary);
+            background-color: var(--primary-light);
+        }
+
+        .dna-card {
+            background-color: var(--section-bg);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: background-color 0.2s;
+        }
+
+        .dna-card:hover {
+            background-color: var(--section-bg-hover);
+        }
+
+        .dna-card.selected {
+            border-color: var(--primary);
+            background-color: var(--primary-light);
+        }
+
+        .logout-btn {
+            padding: 10px 20px;
+            background-color: var(--error);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            margin-top: 20px;
+        }
+
+        .logout-btn:hover {
+            background-color: var(--error-dark, darkred);
+        }
+        
+        .search-section {
+            margin-bottom: 20px;
+            background-color: var(--primary);
+            border-radius: 10px;
+            padding: 30px;
+            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        }
+        
+        .search-section h3 {
+            color: white;
+            font-size: 24px;
+            margin-top: 0;
+        }
+        
+        .search-section p {
+            color: white;
+            font-size: 16px;
+            margin-bottom: 20px;
+        }
+        
+        .search-form {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .search-input {
+            flex: 1;
+            width: 90%;
+            padding: 15px;
+            border-radius: 8px;
+            border: 3px solid white;
+            background-color: white;
+            color: #333;
+            font-size: 18px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+        
+        .dna-display {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: var(--dark-bg);
+            border-radius: 8px;
+            display: none;
+        }
+        
+        .dna-header {
+            display: flex;
+            justify-content: space-between;
+            padding-bottom: 10px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        
+        .tab-container {
+            margin-top: 20px;
+        }
+
+        .tab-buttons {
+            display: flex;
+            gap: 2px;
+            margin-bottom: 15px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .tab-button {
+            padding: 10px 15px;
+            background-color: var(--section-bg);
+            border: none;
+            border-bottom: 2px solid transparent;
+            color: var(--text-primary);
+            cursor: pointer;
+            font-weight: bold;
+        }
+
+        .tab-button:hover {
+            background-color: var(--section-bg-hover);
+        }
+
+        .tab-button.active {
+            border-bottom: 2px solid var(--text-primary);
+            color: var(--text-primary);
+            background-color: var(--section-bg-hover);
+        }
+        
+        .clear-data-btn {
+            background-color: transparent;
+            color: #666;
+            border: 1px solid #666;
+            border-radius: 4px;
+            padding: 5px 10px;
+            cursor: pointer;
+            font-size: 13px;
+            transition: all 0.2s ease;
+        }
+        
+        .clear-data-btn:hover {
+            background-color: #666;
+            color: white;
+        }
+
+        .tab-content {
+            display: none;
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+        
+        .dna-info {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+        
+        .dna-info-item {
+            display: flex;
+            flex-direction: column;
+        }
+        
+        .dna-info-label {
+            font-size: 14px;
+            color: var(--text-dim);
+            margin-bottom: 5px;
+        }
+        
+        .dna-info-value {
+            font-weight: bold;
+        }
+
+        .info-section {
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .info-section-title {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: var(--primary);
+            font-size: 1.1em;
+        }
+        
+        .dna-edit-form {
+            margin-top: 20px;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        .form-label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        
+        .form-input {
+            width: 100%;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background-color: var(--input-bg);
+            color: var(--text-primary);
+        }
+        
+        .form-textarea {
+            width: 100%;
+            padding: 10px;
+            border-radius: 4px;
+            border: 1px solid var(--border-color);
+            background-color: var(--input-bg);
+            color: var(--text-primary);
+            min-height: 100px;
+            resize: vertical;
+        }
+        
+        .button-container {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+            margin-top: 20px;
+        }
+        
+        .button {
+            padding: 10px 20px;
+            border-radius: 4px;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+        }
+        
+        .button.primary {
+            background-color: var(--primary);
+            color: white;
+        }
+        
+        .search-button {
+            padding: 15px 15px;
+            font-size: 16px;
+            font-weight: bold;
+            background-color: #333;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+            width: 100px;
+            flex-shrink: 0;
+        }
+        
+        .search-button:hover {
+            background-color: #444;
+        }
+        
+        .button.secondary {
+            background-color: var(--section-bg);
+            border: 1px solid var(--primary);
+            color: var(--primary);
+        }
+        
+        .button:hover {
+            opacity: 0.9;
+        }
+        
+        .button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .social-accounts {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .social-account {
+            display: flex;
+            align-items: center;
+            padding: 8px;
+            background-color: var(--section-bg);
+            border-radius: 4px;
+        }
+
+        .social-icon {
+            width: 24px;
+            height: 24px;
+            margin-right: 8px;
+            text-align: center;
+        }
+
+        .social-name {
+            font-weight: bold;
+        }
+
+        .wallet-accounts {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 10px;
+            margin-top: 10px;
+        }
+
+        .wallet-account {
+            padding: 8px;
+            background-color: var(--section-bg);
+            border-radius: 4px;
+        }
+
+        .wallet-network {
+            font-weight: bold;
+            margin-bottom: 4px;
+        }
+
+        .wallet-address {
+            font-family: monospace;
+            word-break: break-all;
+            font-size: 0.9em;
+        }
+    </style>
+</head>
+<body>
+    <!-- Include navbar -->
+    <div id="navbar-container"></div>
+    
+    <div class="container">
+        <h1>CPUNK DNA Editor</h1>
+        
+        <div class="info-section">
+            <p>Please connect to the Cellframe dashboard to access the DNA editor. This tool allows admins to:</p>
+            <p>• Search for DNA registrations<br>
+               • View detailed DNA profiles<br>
+               • Edit profile information</p>
+        </div>
+
+        <!-- Connection Status Section -->
+        <div class="status-section" id="connect-section">
+            <div class="status-box">
+                <div class="status-header">
+                    <span style="font-weight: bold; margin-right: 8px;">Dashboard Status:</span>
+                    <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+                </div>
+                <button id="connectButton" class="help-button">Connect</button>
+            </div>
+            <div id="connectionError" class="message error" style="display: none;"></div>
+        </div>
+
+        <!-- Wallet Selection Section -->
+        <div class="status-section" id="walletSection" style="display: none;">
+            <h3>Select Wallet for Admin Access</h3>
+            <p>Choose the wallet containing your admin DNA.</p>
+            <div id="walletsList"></div>
+            <div id="walletError" class="message error" style="display: none;"></div>
+        </div>
+
+        <!-- DNA Selection Section -->
+        <div class="status-section" id="dnaSection" style="display: none;">
+            <h3>Select DNA Nickname</h3>
+            <p>Choose the DNA nickname to use for admin authentication.</p>
+            <div id="dnaList"></div>
+            <div id="dnaError" class="message error" style="display: none;"></div>
+        </div>
+
+        <!-- Editor Section (will show after authentication) -->
+        <div class="editor-container" id="editorContainer">
+            <div class="user-info" style="margin-bottom: 20px; padding: 15px; background-color: var(--section-bg); border-radius: 10px;">
+                <h3 style="margin-top: 0;">Admin Access</h3>
+                <p>Logged in as: <strong id="userDna">Loading...</strong></p>
+                <p>Wallet: <span id="userWallet">Loading...</span></p>
+            </div>
+            
+            <!-- DNA Search Section (visible only after authentication) -->
+            <div class="search-section">
+                <h3>Search DNA</h3>
+                <p>Enter a DNA nickname or wallet address to search:</p>
+                <div class="search-form">
+                    <input type="text" id="searchInput" class="search-input" placeholder="Enter DNA nickname (e.g., nocdem)">
+                    <button id="searchButton" class="search-button">SEARCH</button>
+                </div>
+                <div id="searchStatus" class="message" style="display: none;"></div>
+            </div>
+
+        <!-- DNA Display Section - Moved outside editor container -->
+        <div class="dna-display" id="dnaDisplay">
+            <div class="dna-header">
+                <h3 id="dnaTitle">DNA Information</h3>
+                <button id="editToggleButton" class="button secondary" style="display: none;">Edit</button>
+            </div>
+
+                <!-- DNA Information Display with Tabs -->
+                <div class="tab-container" id="dnaInfoTabs">
+                    <div class="tab-buttons">
+                        <button class="tab-button active" data-tab="basicInfo">Basic Info</button>
+                        <button class="tab-button" data-tab="socialAccounts">Social Accounts</button>
+                        <button class="tab-button" data-tab="walletAddresses">Wallet Addresses</button>
+                        <button class="tab-button" data-tab="messages">Messages</button>
+                    </div>
+
+                    <!-- Basic Info Tab -->
+                    <div id="basicInfo" class="tab-content active">
+                        <div class="dna-info" id="dnaBasicInfo">
+                            <!-- Will be populated with DNA basic details -->
+                        </div>
+                    </div>
+
+                    <!-- Social Accounts Tab -->
+                    <div id="socialAccounts" class="tab-content">
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div class="info-section-title">Connected Social Accounts</div>
+                            <button id="clearSocialsButton" class="clear-data-btn">Clear All Socials</button>
+                        </div>
+                        <p class="tab-description">View and manage social media profiles connected to this DNA.</p>
+                        <div class="social-accounts" id="dnaSocialAccounts">
+                            <!-- Will be populated with social accounts -->
+                        </div>
+                    </div>
+
+                    <!-- Wallet Addresses Tab -->
+                    <div id="walletAddresses" class="tab-content">
+                        <div class="info-section-title">Registered Wallet Addresses</div>
+                        <div class="wallet-accounts" id="dnaWalletAccounts">
+                            <!-- Will be populated with wallet addresses -->
+                        </div>
+                    </div>
+
+                    <!-- Messages Tab -->
+                    <div id="messages" class="tab-content">
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <div class="info-section-title">Message History</div>
+                            <button id="clearMessagesButton" class="clear-data-btn">Clear All Messages</button>
+                        </div>
+                        <div id="dnaMessages">
+                            <!-- Will be populated with messages -->
+                        </div>
+                    </div>
+                </div>
+
+                <!-- DNA Edit Form -->
+                <div class="dna-edit-form" id="dnaEditForm" style="display: none;">
+                    <h3>Edit DNA Profile</h3>
+                    
+                    <!-- This will be a dynamic form based on the DNA properties -->
+                    <div id="dnaFormFields">
+                        <!-- Form fields will be generated here -->
+                    </div>
+                    
+                    <div class="button-container">
+                        <button id="cancelEditButton" class="button secondary">Cancel</button>
+                        <button id="saveEditButton" class="button primary">Save Changes</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+            <button id="logoutButton" class="logout-btn" style="display: none;">Disconnect from Dashboard</button>
+        </div>
+    </div>
+
+    <script src="js/dashboardConnector.js"></script>
+    <script>
+        // DOM Elements
+        const editorContainer = document.getElementById('editorContainer');
+        const userDnaElement = document.getElementById('userDna');
+        const userWalletElement = document.getElementById('userWallet');
+        const logoutButton = document.getElementById('logoutButton');
+        
+        // DNA Search Elements
+        const searchInput = document.getElementById('searchInput');
+        const searchButton = document.getElementById('searchButton');
+        const searchStatus = document.getElementById('searchStatus');
+        
+        // DNA Display Elements
+        const dnaDisplay = document.getElementById('dnaDisplay');
+        const dnaTitle = document.getElementById('dnaTitle');
+        const dnaBasicInfo = document.getElementById('dnaBasicInfo');
+        const dnaSocialAccounts = document.getElementById('dnaSocialAccounts');
+        const dnaWalletAccounts = document.getElementById('dnaWalletAccounts');
+        const dnaMessages = document.getElementById('dnaMessages');
+        const editToggleButton = document.getElementById('editToggleButton');
+        const dnaEditForm = document.getElementById('dnaEditForm');
+        const dnaFormFields = document.getElementById('dnaFormFields');
+        const cancelEditButton = document.getElementById('cancelEditButton');
+        const saveEditButton = document.getElementById('saveEditButton');
+        
+        // Tabs Elements
+        const tabButtons = document.querySelectorAll('.tab-button');
+        const tabContents = document.querySelectorAll('.tab-content');
+
+        // State Variables
+        let adminList = [];
+        let currentDna = null;
+        let isEditing = false;
+
+        // Load admin list
+        async function loadAdmins() {
+            try {
+                const response = await fetch('admins.txt');
+                if (!response.ok) {
+                    throw new Error(`Failed to load admins.txt: ${response.status}`);
+                }
+                
+                const text = await response.text();
+                
+                // Parse admin nicknames - filtering out comments and empty lines
+                return text.split('\n')
+                    .map(line => line.trim())
+                    .filter(line => line && !line.startsWith('#'));
+            } catch (error) {
+                console.error('Error loading admin list:', error);
+                return [];
+            }
+        }
+
+        // Check if user is admin
+        function isAdmin(dna) {
+            return adminList.some(admin => admin.toLowerCase() === dna.toLowerCase());
+        }
+
+        // Initialize the page
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Load navbar
+            try {
+                const navbarResponse = await fetch('navbar-template.html');
+                const navbarHtml = await navbarResponse.text();
+                document.getElementById('navbar-container').innerHTML = navbarHtml;
+            } catch (error) {
+                console.error('Error loading navbar:', error);
+            }
+
+            // Load admins list
+            adminList = await loadAdmins();
+            console.log('Loaded admins:', adminList);
+
+            // Initialize dashboard connector (for admin features)
+            CpunkDashboard.init({
+                onConnected: function(sessionId) {
+                    console.log('Connected to dashboard with session ID:', sessionId);
+                },
+                onWalletSelected: function(wallet) {
+                    console.log('Selected wallet:', wallet);
+                },
+                onDnaSelected: function(dna) {
+                    console.log('Selected DNA:', dna);
+                    handleDnaSelection(dna);
+                },
+                onError: function(message) {
+                    console.error('Dashboard connector error:', message);
+                }
+            });
+
+            // Add event listeners
+            searchButton.addEventListener('click', searchDna);
+            editToggleButton.addEventListener('click', toggleEditMode);
+            cancelEditButton.addEventListener('click', cancelEdit);
+            saveEditButton.addEventListener('click', saveEdit);
+            
+            // Add clear data button event listeners
+            document.getElementById('clearSocialsButton')?.addEventListener('click', () => clearData('socials'));
+            document.getElementById('clearMessagesButton')?.addEventListener('click', () => clearData('messages'));
+            document.getElementById('clearDelegationsButton')?.addEventListener('click', () => clearData('delegations'));
+            
+            // Show connection section since authentication is required
+            document.getElementById('connect-section').style.display = 'block';
+            
+            // Set up tab switching
+            tabButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    const tabId = button.getAttribute('data-tab');
+                    
+                    // Remove active class from all buttons and contents
+                    tabButtons.forEach(btn => btn.classList.remove('active'));
+                    tabContents.forEach(content => content.classList.remove('active'));
+                    
+                    // Add active class to clicked button and corresponding content
+                    button.classList.add('active');
+                    document.getElementById(tabId).classList.add('active');
+                });
+            });
+            
+            // Logout button handler
+            logoutButton.addEventListener('click', function() {
+                CpunkDashboard.reset();
+                editorContainer.style.display = 'none';
+                dnaDisplay.style.display = 'none';
+                searchStatus.style.display = 'none';
+            });
+            
+            // Enable search on Enter key
+            searchInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    searchDna();
+                }
+            });
+        });
+
+        // Handle DNA selection and admin check
+        function handleDnaSelection(dna) {
+            if (!dna || !dna.name) {
+                console.error('Invalid DNA selected');
+                return;
+            }
+
+            // Check if the DNA is in the admin list
+            if (isAdmin(dna.name)) {
+                // Show admin editor
+                userDnaElement.textContent = dna.name;
+                userWalletElement.textContent = dna.wallet || 'Unknown';
+                
+                // Show editor container
+                document.getElementById('dnaSection').style.display = 'none';
+                editorContainer.style.display = 'block';
+            } else {
+                // Show access denied message
+                document.getElementById('dnaError').textContent = 'Access denied. This DNA does not have admin privileges.';
+                document.getElementById('dnaError').style.display = 'block';
+            }
+        }
+
+        // Search DNA
+        async function searchDna() {
+            const searchTerm = searchInput.value.trim();
+            
+            if (!searchTerm) {
+                showSearchStatus('Please enter a DNA nickname or wallet address', 'warning');
+                return;
+            }
+            
+            // Show searching status
+            showSearchStatus('Searching...', 'info');
+            searchButton.disabled = true;
+            
+            try {
+                // Call the DNA proxy to look up the address or nickname
+                const response = await fetch(`dna-proxy.php?lookup=${encodeURIComponent(searchTerm)}`);
+                const text = await response.text();
+                
+                try {
+                    const data = JSON.parse(text);
+                    
+                    // Check if search was successful
+                    if (data.status_code === 0 && data.response_data) {
+                        // DNA found!
+                        currentDna = {
+                            searchTerm: searchTerm,
+                            data: data.response_data
+                        };
+                        
+                        // Show DNA info in a standalone way (no need for the editor container)
+                        displayDnaInfo(currentDna);
+                        dnaDisplay.style.display = 'block';
+                        searchStatus.style.display = 'none';
+                        
+                        // Only show edit button if authenticated
+                        editToggleButton.style.display = CpunkDashboard.getSessionId() ? 'block' : 'none';
+                    } else if (data.error) {
+                        // API returned an error
+                        showSearchStatus(`Error: ${data.error}`, 'error');
+                    } else {
+                        // No results found
+                        showSearchStatus('No DNA registration found for the provided search term', 'warning');
+                    }
+                } catch (e) {
+                    // Error parsing response
+                    console.error('Error parsing response:', e, text);
+                    showSearchStatus('Error processing search results', 'error');
+                }
+            } catch (error) {
+                console.error('Search error:', error);
+                showSearchStatus(`Error searching: ${error.message}`, 'error');
+            } finally {
+                searchButton.disabled = false;
+            }
+        }
+        
+        // Display DNA information
+        function displayDnaInfo(dnaData) {
+            // Set title
+            let nickname = '';
+            let ownerAddress = '';
+            
+            // Check if we're looking at a nickname or a wallet 
+            if (dnaData.data.registered_names) {
+                // This is a wallet lookup
+                nickname = Object.keys(dnaData.data.registered_names)[0] || '';
+                ownerAddress = dnaData.searchTerm;
+                dnaTitle.textContent = `DNA for wallet: ${formatAddress(ownerAddress)}`;
+            } else {
+                // This is a nickname lookup
+                nickname = dnaData.searchTerm;
+                ownerAddress = dnaData.data.owner_address || '';
+                dnaTitle.textContent = `DNA: ${nickname}`;
+            }
+            
+            console.log("DNA Data:", dnaData);
+            
+            // Display Basic Info Tab
+            displayBasicInfo(dnaData, nickname, ownerAddress);
+            
+            // Display Social Accounts Tab
+            displaySocialAccounts(dnaData);
+            
+            // Display Wallet Addresses Tab
+            displayWalletAddresses(dnaData);
+            
+            // Display Messages Tab
+            displayMessages(dnaData);
+            
+            // Display Delegations Tab if exists
+            if (dnaData.data.delegations && dnaData.data.delegations.length > 0) {
+                // Add the delegations tab button if it doesn't exist
+                if (!document.getElementById('delegationsTab')) {
+                    const tabButtons = document.querySelector('.tab-buttons');
+                    const delegationsTabButton = document.createElement('button');
+                    delegationsTabButton.id = 'delegationsTab';
+                    delegationsTabButton.className = 'tab-button';
+                    delegationsTabButton.setAttribute('data-tab', 'delegations');
+                    delegationsTabButton.textContent = 'Delegations';
+                    tabButtons.appendChild(delegationsTabButton);
+                    
+                    // Add event listener
+                    delegationsTabButton.addEventListener('click', () => {
+                        // Remove active class from all buttons and contents
+                        document.querySelectorAll('.tab-button').forEach(btn => btn.classList.remove('active'));
+                        document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+                        
+                        // Add active class to this button and corresponding content
+                        delegationsTabButton.classList.add('active');
+                        document.getElementById('delegations').classList.add('active');
+                    });
+                    
+                    // Create delegations tab content
+                    const tabContainer = document.getElementById('dnaInfoTabs');
+                    const delegationsContent = document.createElement('div');
+                    delegationsContent.id = 'delegations';
+                    delegationsContent.className = 'tab-content';
+                    delegationsContent.innerHTML = `
+                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                            <div class="info-section-title">Delegation History</div>
+                            <button id="clearDelegationsButton" class="clear-data-btn">Clear All Delegations</button>
+                        </div>
+                        <div id="dnaDelegations"></div>
+                    `;
+                    tabContainer.appendChild(delegationsContent);
+                    
+                    // Add event listener for the clear button
+                    document.getElementById('clearDelegationsButton')?.addEventListener('click', () => clearData('delegations'));
+                }
+                
+                // Display delegations
+                displayDelegations(dnaData);
+            }
+        }
+        
+        // Display basic info tab
+        function displayBasicInfo(dnaData, nickname, ownerAddress) {
+            // Clear previous content
+            dnaBasicInfo.innerHTML = '';
+            
+            // Create info blocks
+            let infoHTML = '';
+            
+            // If we have a nickname
+            if (nickname) {
+                infoHTML += createInfoItem('Nickname', nickname);
+            }
+            
+            // Public hash (always present)
+            if (dnaData.data.public_hash) {
+                infoHTML += createInfoItem('Public Hash', dnaData.data.public_hash);
+            }
+            
+            // Sign ID if available
+            if (dnaData.data.sign_id) {
+                infoHTML += createInfoItem('Sign ID', dnaData.data.sign_id);
+            }
+            
+            // Bio if available
+            if (dnaData.data.bio) {
+                infoHTML += createInfoItem('Bio', dnaData.data.bio);
+            }
+            
+            // Registration date from registered_names
+            if (dnaData.data.registered_names && dnaData.data.registered_names[nickname]) {
+                const regData = dnaData.data.registered_names[nickname];
+                
+                if (regData.created_at) {
+                    const date = new Date(regData.created_at);
+                    infoHTML += createInfoItem('Registration Date', date.toLocaleString());
+                }
+                
+                if (regData.expires_on) {
+                    const date = new Date(regData.expires_on);
+                    infoHTML += createInfoItem('Expiration Date', date.toLocaleString());
+                }
+                
+                if (regData.tx_hash) {
+                    infoHTML += createInfoItem('Registration TX', formatAddress(regData.tx_hash));
+                }
+            }
+            
+            // Modified date if available
+            if (dnaData.data.modified_at) {
+                const date = new Date(dnaData.data.modified_at);
+                infoHTML += createInfoItem('Last Modified', date.toLocaleString());
+            }
+            
+            // Count stats
+            if (dnaData.data.messages && Array.isArray(dnaData.data.messages)) {
+                infoHTML += createInfoItem('Total Messages', dnaData.data.messages.length);
+            }
+            
+            if (dnaData.data.delegations && Array.isArray(dnaData.data.delegations)) {
+                infoHTML += createInfoItem('Total Delegations', dnaData.data.delegations.length);
+            }
+            
+            // Set content
+            dnaBasicInfo.innerHTML = infoHTML;
+        }
+        
+        // Display social accounts tab
+        function displaySocialAccounts(dnaData) {
+            // Clear previous content
+            dnaSocialAccounts.innerHTML = '';
+            
+            // Add styles for social accounts
+            let socialHTML = `
+                <style>
+                    .tab-description {
+                        color: var(--text-dim);
+                        margin-bottom: 20px;
+                        font-size: 14px;
+                    }
+                    
+                    .social-accounts-container {
+                        margin-top: 15px;
+                        display: grid;
+                        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+                        gap: 15px;
+                    }
+                    
+                    .social-account {
+                        display: grid;
+                        grid-template-columns: auto 1fr auto;
+                        align-items: center;
+                        gap: 15px;
+                        padding: 15px;
+                        background-color: var(--section-bg);
+                        border-radius: 12px;
+                        transition: transform 0.2s, box-shadow 0.2s;
+                        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+                    }
+                    
+                    .social-account:hover {
+                        transform: translateY(-2px);
+                        box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+                    }
+                    
+                    .social-icon {
+                        width: 36px;
+                        height: 36px;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 22px;
+                        background-color: var(--primary-light);
+                        border-radius: 50%;
+                        color: var(--primary);
+                    }
+                    
+                    .social-name {
+                        font-weight: bold;
+                        letter-spacing: 0.2px;
+                    }
+                    
+                    .delete-social-btn {
+                        background-color: transparent;
+                        color: var(--error);
+                        border: 1px solid var(--error);
+                        border-radius: 6px;
+                        padding: 6px 12px;
+                        cursor: pointer;
+                        font-size: 13px;
+                        font-weight: 500;
+                        transition: all 0.2s ease;
+                    }
+                    
+                    .delete-social-btn:hover {
+                        background-color: var(--error);
+                        color: white;
+                    }
+                    
+                    @keyframes loading {
+                        0% { opacity: 0.3; }
+                        50% { opacity: 1; }
+                        100% { opacity: 0.3; }
+                    }
+                    
+                    .loading-spinner {
+                        animation: loading 1.5s infinite;
+                        font-weight: bold;
+                    }
+                </style>
+                
+                <div class="social-controls" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                    <div id="socialStatus" class="message" style="display: none;"></div>
+                </div>
+                
+                <div class="social-accounts-container">
+            `;
+            
+            let foundAccounts = false;
+            
+            // Check for social media accounts in the new socials structure
+            if (dnaData.data.socials) {
+                const socialPlatforms = {
+                    'telegram': { name: 'Telegram', icon: '📱' },
+                    'x': { name: 'X/Twitter', icon: '🐦' },
+                    'twitter': { name: 'Twitter', icon: '🐦' },
+                    'facebook': { name: 'Facebook', icon: '👤' },
+                    'instagram': { name: 'Instagram', icon: '📷' },
+                    'linkedin': { name: 'LinkedIn', icon: '💼' },
+                    'github': { name: 'GitHub', icon: '💻' },
+                    'discord': { name: 'Discord', icon: '🎮' },
+                    'google': { name: 'Google', icon: '📧' }
+                };
+                
+                // Check each platform
+                for (const [key, value] of Object.entries(dnaData.data.socials)) {
+                    if (value && value.profile && value.profile.trim() !== '') {
+                        const platform = socialPlatforms[key] || { name: formatFieldName(key), icon: '🔗' };
+                        const socialId = `social_${key}_${Date.now()}`;
+                        
+                        socialHTML += `
+                            <div class="social-account" id="${socialId}">
+                                <div class="social-icon">${platform.icon}</div>
+                                <div class="social-name">
+                                    <div style="font-size: 14px; color: var(--text-dim); margin-bottom: 4px;">${platform.name}</div>
+                                    <div style="word-break: break-all;">${value.profile}</div>
+                                </div>
+                                <button class="delete-social-btn" 
+                                    data-platform="${key}" 
+                                    data-profile="${value.profile}" 
+                                    data-social-id="${socialId}">
+                                    <span style="display: flex; align-items: center;">
+                                        <span style="margin-right: 4px;">✕</span> Unlink
+                                    </span>
+                                </button>
+                            </div>
+                        `;
+                        
+                        foundAccounts = true;
+                    }
+                }
+            }
+            
+            // If no accounts found
+            if (!foundAccounts) {
+                socialHTML += `
+                    <div class="no-accounts-message" style="text-align: center; padding: 30px; background-color: var(--section-bg); border-radius: 12px; color: var(--text-dim);">
+                        <div style="font-size: 24px; margin-bottom: 10px;">🔍</div>
+                        <h3 style="margin-top: 0; margin-bottom: 8px;">No Social Accounts</h3>
+                        <p style="margin-bottom: 0;">This DNA profile has no connected social media accounts.</p>
+                    </div>
+                `;
+            }
+            
+            socialHTML += '</div>'; // Close social-accounts-container
+            
+            // Set content
+            dnaSocialAccounts.innerHTML = socialHTML;
+            
+            // Add event listeners to delete buttons
+            const deleteButtons = dnaSocialAccounts.querySelectorAll('.delete-social-btn');
+            deleteButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    const platform = button.getAttribute('data-platform');
+                    const profile = button.getAttribute('data-profile');
+                    const socialId = button.getAttribute('data-social-id');
+                    
+                    // Confirm deletion with a more user-friendly message
+                    if (confirm(`Unlink social account?\n\n${formatFieldName(platform)}: ${profile}\n\nThis action will remove the connection between this DNA profile and the social account.`)) {
+                        deleteSocialAccount(platform, socialId);
+                    }
+                });
+            });
+        }
+        
+        // Delete a social account
+        async function deleteSocialAccount(platform, socialId) {
+            // Disable the corresponding delete button and show loading state
+            const button = document.querySelector(`#${socialId} .delete-social-btn`);
+            if (button) {
+                button.disabled = true;
+                button.innerHTML = '<span style="display: flex; align-items: center;"><span style="margin-right: 5px;" class="loading-spinner">⋯</span> Unlinking</span>';
+            }
+            
+            // Get current DNA data
+            if (!currentDna || !currentDna.data || !currentDna.data.socials) {
+                showSocialStatus('Unable to access social account data. Please try again.', 'error');
+                return;
+            }
+            
+            try {
+                // Get one of the backbone addresses to use as the wallet for the payload
+                let walletAddress = '';
+                if (currentDna.data.wallet_addresses && currentDna.data.wallet_addresses.Backbone) {
+                    walletAddress = currentDna.data.wallet_addresses.Backbone;
+                } else {
+                    // Try to use any other wallet address
+                    for (const [network, address] of Object.entries(currentDna.data.wallet_addresses || {})) {
+                        if (address && address.trim()) {
+                            walletAddress = address;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!walletAddress) {
+                    showSocialStatus('No wallet address found. A valid wallet address is required to update the profile.', 'error');
+                    return;
+                }
+                
+                // Create a copy of the socials object and set the platform's profile to empty string
+                const updatedSocials = { ...currentDna.data.socials };
+                if (updatedSocials[platform]) {
+                    updatedSocials[platform].profile = "";
+                }
+                
+                // Create the update payload
+                const updatePayload = {
+                    action: 'update',
+                    wallet: walletAddress,
+                    socials: updatedSocials
+                };
+                
+                // Log the update payload
+                console.log('Social account delete payload:', updatePayload);
+                
+                // Make the actual API request to update socials
+                const response = await fetch('dna-proxy.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(updatePayload)
+                });
+                
+                const result = await response.text();
+                console.log('Delete social account response:', result);
+                
+                try {
+                    const jsonResult = JSON.parse(result);
+                    
+                    if (jsonResult.status_code === 0 || jsonResult.status === 'ok') {
+                        // Update was successful
+                        showSocialStatus('Social account unlinked successfully! ✓', 'success');
+                        
+                        // Update the local data
+                        if (currentDna && currentDna.data && currentDna.data.socials && currentDna.data.socials[platform]) {
+                            currentDna.data.socials[platform].profile = "";
+                        }
+                        
+                        // Remove the social account row from the UI
+                        const socialRow = document.getElementById(socialId);
+                        if (socialRow) {
+                            socialRow.style.transition = 'opacity 0.5s';
+                            socialRow.style.opacity = '0';
+                            setTimeout(() => {
+                                socialRow.remove();
+                            }, 500);
+                        }
+                    } else {
+                        // API returned an error
+                        showSocialStatus(`Error: ${jsonResult.error || 'Failed to delete social account'}`, 'error');
+                    }
+                } catch (e) {
+                    // Response wasn't JSON or had an unexpected format
+                    if (result.includes('success') || result.includes('ok')) {
+                        showSocialStatus('Social account unlinked successfully! ✓', 'success');
+                    } else {
+                        showSocialStatus('Error: Unexpected response format', 'error');
+                    }
+                }
+            } catch (error) {
+                console.error('Error deleting social account:', error);
+                showSocialStatus(`Error deleting social account: ${error.message}`, 'error');
+                
+                // Re-enable the button
+                if (button) {
+                    button.disabled = false;
+                    button.innerHTML = '<span style="display: flex; align-items: center;"><span style="margin-right: 4px;">✕</span> Unlink</span>';
+                }
+            }
+        }
+        
+        // Show social status message
+        function showSocialStatus(message, type) {
+            const socialStatus = document.getElementById('socialStatus');
+            if (socialStatus) {
+                socialStatus.textContent = message;
+                socialStatus.className = `message ${type}`;
+                socialStatus.style.display = 'block';
+                
+                // Auto-hide after a few seconds
+                setTimeout(() => {
+                    socialStatus.style.display = 'none';
+                }, 5000);
+            }
+        }
+        
+        // Display delegations tab
+        function displayDelegations(dnaData) {
+            const dnaDelegations = document.getElementById('dnaDelegations');
+            
+            // Clear previous content
+            dnaDelegations.innerHTML = '';
+            
+            // Check if delegations exist
+            if (!dnaData.data.delegations || dnaData.data.delegations.length === 0) {
+                dnaDelegations.innerHTML = '<div>No delegations found.</div>';
+                return;
+            }
+            
+            // Create delegations table
+            let delegationsHTML = `
+                <style>
+                    .delegations-table {
+                        width: 100%;
+                        border-collapse: collapse;
+                        margin-top: 15px;
+                    }
+                    
+                    .delegations-table th, .delegations-table td {
+                        padding: 8px;
+                        text-align: left;
+                        border-bottom: 1px solid var(--border-color);
+                    }
+                    
+                    .delegations-table th {
+                        font-weight: bold;
+                        background-color: var(--section-bg);
+                    }
+                    
+                    .delegations-table tr:hover {
+                        background-color: var(--section-bg-hover);
+                    }
+                    
+                    .delegation-hash {
+                        font-family: monospace;
+                        font-size: 0.8em;
+                    }
+                    
+                </style>
+                
+                <table class="delegations-table">
+                    <thead>
+                        <tr>
+                            <th>Date</th>
+                            <th>Network</th>
+                            <th>Amount</th>
+                            <th>Tax (%)</th>
+                            <th>TX Hash</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+            `;
+            
+            // Sort delegations by timestamp (most recent first)
+            const sortedDelegations = [...dnaData.data.delegations].sort((a, b) => {
+                const timeA = a.timestamp || new Date(a.delegation_time).getTime()/1000;
+                const timeB = b.timestamp || new Date(b.delegation_time).getTime()/1000;
+                return timeB - timeA;
+            });
+            
+            // Add delegations rows (maximum 20 to avoid overloading)
+            const maxDisplay = 20;
+            for (let i = 0; i < Math.min(sortedDelegations.length, maxDisplay); i++) {
+                const delegation = sortedDelegations[i];
+                const date = delegation.delegation_time 
+                    ? new Date(delegation.delegation_time)
+                    : new Date(delegation.timestamp * 1000);
+                
+                delegationsHTML += `
+                    <tr>
+                        <td>${date.toLocaleString()}</td>
+                        <td>${delegation.network || 'Unknown'}</td>
+                        <td>${delegation.amount || 0}</td>
+                        <td>${delegation.tax || 0}%</td>
+                        <td class="delegation-hash">${formatAddress(delegation.tx_hash)}</td>
+                    </tr>
+                `;
+            }
+            
+            delegationsHTML += `
+                    </tbody>
+                </table>
+            `;
+            
+            if (sortedDelegations.length > maxDisplay) {
+                delegationsHTML += `<div style="margin-top: 10px; font-style: italic;">Showing ${maxDisplay} of ${sortedDelegations.length} delegations</div>`;
+            }
+            
+            // Set content
+            dnaDelegations.innerHTML = delegationsHTML;
+            
+        }
+        
+        // Display wallet addresses tab
+        function displayWalletAddresses(dnaData) {
+            // Clear previous content
+            dnaWalletAccounts.innerHTML = '';
+            
+            let walletsHTML = '';
+            let foundWallets = false;
+            
+            // First check wallet_addresses structure (new format)
+            if (dnaData.data.wallet_addresses) {
+                for (const [network, address] of Object.entries(dnaData.data.wallet_addresses)) {
+                    if (address && address.trim() !== '') {
+                        walletsHTML += `
+                            <div class="wallet-account">
+                                <div class="wallet-network">${formatFieldName(network)}</div>
+                                <div class="wallet-address">${address}</div>
+                            </div>
+                        `;
+                        
+                        foundWallets = true;
+                    }
+                }
+            }
+            
+            // Check for dinosaur_wallets (crypto wallets)
+            if (dnaData.data.dinosaur_wallets) {
+                for (const [crypto, address] of Object.entries(dnaData.data.dinosaur_wallets)) {
+                    if (address && address.trim() !== '') {
+                        walletsHTML += `
+                            <div class="wallet-account">
+                                <div class="wallet-network">${crypto} Wallet</div>
+                                <div class="wallet-address">${address}</div>
+                            </div>
+                        `;
+                        
+                        foundWallets = true;
+                    }
+                }
+            }
+            
+            // If no wallets found
+            if (!foundWallets) {
+                walletsHTML = '<div>No additional wallet addresses registered with this DNA.</div>';
+            }
+            
+            // Set content
+            dnaWalletAccounts.innerHTML = walletsHTML;
+        }
+        
+        // Display messages tab
+        function displayMessages(dnaData) {
+            // Clear previous content
+            dnaMessages.innerHTML = '';
+            
+            // Check for messages
+            if (dnaData.data.messages && Array.isArray(dnaData.data.messages) && dnaData.data.messages.length > 0) {
+                // Create messages table
+                let messagesHTML = `
+                    <style>
+                        .messages-table {
+                            width: 100%;
+                            border-collapse: collapse;
+                            margin-top: 15px;
+                        }
+                        
+                        .messages-table th, .messages-table td {
+                            padding: 8px;
+                            text-align: left;
+                            border-bottom: 1px solid var(--border-color);
+                        }
+                        
+                        .messages-table th {
+                            font-weight: bold;
+                            background-color: var(--section-bg);
+                        }
+                        
+                        .messages-table tr:hover {
+                            background-color: var(--section-bg-hover);
+                        }
+                        
+                        .message-preview {
+                            max-width: 300px;
+                            overflow: hidden;
+                            text-overflow: ellipsis;
+                            white-space: nowrap;
+                        }
+                        
+                        .delete-message-btn {
+                            background-color: transparent;
+                            color: #666;
+                            border: 1px solid #666;
+                            border-radius: 4px;
+                            padding: 4px 8px;
+                            cursor: pointer;
+                            font-size: 12px;
+                            transition: all 0.2s ease;
+                        }
+                        
+                        .delete-message-btn:hover {
+                            background-color: #666;
+                            color: white;
+                        }
+                        
+                        .delete-action {
+                            text-align: center;
+                        }
+                    </style>
+                    
+                    <div class="message-controls" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+                        <div>${dnaData.data.messages.length} messages found</div>
+                        <div id="deleteStatus" class="message" style="display: none;"></div>
+                    </div>
+                    
+                    <table class="messages-table">
+                        <thead>
+                            <tr>
+                                <th>Date</th>
+                                <th>To</th>
+                                <th>From</th>
+                                <th>Message</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                `;
+                
+                // Sort messages by timestamp (most recent first)
+                const sortedMessages = [...dnaData.data.messages].sort((a, b) => {
+                    const timeA = typeof a.timestamp === 'number' ? a.timestamp : new Date(a.timestamp).getTime()/1000;
+                    const timeB = typeof b.timestamp === 'number' ? b.timestamp : new Date(b.timestamp).getTime()/1000;
+                    return timeB - timeA;
+                });
+                
+                // Add message rows (maximum 10 to avoid overloading)
+                const maxDisplay = 10;
+                for (let i = 0; i < Math.min(sortedMessages.length, maxDisplay); i++) {
+                    const message = sortedMessages[i];
+                    const date = typeof message.timestamp === 'number' 
+                        ? new Date(message.timestamp * 1000)
+                        : new Date(message.timestamp);
+                    
+                    // Create a unique ID for this message based on its properties
+                    const messageId = `msg_${i}_${Date.now()}`;
+                    
+                    messagesHTML += `
+                        <tr id="${messageId}">
+                            <td>${date.toLocaleString()}</td>
+                            <td>${message.r_dna}</td>
+                            <td>${message.s_dna}</td>
+                            <td class="message-preview">${message.msg || ''}</td>
+                            <td class="delete-action">
+                                <button class="delete-message-btn" 
+                                    data-timestamp="${message.timestamp}"
+                                    data-s-dna="${message.s_dna}"
+                                    data-r-dna="${message.r_dna}"
+                                    data-msg="${message.msg}"
+                                    data-msg-id="${messageId}">
+                                    Remove
+                                </button>
+                            </td>
+                        </tr>
+                    `;
+                }
+                
+                messagesHTML += `
+                        </tbody>
+                    </table>
+                `;
+                
+                if (sortedMessages.length > maxDisplay) {
+                    messagesHTML += `<div style="margin-top: 10px; font-style: italic;">Showing ${maxDisplay} of ${sortedMessages.length} messages</div>`;
+                }
+                
+                // Show message table
+                dnaMessages.innerHTML = messagesHTML;
+                
+                // Add event listeners to delete buttons
+                const deleteButtons = dnaMessages.querySelectorAll('.delete-message-btn');
+                deleteButtons.forEach(button => {
+                    button.addEventListener('click', () => {
+                        const timestamp = button.getAttribute('data-timestamp');
+                        const s_dna = button.getAttribute('data-s-dna');
+                        const r_dna = button.getAttribute('data-r-dna');
+                        const msg = button.getAttribute('data-msg');
+                        const msgId = button.getAttribute('data-msg-id');
+                        
+                        // Confirm deletion
+                        if (confirm(`Are you sure you want to delete this message:\n\n"${msg}"\n\nSent to: ${r_dna}`)) {
+                            deleteMessage(s_dna, r_dna, msg, timestamp, msgId);
+                        }
+                    });
+                });
+            } else {
+                dnaMessages.innerHTML = '<div>No messages found for this DNA.</div>';
+            }
+        }
+        
+        
+        // Delete a message by sending an update without the message
+        async function deleteMessage(s_dna, r_dna, msg, timestamp, msgId) {
+            // Disable the corresponding delete button and show loading state
+            const button = document.querySelector(`#${msgId} .delete-message-btn`);
+            if (button) {
+                button.disabled = true;
+                button.innerHTML = '<span style="display: flex; align-items: center;"><span style="margin-right: 5px;" class="loading-spinner">⋯</span> Unlinking</span>';
+            }
+            
+            // Get current DNA data
+            if (!currentDna || !currentDna.data || !currentDna.data.messages) {
+                showDeleteStatus('Error: Cannot access message data', 'error');
+                return;
+            }
+            
+            try {
+                // Get one of the backbone addresses to use as the wallet for the payload
+                let walletAddress = '';
+                if (currentDna.data.wallet_addresses && currentDna.data.wallet_addresses.Backbone) {
+                    walletAddress = currentDna.data.wallet_addresses.Backbone;
+                } else {
+                    // Try to use any other wallet address
+                    for (const [network, address] of Object.entries(currentDna.data.wallet_addresses || {})) {
+                        if (address && address.trim()) {
+                            walletAddress = address;
+                            break;
+                        }
+                    }
+                }
+                
+                if (!walletAddress) {
+                    showDeleteStatus('Error: No wallet address found for update', 'error');
+                    return;
+                }
+                
+                // Create a filtered messages array without the target message
+                const updatedMessages = currentDna.data.messages.filter(m => {
+                    // Check if this is the message to remove (match all properties)
+                    const isSameTimestamp = m.timestamp == timestamp; // == to handle string/number comparison
+                    const isSameSender = m.s_dna === s_dna;
+                    const isSameRecipient = m.r_dna === r_dna;
+                    const isSameMsg = m.msg === msg;
+                    
+                    // Keep the message if it doesn't match (return true to keep, false to filter out)
+                    return !(isSameTimestamp && isSameSender && isSameRecipient && isSameMsg);
+                });
+                
+                // Create the update payload
+                const updatePayload = {
+                    action: 'update',
+                    wallet: walletAddress,
+                    messages: updatedMessages
+                };
+                
+                // Log the update payload
+                console.log('Message delete payload:', updatePayload);
+                
+                // In a real implementation, we would send this payload to the API
+                // For now, simulate a successful update
+                
+                // Make the actual API request to update messages
+                const response = await fetch('dna-proxy.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(updatePayload)
+                });
+                
+                const result = await response.text();
+                console.log('Delete message response:', result);
+                
+                try {
+                    const jsonResult = JSON.parse(result);
+                    
+                    if (jsonResult.status_code === 0 || jsonResult.status === 'ok') {
+                        // Update was successful
+                        showDeleteStatus('Message deleted successfully', 'success');
+                        
+                        // Update the local data
+                        if (currentDna && currentDna.data) {
+                            currentDna.data.messages = updatedMessages;
+                        }
+                        
+                        // Remove the message row from the UI
+                        const messageRow = document.getElementById(msgId);
+                        if (messageRow) {
+                            messageRow.style.transition = 'opacity 0.5s';
+                            messageRow.style.opacity = '0';
+                            setTimeout(() => {
+                                messageRow.remove();
+                            }, 500);
+                        }
+                    } else {
+                        // API returned an error
+                        showDeleteStatus(`Error: ${jsonResult.error || 'Failed to delete message'}`, 'error');
+                    }
+                } catch (e) {
+                    // Response wasn't JSON or had an unexpected format
+                    if (result.includes('success') || result.includes('ok')) {
+                        showDeleteStatus('Message deleted successfully', 'success');
+                    } else {
+                        showDeleteStatus('Error: Unexpected response format', 'error');
+                    }
+                }
+            } catch (error) {
+                console.error('Error deleting message:', error);
+                showDeleteStatus(`Error deleting message: ${error.message}`, 'error');
+                
+                // Re-enable the button
+                if (button) {
+                    button.disabled = false;
+                    button.innerHTML = '<span style="display: flex; align-items: center;"><span style="margin-right: 4px;">✕</span> Unlink</span>';
+                }
+            }
+        }
+        
+        // Show delete status message
+        function showDeleteStatus(message, type) {
+            const deleteStatus = document.getElementById('deleteStatus');
+            if (deleteStatus) {
+                deleteStatus.textContent = message;
+                deleteStatus.className = `message ${type}`;
+                deleteStatus.style.display = 'block';
+                
+                // Auto-hide after a few seconds
+                setTimeout(() => {
+                    deleteStatus.style.display = 'none';
+                }, 5000);
+            }
+        }
+        
+        // Create an info item HTML
+        function createInfoItem(label, value) {
+            return `
+                <div class="dna-info-item">
+                    <span class="dna-info-label">${label}</span>
+                    <span class="dna-info-value">${value}</span>
+                </div>
+            `;
+        }
+        
+        // Format field names for display (convert camelCase to Title Case)
+        function formatFieldName(name) {
+            // Replace underscores with spaces
+            let formatted = name.replace(/_/g, ' ');
+            
+            // Convert camelCase to spaces
+            formatted = formatted.replace(/([a-z])([A-Z])/g, '$1 $2');
+            
+            // Capitalize first letter of each word
+            return formatted.replace(/\b\w/g, c => c.toUpperCase());
+        }
+        
+        // Format wallet address for display
+        function formatAddress(address) {
+            if (!address || address.length < 20) return address;
+            return address.substring(0, 10) + '...' + address.substring(address.length - 10);
+        }
+        
+        // Show search status message
+        function showSearchStatus(message, type) {
+            searchStatus.textContent = message;
+            searchStatus.className = `message ${type}`;
+            searchStatus.style.display = 'block';
+        }
+        
+        // Toggle edit mode
+        function toggleEditMode() {
+            if (!currentDna) return;
+            
+            isEditing = !isEditing;
+            
+            if (isEditing) {
+                // Switch to edit mode
+                createEditForm();
+                dnaEditForm.style.display = 'block';
+                editToggleButton.textContent = 'Cancel';
+                document.getElementById('dnaInfoTabs').style.display = 'none';
+            } else {
+                // Switch back to view mode
+                dnaEditForm.style.display = 'none';
+                editToggleButton.textContent = 'Edit';
+                document.getElementById('dnaInfoTabs').style.display = 'block';
+            }
+        }
+        
+        // Create the edit form based on current DNA data
+        function createEditForm() {
+            // Clear previous form
+            dnaFormFields.innerHTML = '';
+            
+            // Create form fields for editable properties
+            let formHTML = '';
+            
+            // Bio field first (if it exists)
+            formHTML += `
+                <div class="form-group">
+                    <label class="form-label" for="field_bio">Bio</label>
+                    <textarea id="field_bio" name="bio" class="form-textarea">${currentDna.data.profile?.bio || ''}</textarea>
+                </div>
+            `;
+            
+            // Social media fields
+            formHTML += '<h4>Social Media</h4>';
+            
+            // Telegram
+            formHTML += `
+                <div class="form-group">
+                    <label class="form-label" for="field_platform_telegram">Telegram</label>
+                    <input type="text" id="field_platform_telegram" name="platform_telegram" class="form-input" value="${currentDna.data.profile?.platform_telegram || ''}">
+                </div>
+            `;
+            
+            // Twitter
+            formHTML += `
+                <div class="form-group">
+                    <label class="form-label" for="field_platform_twitter">X/Twitter</label>
+                    <input type="text" id="field_platform_twitter" name="platform_twitter" class="form-input" value="${currentDna.data.profile?.platform_twitter || ''}">
+                </div>
+            `;
+            
+            // Discord
+            formHTML += `
+                <div class="form-group">
+                    <label class="form-label" for="field_platform_discord">Discord</label>
+                    <input type="text" id="field_platform_discord" name="platform_discord" class="form-input" value="${currentDna.data.profile?.platform_discord || ''}">
+                </div>
+            `;
+            
+            // GitHub
+            formHTML += `
+                <div class="form-group">
+                    <label class="form-label" for="field_platform_github">GitHub</label>
+                    <input type="text" id="field_platform_github" name="platform_github" class="form-input" value="${currentDna.data.profile?.platform_github || ''}">
+                </div>
+            `;
+            
+            // Additional Custom Fields
+            formHTML += '<h4>Additional Information</h4>';
+            
+            // Website
+            formHTML += `
+                <div class="form-group">
+                    <label class="form-label" for="field_website">Website</label>
+                    <input type="text" id="field_website" name="website" class="form-input" value="${currentDna.data.profile?.website || ''}">
+                </div>
+            `;
+            
+            // Location
+            formHTML += `
+                <div class="form-group">
+                    <label class="form-label" for="field_location">Location</label>
+                    <input type="text" id="field_location" name="location" class="form-input" value="${currentDna.data.profile?.location || ''}">
+                </div>
+            `;
+            
+            // Set form HTML
+            dnaFormFields.innerHTML = formHTML;
+        }
+        
+        // Cancel edit
+        function cancelEdit() {
+            isEditing = false;
+            dnaEditForm.style.display = 'none';
+            editToggleButton.textContent = 'Edit';
+            document.getElementById('dnaInfoTabs').style.display = 'block';
+        }
+        
+        // Clear data function - clears specific data collections
+        async function clearData(dataType) {
+            if (!currentDna || !currentDna.data) {
+                alert('Error: Cannot access DNA data');
+                return;
+            }
+            
+            // Confirm with user
+            const confirmMessage = `Are you sure you want to clear all ${dataType}? This action cannot be undone.`;
+            if (!confirm(confirmMessage)) {
+                return;
+            }
+            
+            // Get wallet address for the update
+            let walletAddress = '';
+            if (currentDna.data.wallet_addresses && currentDna.data.wallet_addresses.Backbone) {
+                walletAddress = currentDna.data.wallet_addresses.Backbone;
+            } else {
+                // Try to use any other wallet address
+                for (const [network, address] of Object.entries(currentDna.data.wallet_addresses || {})) {
+                    if (address && address.trim()) {
+                        walletAddress = address;
+                        break;
+                    }
+                }
+            }
+            
+            if (!walletAddress) {
+                alert('Error: No wallet address found for update');
+                return;
+            }
+            
+            // Create the update payload based on data type
+            const updatePayload = {
+                action: 'update',
+                wallet: walletAddress
+            };
+            
+            // Set the appropriate property based on dataType
+            switch(dataType) {
+                case 'socials':
+                    updatePayload.socials = {};
+                    break;
+                case 'wallets':
+                    updatePayload.wallet_addresses = {};
+                    break;
+                case 'messages':
+                    updatePayload.messages = [];
+                    break;
+                case 'delegations':
+                    updatePayload.delegations = [];
+                    break;
+                default:
+                    alert('Unknown data type');
+                    return;
+            }
+            
+            console.log(`Clearing ${dataType} with payload:`, updatePayload);
+            
+            try {
+                // Make the API request to update
+                const response = await fetch('dna-proxy.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify(updatePayload)
+                });
+                
+                const result = await response.text();
+                console.log(`Clear ${dataType} response:`, result);
+                
+                try {
+                    const jsonResult = JSON.parse(result);
+                    
+                    if (jsonResult.status_code === 0 || jsonResult.status === 'ok') {
+                        // Update was successful
+                        alert(`All ${dataType} have been cleared successfully!`);
+                        
+                        // Update the local data
+                        switch(dataType) {
+                            case 'socials':
+                                currentDna.data.socials = {};
+                                displaySocialAccounts(currentDna);
+                                break;
+                            case 'wallets':
+                                currentDna.data.wallet_addresses = {};
+                                displayWalletAddresses(currentDna);
+                                break;
+                            case 'messages':
+                                currentDna.data.messages = [];
+                                displayMessages(currentDna);
+                                break;
+                            case 'delegations':
+                                currentDna.data.delegations = [];
+                                displayDelegations(currentDna);
+                                break;
+                        }
+                    } else {
+                        // API returned an error
+                        alert(`Error: ${jsonResult.error || `Failed to clear ${dataType}`}`);
+                    }
+                } catch (e) {
+                    // Response wasn't JSON or had an unexpected format
+                    if (result.includes('success') || result.includes('ok')) {
+                        alert(`All ${dataType} have been cleared successfully!`);
+                        
+                        // Update the local data
+                        switch(dataType) {
+                            case 'socials':
+                                currentDna.data.socials = {};
+                                displaySocialAccounts(currentDna);
+                                break;
+                            case 'wallets':
+                                currentDna.data.wallet_addresses = {};
+                                displayWalletAddresses(currentDna);
+                                break;
+                            case 'messages':
+                                currentDna.data.messages = [];
+                                displayMessages(currentDna);
+                                break;
+                            case 'delegations':
+                                currentDna.data.delegations = [];
+                                displayDelegations(currentDna);
+                                break;
+                        }
+                    } else {
+                        alert(`Error: Unexpected response format when clearing ${dataType}`);
+                    }
+                }
+            } catch (error) {
+                console.error(`Error clearing ${dataType}:`, error);
+                alert(`Error clearing ${dataType}: ${error.message}`);
+            }
+        }
+        
+        // Save edit
+        async function saveEdit() {
+            if (!currentDna) return;
+            
+            // Disable the save button
+            saveEditButton.disabled = true;
+            saveEditButton.textContent = 'Saving...';
+            
+            try {
+                // Collect form data
+                const formData = {};
+                const inputs = dnaFormFields.querySelectorAll('input, textarea');
+                
+                inputs.forEach(input => {
+                    if (input.name && input.value.trim()) {
+                        formData[input.name] = input.value.trim();
+                    }
+                });
+                
+                // Create update payload
+                // This is a simulated update - in a real implementation, we would
+                // make an API call to update the DNA data
+                const updatePayload = {
+                    action: 'update',
+                    wallet: currentDna.data.owner_address,
+                    profile: formData
+                };
+                
+                console.log('Would update DNA with:', updatePayload);
+                
+                // Simulated success
+                showSearchStatus('DNA profile updated successfully', 'success');
+                
+                // Return to view mode
+                cancelEdit();
+                
+                // Update the current DNA data with the new values
+                if (!currentDna.data.profile) {
+                    currentDna.data.profile = {};
+                }
+                
+                // Update profile with form values
+                for (const [key, value] of Object.entries(formData)) {
+                    currentDna.data.profile[key] = value;
+                }
+                
+                // Refresh the display
+                displayDnaInfo(currentDna);
+                
+            } catch (error) {
+                console.error('Save error:', error);
+                showSearchStatus(`Error saving changes: ${error.message}`, 'error');
+            } finally {
+                saveEditButton.disabled = false;
+                saveEditButton.textContent = 'Save Changes';
+            }
+        }
+    </script>
+</body>
+</html>

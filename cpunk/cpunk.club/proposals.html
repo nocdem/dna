@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK - Improvement Proposals</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/proposals-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/navbar.js"></script>
+
+        <div class="intro-section">
+            <p>📝 Welcome to the CPUNK Improvement Proposals (CIPs) system. Here you can review official proposals for improving the CPUNK ecosystem and view governance results.</p>
+            <p>CIPs allow community members to formally propose changes to the protocol, governance, or ecosystem features. Each proposal goes through review and voting processes.</p>
+            <p><strong>Note:</strong> You can browse all proposals without connecting to the dashboard. Dashboard connection is only required when you wish to cast a vote on active proposals.</p>
+        </div>
+
+        <!-- Dashboard Connection Control Panel -->
+        <div id="dashboardControlPanel" class="status-box dashboard-control-panel">
+            <div class="status-header">
+                <span>Dashboard Status:</span>
+                <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+            </div>
+            <button id="connectButton" class="help-button">Connect</button>
+            <div class="session-details" id="sessionDetails" style="display: none;"></div>
+            <div class="error-message" id="connectionError" style="display: none;"></div>
+        </div>
+        
+        <div id="connectSection" style="display: none;"></div>
+
+        <!-- Wallet Selection Section -->
+        <div id="walletSection" class="section" style="display: none;">
+            <h2>Select Your Wallet</h2>
+            <div class="wallets-container" id="walletsList"></div>
+        </div>
+
+        <!-- Proposals List Section -->
+        <div id="proposalsSection" class="section" style="display: none;">
+            <div class="wallet-header">
+                <h2>CPUNK Improvement Proposals</h2>
+                <div class="wallet-label">Wallet: <span id="selectedWalletName" class="wallet-value"></span></div>
+            </div>
+            <div class="filters-container">
+                <div class="filter-group">
+                    <label for="statusFilter">Status:</label>
+                    <select id="statusFilter" class="filter-select">
+                        <option value="all">All Proposals</option>
+                        <option value="draft" selected>Draft</option>
+                        <option value="voting">Under Vote</option>
+                        <option value="approved">Approved</option>
+                        <option value="rejected">Rejected</option>
+                        <option value="implemented">Implemented</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="sortOrder">Sort By:</label>
+                    <select id="sortOrder" class="filter-select">
+                        <option value="newest">Newest First</option>
+                        <option value="oldest">Oldest First</option>
+                        <option value="number-asc">Number (Ascending)</option>
+                        <option value="number-desc">Number (Descending)</option>
+                    </select>
+                </div>
+            </div>
+            <div id="proposalsList" class="proposals-grid"></div>
+        </div>
+
+        <!-- Proposal Details Section -->
+        <div id="proposalDetailSection" class="section" style="display: none;">
+            <div id="proposalDetail"></div>
+            <div class="vote-controls" id="voteControls" style="display: none;">
+                <h3>Cast Your Vote</h3>
+                <div class="vote-options-grid" id="voteOptionsGrid"></div>
+                <div class="success-message" id="voteSuccess" style="display: none;"></div>
+                <div class="error-message" id="voteError" style="display: none;"></div>
+                <div class="warning-message" id="voteWarning" style="display: none;"></div>
+            </div>
+            <div class="help-button-container">
+                <button id="backButton" class="help-button">Back to Proposals List</button>
+            </div>
+        </div>
+
+        <!-- Navigation now handled by navbar-template.html -->
+    </div>
+
+    <!-- Core utilities -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/dashboardConnector.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    <!-- Page specific script -->
+    <script src="js/proposals.js"></script>
+</body>
+</html>

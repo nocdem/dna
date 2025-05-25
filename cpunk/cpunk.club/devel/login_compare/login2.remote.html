@@ -1,0 +1,1791 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CPUNK - Login</title>
+    <!-- CSS files -->
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/user-settings-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+        /* Tab styling */
+        .tab-navigation {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .tab-button {
+            flex: 1;
+            padding: 10px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-weight: bold;
+            color: var(--text-color);
+            transition: all 0.2s ease;
+        }
+        .tab-button:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        .tab-button.active {
+            border-bottom-color: var(--accent-color);
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+        /* Standardized social connect button styling */
+        .social-connect-btn {
+            background-color: var(--accent-color, #5d45e0);
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 4px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+            transition: background-color 0.2s ease;
+            font-weight: 500;
+            min-width: 140px;
+            text-align: center;
+        }
+        .social-connect-btn span {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        .social-connect-btn svg {
+            display: inline-block;
+            vertical-align: middle;
+        }
+        .social-connect-btn:hover {
+            background-color: var(--accent-hover-color, #7857F7);
+        }
+        .social-connect-btn:disabled {
+            background-color: #606060;
+            cursor: not-allowed;
+        }
+        .social-connect-btn.connected {
+            background-color: #00C851;
+        }
+        /* Styling for verified input fields */
+        .verification-input input[readonly] {
+            background-color: #f2f2f2;
+            border-color: #ddd;
+            color: #666;
+            cursor: not-allowed;
+        }
+        /* Styling for verification value display */
+        .social-value {
+            display: inline-block;
+            font-size: 0.85em;
+            color: #00C851;
+            font-weight: normal;
+            font-style: italic;
+            margin-left: 5px;
+        }
+        /* Ensure consistent styling for specific buttons */
+        #connectGoogleButton, #connectTwitterButton, #verifyTelegramButton,
+        #connectLinkedInButton, #connectGitHubButton {
+            background-color: var(--accent-color, #5d45e0);
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/navbar.js"></script>
+
+        <div class="info-section" id="infoSection">
+            <p>Edit your profile information and customize how you appear in the CPUNK ecosystem. Connect your wallet, verify your DNA registration, and update your social links and wallet information.</p>
+            <p>These settings will be visible to other users when they view your DNA profile.</p>
+        </div>
+
+        <!-- Dashboard Connection Section -->
+        <div id="connectionSection">
+            <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="status-header" style="margin-bottom: 0;">
+                    <span>Dashboard Status:</span>
+                    <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+                </div>
+                <button id="connectButton" class="help-button" style="margin: 0; width: auto;">Connect</button>
+                <div class="session-details" id="sessionDetails" style="display: none;"></div>
+                <div class="error-message" id="connectionError" style="display: none;"></div>
+            </div>
+        </div>
+
+        <!-- Wallet Selection Section -->
+        <div id="walletSection" class="section" style="display: none;">
+            <h2>Select Your Wallet</h2>
+            <p>Choose the wallet associated with your DNA registration:</p>
+
+            <div id="walletsList" class="wallets-container">
+                <div class="loading">Loading wallets</div>
+            </div>
+
+            <button id="continueButton" disabled>Continue with Selected Wallet</button>
+            <div class="error-message" id="walletError"></div>
+        </div>
+
+        <!-- DNA Verification Section -->
+        <div id="dnaSection" class="section" style="display: none;">
+            <h2>DNA Registration</h2>
+            <div id="dnaStatus" class="loading">Checking DNA registration</div>
+            <div class="error-message" id="dnaError"></div>
+
+            <div id="dnaDetails" style="display:none;">
+                <div class="profile-preview">
+                    <div class="profile-header">
+                        <div class="profile-avatar" id="profileAvatar">C</div>
+                        <div class="profile-info">
+                            <div class="profile-nickname" id="profileNickname">CPUNK_User</div>
+                            <div class="nickname-tags" id="profileNicknames"></div>
+                        </div>
+                    </div>
+
+                    <div class="profile-stats">
+                        <div class="stats-item">
+                            <div class="stats-value" id="nicknamesCount">0</div>
+                            <div class="stats-label">Nicknames</div>
+                        </div>
+                        <div class="stats-item">
+                            <div class="stats-value" id="socialsCount">0</div>
+                            <div class="stats-label">Social Profiles</div>
+                        </div>
+                        <div class="stats-item">
+                            <div class="stats-value" id="walletsCount">0</div>
+                            <div class="stats-label">External Wallets</div>
+                        </div>
+                    </div>
+                </div>
+
+                <button id="editButton">Edit Profile Settings</button>
+            </div>
+        </div>
+
+        <!-- Hide edit button after clicking it -->
+        <script>
+            document.addEventListener('DOMContentLoaded', function() {
+                const editButton = document.getElementById('editButton');
+                if (editButton) {
+                    editButton.addEventListener('click', function() {
+                        // Hide the button after clicking
+                        this.style.display = 'none';
+                    });
+                }
+            });
+        </script>
+
+        <!-- Profile Settings Form -->
+        <div id="editSection" class="section" style="display: none;">
+            <h2>Edit Your Profile</h2>
+
+            <!-- Tab Navigation -->
+            <div class="tab-navigation">
+                <button class="tab-button active" data-tab="info-tab">
+                    <span>📋 Info</span>
+                </button>
+                <button class="tab-button" data-tab="socials-tab">
+                    <span>👥 Socials</span>
+                </button>
+                <button class="tab-button" data-tab="wallets-tab">
+                    <span>💰 Wallets</span>
+                </button>
+            </div>
+
+            <div class="form-section">
+                <!-- Info Tab Content -->
+                <div id="info-tab" class="tab-content active">
+                    <div class="form-group">
+                        <label for="profileDescription">Profile Description</label>
+                        <textarea id="profileDescription" rows="3" placeholder="Write a short bio about yourself"></textarea>
+                        <div class="help-text">This will be displayed on your public profile (optional)</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="profileImageUrl">Profile Image URL</label>
+                        <input type="url" id="profileImageUrl" placeholder="https://example.com/your-image.jpg">
+                        <div class="help-text">Enter a URL to your profile image (optional)</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Public Key Hash</label>
+                        <input type="text" id="pubkeyHash" class="form-control" readonly style="background-color: var(--section-bg);">
+                        <div class="help-text">Your public key hash used to verify your identity (read-only)</div>
+                    </div>
+                </div>
+
+                <!-- Socials Tab Content -->
+                <div id="socials-tab" class="tab-content">
+                    <!-- Social Account Verification Info -->
+                    <div class="authentication-info" style="margin-bottom: 20px; padding: 15px; background-color: rgba(0, 0, 0, 0.2); border-radius: 6px;">
+                        <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 1em;">Social Account Verification</h4>
+                        <p style="font-size: 0.9em; margin-bottom: 0; opacity: 0.9;">
+                            Linking your social accounts to your DNA profile strengthens your identity within the CPUNK ecosystem and enhances your proof of humanity. Verifying multiple platforms further boosts your credibility and community presence.
+                        </p>
+                        <p style="font-size: 0.9em; margin-top: 10px; margin-bottom: 0; opacity: 0.9;">
+                            <strong>Be advised:</strong> Once linked, these connections are permanent and cannot be changed or removed. Verifying multiple platforms provides stronger identity proof within the CPUNK ecosystem.
+                        </p>
+                    </div>
+
+                    <!-- Google OAuth implementation -->
+                    <div class="form-group">
+                        <div class="social-header">
+                            <div class="social-icon">
+                                <span>G</span>
+                            </div>
+                            <label for="googleProfile" id="googleLabel">Google <span class="social-value" id="googleValue"></span></label>
+                            <div id="googleVerificationStatus" class="social-status">
+                                <div class="status-circle status-unverified"></div>
+                                <span class="status-text">Unverified</span>
+                            </div>
+                        </div>
+                        <div class="google-wrapper">
+                            <div class="input-group verification-input" style="flex-grow: 1;" id="googleProfileContainer">
+                                <input type="email" id="googleProfile" placeholder="Not connected" readonly style="width: 100%; background-color: #f2f2f2;">
+                            </div>
+                            <button type="button" id="connectGoogleButton" class="social-connect-btn">
+                                <span>
+                                    <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+                                        <path fill="#FFC107" d="M43.611,20.083H42V20H24v8h11.303c-1.649,4.657-6.08,8-11.303,8c-6.627,0-12-5.373-12-12c0-6.627,5.373-12,12-12c3.059,0,5.842,1.154,7.961,3.039l5.657-5.657C34.046,6.053,29.268,4,24,4C12.955,4,4,12.955,4,24c0,11.045,8.955,20,20,20c11.045,0,20-8.955,20-20C44,22.659,43.862,21.35,43.611,20.083z"></path>
+                                        <path fill="#FF3D00" d="M6.306,14.691l6.571,4.819C14.655,15.108,18.961,12,24,12c3.059,0,5.842,1.154,7.961,3.039l5.657-5.657C34.046,6.053,29.268,4,24,4C16.318,4,9.656,8.337,6.306,14.691z"></path>
+                                        <path fill="#4CAF50" d="M24,44c5.166,0,9.86-1.977,13.409-5.192l-6.19-5.238C29.211,35.091,26.715,36,24,36c-5.202,0-9.619-3.317-11.283-7.946l-6.522,5.025C9.505,39.556,16.227,44,24,44z"></path>
+                                        <path fill="#1976D2" d="M43.611,20.083H42V20H24v8h11.303c-0.792,2.237-2.231,4.166-4.087,5.571c0.001-0.001,0.002-0.001,0.003-0.002l6.19,5.238C36.971,39.205,44,34,44,24C44,22.659,43.862,21.35,43.611,20.083z"></path>
+                                    </svg>
+                                    Connect Google
+                                </span>
+                            </button>
+                        </div>
+                        <div class="help-text">Connect your Google account to verify ownership</div>
+                    </div>
+
+                    <div class="form-group">
+                        <div class="social-header">
+                            <div class="social-icon">
+                                <span>📱</span>
+                            </div>
+                            <label for="telegramProfile">Telegram</label>
+                            <div id="telegramVerificationStatus" class="social-status">
+                                <div class="status-circle status-unverified"></div>
+                                <span class="status-text">Unverified</span>
+                            </div>
+                        </div>
+                        <div class="telegram-wrapper">
+                            <div class="input-group" style="flex-grow: 1;">
+                                <input type="text" id="telegramProfile" placeholder="username" style="width: 100%">
+                            </div>
+                            <button type="button" id="verifyTelegramButton" class="social-connect-btn"><span>Verify</span></button>
+                        </div>
+                        <div class="help-text">Your Telegram username without the @ symbol</div>
+                    </div>
+
+                    <div class="form-group">
+                        <div class="social-header">
+                            <div class="social-icon">
+                                <span>🐦</span>
+                            </div>
+                            <label for="xProfile" id="twitterLabel">X (Twitter) <span class="social-value" id="twitterValue"></span></label>
+                            <div id="twitterVerificationStatus" class="social-status">
+                                <!-- Twitter verification status is automatically set based on whether username exists -->
+                                <!-- If username exists, it's already verified -->
+                                <span class="verified-value" id="twitterVerifiedValue" style="margin-left: 5px; display: none;"></span>
+                            </div>
+                        </div>
+                        <div class="twitter-wrapper">
+                            <div class="input-group verification-input" style="flex-grow: 1;" id="twitterProfileContainer">
+                                <input type="text" id="xProfile" placeholder="Not connected" readonly style="width: 100%; background-color: #f2f2f2;">
+                            </div>
+                            <button type="button" id="connectTwitterButton" class="social-connect-btn">
+                                <span>
+                                    <svg class="twitter-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="18" height="18">
+                                        <path fill="currentColor" d="M14.243 16.243c-.372.373-.884.585-1.415.585H5.172c-.53 0-1.043-.212-1.415-.585-.372-.372-.585-.884-.585-1.415V9.172c0-.53.212-1.043.585-1.415.372-.372.884-.585 1.415-.585h7.656c.53 0 1.043.212 1.415.585.372.372.585.884.585 1.415v5.656a2 2 0 0 1-.585 1.415z"/>
+                                        <path fill="currentColor" d="M18.172 20.828H8c-1.105 0-2-.895-2-2v-2h5.657c.795 0 1.489-.44 1.85-1.086l1.615-2.885c.193-.346.528-.496.79-.438a.701.701 0 0 1 .588.85L15.35 16.84a.694.694 0 0 0 .66.483h2.162c1.105 0 2 .895 2 2v-.495c0 1.105-.895 2-2 2z"/>
+                                    </svg>
+                                    Connect Twitter
+                                </span>
+                            </button>
+                        </div>
+                        <div class="help-text">Connect your Twitter account to verify ownership</div>
+                    </div>
+
+                    
+                    
+                    <!-- LinkedIn OAuth implementation -->
+                    <div class="form-group">
+                        <div class="social-header">
+                            <div class="social-icon">
+                                <span>💼</span>
+                            </div>
+                            <label for="linkedinProfile" id="linkedinLabel">LinkedIn <span class="social-value" id="linkedinValue"></span></label>
+                            <div id="linkedinVerificationStatus" class="social-status">
+                                <div class="status-circle status-unverified"></div>
+                                <span class="status-text">Not connected</span>
+                                <span class="verified-value" id="linkedinVerifiedValue" style="margin-left: 5px; display: none;"></span>
+                            </div>
+                        </div>
+                        <div class="linkedin-wrapper">
+                            <div class="input-group verification-input" style="flex-grow: 1;" id="linkedinProfileContainer">
+                                <input type="text" id="linkedinProfile" placeholder="Not connected" readonly style="width: 100%; background-color: #f2f2f2;">
+                            </div>
+                            <button type="button" id="connectLinkedInButton" class="social-connect-btn">
+                                <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                                    <path fill="currentColor" d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.32 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.79M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z"/>
+                                </svg>
+                                Connect LinkedIn
+                            </button>
+                        </div>
+                        <div class="help-text">Connect your LinkedIn account to verify ownership</div>
+                    </div>
+                    
+
+                    <!-- GitHub OAuth implementation -->
+                    <div class="form-group">
+                        <div class="social-header">
+                            <div class="social-icon">
+                                <span>🐙</span>
+                            </div>
+                            <label for="githubProfile" id="githubLabel">GitHub <span class="social-value" id="githubValue"></span></label>
+                            <div id="githubVerificationStatus" class="social-status">
+                                <div class="status-circle status-unverified"></div>
+                                <span class="status-text">Not connected</span>
+                                <span class="verified-value" id="githubVerifiedValue" style="margin-left: 5px; display: none;"></span>
+                            </div>
+                        </div>
+                        <div class="github-wrapper">
+                            <div class="input-group verification-input" style="flex-grow: 1;" id="githubProfileContainer">
+                                <input type="text" id="githubProfile" placeholder="Not connected" readonly style="width: 100%; background-color: #f2f2f2;">
+                            </div>
+                            <button type="button" id="connectGitHubButton" class="social-connect-btn">
+                                <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+                                    <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                                </svg>
+                                Connect GitHub
+                            </button>
+                        </div>
+                        <div class="help-text">Connect your GitHub account to verify ownership</div>
+                    </div>
+
+                </div>
+
+                <!-- Wallets Tab Content -->
+                <div id="wallets-tab" class="tab-content">
+                    <div class="info-section" style="margin-bottom: 10px; padding: 8px;">
+                        <p style="margin: 0; font-size: 0.9em;">Connect your Web3 wallets for verification and cross-chain functionality.</p>
+                    </div>
+
+                    <div class="wallet-container" style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 15px;">
+                        <!-- Ethereum Wallet -->
+                        <div class="wallet-item" style="flex: 1; min-width: 180px; background-color: rgba(98, 126, 234, 0.1); border-radius: 8px; padding: 10px; border: 1px solid #627eea;">
+                            <div style="display: flex; align-items: center; margin-bottom: 5px;">
+                                <div style="width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin-right: 8px;">
+                                    <span style="font-size: 16px;">Ξ</span>
+                                </div>
+                                <label style="margin: 0; font-size: 0.9em; font-weight: bold;">Ethereum (ETH)</label>
+                            </div>
+                            <button type="button" id="connectEthWallet" class="connect-button" style="width: 100%; padding: 6px; margin: 0; background-color: #627eea; font-size: 0.85em;">
+                                <span style="display: flex; align-items: center; justify-content: center; gap: 5px;">
+                                    <svg width="16" height="16" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M13.9851 0L13.8093 0.596454V19.1476L13.9851 19.3233L22.5543 14.2173L13.9851 0Z" fill="white"/>
+                                        <path d="M13.9851 0L5.41602 14.2173L13.9851 19.3233V10.3505V0Z" fill="white" fill-opacity="0.8"/>
+                                        <path d="M13.9852 20.9506L13.8848 21.0725V27.6323L13.9852 27.9241L22.5602 15.8469L13.9852 20.9506Z" fill="white"/>
+                                        <path d="M13.9851 27.9241V20.9506L5.41602 15.8469L13.9851 27.9241Z" fill="white" fill-opacity="0.8"/>
+                                        <path d="M13.9851 19.3232L22.5542 14.2172L13.9851 10.3503V19.3232Z" fill="white" fill-opacity="0.9"/>
+                                        <path d="M5.41602 14.2172L13.9851 19.3232V10.3503L5.41602 14.2172Z" fill="white" fill-opacity="0.7"/>
+                                    </svg>
+                                    MetaMask
+                                </span>
+                            </button>
+                            <div id="ethWalletStatus" class="wallet-status" style="margin-top: 5px; display: none; padding: 4px; border-radius: 4px; background-color: var(--primary-bg); font-size: 0.8em;">
+                                <span id="ethWalletAddress" style="font-family: monospace; word-break: break-all;"></span>
+                            </div>
+                        </div>
+                        
+                        <!-- Bitcoin Wallet -->
+                        <div class="wallet-item" style="flex: 1; min-width: 180px; background-color: rgba(247, 147, 26, 0.1); border-radius: 8px; padding: 10px; border: 1px solid #f7931a;">
+                            <div style="display: flex; align-items: center; margin-bottom: 5px;">
+                                <div style="width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin-right: 8px;">
+                                    <span style="font-size: 16px;">₿</span>
+                                </div>
+                                <label style="margin: 0; font-size: 0.9em; font-weight: bold;">Bitcoin (BTC)</label>
+                            </div>
+                            <button type="button" id="connectBtcWallet" class="connect-button" style="width: 100%; padding: 6px; margin: 0; background-color: #f7931a; font-size: 0.85em;">
+                                <span style="display: flex; align-items: center; justify-content: center; gap: 5px;">
+                                    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M19.3 12.35C17.9834 17.0992 13.0666 19.7867 8.31732 18.47C3.56807 17.1534 0.880572 12.2367 2.19724 7.4875C3.5139 2.73825 8.43065 0.0507484 13.1799 1.36741C17.9291 2.68408 20.6166 7.60083 19.3 12.35Z" fill="white"/>
+                                        <path d="M14.2516 8.70001C14.4349 7.40001 13.4599 6.72501 12.1432 6.28751L12.5599 4.77501L11.6182 4.53751L11.2132 6.00001C10.9849 5.93751 10.7449 5.87501 10.5066 5.81251L10.9149 4.33751L9.97156 4.10001L9.55656 5.61251C9.36156 5.56251 9.17156 5.51251 8.98823 5.46251L8.98989 5.45834L7.69989 5.13334L7.44989 6.13334C7.44989 6.13334 8.15823 6.28751 8.14156 6.29584C8.53323 6.38751 8.60406 6.65001 8.59573 6.85834L8.11406 8.60001C8.14739 8.60834 8.19156 8.62084 8.24156 8.64167L8.14156 8.61667L7.46656 11.1167C7.41989 11.2333 7.30823 11.4083 7.03323 11.3417C7.04156 11.3542 6.34156 11.175 6.34156 11.175L5.87656 12.25L7.09989 12.5583C7.30823 12.6167 7.51156 12.675 7.71073 12.7333L7.29156 14.2667L8.23323 14.5042L8.64989 12.9917C8.88739 13.0583 9.11656 13.1208 9.34156 13.1792L8.92656 14.6875L9.86823 14.925L10.2874 13.3958C11.9791 13.725 13.2349 13.5917 13.8016 12.0625C14.2557 10.8333 13.8391 10.125 12.9932 9.67917C13.6099 9.54167 14.0849 9.12917 14.2516 8.70001ZM11.8432 11.425C11.5182 12.6542 9.39156 11.9625 8.66656 11.7833L9.23739 9.72917C9.96239 9.90834 12.1807 10.1458 11.8432 11.425ZM12.1682 8.68334C11.8724 9.80834 10.0857 9.21667 9.47156 9.06667L9.98573 7.19167C10.5999 7.34167 12.4766 7.51667 12.1682 8.68334Z" fill="#F7931A"/>
+                                    </svg>
+                                    Bitcoin Wallet
+                                </span>
+                            </button>
+                            <div id="btcWalletStatus" class="wallet-status" style="margin-top: 5px; display: none; padding: 4px; border-radius: 4px; background-color: var(--primary-bg); font-size: 0.8em;">
+                                <span id="btcWalletAddress" style="font-family: monospace; word-break: break-all;"></span>
+                            </div>
+                        </div>
+                        
+                        <!-- Solana Wallet -->
+                        <div class="wallet-item" style="flex: 1; min-width: 180px; background-color: rgba(153, 69, 255, 0.1); border-radius: 8px; padding: 10px; border: 1px solid #9945ff;">
+                            <div style="display: flex; align-items: center; margin-bottom: 5px;">
+                                <div style="width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin-right: 8px;">
+                                    <span style="font-size: 16px;">☀️</span>
+                                </div>
+                                <label style="margin: 0; font-size: 0.9em; font-weight: bold;">Solana (SOL)</label>
+                            </div>
+                            <button type="button" id="connectSolWallet" class="connect-button" style="width: 100%; padding: 6px; margin: 0; background-color: #9945ff; font-size: 0.85em;">
+                                <span style="display: flex; align-items: center; justify-content: center; gap: 5px;">
+                                    <svg width="16" height="16" viewBox="0 0 397 311" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M64.8161 237.809L207.944 310.994C218.505 316.364 231.216 310.994 231.216 299.538V246.135C231.216 239.224 226.861 233.854 219.937 230.704L77.5271 157.519C66.9661 152.149 54.2555 157.519 54.2555 168.975V222.377C54.2555 230.704 58.6102 236.074 64.8161 237.809Z" fill="white"/>
+                                        <path d="M64.8161 81.6498L207.944 154.834C218.505 160.204 231.216 154.834 231.216 143.378V89.9756C231.216 83.0646 226.861 77.6947 219.937 74.5446L77.5271 1.36023C66.9661 -4.00972 54.2555 1.36023 54.2555 12.8159V66.2185C54.2555 74.5446 58.6102 79.9145 64.8161 81.6498Z" fill="white"/>
+                                        <path d="M342.159 171.1L199.031 97.9151C188.47 92.5453 175.76 97.9151 175.76 109.371V162.774C175.76 169.685 180.114 175.055 187.038 178.205L329.448 251.39C340.009 256.76 352.72 251.39 352.72 239.934V186.531C352.72 178.205 348.365 172.835 342.159 171.1Z" fill="white"/>
+                                    </svg>
+                                    Solana Wallet
+                                </span>
+                            </button>
+                            <div id="solWalletStatus" class="wallet-status" style="margin-top: 5px; display: none; padding: 4px; border-radius: 4px; background-color: var(--primary-bg); font-size: 0.8em;">
+                                <span id="solWalletAddress" style="font-family: monospace; word-break: break-all;"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <button id="saveButton">Save Profile Changes</button>
+                <div class="success-message" id="saveSuccess"></div>
+                <div class="error-message" id="saveError"></div>
+            </div>
+        </div>
+
+        <!-- Telegram Verification Modal -->
+        <div id="telegramVerificationModal" class="modal-overlay">
+            <div class="modal-container">
+                <button id="closeModalButton" class="modal-close">&times;</button>
+                <h3 class="modal-title">Verify Your Telegram Account</h3>
+                <div class="modal-content">
+                    <p>To verify your Telegram account, you'll need to interact with our verification bot. Please follow these steps:</p>
+
+                    <div class="verification-steps">
+                        <ol>
+                            <li>Copy your DNA nickname shown below</li>
+                            <li>Click the link to open our verification bot on Telegram</li>
+                            <li>Send your DNA nickname to the bot when asked</li>
+                            <li>Once verified, return to this page and reload</li>
+                        </ol>
+                    </div>
+
+                    <div class="guid-display" id="guidDisplay">
+                        <!-- DNA nickname will be inserted here -->
+                    </div>
+
+                    <button id="copyGuidButton" class="copy-guid-btn">Copy DNA Nickname</button>
+
+                    <a id="telegramBotLink" href="https://t.me/CpunkVerifyBot" target="_blank" class="bot-link">
+                        Open Telegram Bot
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation now handled by navbar-template.html -->
+        <!-- Profile link needs to be preserved for JavaScript functionality -->
+        <a href="#" id="profileLink" style="display: none;">My Profile</a>
+    </div>
+
+    <!-- The hidden input fields required by JavaScript but not shown to users -->
+    <input type="hidden" id="guidValue">
+    <input type="hidden" id="signId">
+    <input type="hidden" id="walletAddress">
+
+    <!-- JavaScript addition to handle profile link -->
+    <script>
+        // This additional script handles the profile link update
+        document.addEventListener('DOMContentLoaded', function() {
+            // Will run after main user_settings.js is loaded
+            const originalUpdateProfilePreview = window.updateProfilePreview || function() {};
+            
+            // Override or extend the updateProfilePreview function if it exists
+            window.updateProfilePreview = function(data) {
+                // Call the original function if it exists
+                if (typeof originalUpdateProfilePreview === 'function') {
+                    originalUpdateProfilePreview(data);
+                }
+                
+                // Update the profile link with DNA nickname
+                const profileLink = document.getElementById('profileLink');
+                if (profileLink && data) {
+                    const registeredNames = data.registered_names || {};
+                    const nicknames = Object.keys(registeredNames);
+                    const primaryNickname = nicknames.length > 0 ? nicknames[0] : '';
+                    
+                    if (primaryNickname) {
+                        profileLink.href = `https://cpunk.club/${primaryNickname}`;
+                    } else {
+                        profileLink.href = '#';
+                    }
+                }
+            };
+        });
+    </script>
+
+    <!-- External JavaScript -->
+    <!-- Utility Libraries -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    
+    <!-- Page-specific JavaScript -->
+    <script src="js/user_settings.js"></script>
+    
+    <script>
+        // Ensure API hooks are in place before user_settings.js runs
+        (function() {
+            // Wait for API Console to be available
+            let apiConsoleReady = false;
+            
+            function checkAPIConsole() {
+                if (window.CpunkAPIConsole) {
+                    // API Console is available, initialize it
+                    console.log('API Console detected, initializing...');
+                    apiConsoleReady = true;
+                    return true;
+                }
+                return false;
+            }
+            
+            // Check if API Console is already available
+            if (!checkAPIConsole()) {
+                // Set up a small interval to check for API Console
+                const checkInterval = setInterval(() => {
+                    if (checkAPIConsole()) {
+                        clearInterval(checkInterval);
+                        monkeyPatchFetch();
+                    }
+                }, 100);
+                
+                // Safety timeout after 2 seconds
+                setTimeout(() => {
+                    clearInterval(checkInterval);
+                    if (!apiConsoleReady) {
+                        console.error('API Console not available after timeout');
+                    }
+                }, 2000);
+            } else {
+                monkeyPatchFetch();
+            }
+            
+            function monkeyPatchFetch() {
+                // Store original fetch for monkey patching
+                const originalFetch = window.fetch;
+                
+                // Override fetch to log requests and responses
+                window.fetch = async function(...args) {
+                    const url = args[0];
+                    const options = args[1] || {};
+                    const requestTime = new Date().toISOString();
+                    
+                    // Skip tracking for non-API calls like navbar template fetch
+                    if (url && !url.includes('navbar-template.html') && !url.includes('.css') && !url.includes('.js')) {
+                        // Extract API info
+                        try {
+                            // Log to API Console using the global logAPI function
+                            if (window.logAPI) {
+                                window.logAPI('API Request: ' + url, {
+                                    url: url,
+                                    method: options.method || 'GET',
+                                    headers: options.headers || {},
+                                    body: options.body || null
+                                });
+                            } else {
+                                console.log('[API Request]', url, options);
+                            }
+                        } catch (err) {
+                            console.error('Error logging request:', err);
+                        }
+                    }
+                    
+                    // Execute the original fetch
+                    try {
+                        const response = await originalFetch.apply(this, args);
+                        
+                        // Clone the response before reading it
+                        if (url && !url.includes('navbar-template.html') && !url.includes('.css') && !url.includes('.js')) {
+                            const responseTime = new Date().toISOString();
+                            const clonedResponse = response.clone();
+                            
+                            // Handle response based on content type
+                            clonedResponse.text().then(text => {
+                                let responseData;
+                                
+                                try {
+                                    // Try to parse JSON
+                                    responseData = JSON.parse(text);
+                                } catch (e) {
+                                    // Not JSON, use text
+                                    responseData = text;
+                                }
+                                
+                                // Log to API Console using the global logAPI function
+                                if (window.logAPI) {
+                                    window.logAPI('API Response: ' + url, {
+                                        url: url,
+                                        method: options.method || 'GET',
+                                        timestamp: responseTime,
+                                        data: responseData,
+                                        status: "success"
+                                    });
+                                } else {
+                                    console.log('[API Response]', url, responseData);
+                                }
+                            }).catch(err => {
+                                console.error('Error parsing response:', err);
+                            });
+                        }
+                        
+                        return response;
+                    } catch (error) {
+                        // Log fetch errors
+                        if (url && !url.includes('navbar-template.html') && !url.includes('.css') && !url.includes('.js')) {
+                            if (window.logAPI) {
+                                window.logAPI('API Error: ' + url, {
+                                    url: url,
+                                    method: options.method || 'GET',
+                                    timestamp: new Date().toISOString(),
+                                    error: error.message
+                                });
+                            } else {
+                                console.error('[API Error]', url, error);
+                            }
+                        }
+                        throw error;
+                    }
+                };
+                
+                console.log('Fetch successfully monkey patched for API tracking');
+            }
+        })();
+        
+        // Initialize utility modules
+        document.addEventListener('DOMContentLoaded', function() {
+            // Test the API console with a direct call
+            setTimeout(() => {
+                if (window.logAPI) {
+                    window.logAPI('Login Page Initialized', { 
+                        source: 'login.html', 
+                        time: new Date().toISOString(),
+                        message: 'Press Ctrl+Shift+A to toggle API Console'
+                    });
+                    console.log('Test message logged to API Console');
+                }
+                
+                // Initialize other utilities
+                if (typeof CpunkUtils !== 'undefined') {
+                    CpunkUtils.init({
+                        debug: {
+                            enabled: true,
+                            showInConsole: true
+                        }
+                    });
+                }
+                
+                // Tab switching functionality
+                console.log('Setting up tab buttons...');
+                const tabButtons = document.querySelectorAll('.tab-button');
+                const tabContents = document.querySelectorAll('.tab-content');
+
+                console.log('Found tab buttons:', tabButtons.length);
+                console.log('Found tab contents:', tabContents.length);
+
+                // Make tab switching global for easier debugging/access
+                window.switchTab = function(tabId) {
+                    console.log('Switching to tab:', tabId);
+
+                    // Update active tab button
+                    tabButtons.forEach(btn => {
+                        if (btn.getAttribute('data-tab') === tabId) {
+                            btn.classList.add('active');
+                        } else {
+                            btn.classList.remove('active');
+                        }
+                    });
+
+                    // Show selected tab content
+                    tabContents.forEach(content => {
+                        if (content.id === tabId) {
+                            content.style.display = 'block';
+                        } else {
+                            content.style.display = 'none';
+                        }
+                    });
+                };
+
+                // Add click handlers to all tab buttons
+                tabButtons.forEach(button => {
+                    button.addEventListener('click', () => {
+                        const tabId = button.getAttribute('data-tab');
+                        console.log('Tab button clicked:', tabId);
+                        window.switchTab(tabId);
+                    });
+                });
+                
+                // Google OAuth integration
+                const connectGoogleButton = document.getElementById('connectGoogleButton');
+                if (connectGoogleButton) {
+                    connectGoogleButton.addEventListener('click', function(e) {
+                        // Prevent default button behavior
+                        e.preventDefault();
+
+                        // Follow same approach as Twitter OAuth
+                        if (!walletAddress) {
+                            // Show error message
+                            if (saveError) {
+                                saveError.textContent = 'Wallet address is missing. Please select a wallet first.';
+                                saveError.style.display = 'block';
+                            }
+                            return;
+                        }
+
+                        // Disable the button during OAuth
+                        connectGoogleButton.disabled = true;
+                        connectGoogleButton.innerHTML = '<span class="loading-spinner"></span>Connecting...';
+
+                        console.log('Using wallet address for Google OAuth:', walletAddress);
+
+                        // Open popup for Google OAuth
+                        const width = 600;
+                        const height = 600;
+                        const left = window.screen.width / 2 - width / 2;
+                        const top = window.screen.height / 2 - height / 2;
+                        const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no`;
+
+                        // Log that we're opening popup for debugging
+                        console.log('Opening Google OAuth popup window');
+
+                        // Open the popup (using same approach as Twitter)
+                        const GOOGLE_OAUTH_URL = 'google_oauth.php';
+                        const authUrl = `${GOOGLE_OAUTH_URL}?request=auth&wallet=${encodeURIComponent(walletAddress)}`;
+
+                        const popup = window.open(authUrl, 'googleAuth', features);
+
+                        // If popup was blocked or failed to open
+                        if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+                            console.error('Popup window was blocked or failed to open');
+                            if (saveError) {
+                                saveError.textContent = 'Please allow popups for this site to use Google authentication';
+                                saveError.style.display = 'block';
+                            }
+
+                            // Reset button
+                            connectGoogleButton.disabled = false;
+                            connectGoogleButton.innerHTML = 'Connect Google';
+                        }
+
+                        // Listen for messages from the popup
+                        window.addEventListener('message', handleGoogleAuthCallback);
+                    });
+                }
+
+                // LinkedIn OAuth integration
+                const connectLinkedInButton = document.getElementById('connectLinkedInButton');
+                if (connectLinkedInButton) {
+                    connectLinkedInButton.addEventListener('click', function(e) {
+                        // Prevent default button behavior
+                        e.preventDefault();
+
+                        // Check for wallet address
+                        if (!walletAddress) {
+                            // Show error message
+                            if (saveError) {
+                                saveError.textContent = 'Wallet address is missing. Please select a wallet first.';
+                                saveError.style.display = 'block';
+                            }
+                            return;
+                        }
+
+                        // Disable the button during OAuth
+                        connectLinkedInButton.disabled = true;
+                        connectLinkedInButton.innerHTML = '<span class="loading-spinner"></span>Connecting...';
+
+                        console.log('Using wallet address for LinkedIn OAuth:', walletAddress);
+
+                        // Open popup for LinkedIn OAuth
+                        const width = 600;
+                        const height = 600;
+                        const left = window.screen.width / 2 - width / 2;
+                        const top = window.screen.height / 2 - height / 2;
+                        const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no`;
+
+                        // Open the popup with wallet parameter
+                        const LINKEDIN_OAUTH_URL = 'linkedin_oauth.php';
+                        const authUrl = `${LINKEDIN_OAUTH_URL}?request=auth&wallet=${encodeURIComponent(walletAddress)}`;
+
+                        const popup = window.open(authUrl, 'linkedinAuth', features);
+
+                        // Check if popup was blocked
+                        if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+                            console.error('Popup window was blocked or failed to open');
+                            if (saveError) {
+                                saveError.textContent = 'Please allow popups for this site to use LinkedIn authentication';
+                                saveError.style.display = 'block';
+                            }
+
+                            // Reset button
+                            connectLinkedInButton.disabled = false;
+                            connectLinkedInButton.innerHTML = 'Connect LinkedIn';
+                        }
+
+                        // Listen for messages from the popup
+                        window.addEventListener('message', handleLinkedInAuthCallback);
+                    });
+                }
+
+                // GitHub OAuth integration
+                const connectGitHubButton = document.getElementById('connectGitHubButton');
+                if (connectGitHubButton) {
+                    connectGitHubButton.addEventListener('click', function(e) {
+                        // Prevent default button behavior
+                        e.preventDefault();
+
+                        // Check for wallet address
+                        if (!walletAddress) {
+                            // Show error message
+                            if (saveError) {
+                                saveError.textContent = 'Wallet address is missing. Please select a wallet first.';
+                                saveError.style.display = 'block';
+                            }
+                            return;
+                        }
+
+                        // Disable the button during OAuth
+                        connectGitHubButton.disabled = true;
+                        connectGitHubButton.innerHTML = '<span class="loading-spinner"></span>Connecting...';
+
+                        console.log('Using wallet address for GitHub OAuth:', walletAddress);
+
+                        // Open popup for GitHub OAuth
+                        const width = 600;
+                        const height = 600;
+                        const left = window.screen.width / 2 - width / 2;
+                        const top = window.screen.height / 2 - height / 2;
+                        const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no`;
+
+                        // Open the popup with wallet parameter
+                        const GITHUB_OAUTH_URL = 'github_oauth.php';
+                        const authUrl = `${GITHUB_OAUTH_URL}?request=auth&wallet=${encodeURIComponent(walletAddress)}`;
+
+                        const popup = window.open(authUrl, 'githubAuth', features);
+
+                        // Check if popup was blocked
+                        if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+                            console.error('Popup window was blocked or failed to open');
+                            if (saveError) {
+                                saveError.textContent = 'Please allow popups for this site to use GitHub authentication';
+                                saveError.style.display = 'block';
+                            }
+
+                            // Reset button
+                            connectGitHubButton.disabled = false;
+                            connectGitHubButton.innerHTML = `
+                                <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+                                    <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                                </svg>
+                                Connect GitHub
+                            `;
+                        }
+
+                        // Listen for messages from the popup
+                        window.addEventListener('message', handleGitHubAuthCallback);
+                    });
+                }
+
+                // OAuth messaging - separate handlers for each service
+
+                // Add function to handle Google OAuth callback (similar to handleTwitterAuthCallback)
+                async function handleGoogleAuthCallback(event) {
+                    // Verify the origin
+                    if (event.origin !== window.location.origin) {
+                        console.warn('Received message from unknown origin', event.origin);
+                        return;
+                    }
+
+                    console.log('Received Google auth callback:', event.data);
+
+                    if (event.data.type === 'google_auth_success') {
+                        // Success - Google account connected
+                        const email = event.data.email;
+
+                        // Update the UI
+                        const googleProfileInput = document.getElementById('googleProfile');
+                        const googleProfileContainer = document.getElementById('googleProfileContainer');
+                        if (googleProfileInput && email) {
+                            googleProfileInput.value = email;
+                            // Show container when we have a value
+                            if (googleProfileContainer) googleProfileContainer.style.display = 'block';
+                        }
+
+                        // Update verification status
+                        const googleVerificationStatus = document.getElementById('googleVerificationStatus');
+                        if (googleVerificationStatus) {
+                            googleVerificationStatus.innerHTML = `
+                                <div class="status-circle status-verified"></div>
+                                <span class="status-text">Verified</span>
+                            `;
+                        }
+
+                        // Update button
+                        const connectGoogleButton = document.getElementById('connectGoogleButton');
+                        if (connectGoogleButton) {
+                            connectGoogleButton.disabled = true;
+                            connectGoogleButton.textContent = 'Connected';
+                            connectGoogleButton.classList.add('connected');
+                        }
+
+                        // Show success message
+                        if (saveSuccess) {
+                            saveSuccess.textContent = `Google account ${email} connected successfully!`;
+                            saveSuccess.style.display = 'block';
+                        }
+                        if (saveError) saveError.style.display = 'none';
+
+                        // Update social count
+                        setTimeout(updateSocialCount, 500);
+
+                        // Refresh data to get latest changes
+                        await checkDnaRegistration();
+
+                    } else if (event.data.type === 'google_auth_error') {
+                        // Error occurred during Google auth
+                        console.error('Google auth error:', event.data.error);
+
+                        // Reset button
+                        const connectGoogleButton = document.getElementById('connectGoogleButton');
+                        if (connectGoogleButton) {
+                            connectGoogleButton.disabled = false;
+                            connectGoogleButton.innerHTML = 'Connect Google';
+                        }
+
+                        // Show error message
+                        if (saveError) {
+                            saveError.textContent = `Error connecting Google: ${event.data.error}`;
+                            saveError.style.display = 'block';
+                        }
+                        if (saveSuccess) saveSuccess.style.display = 'none';
+                    }
+
+                    // Clean up event listener
+                    window.removeEventListener('message', handleGoogleAuthCallback);
+                }
+
+                // Handle LinkedIn OAuth callback
+                async function handleLinkedInAuthCallback(event) {
+                    // Verify the origin
+                    if (event.origin !== window.location.origin) {
+                        console.warn('Received message from unknown origin', event.origin);
+                        return;
+                    }
+
+                    console.log('Received LinkedIn auth callback:', event.data);
+
+                    if (event.data.type === 'linkedin_auth_success') {
+                        // Success - LinkedIn account connected
+                        const profile = event.data.profile;
+                        const name = event.data.name;
+
+                        // Update the UI
+                        const linkedinProfileInput = document.getElementById('linkedinProfile');
+                        if (linkedinProfileInput) linkedinProfileInput.value = profile;
+
+                        // Update verification status
+                        const linkedinVerificationStatus = document.getElementById('linkedinVerificationStatus');
+                        if (linkedinVerificationStatus) {
+                            linkedinVerificationStatus.innerHTML = `
+                                <div class="status-circle status-verified"></div>
+                                <span class="status-text">Verified</span>
+                            `;
+                        }
+
+                        // Hide the connect button completely when verified
+                        const connectLinkedInButton = document.getElementById('connectLinkedInButton');
+                        if (connectLinkedInButton) {
+                            connectLinkedInButton.style.display = 'none';
+                        }
+
+                        // Hide the help text for verified accounts
+                        const linkedinHelpText = connectLinkedInButton ?
+                            connectLinkedInButton.parentElement.nextElementSibling : null;
+                        if (linkedinHelpText && linkedinHelpText.classList.contains('help-text')) {
+                            linkedinHelpText.style.display = 'none';
+                        }
+
+                        // Show success message
+                        if (saveSuccess) {
+                            saveSuccess.textContent = `LinkedIn profile connected successfully!`;
+                            saveSuccess.style.display = 'block';
+                        }
+                        if (saveError) saveError.style.display = 'none';
+
+                        // Update social count
+                        setTimeout(updateSocialCount, 500);
+
+                        // Refresh data to get latest changes
+                        await checkDnaRegistration();
+
+                    } else if (event.data.type === 'linkedin_auth_error') {
+                        // Error occurred during auth
+                        console.error('LinkedIn auth error:', event.data.error);
+
+                        // Reset button
+                        const connectLinkedInButton = document.getElementById('connectLinkedInButton');
+                        if (connectLinkedInButton) {
+                            connectLinkedInButton.disabled = false;
+                            connectLinkedInButton.style.display = 'block';
+                            connectLinkedInButton.innerHTML = `
+                                <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
+                                    <path fill="currentColor" d="M19 3a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h14m-.5 15.5v-5.3a3.26 3.26 0 0 0-3.26-3.26c-.85 0-1.84.52-2.32 1.3v-1.11h-2.79v8.37h2.79v-4.93c0-.77.62-1.4 1.39-1.4a1.4 1.4 0 0 1 1.4 1.4v4.93h2.79M6.88 8.56a1.68 1.68 0 0 0 1.68-1.68c0-.93-.75-1.69-1.68-1.69a1.69 1.69 0 0 0-1.69 1.69c0 .93.76 1.68 1.69 1.68m1.39 9.94v-8.37H5.5v8.37h2.77z"/>
+                                </svg>
+                                Connect LinkedIn
+                            `;
+
+                            // Ensure help text is visible
+                            const linkedinHelpText = connectLinkedInButton ?
+                                connectLinkedInButton.parentElement.nextElementSibling : null;
+                            if (linkedinHelpText && linkedinHelpText.classList.contains('help-text')) {
+                                linkedinHelpText.style.display = '';
+                            }
+                        }
+
+                        // Show error message
+                        if (saveError) {
+                            saveError.textContent = `Error connecting LinkedIn: ${event.data.error}`;
+                            saveError.style.display = 'block';
+                        }
+                        if (saveSuccess) saveSuccess.style.display = 'none';
+                    }
+
+                    // Clean up event listener
+                    window.removeEventListener('message', handleLinkedInAuthCallback);
+                }
+
+                // General message handler for backward compatibility
+                window.addEventListener('message', function(event) {
+                    // Always check origin for security
+                    if (event.origin !== window.location.origin) {
+                        console.warn('Received message from unknown origin', event.origin);
+                        return;
+                    }
+
+                    // Handle Twitter OAuth success
+                    if (event.data && event.data.type && event.data.type === 'twitter_auth_success') {
+                        // Handle Twitter auth success
+                        console.log('Twitter authentication successful:', event.data);
+
+                        // Show the Twitter input field when verified
+                        const twitterProfileContainer = document.getElementById('twitterProfileContainer');
+                        if (twitterProfileContainer) twitterProfileContainer.style.display = 'block';
+
+                        // Update social count after verification
+                        setTimeout(updateSocialCount, 500);
+                    }
+
+                    // Handle GitHub OAuth success (for redundancy/backward compatibility)
+                    if (event.data && event.data.type && event.data.type === 'github_auth_success') {
+                        console.log('GitHub authentication successful (general handler):', event.data);
+
+                        // Capture GitHub data for persistence
+                        try {
+                            localStorage.setItem('github_oauth_backup', JSON.stringify({
+                                timestamp: Date.now(),
+                                username: event.data.username || '',
+                                name: event.data.name || ''
+                            }));
+                        } catch (e) {
+                            console.error('[DEBUG] Error storing GitHub backup data', e);
+                        }
+
+                        // Update GitHub UI
+                        const githubProfileInput = document.getElementById('githubProfile');
+                        const githubProfileContainer = document.getElementById('githubProfileContainer');
+                        const githubVerificationStatus = document.getElementById('githubVerificationStatus');
+                        const connectGitHubButton = document.getElementById('connectGitHubButton');
+
+                        if (githubProfileInput) githubProfileInput.value = event.data.username || '';
+                        if (githubProfileContainer) githubProfileContainer.style.display = 'block';
+
+                        if (githubVerificationStatus) {
+                            githubVerificationStatus.innerHTML = `
+                                <div class="status-circle status-verified"></div>
+                                <span class="status-text">Verified</span>
+                            `;
+                        }
+
+                        if (connectGitHubButton) {
+                            connectGitHubButton.style.display = 'none';
+                            connectGitHubButton.disabled = true;
+                        }
+
+                        // Update social count
+                        setTimeout(updateSocialCount, 500);
+                    }
+
+                    // Handle Google OAuth success
+                    if (event.data && event.data.type && event.data.type === 'google_auth_success') {
+                        console.log('Google authentication successful:', event.data);
+
+                        // Update UI to show the connected Google account
+                        const googleProfileInput = document.getElementById('googleProfile');
+                        const googleVerificationStatus = document.getElementById('googleVerificationStatus');
+                        const email = event.data.email;
+
+                        if (googleProfileInput && email) {
+                            googleProfileInput.value = email;
+
+                            // Show the input field
+                            const googleProfileContainer = document.getElementById('googleProfileContainer');
+                            if (googleProfileContainer) googleProfileContainer.style.display = 'block';
+
+                            // Update verification status (similar to Twitter)
+                            if (googleVerificationStatus) {
+                                googleVerificationStatus.innerHTML = `
+                                    <div class="status-circle status-verified"></div>
+                                    <span class="status-text">Verified</span>
+                                    <span class="verified-value" id="googleVerifiedValue">: ${email}</span>
+                                `;
+                            }
+
+                            // Update button
+                            const connectGoogleButton = document.getElementById('connectGoogleButton');
+                            if (connectGoogleButton) {
+                                connectGoogleButton.disabled = true;
+                                connectGoogleButton.textContent = 'Connected';
+                                connectGoogleButton.classList.add('connected');
+                            }
+
+                            // Show success message
+                            if (saveSuccess) {
+                                saveSuccess.textContent = `Google account ${email} connected successfully!`;
+                                saveSuccess.style.display = 'block';
+                            }
+                            if (saveError) saveError.style.display = 'none';
+                        }
+
+                        // Update social count after verification
+                        setTimeout(updateSocialCount, 500);
+
+                        // Refresh data to get latest changes (follow Twitter's approach)
+                        checkDnaRegistration();
+                    }
+
+                    // Handle LinkedIn OAuth success
+                    if (event.data && event.data.type && event.data.type === 'linkedin_auth_success') {
+                        console.log('LinkedIn authentication successful:', event.data);
+
+                        // Update UI to show the connected LinkedIn account
+                        const linkedinProfileInput = document.getElementById('linkedinProfile');
+                        const linkedinVerificationStatus = document.getElementById('linkedinVerificationStatus');
+                        const profile = event.data.profile;
+
+                        if (linkedinProfileInput && profile) {
+                            linkedinProfileInput.value = profile;
+
+                            // Show the input field
+                            const linkedinProfileContainer = document.getElementById('linkedinProfileContainer');
+                            if (linkedinProfileContainer) linkedinProfileContainer.style.display = 'block';
+
+                            // Update verification status
+                            if (linkedinVerificationStatus) {
+                                linkedinVerificationStatus.innerHTML = `
+                                    <div class="status-circle status-verified"></div>
+                                    <span class="status-text">Verified</span>
+                                `;
+                            }
+
+                            // Hide the LinkedIn button after successful connection
+                            const connectLinkedInButton = document.getElementById('connectLinkedInButton');
+                            if (connectLinkedInButton) {
+                                connectLinkedInButton.style.display = 'none';
+                            }
+
+                            // Hide the help text for verified accounts
+                            const linkedinHelpText = connectLinkedInButton ?
+                                connectLinkedInButton.parentElement.nextElementSibling : null;
+                            if (linkedinHelpText && linkedinHelpText.classList.contains('help-text')) {
+                                linkedinHelpText.style.display = 'none';
+                            }
+
+                            // Show success message
+                            if (saveSuccess) {
+                                saveSuccess.textContent = `LinkedIn profile connected successfully!`;
+                                saveSuccess.style.display = 'block';
+                            }
+                            if (saveError) saveError.style.display = 'none';
+                        }
+
+                        // Update social count after verification
+                        setTimeout(updateSocialCount, 500);
+
+                        // Refresh data to get latest changes
+                        checkDnaRegistration();
+                    }
+
+                    // Handle OAuth errors (Twitter, Google, LinkedIn, GitHub)
+                    if (event.data && event.data.type && (
+                        event.data.type === 'twitter_auth_error' ||
+                        event.data.type === 'google_auth_error' ||
+                        event.data.type === 'linkedin_auth_error' ||
+                        event.data.type === 'github_auth_error'
+                    )) {
+                        console.error('OAuth error:', event.data);
+
+                        // For LinkedIn errors, show more detailed error information
+                        if (event.data.type === 'linkedin_auth_error' && event.data.error_description) {
+                            showError('LinkedIn Auth Error: ' + event.data.error + ' - ' + event.data.error_description);
+                        } else {
+                            showError('Authentication error: ' + (event.data.error || 'Unknown error'));
+                        }
+                    }
+                });
+                
+                // Helper function to update social count
+                function updateSocialCount() {
+                    const socialsCountElement = document.getElementById('socialsCount');
+                    if (socialsCountElement) {
+                        let verifiedCount = 0;
+
+                        // Check if Twitter/X is verified (multiple methods)
+                        // 1. Check status circle class
+                        const twitterStatusCircle = document.querySelector('#twitterVerificationStatus .status-circle');
+                        // 2. Check if wrapper indicates connection
+                        const twitterWrapper = document.querySelector('.twitter-wrapper');
+
+                        if ((twitterStatusCircle && twitterStatusCircle.classList.contains('status-verified')) ||
+                            (twitterWrapper && (twitterWrapper.textContent.includes('Verified') ||
+                                                twitterWrapper.textContent.includes('Connected')))) {
+                            verifiedCount++;
+                            console.log('Twitter verified - count:', verifiedCount);
+                        }
+
+                        // Check if Telegram is verified
+                        const telegramStatus = document.querySelector('#telegramVerificationStatus .status-text');
+                        const telegramCircle = document.querySelector('#telegramVerificationStatus .status-circle');
+
+                        if ((telegramStatus && telegramStatus.textContent === 'Verified') ||
+                            (telegramCircle && telegramCircle.classList.contains('status-verified'))) {
+                            verifiedCount++;
+                            console.log('Telegram verified - count:', verifiedCount);
+                        }
+
+                        // Check if Google is verified
+                        const googleStatus = document.querySelector('#googleVerificationStatus .status-text');
+                        const googleCircle = document.querySelector('#googleVerificationStatus .status-circle');
+                        const googleProfile = document.getElementById('googleProfile');
+
+                        if ((googleStatus && googleStatus.textContent === 'Verified') ||
+                            (googleCircle && googleCircle.classList.contains('status-verified')) ||
+                            (googleProfile && googleProfile.value && googleProfile.value !== 'Not connected')) {
+                            verifiedCount++;
+                            console.log('Google verified - count:', verifiedCount);
+                        }
+
+                        // Check if LinkedIn is verified
+                        const linkedinStatus = document.querySelector('#linkedinVerificationStatus .status-text');
+                        const linkedinCircle = document.querySelector('#linkedinVerificationStatus .status-circle');
+                        const linkedinProfile = document.getElementById('linkedinProfile');
+
+                        if ((linkedinStatus && linkedinStatus.textContent === 'Verified') ||
+                            (linkedinCircle && linkedinCircle.classList.contains('status-verified')) ||
+                            (linkedinProfile && linkedinProfile.value && linkedinProfile.value !== 'Not connected')) {
+                            verifiedCount++;
+                            console.log('LinkedIn verified - count:', verifiedCount);
+                        }
+
+                        // Check if GitHub is verified - more robust check
+                        const githubStatus = document.querySelector('#githubVerificationStatus .status-text');
+                        const githubCircle = document.querySelector('#githubVerificationStatus .status-circle');
+                        const githubProfile = document.getElementById('githubProfile');
+                        const connectGitHubButton = document.getElementById('connectGitHubButton');
+
+                        // Check for GitHub verification with multiple methods
+                        const githubVerifiedByUI = (githubStatus && githubStatus.textContent === 'Verified') ||
+                                                   (githubCircle && githubCircle.classList.contains('status-verified'));
+
+                        const githubVerifiedByInput = (githubProfile && githubProfile.value &&
+                                                      githubProfile.value !== 'Not connected' &&
+                                                      githubProfile.value !== '');
+
+                        const githubVerifiedByButton = (connectGitHubButton &&
+                                                       (connectGitHubButton.style.display === 'none' ||
+                                                        connectGitHubButton.disabled === true));
+
+                        // Check localStorage for backup verification data
+                        let githubVerifiedByStorage = false;
+                        try {
+                            const storedData = localStorage.getItem('github_oauth_success') || localStorage.getItem('github_oauth_backup');
+                            if (storedData) {
+                                const parsed = JSON.parse(storedData);
+                                if (parsed && parsed.username) {
+                                    githubVerifiedByStorage = true;
+                                    console.log('[DEBUG] GitHub verified via localStorage:', parsed.username);
+                                }
+                            }
+                        } catch (err) {
+                            console.error('[DEBUG] Error checking GitHub localStorage data:', err);
+                        }
+
+                        // If any verification method is true, consider GitHub verified
+                        if (githubVerifiedByUI || githubVerifiedByInput || githubVerifiedByButton || githubVerifiedByStorage) {
+                            verifiedCount++;
+                            console.log('GitHub verified - count:', verifiedCount);
+
+                            // Ensure UI is properly updated if verified through storage
+                            if (githubVerifiedByStorage && !githubVerifiedByUI && githubStatus) {
+                                githubStatus.innerHTML = `
+                                    <div class="status-circle status-verified"></div>
+                                    <span class="status-text">Verified</span>
+                                `;
+
+                                if (connectGitHubButton) {
+                                    connectGitHubButton.style.display = 'none';
+                                    connectGitHubButton.disabled = true;
+                                }
+                            }
+                        }
+
+                        // Update the count and log it
+                        socialsCountElement.textContent = verifiedCount;
+                        console.log('Final social count:', verifiedCount);
+                    }
+                }
+
+                // Call this on page load to set initial count and check for stored OAuth data
+                setTimeout(function() {
+                    // Check localStorage for GitHub verification data that might need to be applied to UI
+                    try {
+                        const storedGitHubData = localStorage.getItem('github_oauth_success') || localStorage.getItem('github_oauth_backup');
+                        if (storedGitHubData) {
+                            const parsedData = JSON.parse(storedGitHubData);
+                            // Only apply if data is valid and username exists
+                            if (parsedData && parsedData.username) {
+                                console.log('[DEBUG] Found stored GitHub OAuth data:', parsedData);
+
+                                // Update UI to show verified status
+                                const githubProfileInput = document.getElementById('githubProfile');
+                                const githubProfileContainer = document.getElementById('githubProfileContainer');
+                                const githubVerificationStatus = document.getElementById('githubVerificationStatus');
+                                const connectGitHubButton = document.getElementById('connectGitHubButton');
+
+                                if (githubProfileInput) {
+                                    githubProfileInput.value = parsedData.username;
+                                }
+
+                                // Show the GitHub profile field when verified
+                                if (githubProfileContainer) {
+                                    githubProfileContainer.style.display = 'block';
+                                }
+
+                                if (githubVerificationStatus) {
+                                    githubVerificationStatus.innerHTML = `
+                                        <div class="status-circle status-verified"></div>
+                                        <span class="status-text">Verified</span>
+                                    `;
+                                }
+
+                                if (connectGitHubButton) {
+                                    connectGitHubButton.style.display = 'none';
+                                    connectGitHubButton.disabled = true;
+
+                                    // Hide help text also
+                                    const githubHelpText = connectGitHubButton.parentElement.nextElementSibling;
+                                    if (githubHelpText && githubHelpText.classList.contains('help-text')) {
+                                        githubHelpText.style.display = 'none';
+                                    }
+                                }
+
+                                console.log('[DEBUG] Applied GitHub OAuth data from storage to UI');
+                            }
+                        }
+                    } catch (err) {
+                        console.error('[DEBUG] Error processing stored GitHub OAuth data:', err);
+                    }
+
+                    // More robust function to check all verification statuses and show input fields
+                    function showVerifiedInputFields() {
+                        console.log('[DEBUG] Checking all verified services and showing their input fields');
+
+                        // IMPORTANT: Check if services are verified when loading from server data
+                        async function checkDnaDataForVerifiedServices() {
+                            try {
+                                // Get the wallet address from the page
+                                const walletAddressInput = document.getElementById('walletAddress');
+                                const walletAddress = walletAddressInput ? walletAddressInput.value : null;
+
+                                if (!walletAddress) {
+                                    console.log('[DEBUG] No wallet address found, cannot check DNA data');
+                                    return;
+                                }
+
+                                // Fetch DNA data for this wallet to check verified services
+                                const response = await fetch(`dna-proxy.php?action=get_info&wallet=${encodeURIComponent(walletAddress)}`);
+                                const data = await response.json();
+
+                                console.log('[DEBUG] DNA data retrieved:', data);
+
+                                if (data && data.success) {
+                                    // Check for verified services in the data
+                                    const socialServices = data.services || {};
+
+                                    // Google verification
+                                    if (socialServices.google) {
+                                        const googleProfileContainer = document.getElementById('googleProfileContainer');
+                                        const googleProfile = document.getElementById('googleProfile');
+                                        const googleStatus = document.querySelector('#googleVerificationStatus .status-text');
+
+                                        if (googleProfileContainer) googleProfileContainer.style.display = 'block';
+                                        if (googleProfile) googleProfile.value = socialServices.google;
+                                        if (googleStatus) googleStatus.textContent = 'Verified';
+
+                                        const googleCircle = document.querySelector('#googleVerificationStatus .status-circle');
+                                        if (googleCircle) googleCircle.className = 'status-circle status-verified';
+
+                                        console.log('[DEBUG] Google service verified from DNA data');
+                                    }
+
+                                    // Twitter verification
+                                    if (socialServices.twitter) {
+                                        const twitterProfileContainer = document.getElementById('twitterProfileContainer');
+                                        const xProfile = document.getElementById('xProfile');
+                                        const twitterStatus = document.querySelector('#twitterVerificationStatus .status-text');
+
+                                        if (twitterProfileContainer) twitterProfileContainer.style.display = 'block';
+                                        if (xProfile) xProfile.value = socialServices.twitter;
+                                        if (twitterStatus) twitterStatus.textContent = 'Verified';
+
+                                        const twitterCircle = document.querySelector('#twitterVerificationStatus .status-circle');
+                                        if (twitterCircle) twitterCircle.className = 'status-circle status-verified';
+
+                                        console.log('[DEBUG] Twitter service verified from DNA data');
+                                    }
+
+                                    // LinkedIn verification
+                                    if (socialServices.linkedin) {
+                                        const linkedinProfileContainer = document.getElementById('linkedinProfileContainer');
+                                        const linkedinProfile = document.getElementById('linkedinProfile');
+                                        const linkedinStatus = document.querySelector('#linkedinVerificationStatus .status-text');
+
+                                        if (linkedinProfileContainer) linkedinProfileContainer.style.display = 'block';
+                                        if (linkedinProfile) linkedinProfile.value = socialServices.linkedin;
+                                        if (linkedinStatus) linkedinStatus.textContent = 'Verified';
+
+                                        const linkedinCircle = document.querySelector('#linkedinVerificationStatus .status-circle');
+                                        if (linkedinCircle) linkedinCircle.className = 'status-circle status-verified';
+
+                                        console.log('[DEBUG] LinkedIn service verified from DNA data');
+                                    }
+
+                                    // GitHub verification
+                                    if (socialServices.github) {
+                                        const githubProfileContainer = document.getElementById('githubProfileContainer');
+                                        const githubProfile = document.getElementById('githubProfile');
+                                        const githubStatus = document.querySelector('#githubVerificationStatus .status-text');
+                                        const connectGitHubButton = document.getElementById('connectGitHubButton');
+
+                                        if (githubProfileContainer) githubProfileContainer.style.display = 'block';
+                                        if (githubProfile) githubProfile.value = socialServices.github;
+                                        if (githubStatus) githubStatus.textContent = 'Verified';
+
+                                        const githubCircle = document.querySelector('#githubVerificationStatus .status-circle');
+                                        if (githubCircle) githubCircle.className = 'status-circle status-verified';
+
+                                        // Hide button for verified GitHub
+                                        if (connectGitHubButton) {
+                                            connectGitHubButton.style.display = 'none';
+                                            connectGitHubButton.disabled = true;
+                                        }
+
+                                        console.log('[DEBUG] GitHub service verified from DNA data');
+                                    }
+                                }
+                            } catch (err) {
+                                console.error('[DEBUG] Error checking DNA data for verified services:', err);
+                            }
+                        }
+
+                        // First check UI elements
+
+                        // Check Google
+                        const googleStatus = document.querySelector('#googleVerificationStatus .status-text');
+                        const googleCircle = document.querySelector('#googleVerificationStatus .status-circle');
+                        const googleProfile = document.getElementById('googleProfile');
+                        const googleProfileContainer = document.getElementById('googleProfileContainer');
+
+                        if ((googleStatus && googleStatus.textContent === 'Verified') ||
+                            (googleCircle && googleCircle.classList.contains('status-verified')) ||
+                            (googleProfile && googleProfile.value && googleProfile.value !== 'Not connected')) {
+                            if (googleProfileContainer) {
+                                googleProfileContainer.style.display = 'block';
+                                console.log('[DEBUG] Google verified, showing input field');
+                            }
+                        }
+
+                        // Check Twitter
+                        const twitterStatus = document.querySelector('#twitterVerificationStatus .status-text');
+                        const twitterCircle = document.querySelector('#twitterVerificationStatus .status-circle');
+                        const xProfile = document.getElementById('xProfile');
+                        const twitterProfileContainer = document.getElementById('twitterProfileContainer');
+
+                        if ((twitterStatus && twitterStatus.textContent === 'Verified') ||
+                            (twitterCircle && twitterCircle.classList.contains('status-verified')) ||
+                            (xProfile && xProfile.value && xProfile.value !== 'Not connected')) {
+                            if (twitterProfileContainer) {
+                                twitterProfileContainer.style.display = 'block';
+                                console.log('[DEBUG] Twitter verified, showing input field');
+                            }
+                        }
+
+                        // Check LinkedIn
+                        const linkedinStatus = document.querySelector('#linkedinVerificationStatus .status-text');
+                        const linkedinCircle = document.querySelector('#linkedinVerificationStatus .status-circle');
+                        const linkedinProfile = document.getElementById('linkedinProfile');
+                        const linkedinProfileContainer = document.getElementById('linkedinProfileContainer');
+
+                        if ((linkedinStatus && linkedinStatus.textContent === 'Verified') ||
+                            (linkedinCircle && linkedinCircle.classList.contains('status-verified')) ||
+                            (linkedinProfile && linkedinProfile.value && linkedinProfile.value !== 'Not connected')) {
+                            if (linkedinProfileContainer) {
+                                linkedinProfileContainer.style.display = 'block';
+                                console.log('[DEBUG] LinkedIn verified, showing input field');
+                            }
+                        }
+
+                        // Check GitHub
+                        const githubStatus = document.querySelector('#githubVerificationStatus .status-text');
+                        const githubCircle = document.querySelector('#githubVerificationStatus .status-circle');
+                        const githubProfile = document.getElementById('githubProfile');
+                        const githubProfileContainer = document.getElementById('githubProfileContainer');
+
+                        if ((githubStatus && githubStatus.textContent === 'Verified') ||
+                            (githubCircle && githubCircle.classList.contains('status-verified')) ||
+                            (githubProfile && githubProfile.value && githubProfile.value !== 'Not connected')) {
+                            if (githubProfileContainer) {
+                                githubProfileContainer.style.display = 'block';
+                                console.log('[DEBUG] GitHub verified, showing input field');
+                            }
+                        }
+
+                        // Then check server data for additional verification
+                        checkDnaDataForVerifiedServices();
+                    }
+
+                    // Function removed - all textboxes are now visible
+
+                    // Removed verification check functions - all textboxes are now visible
+
+                    // Function to show values next to service names
+                    function displayServiceValues() {
+                        console.log('Updating service labels with values');
+
+                        // Map input fields to label value spans
+                        const services = [
+                            {input: 'googleProfile', value: 'googleValue'},
+                            {input: 'xProfile', value: 'twitterValue'},
+                            {input: 'linkedinProfile', value: 'linkedinValue'},
+                            {input: 'githubProfile', value: 'githubValue'}
+                        ];
+
+                        // Update each service
+                        services.forEach(({input, value}) => {
+                            const inputElement = document.getElementById(input);
+                            const valueElement = document.getElementById(value);
+
+                            if (inputElement && valueElement && inputElement.value && inputElement.value !== 'Not connected' && inputElement.value.trim() !== '') {
+                                // Display the value in the label
+                                valueElement.textContent = '(' + inputElement.value + ')';
+                                console.log(`Updated ${input} with value: ${inputElement.value}`);
+
+                                // Also update the status to "Verified"
+                                const statusId = input === 'googleProfile' ? 'googleVerificationStatus' :
+                                                input === 'xProfile' ? 'twitterVerificationStatus' :
+                                                input === 'linkedinProfile' ? 'linkedinVerificationStatus' : 'githubVerificationStatus';
+
+                                const status = document.getElementById(statusId);
+                                if (status) {
+                                    const statusText = status.querySelector('.status-text');
+                                    const statusCircle = status.querySelector('.status-circle');
+
+                                    if (statusText) statusText.textContent = 'Verified';
+                                    if (statusCircle) {
+                                        statusCircle.classList.remove('status-unverified');
+                                        statusCircle.classList.add('status-verified');
+                                    }
+                                }
+                            }
+                        });
+                    }
+
+                    // Run several times to catch all updates
+                    setTimeout(displayServiceValues, 500);
+                    setTimeout(displayServiceValues, 1500);
+                    setTimeout(displayServiceValues, 3000);
+
+                    // Use our well-defined updateSocialCount function for consistency
+                    updateSocialCount();
+
+                    // Log initial social verification status for debugging
+                    console.log('Initial social verification status:');
+                    console.log('- Twitter:', document.querySelector('.twitter-wrapper')?.textContent.includes('Connected') ? 'Connected' : 'Not connected');
+                    console.log('- Telegram:', document.querySelector('#telegramVerificationStatus .status-text')?.textContent || 'Not found');
+                    console.log('- GitHub:', document.querySelector('#githubVerificationStatus .status-text')?.textContent || 'Not found');
+
+                    // Add check to auto-refresh the GitHub UI state if verification status doesn't match stored data
+                    setTimeout(function() {
+                        const githubStatus = document.querySelector('#githubVerificationStatus .status-text');
+                        if (githubStatus && githubStatus.textContent !== 'Verified') {
+                            try {
+                                const storedData = localStorage.getItem('github_oauth_success') || localStorage.getItem('github_oauth_backup');
+                                if (storedData) {
+                                    console.log('[DEBUG] GitHub UI state doesn\'t match stored data - refreshing display');
+                                    updateSocialCount(); // This will fix the UI based on the stored data
+                                }
+                            } catch (err) {
+                                console.error('[DEBUG] Error checking for GitHub verification mismatch:', err);
+                            }
+                        }
+                    }, 1500);
+                }, 1000);
+                
+                // Function to show error messages
+                function showError(message) {
+                    console.log('showError called with message:', message);
+
+                    const errorElement = document.createElement('div');
+                    errorElement.className = 'error-message';
+                    errorElement.style.padding = '10px';
+                    errorElement.style.marginTop = '10px';
+                    errorElement.style.backgroundColor = 'rgba(255, 0, 0, 0.1)';
+                    errorElement.style.border = '1px solid rgba(255, 0, 0, 0.3)';
+                    errorElement.style.borderRadius = '4px';
+                    errorElement.style.color = '#ff6b6b';
+                    errorElement.textContent = message;
+
+                    // Find where to insert the error message
+                    const socialTab = document.getElementById('socials-tab');
+                    console.log('socialTab element:', socialTab);
+
+                    if (socialTab) {
+                        socialTab.appendChild(errorElement);
+                        console.log('Error message added to socialTab');
+
+                        // Also show as alert for debugging
+                        alert(message);
+
+                        // Remove the error message after 5 seconds
+                        setTimeout(() => {
+                            errorElement.remove();
+                        }, 5000);
+                    } else {
+                        // Fallback if socialTab doesn't exist
+                        console.error('socialTab element not found, showing alert instead');
+                        alert('Error: ' + message);
+                    }
+                }
+            }, 500); // Give a little time for everything to initialize
+        });
+
+        // Handle GitHub OAuth callback
+        async function handleGitHubAuthCallback(event) {
+            // Verify the origin
+            if (event.origin !== window.location.origin) {
+                console.warn('Received message from unknown origin', event.origin);
+                return;
+            }
+
+            console.log('Received GitHub auth callback:', event.data);
+
+            if (event.data.type === 'github_auth_success') {
+                // Success - GitHub account connected
+                const username = event.data.username;
+                const name = event.data.name || '';
+
+                // Update the UI
+                const githubProfileInput = document.getElementById('githubProfile');
+                const githubProfileContainer = document.getElementById('githubProfileContainer');
+                if (githubProfileInput) githubProfileInput.value = username;
+                if (githubProfileContainer) githubProfileContainer.style.display = 'block';
+
+                // Update verification status
+                const githubVerificationStatus = document.getElementById('githubVerificationStatus');
+                if (githubVerificationStatus) {
+                    githubVerificationStatus.innerHTML = `
+                        <div class="status-circle status-verified"></div>
+                        <span class="status-text">Verified</span>
+                    `;
+                }
+
+                // Hide the connect button completely when verified (like LinkedIn)
+                const connectGitHubButton = document.getElementById('connectGitHubButton');
+                if (connectGitHubButton) {
+                    connectGitHubButton.style.display = 'none';
+                }
+
+                // Hide the help text
+                const githubHelpText = connectGitHubButton ?
+                    connectGitHubButton.parentElement.nextElementSibling : null;
+                if (githubHelpText && githubHelpText.classList.contains('help-text')) {
+                    githubHelpText.style.display = 'none';
+                }
+
+                // Show success message
+                if (saveSuccess) {
+                    saveSuccess.textContent = `GitHub account @${username} connected successfully!`;
+                    saveSuccess.style.display = 'block';
+                }
+                if (saveError) saveError.style.display = 'none';
+
+                // Update social count
+                setTimeout(updateSocialCount, 500);
+
+                // Refresh data to get latest changes (same approach as LinkedIn/Google)
+                await checkDnaRegistration();
+
+            } else if (event.data.type === 'github_auth_error') {
+                // Error occurred during GitHub auth
+                console.error('GitHub auth error:', event.data.error);
+
+                // Reset button
+                const connectGitHubButton = document.getElementById('connectGitHubButton');
+                if (connectGitHubButton) {
+                    connectGitHubButton.disabled = false;
+                    connectGitHubButton.innerHTML = `
+                        <svg width="18" height="18" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16">
+                            <path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/>
+                        </svg>
+                        Connect GitHub
+                    `;
+                }
+
+                // Show error message
+                if (saveError) {
+                    saveError.textContent = `Error connecting GitHub: ${event.data.error}`;
+                    saveError.style.display = 'block';
+                }
+                if (saveSuccess) saveSuccess.style.display = 'none';
+            }
+
+            // Clean up event listener
+            window.removeEventListener('message', handleGitHubAuthCallback);
+        }
+    </script>
+</body>
+</html>

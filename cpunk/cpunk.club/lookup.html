@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK - DNA Lookup</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/lookup-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar placeholder -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <div class="intro-section">
+            <p>🔍 DNA (Distributed Naming & Addressing) provides a way to associate friendly nicknames with wallet addresses on the Cellframe blockchain.</p>
+            <p>Use this page to look up information about a registered nickname or wallet address.</p>
+        </div>
+
+        <div class="highlight-box">
+            <div id="lookupForm">
+                <div class="search-box">
+                    <input type="text" id="searchInput" placeholder="Enter nickname or wallet address" required>
+                    <button type="submit" id="searchButton" class="help-button">Search</button>
+                </div>
+                <div class="help-text">Enter a DNA nickname (e.g., 'cpunk') or a wallet address</div>
+            </div>
+
+            <div class="recent-searches" id="recentSearches" style="display: none;">
+                <div class="recent-searches-header">
+                    <div class="recent-searches-title">Recent Searches</div>
+                    <div class="recent-searches-clear" id="clearSearches">Clear All</div>
+                </div>
+                <div class="recent-searches-list" id="recentSearchesList">
+                    <!-- Recent searches will be populated here -->
+                </div>
+            </div>
+        </div>
+
+        <div id="loading" class="loading" style="display: none;">Searching DNA records</div>
+        <div id="result" class="result">
+            <!-- Results will be displayed here -->
+        </div>
+
+
+        <!-- Navigation now handled by navbar-template.html -->
+    </div>
+
+    <!-- Utility Libraries -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+
+    <!-- Script to load navbar template -->
+    <script src="js/navbar.js"></script>
+
+    <!-- Page-specific script -->
+    <script src="js/lookup.js"></script>
+</body>
+</html>

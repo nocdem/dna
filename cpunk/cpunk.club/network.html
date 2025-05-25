@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK Network Installation - Setup Your Node</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/network-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/navbar.js"></script>
+
+        <div class="intro-section">
+            <p>This guide shows how to add the CPUNK network to your Cellframe node.</p>
+        </div>
+        
+        <h2>Download and Install Files</h2>
+        
+        <div class="step-container">
+            <div class="step-header">
+                <div class="step-number">1</div>
+                <div class="step-title">Network Configuration</div>
+            </div>
+            <div class="step-content">
+                <div class="download-section">
+                    <a href="configs/Cpunk.cfg" download class="download-button">Download Cpunk.cfg</a>
+                </div>
+                <div class="install-paths">
+                    <div class="os-path linux-path">
+                        <div class="os-icon">🐧</div>
+                        <strong>Linux:</strong> Copy to <code>/opt/cellframe-node/etc/network/Cpunk.cfg</code>
+                        <div class="code-block">
+                            <pre><span class="command-line">sudo cp Cpunk.cfg /opt/cellframe-node/etc/network/Cpunk.cfg</span></pre>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                    </div>
+                    <div class="os-path windows-path">
+                        <div class="os-icon">🪟</div>
+                        <strong>Windows:</strong> Copy to <code>C:\Users\Public\Documents\cellframe-node\etc\network\Cpunk.cfg</code>
+                        <div class="code-block">
+                            <pre><span class="command-line">copy Cpunk.cfg C:\Users\Public\Documents\cellframe-node\etc\network\Cpunk.cfg</span></pre>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="step-container">
+            <div class="step-header">
+                <div class="step-number">2</div>
+                <div class="step-title">Chain Configuration Files</div>
+            </div>
+            <div class="step-content">
+                <div class="download-section">
+                    <a href="configs/chain-0.cfg" download class="download-button">Download chain-0.cfg</a>
+                    <a href="configs/main.cfg" download class="download-button">Download main.cfg</a>
+                </div>
+                <div class="install-paths">
+                    <div class="os-path linux-path">
+                        <div class="os-icon">🐧</div>
+                        <strong>Linux:</strong> Create directory and copy files
+                        <div class="code-block">
+                            <pre><span class="command-line">sudo mkdir -p /opt/cellframe-node/etc/network/Cpunk
+sudo cp chain-0.cfg /opt/cellframe-node/etc/network/Cpunk/
+sudo cp main.cfg /opt/cellframe-node/etc/network/Cpunk/</span></pre>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                    </div>
+                    <div class="os-path windows-path">
+                        <div class="os-icon">🪟</div>
+                        <strong>Windows:</strong> Create directory and copy files
+                        <div class="code-block">
+                            <pre><span class="command-line">mkdir C:\Users\Public\Documents\cellframe-node\etc\network\Cpunk
+copy chain-0.cfg C:\Users\Public\Documents\cellframe-node\etc\network\Cpunk\
+copy main.cfg C:\Users\Public\Documents\cellframe-node\etc\network\Cpunk\</span></pre>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="step-container">
+            <div class="step-header">
+                <div class="step-number">3</div>
+                <div class="step-title">Root Certificates</div>
+            </div>
+            <div class="step-content">
+                <div class="download-section certificate-downloads">
+                    <a href="certs/cpunk.root.0.dcert" download class="download-button">cpunk.root.0.dcert</a>
+                    <a href="certs/cpunk.root.1.dcert" download class="download-button">cpunk.root.1.dcert</a>
+                    <a href="certs/cpunk.root.2.dcert" download class="download-button">cpunk.root.2.dcert</a>
+                    <a href="certs/cpunk.master.0.dcert" download class="download-button">cpunk.master.0.dcert</a>
+                    <a href="certs/cpunk.master.1.dcert" download class="download-button">cpunk.master.1.dcert</a>
+                    <a href="certs/cpunk.master.2.dcert" download class="download-button">cpunk.master.2.dcert</a>
+                </div>
+                <div class="install-paths">
+                    <div class="os-path linux-path">
+                        <div class="os-icon">🐧</div>
+                        <strong>Linux:</strong> Copy to <code>/opt/cellframe-node/share/ca/</code>
+                        <div class="code-block">
+                            <pre><span class="command-line">sudo cp cpunk.root.0.dcert cpunk.root.1.dcert cpunk.root.2.dcert cpunk.master.0.dcert cpunk.master.1.dcert cpunk.master.2.dcert /opt/cellframe-node/share/ca/</span></pre>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                    </div>
+                    <div class="os-path windows-path">
+                        <div class="os-icon">🪟</div>
+                        <strong>Windows:</strong> Copy to <code>C:\Users\Public\Documents\cellframe-node\share\ca\</code>
+                        <div class="code-block">
+                            <pre><span class="command-line">copy cpunk.root.0.dcert cpunk.root.1.dcert cpunk.root.2.dcert cpunk.master.0.dcert cpunk.master.1.dcert cpunk.master.2.dcert C:\Users\Public\Documents\cellframe-node\share\ca\</span></pre>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="step-container">
+            <div class="step-header">
+                <div class="step-number">4</div>
+                <div class="step-title">Restart Node and Verify</div>
+            </div>
+            <div class="step-content">
+                <div class="install-paths">
+                    <div class="os-path linux-path">
+                        <div class="os-icon">🐧</div>
+                        <strong>Linux:</strong> Restart and verify
+                        <div class="code-block split-commands">
+                            <pre><span class="command-line">sudo systemctl restart cellframe-node</span></pre>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                        <div class="code-block split-commands">
+                            <pre><span class="command-line">/opt/cellframe-node/bin/cellframe-node-cli net list</span></pre>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                    </div>
+                    <div class="os-path windows-path">
+                        <div class="os-icon">🪟</div>
+                        <strong>Windows:</strong> Restart and verify
+                        <div class="code-block split-commands">
+                            <pre><span class="command-line">Restart-Service -Name "Cellframe Node" -Force</span></pre>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                        <div class="code-block split-commands">
+                            <pre><span class="command-line">& "C:\Program Files\cellframe-node\cellframe-node-cli.exe" net list</span></pre>
+                        </div>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Utilities Scripts -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+
+    <!-- Copy to clipboard function -->
+    <script>
+        // Copy code to clipboard function
+        window.copyCodeToClipboard = function(codeBlock) {
+            const code = codeBlock.querySelector('pre').textContent;
+            
+            navigator.clipboard.writeText(code).then(() => {
+                const button = codeBlock.nextElementSibling;
+                const originalText = button.textContent;
+                button.textContent = 'Copied!';
+                button.style.backgroundColor = 'var(--success)';
+                
+                setTimeout(() => {
+                    button.textContent = originalText;
+                    button.style.backgroundColor = '';
+                }, 1500);
+            }).catch(err => {
+                const button = codeBlock.nextElementSibling;
+                button.textContent = 'Error!';
+                button.style.backgroundColor = 'var(--error)';
+                
+                setTimeout(() => {
+                    button.textContent = 'Copy';
+                    button.style.backgroundColor = '';
+                }, 1500);
+            });
+        };
+    </script>
+</body>
+</html>

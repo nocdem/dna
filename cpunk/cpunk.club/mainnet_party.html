@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK - Cellframe Mainnet Birthday Bash</title>
+    <!-- CSS files -->
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/mainnet-party-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/navbar.js"></script>
+
+        <div class="event-header">
+            <div class="event-tagline">"The Post-Quantum Ark" in ISTANBUL</div>
+            <div class="event-date">July 12th, 2025</div>
+        </div>
+
+        <div class="event-banner">
+            <div class="banner-content">
+                <div class="countdown" id="countdown">
+                    <div class="countdown-item">
+                        <span id="days"></span>
+                        <span class="countdown-label">Days</span>
+                    </div>
+                    <div class="countdown-item">
+                        <span id="hours"></span>
+                        <span class="countdown-label">Hours</span>
+                    </div>
+                    <div class="countdown-item">
+                        <span id="minutes"></span>
+                        <span class="countdown-label">Minutes</span>
+                    </div>
+                    <div class="countdown-item">
+                        <span id="seconds"></span>
+                        <span class="countdown-label">Seconds</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="event-description">
+            <p class="highlight">Alright Chip-Punks! Mark your calendars!</p>
+            <p>Thrilled to announce the winning location for our Cellframe Mainnet Birthday bash: <span class="highlight">"The Post-Quantum Ark" in ISTANBUL!</span> July 12th, 2025!</p>
+            <p>Join the teams from CPUNK, QEVM, NODE.sys, KelVPN, DotFlat & the Cellframe team!</p>
+            
+            <div class="features">
+                <div class="feature-item">
+                    <div class="feature-icon">👥</div>
+                    <div class="feature-text">Connect face-to-face</div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🚀</div>
+                    <div class="feature-text">See groundbreaking products</div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🎤</div>
+                    <div class="feature-text">Insightful presentations & Q&A</div>
+                </div>
+                <div class="feature-item">
+                    <div class="feature-icon">🎵</div>
+                    <div class="feature-text">Epic beats by DJ Naeper!</div>
+                </div>
+            </div>
+            
+            <p class="highlight">Here's how to secure your place:</p>
+            <ul class="reservation-rules">
+                <li><strong>DNA-Linked Reservation:</strong> Connect with your registered DNA to reserve.</li>
+                <li><strong>CPUNK Commitment:</strong> Reserving your spot requires locking 1,000,000 CPUNK. This CPUNK will be securely held until the party on July 12th and fully refunded to attendees.</li>
+                <li><strong>Reward for Attendance:</strong> If you book your spot and join us at the celebration, you will receive your 1,000,000 CPUNK deposit back PLUS a reward of 10%, totaling 1,100,000 CPUNK! Consider it a thank you for your commitment.</li>
+                <li><strong>No-Show Consideration:</strong> If you book but can't attend, your 1,000,000 CPUNK deposit will be returned minus a 10% no-show fee (you'll receive 900,000 CPUNK).</li>
+                <li><strong>One Wallet, One Reservation:</strong> For an accurate headcount, only one reservation per wallet is permitted. Use a separate wallet for each family member or friend.</li>
+            </ul>
+        </div>
+
+        <div class="reservation-section">
+            <h3>Reserve Your Spot</h3>
+            <p class="reservation-info">Secure your attendance by reserving with <span class="highlight">1,000,000 CPUNK</span> on the <span class="highlight">Backbone</span> network.
+               Connect your dashboard, select your wallet and DNA, and make the reservation payment.</p>
+
+            <!-- Dashboard Connection Section -->
+            <div id="connectionSection">
+                <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
+                    <div class="status-header" style="margin-bottom: 0;">
+                        <span>Dashboard Status:</span>
+                        <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+                    </div>
+                    <button id="connectButton" class="help-button" style="margin: 0; width: auto;">Connect</button>
+                </div>
+                <div class="error-message" id="connectionError"></div>
+            </div>
+
+            <!-- Wallet Selection Section -->
+            <div id="walletSection" class="section" style="display: none;">
+                <h3>Select Your Wallet</h3>
+                <p>Choose the Backbone network wallet to use for reservation:</p>
+
+                <div id="walletsList" class="wallets-container"></div>
+
+                <button id="continueButton" disabled>Continue with Selected Wallet</button>
+                <div class="error-message" id="walletError"></div>
+            </div>
+
+            <!-- DNA Verification Section -->
+            <div id="dnaSection" class="section" style="display: none;">
+                <h3>CPUNK Identity</h3>
+                <div id="dnaStatus"></div>
+                <div class="error-message" id="dnaError"></div>
+
+                <!-- DNA Selection List -->
+                <div id="dnaSelectionList" style="display:none;"></div>
+
+                <div id="dnaDetails" style="display:none;">
+                    <div class="profile-preview">
+                        <div class="profile-header">
+                            <div class="profile-avatar" id="profileAvatar"></div>
+                            <div class="profile-info">
+                                <div class="profile-nickname" id="profileNickname"></div>
+                                <div class="nickname-tags" id="profileNicknames"></div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="reservation-buttons">
+                        <button id="reserveButton">Reserve Your Spot - 1,000,000 CPUNK</button>
+                        <div class="reservation-divider">OR</div>
+                        <button id="toggleInvitationButton" class="secondary-button">Use Invitation Code</button>
+                    </div>
+
+                    <!-- Invitation Code Section -->
+                    <div id="invitationCodeSection" class="section" style="display: none;">
+                        <div class="invitation-container">
+                            <h4>Enter Your Invitation Code</h4>
+                            <p class="invitation-info">If you've received a special invitation code, enter it below to reserve your spot without CPUNK payment.</p>
+
+                            <div class="code-input-container">
+                                <input type="text" id="invitationCodeInput" placeholder="Enter invitation code" class="invitation-input">
+                                <button id="validateCodeButton" class="secondary-button">Validate</button>
+                            </div>
+
+                            <div id="codeStatus" class="code-status" style="display: none;"></div>
+
+                            <div id="validCodeDetails" style="display: none;">
+                                <div class="valid-code-container">
+                                    <div class="code-icon">✓</div>
+                                    <div class="code-details">
+                                        <div class="code-type" id="codeType"></div>
+                                        <div class="code-description" id="codeDescription"></div>
+                                    </div>
+                                </div>
+                                <button id="redeemCodeButton" class="success-button">Reserve With Invitation Code</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Transaction Processing Section -->
+            <div id="txSection" class="section" style="display: none;">
+                <h3>Processing Reservation</h3>
+                <div id="txProcessingContainer" class="tx-processing-container">
+                    <div class="tx-processing-animation">
+                        <div class="tx-processing-spinner"></div>
+                    </div>
+                    <div id="txStatus" class="tx-status"></div>
+                    <div class="error-message" id="txError"></div>
+                    <div class="success-message" id="txSuccess"></div>
+                    <div class="tx-note">
+                        Transaction verification works similarly to DNA registration. The transaction will be checked at increasing intervals to confirm payment.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Reservation Confirmed Section -->
+            <div id="confirmationSection" class="section" style="display: none;">
+                <div class="confirmation-container">
+                    <div class="confirmation-icon">✓</div>
+                    <h3>Reservation Confirmed!</h3>
+                    <p>Your spot at the Cellframe Mainnet Birthday Bash has been reserved.</p>
+                    <p>We've sent a confirmation to your DNA profile.</p>
+                    <div class="confirmation-details">
+                        <div class="detail-item">
+                            <span class="detail-label">Event:</span>
+                            <span class="detail-value">Cellframe Mainnet Birthday Bash</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Date:</span>
+                            <span class="detail-value">July 12th, 2025</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Location:</span>
+                            <span class="detail-value">"The Post-Quantum Ark", Istanbul</span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Reserved by:</span>
+                            <span class="detail-value" id="reservedByDna"></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Transaction:</span>
+                            <span class="detail-value" id="reservationTxId"></span>
+                        </div>
+                    </div>
+                    <p class="note">Save this information for your records. We'll contact you with more details closer to the event date.</p>
+                </div>
+            </div>
+        </div>
+
+        <div class="attendees-section" id="attendeesSection">
+            <h3>Confirmed Attendees</h3>
+            <div id="attendeesList" class="attendees-container">
+                <div class="loading">Loading attendees list...</div>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- External JavaScript -->
+    <!-- Utility Libraries -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    <script src="js/dashboardConnector.js"></script>
+    
+    <!-- Page-specific JavaScript -->
+    <script src="js/mainnet_party.js"></script>
+</body>
+</html>

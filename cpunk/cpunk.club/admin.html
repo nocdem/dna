@@ -1,0 +1,1517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK Admin Panel</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/index-page.css">
+    <link rel="stylesheet" href="css/edit-content-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <link rel="stylesheet" href="css/dropdown-desktop-fix.css">
+    <style>
+        /* Invitation Code Management Styles */
+        .invitation-container {
+            width: 100%;
+        }
+
+        .invitation-section {
+            margin-bottom: 30px;
+            background-color: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 20px;
+        }
+
+        .invitation-form {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-gap: 15px;
+            margin-bottom: 15px;
+        }
+
+        .form-group {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .form-group label {
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        .form-hint {
+            font-size: 12px;
+            color: var(--text-dim);
+            margin-top: 4px;
+        }
+
+        /* Dashboard Styles */
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 20px;
+            margin: 20px 0;
+        }
+
+        .dashboard-card {
+            background-color: var(--section-bg, #1a1c25);
+            border-radius: 10px;
+            padding: 20px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--primary-dim, #2c2f3a);
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--primary-dim, #2c2f3a);
+        }
+
+        .card-title {
+            font-size: 1.1em;
+            font-weight: bold;
+            color: var(--primary, #f97834);
+            margin: 0;
+            display: flex;
+            align-items: center;
+        }
+
+        .card-title-icon {
+            margin-right: 10px;
+        }
+
+        .connect-button {
+            background-color: var(--primary, #f97834);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            padding: 12px 20px;
+            margin-top: 15px;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            transition: background-color 0.2s;
+            align-self: center;
+        }
+
+        .connect-button:hover {
+            background-color: var(--primary-hover, #e56724);
+        }
+
+        .connect-button:disabled {
+            background-color: var(--disabled-bg, #555);
+            cursor: not-allowed;
+            opacity: 0.7;
+        }
+
+        .info-section {
+            background-color: var(--section-bg, #1a1c25);
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            border: 1px solid var(--primary-dim, #2c2f3a);
+        }
+
+        .info-section p {
+            margin: 10px 0;
+            line-height: 1.6;
+        }
+
+        .form-control {
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background-color: var(--bg-light);
+            color: var(--text-primary);
+        }
+
+        .controls-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 15px;
+        }
+
+        .filter-controls {
+            display: flex;
+            align-items: center;
+        }
+
+        .filter-controls label {
+            display: flex;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .filter-controls input[type="checkbox"] {
+            margin-right: 8px;
+        }
+
+        .codes-list-container {
+            max-height: 300px;
+            overflow-y: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            background-color: var(--bg-light);
+        }
+
+        .codes-table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .codes-table th,
+        .codes-table td {
+            padding: 10px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .codes-table th {
+            background-color: var(--bg-dark);
+            position: sticky;
+            top: 0;
+        }
+
+        .code-status {
+            display: inline-block;
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-weight: bold;
+        }
+
+        .code-status.available {
+            background-color: var(--success-light);
+            color: var(--success);
+        }
+
+        .code-status.used {
+            background-color: var(--error-light);
+            color: var(--error);
+        }
+
+        .delete-code-btn {
+            padding: 3px 8px;
+            border-radius: 4px;
+            background-color: var(--error);
+            color: white;
+            border: none;
+            cursor: pointer;
+        }
+
+        .delete-code-btn:disabled {
+            background-color: var(--bg-dark);
+            color: var(--text-dim);
+            cursor: not-allowed;
+        }
+
+        .stats-container {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            grid-gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-box {
+            background-color: var(--bg-light);
+            border-radius: 6px;
+            padding: 15px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 24px;
+            font-weight: bold;
+            color: var(--primary);
+            margin-bottom: 5px;
+        }
+
+        .stat-label {
+            font-size: 14px;
+            color: var(--text-dim);
+        }
+
+        .attendees-list {
+            max-height: 250px;
+            overflow-y: auto;
+            background-color: var(--bg-light);
+            border-radius: 6px;
+            padding: 10px;
+        }
+
+        .attendee-list {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+        }
+
+        .attendee-item {
+            border-bottom: 1px solid var(--border-color);
+            padding: 10px 0;
+        }
+
+        .attendee-item:last-child {
+            border-bottom: none;
+        }
+
+        .attendee-info {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .attendee-name {
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+
+        .attendee-details {
+            display: flex;
+            justify-content: space-between;
+            font-size: 12px;
+            color: var(--text-dim);
+        }
+
+        .logout-section {
+            margin-top: 40px;
+            padding: 20px;
+            text-align: center;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .logout-btn {
+            padding: 10px 20px;
+            background-color: var(--error);
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+
+        .logout-btn:hover {
+            background-color: var(--error-dark, darkred);
+        }
+
+        @media (max-width: 768px) {
+            .invitation-form {
+                grid-template-columns: 1fr;
+            }
+
+            .stats-container {
+                grid-template-columns: 1fr;
+            }
+
+            .controls-row {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+
+            .filter-controls {
+                margin-top: 10px;
+            }
+
+            .attendee-details {
+                flex-direction: column;
+            }
+        }
+    </style>
+</head>
+<body>
+    <!-- Include navbar -->
+    <div id="navbar-container"></div>
+    
+    <div class="container">
+        <h1>CPUNK Admin Panel</h1>
+        
+        <div class="info-section">
+            <p>Connect your Cellframe dashboard to access the CPUNK Admin Panel. This connection allows you to:</p>
+            <p>• Update news and announcements<br>
+               • Generate invitation codes<br>
+               • Manage website content</p>
+        </div>
+
+        <div class="status-section" style="margin-bottom: 20px; padding: 15px; background-color: var(--section-bg); border-radius: 10px;">
+            <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;" id="connect-section">
+                <div class="status-header" style="margin-bottom: 0;">
+                    <span style="font-weight: bold; margin-right: 8px;">Dashboard Status:</span>
+                    <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+                </div>
+                <button id="connectButton" class="help-button" style="margin: 0; width: auto; min-width: 120px;">Connect</button>
+            </div>
+            <div id="connectMessage" class="message error" style="display: none; margin-top: 10px;"></div>
+        </div>
+
+        <!-- Wallet Selection Section -->
+        <div class="data-section" id="wallet-section" style="margin-bottom: 25px; padding: 15px; background-color: var(--section-bg); border-radius: 10px; display: none;">
+            <h3 class="section-title" style="margin-top: 0; font-size: 1.2em;">Select Wallet for Admin Access</h3>
+            <p class="help-text">Choose the wallet containing your admin DNA.</p>
+
+            <div class="wallets-container" id="walletsList" style="margin-top: 15px;">
+                <div class="message">Loading wallets...</div>
+            </div>
+
+            <div style="margin-top: 20px; text-align: center;">
+                <button id="continueButton" class="help-button" disabled style="min-width: 200px;">Continue with Selected Wallet</button>
+            </div>
+            <div id="walletMessage" class="message error" style="display: none; margin-top: 10px;"></div>
+        </div>
+
+        <!-- Authentication Section -->
+        <div class="data-section" id="authentication-section" style="margin-bottom: 25px; padding: 15px; background-color: var(--section-bg); border-radius: 10px; display: none;">
+            <h3 class="section-title" style="margin-top: 0; font-size: 1.2em;">DNA Authentication</h3>
+            <p class="help-text">Checking your DNA for administrator access...</p>
+
+            <div id="dnaStatus" class="message" style="margin-top: 15px;">
+                <span class="loading"></span> Verifying admin status...
+            </div>
+
+            <div class="admin-card" id="dnaCard" style="display: none; margin-top: 15px; padding: 15px; background-color: var(--dark-bg); border-radius: 8px;">
+                <div class="admin-header" style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
+                    <span class="admin-title" style="font-weight: bold; color: var(--primary);">Your DNA Nicknames</span>
+                </div>
+                <div class="admin-list" id="dnaList">
+                    <!-- DNA nicknames will be listed here -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Editor Section -->
+        <div id="editor-section" style="display: none;">
+            <div class="user-info" id="userInfo">
+                <div class="user-avatar" id="userAvatar">C</div>
+                <div class="user-details">
+                    <div class="user-name" id="userName">User</div>
+                    <div class="user-wallet" id="userWallet">Wallet Address</div>
+                </div>
+            </div>
+            
+            <div class="stats-grid">
+                <div class="stats-box tab-container">
+                    <div class="tab-buttons">
+                        <button class="tab-button active" data-tab="news-tab">News</button>
+                        <button class="tab-button" data-tab="updates-tab">Updates</button>
+                        <button class="tab-button" data-tab="invitation-tab">Invitation Codes</button>
+                    </div>
+
+                    <!-- News Tab -->
+                    <div id="news-tab" class="tab-content active">
+                        <div class="editor-container">
+                            <div class="editor-header">
+                                <span class="editor-title">Edit News Content</span>
+                            </div>
+                            <div class="format-help">
+                                <p>Format: Each line starting with "- " represents a news item.</p>
+                                <p>Lines starting with # are comments and won't be displayed.</p>
+                            </div>
+                            <textarea id="news-editor" placeholder="# CPUNK News Content
+# Each line represents a news item
+# Format: - News item text
+- Example news item 1
+- Example news item 2"></textarea>
+                        </div>
+
+                        <div class="button-container">
+                            <button id="preview-news-button" class="button secondary">Preview</button>
+                            <button id="save-news-button" class="button">Save News</button>
+                        </div>
+
+                        <div id="news-preview" class="preview-container" style="display: none;">
+                            <h3>Preview</h3>
+                            <div id="news-preview-content"></div>
+                        </div>
+
+                        <div id="news-message" class="message" style="display: none;"></div>
+                    </div>
+
+                    <!-- Updates Tab -->
+                    <div id="updates-tab" class="tab-content">
+                        <div class="editor-container">
+                            <div class="editor-header">
+                                <span class="editor-title">Edit Updates Content</span>
+                            </div>
+                            <div class="format-help">
+                                <p>Format: Each line starting with "- " represents an update item.</p>
+                                <p>Lines starting with # are comments and won't be displayed.</p>
+                            </div>
+                            <textarea id="updates-editor" placeholder="# CPUNK Updates Content
+# Each line represents an update item
+# Format: - Update item text
+- Example update item 1
+- Example update item 2"></textarea>
+                        </div>
+
+                        <div class="button-container">
+                            <button id="preview-updates-button" class="button secondary">Preview</button>
+                            <button id="save-updates-button" class="button">Save Updates</button>
+                        </div>
+
+                        <div id="updates-preview" class="preview-container" style="display: none;">
+                            <h3>Preview</h3>
+                            <div id="updates-preview-content"></div>
+                        </div>
+
+                        <div id="updates-message" class="message" style="display: none;"></div>
+                    </div>
+
+                    <!-- Invitation Codes Tab -->
+                    <div id="invitation-tab" class="tab-content">
+                        <div class="invitation-container">
+                            <div class="editor-header">
+                                <span class="editor-title">Manage Invitation Codes</span>
+                            </div>
+
+                            <!-- Create new code section -->
+                            <div class="invitation-section">
+                                <h3>Create New Invitation Code</h3>
+                                <div class="invitation-form">
+                                    <div class="form-group">
+                                        <label for="code-input">Code:</label>
+                                        <input type="text" id="code-input" placeholder="e.g., MAINNET2025" class="form-control">
+                                        <span class="form-hint">Leave empty to auto-generate a code</span>
+                                    </div>
+                                    <button id="create-code-button" class="button">Create Invitation Code</button>
+                                </div>
+                                <div id="create-code-message" class="message" style="display: none;"></div>
+                            </div>
+
+                            <!-- View existing codes section -->
+                            <div class="invitation-section">
+                                <h3>Existing Invitation Codes</h3>
+                                <div class="controls-row">
+                                    <button id="refresh-codes-button" class="button secondary">Refresh List</button>
+                                    <div class="filter-controls">
+                                        <label>
+                                            <input type="checkbox" id="show-used-codes" checked>
+                                            Show Used Codes
+                                        </label>
+                                    </div>
+                                </div>
+                                <div class="codes-list-container">
+                                    <table class="codes-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Code</th>
+                                                <th>Type</th>
+                                                <th>Description</th>
+                                                <th>Status</th>
+                                                <th>Actions</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody id="codes-list">
+                                            <tr>
+                                                <td colspan="5">Loading invitation codes...</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+
+                            <!-- Code usage statistics -->
+                            <div class="invitation-section">
+                                <h3>Attendee Statistics</h3>
+                                <div class="stats-container">
+                                    <div class="stat-box">
+                                        <div class="stat-value" id="total-codes">0</div>
+                                        <div class="stat-label">Total Codes</div>
+                                    </div>
+                                    <div class="stat-box">
+                                        <div class="stat-value" id="used-codes">0</div>
+                                        <div class="stat-label">Used Codes</div>
+                                    </div>
+                                    <div class="stat-box">
+                                        <div class="stat-value" id="available-codes">0</div>
+                                        <div class="stat-label">Available Codes</div>
+                                    </div>
+                                </div>
+                                <div id="attendees-container">
+                                    <h4>Recent Registrations</h4>
+                                    <div class="attendees-list" id="recent-attendees">
+                                        <p>Loading attendee data...</p>
+                                    </div>
+                                </div>
+
+                                <!-- Move logout button inside the container -->
+                                <div class="logout-container" style="margin-top: 30px; text-align: center; padding-top: 20px; border-top: 1px solid var(--border-color);">
+                                    <button id="logoutButton" class="logout-btn">Disconnect from Dashboard</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // API Configuration
+        const API_URL = 'http://localhost:8045/';
+        const DNA_PROXY_URL = 'dna-proxy.php';
+        
+        // State variables
+        let sessionId = null;
+        let selectedWallet = null;
+        let walletAddress = null;
+        let userNicknames = [];
+        let admins = [];
+        let isAdmin = false;
+        let adminNickname = null;
+        
+        // DOM Elements - Authentication
+        const connectSection = document.getElementById('connect-section');
+        const walletSection = document.getElementById('wallet-section');
+        const authenticationSection = document.getElementById('authentication-section');
+        const editorSection = document.getElementById('editor-section');
+        
+        const statusIndicator = document.getElementById('statusIndicator');
+        const connectButton = document.getElementById('connectButton');
+        const connectMessage = document.getElementById('connectMessage');
+        const walletsList = document.getElementById('walletsList');
+        const continueButton = document.getElementById('continueButton');
+        const walletMessage = document.getElementById('walletMessage');
+        const dnaStatus = document.getElementById('dnaStatus');
+        const dnaCard = document.getElementById('dnaCard');
+        const dnaList = document.getElementById('dnaList');
+        const logoutButton = document.getElementById('logoutButton');
+        
+        // DOM Elements - User Info
+        const userAvatar = document.getElementById('userAvatar');
+        const userName = document.getElementById('userName');
+        const userWallet = document.getElementById('userWallet');
+        
+        // DOM Elements - Editor
+        const newsEditor = document.getElementById('news-editor');
+        const updatesEditor = document.getElementById('updates-editor');
+        const previewNewsButton = document.getElementById('preview-news-button');
+        const previewUpdatesButton = document.getElementById('preview-updates-button');
+        const saveNewsButton = document.getElementById('save-news-button');
+        const saveUpdatesButton = document.getElementById('save-updates-button');
+        const newsPreview = document.getElementById('news-preview');
+        const updatesPreview = document.getElementById('updates-preview');
+        const newsPreviewContent = document.getElementById('news-preview-content');
+        const updatesPreviewContent = document.getElementById('updates-preview-content');
+        const newsMessage = document.getElementById('news-message');
+        const updatesMessage = document.getElementById('updates-message');
+
+        // Tab functionality
+        const tabButtons = document.querySelectorAll('.tab-button');
+        const tabContents = document.querySelectorAll('.tab-content');
+
+        tabButtons.forEach(button => {
+            button.addEventListener('click', () => {
+                const tabId = button.getAttribute('data-tab');
+                
+                // Remove active class from all buttons and contents
+                tabButtons.forEach(btn => btn.classList.remove('active'));
+                tabContents.forEach(content => content.classList.remove('active'));
+                
+                // Add active class to clicked button and corresponding content
+                button.classList.add('active');
+                document.getElementById(tabId).classList.add('active');
+            });
+        });
+
+        // Dashboard API Connection Functions
+        async function makeRequest(method, params = {}) {
+            const url = new URL(API_URL);
+            url.searchParams.append('method', method);
+
+            for (const [key, value] of Object.entries(params)) {
+                url.searchParams.append(key, value);
+            }
+
+            try {
+                const response = await fetch(url.toString());
+                if (!response.ok) {
+                    throw new Error(`Dashboard API error: ${response.status}`);
+                }
+
+                return await response.json();
+            } catch (error) {
+                console.error('Dashboard request error:', error);
+                throw error;
+            }
+        }
+
+        // Update dashboard status display
+        function updateStatus(status, message = '') {
+            statusIndicator.className = 'status-indicator status-' + status;
+            statusIndicator.textContent = message || status.charAt(0).toUpperCase() + status.slice(1);
+        }
+
+        // Connect to dashboard handler
+        async function connectToDashboard() {
+            try {
+                connectButton.disabled = true;
+                connectButton.innerHTML = '<span class="loading"></span> Connecting...';
+                connectMessage.style.display = 'none';
+
+                // Update status
+                updateStatus('connecting', 'Connecting...');
+
+                // Make connection request
+                const response = await makeRequest('Connect');
+
+                if (response.status === 'ok' && response.data && response.data.id) {
+                    sessionId = response.data.id;
+
+                    // Update status and UI
+                    updateStatus('connected', 'Connected');
+                    connectButton.textContent = 'Connected';
+
+                    // Show wallet selection section
+                    connectSection.style.display = 'none';
+                    walletSection.style.display = 'block';
+
+                    // Load wallets
+                    await loadWallets();
+                } else {
+                    throw new Error(response.errorMsg || 'Failed to connect to dashboard');
+                }
+            } catch (error) {
+                console.error('Connection error:', error);
+                updateStatus('disconnected', 'Connection failed');
+                connectButton.textContent = 'Connect to Dashboard';
+
+                // Show error message
+                connectMessage.textContent = `Error connecting to dashboard: ${error.message}`;
+                connectMessage.style.display = 'block';
+            } finally {
+                connectButton.disabled = false;
+            }
+        }
+
+        // Get wallet data from dashboard
+        async function getWalletData(walletName) {
+            try {
+                const response = await makeRequest('GetDataWallet', {
+                    id: sessionId,
+                    walletName: walletName
+                });
+
+                return response;
+            } catch (error) {
+                console.error(`Error fetching data for wallet ${walletName}:`, error);
+                return null;
+            }
+        }
+
+        // Load wallets from dashboard
+        async function loadWallets() {
+            if (!sessionId) return;
+
+            try {
+                walletsList.innerHTML = '<div class="message">Loading wallets...</div>';
+
+                const response = await makeRequest('GetWallets', { id: sessionId });
+
+                if (response.status === 'ok' && response.data && Array.isArray(response.data)) {
+                    const wallets = response.data;
+
+                    if (wallets.length === 0) {
+                        walletsList.innerHTML = `
+                            <div class="message warning" style="display: block;">
+                                No wallets found in your dashboard.<br>
+                                Please create a wallet first.
+                            </div>
+                        `;
+                        return;
+                    }
+
+                    // Clear previous content
+                    walletsList.innerHTML = '';
+
+                    // Process each wallet
+                    for (const wallet of wallets) {
+                        const walletData = await getWalletData(wallet.name);
+                        
+                        if (!walletData || !walletData.data || walletData.data.length === 0) continue;
+                        
+                        // Get first network for display (typically will have the same address across networks)
+                        const networkData = walletData.data[0];
+                        const address = networkData.address;
+                        
+                        // Create wallet card
+                        const walletCard = document.createElement('div');
+                        walletCard.className = 'wallet-card';
+                        walletCard.dataset.name = wallet.name;
+                        walletCard.dataset.address = address;
+                        
+                        walletCard.innerHTML = `
+                            <div>${wallet.name}</div>
+                            <div style="font-size: 0.8em; color: var(--text-dim);">${address.substring(0, 10)}...${address.substring(address.length - 10)}</div>
+                        `;
+                        
+                        walletCard.addEventListener('click', () => {
+                            // Deselect all wallets
+                            document.querySelectorAll('.wallet-card').forEach(card => {
+                                card.classList.remove('selected');
+                            });
+                            
+                            // Select this wallet
+                            walletCard.classList.add('selected');
+                            
+                            // Store wallet info
+                            selectedWallet = { 
+                                name: wallet.name,
+                                address: address
+                            };
+                            
+                            // Enable continue button
+                            continueButton.disabled = false;
+                        });
+                        
+                        walletsList.appendChild(walletCard);
+                    }
+                } else {
+                    throw new Error('Failed to load wallets');
+                }
+            } catch (error) {
+                console.error('Error loading wallets:', error);
+                walletsList.innerHTML = `
+                    <div class="message error" style="display: block;">
+                        Error loading wallets: ${error.message}
+                    </div>
+                `;
+                walletMessage.textContent = `Error loading wallets: ${error.message}`;
+                walletMessage.style.display = 'block';
+            }
+        }
+
+        // Continue with selected wallet handler
+        async function continueWithWallet() {
+            if (!selectedWallet) {
+                walletMessage.textContent = 'Please select a wallet first';
+                walletMessage.style.display = 'block';
+                return;
+            }
+
+            try {
+                walletMessage.style.display = 'none';
+                continueButton.disabled = true;
+                continueButton.innerHTML = '<span class="loading"></span> Checking DNA...';
+
+                // Store the wallet address
+                walletAddress = selectedWallet.address;
+
+                // Show authentication section
+                walletSection.style.display = 'none';
+                authenticationSection.style.display = 'block';
+
+                // Load admin list first
+                await loadAdmins();
+
+                // Check for DNA registration
+                await checkDnaRegistration();
+
+            } catch (error) {
+                console.error('Error processing wallet selection:', error);
+                dnaStatus.className = 'message error';
+                dnaStatus.textContent = `Error: ${error.message}`;
+                dnaStatus.style.display = 'block';
+            } finally {
+                continueButton.disabled = false;
+                continueButton.textContent = 'Continue with Selected Wallet';
+            }
+        }
+
+        // Check DNA registration against wallet address
+        async function checkDnaRegistration() {
+            if (!walletAddress) return;
+
+            try {
+                dnaStatus.className = 'message';
+                dnaStatus.innerHTML = '<span class="loading"></span> Checking DNA registration...';
+                dnaStatus.style.display = 'block';
+                dnaCard.style.display = 'none';
+
+                // Make API request to check DNA for this wallet
+                const requestUrl = `${DNA_PROXY_URL}?lookup=${encodeURIComponent(walletAddress)}`;
+                const response = await fetch(requestUrl);
+                const text = await response.text();
+
+                try {
+                    // Parse as JSON
+                    const data = JSON.parse(text);
+                    
+                    console.log("DNA Response Data:", data);
+
+                    // Check if data was found
+                    if (data.status_code === 0 && data.response_data) {
+                        // Get registered names from response data
+                        const registeredNames = data.response_data.registered_names || {};
+                        userNicknames = Object.keys(registeredNames);
+
+                        if (userNicknames.length === 0) {
+                            // No DNA registration found
+                            dnaStatus.className = 'message warning';
+                            dnaStatus.textContent = `No DNA registrations found for this wallet.`;
+                            return;
+                        }
+
+                        // Check if any of the DNA nicknames are in the admin list
+                        const adminDnas = userNicknames.filter(name => {
+                            // Case-insensitive comparison
+                            return admins.some(admin => admin.toLowerCase() === name.toLowerCase());
+                        });
+                        
+                        if (adminDnas.length > 0) {
+                            // Found admin DNA
+                            isAdmin = true;
+                            adminNickname = adminDnas[0]; // Use the first admin DNA found
+                            
+                            dnaStatus.className = 'message success';
+                            dnaStatus.textContent = `Admin access verified! Welcome, ${adminNickname}.`;
+                            
+                            // Display user DNA list
+                            displayDnaList(userNicknames, adminDnas);
+                            
+                            // Show editor after short delay
+                            setTimeout(() => {
+                                authenticationSection.style.display = 'none';
+                                editorSection.style.display = 'block';
+                                
+                                // Update user info
+                                updateUserInfo(adminNickname, walletAddress);
+                                
+                                // Load content files
+                                loadContent();
+
+                                // Initialize invitation codes management
+                                refreshCodesList();
+                            }, 1500);
+                        } else {
+                            // No admin access
+                            dnaStatus.className = 'message error';
+                            dnaStatus.textContent = `Access denied. None of your DNA nicknames have admin privileges.`;
+                            
+                            // Display user DNA list
+                            displayDnaList(userNicknames, []);
+                        }
+                    } else if (data.error) {
+                        // Specific error from API
+                        dnaStatus.className = 'message error';
+                        dnaStatus.textContent = `Error: ${data.error}`;
+                    } else {
+                        // No DNA data found
+                        dnaStatus.className = 'message warning';
+                        dnaStatus.textContent = `No DNA registrations found for this wallet.`;
+                    }
+                } catch (e) {
+                    // If not valid JSON, likely an error
+                    console.error("JSON Parse Error:", e);
+                    dnaStatus.className = 'message error';
+                    dnaStatus.textContent = `Error checking DNA registration. Invalid response format.`;
+                }
+            } catch (error) {
+                console.error('Error checking DNA registration:', error);
+                dnaStatus.className = 'message error';
+                dnaStatus.textContent = `Error checking DNA registration: ${error.message}`;
+            }
+        }
+
+        // Load admin list from admins.txt
+        async function loadAdmins() {
+            try {
+                const response = await fetch('admins.txt');
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to load admins.txt: ${response.status} ${response.statusText}`);
+                }
+                
+                const text = await response.text();
+                
+                // Parse admin nicknames - filtering out comments and empty lines
+                admins = text.split('\n')
+                    .map(line => line.trim())
+                    .filter(line => line && !line.startsWith('#'));
+                    
+                console.log('Loaded admins:', admins);
+                
+                return admins;
+            } catch (error) {
+                console.error('Error loading admin list:', error);
+                throw new Error('Could not load admin list: ' + error.message);
+            }
+        }
+
+        // Display DNA list with admin status
+        function displayDnaList(nicknames, adminDnas) {
+            dnaList.innerHTML = '';
+            
+            nicknames.forEach(name => {
+                const isAdminDna = adminDnas.some(admin => admin.toLowerCase() === name.toLowerCase());
+                
+                const dnaItem = document.createElement('div');
+                dnaItem.className = `dna-item${isAdminDna ? ' admin' : ''}`;
+                dnaItem.innerHTML = `
+                    <span class="dna-status${isAdminDna ? ' admin' : ''}"></span>
+                    <span>${name}</span>
+                `;
+                
+                dnaList.appendChild(dnaItem);
+            });
+            
+            dnaCard.style.display = 'block';
+        }
+
+        // Update user info in editor
+        function updateUserInfo(nickname, address) {
+            userAvatar.textContent = nickname.charAt(0).toUpperCase();
+            userName.textContent = nickname;
+            userWallet.textContent = address;
+        }
+
+        // Load content from files
+        async function loadContent() {
+            try {
+                // Load news content
+                const newsResponse = await fetch('news.txt');
+                const newsText = await newsResponse.text();
+                newsEditor.value = newsText;
+                
+                // Load updates content
+                const updatesResponse = await fetch('updates.txt');
+                const updatesText = await updatesResponse.text();
+                updatesEditor.value = updatesText;
+            } catch (error) {
+                console.error('Error loading content:', error);
+                showMessage(newsMessage, 'Error loading content: ' + error.message, 'error');
+            }
+        }
+
+        // Logout functionality
+        logoutButton.addEventListener('click', () => {
+            // Reset state
+            sessionId = null;
+            selectedWallet = null;
+            walletAddress = null;
+            userNicknames = [];
+            isAdmin = false;
+            adminNickname = null;
+            
+            // Reset UI
+            editorSection.style.display = 'none';
+            connectSection.style.display = 'block';
+            updateStatus('disconnected', 'Disconnected');
+            
+            // Clear messages
+            connectMessage.style.display = 'none';
+        });
+
+        // Preview functionality
+        previewNewsButton.addEventListener('click', () => {
+            const content = newsEditor.value;
+            const preview = parseContent(content);
+            
+            newsPreviewContent.innerHTML = '';
+            
+            if (preview.length === 0) {
+                newsPreviewContent.innerHTML = '<div class="preview-item">No displayable content found. Make sure you have lines starting with "- ".</div>';
+            } else {
+                preview.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'preview-item';
+                    div.textContent = item;
+                    newsPreviewContent.appendChild(div);
+                });
+            }
+            
+            newsPreview.style.display = 'block';
+        });
+
+        previewUpdatesButton.addEventListener('click', () => {
+            const content = updatesEditor.value;
+            const preview = parseContent(content);
+            
+            updatesPreviewContent.innerHTML = '';
+            
+            if (preview.length === 0) {
+                updatesPreviewContent.innerHTML = '<div class="preview-item">No displayable content found. Make sure you have lines starting with "- ".</div>';
+            } else {
+                preview.forEach(item => {
+                    const div = document.createElement('div');
+                    div.className = 'preview-item';
+                    div.textContent = item;
+                    updatesPreviewContent.appendChild(div);
+                });
+            }
+            
+            updatesPreview.style.display = 'block';
+        });
+
+        // Parse content
+        function parseContent(content) {
+            return content.split('\n')
+                .filter(line => line.trim().startsWith('-')) // Only get lines that start with a dash
+                .map(line => line.trim());
+        }
+
+        // Save functionality
+        saveNewsButton.addEventListener('click', async () => {
+            const content = newsEditor.value;
+            
+            try {
+                saveNewsButton.disabled = true;
+                saveNewsButton.innerHTML = '<span class="loading"></span> Saving...';
+                
+                const response = await saveFile('news.txt', content);
+                if (response.success) {
+                    showMessage(newsMessage, 'News content saved successfully!', 'success');
+                } else {
+                    showMessage(newsMessage, 'Error saving news content: ' + response.message, 'error');
+                }
+            } catch (error) {
+                console.error('Error saving news content:', error);
+                showMessage(newsMessage, 'Error saving news content: ' + error.message, 'error');
+            } finally {
+                saveNewsButton.disabled = false;
+                saveNewsButton.textContent = 'Save News';
+            }
+        });
+
+        saveUpdatesButton.addEventListener('click', async () => {
+            const content = updatesEditor.value;
+            
+            try {
+                saveUpdatesButton.disabled = true;
+                saveUpdatesButton.innerHTML = '<span class="loading"></span> Saving...';
+                
+                const response = await saveFile('updates.txt', content);
+                if (response.success) {
+                    showMessage(updatesMessage, 'Updates content saved successfully!', 'success');
+                } else {
+                    showMessage(updatesMessage, 'Error saving updates content: ' + response.message, 'error');
+                }
+            } catch (error) {
+                console.error('Error saving updates content:', error);
+                showMessage(updatesMessage, 'Error saving updates content: ' + error.message, 'error');
+            } finally {
+                saveUpdatesButton.disabled = false;
+                saveUpdatesButton.textContent = 'Save Updates';
+            }
+        });
+
+        // Save file to server
+        async function saveFile(filename, content) {
+            try {
+                const response = await fetch('save_content.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        filename: filename,
+                        content: content,
+                        dna: adminNickname, // Send admin DNA name for authentication
+                        wallet: walletAddress // Send wallet address for extra verification
+                    }),
+                });
+
+                return await response.json();
+            } catch (error) {
+                console.error('Error saving file:', error);
+                throw error;
+            }
+        }
+
+        // Invitation Code Management Functions
+
+        // Load invitation codes
+        async function loadInvitationCodes() {
+            try {
+                const response = await fetch('invitation_codes.txt');
+                if (!response.ok) {
+                    throw new Error(`Failed to load invitation codes: ${response.status}`);
+                }
+
+                const text = await response.text();
+                const codes = text.split('\n')
+                    .map(line => line.trim())
+                    .filter(line => line.length > 0);
+
+                return codes;
+            } catch (error) {
+                console.error('Error loading invitation codes:', error);
+                throw error;
+            }
+        }
+
+        // Load code attendees
+        async function loadCodeAttendees() {
+            try {
+                const response = await fetch('code_attendees.txt');
+                if (!response.ok) {
+                    // If file doesn't exist or other error, return empty array
+                    if (response.status === 404) {
+                        return [];
+                    }
+                    throw new Error(`Failed to load code attendees: ${response.status}`);
+                }
+
+                const text = await response.text();
+                if (!text.trim()) {
+                    return [];
+                }
+
+                const attendees = text.split('\n')
+                    .filter(line => line.trim().length > 0)
+                    .map(line => {
+                        const parts = line.split('|');
+                        return {
+                            dna: parts[0] || '',
+                            code: parts[1] || '',
+                            timestamp: parts[2] || '',
+                            wallet: parts[3] || ''
+                        };
+                    });
+
+                return attendees;
+            } catch (error) {
+                console.error('Error loading code attendees:', error);
+                return [];
+            }
+        }
+
+        // Save invitation codes
+        async function saveInvitationCodes(codes) {
+            try {
+                const content = codes.join('\n');
+                const response = await fetch('save_content.php', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        filename: 'invitation_codes.txt',
+                        content: content,
+                        dna: adminNickname,
+                        wallet: walletAddress
+                    }),
+                });
+
+                return await response.json();
+            } catch (error) {
+                console.error('Error saving invitation codes:', error);
+                throw error;
+            }
+        }
+
+        // Generate a unique invitation code
+        function generateInvitationCode() {
+            const prefix = "VIP"; // Default prefix
+            const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase();
+            const year = new Date().getFullYear();
+
+            return `${prefix}${randomPart}${year}`;
+        }
+
+        // Create a new invitation code
+        async function createInvitationCode() {
+            const codeInput = document.getElementById('code-input');
+            const createButton = document.getElementById('create-code-button');
+            const messageElement = document.getElementById('create-code-message');
+
+            try {
+                // Validate input
+                let code = codeInput.value.trim().toUpperCase();
+                if (!code) {
+                    // Generate a code if not provided
+                    code = generateInvitationCode();
+                    codeInput.value = code;
+                }
+
+                if (!code.match(/^[A-Z0-9]{6,20}$/)) {
+                    showMessage(messageElement, 'Invalid code format. Use 6-20 alphanumeric characters.', 'error');
+                    return;
+                }
+
+                // Disable button and show loading state
+                createButton.disabled = true;
+                createButton.innerHTML = '<span class="loading"></span> Creating...';
+
+                // Load existing codes
+                const existingCodes = await loadInvitationCodes();
+
+                // Check if code already exists
+                if (existingCodes.includes(code)) {
+                    showMessage(messageElement, `Invitation code '${code}' already exists.`, 'error');
+                    return;
+                }
+
+                // Add new code to the list
+                existingCodes.push(code);
+
+                // Save updated codes list
+                const result = await saveInvitationCodes(existingCodes);
+
+                if (result.success) {
+                    showMessage(messageElement, `Invitation code '${code}' created successfully!`, 'success');
+                    refreshCodesList();
+
+                    // Clear the form
+                    codeInput.value = '';
+                } else {
+                    showMessage(messageElement, `Error creating invitation code: ${result.message}`, 'error');
+                }
+
+            } catch (error) {
+                console.error('Error creating invitation code:', error);
+                showMessage(messageElement, `Error creating invitation code: ${error.message}`, 'error');
+            } finally {
+                createButton.disabled = false;
+                createButton.textContent = 'Create Invitation Code';
+            }
+        }
+
+        // Delete an invitation code
+        async function deleteInvitationCode(code) {
+            if (!confirm(`Are you sure you want to delete invitation code '${code}'?`)) {
+                return;
+            }
+
+            try {
+                // Load existing codes
+                const existingCodes = await loadInvitationCodes();
+
+                // Filter out the code to delete
+                const updatedCodes = existingCodes.filter(c => c !== code);
+
+                if (updatedCodes.length === existingCodes.length) {
+                    // Code wasn't in the list
+                    alert(`Invitation code '${code}' does not exist.`);
+                    return;
+                }
+
+                // Save updated codes list
+                const result = await saveInvitationCodes(updatedCodes);
+
+                if (result.success) {
+                    alert(`Invitation code '${code}' deleted successfully!`);
+                    refreshCodesList();
+                } else {
+                    alert(`Error deleting invitation code: ${result.message}`);
+                }
+
+            } catch (error) {
+                console.error('Error deleting invitation code:', error);
+                alert(`Error deleting invitation code: ${error.message}`);
+            }
+        }
+
+        // Check if a code has been used
+        async function isCodeUsed(code) {
+            const attendees = await loadCodeAttendees();
+            return attendees.some(attendee => attendee.code === code);
+        }
+
+        // Refresh the codes list display
+        async function refreshCodesList() {
+            const codesListElement = document.getElementById('codes-list');
+            const totalCodesElement = document.getElementById('total-codes');
+            const usedCodesElement = document.getElementById('used-codes');
+            const availableCodesElement = document.getElementById('available-codes');
+            const showUsedCodes = document.getElementById('show-used-codes').checked;
+
+            try {
+                codesListElement.innerHTML = '<tr><td colspan="5">Loading invitation codes...</td></tr>';
+
+                // Load codes and attendees
+                const [codes, attendees] = await Promise.all([
+                    loadInvitationCodes(),
+                    loadCodeAttendees()
+                ]);
+
+                // Get used codes from attendees
+                const usedCodesList = attendees.map(a => a.code);
+                const uniqueUsedCodes = new Set(usedCodesList);
+                const usedCodesCount = uniqueUsedCodes.size;
+
+                // Available codes are the current codes in invitation_codes.txt
+                const availableCodesCount = codes.length;
+
+                // Total codes is the sum of available codes plus used codes
+                // (some used codes might no longer be in invitation_codes.txt)
+                const totalCodesCount = availableCodesCount + usedCodesCount;
+
+                // Update statistics display
+                totalCodesElement.textContent = totalCodesCount;
+                usedCodesElement.textContent = usedCodesCount;
+                availableCodesElement.textContent = availableCodesCount;
+
+                // Create codes list HTML
+                if (codes.length === 0) {
+                    codesListElement.innerHTML = '<tr><td colspan="5">No invitation codes found</td></tr>';
+                } else {
+                    codesListElement.innerHTML = '';
+
+                    for (const code of codes) {
+                        const isUsed = usedCodesList.includes(code);
+
+                        // Skip used codes if filter is applied
+                        if (isUsed && !showUsedCodes) {
+                            continue;
+                        }
+
+                        const row = document.createElement('tr');
+                        row.innerHTML = `
+                            <td>${code}</td>
+                            <td>VIP</td>
+                            <td>VIP Guest</td>
+                            <td><span class="code-status ${isUsed ? 'used' : 'available'}">${isUsed ? 'Used' : 'Available'}</span></td>
+                            <td>
+                                <button class="delete-code-btn" data-code="${code}" ${isUsed ? 'disabled' : ''}>
+                                    ${isUsed ? 'Used' : 'Delete'}
+                                </button>
+                            </td>
+                        `;
+
+                        codesListElement.appendChild(row);
+                    }
+
+                    // Add event listeners to delete buttons
+                    document.querySelectorAll('.delete-code-btn').forEach(button => {
+                        if (!button.disabled) {
+                            button.addEventListener('click', () => {
+                                const code = button.getAttribute('data-code');
+                                deleteInvitationCode(code);
+                            });
+                        }
+                    });
+                }
+
+                // Load and display recent attendees
+                updateRecentAttendees(attendees);
+
+            } catch (error) {
+                console.error('Error refreshing codes list:', error);
+                codesListElement.innerHTML = `<tr><td colspan="5">Error loading invitation codes: ${error.message}</td></tr>`;
+            }
+        }
+
+        // Update the recent attendees display
+        function updateRecentAttendees(attendees) {
+            const recentAttendeesElement = document.getElementById('recent-attendees');
+
+            if (!attendees || attendees.length === 0) {
+                recentAttendeesElement.innerHTML = '<p>No registrations found</p>';
+                return;
+            }
+
+            // Sort by timestamp (most recent first)
+            attendees.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp));
+
+            // Take the 10 most recent
+            const recentAttendees = attendees.slice(0, 10);
+
+            // Create HTML
+            let html = '<table class="attendee-table" style="width: 100%; border-collapse: collapse;">';
+            html += `
+                <thead>
+                    <tr style="background-color: var(--dark-bg); border-bottom: 1px solid var(--border-color);">
+                        <th style="padding: 8px; text-align: left;">DNA Nickname</th>
+                        <th style="padding: 8px; text-align: left;">Code</th>
+                        <th style="padding: 8px; text-align: left;">Registration Time</th>
+                    </tr>
+                </thead>
+                <tbody>
+            `;
+
+            for (const attendee of recentAttendees) {
+                html += `
+                    <tr style="border-bottom: 1px solid var(--border-color);">
+                        <td style="padding: 8px; font-weight: bold;">${attendee.dna}</td>
+                        <td style="padding: 8px;">${attendee.code}</td>
+                        <td style="padding: 8px;">${new Date(attendee.timestamp).toLocaleString()}</td>
+                    </tr>
+                `;
+            }
+
+            html += '</tbody></table>';
+            recentAttendeesElement.innerHTML = html;
+        }
+
+        // Helper to show messages
+        function showMessage(element, message, type) {
+            element.textContent = message;
+            element.className = `message ${type}`;
+            element.style.display = 'block';
+            
+            // Auto-hide after 5 seconds
+            setTimeout(() => {
+                element.style.display = 'none';
+            }, 5000);
+        }
+
+        // Load navbar and initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            // Load navbar
+            fetch('navbar-template.html')
+                .then(response => response.text())
+                .then(data => {
+                    document.getElementById('navbar-container').innerHTML = data;
+
+                    // Initialize navbar functionality after loading
+                    const menuToggle = document.getElementById('menuToggle');
+                    const navbarMenu = document.getElementById('navbarMenu');
+                    const menuOverlay = document.getElementById('menuOverlay');
+
+                    if (menuToggle) {
+                        menuToggle.addEventListener('click', function() {
+                            navbarMenu.classList.toggle('active');
+                            menuOverlay.classList.toggle('active');
+                            this.classList.toggle('active');
+                        });
+                    }
+
+                    if (menuOverlay) {
+                        menuOverlay.addEventListener('click', function() {
+                            navbarMenu.classList.remove('active');
+                            menuToggle.classList.remove('active');
+                            this.classList.remove('active');
+                        });
+                    }
+
+                    // Initialize dropdown functionality for navbar
+                    const dropdownToggle = document.querySelectorAll('.dropdown-toggle');
+
+                    dropdownToggle.forEach(toggle => {
+                        toggle.addEventListener('click', function(e) {
+                            e.preventDefault();
+                            const dropdown = this.nextElementSibling;
+                            dropdown.classList.toggle('active');
+                        });
+                    });
+                })
+                .catch(error => console.error('Error loading navbar:', error));
+
+            // Initialize invitation code management
+            const createCodeButton = document.getElementById('create-code-button');
+            const refreshCodesButton = document.getElementById('refresh-codes-button');
+            const showUsedCodesCheckbox = document.getElementById('show-used-codes');
+
+            if (createCodeButton) {
+                createCodeButton.addEventListener('click', createInvitationCode);
+            }
+
+            if (refreshCodesButton) {
+                refreshCodesButton.addEventListener('click', refreshCodesList);
+            }
+
+            if (showUsedCodesCheckbox) {
+                showUsedCodesCheckbox.addEventListener('change', refreshCodesList);
+            }
+        });
+
+        // Connect button event listener
+        connectButton.addEventListener('click', connectToDashboard);
+        continueButton.addEventListener('click', continueWithWallet);
+    </script>
+</body>
+</html>

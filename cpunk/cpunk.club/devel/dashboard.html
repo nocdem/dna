@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>CPUNK - Connect Dashboard</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/dashboard-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="logo">
+            <img src="/logo.png" alt="CPUNK Logo">
+        </div>
+
+        <h1>Connect Dashboard</h1>
+
+        <div class="info-section">
+            <p>Connect your Cellframe dashboard to interact with the CPUNK ecosystem. This connection allows you to:</p>
+            <p>• View your wallets and balances<br>
+               • Access available networks<br>
+               • Perform secure transactions</p>
+        </div>
+
+        <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
+            <div class="status-header" style="margin-bottom: 0;">
+                <span>Dashboard Status:</span>
+                <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+            </div>
+            <button id="connectButton" class="help-button" style="margin: 0; width: auto;">Connect</button>
+            <div class="session-details" id="sessionDetails" style="display: none;"></div>
+            <div class="error-message" id="errorMessage" style="display: none;"></div>
+        </div>
+
+        <div class="data-section" id="networksSection">
+            <h3 class="section-title">Available Networks</h3>
+            <div id="networksList"></div>
+        </div>
+
+        <div class="data-section" id="walletsSection">
+            <h3 class="section-title">Connected Wallets</h3>
+            <div id="walletsList"></div>
+        </div>
+
+        <!-- Main navigation -->
+        <div class="navigation">
+            <a href="register.html" class="nav-item">Register DNA 🧬</a>
+            <a href="user_settings.html" class="nav-item">Login 🔑</a>
+            <a href="delegate.html" class="nav-item">Delegate 🌱</a>
+        </div>
+
+        <!-- Secondary navigation -->
+        <div class="navigation" style="margin-top: 15px;">
+            <a href="index.html" class="nav-item active">Home 🏠</a>
+            <a href="lookup.html" class="nav-item">Search 🔍</a>
+            <a href="about.html" class="nav-item">About Us ℹ️</a>
+        </div>
+
+        <!-- Social links -->
+        <div class="social-links">
+            <a href="https://twitter.com/OfficialCpunk" target="_blank">Twitter</a>
+            <a href="https://instagram.com/cpunk_official" target="_blank">Instagram</a>
+            <a href="https://t.me/chippunk_official" target="_blank">Telegram</a>
+        </div>
+    </div>
+
+    <!-- Core utilities -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/dashboardConnector.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    <script>
+        // DOM Elements
+        const networksSection = document.getElementById('networksSection');
+        const networksList = document.getElementById('networksList');
+        const walletsSection = document.getElementById('walletsSection');
+        const walletsList = document.getElementById('walletsList');
+
+        // Initialize CpunkUI with dashboard connector elements
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize API Console
+            CpunkAPIConsole.init();
+            
+            // Initialize utilities
+            CpunkUtils.init({
+                debug: {
+                    enabled: true,
+                    showInConsole: true,
+                    showInUI: false
+                }
+            });
+            
+            CpunkUI.init({
+                dashboardConnectorElements: {
+                    statusIndicatorId: 'statusIndicator',
+                    connectButtonId: 'connectButton',
+                    connectionErrorId: 'errorMessage'
+                }
+            });
+            
+            // Initialize the dashboard connector
+            CpunkDashboard.init({
+                apiUrl: 'http://localhost:8045/',
+                onConnected: async (sessionId) => {
+                    // Log connection success to API console
+                    CpunkAPIConsole.log('Connected to dashboard', { sessionId });
+                    
+                    // Get networks and wallets
+                    await getNetworks(sessionId);
+                    await getWallets(sessionId);
+                    
+                    // Update button text to match other pages
+                    document.getElementById('connectButton').textContent = 'Connected';
+                },
+                onError: (message) => {
+                    // Log error to API console
+                    CpunkAPIConsole.log('Dashboard connection error', { message });
+                    
+                    console.error('Dashboard connection error:', message);
+                    if (document.getElementById('errorMessage')) {
+                        document.getElementById('errorMessage').textContent = message;
+                        document.getElementById('errorMessage').style.display = 'block';
+                    }
+                }
+            });
+        });
+
+        // Get networks from dashboard
+        async function getNetworks(sessionId) {
+            try {
+                // Log the network request to API console
+                CpunkAPIConsole.log('Requesting networks list', { id: sessionId });
+                
+                const response = await CpunkDashboard.makeRequest('GetNetworks', { id: sessionId });
+                
+                // Log the network response to API console
+                CpunkAPIConsole.log('Received networks response', response);
+
+                if (response.status === 'ok' && response.data && Array.isArray(response.data)) {
+                    networksSection.style.display = 'block';
+                    networksList.innerHTML = response.data.map(network => `
+                        <div class="item-card">
+                            <strong style="color: #f97834;">Network:</strong> ${network}
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                // Log error to API console
+                CpunkAPIConsole.log('Error fetching networks', { error: error.message });
+                console.error('Error fetching networks:', error);
+            }
+        }
+
+        // Get wallets from dashboard
+        async function getWallets(sessionId) {
+            try {
+                // Log the wallets request to API console
+                CpunkAPIConsole.log('Requesting wallets list', { id: sessionId });
+                
+                const wallets = await CpunkDashboard.getWallets();
+                
+                // Log the wallets response to API console
+                CpunkAPIConsole.log('Received wallets', { count: wallets.length });
+                
+                if (wallets && wallets.length > 0) {
+                    walletsSection.style.display = 'block';
+                    
+                    // Get detailed data for each wallet
+                    const walletsWithData = await Promise.all(wallets.map(async (wallet) => {
+                        // Log individual wallet data request
+                        CpunkAPIConsole.log(`Requesting data for wallet: ${wallet.name}`, {
+                            id: sessionId,
+                            walletName: wallet.name
+                        });
+                        
+                        const walletData = await CpunkDashboard.makeRequest('GetDataWallet', {
+                            id: sessionId,
+                            walletName: wallet.name
+                        });
+                        
+                        return {
+                            ...wallet,
+                            details: walletData?.data || null
+                        };
+                    }));
+
+                    walletsList.innerHTML = walletsWithData.map(wallet => `
+                        <div class="item-card">
+                            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                                <strong style="color: #f97834; font-size: 1.2em;">Wallet: ${wallet.name}</strong>
+                                ${wallet.status ? `<span style="color: #888;">${wallet.status}</span>` : ''}
+                            </div>
+                            ${wallet.details ? wallet.details.map(networkData => `
+                                <div style="margin-top: 15px; background-color: #1a0f0e; padding: 15px; border-radius: 5px;">
+                                    <div style="color: #f97834; margin-bottom: 10px; font-weight: bold;">
+                                        Network: ${networkData.network}
+                                    </div>
+                                    <div class="address-container">
+                                        <div class="address-label">Address:</div>
+                                        <div class="address-content">
+                                            <div class="address-text">${networkData.address}</div>
+                                            <button class="copy-button" onclick="copyToClipboard('${networkData.address}')">
+                                                Copy
+                                            </button>
+                                        </div>
+                                    </div>
+                                    ${networkData.tokens && networkData.tokens.length > 0 ? `
+                                        <div style="margin-top: 10px;">
+                                            ${networkData.tokens.map(token => `
+                                                <div style="display: flex; justify-content: space-between; align-items: center; 
+                                                            padding: 8px; background-color: #2b1816; margin: 5px 0; border-radius: 3px;">
+                                                    <span style="color: #f97834;">${token.tokenName}</span>
+                                                    <span>${parseFloat(token.balance).toLocaleString(undefined, {
+                                                        minimumFractionDigits: 2,
+                                                        maximumFractionDigits: 8
+                                                    })}</span>
+                                                </div>
+                                            `).join('')}
+                                        </div>
+                                    ` : '<div style="color: #666;">No tokens in this network</div>'}
+                                </div>
+                            `).join('') : ''}
+                        </div>
+                    `).join('');
+                }
+            } catch (error) {
+                console.error('Error fetching wallets:', error);
+            }
+        }
+
+        // Copy to clipboard function
+        async function copyToClipboard(text) {
+            try {
+                if (typeof CpunkUtils !== 'undefined' && CpunkUtils.copyToClipboard) {
+                    CpunkUtils.copyToClipboard(text, 
+                        // Success callback
+                        () => {
+                            const button = event.target;
+                            button.textContent = 'Copied!';
+                            button.classList.add('copied');
+                            setTimeout(() => {
+                                button.textContent = 'Copy';
+                                button.classList.remove('copied');
+                            }, 2000);
+                        },
+                        // Error callback
+                        () => {
+                            console.error('Failed to copy text');
+                        }
+                    );
+                } else {
+                    // Fallback to direct clipboard API
+                    await navigator.clipboard.writeText(text);
+                    const button = event.target;
+                    button.textContent = 'Copied!';
+                    button.classList.add('copied');
+                    setTimeout(() => {
+                        button.textContent = 'Copy';
+                        button.classList.remove('copied');
+                    }, 2000);
+                }
+            } catch (err) {
+                console.error('Failed to copy text:', err);
+            }
+        }
+    </script>
+</body>
+</html>

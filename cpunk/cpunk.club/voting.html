@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK - Voting System</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/voting-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/navbar.js"></script>
+
+        <div class="intro-section">
+            <p>🗳️ Welcome to the CPUNK community voting system. Here you can participate in governance decisions and help shape the future of the CPUNK ecosystem.</p>
+            <p>Your token-weighted vote directly influences key decisions and project development. Connect your Cellframe wallet to view active proposals and cast your votes.</p>
+        </div>
+
+        <!-- Dashboard Connection Control Panel -->
+        <div id="dashboardControlPanel" class="status-box dashboard-control-panel">
+            <div class="status-header">
+                <span>Dashboard Status:</span>
+                <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+            </div>
+            <button id="connectButton" class="help-button">Connect</button>
+            <div class="session-details" id="sessionDetails" style="display: none;"></div>
+            <div class="error-message" id="connectionError" style="display: none;"></div>
+        </div>
+        
+        <div id="connectSection" style="display: none;"></div>
+
+        <!-- Wallet Selection Section -->
+        <div id="walletSection" class="section" style="display: none;">
+            <h2>Select Your Wallet</h2>
+            <div class="wallets-container" id="walletsList"></div>
+        </div>
+
+        <!-- Votes List Section -->
+        <div id="votesSection" class="section" style="display: none;">
+            <div class="wallet-header">
+                <h2>Active Proposals</h2>
+                <div class="wallet-label">Wallet: <span id="selectedWalletName" class="wallet-value"></span></div>
+            </div>
+            <div class="filters-container">
+                <div class="filter-group">
+                    <label for="statusFilter">Status:</label>
+                    <select id="statusFilter" class="filter-select">
+                        <option value="all">All Proposals</option>
+                        <option value="active" selected>Active Only</option>
+                        <option value="expired">Expired Only</option>
+                    </select>
+                </div>
+                <div class="filter-group">
+                    <label for="sortOrder">Sort By:</label>
+                    <select id="sortOrder" class="filter-select">
+                        <option value="newest">Newest First</option>
+                        <option value="oldest">Oldest First</option>
+                        <option value="votes-high">Most Votes</option>
+                        <option value="votes-low">Fewest Votes</option>
+                        <option value="expire-soon">Ending Soon</option>
+                    </select>
+                </div>
+            </div>
+            <div id="votesList" class="votes-grid"></div>
+        </div>
+
+        <!-- Vote Details Section -->
+        <div id="voteDetailSection" class="section" style="display: none;">
+            <div id="voteDetail"></div>
+            <div class="success-message" id="voteSuccess"></div>
+            <div class="error-message" id="voteError"></div>
+            <div class="warning-message" id="voteWarning"></div>
+            
+            <div class="help-button-container">
+                <button id="backButton" class="help-button">Back to Proposals List</button>
+            </div>
+        </div>
+
+        <!-- Navigation now handled by navbar-template.html -->
+    </div>
+
+    <!-- Core utilities -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/dashboardConnector.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    <!-- Page specific script -->
+    <script src="js/voting.js"></script>
+</body>
+</html>

@@ -1,0 +1,444 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK - User Settings</title>
+    <!-- CSS files -->
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/user-settings-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+        /* Tab styling */
+        .tab-navigation {
+            display: flex;
+            margin-bottom: 20px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .tab-button {
+            flex: 1;
+            padding: 10px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-weight: bold;
+            color: var(--text-color);
+            transition: all 0.2s ease;
+        }
+        .tab-button:hover {
+            background-color: rgba(255, 255, 255, 0.05);
+        }
+        .tab-button.active {
+            border-bottom-color: var(--accent-color);
+        }
+        .tab-content {
+            display: none;
+        }
+        .tab-content.active {
+            display: block;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/navbar.js"></script>
+
+        <div class="info-section" id="infoSection">
+            <p>Edit your profile information and customize how you appear in the CPUNK ecosystem. Connect your wallet, verify your DNA registration, and update your social links and wallet information.</p>
+            <p>These settings will be visible to other users when they view your DNA profile.</p>
+        </div>
+
+        <!-- Dashboard Connection Section -->
+        <div id="connectionSection">
+            <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="status-header" style="margin-bottom: 0;">
+                    <span>Dashboard Status:</span>
+                    <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+                </div>
+                <button id="connectButton" class="help-button" style="margin: 0; width: auto;">Connect</button>
+                <div class="session-details" id="sessionDetails" style="display: none;"></div>
+                <div class="error-message" id="connectionError" style="display: none;"></div>
+            </div>
+        </div>
+
+        <!-- Wallet Selection Section -->
+        <div id="walletSection" class="section" style="display: none;">
+            <h2>Select Your Wallet</h2>
+            <p>Choose the wallet associated with your DNA registration:</p>
+
+            <div id="walletsList" class="wallets-container">
+                <div class="loading">Loading wallets</div>
+            </div>
+
+            <button id="continueButton" disabled>Continue with Selected Wallet</button>
+            <div class="error-message" id="walletError"></div>
+        </div>
+
+        <!-- DNA Verification Section -->
+        <div id="dnaSection" class="section" style="display: none;">
+            <h2>DNA Registration</h2>
+            <div id="dnaStatus" class="loading">Checking DNA registration</div>
+            <div class="error-message" id="dnaError"></div>
+
+            <div id="dnaDetails" style="display:none;">
+                <div class="profile-preview">
+                    <div class="profile-header">
+                        <div class="profile-avatar" id="profileAvatar">C</div>
+                        <div class="profile-info">
+                            <div class="profile-nickname" id="profileNickname">CPUNK_User</div>
+                            <div class="nickname-tags" id="profileNicknames"></div>
+                        </div>
+                    </div>
+
+                    <div class="profile-stats">
+                        <div class="stats-item">
+                            <div class="stats-value" id="nicknamesCount">0</div>
+                            <div class="stats-label">Nicknames</div>
+                        </div>
+                        <div class="stats-item">
+                            <div class="stats-value" id="socialsCount">0</div>
+                            <div class="stats-label">Social Profiles</div>
+                        </div>
+                        <div class="stats-item">
+                            <div class="stats-value" id="walletsCount">0</div>
+                            <div class="stats-label">External Wallets</div>
+                        </div>
+                    </div>
+                </div>
+
+                <button id="editButton">Edit Profile Settings</button>
+            </div>
+        </div>
+
+        <!-- Profile Settings Form -->
+        <div id="editSection" class="section" style="display: none;">
+            <h2>Edit Your Profile</h2>
+
+            <!-- Tab Navigation -->
+            <div class="tab-navigation">
+                <button class="tab-button active" data-tab="info-tab">
+                    <span>📋 Info</span>
+                </button>
+                <button class="tab-button" data-tab="dna-tab">
+                    <span>🧬 DNA</span>
+                </button>
+                <button class="tab-button" data-tab="socials-tab">
+                    <span>👥 Socials</span>
+                </button>
+                <button class="tab-button" data-tab="wallets-tab">
+                    <span>💰 Wallets</span>
+                </button>
+                <button class="tab-button" data-tab="delegations-tab">
+                    <span>📊 Delegations</span>
+                </button>
+            </div>
+
+            <div class="form-section">
+                <!-- Info Tab Content -->
+                <div id="info-tab" class="tab-content active">
+                    <div class="form-group">
+                        <label for="profileDescription">Profile Description</label>
+                        <textarea id="profileDescription" rows="3" placeholder="Write a short bio about yourself"></textarea>
+                        <div class="help-text">This will be displayed on your public profile (optional)</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="profileImageUrl">Profile Image URL</label>
+                        <input type="url" id="profileImageUrl" placeholder="https://example.com/your-image.jpg">
+                        <div class="help-text">Enter a URL to your profile image (optional)</div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>Public Key Hash</label>
+                        <input type="text" id="pubkeyHash" class="form-control" readonly style="background-color: var(--section-bg);">
+                        <div class="help-text">Your public key hash used to verify your identity (read-only)</div>
+                    </div>
+                </div>
+
+                <!-- DNA Tab Content -->
+                <div id="dna-tab" class="tab-content">
+                    <div class="authentication-info" style="margin-bottom: 20px; padding: 15px; background-color: rgba(0, 0, 0, 0.2); border-radius: 6px;">
+                        <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 1em;">DNA Registration Information</h4>
+                        <p style="font-size: 0.9em; margin-bottom: 8px; opacity: 0.9;">
+                            This section displays information about DNA registrations linked to your selected wallet. DNA (Distributed Name and Address) is your unique identifier within the CPUNK ecosystem.
+                        </p>
+                    </div>
+
+                    <div id="linkedDNAs" class="dna-list">
+                        <div class="loading">Loading DNA information...</div>
+                    </div>
+
+                    <div id="noDNAs" class="dna-info" style="display: none; text-align: center; padding: 20px;">
+                        <p>No DNA registrations found for this wallet.</p>
+                        <p>You can register a new DNA using the CPUNK platform.</p>
+                    </div>
+                </div>
+
+                <!-- Socials Tab Content -->
+                <div id="socials-tab" class="tab-content">
+                    <!-- Social Account Verification Section -->
+                    <div class="authentication-info" style="margin-bottom: 20px; padding: 15px; background-color: rgba(0, 0, 0, 0.2); border-radius: 6px;">
+                        <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 1em;">Social Account Verification</h4>
+                        <p style="font-size: 0.9em; margin-bottom: 0; opacity: 0.9;">
+                            Linking your social accounts to your DNA profile strengthens your identity within the CPUNK ecosystem and enhances your proof of humanity. Verifying multiple platforms further boosts your credibility and community presence.
+                        </p>
+                        <p style="font-size: 0.9em; margin-top: 10px; margin-bottom: 0;">
+                            <span style="color: #ff6b6b; font-weight: bold;">Be advised:</span> Once linked, these connections are permanent and cannot be changed or removed.
+                        </p>
+                    </div>
+                    
+                    <!-- Social Accounts Summary Box -->
+                    <div id="socialsSummary" class="socials-summary" style="margin-bottom: 20px; background-color: rgba(0, 0, 0, 0.1); border-radius: 6px; padding: 15px; border: 1px solid var(--border-color);">
+                        <h4 style="margin-top: 0; margin-bottom: 15px; font-size: 1em; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Connected Accounts</h4>
+                        <div id="socialsList" class="socials-list">
+                            <!-- Social account entries will be added here dynamically via JavaScript -->
+                            <div class="loading">Loading connected accounts...</div>
+                        </div>
+                        <div id="noSocials" style="display: none; text-align: center; padding: 10px; font-size: 0.9em; opacity: 0.7;">
+                            No social accounts connected yet
+                        </div>
+                    </div>
+
+                    <!-- Hidden form fields to maintain functionality -->
+                    <div style="display: none;">
+                        <input type="email" id="googleProfile" placeholder="Not connected" readonly>
+                        <div id="googleVerificationStatus"></div>
+                        <button type="button" id="connectGoogleButton">Connect Google</button>
+                        
+                        <input type="text" id="telegramProfile" placeholder="username">
+                        <div id="telegramVerificationStatus"></div>
+                        <button type="button" id="verifyTelegramButton">Verify</button>
+                        
+                        <input type="text" id="xProfile" placeholder="Not connected" readonly>
+                        <div id="twitterVerificationStatus"></div>
+                        <button type="button" id="connectTwitterButton">Connect Twitter</button>
+                        
+                        <input type="text" id="linkedinProfile" placeholder="Not connected" readonly>
+                        <div id="linkedinVerificationStatus"></div>
+                        <button type="button" id="connectLinkedInButton">Connect LinkedIn</button>
+                        
+                        <input type="text" id="githubProfile" placeholder="Not connected" readonly>
+                        <div id="githubVerificationStatus"></div>
+                        <button type="button" id="connectGitHubButton">Connect GitHub</button>
+                    </div>
+                    
+                    <!-- Instructions for connecting new accounts -->
+                    <div class="connect-instructions" style="margin-top: 20px; text-align: center; padding: 15px; background-color: rgba(0, 0, 0, 0.2); border-radius: 6px;">
+                        <p style="margin-bottom: 10px;">Want to connect additional social accounts?</p>
+                        <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 10px;">
+                            <button type="button" id="connectTwitterButton2" class="connect-btn" style="background-color: #1DA1F2; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+                                🐦 Twitter
+                            </button>
+                            <button type="button" id="connectGoogleButton2" class="connect-btn" style="background-color: #4285F4; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+                                G Google
+                            </button>
+                            <button type="button" id="verifyTelegramButton2" class="connect-btn" style="background-color: #0088cc; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+                                📱 Telegram
+                            </button>
+                            <button type="button" id="connectLinkedInButton2" class="connect-btn" style="background-color: #0e76a8; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+                                💼 LinkedIn
+                            </button>
+                            <button type="button" id="connectGitHubButton2" class="connect-btn" style="background-color: #24292e; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
+                                🐙 GitHub
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Wallets Tab Content -->
+                <div id="wallets-tab" class="tab-content">
+                    <div class="info-section" style="margin-bottom: 10px; padding: 8px;">
+                        <p style="margin: 0; font-size: 0.9em;">Connect your Web3 wallets for verification and cross-chain functionality.</p>
+                    </div>
+
+                    <div class="wallet-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-bottom: 15px;">
+                        <!-- Ethereum Wallet -->
+                        <div class="wallet-item" style="background-color: rgba(98, 126, 234, 0.1); border-radius: 8px; padding: 10px; border: 1px solid #627eea;">
+                            <div style="display: flex; align-items: center; margin-bottom: 5px;">
+                                <div style="width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin-right: 8px;">
+                                    <span style="font-size: 16px;">Ξ</span>
+                                </div>
+                                <label style="margin: 0; font-size: 0.9em; font-weight: bold;">Ethereum (ETH)</label>
+                            </div>
+                            <button type="button" id="connectEthWallet" class="connect-button" style="width: 100%; padding: 6px; margin: 0; background-color: #627eea; font-size: 0.85em;">
+                                <span style="display: flex; align-items: center; justify-content: center; gap: 5px;">
+                                    <svg width="16" height="16" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M13.9851 0L13.8093 0.596454V19.1476L13.9851 19.3233L22.5543 14.2173L13.9851 0Z" fill="white"/>
+                                        <path d="M13.9851 0L5.41602 14.2173L13.9851 19.3233V10.3505V0Z" fill="white" fill-opacity="0.8"/>
+                                        <path d="M13.9852 20.9506L13.8848 21.0725V27.6323L13.9852 27.9241L22.5602 15.8469L13.9852 20.9506Z" fill="white"/>
+                                        <path d="M13.9851 27.9241V20.9506L5.41602 15.8469L13.9851 27.9241Z" fill="white" fill-opacity="0.8"/>
+                                        <path d="M13.9851 19.3232L22.5542 14.2172L13.9851 10.3503V19.3232Z" fill="white" fill-opacity="0.9"/>
+                                        <path d="M5.41602 14.2172L13.9851 19.3232V10.3503L5.41602 14.2172Z" fill="white" fill-opacity="0.7"/>
+                                    </svg>
+                                    MetaMask
+                                </span>
+                            </button>
+                            <div id="ethWalletStatus" class="wallet-status" style="margin-top: 5px; display: none; padding: 4px; border-radius: 4px; background-color: var(--primary-bg); font-size: 0.8em;">
+                                <span id="ethWalletAddress" style="font-family: monospace; word-break: break-all;"></span>
+                            </div>
+                        </div>
+                        
+                        <!-- Bitcoin Wallet -->
+                        <div class="wallet-item" style="background-color: rgba(247, 147, 26, 0.1); border-radius: 8px; padding: 10px; border: 1px solid #f7931a;">
+                            <div style="display: flex; align-items: center; margin-bottom: 5px;">
+                                <div style="width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin-right: 8px;">
+                                    <span style="font-size: 16px;">₿</span>
+                                </div>
+                                <label style="margin: 0; font-size: 0.9em; font-weight: bold;">Bitcoin (BTC)</label>
+                            </div>
+                            <button type="button" id="connectBtcWallet" class="connect-button" style="width: 100%; padding: 6px; margin: 0; background-color: #f7931a; font-size: 0.85em;">
+                                <span style="display: flex; align-items: center; justify-content: center; gap: 5px;">
+                                    <svg width="16" height="16" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M19.3 12.35C17.9834 17.0992 13.0666 19.7867 8.31732 18.47C3.56807 17.1534 0.880572 12.2367 2.19724 7.4875C3.5139 2.73825 8.43065 0.0507484 13.1799 1.36741C17.9291 2.68408 20.6166 7.60083 19.3 12.35Z" fill="white"/>
+                                        <path d="M14.2516 8.70001C14.4349 7.40001 13.4599 6.72501 12.1432 6.28751L12.5599 4.77501L11.6182 4.53751L11.2132 6.00001C10.9849 5.93751 10.7449 5.87501 10.5066 5.81251L10.9149 4.33751L9.97156 4.10001L9.55656 5.61251C9.36156 5.56251 9.17156 5.51251 8.98823 5.46251L8.98989 5.45834L7.69989 5.13334L7.44989 6.13334C7.44989 6.13334 8.15823 6.28751 8.14156 6.29584C8.53323 6.38751 8.60406 6.65001 8.59573 6.85834L8.11406 8.60001C8.14739 8.60834 8.19156 8.62084 8.24156 8.64167L8.14156 8.61667L7.46656 11.1167C7.41989 11.2333 7.30823 11.4083 7.03323 11.3417C7.04156 11.3542 6.34156 11.175 6.34156 11.175L5.87656 12.25L7.09989 12.5583C7.30823 12.6167 7.51156 12.675 7.71073 12.7333L7.29156 14.2667L8.23323 14.5042L8.64989 12.9917C8.88739 13.0583 9.11656 13.1208 9.34156 13.1792L8.92656 14.6875L9.86823 14.925L10.2874 13.3958C11.9791 13.725 13.2349 13.5917 13.8016 12.0625C14.2557 10.8333 13.8391 10.125 12.9932 9.67917C13.6099 9.54167 14.0849 9.12917 14.2516 8.70001ZM11.8432 11.425C11.5182 12.6542 9.39156 11.9625 8.66656 11.7833L9.23739 9.72917C9.96239 9.90834 12.1807 10.1458 11.8432 11.425ZM12.1682 8.68334C11.8724 9.80834 10.0857 9.21667 9.47156 9.06667L9.98573 7.19167C10.5999 7.34167 12.4766 7.51667 12.1682 8.68334Z" fill="#F7931A"/>
+                                    </svg>
+                                    Trust Wallet (BTC)
+                                </span>
+                            </button>
+                            <div id="btcWalletStatus" class="wallet-status" style="margin-top: 5px; display: none; padding: 4px; border-radius: 4px; background-color: var(--primary-bg); font-size: 0.8em;">
+                                <span id="btcWalletAddress" style="font-family: monospace; word-break: break-all;"></span>
+                            </div>
+                        </div>
+                        
+                        <!-- Solana Wallet -->
+                        <div class="wallet-item" style="background-color: rgba(153, 69, 255, 0.1); border-radius: 8px; padding: 10px; border: 1px solid #9945ff;">
+                            <div style="display: flex; align-items: center; margin-bottom: 5px;">
+                                <div style="width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin-right: 8px;">
+                                    <span style="font-size: 16px;">☀️</span>
+                                </div>
+                                <label style="margin: 0; font-size: 0.9em; font-weight: bold;">Solana (SOL)</label>
+                            </div>
+                            <button type="button" id="connectSolWallet" class="connect-button" style="width: 100%; padding: 6px; margin: 0; background-color: #9945ff; font-size: 0.85em;">
+                                <span style="display: flex; align-items: center; justify-content: center; gap: 5px;">
+                                    <svg width="16" height="16" viewBox="0 0 397 311" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M64.8161 237.809L207.944 310.994C218.505 316.364 231.216 310.994 231.216 299.538V246.135C231.216 239.224 226.861 233.854 219.937 230.704L77.5271 157.519C66.9661 152.149 54.2555 157.519 54.2555 168.975V222.377C54.2555 230.704 58.6102 236.074 64.8161 237.809Z" fill="white"/>
+                                        <path d="M64.8161 81.6498L207.944 154.834C218.505 160.204 231.216 154.834 231.216 143.378V89.9756C231.216 83.0646 226.861 77.6947 219.937 74.5446L77.5271 1.36023C66.9661 -4.00972 54.2555 1.36023 54.2555 12.8159V66.2185C54.2555 74.5446 58.6102 79.9145 64.8161 81.6498Z" fill="white"/>
+                                        <path d="M342.159 171.1L199.031 97.9151C188.47 92.5453 175.76 97.9151 175.76 109.371V162.774C175.76 169.685 180.114 175.055 187.038 178.205L329.448 251.39C340.009 256.76 352.72 251.39 352.72 239.934V186.531C352.72 178.205 348.365 172.835 342.159 171.1Z" fill="white"/>
+                                    </svg>
+                                    Trust Wallet (SOL)
+                                </span>
+                            </button>
+                            <div id="solWalletStatus" class="wallet-status" style="margin-top: 5px; display: none; padding: 4px; border-radius: 4px; background-color: var(--primary-bg); font-size: 0.8em;">
+                                <span id="solWalletAddress" style="font-family: monospace; word-break: break-all;"></span>
+                            </div>
+                        </div>
+
+                        <!-- BNB Wallet -->
+                        <div class="wallet-item" style="background-color: rgba(243, 186, 47, 0.1); border-radius: 8px; padding: 10px; border: 1px solid #F3BA2F;">
+                            <div style="display: flex; align-items: center; margin-bottom: 5px;">
+                                <div style="width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin-right: 8px;">
+                                    <span style="font-size: 16px;">B</span>
+                                </div>
+                                <label style="margin: 0; font-size: 0.9em; font-weight: bold;">Binance (BNB)</label>
+                            </div>
+                            <button type="button" id="connectBnbWallet" class="connect-button" style="width: 100%; padding: 6px; margin: 0; background-color: #F3BA2F; font-size: 0.85em;">
+                                <span style="display: flex; align-items: center; justify-content: center; gap: 5px;">
+                                    <svg width="16" height="16" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+                                        <path d="M16 0L19.6 3.6L8.4 14.8L4.8 11.2L16 0Z" fill="white"/>
+                                        <path d="M23.2 7.2L26.8 10.8L8.4 29.2L4.8 25.6L23.2 7.2Z" fill="white"/>
+                                        <path d="M1.2 14.8L4.8 18.4L1.2 22L-2.4 18.4L1.2 14.8Z" fill="white"/>
+                                        <path d="M30.8 14.8L34.4 18.4L16 36.8L12.4 33.2L30.8 14.8Z" fill="white"/>
+                                    </svg>
+                                    Trust Wallet (BNB)
+                                </span>
+                            </button>
+                            <div id="bnbWalletStatus" class="wallet-status" style="margin-top: 5px; display: none; padding: 4px; border-radius: 4px; background-color: var(--primary-bg); font-size: 0.8em;">
+                                <span id="bnbWalletAddress" style="font-family: monospace; word-break: break-all;"></span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Delegations Tab Content -->
+                <div id="delegations-tab" class="tab-content">
+                    <div class="authentication-info" style="margin-bottom: 20px; padding: 15px; background-color: rgba(0, 0, 0, 0.2); border-radius: 6px;">
+                        <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 1em;">Delegation History</h4>
+                        <p style="font-size: 0.9em; margin-bottom: 8px; opacity: 0.9;">
+                            This section displays your delegation history on the CPUNK platform. Delegations represent your contributions to the CPUNK ecosystem.
+                        </p>
+                    </div>
+
+                    <div id="delegationsList" class="delegations-list">
+                        <div class="loading">Loading delegation history...</div>
+                    </div>
+
+                    <div id="noDelegations" class="delegations-info" style="display: none; text-align: center; padding: 20px;">
+                        <p>No delegations found for this wallet.</p>
+                        <p>Participate in the CPUNK ecosystem to start delegating.</p>
+                    </div>
+                </div>
+
+                <button id="saveButton">Save Profile Changes</button>
+                <div class="success-message" id="saveSuccess"></div>
+                <div class="error-message" id="saveError"></div>
+            </div>
+        </div>
+
+        <!-- Telegram Verification Modal -->
+        <div id="telegramVerificationModal" class="modal-overlay">
+            <div class="modal-container">
+                <button id="closeModalButton" class="modal-close">&times;</button>
+                <h3 class="modal-title">Verify Your Telegram Account</h3>
+                <div class="modal-content">
+                    <p>To verify your Telegram account, you'll need to interact with our verification bot. Please follow these steps:</p>
+
+                    <div class="verification-steps">
+                        <ol>
+                            <li>Copy your DNA nickname shown below</li>
+                            <li>Click the link to open our verification bot on Telegram</li>
+                            <li>Send your DNA nickname to the bot when asked</li>
+                            <li>Once verified, return to this page and reload</li>
+                        </ol>
+                    </div>
+
+                    <div class="guid-display" id="guidDisplay">
+                        <!-- DNA nickname will be inserted here -->
+                    </div>
+
+                    <button id="copyGuidButton" class="copy-guid-btn">Copy DNA Nickname</button>
+
+                    <a id="telegramBotLink" href="https://t.me/CpunkVerifyBot" target="_blank" class="bot-link">
+                        Open Telegram Bot
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation now handled by navbar-template.html -->
+        <!-- Profile link needs to be preserved for JavaScript functionality -->
+        <a href="#" id="profileLink" style="display: none;">My Profile</a>
+    </div>
+
+    <!-- The hidden input fields required by JavaScript but not shown to users -->
+    <input type="hidden" id="guidValue">
+    <input type="hidden" id="signId">
+    <input type="hidden" id="walletAddress">
+
+    <!-- External JavaScript -->
+    <!-- Utility Libraries -->
+    <script src="js/navbar.js"></script>
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    <script src="js/dashboardConnector.js"></script>
+
+    <!-- Module Components -->
+    <script src="js/social-integration.js"></script>
+    <script src="js/wallet-integration.js"></script>
+
+    <!-- Page-specific JavaScript -->
+    <script src="js/settings.js"></script>
+</body>
+</html>

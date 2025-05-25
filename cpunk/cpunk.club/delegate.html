@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK - Delegation Dashboard</title>
+    <!-- CSS files -->
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/delegation-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/navbar.js"></script>
+
+        <div class="intro-section">
+            <p>Stake your tokens on Cellframe networks to participate in ecosystem governance and earn rewards. Your delegation helps secure the network and supports the community.</p>
+            <p>By delegating, you'll earn regular rewards while keeping your tokens secure and helping to grow the ecosystem. Choose between Backbone (mCELL) or KelVPN (mKEL) networks for delegation.</p>
+        </div>
+
+        <div class="highlight-box" style="margin-bottom: 25px;">
+            <h3 style="margin-top: 0; font-size: 1.2em;">Requirements</h3>
+            <ul class="requirements-list" style="padding-left: 25px; margin-bottom: 10px;">
+                <li>Latest Cellframe node must be installed and running</li>
+                <li>Node must be fully synchronized with the network</li>
+                <li>Rewards address must be registered in the DNA system</li>
+            </ul>
+            <div id="networkRequirements" style="display: none; margin-top: 15px; padding: 15px; background-color: rgba(0,0,0,0.3); border-radius: 5px;">
+                <h4 style="margin-top: 0; color: var(--primary); font-size: 1em;">Network-Specific Requirements:</h4>
+                <ul id="networkRequirementsList" class="requirements-list" style="padding-left: 25px; margin-bottom: 0;"></ul>
+            </div>
+        </div>
+
+        <div class="status-section" style="margin-bottom: 20px; padding: 15px;">
+            <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="status-header" style="margin-bottom: 0;">
+                    <span style="font-weight: bold; margin-right: 8px;">Dashboard Status:</span>
+                    <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+                </div>
+                <button id="connectButton" class="help-button" style="margin: 0; width: auto !important; min-width: 120px;">Connect</button>
+            </div>
+            <div class="session-details" id="sessionDetails" style="display: none; margin-top: 10px; font-family: monospace; font-size: 0.9em;"></div>
+            <div class="error-message" id="errorMessage" style="display: none; margin-top: 10px;"></div>
+        </div>
+
+        <div class="data-section" id="networkSection" style="margin-bottom: 25px; padding: 15px; display: none;">
+            <h3 class="section-title" style="margin-top: 0; font-size: 1.2em;">Select Network</h3>
+            <p class="help-text">Choose the network for delegation.</p>
+            <div id="networksList" style="margin-top: 15px; display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 15px;"></div>
+        </div>
+
+        <div class="data-section" id="walletsSection" style="margin-bottom: 25px; padding: 15px;">
+            <h3 class="section-title" style="margin-top: 0; font-size: 1.2em;">Select Wallet for Delegation</h3>
+            <p class="help-text" id="walletHelpText">Choose the wallet containing the tokens you want to delegate.</p>
+            <div id="walletsList" style="margin-top: 15px;"></div>
+        </div>
+
+        <div class="form-container" id="delegationForm" style="padding: 20px; margin-bottom: 25px;">
+            <h3 class="section-title" style="margin-top: 0; font-size: 1.2em;">Delegation Details</h3>
+
+            <div class="form-group">
+                <label for="selectedWallet">Selected Wallet:</label>
+                <div id="selectedWalletDisplay" class="form-control" style="background-color: #1a0f0e; cursor: not-allowed; overflow-x: hidden; white-space: nowrap; text-overflow: ellipsis;">No wallet selected</div>
+            </div>
+            
+            <div class="form-group" id="dnaSelectionContainer" style="display: none;">
+                <label for="dnaSelect">Select DNA Nickname:</label>
+                <select id="dnaSelect" class="form-control"></select>
+                <div class="help-text">Choose which DNA nickname to use for delegation</div>
+            </div>
+
+            <div class="form-group">
+                <label for="rewardsAddress">Rewards Address:</label>
+                <input type="text" id="rewardsAddress" class="form-control" placeholder="Enter the address to receive rewards">
+                <div class="help-text">This address will receive your delegation rewards</div>
+                <div class="warning-text">Address must be registered in DNA system.</div>
+                <div id="dnaStatus" style="margin-top: 10px; font-family: 'Courier New', monospace; display: none;"></div>
+                <div class="error-text" id="rewardsAddressError"></div>
+            </div>
+
+            <div class="form-group">
+                <label for="delegationAmount">Amount to Delegate:</label>
+                <input type="number" id="delegationAmount" class="form-control" placeholder="Enter amount" min="1" step="0.01">
+                <div class="help-text" id="delegationHelpText">Select a network and wallet first</div>
+                <div class="warning-text" id="balanceWarning"></div>
+                <div class="error-text" id="delegationAmountError"></div>
+            </div>
+
+            <div class="form-option">
+                <div class="form-option-title">
+                    <label>Tax Rate:</label>
+                    <div class="tax-value" id="taxValue">-</div>
+                </div>
+                <div class="help-text">Tax rate is automatically determined based on network and delegation amount.</div>
+                <div id="taxRateInfo" style="margin: 10px 0; color: #ccc; font-size: 0.9em;"></div>
+            </div>
+
+            <div class="success-message" id="successMessage"></div>
+            <div class="response-container" id="apiResponse">
+                <h4>API Response</h4>
+                <div class="response-data" id="responseData"></div>
+            </div>
+
+            <div class="help-button-container">
+                <button type="button" id="submitDelegation" class="help-button" disabled>Submit Delegation</button>
+                <div class="help-description">Stake your tokens and earn rewards</div>
+            </div>
+        </div>
+        
+        <!-- Verification Section -->
+        <div class="section" id="verificationSection" style="display: none; padding: 20px; margin-bottom: 25px;">
+            <h3 style="margin-top: 0; font-size: 1.2em;">Transaction Verification</h3>
+            
+            <div id="txProcessingContainer" class="tx-processing-container">
+                <div class="tx-processing-animation">
+                    <div class="tx-processing-spinner"></div>
+                </div>
+                <div id="verificationStatus" class="tx-status">Processing your delegation transaction. Please wait...</div>
+                <div class="error-message" id="txError" style="display: none;"></div>
+                <div class="success-message" id="txSuccess" style="display: none;"></div>
+                
+                <div class="transaction-details">
+                    <div id="txHashDisplay" class="hash-container"></div>
+                    <div id="orderHashDisplay" class="hash-container"></div>
+                </div>
+                
+                <div class="verification-progress" id="verificationProgress">
+                    <div class="progress-bar">
+                        <div id="progressFill" class="progress-fill"></div>
+                    </div>
+                </div>
+                
+                <div id="verificationDetails" class="verification-details"></div>
+                
+                <div class="help-button-container">
+                    <button id="retestVerificationButton" class="help-button" style="display: none;">
+                        Retest Verification
+                    </button>
+                </div>
+                
+                <div class="tx-note">
+                    Transaction verification works in the background. The transaction will be checked at increasing intervals to confirm your delegation.
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation now handled by navbar-template.html -->
+    </div>
+
+    <!-- Core utilities -->
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <script src="js/dashboardConnector.js"></script>
+    <script src="js/cpunk-api-console.js"></script>
+    <!-- Page specific script -->
+    <script src="js/delegation.js"></script>
+    
+    <!-- Initialize API console -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize API console if available
+            if (typeof window.logAPI === 'undefined' && typeof CpunkAPIConsole !== 'undefined') {
+                if (CpunkAPIConsole.init) {
+                    CpunkAPIConsole.init();
+                    console.log('API Console initialized for delegation page');
+                    
+                    // Log a test message to verify it's working
+                    window.logAPI('Delegation Page Initialized', { 
+                        source: 'delegate.html', 
+                        time: new Date().toISOString(),
+                        message: 'Press Ctrl+Shift+A to toggle API Console'
+                    });
+                }
+            }
+        });
+    </script>
+</body>
+</html>
