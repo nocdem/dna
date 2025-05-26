@@ -4,6 +4,14 @@ Every session will start with protocol mode enabled.
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Security Warning
+
+**CRITICAL SECURITY NOTE**: This project is OPEN SOURCE and publicly accessible. When deploying or creating code:
+- NEVER include sensitive information (passwords, API keys, private keys, tokens)
+- NEVER commit secrets to the repository
+- ALWAYS review code for security vulnerabilities before deployment
+- Consider all code and configurations as publicly visible
+
 ## Project Overview
 
 This repository contains the CPUNK cryptocurrency platform, a "Quantum-Safe MEME Coin" built on the Cellframe blockchain. The platform is primarily a web application with these key features:
