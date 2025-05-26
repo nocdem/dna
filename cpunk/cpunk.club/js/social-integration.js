@@ -615,7 +615,13 @@ const SocialIntegration = (function() {
         const features = `width=${width},height=${height},left=${left},top=${top},menubar=no,toolbar=no,location=no`;
         
         // Build URL with wallet parameter
-        const authUrl = `${oauthUrl}?auth=start&wallet=${encodeURIComponent(walletAddress)}`;
+        // Use correct parameter based on the OAuth provider
+        let authParam = 'request=auth'; // Default for most providers
+        if (oauthUrl.includes('twitter_oauth.php')) {
+            authParam = 'auth=start'; // Twitter uses 'auth=start'
+        }
+        
+        const authUrl = `${oauthUrl}?${authParam}&wallet=${encodeURIComponent(walletAddress)}`;
         
         // Try to open popup
         const popup = window.open(authUrl, windowName, features);

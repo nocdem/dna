@@ -52,6 +52,12 @@ function generateState() {
 if (isset($_GET['auth']) && $_GET['auth'] === 'start') {
     logMsg('Starting Twitter OAuth 2.0 authorization');
     
+    // Store wallet address in session
+    if (isset($_GET['wallet'])) {
+        $_SESSION['wallet_address'] = $_GET['wallet'];
+        logMsg('Stored wallet address in session: ' . $_GET['wallet']);
+    }
+    
     // Generate and store state
     $state = generateState();
     $_SESSION['twitter_oauth_state'] = $state;
@@ -152,11 +158,32 @@ if (isset($_GET['code'])) {
         
         logMsg('Successfully authenticated user: ' . $username);
         
+        // Get wallet address from session or query parameter
+        $walletAddress = '';
+        if (isset($_GET['wallet']) && !empty($_GET['wallet'])) {
+            $walletAddress = $_GET['wallet'];
+            logMsg('Got wallet address from query param: ' . $walletAddress);
+        } elseif (isset($_SESSION['wallet_address']) && !empty($_SESSION['wallet_address'])) {
+            $walletAddress = $_SESSION['wallet_address'];
+            logMsg('Got wallet address from session: ' . $walletAddress);
+        }
+        
+        // Update DNA record if we have a wallet address
+        $result = [];
+        if (!empty($walletAddress)) {
+            logMsg('Updating DNA with Twitter username: ' . $username . ' for wallet: ' . $walletAddress);
+            $result = updateDnaTwitter($walletAddress, $username);
+            logMsg('DNA update result: ' . json_encode($result));
+        } else {
+            logMsg('No wallet address available for DNA update');
+        }
+        
         // Send success message to parent window
         echo "<script>
             window.opener.postMessage({
                 type: 'twitter_auth_success',
-                username: '" . addslashes($username) . "'
+                username: '" . addslashes($username) . "',
+                result: " . json_encode($result) . "
             }, '*');
             window.close();
         </script>";
@@ -183,6 +210,96 @@ if (isset($_GET['error'])) {
         window.close();
     </script>";
     exit;
+}
+
+/**
+ * Update the user's DNA record with their Twitter username
+ */
+function updateDnaTwitter($walletAddress, $twitterUsername) {
+    global $logFile;
+    
+    logMsg('Starting DNA update for Twitter username: ' . $twitterUsername);
+    
+    // DNA API endpoint
+    $dnaApiUrl = 'https://' . $_SERVER['HTTP_HOST'] . '/dna-proxy.php';
+    
+    // Prepare data for update
+    $updateData = [
+        'action' => 'update',
+        'wallet' => $walletAddress,
+        'socials' => [
+            'x' => [
+                'profile' => $twitterUsername,
+                'verified' => true
+            ]
+        ]
+    ];
+    
+    $postData = json_encode($updateData);
+    logMsg('DNA update data: ' . $postData);
+    logMsg('DNA API URL: ' . $dnaApiUrl);
+    
+    // Make POST request to update DNA
+    $ch = curl_init($dnaApiUrl);
+    curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+    curl_setopt($ch, CURLOPT_POST, true);
+    curl_setopt($ch, CURLOPT_POSTFIELDS, $postData);
+    curl_setopt($ch, CURLOPT_HTTPHEADER, [
+        'Content-Type: application/json',
+        'Content-Length: ' . strlen($postData)
+    ]);
+    
+    // Add verbose debugging
+    $verbose = fopen('php://temp', 'w+');
+    curl_setopt($ch, CURLOPT_VERBOSE, true);
+    curl_setopt($ch, CURLOPT_STDERR, $verbose);
+    
+    $response = curl_exec($ch);
+    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    
+    // Get verbose debug information
+    rewind($verbose);
+    $verboseLog = stream_get_contents($verbose);
+    logMsg('CURL Verbose log: ' . $verboseLog);
+    
+    // Check for curl errors
+    if (curl_errno($ch)) {
+        $error = curl_error($ch);
+        logMsg('CURL Error: ' . $error);
+        curl_close($ch);
+        return ['error' => 'CURL error: ' . $error];
+    }
+    
+    curl_close($ch);
+    
+    logMsg('DNA API response code: ' . $httpCode);
+    logMsg('DNA API response: ' . $response);
+    
+    // Try to parse response
+    $result = [];
+    try {
+        $result = json_decode($response, true);
+        if (json_last_error() !== JSON_ERROR_NONE) {
+            logMsg('JSON Parse Error: ' . json_last_error_msg());
+            $result = ['error' => 'Failed to parse JSON response', 'response' => $response];
+        }
+    } catch (Exception $e) {
+        logMsg('Exception parsing response: ' . $e->getMessage());
+        $result = ['error' => 'Exception: ' . $e->getMessage(), 'response' => $response];
+    }
+    
+    if (empty($result)) {
+        // If response is empty or couldn't be parsed, but we got a success HTTP code
+        if ($httpCode >= 200 && $httpCode < 300) {
+            $result = ['success' => true, 'message' => 'DNA updated successfully'];
+            logMsg('DNA update appears successful based on HTTP code');
+        } else {
+            $result = ['error' => 'Empty response with HTTP code: ' . $httpCode, 'response' => $response];
+            logMsg('DNA update failed with HTTP code: ' . $httpCode);
+        }
+    }
+    
+    return $result;
 }
 
 // If no action specified, show error
