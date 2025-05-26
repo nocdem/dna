@@ -2,6 +2,29 @@
 
 All notable changes to CPUNK platform will be documented in this file.
 
+## [0.1.5] - 2025-05-26
+
+### Added
+- Centralized authentication module (authentication.js)
+  - Created reusable authentication library for admin-protected pages
+  - Provides consistent authentication flow across admin and editor pages
+  - Automatic admin DNA detection after wallet selection
+  - Simplified authentication process - no manual DNA selection needed
+
+### Changed
+- Updated Editor page authentication
+  - Now uses centralized authentication module
+  - Removed DNA selection step - automatically checks for admin access
+  - Updated wallets tab to show only crypto wallets (dinosaur_wallets)
+  - Added "Clear All Wallets" button that preserves wallet structure
+- Updated Admin page authentication
+  - Migrated to use centralized authentication module
+  - Consistent authentication behavior with editor page
+
+### Fixed
+- Fixed wallet clearing to preserve crypto currency structure (BTC, ETH, SOL, QEVM, BNB)
+- Fixed editor authentication to match admin page behavior
+
 ## [0.1.4] - 2025-05-19
 
 ### Added

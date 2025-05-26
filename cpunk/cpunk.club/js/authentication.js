@@ -86,7 +86,7 @@ class CpunkAuthentication {
      */
     async loadAdmins() {
         try {
-            const response = await fetch('admins.txt');
+            const response = await fetch('get_admins.php');
             
             if (!response.ok) {
                 throw new Error(`Failed to load admins.txt: ${response.status}`);

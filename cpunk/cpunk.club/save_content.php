@@ -184,7 +184,7 @@ if (!function_exists('str_starts_with')) {
 
 // Load admins list
 function loadAdmins() {
-    $adminsFile = 'admins.txt';
+    $adminsFile = '/home/deployer/config/admins.txt';
     
     if (!file_exists($adminsFile)) {
         log_debug("Admin file not found: $adminsFile");
@@ -263,7 +263,7 @@ if (!authenticateUser($dna, $wallet)) {
 }
 
 // Validate filename
-$allowed_files = ['news.txt', 'updates.txt', 'invitation_codes.txt', 'admins.txt', 'content.txt', 'custom.txt']; // Allow specific files to be modified
+$allowed_files = ['news.txt', 'updates.txt', 'invitation_codes.txt', 'content.txt', 'custom.txt']; // Allow specific files to be modified
 $allowed_extensions = ['.txt']; // Only allow text files
 
 // Check if filename is in allowed list or has allowed extension

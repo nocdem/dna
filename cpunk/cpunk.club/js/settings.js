@@ -4,14 +4,8 @@
 let walletAddress = null;
 let dnaData = null;
 
-// Store external wallet addresses
-let externalWallets = {
-    BTC: '',
-    ETH: '',
-    SOL: '',
-    BNB: '',  // Added BNB wallet support
-    QEVM: ''  // Added QEVM field to match updated API
-};
+// External wallets now managed by WalletIntegration module
+let externalWallets = {};
 
 document.addEventListener('DOMContentLoaded', function() {
     
@@ -21,6 +15,18 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initialize Social Integration module
     if (typeof SocialIntegration !== 'undefined') {
         SocialIntegration.init();
+    }
+    
+    // Initialize Wallet Integration module
+    if (typeof WalletIntegration !== 'undefined') {
+        WalletIntegration.init({
+            onWalletUpdate: function(wallets) {
+                // Update external wallets reference
+                externalWallets = wallets;
+                // Auto-save profile data when wallet is connected
+                saveProfileDataSilently();
+            }
+        });
     }
     
     // Set up event listeners
@@ -37,23 +43,41 @@ document.addEventListener('DOMContentLoaded', function() {
     if (typeof CpunkDashboard !== 'undefined') {
         CpunkDashboard.init({
             onConnected: function(sessionId) { 
-                // Show wallet selection after connection
+                // Show wallet selection after connection and hide other sections
                 const walletSection = document.getElementById('walletSection');
+                const dnaSection = document.getElementById('dnaSection');
+                const editSection = document.getElementById('editSection');
+                
                 if (walletSection) walletSection.style.display = 'block';
+                if (dnaSection) dnaSection.style.display = 'none';
+                if (editSection) editSection.style.display = 'none';
             },
             onWalletSelected: function(wallet) {
                 // Store wallet address
                 if (wallet && wallet.address) {
                     walletAddress = wallet.address;
                     
+                    // External wallets (dinosaur wallets) will be loaded from API for this wallet
+                    
+                    // Clear cached DNA data
+                    dnaData = null;
+                    
                     // Update Social Integration module with wallet address
                     if (typeof SocialIntegration !== 'undefined') {
                         SocialIntegration.setWalletAddress(walletAddress);
+                        SocialIntegration.setDnaData(null); // Clear cached DNA data
                     }
                     
                     // Set wallet address to hidden input for forms
                     const walletAddressInput = document.getElementById('walletAddress');
                     if (walletAddressInput) walletAddressInput.value = walletAddress;
+                    
+                    // Hide wallet section and show DNA section
+                    const walletSection = document.getElementById('walletSection');
+                    const dnaSection = document.getElementById('dnaSection');
+                    
+                    if (walletSection) walletSection.style.display = 'none';
+                    if (dnaSection) dnaSection.style.display = 'block';
                     
                     // Check DNA registration
                     checkDnaRegistration();
@@ -158,8 +182,7 @@ function setupEventListeners() {
     // The dashboardConnector.js file already adds its own click handler.
     // Just setup other buttons below.
     
-    // Set up wallet connection buttons
-    setupWalletButtons();
+    // Wallet connection buttons are now handled by WalletIntegration module
     
     // Edit button
     const editButton = document.getElementById('editButton');
@@ -389,21 +412,11 @@ async function checkDnaRegistration() {
             
             // Check for dinosaur_wallets in response_data
             if (data.response_data.dinosaur_wallets) {
-                // Store wallet addresses
-                externalWallets = {
-                    BTC: data.response_data.dinosaur_wallets.BTC || '',
-                    ETH: data.response_data.dinosaur_wallets.ETH || '',
-                    SOL: data.response_data.dinosaur_wallets.SOL || '',
-                    QEVM: data.response_data.dinosaur_wallets.QEVM || ''
-                };
-                
-                // Update UI for connected wallets
-                updateWalletUI(data.response_data.dinosaur_wallets);
-                
-                // Force update to wallet tabs with a delay
-                setTimeout(() => {
-                    updateWalletUI(data.response_data.dinosaur_wallets);
-                }, 500);
+                // Update wallet integration module with stored wallet addresses
+                if (typeof WalletIntegration !== 'undefined') {
+                    WalletIntegration.setExternalWallets(data.response_data.dinosaur_wallets);
+                    externalWallets = WalletIntegration.getExternalWallets();
+                }
             }
             
             // Check for delegations in response_data
@@ -416,20 +429,11 @@ async function checkDnaRegistration() {
             
             // Check for dinosaur_wallets directly in data
             if (data.dinosaur_wallets) {
-                externalWallets = {
-                    BTC: data.dinosaur_wallets.BTC || '',
-                    ETH: data.dinosaur_wallets.ETH || '',
-                    SOL: data.dinosaur_wallets.SOL || '',
-                    QEVM: data.dinosaur_wallets.QEVM || ''
-                };
-                
-                // Update UI for connected wallets
-                updateWalletUI(data.dinosaur_wallets);
-                
-                // Force update to wallet tabs with a delay
-                setTimeout(() => {
-                    updateWalletUI(data.dinosaur_wallets);
-                }, 500);
+                // Update wallet integration module with stored wallet addresses
+                if (typeof WalletIntegration !== 'undefined') {
+                    WalletIntegration.setExternalWallets(data.dinosaur_wallets);
+                    externalWallets = WalletIntegration.getExternalWallets();
+                }
             }
             
             // Check for delegations directly in data
@@ -442,20 +446,11 @@ async function checkDnaRegistration() {
             
             // Check for dinosaur_wallets in data.data
             if (data.data.dinosaur_wallets) {
-                externalWallets = {
-                    BTC: data.data.dinosaur_wallets.BTC || '',
-                    ETH: data.data.dinosaur_wallets.ETH || '',
-                    SOL: data.data.dinosaur_wallets.SOL || '',
-                    QEVM: data.data.dinosaur_wallets.QEVM || ''
-                };
-                
-                // Update UI for connected wallets
-                updateWalletUI(data.data.dinosaur_wallets);
-                
-                // Force update to wallet tabs with a delay
-                setTimeout(() => {
-                    updateWalletUI(data.data.dinosaur_wallets);
-                }, 500);
+                // Update wallet integration module with stored wallet addresses
+                if (typeof WalletIntegration !== 'undefined') {
+                    WalletIntegration.setExternalWallets(data.data.dinosaur_wallets);
+                    externalWallets = WalletIntegration.getExternalWallets();
+                }
             }
             
             // Check for delegations in data.data
@@ -485,9 +480,15 @@ async function checkDnaRegistration() {
             // Load DNA information right away without waiting for tab click
             displayDNAInformation(data);
 
-            // Show DNA details
+            // Show DNA details and edit button
             if (dnaDetails) {
                 dnaDetails.style.display = 'block';
+            }
+            
+            // Show edit button when DNA data is found
+            const editButton = document.getElementById('editButton');
+            if (editButton) {
+                editButton.style.display = 'block';
             }
             
             // Check for pending Telegram verification and show instructions if needed
@@ -529,8 +530,11 @@ function updateProfilePreview(data) {
     
     // Check for dinosaur_wallets in the data
     if (data.dinosaur_wallets) {
-        // Store wallet addresses and update UI
-        updateWalletUI(data.dinosaur_wallets);
+        // Update wallet integration module with stored wallet addresses
+        if (typeof WalletIntegration !== 'undefined') {
+            WalletIntegration.setExternalWallets(data.dinosaur_wallets);
+            externalWallets = WalletIntegration.getExternalWallets();
+        }
     }
     
     // Check for delegations in the data
@@ -610,431 +614,14 @@ function updateProfilePreview(data) {
 // - continueTelegramVerification, checkPendingTelegramVerification
 
 
-/**
- * Connect Ethereum wallet via MetaMask
- */
-async function connectEthWallet() {
-    const ethWalletStatus = document.getElementById('ethWalletStatus');
-    const ethWalletAddress = document.getElementById('ethWalletAddress');
-    const connectEthButton = document.getElementById('connectEthWallet');
-    
-    try {
-        // Check if MetaMask is installed
-        if (typeof window.ethereum === 'undefined') {
-            throw new Error('MetaMask is not installed. Please install MetaMask to connect your Ethereum wallet.');
-        }
-        
-        // Update button state
-        if (connectEthButton) {
-            connectEthButton.disabled = true;
-            connectEthButton.innerHTML = '<span class="loading-spinner"></span>Connecting...';
-        }
-        
-        // Request account access
-        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-        
-        if (accounts.length > 0) {
-            const address = accounts[0];
-            
-            // Update UI
-            if (ethWalletAddress) ethWalletAddress.textContent = address;
-            if (ethWalletStatus) ethWalletStatus.style.display = 'block';
-            if (connectEthButton) connectEthButton.innerHTML = 'Connected to MetaMask';
-            
-            // Store for API submission later
-            externalWallets.ETH = address;
-            
-            showSuccess('Ethereum wallet connected successfully!');
-            
-            // Update wallet counts in UI
-            const walletsCount = document.getElementById('walletsCount');
-            if (walletsCount) {
-                const count = Object.values(externalWallets).filter(w => w && w.trim() !== '').length;
-                walletsCount.textContent = count;
-            }
-            
-            // Auto-save profile data when wallet is connected
-            saveProfileDataSilently();
-        }
-    } catch (error) {
-        showError('Error connecting to MetaMask: ' + error.message);
-        console.error('Error connecting to MetaMask:', error);
-        
-        // Reset button
-        if (connectEthButton) {
-            connectEthButton.innerHTML = `
-                <span style="display: flex; align-items: center; justify-content: center; gap: 5px;">
-                    <svg width="16" height="16" viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg">
-                        <path d="M13.9851 0L13.8093 0.596454V19.1476L13.9851 19.3233L22.5543 14.2173L13.9851 0Z" fill="white"/>
-                        <path d="M13.9851 0L5.41602 14.2173L13.9851 19.3233V10.3505V0Z" fill="white" fill-opacity="0.8"/>
-                        <path d="M13.9852 20.9506L13.8848 21.0725V27.6323L13.9852 27.9241L22.5602 15.8469L13.9852 20.9506Z" fill="white"/>
-                        <path d="M13.9851 27.9241V20.9506L5.41602 15.8469L13.9851 27.9241Z" fill="white" fill-opacity="0.8"/>
-                        <path d="M13.9851 19.3232L22.5542 14.2172L13.9851 10.3503V19.3232Z" fill="white" fill-opacity="0.9"/>
-                        <path d="M5.41602 14.2172L13.9851 19.3232V10.3503L5.41602 14.2172Z" fill="white" fill-opacity="0.7"/>
-                    </svg>
-                    MetaMask
-                </span>
-            `;
-        }
-    } finally {
-        if (connectEthButton) connectEthButton.disabled = false;
-    }
-}
+// Cryptocurrency wallet functions have been moved to wallet-integration.js
+// The following functions have been removed and replaced with WalletIntegration module calls:
+// - connectEthWallet, connectBtcWallet, connectSolWallet, connectBnbWallet
+// - connectSolWalletWithPhantom, updateWalletUI, setupWalletButtons
 
-/**
- * Connect Bitcoin wallet using Trust Wallet
- */
-async function connectBtcWallet() {
-    const btcWalletStatus = document.getElementById('btcWalletStatus');
-    const btcWalletAddress = document.getElementById('btcWalletAddress');
-    const connectBtcButton = document.getElementById('connectBtcWallet');
-    
-    try {
-        // Update button state
-        if (connectBtcButton) {
-            connectBtcButton.disabled = true;
-            connectBtcButton.innerHTML = '<span class="loading-spinner"></span>Connecting...';
-        }
-        
-        // Check if Trust Wallet is installed
-        if (typeof window.trustwallet === 'undefined') {
-            throw new Error('Trust Wallet is not installed. Please install Trust Wallet to connect your Bitcoin wallet.');
-        }
-        
-        // Get the Trust Wallet provider
-        const provider = window.trustwallet;
-        
-        try {
-            // Check if Trust Wallet has any Bitcoin capability
-            // Standard approach following TrustWallet's documentation
-            
-            // First try standard TrustWallet Bitcoin API
-            if (provider.bitcoin) {
-                await provider.bitcoin.request({ method: 'requestAccounts' });
-                
-                // Get the address
-                const address = await provider.bitcoin.request({ method: 'getAccounts' });
-                
-                if (address && address.length > 0) {
-                    const btcAddress = address[0];
-                    
-                    // Update UI
-                    if (btcWalletAddress) btcWalletAddress.textContent = btcAddress;
-                    if (btcWalletStatus) btcWalletStatus.style.display = 'block';
-                    if (connectBtcButton) connectBtcButton.innerHTML = 'Connected to Trust Wallet';
-                    
-                    // Store for API submission later
-                    externalWallets.BTC = btcAddress;
-                    
-                    showSuccess('Bitcoin wallet connected successfully!');
-                    
-                    // Update wallet counts in UI
-                    const walletsCount = document.getElementById('walletsCount');
-                    if (walletsCount) {
-                        const count = Object.values(externalWallets).filter(w => w && w.trim() !== '').length;
-                        walletsCount.textContent = count;
-                    }
-                    
-                    // Auto-save profile data when wallet is connected
-                    saveProfileDataSilently();
-                    return;
-                }
-            }
-            
-            // TODO: Proper Bitcoin integration with Trust Wallet to be implemented later
-            if (provider.request) {
-                try {
-                    
-                    // Show message that Bitcoin connection is not supported yet
-                    showError('Bitcoin wallet connection with Trust Wallet is not yet supported.');
-                    
-                    // Update UI to show pending status
-                    if (btcWalletStatus) btcWalletStatus.style.display = 'none';
-                    if (connectBtcButton) connectBtcButton.innerHTML = 'Bitcoin Wallet';
-                    
-                    return;
-                } catch (innerError) {
-                }
-            }
-            
-            // If we reach here, no method worked
-            throw new Error('Bitcoin connection method not available in this Trust Wallet version');
-        } catch (err) {
-            console.error('Trust Wallet Bitcoin error:', err);
-            if (err.code === 4001) {
-                throw new Error('User rejected the connection request');
-            } else {
-                throw err;
-            }
-        }
-    } catch (error) {
-        showError('Error connecting Bitcoin wallet: ' + error.message);
-        console.error('Error connecting Bitcoin wallet:', error);
-        
-        // Reset button
-        if (connectBtcButton) {
-            connectBtcButton.disabled = false;
-            connectBtcButton.innerHTML = 'Bitcoin Wallet';
-        }
-    } finally {
-        if (connectBtcButton) connectBtcButton.disabled = false;
-    }
-}
 
-/**
- * Connect Solana wallet using Trust Wallet
- */
-async function connectSolWallet() {
-    const solWalletStatus = document.getElementById('solWalletStatus');
-    const solWalletAddress = document.getElementById('solWalletAddress');
-    const connectSolButton = document.getElementById('connectSolWallet');
-    
-    try {
-        // Check if Trust Wallet is installed first
-        if (typeof window.trustwallet === 'undefined') {
-            // Fall back to Phantom wallet if Trust Wallet is not available
-            if (typeof window.solana === 'undefined') {
-                throw new Error('No Solana wallet detected. Please install Trust Wallet or Phantom to connect your Solana wallet.');
-            } else {
-                // Use Phantom wallet as before
-                return connectSolWalletWithPhantom();
-            }
-        }
-        
-        // Update button state
-        if (connectSolButton) {
-            connectSolButton.disabled = true;
-            connectSolButton.innerHTML = '<span class="loading-spinner"></span>Connecting...';
-        }
-        
-        // Connect to Trust Wallet Solana
-        try {
-            const provider = window.trustwallet;
-            
-            // Check if Trust Wallet has a solana namespace
-            if (!provider.solana) {
-                // Use more standard Web3 provider approach that works with most wallets including Trust Wallet
-                // Trust Wallet may expose Solana functionality through a different API
-                
-                // First try standard Solana-compatible API
-                if (provider.isTrust && provider.isSolana) {
-                    await provider.connect();
-                    const address = provider.publicKey.toString();
-                    
-                    // Update UI
-                    if (solWalletAddress) solWalletAddress.textContent = address;
-                    if (solWalletStatus) solWalletStatus.style.display = 'block';
-                    if (connectSolButton) connectSolButton.innerHTML = 'Connected to Trust Wallet';
-                    
-                    // Store for API submission later
-                    externalWallets.SOL = address;
-                    
-                    showSuccess('Solana wallet connected successfully!');
-                    
-                    // Update wallet counts in UI
-                    const walletsCount = document.getElementById('walletsCount');
-                    if (walletsCount) {
-                        const count = Object.values(externalWallets).filter(w => w && w.trim() !== '').length;
-                        walletsCount.textContent = count;
-                    }
-                    
-                    // Auto-save profile data when wallet is connected
-                    saveProfileDataSilently();
-                    return;
-                }
-                
-                // Fall back to standard Solana wallet adapter approach
-                if (window.solana) {
-                    return connectSolWalletWithPhantom();
-                }
-                
-                throw new Error('Solana functionality not supported in Trust Wallet on this device');
-            }
-            
-            // Standard Trust Wallet Solana API approach
-            await provider.solana.request({ method: 'connect' });
-            
-            // Get the address 
-            const resp = await provider.solana.request({ method: 'getAccount' });
-            
-            // Trust Wallet Solana API returns the public key in the account property
-            const address = resp.publicKey.toString();
-            
-            // Update UI
-            if (solWalletAddress) solWalletAddress.textContent = address;
-            if (solWalletStatus) solWalletStatus.style.display = 'block';
-            if (connectSolButton) connectSolButton.innerHTML = 'Connected to Trust Wallet';
-            
-            // Store for API submission later
-            externalWallets.SOL = address;
-            
-            showSuccess('Solana wallet connected successfully!');
-            
-            // Update wallet counts in UI
-            const walletsCount = document.getElementById('walletsCount');
-            if (walletsCount) {
-                const count = Object.values(externalWallets).filter(w => w && w.trim() !== '').length;
-                walletsCount.textContent = count;
-            }
-        } catch (err) {
-            console.error('Trust Wallet Solana error:', err);
-            if (err.code === 4001) {
-                throw new Error('User rejected the connection request');
-            } else {
-                // Try Phantom as fallback
-                if (window.solana) {
-                    return connectSolWalletWithPhantom();
-                }
-                throw err;
-            }
-        }
-    } catch (error) {
-        showError('Error connecting to Solana wallet: ' + error.message);
-        console.error('Error connecting to Solana wallet:', error);
-        
-        // Reset button
-        if (connectSolButton) {
-            connectSolButton.innerHTML = 'Solana Wallet';
-        }
-    } finally {
-        if (connectSolButton) connectSolButton.disabled = false;
-    }
-}
 
-/**
- * Connect BNB wallet using Trust Wallet
- */
-async function connectBnbWallet() {
-    const bnbWalletStatus = document.getElementById('bnbWalletStatus');
-    const bnbWalletAddress = document.getElementById('bnbWalletAddress');
-    const connectBnbButton = document.getElementById('connectBnbWallet');
-    
-    try {
-        // Update button state
-        if (connectBnbButton) {
-            connectBnbButton.disabled = true;
-            connectBnbButton.innerHTML = '<span class="loading-spinner"></span>Connecting...';
-        }
-        
-        // Check if Trust Wallet is installed
-        if (typeof window.trustwallet === 'undefined') {
-            throw new Error('Trust Wallet is not installed. Please install Trust Wallet to connect your BNB wallet.');
-        }
-        
-        // Get the Trust Wallet provider
-        const provider = window.trustwallet;
-        
-        try {
-            // Use standard eth_requestAccounts to get the BNB address
-            const accounts = await provider.request({ method: 'eth_requestAccounts', params: [{ chainId: '0x38' }] });
-            
-            if (accounts && accounts.length > 0) {
-                const bnbAddress = accounts[0];
-                
-                // Update UI
-                if (bnbWalletAddress) bnbWalletAddress.textContent = bnbAddress;
-                if (bnbWalletStatus) bnbWalletStatus.style.display = 'block';
-                if (connectBnbButton) connectBnbButton.innerHTML = 'Connected to Trust Wallet';
-                
-                // Store for API submission later
-                externalWallets.BNB = bnbAddress;
-                
-                showSuccess('BNB wallet connected successfully!');
-                
-                // Update wallet counts in UI
-                const walletsCount = document.getElementById('walletsCount');
-                if (walletsCount) {
-                    const count = Object.values(externalWallets).filter(w => w && w.trim() !== '').length;
-                    walletsCount.textContent = count;
-                }
-                
-                // Auto-save profile data when wallet is connected
-                try {
-                    saveProfileData(true);
-                } catch (saveError) {
-                    console.error('Error auto-saving profile after BNB connection:', saveError);
-                }
-                return;
-            } else {
-                throw new Error('No BNB accounts found');
-            }
-        } catch (err) {
-            console.error('Trust Wallet BNB error:', err);
-            if (err.code === 4001) {
-                throw new Error('User rejected the connection request');
-            } else {
-                throw err;
-            }
-        }
-    } catch (error) {
-        showError('Error connecting to BNB wallet: ' + error.message);
-        console.error('Error connecting to BNB wallet:', error);
-        
-        // Reset button
-        if (connectBnbButton) {
-            connectBnbButton.innerHTML = 'BNB Wallet';
-        }
-    } finally {
-        if (connectBnbButton) connectBnbButton.disabled = false;
-    }
-}
 
-/**
- * Connect Solana wallet with Phantom (fallback method)
- */
-async function connectSolWalletWithPhantom() {
-    const solWalletStatus = document.getElementById('solWalletStatus');
-    const solWalletAddress = document.getElementById('solWalletAddress');
-    const connectSolButton = document.getElementById('connectSolWallet');
-    
-    try {
-        // Update button state
-        if (connectSolButton) {
-            connectSolButton.disabled = true;
-            connectSolButton.innerHTML = '<span class="loading-spinner"></span>Connecting...';
-        }
-        
-        // Connect to Phantom wallet
-        try {
-            const resp = await window.solana.connect();
-            
-            const address = resp.publicKey.toString();
-            
-            // Update UI
-            if (solWalletAddress) solWalletAddress.textContent = address;
-            if (solWalletStatus) solWalletStatus.style.display = 'block';
-            if (connectSolButton) connectSolButton.innerHTML = 'Connected to Phantom';
-            
-            // Store for API submission later
-            externalWallets.SOL = address;
-            
-            showSuccess('Solana wallet connected successfully!');
-            
-            // Update wallet counts in UI
-            const walletsCount = document.getElementById('walletsCount');
-            if (walletsCount) {
-                const count = Object.values(externalWallets).filter(w => w && w.trim() !== '').length;
-                walletsCount.textContent = count;
-            }
-        } catch (err) {
-            if (err.code === 4001) {
-                throw new Error('User rejected the connection request');
-            } else {
-                throw err;
-            }
-        }
-    } catch (error) {
-        showError('Error connecting to Phantom wallet: ' + error.message);
-        console.error('Error connecting to Phantom wallet:', error);
-        
-        // Reset button
-        if (connectSolButton) {
-            connectSolButton.innerHTML = 'Solana Wallet';
-        }
-    } finally {
-        if (connectSolButton) connectSolButton.disabled = false;
-    }
-}
 
 /**
  * Load DNA information in the DNA tab
@@ -1286,31 +873,22 @@ function displayDNAInformation(data) {
         
         // Check for dinosaur_wallets in response_data
         if (data.response_data.dinosaur_wallets) {
-            // Store wallet addresses
-            externalWallets = {
-                BTC: data.response_data.dinosaur_wallets.BTC || '',
-                ETH: data.response_data.dinosaur_wallets.ETH || '',
-                SOL: data.response_data.dinosaur_wallets.SOL || '',
-                QEVM: data.response_data.dinosaur_wallets.QEVM || ''
-            };
-            
-            // Update UI for connected wallets
-            updateWalletUI(data.response_data.dinosaur_wallets);
+            // Update wallet integration module with stored wallet addresses
+            if (typeof WalletIntegration !== 'undefined') {
+                WalletIntegration.setExternalWallets(data.response_data.dinosaur_wallets);
+                externalWallets = WalletIntegration.getExternalWallets();
+            }
         }
     } else if (data.registered_names) {
         registeredNames = data.registered_names;
         
         // Check for dinosaur_wallets directly in data
         if (data.dinosaur_wallets) {
-            externalWallets = {
-                BTC: data.dinosaur_wallets.BTC || '',
-                ETH: data.dinosaur_wallets.ETH || '',
-                SOL: data.dinosaur_wallets.SOL || '',
-                QEVM: data.dinosaur_wallets.QEVM || ''
-            };
-            
-            // Update UI for connected wallets
-            updateWalletUI(data.dinosaur_wallets);
+            // Update wallet integration module with stored wallet addresses
+            if (typeof WalletIntegration !== 'undefined') {
+                WalletIntegration.setExternalWallets(data.dinosaur_wallets);
+                externalWallets = WalletIntegration.getExternalWallets();
+            }
         }
     }
     
@@ -1382,99 +960,7 @@ function displayDNAInformation(data) {
     noDNAsElement.style.display = 'none';
 }
 
-/**
- * Helper function to update wallet UI
- */
-function updateWalletUI(wallets) {
-    if (!wallets) return;
-    
-    // Store wallet addresses globally
-    if (wallets.BTC) externalWallets.BTC = wallets.BTC;
-    if (wallets.ETH) externalWallets.ETH = wallets.ETH;
-    if (wallets.SOL) externalWallets.SOL = wallets.SOL;
-    if (wallets.BNB) externalWallets.BNB = wallets.BNB;
-    if (wallets.QEVM) externalWallets.QEVM = wallets.QEVM;
-    
-    // Update ETH wallet UI
-    if (wallets.ETH) {
-        const ethWalletStatus = document.getElementById('ethWalletStatus');
-        const ethWalletAddress = document.getElementById('ethWalletAddress');
-        const connectEthWallet = document.getElementById('connectEthWallet');
-        
-        if (ethWalletAddress) ethWalletAddress.textContent = wallets.ETH;
-        if (ethWalletStatus) ethWalletStatus.style.display = 'block';
-        if (connectEthWallet) connectEthWallet.innerHTML = 'Connected to MetaMask';
-    }
-    
-    // Update BTC wallet UI
-    if (wallets.BTC) {
-        const btcWalletStatus = document.getElementById('btcWalletStatus');
-        const btcWalletAddress = document.getElementById('btcWalletAddress');
-        const connectBtcWallet = document.getElementById('connectBtcWallet');
-        
-        if (btcWalletAddress) btcWalletAddress.textContent = wallets.BTC;
-        if (btcWalletStatus) btcWalletStatus.style.display = 'block';
-        if (connectBtcWallet) connectBtcWallet.innerHTML = 'Connected to Bitcoin Wallet';
-    }
-    
-    // Update SOL wallet UI
-    if (wallets.SOL) {
-        const solWalletStatus = document.getElementById('solWalletStatus');
-        const solWalletAddress = document.getElementById('solWalletAddress');
-        const connectSolWallet = document.getElementById('connectSolWallet');
-        
-        if (solWalletAddress) solWalletAddress.textContent = wallets.SOL;
-        if (solWalletStatus) solWalletStatus.style.display = 'block';
-        if (connectSolWallet) connectSolWallet.innerHTML = 'Connected to Solana Wallet';
-    }
-    
-    // Update BNB wallet UI
-    if (wallets.BNB) {
-        const bnbWalletStatus = document.getElementById('bnbWalletStatus');
-        const bnbWalletAddress = document.getElementById('bnbWalletAddress');
-        const connectBnbWallet = document.getElementById('connectBnbWallet');
-        
-        if (bnbWalletAddress) bnbWalletAddress.textContent = wallets.BNB;
-        if (bnbWalletStatus) bnbWalletStatus.style.display = 'block';
-        if (connectBnbWallet) connectBnbWallet.innerHTML = 'Connected to BNB Wallet';
-    }
-    
-    // Update wallet count in UI
-    const walletsCount = document.getElementById('walletsCount');
-    if (walletsCount) {
-        const count = Object.values(externalWallets).filter(w => w && w.trim() !== '').length;
-        walletsCount.textContent = count;
-    }
-}
 
-/**
- * Set up wallet connection buttons
- */
-function setupWalletButtons() {
-    // Ethereum wallet
-    const connectEthWalletButton = document.getElementById('connectEthWallet');
-    if (connectEthWalletButton) {
-        connectEthWalletButton.addEventListener('click', connectEthWallet);
-    }
-    
-    // Bitcoin wallet
-    const connectBtcWalletButton = document.getElementById('connectBtcWallet');
-    if (connectBtcWalletButton) {
-        connectBtcWalletButton.addEventListener('click', connectBtcWallet);
-    }
-    
-    // Solana wallet
-    const connectSolWalletButton = document.getElementById('connectSolWallet');
-    if (connectSolWalletButton) {
-        connectSolWalletButton.addEventListener('click', connectSolWallet);
-    }
-    
-    // BNB wallet
-    const connectBnbWalletButton = document.getElementById('connectBnbWallet');
-    if (connectBnbWalletButton) {
-        connectBnbWalletButton.addEventListener('click', connectBnbWallet);
-    }
-}
 
 /**
  * Show error message
