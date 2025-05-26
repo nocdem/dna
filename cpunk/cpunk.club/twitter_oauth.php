@@ -24,7 +24,19 @@ header('Access-Control-Allow-Methods: GET, POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
 
 // Twitter API credentials
-$config = require_once('/home/deployer/config/oauth_config.php');
+$configFile = '/home/deployer/config/oauth_config.php';
+if (!file_exists($configFile)) {
+    logMsg('OAuth configuration file not found at: ' . $configFile);
+    die('<h1>OAuth Configuration Error</h1><p>The OAuth configuration is not properly set up. Please contact the administrator.</p><p>Configuration file missing: ' . htmlspecialchars($configFile) . '</p>');
+}
+
+$config = require_once($configFile);
+
+if (!isset($config['twitter']['client_id']) || !isset($config['twitter']['client_secret'])) {
+    logMsg('Twitter OAuth credentials not found in configuration');
+    die('<h1>OAuth Configuration Error</h1><p>Twitter OAuth credentials are not configured. Please contact the administrator.</p>');
+}
+
 define('CLIENT_ID', $config['twitter']['client_id']);
 define('CLIENT_SECRET', $config['twitter']['client_secret']);
 define('REDIRECT_URI', 'https://' . $_SERVER['HTTP_HOST'] . '/twitter_oauth.php');
