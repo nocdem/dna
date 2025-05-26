@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="css/navbar.css">
     <style>
         .container {
-            max-width: 1200px;
+            max-width: 900px;
             margin: 0 auto;
             padding: 20px;
         }
@@ -150,22 +150,23 @@
         
         .search-section {
             margin-bottom: 20px;
-            background-color: var(--primary);
+            background-color: var(--section-bg);
             border-radius: 10px;
-            padding: 30px;
-            box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+            padding: 20px;
+            border: 1px solid var(--border-color);
         }
         
         .search-section h3 {
-            color: white;
-            font-size: 24px;
+            color: var(--text-primary);
+            font-size: 1.5em;
             margin-top: 0;
+            margin-bottom: 10px;
         }
         
         .search-section p {
-            color: white;
-            font-size: 16px;
-            margin-bottom: 20px;
+            color: var(--text-dim);
+            font-size: 14px;
+            margin-bottom: 15px;
         }
         
         .search-form {
@@ -464,20 +465,21 @@
             <div id="walletError" class="message error" style="display: none;"></div>
         </div>
 
-        <!-- DNA Selection Section -->
-        <div class="status-section" id="dnaSection" style="display: none;">
-            <h3>Select DNA Nickname</h3>
-            <p>Choose the DNA nickname to use for admin authentication.</p>
-            <div id="dnaList"></div>
-            <div id="dnaError" class="message error" style="display: none;"></div>
-        </div>
+        <!-- Admin Check Status -->
+        <div id="dnaError" class="message error" style="display: none;"></div>
 
         <!-- Editor Section (will show after authentication) -->
         <div class="editor-container" id="editorContainer">
-            <div class="user-info" style="margin-bottom: 20px; padding: 15px; background-color: var(--section-bg); border-radius: 10px;">
-                <h3 style="margin-top: 0;">Admin Access</h3>
-                <p>Logged in as: <strong id="userDna">Loading...</strong></p>
-                <p>Wallet: <span id="userWallet">Loading...</span></p>
+            <div class="user-info" id="userInfo">
+                <div class="user-avatar" id="userAvatar">C</div>
+                <div class="user-details">
+                    <div class="user-name" id="userName">User</div>
+                    <div class="user-wallet" id="userWallet">Wallet Address</div>
+                </div>
+            </div>
+            
+            <div style="margin-bottom: 20px; text-align: center;">
+                <button id="logoutButton" style="background-color: var(--error); color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px;">Disconnect from Dashboard</button>
             </div>
             
             <!-- DNA Search Section (visible only after authentication) -->
@@ -528,7 +530,10 @@
 
                     <!-- Wallet Addresses Tab -->
                     <div id="walletAddresses" class="tab-content">
-                        <div class="info-section-title">Registered Wallet Addresses</div>
+                        <div style="display: flex; justify-content: space-between; align-items: center;">
+                            <div class="info-section-title">Crypto Wallet Addresses</div>
+                            <button id="clearWalletsButton" class="clear-data-btn">Clear All Wallets</button>
+                        </div>
                         <div class="wallet-accounts" id="dnaWalletAccounts">
                             <!-- Will be populated with wallet addresses -->
                         </div>
@@ -563,16 +568,17 @@
             </div>
         </div>
 
-            <button id="logoutButton" class="logout-btn" style="display: none;">Disconnect from Dashboard</button>
         </div>
     </div>
 
     <script src="js/dashboardConnector.js"></script>
+    <script src="js/authentication.js"></script>
     <script>
         // DOM Elements
         const editorContainer = document.getElementById('editorContainer');
-        const userDnaElement = document.getElementById('userDna');
-        const userWalletElement = document.getElementById('userWallet');
+        const userAvatar = document.getElementById('userAvatar');
+        const userName = document.getElementById('userName');
+        const userWallet = document.getElementById('userWallet');
         const logoutButton = document.getElementById('logoutButton');
         
         // DNA Search Elements
@@ -598,34 +604,8 @@
         const tabContents = document.querySelectorAll('.tab-content');
 
         // State Variables
-        let adminList = [];
         let currentDna = null;
         let isEditing = false;
-
-        // Load admin list
-        async function loadAdmins() {
-            try {
-                const response = await fetch('admins.txt');
-                if (!response.ok) {
-                    throw new Error(`Failed to load admins.txt: ${response.status}`);
-                }
-                
-                const text = await response.text();
-                
-                // Parse admin nicknames - filtering out comments and empty lines
-                return text.split('\n')
-                    .map(line => line.trim())
-                    .filter(line => line && !line.startsWith('#'));
-            } catch (error) {
-                console.error('Error loading admin list:', error);
-                return [];
-            }
-        }
-
-        // Check if user is admin
-        function isAdmin(dna) {
-            return adminList.some(admin => admin.toLowerCase() === dna.toLowerCase());
-        }
 
         // Initialize the page
         document.addEventListener('DOMContentLoaded', async function() {
@@ -638,24 +618,32 @@
                 console.error('Error loading navbar:', error);
             }
 
-            // Load admins list
-            adminList = await loadAdmins();
-            console.log('Loaded admins:', adminList);
-
-            // Initialize dashboard connector (for admin features)
-            CpunkDashboard.init({
-                onConnected: function(sessionId) {
-                    console.log('Connected to dashboard with session ID:', sessionId);
+            // Initialize authentication module
+            await CpunkAuth.init({
+                onAuthenticated: function(authData) {
+                    console.log('Admin authenticated:', authData);
+                    
+                    // Update UI with authenticated user info
+                    userAvatar.textContent = authData.dna.charAt(0).toUpperCase();
+                    userName.textContent = authData.dna;
+                    userWallet.textContent = authData.wallet;
+                    
+                    // Show editor container
+                    editorContainer.style.display = 'block';
+                    
+                    // Authentication successful - no message needed
                 },
-                onWalletSelected: function(wallet) {
-                    console.log('Selected wallet:', wallet);
-                },
-                onDnaSelected: function(dna) {
-                    console.log('Selected DNA:', dna);
-                    handleDnaSelection(dna);
+                onAccessDenied: function(message) {
+                    console.log('Access denied:', message);
+                    // Access denied message is already shown by auth module
                 },
                 onError: function(message) {
-                    console.error('Dashboard connector error:', message);
+                    console.error('Authentication error:', message);
+                },
+                onLogout: function() {
+                    // Hide DNA display if shown
+                    dnaDisplay.style.display = 'none';
+                    searchStatus.style.display = 'none';
                 }
             });
 
@@ -667,6 +655,7 @@
             
             // Add clear data button event listeners
             document.getElementById('clearSocialsButton')?.addEventListener('click', () => clearData('socials'));
+            document.getElementById('clearWalletsButton')?.addEventListener('click', () => clearData('wallets'));
             document.getElementById('clearMessagesButton')?.addEventListener('click', () => clearData('messages'));
             document.getElementById('clearDelegationsButton')?.addEventListener('click', () => clearData('delegations'));
             
@@ -689,12 +678,12 @@
             });
             
             // Logout button handler
-            logoutButton.addEventListener('click', function() {
-                CpunkDashboard.reset();
-                editorContainer.style.display = 'none';
-                dnaDisplay.style.display = 'none';
-                searchStatus.style.display = 'none';
-            });
+            const logoutBtn = document.getElementById('logoutButton');
+            if (logoutBtn) {
+                logoutBtn.addEventListener('click', function() {
+                    CpunkAuth.logout();
+                });
+            }
             
             // Enable search on Enter key
             searchInput.addEventListener('keypress', function(e) {
@@ -704,28 +693,6 @@
             });
         });
 
-        // Handle DNA selection and admin check
-        function handleDnaSelection(dna) {
-            if (!dna || !dna.name) {
-                console.error('Invalid DNA selected');
-                return;
-            }
-
-            // Check if the DNA is in the admin list
-            if (isAdmin(dna.name)) {
-                // Show admin editor
-                userDnaElement.textContent = dna.name;
-                userWalletElement.textContent = dna.wallet || 'Unknown';
-                
-                // Show editor container
-                document.getElementById('dnaSection').style.display = 'none';
-                editorContainer.style.display = 'block';
-            } else {
-                // Show access denied message
-                document.getElementById('dnaError').textContent = 'Access denied. This DNA does not have admin privileges.';
-                document.getElementById('dnaError').style.display = 'block';
-            }
-        }
 
         // Search DNA
         async function searchDna() {
@@ -762,7 +729,7 @@
                         searchStatus.style.display = 'none';
                         
                         // Only show edit button if authenticated
-                        editToggleButton.style.display = CpunkDashboard.getSessionId() ? 'block' : 'none';
+                        editToggleButton.style.display = CpunkAuth.getStatus().isAuthenticated ? 'block' : 'none';
                     } else if (data.error) {
                         // API returned an error
                         showSearchStatus(`Error: ${data.error}`, 'error');
@@ -1324,23 +1291,7 @@
             let walletsHTML = '';
             let foundWallets = false;
             
-            // First check wallet_addresses structure (new format)
-            if (dnaData.data.wallet_addresses) {
-                for (const [network, address] of Object.entries(dnaData.data.wallet_addresses)) {
-                    if (address && address.trim() !== '') {
-                        walletsHTML += `
-                            <div class="wallet-account">
-                                <div class="wallet-network">${formatFieldName(network)}</div>
-                                <div class="wallet-address">${address}</div>
-                            </div>
-                        `;
-                        
-                        foundWallets = true;
-                    }
-                }
-            }
-            
-            // Check for dinosaur_wallets (crypto wallets)
+            // Only check for dinosaur_wallets (crypto wallets)
             if (dnaData.data.dinosaur_wallets) {
                 for (const [crypto, address] of Object.entries(dnaData.data.dinosaur_wallets)) {
                     if (address && address.trim() !== '') {
@@ -1358,7 +1309,7 @@
             
             // If no wallets found
             if (!foundWallets) {
-                walletsHTML = '<div>No additional wallet addresses registered with this DNA.</div>';
+                walletsHTML = '<div>No crypto wallet addresses registered with this DNA.</div>';
             }
             
             // Set content
@@ -1827,7 +1778,14 @@
                     updatePayload.socials = {};
                     break;
                 case 'wallets':
-                    updatePayload.wallet_addresses = {};
+                    // Preserve structure but clear values
+                    updatePayload.dinosaur_wallets = {
+                        "BTC": "",
+                        "ETH": "",
+                        "SOL": "",
+                        "QEVM": "",
+                        "BNB": ""
+                    };
                     break;
                 case 'messages':
                     updatePayload.messages = [];
@@ -1869,7 +1827,13 @@
                                 displaySocialAccounts(currentDna);
                                 break;
                             case 'wallets':
-                                currentDna.data.wallet_addresses = {};
+                                currentDna.data.dinosaur_wallets = {
+                                    "BTC": "",
+                                    "ETH": "",
+                                    "SOL": "",
+                                    "QEVM": "",
+                                    "BNB": ""
+                                };
                                 displayWalletAddresses(currentDna);
                                 break;
                             case 'messages':
@@ -1897,7 +1861,13 @@
                                 displaySocialAccounts(currentDna);
                                 break;
                             case 'wallets':
-                                currentDna.data.wallet_addresses = {};
+                                currentDna.data.dinosaur_wallets = {
+                                    "BTC": "",
+                                    "ETH": "",
+                                    "SOL": "",
+                                    "QEVM": "",
+                                    "BNB": ""
+                                };
                                 displayWalletAddresses(currentDna);
                                 break;
                             case 'messages':

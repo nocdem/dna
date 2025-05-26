@@ -744,6 +744,10 @@ const CpunkDashboard = (function() {
         selectedNetwork = null;
         selectedDNA = null;
         userDNAs = [];
+        walletsByName = {};
+        
+        // Clear cached session data
+        clearSessionState();
         
         updateStatus('disconnected', 'Disconnected');
         

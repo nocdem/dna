@@ -337,50 +337,28 @@
                • Manage website content</p>
         </div>
 
-        <div class="status-section" style="margin-bottom: 20px; padding: 15px; background-color: var(--section-bg); border-radius: 10px;">
-            <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;" id="connect-section">
+        <!-- Connection Status Section -->
+        <div class="status-section" id="connect-section" style="margin-bottom: 20px; padding: 15px; background-color: var(--section-bg); border-radius: 10px;">
+            <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
                 <div class="status-header" style="margin-bottom: 0;">
                     <span style="font-weight: bold; margin-right: 8px;">Dashboard Status:</span>
                     <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
                 </div>
                 <button id="connectButton" class="help-button" style="margin: 0; width: auto; min-width: 120px;">Connect</button>
             </div>
-            <div id="connectMessage" class="message error" style="display: none; margin-top: 10px;"></div>
+            <div id="connectionError" class="message error" style="display: none; margin-top: 10px;"></div>
         </div>
 
         <!-- Wallet Selection Section -->
-        <div class="data-section" id="wallet-section" style="margin-bottom: 25px; padding: 15px; background-color: var(--section-bg); border-radius: 10px; display: none;">
-            <h3 class="section-title" style="margin-top: 0; font-size: 1.2em;">Select Wallet for Admin Access</h3>
-            <p class="help-text">Choose the wallet containing your admin DNA.</p>
-
-            <div class="wallets-container" id="walletsList" style="margin-top: 15px;">
-                <div class="message">Loading wallets...</div>
-            </div>
-
-            <div style="margin-top: 20px; text-align: center;">
-                <button id="continueButton" class="help-button" disabled style="min-width: 200px;">Continue with Selected Wallet</button>
-            </div>
-            <div id="walletMessage" class="message error" style="display: none; margin-top: 10px;"></div>
+        <div class="status-section" id="walletSection" style="margin-bottom: 20px; padding: 15px; background-color: var(--section-bg); border-radius: 10px; display: none;">
+            <h3>Select Wallet for Admin Access</h3>
+            <p>Choose the wallet containing your admin DNA.</p>
+            <div id="walletsList"></div>
+            <div id="walletError" class="message error" style="display: none;"></div>
         </div>
 
-        <!-- Authentication Section -->
-        <div class="data-section" id="authentication-section" style="margin-bottom: 25px; padding: 15px; background-color: var(--section-bg); border-radius: 10px; display: none;">
-            <h3 class="section-title" style="margin-top: 0; font-size: 1.2em;">DNA Authentication</h3>
-            <p class="help-text">Checking your DNA for administrator access...</p>
-
-            <div id="dnaStatus" class="message" style="margin-top: 15px;">
-                <span class="loading"></span> Verifying admin status...
-            </div>
-
-            <div class="admin-card" id="dnaCard" style="display: none; margin-top: 15px; padding: 15px; background-color: var(--dark-bg); border-radius: 8px;">
-                <div class="admin-header" style="margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid var(--border-color);">
-                    <span class="admin-title" style="font-weight: bold; color: var(--primary);">Your DNA Nicknames</span>
-                </div>
-                <div class="admin-list" id="dnaList">
-                    <!-- DNA nicknames will be listed here -->
-                </div>
-            </div>
-        </div>
+        <!-- Admin Check Status -->
+        <div id="dnaError" class="message error" style="display: none;"></div>
 
         <!-- Editor Section -->
         <div id="editor-section" style="display: none;">
@@ -390,6 +368,10 @@
                     <div class="user-name" id="userName">User</div>
                     <div class="user-wallet" id="userWallet">Wallet Address</div>
                 </div>
+            </div>
+            
+            <div style="margin-bottom: 20px; text-align: center;">
+                <button id="logoutButton" style="background-color: var(--error); color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px;">Disconnect from Dashboard</button>
             </div>
             
             <div class="stats-grid">
@@ -537,10 +519,6 @@
                                     </div>
                                 </div>
 
-                                <!-- Move logout button inside the container -->
-                                <div class="logout-container" style="margin-top: 30px; text-align: center; padding-top: 20px; border-top: 1px solid var(--border-color);">
-                                    <button id="logoutButton" class="logout-btn">Disconnect from Dashboard</button>
-                                </div>
                             </div>
                         </div>
                     </div>
@@ -549,6 +527,8 @@
         </div>
     </div>
 
+    <script src="js/dashboardConnector.js"></script>
+    <script src="js/authentication.js"></script>
     <script>
         // API Configuration
         const API_URL = 'http://localhost:8045/';
@@ -556,28 +536,14 @@
         
         // State variables
         let sessionId = null;
-        let selectedWallet = null;
         let walletAddress = null;
-        let userNicknames = [];
-        let admins = [];
         let isAdmin = false;
         let adminNickname = null;
         
-        // DOM Elements - Authentication
-        const connectSection = document.getElementById('connect-section');
-        const walletSection = document.getElementById('wallet-section');
-        const authenticationSection = document.getElementById('authentication-section');
+        // DOM Elements
         const editorSection = document.getElementById('editor-section');
-        
         const statusIndicator = document.getElementById('statusIndicator');
         const connectButton = document.getElementById('connectButton');
-        const connectMessage = document.getElementById('connectMessage');
-        const walletsList = document.getElementById('walletsList');
-        const continueButton = document.getElementById('continueButton');
-        const walletMessage = document.getElementById('walletMessage');
-        const dnaStatus = document.getElementById('dnaStatus');
-        const dnaCard = document.getElementById('dnaCard');
-        const dnaList = document.getElementById('dnaList');
         const logoutButton = document.getElementById('logoutButton');
         
         // DOM Elements - User Info
@@ -617,350 +583,6 @@
             });
         });
 
-        // Dashboard API Connection Functions
-        async function makeRequest(method, params = {}) {
-            const url = new URL(API_URL);
-            url.searchParams.append('method', method);
-
-            for (const [key, value] of Object.entries(params)) {
-                url.searchParams.append(key, value);
-            }
-
-            try {
-                const response = await fetch(url.toString());
-                if (!response.ok) {
-                    throw new Error(`Dashboard API error: ${response.status}`);
-                }
-
-                return await response.json();
-            } catch (error) {
-                console.error('Dashboard request error:', error);
-                throw error;
-            }
-        }
-
-        // Update dashboard status display
-        function updateStatus(status, message = '') {
-            statusIndicator.className = 'status-indicator status-' + status;
-            statusIndicator.textContent = message || status.charAt(0).toUpperCase() + status.slice(1);
-        }
-
-        // Connect to dashboard handler
-        async function connectToDashboard() {
-            try {
-                connectButton.disabled = true;
-                connectButton.innerHTML = '<span class="loading"></span> Connecting...';
-                connectMessage.style.display = 'none';
-
-                // Update status
-                updateStatus('connecting', 'Connecting...');
-
-                // Make connection request
-                const response = await makeRequest('Connect');
-
-                if (response.status === 'ok' && response.data && response.data.id) {
-                    sessionId = response.data.id;
-
-                    // Update status and UI
-                    updateStatus('connected', 'Connected');
-                    connectButton.textContent = 'Connected';
-
-                    // Show wallet selection section
-                    connectSection.style.display = 'none';
-                    walletSection.style.display = 'block';
-
-                    // Load wallets
-                    await loadWallets();
-                } else {
-                    throw new Error(response.errorMsg || 'Failed to connect to dashboard');
-                }
-            } catch (error) {
-                console.error('Connection error:', error);
-                updateStatus('disconnected', 'Connection failed');
-                connectButton.textContent = 'Connect to Dashboard';
-
-                // Show error message
-                connectMessage.textContent = `Error connecting to dashboard: ${error.message}`;
-                connectMessage.style.display = 'block';
-            } finally {
-                connectButton.disabled = false;
-            }
-        }
-
-        // Get wallet data from dashboard
-        async function getWalletData(walletName) {
-            try {
-                const response = await makeRequest('GetDataWallet', {
-                    id: sessionId,
-                    walletName: walletName
-                });
-
-                return response;
-            } catch (error) {
-                console.error(`Error fetching data for wallet ${walletName}:`, error);
-                return null;
-            }
-        }
-
-        // Load wallets from dashboard
-        async function loadWallets() {
-            if (!sessionId) return;
-
-            try {
-                walletsList.innerHTML = '<div class="message">Loading wallets...</div>';
-
-                const response = await makeRequest('GetWallets', { id: sessionId });
-
-                if (response.status === 'ok' && response.data && Array.isArray(response.data)) {
-                    const wallets = response.data;
-
-                    if (wallets.length === 0) {
-                        walletsList.innerHTML = `
-                            <div class="message warning" style="display: block;">
-                                No wallets found in your dashboard.<br>
-                                Please create a wallet first.
-                            </div>
-                        `;
-                        return;
-                    }
-
-                    // Clear previous content
-                    walletsList.innerHTML = '';
-
-                    // Process each wallet
-                    for (const wallet of wallets) {
-                        const walletData = await getWalletData(wallet.name);
-                        
-                        if (!walletData || !walletData.data || walletData.data.length === 0) continue;
-                        
-                        // Get first network for display (typically will have the same address across networks)
-                        const networkData = walletData.data[0];
-                        const address = networkData.address;
-                        
-                        // Create wallet card
-                        const walletCard = document.createElement('div');
-                        walletCard.className = 'wallet-card';
-                        walletCard.dataset.name = wallet.name;
-                        walletCard.dataset.address = address;
-                        
-                        walletCard.innerHTML = `
-                            <div>${wallet.name}</div>
-                            <div style="font-size: 0.8em; color: var(--text-dim);">${address.substring(0, 10)}...${address.substring(address.length - 10)}</div>
-                        `;
-                        
-                        walletCard.addEventListener('click', () => {
-                            // Deselect all wallets
-                            document.querySelectorAll('.wallet-card').forEach(card => {
-                                card.classList.remove('selected');
-                            });
-                            
-                            // Select this wallet
-                            walletCard.classList.add('selected');
-                            
-                            // Store wallet info
-                            selectedWallet = { 
-                                name: wallet.name,
-                                address: address
-                            };
-                            
-                            // Enable continue button
-                            continueButton.disabled = false;
-                        });
-                        
-                        walletsList.appendChild(walletCard);
-                    }
-                } else {
-                    throw new Error('Failed to load wallets');
-                }
-            } catch (error) {
-                console.error('Error loading wallets:', error);
-                walletsList.innerHTML = `
-                    <div class="message error" style="display: block;">
-                        Error loading wallets: ${error.message}
-                    </div>
-                `;
-                walletMessage.textContent = `Error loading wallets: ${error.message}`;
-                walletMessage.style.display = 'block';
-            }
-        }
-
-        // Continue with selected wallet handler
-        async function continueWithWallet() {
-            if (!selectedWallet) {
-                walletMessage.textContent = 'Please select a wallet first';
-                walletMessage.style.display = 'block';
-                return;
-            }
-
-            try {
-                walletMessage.style.display = 'none';
-                continueButton.disabled = true;
-                continueButton.innerHTML = '<span class="loading"></span> Checking DNA...';
-
-                // Store the wallet address
-                walletAddress = selectedWallet.address;
-
-                // Show authentication section
-                walletSection.style.display = 'none';
-                authenticationSection.style.display = 'block';
-
-                // Load admin list first
-                await loadAdmins();
-
-                // Check for DNA registration
-                await checkDnaRegistration();
-
-            } catch (error) {
-                console.error('Error processing wallet selection:', error);
-                dnaStatus.className = 'message error';
-                dnaStatus.textContent = `Error: ${error.message}`;
-                dnaStatus.style.display = 'block';
-            } finally {
-                continueButton.disabled = false;
-                continueButton.textContent = 'Continue with Selected Wallet';
-            }
-        }
-
-        // Check DNA registration against wallet address
-        async function checkDnaRegistration() {
-            if (!walletAddress) return;
-
-            try {
-                dnaStatus.className = 'message';
-                dnaStatus.innerHTML = '<span class="loading"></span> Checking DNA registration...';
-                dnaStatus.style.display = 'block';
-                dnaCard.style.display = 'none';
-
-                // Make API request to check DNA for this wallet
-                const requestUrl = `${DNA_PROXY_URL}?lookup=${encodeURIComponent(walletAddress)}`;
-                const response = await fetch(requestUrl);
-                const text = await response.text();
-
-                try {
-                    // Parse as JSON
-                    const data = JSON.parse(text);
-                    
-                    console.log("DNA Response Data:", data);
-
-                    // Check if data was found
-                    if (data.status_code === 0 && data.response_data) {
-                        // Get registered names from response data
-                        const registeredNames = data.response_data.registered_names || {};
-                        userNicknames = Object.keys(registeredNames);
-
-                        if (userNicknames.length === 0) {
-                            // No DNA registration found
-                            dnaStatus.className = 'message warning';
-                            dnaStatus.textContent = `No DNA registrations found for this wallet.`;
-                            return;
-                        }
-
-                        // Check if any of the DNA nicknames are in the admin list
-                        const adminDnas = userNicknames.filter(name => {
-                            // Case-insensitive comparison
-                            return admins.some(admin => admin.toLowerCase() === name.toLowerCase());
-                        });
-                        
-                        if (adminDnas.length > 0) {
-                            // Found admin DNA
-                            isAdmin = true;
-                            adminNickname = adminDnas[0]; // Use the first admin DNA found
-                            
-                            dnaStatus.className = 'message success';
-                            dnaStatus.textContent = `Admin access verified! Welcome, ${adminNickname}.`;
-                            
-                            // Display user DNA list
-                            displayDnaList(userNicknames, adminDnas);
-                            
-                            // Show editor after short delay
-                            setTimeout(() => {
-                                authenticationSection.style.display = 'none';
-                                editorSection.style.display = 'block';
-                                
-                                // Update user info
-                                updateUserInfo(adminNickname, walletAddress);
-                                
-                                // Load content files
-                                loadContent();
-
-                                // Initialize invitation codes management
-                                refreshCodesList();
-                            }, 1500);
-                        } else {
-                            // No admin access
-                            dnaStatus.className = 'message error';
-                            dnaStatus.textContent = `Access denied. None of your DNA nicknames have admin privileges.`;
-                            
-                            // Display user DNA list
-                            displayDnaList(userNicknames, []);
-                        }
-                    } else if (data.error) {
-                        // Specific error from API
-                        dnaStatus.className = 'message error';
-                        dnaStatus.textContent = `Error: ${data.error}`;
-                    } else {
-                        // No DNA data found
-                        dnaStatus.className = 'message warning';
-                        dnaStatus.textContent = `No DNA registrations found for this wallet.`;
-                    }
-                } catch (e) {
-                    // If not valid JSON, likely an error
-                    console.error("JSON Parse Error:", e);
-                    dnaStatus.className = 'message error';
-                    dnaStatus.textContent = `Error checking DNA registration. Invalid response format.`;
-                }
-            } catch (error) {
-                console.error('Error checking DNA registration:', error);
-                dnaStatus.className = 'message error';
-                dnaStatus.textContent = `Error checking DNA registration: ${error.message}`;
-            }
-        }
-
-        // Load admin list from admins.txt
-        async function loadAdmins() {
-            try {
-                const response = await fetch('admins.txt');
-                
-                if (!response.ok) {
-                    throw new Error(`Failed to load admins.txt: ${response.status} ${response.statusText}`);
-                }
-                
-                const text = await response.text();
-                
-                // Parse admin nicknames - filtering out comments and empty lines
-                admins = text.split('\n')
-                    .map(line => line.trim())
-                    .filter(line => line && !line.startsWith('#'));
-                    
-                console.log('Loaded admins:', admins);
-                
-                return admins;
-            } catch (error) {
-                console.error('Error loading admin list:', error);
-                throw new Error('Could not load admin list: ' + error.message);
-            }
-        }
-
-        // Display DNA list with admin status
-        function displayDnaList(nicknames, adminDnas) {
-            dnaList.innerHTML = '';
-            
-            nicknames.forEach(name => {
-                const isAdminDna = adminDnas.some(admin => admin.toLowerCase() === name.toLowerCase());
-                
-                const dnaItem = document.createElement('div');
-                dnaItem.className = `dna-item${isAdminDna ? ' admin' : ''}`;
-                dnaItem.innerHTML = `
-                    <span class="dna-status${isAdminDna ? ' admin' : ''}"></span>
-                    <span>${name}</span>
-                `;
-                
-                dnaList.appendChild(dnaItem);
-            });
-            
-            dnaCard.style.display = 'block';
-        }
-
         // Update user info in editor
         function updateUserInfo(nickname, address) {
             userAvatar.textContent = nickname.charAt(0).toUpperCase();
@@ -987,23 +609,12 @@
         }
 
         // Logout functionality
-        logoutButton.addEventListener('click', () => {
-            // Reset state
-            sessionId = null;
-            selectedWallet = null;
-            walletAddress = null;
-            userNicknames = [];
-            isAdmin = false;
-            adminNickname = null;
-            
-            // Reset UI
-            editorSection.style.display = 'none';
-            connectSection.style.display = 'block';
-            updateStatus('disconnected', 'Disconnected');
-            
-            // Clear messages
-            connectMessage.style.display = 'none';
-        });
+        const logoutBtn = document.getElementById('logoutButton');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', () => {
+                CpunkAuth.logout();
+            });
+        }
 
         // Preview functionality
         previewNewsButton.addEventListener('click', () => {
@@ -1450,7 +1061,47 @@
         }
 
         // Load navbar and initialize
-        document.addEventListener('DOMContentLoaded', function() {
+        document.addEventListener('DOMContentLoaded', async function() {
+            // Initialize authentication module
+            await CpunkAuth.init({
+                onAuthenticated: function(authData) {
+                    console.log('Admin authenticated:', authData);
+                    
+                    // Update state variables
+                    isAdmin = true;
+                    adminNickname = authData.dna;
+                    walletAddress = authData.wallet;
+                    sessionId = CpunkAuth.getStatus().sessionId;
+                    
+                    // Show editor section
+                    editorSection.style.display = 'block';
+                    
+                    // Update user info
+                    updateUserInfo(authData.dna, authData.wallet);
+                    
+                    // Load content and invitation codes
+                    loadContent();
+                    refreshCodesList();
+                },
+                onAccessDenied: function(message) {
+                    console.log('Access denied:', message);
+                    // Access denied message is already shown by auth module
+                },
+                onError: function(message) {
+                    console.error('Authentication error:', message);
+                },
+                onLogout: function() {
+                    // Reset state
+                    isAdmin = false;
+                    adminNickname = null;
+                    walletAddress = null;
+                    sessionId = null;
+                    
+                    // Reset UI
+                    editorSection.style.display = 'none';
+                }
+            });
+            
             // Load navbar
             fetch('navbar-template.html')
                 .then(response => response.text())
@@ -1507,11 +1158,9 @@
             if (showUsedCodesCheckbox) {
                 showUsedCodesCheckbox.addEventListener('change', refreshCodesList);
             }
+            
+            // Connect button is handled by authentication module
         });
-
-        // Connect button event listener
-        connectButton.addEventListener('click', connectToDashboard);
-        continueButton.addEventListener('click', continueWithWallet);
     </script>
 </body>
 </html>
