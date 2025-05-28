@@ -60,6 +60,7 @@
     <div class="container">
         <!-- Script to load navbar template (located in external JS file) -->
         <script src="js/navbar.js"></script>
+        <script src="js/sso.js"></script>
 
         <header class="highlight-box" id="stats-header">
             <h1>🔍 CPUNK Network Statistics</h1>
@@ -242,5 +243,17 @@
     
     <!-- Network statistics specific script -->
     <script src="js/network-stats.js"></script>
+    
+    <script>
+        // Initialize SSO
+        CpunkSSO.getInstance().init({
+            onAuthenticated: (user) => {
+                console.log('User authenticated:', user.dna);
+            },
+            onUnauthenticated: () => {
+                console.log('User not authenticated');
+            }
+        });
+    </script>
 </body>
 </html>

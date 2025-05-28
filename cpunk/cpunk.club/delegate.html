@@ -24,6 +24,7 @@
     <div class="container">
         <!-- Script to load navbar template -->
         <script src="js/navbar.js"></script>
+        <script src="js/sso.js"></script>
 
         <div class="intro-section">
             <p>Stake your tokens on Cellframe networks to participate in ecosystem governance and earn rewards. Your delegation helps secure the network and supports the community.</p>
@@ -163,8 +164,8 @@
     <script src="js/cpunk-utils.js"></script>
     <script src="js/cpunk-transaction.js"></script>
     <script src="js/cpunk-ui.js"></script>
-    <script src="js/dashboardConnector.js"></script>
     <script src="js/cpunk-api-console.js"></script>
+    <script src="js/dashboardConnector.js"></script>
     <!-- Page specific script -->
     <script src="js/delegation.js"></script>
     
@@ -184,6 +185,16 @@
                         message: 'Press Ctrl+Shift+A to toggle API Console'
                     });
                 }
+            }
+        });
+
+        // Initialize SSO
+        CpunkSSO.getInstance().init({
+            onAuthenticated: (user) => {
+                console.log('User authenticated:', user.dna);
+            },
+            onUnauthenticated: () => {
+                console.log('User not authenticated');
             }
         });
     </script>

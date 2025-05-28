@@ -63,8 +63,21 @@
 
     <!-- Script to load navbar template -->
     <script src="js/navbar.js"></script>
+    <script src="js/sso.js"></script>
 
     <!-- Page-specific script -->
     <script src="js/lookup.js"></script>
+    
+    <script>
+        // Initialize SSO
+        CpunkSSO.getInstance().init({
+            onAuthenticated: (user) => {
+                console.log('User authenticated:', user.dna);
+            },
+            onUnauthenticated: () => {
+                console.log('User not authenticated');
+            }
+        });
+    </script>
 </body>
 </html>

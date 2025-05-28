@@ -3,12 +3,109 @@
 // Global variables
 let walletAddress = null;
 let dnaData = null;
+let currentDna = null;
 
 // External wallets now managed by WalletIntegration module
 let externalWallets = {};
 
 document.addEventListener('DOMContentLoaded', function() {
     
+    // Initialize SSO and check authentication status
+    const sso = CpunkSSO.getInstance();
+    sso.init({
+        onAuthenticated: (user) => {
+            // User is authenticated - show DNA display
+            showDnaDisplay();
+        },
+        onUnauthenticated: () => {
+            // User not authenticated - show login required
+            showLoginRequired();
+        },
+        updateNavbar: true
+    });
+    
+    // Set up event listeners
+    setupAuthEventListeners();
+});
+
+function showLoginRequired() {
+    document.getElementById('loginRequired').style.display = 'block';
+    document.getElementById('dnaDisplay').style.display = 'none';
+    document.getElementById('settingsContent').style.display = 'none';
+}
+
+function showDnaDisplay() {
+    const sso = CpunkSSO.getInstance();
+    const user = sso.getCurrentUser();
+    
+    if (user && user.dna) {
+        document.getElementById('dnaName').textContent = user.dna;
+        document.getElementById('loginRequired').style.display = 'none';
+        document.getElementById('dnaDisplay').style.display = 'block';
+        document.getElementById('settingsContent').style.display = 'none';
+        
+        // Set up logout button here after it's visible
+        const logoutBtn = document.getElementById('logoutBtn');
+        if (logoutBtn) {
+            logoutBtn.addEventListener('click', function() {
+                // Use SSO logout which clears all session data
+                CpunkSSO.getInstance().logout();
+            });
+        }
+    }
+}
+
+function showSettingsContent() {
+    document.getElementById('loginRequired').style.display = 'none';
+    document.getElementById('dnaDisplay').style.display = 'none';
+    document.getElementById('settingsContent').style.display = 'block';
+    
+    // Get wallet address from SSO
+    const sso = CpunkSSO.getInstance();
+    const user = sso.getCurrentUser();
+    if (user && user.wallet) {
+        walletAddress = user.wallet;
+        currentDna = user.dna;
+    }
+    
+    // Initialize settings functionality
+    initializeSettings();
+    
+    // Now show the DNA section and check registration with UI
+    const dnaSection = document.getElementById('dnaSection');
+    if (dnaSection) dnaSection.style.display = 'block';
+    checkDnaRegistration(true);
+}
+
+function setupAuthEventListeners() {
+    // Login button click
+    const loginBtn = document.getElementById('loginBtn');
+    if (loginBtn) {
+        loginBtn.addEventListener('click', function() {
+            // Redirect to login page with return URL
+            window.location.href = 'login.html?redirect=settings.html';
+        });
+    }
+    
+    // DNA card click
+    const dnaCard = document.getElementById('dnaCard');
+    if (dnaCard) {
+        dnaCard.addEventListener('click', function() {
+            showSettingsContent();
+        });
+    }
+    
+    // Logout button click
+    const logoutBtn = document.getElementById('logoutBtn');
+    if (logoutBtn) {
+        logoutBtn.addEventListener('click', function() {
+            // Use SSO logout which clears all session data
+            CpunkSSO.getInstance().logout();
+        });
+    }
+}
+
+function initializeSettings() {
     // Initialize UI components
     initUI();
     
@@ -39,53 +136,32 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }, 1000);
     
-    // Initialize Dashboard connector
-    if (typeof CpunkDashboard !== 'undefined') {
-        CpunkDashboard.init({
-            onConnected: function(sessionId) { 
-                // Show wallet selection after connection and hide other sections
-                const walletSection = document.getElementById('walletSection');
-                const dnaSection = document.getElementById('dnaSection');
-                const editSection = document.getElementById('editSection');
-                
-                if (walletSection) walletSection.style.display = 'block';
-                if (dnaSection) dnaSection.style.display = 'none';
-                if (editSection) editSection.style.display = 'none';
-            },
-            onWalletSelected: function(wallet) {
-                // Store wallet address
-                if (wallet && wallet.address) {
-                    walletAddress = wallet.address;
-                    
-                    // External wallets (dinosaur wallets) will be loaded from API for this wallet
-                    
-                    // Clear cached DNA data
-                    dnaData = null;
-                    
-                    // Update Social Integration module with wallet address
-                    if (typeof SocialIntegration !== 'undefined') {
-                        SocialIntegration.setWalletAddress(walletAddress);
-                        SocialIntegration.setDnaData(null); // Clear cached DNA data
-                    }
-                    
-                    // Set wallet address to hidden input for forms
-                    const walletAddressInput = document.getElementById('walletAddress');
-                    if (walletAddressInput) walletAddressInput.value = walletAddress;
-                    
-                    // Hide wallet section and show DNA section
-                    const walletSection = document.getElementById('walletSection');
-                    const dnaSection = document.getElementById('dnaSection');
-                    
-                    if (walletSection) walletSection.style.display = 'none';
-                    if (dnaSection) dnaSection.style.display = 'block';
-                    
-                    // Check DNA registration
-                    checkDnaRegistration();
-                }
-            }
-        });
+    // Get authentication data from SSO
+    const sso = CpunkSSO.getInstance();
+    const userData = sso.getCurrentUser();
+    
+    if (userData) {
+        // Store wallet and DNA info
+        walletAddress = userData.wallet;
+        currentDna = userData.dna;
+        
+        // Update Social Integration module with wallet address
+        if (typeof SocialIntegration !== 'undefined') {
+            SocialIntegration.setWalletAddress(walletAddress);
+        }
+        
+        // Set wallet address to hidden input for forms
+        const walletAddressInput = document.getElementById('walletAddress');
+        if (walletAddressInput) walletAddressInput.value = walletAddress;
+        
+        // Hide wallet section but don't show DNA section yet
+        const walletSection = document.getElementById('walletSection');
+        if (walletSection) walletSection.style.display = 'none';
+        
+        // Check DNA registration but don't show UI
+        checkDnaRegistration(false);
     }
-});
+}
 
 /**
  * Initialize UI components
@@ -333,29 +409,13 @@ function setupEventListeners() {
         }
     }
     
-    // Continue button
-    const continueButton = document.getElementById('continueButton');
-    if (continueButton) {
-        continueButton.addEventListener('click', function() {
-            // Hide wallet section, show DNA section
-            const walletSection = document.getElementById('walletSection');
-            const dnaSection = document.getElementById('dnaSection');
-            
-            if (walletSection) walletSection.style.display = 'none';
-            if (dnaSection) dnaSection.style.display = 'block';
-            
-            // Check DNA registration if wallet is selected
-            if (walletAddress) {
-                checkDnaRegistration();
-            }
-        });
-    }
+    // Continue button - removed as authentication is now handled by SSO
 }
 
 /**
  * Check DNA registration for the selected wallet
  */
-async function checkDnaRegistration() {
+async function checkDnaRegistration(showUI = true) {
     if (!walletAddress) {
         console.error('Wallet address is missing');
         return;
@@ -365,17 +425,19 @@ async function checkDnaRegistration() {
     const dnaError = document.getElementById('dnaError');
     const dnaDetails = document.getElementById('dnaDetails');
     
-    // Show loading state
-    if (dnaStatus) {
-        dnaStatus.textContent = 'Checking DNA registration...';
-        dnaStatus.style.display = 'block';
-        dnaStatus.className = 'loading';
-    }
-    if (dnaError) {
-        dnaError.style.display = 'none';
-    }
-    if (dnaDetails) {
-        dnaDetails.style.display = 'none';
+    // Only show loading state if showUI is true
+    if (showUI) {
+        if (dnaStatus) {
+            dnaStatus.textContent = 'Checking DNA registration...';
+            dnaStatus.style.display = 'block';
+            dnaStatus.className = 'loading';
+        }
+        if (dnaError) {
+            dnaError.style.display = 'none';
+        }
+        if (dnaDetails) {
+            dnaDetails.style.display = 'none';
+        }
     }
 
     try {
@@ -397,8 +459,8 @@ async function checkDnaRegistration() {
             SocialIntegration.setDnaData(data);
         }
         
-        // Hide loading state
-        if (dnaStatus) {
+        // Hide loading state if showing UI
+        if (showUI && dnaStatus) {
             dnaStatus.style.display = 'none';
         }
 
@@ -482,12 +544,12 @@ async function checkDnaRegistration() {
 
             // Show DNA details and edit button
             if (dnaDetails) {
-                dnaDetails.style.display = 'block';
+                if (showUI) dnaDetails.style.display = 'block';
             }
             
-            // Show edit button when DNA data is found
+            // Show edit button when DNA data is found (if showing UI)
             const editButton = document.getElementById('editButton');
-            if (editButton) {
+            if (showUI && editButton) {
                 editButton.style.display = 'block';
             }
             
@@ -497,7 +559,7 @@ async function checkDnaRegistration() {
             }
         } else {
             // Error or no DNA registrations
-            if (dnaStatus) {
+            if (showUI && dnaStatus) {
                 dnaStatus.className = '';
                 dnaStatus.textContent = data.error_message || 'No DNA registration found';
                 dnaStatus.style.display = 'block';
@@ -506,13 +568,15 @@ async function checkDnaRegistration() {
     } catch (error) {
         console.error('DNA check error:', error);
         
-        // Show error
-        if (dnaStatus) {
-            dnaStatus.style.display = 'none';
-        }
-        if (dnaError) {
-            dnaError.textContent = error.message || 'Failed to check DNA registration';
-            dnaError.style.display = 'block';
+        // Show error if showing UI
+        if (showUI) {
+            if (dnaStatus) {
+                dnaStatus.style.display = 'none';
+            }
+            if (dnaError) {
+                dnaError.textContent = error.message || 'Failed to check DNA registration';
+                dnaError.style.display = 'block';
+            }
         }
     }
 }

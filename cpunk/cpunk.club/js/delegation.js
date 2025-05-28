@@ -1,6 +1,7 @@
 // State variables
 let sessionId = null;
-let selectedWallet = null;
+let walletAddress = null;
+let currentDna = null;
 let selectedNetwork = null;
 let availableBalance = 0;
 let currentTxHash = null;
@@ -94,8 +95,45 @@ document.addEventListener('DOMContentLoaded', () => {
     // Store original submission handler reference for clean handling
     const originalSubmitHandler = handleDelegationSubmission;
     
-    // Set up event listeners
-    connectButton.addEventListener('click', connectToDashboard);
+    // Initialize SSO and check authentication
+    if (typeof CpunkSSO !== 'undefined') {
+        CpunkSSO.getInstance().init({
+            requireAuth: true,
+            onAuthenticated: function(userData) {
+                // User is authenticated
+                console.log('User authenticated:', userData);
+                
+                // Store wallet and DNA info
+                walletAddress = userData.wallet;
+                currentDna = userData.dna;
+                sessionId = userData.sessionId;
+                
+                // Update UI to show authenticated state
+                if (statusIndicator) {
+                    statusIndicator.textContent = 'Connected';
+                    statusIndicator.className = 'status-indicator status-connected';
+                }
+                
+                // Hide connect button and show network selection
+                if (connectButton) connectButton.style.display = 'none';
+                if (networkSection) networkSection.style.display = 'block';
+                
+                // Show networks immediately
+                showNetworkSelection();
+            },
+            onUnauthenticated: function() {
+                // User is not authenticated - SSO will redirect to login page
+                console.log('User not authenticated, redirecting to login...');
+            }
+        });
+    } else {
+        console.error('CpunkSSO not found. Make sure sso.js is loaded.');
+    }
+    
+    // Remove connect button click handler as authentication is handled by SSO
+    if (connectButton) {
+        connectButton.style.display = 'none';
+    }
 
     delegationAmount.addEventListener('input', () => {
         updateBalanceWarning();
@@ -665,54 +703,8 @@ Please activate my rewards.</div>
         }
     }
 
-    // Dashboard Interaction Functions
-    async function connectToDashboard() {
-        try {
-            // Reset UI
-            errorMessage.style.display = 'none';
-            connectButton.disabled = true;
-            networkSection.style.display = 'none';
-            walletsSection.style.display = 'none';
-            delegationForm.style.display = 'none';
-            successMessage.style.display = 'none';
-
-            // Update status
-            CpunkUI.updateConnectionStatus('connecting', 'Connecting...');
-
-            CpunkUtils.logDebug('Connecting to Cellframe dashboard', 'info');
-            
-            // Make connection request using CpunkUtils
-            const response = await CpunkUtils.dashboardRequest('Connect');
-
-            if (response.status === 'ok' && response.data && response.data.id) {
-                sessionId = response.data.id;
-                // Set session ID for transaction manager
-                CpunkTransaction.setSessionId(sessionId);
-                
-                CpunkUI.updateConnectionStatus('connected', 'Connected');
-                connectButton.textContent = 'Refresh Connection';
-
-                CpunkUtils.logDebug('Successfully connected to dashboard', 'info', {
-                    sessionId: sessionId
-                });
-
-                // Show network selection
-                showNetworkSelection();
-            } else {
-                throw new Error(response.errorMsg || 'Failed to connect to dashboard');
-            }
-        } catch (error) {
-            CpunkUtils.logDebug('Connection error', 'error', {
-                message: error.message,
-                stack: error.stack
-            });
-            
-            CpunkUI.showError(error.message, 'errorMessage');
-            CpunkUI.updateConnectionStatus('disconnected', 'Disconnected');
-        } finally {
-            connectButton.disabled = false;
-        }
-    }
+    // Dashboard Interaction Functions - replaced by SSO authentication
+    // connectToDashboard function removed as authentication is handled by SSO
 
     // Show network selection
     function showNetworkSelection() {
@@ -780,34 +772,61 @@ Please activate my rewards.</div>
                 return;
             }
 
-            walletsList.innerHTML = '<div class="loading">Loading wallets...</div>';
-            walletsSection.style.display = 'block';
+            // For SSO authentication, we don't need to show wallet selection
+            // Use the authenticated wallet directly
+            walletsSection.style.display = 'none';
             
-            // Update help text based on selected network
             const config = NETWORK_CONFIG[selectedNetwork];
-            walletHelpText.textContent = `Choose a wallet containing ${config.delegationToken} tokens and ${config.feeToken} for fees on ${selectedNetwork}.`;
             
-            CpunkUtils.logDebug('Loading wallet list from dashboard', 'info');
+            // Check if address is registered in DNA before showing delegation form
+            const isDnaRegistered = await checkDnaRegistration(walletAddress);
 
-            const response = await CpunkUtils.dashboardRequest('GetWallets', { id: sessionId });
+            if (isDnaRegistered) {
+                // Show the delegation form
+                delegationForm.style.display = 'block';
 
-            if (response.status === 'ok' && response.data && Array.isArray(response.data)) {
-                CpunkUtils.logDebug(`Found ${response.data.length} wallets`, 'info');
+                // Pre-fill rewards address with wallet address
+                rewardsAddress.value = walletAddress;
 
-                // Get detailed data for each wallet
-                const walletsWithData = await Promise.all(response.data.map(async (wallet) => {
-                    const walletData = await getWalletData(wallet.name);
-                    return {
-                        ...wallet,
-                        details: walletData?.data || null
-                    };
-                }));
+                // Store the rewards address for later use in delegation recording
+                delegationRewardsAddress = walletAddress;
 
-                walletsList.innerHTML = '';
-                let validWalletsCount = 0;
+                // Update selected wallet display
+                selectedWalletDisplay.textContent = `${currentDna} - Wallet: ${walletAddress.substring(0, 10)}...${walletAddress.substring(walletAddress.length - 10)}`;
 
-                walletsWithData.forEach(wallet => {
-                    if (!wallet.details) return;
+                // Update balance warning based on amount
+                updateBalanceWarning();
+
+                // Validate the form
+                validateForm();
+                
+                // Update tax rate info display
+                updateTaxRateInfo();
+                
+                // Update delegation help text
+                const delegationHelpText = document.getElementById('delegationHelpText');
+                if (delegationHelpText) {
+                    delegationHelpText.textContent = `Minimum: ${config.minDelegation} ${config.delegationToken}, Maximum: ${config.maxDelegation} ${config.delegationToken}`;
+                }
+            } else {
+                // Show DNA registration message but hide the form
+                delegationForm.style.display = 'none';
+
+                // Show prominent registration message
+                errorMessage.innerHTML = `
+                    <strong>DNA Registration Required</strong><br>
+                    Your address ${walletAddress.substring(0, 10)}...${walletAddress.substring(walletAddress.length - 10)}
+                    is not registered in the DNA system.<br><br>
+                    <a href="register.html" style="display: inline-block; padding: 10px 20px; background-color: #f97834; color: white; text-decoration: none; border-radius: 5px; margin-top: 10px;">
+                        Register DNA Now
+                    </a>
+                `;
+                errorMessage.style.display = 'block';
+            }
+            
+            return;
+            
+            // Old wallet loading code removed - no longer needed with SSO
 
                     wallet.details.forEach(networkData => {
                         // Check if wallet is on selected network
@@ -979,8 +998,10 @@ Please activate my rewards.</div>
             });
 
             // Call the CreateOrderStaker API using CpunkTransaction
+            // For SSO authentication, we'll need to use a different approach
+            // since we don't have a wallet name from the dashboard
             const result = await CpunkTransaction.createStakingOrder({
-                walletName: selectedWallet,
+                walletAddress: walletAddress, // Use wallet address instead of name
                 network: selectedNetwork,
                 value: formattedAmount,
                 tax: apiTaxRate

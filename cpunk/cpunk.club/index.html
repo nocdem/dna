@@ -69,6 +69,7 @@
     <div class="container">
         <!-- Script to load navbar template (located in external JS file) -->
         <script src="js/navbar.js"></script>
+        <script src="js/sso.js"></script>
 
         <header class="highlight-box" id="intro-section">
             <h1>🚀 Welcome to ChipPunk ($CPUNK)</h1>
@@ -436,6 +437,16 @@
         
         // Update news and updates every 5 minutes
         setInterval(loadNewsAndUpdates, 300000);
+        
+        // Initialize SSO
+        CpunkSSO.getInstance().init({
+            onAuthenticated: (user) => {
+                console.log('User authenticated:', user.dna);
+            },
+            onUnauthenticated: () => {
+                console.log('User not authenticated');
+            }
+        });
     </script>
 </body>
 </html>

@@ -1,5 +1,6 @@
 // State variables
-let selectedWallet = null;
+let walletAddress = null;
+let currentDna = null;
 const selectedNetwork = 'Cpunk'; // Hardcoded to always use Cpunk network
 let activeVotes = [];
 let voteDetails = {};
@@ -46,18 +47,43 @@ document.addEventListener('DOMContentLoaded', function() {
     
     CpunkTransaction.init();
     
-    // Initialize the dashboard connector
-    CpunkDashboard.init({
-        apiUrl: API_URL,
-        onConnected: async (sessionId) => {
-            // Show wallet selection section
-            walletSection.style.display = 'block';
-            await loadWallets();
-        },
-        onError: (message) => {
-            console.error('Dashboard connection error:', message);
-        }
-    });
+    // Initialize SSO and check authentication
+    if (typeof CpunkSSO !== 'undefined') {
+        CpunkSSO.getInstance().init({
+            requireAuth: false, // Don't require auth for viewing votes
+            onAuthenticated: function(userData) {
+                // User is authenticated
+                console.log('User authenticated:', userData);
+                
+                // Store wallet and DNA info
+                walletAddress = userData.wallet;
+                currentDna = userData.dna;
+                
+                // Update selected wallet display with DNA name
+                if (selectedWalletName) selectedWalletName.textContent = currentDna;
+                
+                // Hide wallet section and show votes directly
+                if (walletSection) walletSection.style.display = 'none';
+                if (votesSection) votesSection.style.display = 'block';
+                
+                // Load votes immediately
+                loadVotes();
+            },
+            onUnauthenticated: function() {
+                // User is not authenticated - that's ok for viewing votes
+                console.log('User not authenticated - view-only mode');
+                
+                // Hide wallet section and show votes directly
+                if (walletSection) walletSection.style.display = 'none';
+                if (votesSection) votesSection.style.display = 'block';
+                
+                // Load votes in view-only mode
+                loadVotes();
+            }
+        });
+    } else {
+        console.error('CpunkSSO not found. Make sure sso.js is loaded.');
+    }
     
     // Initialize DOM elements
     walletSection = document.getElementById('walletSection');
@@ -111,43 +137,8 @@ document.addEventListener('DOMContentLoaded', function() {
     // No need to hide them again here
 });
 
-// Load available wallets
-async function loadWallets() {
-    try {
-        walletsList.innerHTML = '<div class="loading">Loading wallets</div>';
-        
-        const wallets = await CpunkDashboard.getWallets();
-        
-        if (wallets && wallets.length > 0) {
-            renderWalletsList(wallets);
-        } else {
-            walletsList.innerHTML = '<div class="no-votes-message">No wallets found in your dashboard.</div>';
-        }
-    } catch (error) {
-        walletsList.innerHTML = '<div class="error-message" style="display: block;">Failed to load wallets</div>';
-    }
-}
-
-// Render wallets list
-function renderWalletsList(wallets) {
-    if (wallets.length === 0) {
-        walletsList.innerHTML = '<div class="no-votes-message">No wallets found in your dashboard.</div>';
-        return;
-    }
-
-    let walletsHTML = '';
-    wallets.forEach(wallet => {
-        const isSelected = selectedWallet && selectedWallet.name === wallet.name;
-        walletsHTML += `
-            <div class="wallet-card ${isSelected ? 'selected' : ''}" data-wallet-name="${wallet.name}">
-                <div class="wallet-name">${wallet.name}</div>
-            </div>
-        `;
-    });
-
-    walletsList.innerHTML = walletsHTML;
-
-    // Add click event to wallet cards
+// These wallet-related functions are no longer needed as authentication is handled by SSO
+// Wallet selection UI has been removed from the voting page
     document.querySelectorAll('.wallet-card').forEach(card => {
         card.addEventListener('click', () => {
             // Remove selected class from all wallet cards
@@ -166,20 +157,8 @@ function renderWalletsList(wallets) {
     });
 }
 
-// Continue with selected wallet
-async function continueWithWallet() {
-    if (!selectedWallet) return;
-
-    // Update selected wallet display
-    selectedWalletName.textContent = selectedWallet.name;
-
-    // Show votes section
-    walletSection.style.display = 'none';
-    votesSection.style.display = 'block';
-
-    // Load votes
-    await loadVotes();
-}
+// Continue with wallet - no longer needed with SSO
+// This function is replaced by automatic loading after SSO authentication
 
 // Load active votes
 async function loadVotes() {

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CPUNK Community Board</title>
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/board-page.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <style>
+        html, body {
+            overflow-x: hidden;
+            width: 100%;
+            position: relative;
+        }
+    </style>
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/navbar.js"></script>
+
+        <h1>CPUNK Community Board</h1>
+
+        <div class="intro-section">
+            <p>📋 A public space for the CPUNK community to share thoughts, ideas, and updates.</p>
+        </div>
+
+        <!-- Login Required Section -->
+        <div id="loginRequiredSection" class="section" style="display: none;">
+            <div class="info-section">
+                <p>Please login to post on the community board.</p>
+                <button id="loginBtn" class="btn btn-primary">Login</button>
+            </div>
+        </div>
+
+        <!-- Post Creation Section -->
+        <div id="postSection" class="section" style="display: none;">
+            <div class="post-creator">
+                <h3>Share with the Community</h3>
+                <textarea id="postContent" placeholder="What's on your mind?" maxlength="500"></textarea>
+                <div class="post-controls">
+                    <span class="char-count"><span id="charCount">0</span>/500</span>
+                    <button id="postButton" class="action-button" disabled>Post</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Board Display Section -->
+        <div id="boardSection" class="section">
+            <div class="board-header">
+                <h2>Community Posts</h2>
+            </div>
+
+            <!-- Posts Container -->
+            <div id="postsContainer" class="posts-container">
+                <div class="loading-message">Loading community posts...</div>
+            </div>
+
+            <!-- Load More Button -->
+            <div id="loadMoreSection" class="load-more-section" style="display: none;">
+                <button id="loadMoreButton" class="load-more-button">Load More Posts</button>
+            </div>
+        </div>
+
+    </div>
+
+    <!-- Core utilities -->
+    <script src="js/sso.js"></script>
+    <script src="js/cpunk-utils.js"></script>
+    <script src="js/cpunk-transaction.js"></script>
+    <script src="js/cpunk-ui.js"></script>
+    <!-- Page specific script -->
+    <script src="js/board.js"></script>
+</body>
+</html>

@@ -1,5 +1,6 @@
 // State variables
-let selectedWallet = null;
+let walletAddress = null;
+let currentDna = null;
 const selectedNetwork = 'Cpunk'; // Hardcoded to always use Cpunk network
 let activeProposals = [];
 let proposalDetails = {};
@@ -139,16 +140,29 @@ document.addEventListener('DOMContentLoaded', function() {
     
     CpunkTransaction.init();
     
-    // Initialize the dashboard connector but don't require it for viewing proposals
-    CpunkDashboard.init({
-        apiUrl: API_URL,
-        onConnected: async (sessionId) => {
-            // Update connection status only
-        },
-        onError: (message) => {
-            console.error('Dashboard connection error:', message);
-        }
-    });
+    // Initialize SSO and check authentication
+    if (typeof CpunkSSO !== 'undefined') {
+        CpunkSSO.getInstance().init({
+            requireAuth: false, // Don't require auth for viewing proposals
+            onAuthenticated: function(userData) {
+                // User is authenticated
+                console.log('User authenticated:', userData);
+                
+                // Store wallet and DNA info
+                walletAddress = userData.wallet;
+                currentDna = userData.dna;
+                
+                // Update selected wallet display with DNA name
+                if (selectedWalletName) selectedWalletName.textContent = currentDna;
+            },
+            onUnauthenticated: function() {
+                // User is not authenticated - that's ok for viewing proposals
+                console.log('User not authenticated - view-only mode');
+            }
+        });
+    } else {
+        console.error('CpunkSSO not found. Make sure sso.js is loaded.');
+    }
     
     // Initialize DOM elements
     walletSection = document.getElementById('walletSection');
@@ -191,91 +205,22 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
-    // Show the proposals list immediately without requiring wallet connection
+    // Hide wallet section since authentication is handled by SSO
+    if (walletSection) walletSection.style.display = 'none';
+    
+    // Show the proposals list immediately without requiring authentication
     proposalsSection.style.display = 'block';
     loadProposals();
     
-    // Add click handler for connect button to show wallet selection
+    // Remove connect button handler as it's no longer needed
     const connectButton = document.getElementById('connectButton');
     if (connectButton) {
-        connectButton.addEventListener('click', async () => {
-            if (CpunkDashboard.isConnected()) {
-                walletSection.style.display = 'block';
-                await loadWallets();
-            }
-        });
+        connectButton.style.display = 'none';
     }
 });
 
-// Load available wallets
-async function loadWallets() {
-    try {
-        walletsList.innerHTML = '<div class="loading">Loading wallets</div>';
-        
-        const wallets = await CpunkDashboard.getWallets();
-        
-        if (wallets && wallets.length > 0) {
-            renderWalletsList(wallets);
-        } else {
-            walletsList.innerHTML = '<div class="no-proposals-message">No wallets found in your dashboard.</div>';
-        }
-    } catch (error) {
-        walletsList.innerHTML = '<div class="error-message" style="display: block;">Failed to load wallets</div>';
-    }
-}
-
-// Render wallets list
-function renderWalletsList(wallets) {
-    if (wallets.length === 0) {
-        walletsList.innerHTML = '<div class="no-proposals-message">No wallets found in your dashboard.</div>';
-        return;
-    }
-
-    let walletsHTML = '';
-    wallets.forEach(wallet => {
-        const isSelected = selectedWallet && selectedWallet.name === wallet.name;
-        walletsHTML += `
-            <div class="wallet-card ${isSelected ? 'selected' : ''}" data-wallet-name="${wallet.name}">
-                <div class="wallet-name">${wallet.name}</div>
-            </div>
-        `;
-    });
-
-    walletsList.innerHTML = walletsHTML;
-
-    // Add click event to wallet cards
-    document.querySelectorAll('.wallet-card').forEach(card => {
-        card.addEventListener('click', () => {
-            // Remove selected class from all wallet cards
-            document.querySelectorAll('.wallet-card').forEach(c => c.classList.remove('selected'));
-            
-            // Add selected class to clicked card
-            card.classList.add('selected');
-            
-            // Store selected wallet
-            const walletName = card.getAttribute('data-wallet-name');
-            selectedWallet = wallets.find(w => w.name === walletName);
-            
-            // Automatically continue with this wallet
-            continueWithWallet();
-        });
-    });
-}
-
-// Continue with selected wallet
-async function continueWithWallet() {
-    if (!selectedWallet) return;
-
-    // Update selected wallet display
-    selectedWalletName.textContent = selectedWallet.name;
-
-    // Show proposals section
-    walletSection.style.display = 'none';
-    proposalsSection.style.display = 'block';
-
-    // Load proposals
-    await loadProposals();
-}
+// These wallet-related functions are no longer needed as authentication is handled by SSO
+// Wallet selection UI has been removed from the proposals page
 
 // Load active proposals
 async function loadProposals() {
@@ -616,8 +561,20 @@ async function submitVote(buttonElement) {
         return;
     }
 
-    if (!selectedWallet) {
-        showVoteError('No wallet selected.');
+    // Check if user is authenticated
+    if (!CpunkSSO.getInstance().isUserAuthenticated()) {
+        showVoteError('Please login to vote on proposals.');
+        // Redirect to login after a short delay
+        setTimeout(() => {
+            CpunkSSO.getInstance().login();
+        }, 2000);
+        return;
+    }
+    
+    // Get authenticated user info
+    const userInfo = CpunkSSO.getInstance().getCurrentUser();
+    if (!userInfo || !userInfo.wallet) {
+        showVoteError('Authentication error. Please try logging in again.');
         return;
     }
 

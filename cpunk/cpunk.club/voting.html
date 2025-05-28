@@ -23,6 +23,7 @@
     <div class="container">
         <!-- Script to load navbar template -->
         <script src="js/navbar.js"></script>
+        <script src="js/sso.js"></script>
 
         <div class="intro-section">
             <p>🗳️ Welcome to the CPUNK community voting system. Here you can participate in governance decisions and help shape the future of the CPUNK ecosystem.</p>
@@ -96,9 +97,22 @@
     <script src="js/cpunk-utils.js"></script>
     <script src="js/cpunk-transaction.js"></script>
     <script src="js/cpunk-ui.js"></script>
-    <script src="js/dashboardConnector.js"></script>
     <script src="js/cpunk-api-console.js"></script>
+    <script src="js/dashboardConnector.js"></script>
     <!-- Page specific script -->
     <script src="js/voting.js"></script>
+    
+    <script>
+        // Initialize SSO
+        CpunkSSO.getInstance().init({
+            requireAuth: true,
+            onAuthenticated: (user) => {
+                console.log('User authenticated:', user.dna);
+            },
+            onUnauthenticated: () => {
+                console.log('User not authenticated');
+            }
+        });
+    </script>
 </body>
 </html>

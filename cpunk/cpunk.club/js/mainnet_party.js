@@ -1,6 +1,6 @@
 /**
  * CPUNK Mainnet Birthday Bash JavaScript
- * Handles dashboard connection, DNA lookup, and reservation processing
+ * Handles SSO authentication, dashboard connection, DNA lookup, and reservation processing
  */
 
 // API Configuration
@@ -9,6 +9,7 @@ const RESERVATION_AMOUNT = 1000000; // 1,000,000 CPUNK on Backbone network
 const MIN_WALLET_BALANCE = 1000000; // Minimum 1,000,000 CPUNK required in the wallet
 
 // State variables
+let sso = null;
 let sessionId = null;
 let selectedWallet = null;
 let walletAddress = null;
@@ -17,48 +18,49 @@ let selectedDnaNickname = null; // Track the selected DNA nickname
 let attendeesList = [];
 let validatedCode = null; // Store validated invitation code
 
-// DOM Elements
-const statusIndicator = document.getElementById('statusIndicator');
-const connectButton = document.getElementById('connectButton');
-const connectionError = document.getElementById('connectionError');
-const walletSection = document.getElementById('walletSection');
-const walletsList = document.getElementById('walletsList');
-const continueButton = document.getElementById('continueButton');
-const walletError = document.getElementById('walletError');
-const dnaSection = document.getElementById('dnaSection');
-const dnaStatus = document.getElementById('dnaStatus');
-const dnaError = document.getElementById('dnaError');
-const dnaSelectionList = document.getElementById('dnaSelectionList');
-const dnaDetails = document.getElementById('dnaDetails');
-const profileAvatar = document.getElementById('profileAvatar');
-const profileNickname = document.getElementById('profileNickname');
-const profileNicknames = document.getElementById('profileNicknames');
-const reserveButton = document.getElementById('reserveButton');
-const txSection = document.getElementById('txSection');
-const txStatus = document.getElementById('txStatus');
-const txError = document.getElementById('txError');
-const txSuccess = document.getElementById('txSuccess');
-const confirmationSection = document.getElementById('confirmationSection');
-const reservedByDna = document.getElementById('reservedByDna');
-const reservationTxId = document.getElementById('reservationTxId');
-const attendeesListElement = document.getElementById('attendeesList');
+// DOM Elements - will be initialized after DOM loads
+let reservationInfo = null;
+let loginRequiredSection = null;
+let loginBtn = null;
+let statusIndicator = null;
+let walletSection = null;
+let walletsList = null;
+let continueButton = null;
+let walletError = null;
+let dnaSection = null;
+let dnaStatus = null;
+let dnaError = null;
+let dnaSelectionList = null;
+let dnaDetails = null;
+let profileAvatar = null;
+let profileNickname = null;
+let profileNicknames = null;
+let reserveButton = null;
+let txSection = null;
+let txStatus = null;
+let txError = null;
+let txSuccess = null;
+let confirmationSection = null;
+let reservedByDna = null;
+let reservationTxId = null;
+let attendeesListElement = null;
 
-// Invitation Code Elements
-const toggleInvitationButton = document.getElementById('toggleInvitationButton');
-const invitationCodeSection = document.getElementById('invitationCodeSection');
-const invitationCodeInput = document.getElementById('invitationCodeInput');
-const validateCodeButton = document.getElementById('validateCodeButton');
-const codeStatus = document.getElementById('codeStatus');
-const validCodeDetails = document.getElementById('validCodeDetails');
-const codeType = document.getElementById('codeType');
-const codeDescription = document.getElementById('codeDescription');
-const redeemCodeButton = document.getElementById('redeemCodeButton');
+// Invitation Code Elements - will be initialized after DOM loads
+let toggleInvitationButton = null;
+let invitationCodeSection = null;
+let invitationCodeInput = null;
+let validateCodeButton = null;
+let codeStatus = null;
+let validCodeDetails = null;
+let codeType = null;
+let codeDescription = null;
+let redeemCodeButton = null;
 
-// Countdown Elements
-const daysElement = document.getElementById('days');
-const hoursElement = document.getElementById('hours');
-const minutesElement = document.getElementById('minutes');
-const secondsElement = document.getElementById('seconds');
+// Countdown Elements - will be initialized after DOM loads
+let daysElement = null;
+let hoursElement = null;
+let minutesElement = null;
+let secondsElement = null;
 
 /**
  * Dashboard API Connection Functions
@@ -141,11 +143,11 @@ async function makeRequest(method, params = {}) {
 
 // Update dashboard status display
 function updateStatus(status, message = '') {
+    if (!statusIndicator) return;
+    
     if (typeof CpunkUI !== 'undefined' && CpunkUI.updateConnectionStatus) {
         if (status === 'connected' && selectedWallet && selectedWallet.name) {
             CpunkUI.updateConnectionStatus(status, `${selectedWallet.name} Connected`);
-            // Hide connect button after connection is established
-            connectButton.style.display = 'none';
         } else {
             CpunkUI.updateConnectionStatus(status, message || status);
         }
@@ -155,9 +157,6 @@ function updateStatus(status, message = '') {
             // Format as "Dashboard Status: $WalletName Connected"
             statusIndicator.className = 'status-indicator status-connected';
             statusIndicator.textContent = `${selectedWallet.name} Connected`;
-            
-            // Hide connect button after connection is established
-            connectButton.style.display = 'none';
         } else {
             statusIndicator.className = 'status-indicator status-' + status;
             statusIndicator.textContent = message || status;
@@ -165,581 +164,29 @@ function updateStatus(status, message = '') {
     }
 }
 
-// Connect to dashboard handler
-async function connectToDashboard() {
-    try {
-        connectButton.disabled = true;
-        connectButton.textContent = 'Connecting...';
-        connectionError.style.display = 'none';
-
-        // Update status
-        updateStatus('connecting', 'Connecting...');
-
-        // Make connection request
-        const response = await makeRequest('Connect');
-
-        if (response.status === 'ok' && response.data && response.data.id) {
-            sessionId = response.data.id;
-            
-            // Update CpunkTransaction session ID if available
-            if (typeof CpunkTransaction !== 'undefined' && CpunkTransaction.setSessionId) {
-                CpunkTransaction.setSessionId(sessionId);
-            }
-
-            // Update status and UI
-            updateStatus('connected', 'Connected');
-            connectButton.textContent = 'Connected';
-
-            // Show wallet selection section
-            walletSection.style.display = 'block';
-
-            // Load wallets
-            await loadWallets();
-        } else {
-            throw new Error(response.errorMsg || 'Failed to connect to dashboard');
-        }
-    } catch (error) {
-        console.error('Connection error:', error);
-        updateStatus('disconnected', 'Connection failed');
-        connectButton.textContent = 'Connect to Dashboard';
-        connectButton.style.display = 'block';
-
-        // Show error message using CpunkUI if available
-        if (typeof CpunkUI !== 'undefined' && CpunkUI.showError) {
-            CpunkUI.showError(`Error connecting to dashboard: ${error.message}`, 'connectionError');
-        } else {
-            connectionError.textContent = `Error connecting to dashboard: ${error.message}`;
-            connectionError.style.display = 'block';
-        }
-    } finally {
-        connectButton.disabled = false;
+// Get SSO session ID for dashboard operations
+function getSessionId() {
+    if (sso) {
+        return sso.getSessionId();
     }
+    return null;
 }
 
-// Get wallet data from dashboard
-async function getWalletData(walletName) {
-    try {
-        const response = await makeRequest('GetDataWallet', {
-            id: sessionId,
-            walletName: walletName
-        });
+// Removed - wallet selection handled by SSO
 
-        return response;
-    } catch (error) {
-        // Log error using CpunkUtils if available
-        if (typeof CpunkUtils !== 'undefined' && CpunkUtils.logDebug) {
-            CpunkUtils.logDebug(`Error fetching data for wallet ${walletName}`, 'error', { error });
-        } else {
-            console.error(`Error fetching data for wallet ${walletName}:`, error);
-        }
-        return null;
-    }
-}
-
-// Load wallets from dashboard
-async function loadWallets() {
-    if (!sessionId) return;
-
-    try {
-        walletsList.innerHTML = '<div class="loading">Loading wallets...</div>';
-
-        const response = await makeRequest('GetWallets', { id: sessionId });
-
-        if (response.status === 'ok' && response.data && Array.isArray(response.data)) {
-            const wallets = response.data;
-
-            if (wallets.length === 0) {
-                walletsList.innerHTML = `
-                    <div style="color: var(--error); text-align: center; padding: 20px;">
-                        No wallets found in your dashboard.<br>
-                        Please create a wallet first.
-                    </div>
-                `;
-                return;
-            }
-
-            // Clear previous content
-            walletsList.innerHTML = '';
-
-            // Create wallet selection items
-            const walletsWithData = await Promise.all(wallets.map(async (wallet) => {
-                const walletData = await getWalletData(wallet.name);
-                return {
-                    ...wallet,
-                    details: walletData?.data || null
-                };
-            }));
-
-            // Process wallets per network (like in register.js)
-            walletsList.innerHTML = '';
-            let foundWallets = false;
-
-            // Process each wallet
-            walletsWithData.forEach(wallet => {
-                if (!wallet.details || wallet.details.length === 0) return;
-
-                // Process each network in the wallet
-                wallet.details.forEach(networkData => {
-                    // Find CPUNK token
-                    let cpunkToken = null;
-                    if (networkData.tokens && Array.isArray(networkData.tokens)) {
-                        cpunkToken = networkData.tokens.find(token => token.tokenName === 'CPUNK');
-                    }
-                    const cpunkBalance = parseFloat(cpunkToken?.balance || 0);
-
-                    // Only process wallets on the Backbone network
-                    if (networkData.network === 'Backbone') {
-                        // Check if CpunkUI is available for creating wallet card
-                        if (typeof CpunkUI !== 'undefined' && CpunkUI.createWalletCard) {
-                            // Format wallet data for CpunkUI
-                            const walletForCard = {
-                                name: wallet.name,
-                                network: 'Backbone',
-                                address: networkData.address,
-                                tokens: [{
-                                    tokenName: 'CPUNK',
-                                    balance: cpunkBalance
-                                }],
-                                pubkey_hash: networkData.pubkey_hash || ''
-                            };
-                            
-                            // Create the wallet card
-                            const walletCard = CpunkUI.createWalletCard(walletForCard, (selectedWalletData) => {
-                                // Store selected wallet info
-                                selectedWallet = {
-                                    name: wallet.name,
-                                    network: 'Backbone', // Always use Backbone network
-                                    address: networkData.address,
-                                    pubkey_hash: networkData.pubkey_hash || '',
-                                    cpunkBalance: cpunkBalance
-                                };
-
-                                // Enable continue button
-                                continueButton.disabled = false;
-
-                                // Update status with wallet name
-                                updateStatus('connected');
-                            });
-                            
-                            walletsList.appendChild(walletCard);
-                        } else {
-                            // Fallback to direct DOM manipulation
-                            const walletItem = document.createElement('div');
-                            walletItem.className = 'wallet-card';
-                            walletItem.dataset.name = wallet.name;
-                            walletItem.dataset.network = 'Backbone';
-                            walletItem.dataset.address = networkData.address;
-        
-                            // Create balance display
-                            let balanceHtml = '';
-                            
-                            // Use CpunkUtils formatBalance if available
-                            const formatBalance = typeof CpunkUtils !== 'undefined' && CpunkUtils.formatBalance
-                                ? CpunkUtils.formatBalance
-                                : (balance, decimals = 4) => parseFloat(balance).toLocaleString(undefined, {
-                                    minimumFractionDigits: 0,
-                                    maximumFractionDigits: decimals
-                                });
-                                
-                            if (cpunkToken) {
-                                balanceHtml = `<div class="balance-item">CPUNK: ${formatBalance(cpunkBalance)}</div>`;
-                            } else {
-                                balanceHtml = `<div class="balance-item insufficient">CPUNK: 0</div>`;
-                            }
-        
-                            walletItem.innerHTML = `
-                                <div class="wallet-name">${wallet.name}</div>
-                                <div class="wallet-balances">
-                                    ${balanceHtml}
-                                </div>
-                                <div class="wallet-address">${networkData.address}</div>
-                            `;
-                            
-                            walletItem.addEventListener('click', () => {
-                                // Deselect all wallets
-                                document.querySelectorAll('.wallet-card').forEach(card => {
-                                    card.classList.remove('selected');
-                                });
-        
-                                // Select this wallet
-                                walletItem.classList.add('selected');
-        
-                                // Store selected wallet info with network
-                                selectedWallet = {
-                                    name: wallet.name,
-                                    network: 'Backbone', // Always use Backbone network
-                                    address: networkData.address,
-                                    pubkey_hash: networkData.pubkey_hash || '',
-                                    cpunkBalance: cpunkBalance
-                                };
-        
-                                // Update status with wallet name
-                                updateStatus('connected');
-        
-                                // Enable continue button
-                                continueButton.disabled = false;
-                            });
-        
-                            walletsList.appendChild(walletItem);
-                        }
-                        
-                        foundWallets = true;
-                    }
-                });
-            });
-
-            if (!foundWallets) {
-                walletsList.innerHTML = `
-                    <div style="color: var(--error); text-align: center; padding: 20px;">
-                        No wallets found in your dashboard.<br>
-                        Please create a wallet first.
-                    </div>
-                `;
-            }
-        } else {
-            throw new Error('Failed to load wallets');
-        }
-    } catch (error) {
-        // Log error using CpunkUtils if available
-        if (typeof CpunkUtils !== 'undefined' && CpunkUtils.logDebug) {
-            CpunkUtils.logDebug('Error loading wallets', 'error', { error });
-        } else {
-            console.error('Error loading wallets:', error);
-        }
-        
-        walletsList.innerHTML = `
-            <div style="color: var(--error); text-align: center; padding: 20px;">
-                Error loading wallets: ${error.message}
-            </div>
-        `;
-        
-        // Show error message using CpunkUI if available
-        if (typeof CpunkUI !== 'undefined' && CpunkUI.showError) {
-            CpunkUI.showError(`Error loading wallets: ${error.message}`, 'walletError');
-        } else {
-            walletError.textContent = `Error loading wallets: ${error.message}`;
-            walletError.style.display = 'block';
-        }
-    }
-}
-
-// Continue with selected wallet handler
-async function continueWithWallet() {
-    if (!selectedWallet) {
-        // Show error message using CpunkUI if available
-        if (typeof CpunkUI !== 'undefined' && CpunkUI.showError) {
-            CpunkUI.showError('Please select a wallet first', 'walletError');
-        } else {
-            walletError.textContent = 'Please select a wallet first';
-            walletError.style.display = 'block';
-        }
-        return;
-    }
-
-    try {
-        walletError.style.display = 'none';
-        continueButton.disabled = true;
-        continueButton.textContent = 'Loading...';
-
-        // Store the wallet address for lookup
-        walletAddress = selectedWallet.address;
-
-        // Update the status display with wallet name
-        updateStatus('connected');
-
-        // Hide wallet selection section after successful selection
-        walletSection.style.display = 'none';
-
-        // Show DNA section
-        dnaSection.style.display = 'block';
-
-        // Check for DNA registration
-        await checkDnaRegistration();
-
-    } catch (error) {
-        // Log error using CpunkUtils if available
-        if (typeof CpunkUtils !== 'undefined' && CpunkUtils.logDebug) {
-            CpunkUtils.logDebug('Error processing wallet selection', 'error', { error });
-        } else {
-            console.error('Error processing wallet selection:', error);
-        }
-        
-        // Show error message using CpunkUI if available
-        if (typeof CpunkUI !== 'undefined' && CpunkUI.showError) {
-            CpunkUI.showError(`Error: ${error.message}`, 'walletError');
-        } else {
-            walletError.textContent = `Error: ${error.message}`;
-            walletError.style.display = 'block';
-        }
-    } finally {
-        continueButton.disabled = false;
-        continueButton.textContent = 'Continue with Selected Wallet';
-    }
-}
+// Removed - no longer need wallet selection with SSO
 
 /**
  * DNA Registration Functions
  */
 
-// Check DNA registration
-async function checkDnaRegistration() {
-    if (!walletAddress) return;
+// This function is no longer needed - SSO provides DNA information
 
-    try {
-        dnaStatus.style.display = 'block';
-        dnaStatus.className = 'loading';
-        dnaStatus.textContent = 'Checking DNA registration';
-        dnaError.style.display = 'none';
-        dnaDetails.style.display = 'none';
-        dnaSelectionList.style.display = 'none';
+// This function is no longer needed - SSO provides single selected DNA
 
-        // Log API request if console is available
-        if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
-            CpunkAPIConsole.log('DNA Registration Check Request', { 
-                wallet: walletAddress,
-                type: 'dna_api'
-            });
-        }
+// This function is no longer needed - SSO ensures user has DNA
 
-        // Use CpunkUtils to check DNA registration if available
-        let data;
-        if (typeof CpunkUtils !== 'undefined' && CpunkUtils.checkDnaRegistration) {
-            const result = await CpunkUtils.checkDnaRegistration(walletAddress);
-            
-            // Log API response if console is available
-            if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
-                CpunkAPIConsole.log('DNA Registration Check Response', { 
-                    isRegistered: result.isRegistered,
-                    response: result.response,
-                });
-            }
-            if (result.isRegistered && result.response && result.response.response_data) {
-                // Save DNA data
-                dnaData = result.response.response_data;
-
-                // Update DNA status
-                dnaStatus.style.display = 'none';
-                
-                // Check for multiple DNAs and show selection screen if needed
-                const registeredNames = dnaData.registered_names || {};
-                const nicknames = Object.keys(registeredNames);
-                
-                if (nicknames.length > 1) {
-                    // Multiple DNAs - display selection list
-                    displayDnaSelectionList(nicknames, dnaData);
-                } else if (nicknames.length === 1) {
-                    // Single DNA - show directly
-                    dnaDetails.style.display = 'block';
-                    updateProfilePreview(dnaData);
-                } else {
-                    // Somehow no nicknames even though registered
-                    showNoRegistrationMessage();
-                }
-            } else {
-                // No DNA registration found
-                showNoRegistrationMessage();
-            }
-        } else {
-            // Fallback to direct API call
-            const DNA_API_URL = 'dna-proxy.php';
-            // Make API request to check DNA
-            const requestUrl = `${DNA_API_URL}?lookup=${encodeURIComponent(walletAddress)}`;
-            
-            // Log API request if console is available
-            if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
-                CpunkAPIConsole.log('DNA Lookup API Request', { 
-                    url: requestUrl,
-                    wallet: walletAddress,
-                    type: 'dna_api'
-                });
-            }
-            
-            const response = await fetch(requestUrl);
-            const text = await response.text();
-            
-            // Log API response if console is available
-            if (window.CpunkAPIConsole && CpunkAPIConsole.log) {
-                CpunkAPIConsole.log('DNA Lookup API Response', { 
-                    status: response.status,
-                    responseText: text,
-                    type: 'dna_api'
-                });
-            }
-
-            try {
-                // Parse as JSON
-                data = JSON.parse(text);
-
-                // Check if data was found
-                if (data.status_code === 0 && data.response_data) {
-                    // Save DNA data
-                    dnaData = data.response_data;
-
-                    // Update DNA status
-                    dnaStatus.style.display = 'none';
-                    
-                    // Check for multiple DNAs and show selection screen if needed
-                    const registeredNames = dnaData.registered_names || {};
-                    const nicknames = Object.keys(registeredNames);
-                    
-                    if (nicknames.length > 1) {
-                        // Multiple DNAs - display selection list
-                        displayDnaSelectionList(nicknames, dnaData);
-                    } else if (nicknames.length === 1) {
-                        // Single DNA - show directly
-                        dnaDetails.style.display = 'block';
-                        updateProfilePreview(dnaData);
-                    } else {
-                        // Somehow no nicknames even though registered
-                        showNoRegistrationMessage();
-                    }
-                } else {
-                    // No DNA registration found
-                    showNoRegistrationMessage();
-                }
-            } catch (e) {
-                // If not valid JSON, likely an error
-                showNoRegistrationMessage(text);
-            }
-        }
-    } catch (error) {
-        // Log error using CpunkUtils if available
-        if (typeof CpunkUtils !== 'undefined' && CpunkUtils.logDebug) {
-            CpunkUtils.logDebug('Error checking DNA registration', 'error', { error });
-        } else {
-            console.error('Error checking DNA registration:', error);
-        }
-        
-        dnaStatus.style.display = 'none';
-        
-        // Show error message using CpunkUI if available
-        if (typeof CpunkUI !== 'undefined' && CpunkUI.showError) {
-            CpunkUI.showError(`Error checking DNA registration: ${error.message}`, 'dnaError');
-        } else {
-            dnaError.textContent = `Error checking DNA registration: ${error.message}`;
-            dnaError.style.display = 'block';
-        }
-    }
-}
-
-// Display the list of DNAs for selection
-function displayDnaSelectionList(nicknames, dnaData) {
-    // Clear previous content
-    dnaSelectionList.innerHTML = '';
-    
-    // Show DNA selection list
-    dnaSelectionList.style.display = 'block';
-    
-    // Add a header for the DNA selection
-    const header = document.createElement('h3');
-    header.textContent = 'Select a DNA for your reservation';
-    header.style.marginBottom = '15px';
-    dnaSelectionList.appendChild(header);
-    
-    // Create container for DNA cards
-    const cardsContainer = document.createElement('div');
-    cardsContainer.className = 'dna-cards-container';
-    dnaSelectionList.appendChild(cardsContainer);
-    
-    // Create DNA cards for each nickname
-    nicknames.forEach(nickname => {
-        const dnaCard = document.createElement('div');
-        dnaCard.className = 'dna-card';
-        
-        // Create avatar with first letter
-        const initial = nickname.charAt(0).toUpperCase();
-        
-        dnaCard.innerHTML = `
-            <div class="dna-avatar">${initial}</div>
-            <div class="dna-name">${nickname}</div>
-        `;
-        
-        // Add click handler
-        dnaCard.addEventListener('click', () => {
-            // Deselect all DNAs
-            document.querySelectorAll('.dna-card').forEach(card => {
-                card.classList.remove('selected');
-            });
-            
-            // Select this DNA
-            dnaCard.classList.add('selected');
-            
-            // Hide selection list after 500ms delay (to show selection effect)
-            setTimeout(() => {
-                dnaSelectionList.style.display = 'none';
-            }, 500);
-            
-            // Show selected DNA
-            dnaDetails.style.display = 'block';
-            
-            // Store the selected nickname and update preview
-            selectedDnaNickname = nickname;
-            updateProfilePreviewWithNickname(nickname, dnaData);
-        });
-        
-        cardsContainer.appendChild(dnaCard);
-    });
-    
-    // Show selection instructions
-    const instructions = document.createElement('div');
-    instructions.className = 'dna-selection-instructions';
-    instructions.textContent = 'Click on a DNA nickname to select it for the party reservation';
-    dnaSelectionList.appendChild(instructions);
-}
-
-// Show message when no DNA registration is found
-function showNoRegistrationMessage(errorText = '') {
-    dnaStatus.className = '';
-    dnaStatus.innerHTML = `
-        <div style="color: var(--error); text-align: center; padding: 20px;">
-            ${errorText && errorText.includes('not found') ?
-                'No DNA registration found for this wallet.' :
-                errorText ? 'Could not verify DNA registration. Please try again.' : 'No DNA registration found for this wallet.'
-            }<br>
-            <button onclick="window.location.href='/register.html'" style="width: auto; margin-top: 15px; display: inline-block; padding: 10px 20px;">
-                Register DNA Now
-            </button>
-        </div>
-    `;
-}
-
-// Update profile preview from DNA data
-function updateProfilePreview(data) {
-    const registeredNames = data.registered_names || {};
-    const nicknames = Object.keys(registeredNames);
-    const primaryNickname = nicknames.length > 0 ? nicknames[0] : '?';
-    
-    // Store the primary nickname as the selected one
-    selectedDnaNickname = primaryNickname;
-    
-    // Update profile with the primary nickname
-    updateProfilePreviewWithNickname(primaryNickname, data);
-}
-
-// Update profile preview with a specific nickname
-function updateProfilePreviewWithNickname(selectedNickname, data) {
-    const registeredNames = data.registered_names || {};
-    const nicknames = Object.keys(registeredNames);
-    
-    // Update avatar and nickname
-    if (profileAvatar) profileAvatar.textContent = selectedNickname.charAt(0).toUpperCase();
-    if (profileNickname) profileNickname.textContent = selectedNickname;
-
-    // Update nickname tags - for the profile preview we'll still show all nicknames 
-    // but highlight the selected one as primary
-    if (profileNicknames) {
-        profileNicknames.innerHTML = '';
-        nicknames.forEach((name) => {
-            const tag = document.createElement('span');
-            tag.className = `nickname-tag${name === selectedNickname ? ' primary' : ''}`;
-            tag.textContent = name;
-            profileNicknames.appendChild(tag);
-        });
-    }
-    
-    // Check if this DNA is already registered for the event
-    checkExistingReservation(selectedNickname);
-}
+// These functions are no longer needed - SSO provides DNA information
 
 // Check if DNA is already registered for the event
 async function checkExistingReservation(dnaName) {
@@ -807,7 +254,12 @@ async function checkExistingReservation(dnaName) {
 
         // Check if this wallet already has a reservation
         if (data.wallet_reserved) {
-            // Wallet already has a reservation
+            // Update reservation info to show confirmed status
+            if (reservationInfo) {
+                reservationInfo.innerHTML = '🎉 <span class="highlight">Reservation Confirmed!</span> You\'re all set for the Cellframe Mainnet Birthday Bash.';
+            }
+            
+            // Wallet already has a reservation - just show profile
             dnaDetails.innerHTML = `
                 <div class="profile-preview">
                     <div class="profile-header">
@@ -817,10 +269,6 @@ async function checkExistingReservation(dnaName) {
                             <div class="nickname-tags" id="profileNicknames">${profileNicknames.innerHTML}</div>
                         </div>
                     </div>
-                </div>
-                <div class="warning-message" style="display: block;">
-                    <p>This wallet has already made a reservation for the party! 🎉</p>
-                    <p>Only one reservation per wallet is allowed.</p>
                 </div>
             `;
             // Hide the reserve button
@@ -828,7 +276,12 @@ async function checkExistingReservation(dnaName) {
         }
         // Check if this specific DNA is already registered
         else if (data.reserved) {
-            // DNA already reserved
+            // Update reservation info to show confirmed status
+            if (reservationInfo) {
+                reservationInfo.innerHTML = '🎉 <span class="highlight">Reservation Confirmed!</span> You\'re all set for the Cellframe Mainnet Birthday Bash.';
+            }
+            
+            // DNA already reserved - just show profile
             dnaDetails.innerHTML = `
                 <div class="profile-preview">
                     <div class="profile-header">
@@ -838,10 +291,6 @@ async function checkExistingReservation(dnaName) {
                             <div class="nickname-tags" id="profileNicknames">${profileNicknames.innerHTML}</div>
                         </div>
                     </div>
-                </div>
-                <div class="success-message" style="display: block;">
-                    <p>This DNA is already registered for the event! 🎉</p>
-                    <p>Transaction: <code>${data.tx_hash || 'N/A'}</code></p>
                 </div>
             `;
             // Hide the reserve button
@@ -866,7 +315,7 @@ async function checkExistingReservation(dnaName) {
 
 // Process reservation
 async function processReservation() {
-    if (!selectedWallet || !dnaData) {
+    if (!selectedWallet || !selectedDnaNickname) {
         // Show error using CpunkUI if available
         if (typeof CpunkUI !== 'undefined' && CpunkUI.showError) {
             CpunkUI.showError('Wallet or DNA data missing', 'dnaError');
@@ -915,11 +364,8 @@ async function processReservation() {
         txSuccess.style.display = 'none';
         
         // 1. Get transaction data for reservation
-        const registeredNames = dnaData.registered_names || {};
-        const nicknames = Object.keys(registeredNames);
-        
-        // Use selectedDnaNickname if available, otherwise default to first nickname
-        const primaryNickname = selectedDnaNickname || (nicknames.length > 0 ? nicknames[0] : null);
+        // Use selectedDnaNickname from SSO
+        const primaryNickname = selectedDnaNickname;
         
         // Log which DNA is being used
         if (typeof CpunkUtils !== 'undefined' && CpunkUtils.logDebug) {
@@ -976,10 +422,15 @@ async function processReservation() {
                 throw new Error('Failed to send transaction');
             }
         } else {
-            // Fallback to direct API call
+            // Fallback to direct API call with SSO session
+            sessionId = getSessionId();
+            if (!sessionId) {
+                throw new Error('No session available');
+            }
+            
             const response = await makeRequest('SendTransaction', {
                 id: sessionId,
-                net: 'Backbone', // Use Backbone network
+                net: 'Backbone',
                 walletName: selectedWallet.name,
                 toAddr: TREASURY_WALLET,
                 tokenName: 'CPUNK',
@@ -1543,10 +994,8 @@ async function loadAttendees(forceRefresh = false) {
             }
 
             // If we just reserved, add our nickname to the list
-            if (forceRefresh && dnaData) {
-                const registeredNames = dnaData.registered_names || {};
-                const nicknames = Object.keys(registeredNames);
-                const primaryNickname = selectedDnaNickname || (nicknames.length > 0 ? nicknames[0] : null);
+            if (forceRefresh && selectedDnaNickname) {
+                const primaryNickname = selectedDnaNickname;
 
                 if (primaryNickname && !attendeesList.some(a => a.nickname === primaryNickname)) {
                     attendeesList.push({
@@ -1782,7 +1231,7 @@ function showCodeStatus(message, type) {
 
 // Process reservation with invitation code
 async function processCodeReservation() {
-    if (!selectedWallet || !dnaData || !validatedCode) {
+    if (!selectedWallet || !selectedDnaNickname || !validatedCode) {
         showCodeStatus('Missing wallet, DNA, or valid code data', 'error');
         return;
     }
@@ -1800,12 +1249,8 @@ async function processCodeReservation() {
         txError.style.display = 'none';
         txSuccess.style.display = 'none';
 
-        // Get the DNA nickname to use
-        const registeredNames = dnaData.registered_names || {};
-        const nicknames = Object.keys(registeredNames);
-
-        // Use selectedDnaNickname if available, otherwise default to first nickname
-        const primaryNickname = selectedDnaNickname || (nicknames.length > 0 ? nicknames[0] : null);
+        // Get the DNA nickname to use from SSO
+        const primaryNickname = selectedDnaNickname;
 
         if (!primaryNickname) {
             throw new Error('No DNA nickname found for reservation');
@@ -1875,12 +1320,66 @@ async function processCodeReservation() {
 }
 
 /**
+ * Initialize DOM elements
+ */
+function initDOMElements() {
+    // Main sections
+    reservationInfo = document.getElementById('reservationInfo');
+    loginRequiredSection = document.getElementById('loginRequiredSection');
+    loginBtn = document.getElementById('loginBtn');
+    statusIndicator = document.getElementById('statusIndicator');
+    walletSection = document.getElementById('walletSection');
+    walletsList = document.getElementById('walletsList');
+    continueButton = document.getElementById('continueButton');
+    walletError = document.getElementById('walletError');
+    dnaSection = document.getElementById('dnaSection');
+    dnaStatus = document.getElementById('dnaStatus');
+    dnaError = document.getElementById('dnaError');
+    dnaSelectionList = document.getElementById('dnaSelectionList');
+    dnaDetails = document.getElementById('dnaDetails');
+    profileAvatar = document.getElementById('profileAvatar');
+    profileNickname = document.getElementById('profileNickname');
+    profileNicknames = document.getElementById('profileNicknames');
+    reserveButton = document.getElementById('reserveButton');
+    txSection = document.getElementById('txSection');
+    txStatus = document.getElementById('txStatus');
+    txError = document.getElementById('txError');
+    txSuccess = document.getElementById('txSuccess');
+    confirmationSection = document.getElementById('confirmationSection');
+    reservedByDna = document.getElementById('reservedByDna');
+    reservationTxId = document.getElementById('reservationTxId');
+    attendeesListElement = document.getElementById('attendeesList');
+    
+    // Invitation code elements
+    toggleInvitationButton = document.getElementById('toggleInvitationButton');
+    invitationCodeSection = document.getElementById('invitationCodeSection');
+    invitationCodeInput = document.getElementById('invitationCodeInput');
+    validateCodeButton = document.getElementById('validateCodeButton');
+    codeStatus = document.getElementById('codeStatus');
+    validCodeDetails = document.getElementById('validCodeDetails');
+    codeType = document.getElementById('codeType');
+    codeDescription = document.getElementById('codeDescription');
+    redeemCodeButton = document.getElementById('redeemCodeButton');
+    
+    // Countdown elements
+    daysElement = document.getElementById('days');
+    hoursElement = document.getElementById('hours');
+    minutesElement = document.getElementById('minutes');
+    secondsElement = document.getElementById('seconds');
+}
+
+/**
  * Initialize Event Listeners
  */
 function initEventListeners() {
-    // Dashboard connection
-    if (connectButton) connectButton.addEventListener('click', connectToDashboard);
-    if (continueButton) continueButton.addEventListener('click', continueWithWallet);
+    // Login button
+    if (loginBtn) {
+        loginBtn.addEventListener('click', () => {
+            window.location.href = 'login.html?redirect=mainnet_party.html';
+        });
+    }
+    
+    // Remove wallet selection listeners as SSO handles this
     if (reserveButton) reserveButton.addEventListener('click', processReservation);
 
     // Invitation code
@@ -1900,10 +1399,92 @@ function initEventListeners() {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', () => {
+    // Initialize DOM elements
+    initDOMElements();
+    
     // Initialize API console if available
     if (typeof CpunkAPIConsole !== 'undefined' && CpunkAPIConsole.init) {
         CpunkAPIConsole.init();
         console.log('API Console initialized for mainnet party page');
+    }
+    
+    // Initialize SSO
+    if (typeof CpunkSSO !== 'undefined') {
+        sso = CpunkSSO.getInstance();
+        sso.init({
+            onAuthenticated: async (user) => {
+                console.log('User authenticated:', user.dna);
+                // Hide login required section and update reservation info
+                if (loginRequiredSection) loginRequiredSection.style.display = 'none';
+                if (reservationInfo) reservationInfo.innerHTML = 'Secure your attendance by reserving with <span class="highlight">1,000,000 CPUNK</span> on the <span class="highlight">Backbone</span> network.';
+                
+                // Get wallet and DNA info from SSO
+                walletAddress = sso.getCurrentWallet();
+                sessionId = sso.sessionId;
+                
+                if (walletAddress && sessionId) {
+                    // Set session ID for transaction module
+                    if (typeof CpunkTransaction !== 'undefined' && CpunkTransaction.setSessionId) {
+                        CpunkTransaction.setSessionId(sessionId);
+                    }
+                    
+                    // Get wallet balance from dashboard
+                    try {
+                        const walletsResponse = await makeRequest('GetWallets', { id: sessionId });
+                        if (walletsResponse.status === 'ok' && walletsResponse.data) {
+                            const backboneWallets = walletsResponse.data.filter(w => w.network === 'Backbone');
+                            const currentWallet = backboneWallets.find(w => w.address === walletAddress);
+                            
+                            if (currentWallet) {
+                                selectedWallet = {
+                                    name: currentWallet.name || 'Wallet',
+                                    address: currentWallet.address,
+                                    network: 'Backbone',
+                                    cpunkBalance: currentWallet.cpunkBalance || 0
+                                };
+                            } else {
+                                // Fallback if wallet not found
+                                selectedWallet = {
+                                    name: 'Wallet',
+                                    address: walletAddress,
+                                    network: 'Backbone',
+                                    cpunkBalance: 0
+                                };
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error loading wallet info:', error);
+                        // Fallback wallet data
+                        selectedWallet = {
+                            name: 'Wallet',
+                            address: walletAddress,
+                            network: 'Backbone',
+                            cpunkBalance: 0
+                        };
+                    }
+                    
+                    // Use DNA from SSO (user.dna)
+                    selectedDnaNickname = user.dna;
+                    
+                    // Show DNA section directly
+                    dnaSection.style.display = 'block';
+                    dnaDetails.style.display = 'block';
+                    
+                    // Update profile preview
+                    if (profileAvatar) profileAvatar.textContent = user.dna.charAt(0).toUpperCase();
+                    if (profileNickname) profileNickname.textContent = user.dna;
+                    
+                    // Check if already reserved for the event
+                    await checkExistingReservation(user.dna);
+                }
+            },
+            onUnauthenticated: () => {
+                console.log('User not authenticated');
+                // Show login required section and restore original reservation info
+                if (loginRequiredSection) loginRequiredSection.style.display = 'block';
+                if (reservationInfo) reservationInfo.innerHTML = 'Secure your attendance by reserving with <span class="highlight">1,000,000 CPUNK</span> on the <span class="highlight">Backbone</span> network. Login to access reservation functionality.';
+            }
+        });
     }
     
     initEventListeners();

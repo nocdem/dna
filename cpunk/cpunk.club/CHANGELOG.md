@@ -2,6 +2,39 @@
 
 All notable changes to CPUNK platform will be documented in this file.
 
+## [0.1.7] - 2025-05-28
+
+### Changed
+- Removed Register DNA button from navbar Services dropdown
+  - Users can register DNA through the login page when needed
+  - Existing link shown in dashboardConnector when no DNA found
+
+### Fixed
+- Authentication loop in register.html
+  - Removed sso.js from register page to prevent redirect loop
+  - Register page now handles its own authentication through dashboard
+- Register page now uses existing session from SSO login
+  - Checks sessionStorage for existing dashboard connection
+  - Automatically shows registration form if coming from SSO
+
+## [0.1.6] - 2025-05-26
+
+### Added
+- Community Board feature (board.html)
+  - Public wall where users can post messages
+  - Wallet-based authentication for posting
+  - Real-time post display with timestamps
+  - Like and reply placeholders for future features
+  - Character limit (500) for posts
+  - Load more pagination system
+  - DNA nickname resolution for wallet addresses
+  - DNA badge (🧬) for verified DNA users
+  - Green avatar border for DNA-verified posts
+  - Internal SSO integration - uses existing login session
+  - DNA selection flow - posts now use selected DNA nickname instead of wallet name
+- Board navigation link in Social dropdown menu
+- Divider styling in dropdown menus
+
 ## [0.1.5] - 2025-05-26
 
 ### Added
@@ -152,3 +185,51 @@ All notable changes to CPUNK platform will be documented in this file.
   - Removed redundant structure comments in settings.js
   - Removed obsolete notes and commented code in voting.js
   - Kept all useful documentation and function comments
+
+## 2025-05-26 20:48:14 - Add Login Page for Single Sign-On
+
+### Added
+- Created login.html with single sign-on functionality
+- Created login-page.css for login page styling
+- Created login.js with wallet and DNA selection
+- Added login link to navbar-template.html
+
+### Features
+- Wallet selection with backbone address display
+- DNA selection for selected wallet
+- Remember wallet preference with local storage
+- Session storage for SSO across pages
+- Dashboard connection integration
+
+## [2025-01-27] SSO Implementation
+
+### Added
+- Created unified SSO module (sso.js) for global authentication across all pages
+- SSO module features:
+  - Automatic session restoration from sessionStorage
+  - Dynamic navbar updates showing login/logout state
+  - Authentication state checking on every page
+  - Support for authentication-required pages with automatic redirects
+  - Unified logout functionality
+
+### Changed
+- Updated login.js to use SSO module for saving authentication sessions
+- Refactored all HTML pages to include and initialize SSO:
+  - index.html, about.html, register.html, lookup.html
+  - delegate.html, voting.html, proposals.html
+  - messaging.html, settings.html, network.html
+  - network-stats.html, whitepaper.html, mainnet_party.html
+  - cprofile.html
+- Pages requiring authentication (messaging.html, settings.html) now automatically redirect to login
+
+### Technical Details
+- SSO stores wallet address, DNA nickname, and session ID in sessionStorage
+- Navbar dynamically shows user DNA nickname when logged in
+- Logout clears all session data and redirects to home page
+- Login page redirects back to requested page after successful authentication
+
+### Changed
+- Navbar now only shows Login (no Settings link)
+- After login, Login changes to user's DNA name
+- Clicking DNA name in navbar loads settings page
+- Simplified SSO navbar behavior - no dropdown, direct link to settings

@@ -50,6 +50,8 @@ let conversations = [];
 let currentConversation = null;
 let messages = [];
 let refreshTimer = null;
+let walletAddress = null;
+let currentDna = null;
 
 // DOM Elements (initialized in DOMContentLoaded)
 let statusIndicator;
@@ -131,119 +133,80 @@ document.addEventListener('DOMContentLoaded', function() {
  * Initialize dashboard connector
  */
 function initDashboard() {
-    if (typeof CpunkDashboard === 'undefined') {
-        console.error('CpunkDashboard not found');
-        showError('Dashboard connector not loaded', 'connectionError');
-        return;
-    }
-    
-    CpunkDashboard.init({
-        onConnected: function(sessionId) {
-            // Show wallet selection after connection
-            if (walletSection) walletSection.style.display = 'block';
-        },
-        onWalletSelected: function(wallet) {
-            // Process wallet selection
-            if (wallet && wallet.address) {
-            }
-        },
-        onDnaSelected: async function(dna) {
-            CpunkDebug.info('DNA selected:', dna);
-            
-            // Store user information with properly formatted wallet address
-            let walletAddress = dna.wallet;
-            
-            // Debug the incoming wallet value
-            CpunkDebug.error('Raw incoming wallet from dashboardConnector:', dna.wallet);
-            
-            // Log initial wallet value
-            CpunkDebug.logWallet('Initial wallet value', walletAddress);
-            
-            // If it's an object with network and address properties, extract just the address
-            if (typeof walletAddress === 'object' && walletAddress !== null) {
-                CpunkDebug.log('Wallet object detected, attempting to extract address');
+    // Initialize SSO instead of dashboard connector
+    if (typeof CpunkSSO !== 'undefined') {
+        CpunkSSO.getInstance().init({
+            requireAuth: true,
+            onAuthenticated: async function(userData) {
+                // User is authenticated
+                console.log('User authenticated:', userData);
                 
-                // Handle different possible wallet object formats
-                if (walletAddress.address) {
-                    CpunkDebug.log('Found direct address property', walletAddress.address);
-                    walletAddress = walletAddress.address;
-                } else if (walletAddress.data && Array.isArray(walletAddress.data) && walletAddress.data.length > 0) {
-                    // Try to find an address in the wallet data array
-                    CpunkDebug.log('Examining wallet.data array', walletAddress.data);
-                    const firstNetwork = walletAddress.data[0];
-                    if (firstNetwork && firstNetwork.address) {
-                        CpunkDebug.log('Found address in first network data', firstNetwork.address);
-                        walletAddress = firstNetwork.address;
-                    }
+                // Store wallet and DNA info
+                walletAddress = userData.wallet;
+                currentDna = userData.dna;
+                
+                // Update current user
+                currentUser.dna = userData.dna;
+                currentUser.wallet = userData.wallet;
+                currentUser.displayName = userData.dna;
+                
+                // Update UI
+                if (statusIndicator) {
+                    statusIndicator.textContent = 'Connected';
+                    statusIndicator.className = 'status-indicator status-connected';
                 }
                 
-                CpunkDebug.logWallet('After object extraction', walletAddress);
+                // Hide connection sections
+                if (connectButton) connectButton.style.display = 'none';
+                if (walletSection) walletSection.style.display = 'none';
+                if (dnaSection) dnaSection.style.display = 'none';
+                
+                // Initialize messaging interface
+                await initializeMessaging();
+            },
+            onUnauthenticated: function() {
+                // User is not authenticated - SSO will redirect to login page
+                console.log('User not authenticated, redirecting to login...');
             }
-            
-            // Ensure address is a string
-            if (typeof walletAddress !== 'string') {
-                CpunkDebug.warn('Wallet address is not a string, converting', typeof walletAddress);
-                walletAddress = String(walletAddress);
-            }
-            
-            // Strip any surrounding quotes
-            const beforeQuoteStrip = walletAddress;
-            walletAddress = walletAddress.replace(/^["'](.*)["']$/, '$1');
-            if (beforeQuoteStrip !== walletAddress) {
-                CpunkDebug.log('Removed surrounding quotes', {before: beforeQuoteStrip, after: walletAddress});
-            }
-            
-            // Clean the string - remove any non-alphanumeric characters except specific allowed ones
-            const beforeClean = walletAddress;
-            walletAddress = walletAddress.replace(/[^\w\-:.+]/g, '');
-            if (beforeClean !== walletAddress) {
-                CpunkDebug.log('Cleaned wallet address', {before: beforeClean, after: walletAddress});
-            }
-            
-            CpunkDebug.logWallet('Final wallet address', walletAddress);
-            
-            currentUser = {
-                dna: dna.name,
-                wallet: walletAddress,
-                displayName: dna.name
-            };
-            
-            // Hide wallet and DNA sections
-            if (walletSection) walletSection.style.display = 'none';
-            if (dnaSection) dnaSection.style.display = 'none';
-            
-            // Hide connection section and intro text
-            const connectionSection = document.getElementById('connectionSection');
-            if (connectionSection) connectionSection.style.display = 'none';
-            
-            // Hide info section (the explanatory text)
-            const infoSection = document.querySelector('.info-section');
-            if (infoSection) infoSection.style.display = 'none';
-            
-            // Optionally make page title smaller for more space
-            const pageTitle = document.querySelector('h1');
-            if (pageTitle) {
-                pageTitle.style.fontSize = '1.5em';
-                pageTitle.style.margin = '10px 0';
-            }
-            
-            // Show messaging UI
-            document.getElementById('messagingSection').style.display = 'block';
-            
-            // Update user profile
-            updateUserProfile();
-            
-            // Load conversations
-            await loadConversations();
-            
-            // Set up auto-refresh
-            setupAutoRefresh();
-        },
-        onError: function(message) {
-            console.error('Dashboard error:', message);
-            showError(message, 'connectionError');
-        }
-    });
+        });
+    } else {
+        console.error('CpunkSSO not found. Make sure sso.js is loaded.');
+        showError('SSO module not loaded', 'connectionError');
+    }
+}
+
+/**
+ * Initialize messaging interface after authentication
+ */
+async function initializeMessaging() {
+    CpunkDebug.info('Initializing messaging interface');
+    
+    // Hide connection section and intro text
+    const connectionSection = document.getElementById('connectionSection');
+    if (connectionSection) connectionSection.style.display = 'none';
+    
+    // Hide info section (the explanatory text)
+    const infoSection = document.querySelector('.info-section');
+    if (infoSection) infoSection.style.display = 'none';
+    
+    // Optionally make page title smaller for more space
+    const pageTitle = document.querySelector('h1');
+    if (pageTitle) {
+        pageTitle.style.fontSize = '1.5em';
+        pageTitle.style.margin = '10px 0';
+    }
+    
+    // Show messaging UI
+    document.getElementById('messagingSection').style.display = 'block';
+    
+    // Update user profile
+    updateUserProfile();
+    
+    // Load conversations
+    await loadConversations();
+    
+    // Set up auto-refresh
+    setupAutoRefresh();
 }
 
 /**

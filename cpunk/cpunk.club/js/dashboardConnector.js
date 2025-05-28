@@ -109,7 +109,7 @@ const CpunkDashboard = (function() {
 
         // If we have an existing session, update UI accordingly
         if (sessionId) {
-            updateStatus('connected', 'Connected (Restored)');
+            updateStatus('connected', 'Connected');
             
             if (elements.connectButton) {
                 elements.connectButton.textContent = 'Reconnect';
@@ -249,7 +249,7 @@ const CpunkDashboard = (function() {
                 
                 if (testResponse.status === 'ok') {
                     console.log('Existing session is valid, reusing it');
-                    updateStatus('connected', 'Connected (Reused)');
+                    updateStatus('connected', 'Connected');
                     
                     if (elements.connectButton) {
                         elements.connectButton.textContent = 'Reconnect';
@@ -548,12 +548,16 @@ const CpunkDashboard = (function() {
                         // Add each DNA to the list
                         userDNAs.forEach(dna => {
                             const dnaCard = document.createElement('div');
-                            dnaCard.className = 'dna-card';
-                            dnaCard.innerHTML = `<div class="dna-name">${dna}</div>`;
+                            dnaCard.className = 'wallet-card';  // Use same class as wallets
+                            
+                            dnaCard.innerHTML = `
+                                <div class="wallet-name">${dna}</div>
+                                <div class="wallet-address">Wallet: ${walletName}</div>
+                            `;
 
                             dnaCard.addEventListener('click', () => {
                                 // Deselect all DNA cards
-                                document.querySelectorAll('.dna-card').forEach(card => {
+                                document.querySelectorAll('#dnaList .wallet-card').forEach(card => {
                                     card.classList.remove('selected');
                                 });
 
@@ -570,7 +574,16 @@ const CpunkDashboard = (function() {
 
                     return userDNAs;
                 } else {
-                    throw new Error('No DNA registration found for this wallet address');
+                    // No DNA found - handle gracefully
+                    if (elements.dnaList) {
+                        elements.dnaList.innerHTML = `
+                            <div style="color: var(--error); text-align: center; padding: 20px;">
+                                No DNA registration found for this wallet.<br>
+                                <a href="register.html" style="color: var(--primary); text-decoration: underline;">Register a DNA nickname</a> first.
+                            </div>
+                        `;
+                    }
+                    return [];
                 }
             } catch (e) {
                 // If parsing fails or no data found

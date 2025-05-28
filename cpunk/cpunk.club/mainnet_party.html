@@ -24,6 +24,7 @@
     <div class="container">
         <!-- Script to load navbar template -->
         <script src="js/navbar.js"></script>
+        <script src="js/sso.js"></script>
 
         <div class="event-header">
             <div class="event-tagline">"The Post-Quantum Ark" in ISTANBUL</div>
@@ -89,19 +90,15 @@
 
         <div class="reservation-section">
             <h3>Reserve Your Spot</h3>
-            <p class="reservation-info">Secure your attendance by reserving with <span class="highlight">1,000,000 CPUNK</span> on the <span class="highlight">Backbone</span> network.
-               Connect your dashboard, select your wallet and DNA, and make the reservation payment.</p>
+            <p id="reservationInfo" class="reservation-info">Secure your attendance by reserving with <span class="highlight">1,000,000 CPUNK</span> on the <span class="highlight">Backbone</span> network.
+               Login to access reservation functionality.</p>
 
-            <!-- Dashboard Connection Section -->
-            <div id="connectionSection">
-                <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
-                    <div class="status-header" style="margin-bottom: 0;">
-                        <span>Dashboard Status:</span>
-                        <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
-                    </div>
-                    <button id="connectButton" class="help-button" style="margin: 0; width: auto;">Connect</button>
+            <!-- Login Required Section -->
+            <div id="loginRequiredSection" class="section" style="display: none;">
+                <div class="info-section">
+                    <p>Please login to reserve your spot at the Cellframe Mainnet Birthday Bash.</p>
+                    <button id="loginBtn" class="btn btn-primary">Login</button>
                 </div>
-                <div class="error-message" id="connectionError"></div>
             </div>
 
             <!-- Wallet Selection Section -->
@@ -234,7 +231,6 @@
     <script src="js/cpunk-transaction.js"></script>
     <script src="js/cpunk-ui.js"></script>
     <script src="js/cpunk-api-console.js"></script>
-    <script src="js/dashboardConnector.js"></script>
     
     <!-- Page-specific JavaScript -->
     <script src="js/mainnet_party.js"></script>

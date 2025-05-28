@@ -2,6 +2,8 @@
 
 Every session will start with protocol mode enabled.
 
+**IMPORTANT**: Before starting any task, always check the documents and references in doc/ directory for relevant information.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## Security Warning

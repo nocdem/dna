@@ -19,6 +19,19 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 // Setup mobile menu functionality
                 setupMobileMenu();
+                
+                // Update navbar with SSO state if SSO is loaded
+                if (typeof CpunkSSO !== 'undefined') {
+                    const sso = CpunkSSO.getInstance();
+                    // Initialize SSO if not already initialized
+                    if (!sso.initialized) {
+                        sso.init({
+                            updateNavbar: false // We'll update manually after
+                        });
+                    }
+                    // Now update navbar
+                    sso.updateNavbar();
+                }
             }
         })
         .catch(error => {

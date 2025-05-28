@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login - CPUNK Platform</title>
+    <link rel="icon" type="image/png" href="/logo.png">
+    <link rel="stylesheet" href="css/main.css">
+    <link rel="stylesheet" href="css/navbar.css">
+    <link rel="stylesheet" href="css/shared-navigation.css">
+    <link rel="stylesheet" href="css/login-page.css">
+</head>
+<body>
+    <!-- Navbar will be added here by JS -->
+    <div class="navbar-placeholder"></div>
+    
+    <div class="container">
+        <!-- Script to load navbar template -->
+        <script src="js/navbar.js"></script>
+
+        <h1 class="page-title">Single Sign-On</h1>
+        
+        <div class="info-section">
+            <p>Connect your PQ wallet to access the CPUNK platform. Your DNA identity will be used for authentication across all platform features.</p>
+        </div>
+
+        <!-- Dashboard Connection Section -->
+        <div class="status-section" style="margin-bottom: 20px; padding: 15px;">
+            <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
+                <div class="status-header" style="margin-bottom: 0;">
+                    <span style="font-weight: bold; margin-right: 8px;">Dashboard Status:</span>
+                    <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+                </div>
+                <button id="connectButton" class="help-button" style="margin: 0; width: auto !important; min-width: 120px;">Connect</button>
+            </div>
+            <div class="error-message" id="connectionError" style="display: none; margin-top: 10px;"></div>
+        </div>
+
+        <!-- Wallet Selection Section -->
+        <div id="walletSection" class="section" style="display: none;">
+            <h2>Select Your Wallet</h2>
+            <p>Choose your wallet - this will be your backbone wallet address:</p>
+
+            <div id="walletsList" class="wallets-container">
+                <div class="loading">Loading wallets</div>
+            </div>
+
+            <div class="error-message" id="walletError"></div>
+        </div>
+
+        <!-- DNA Selection Section -->
+        <div id="dnaSection" class="section" style="display: none;">
+            <h2>Select Your DNA</h2>
+            <p>Choose your DNA identity for this session:</p>
+            
+            <div id="dnaList" class="dna-container">
+                <div class="loading">Loading DNA registrations</div>
+            </div>
+            
+            <div class="error-message" id="dnaError"></div>
+        </div>
+
+        <!-- Login Button -->
+        <div id="loginSection" class="section" style="display: none;">
+            <button id="loginButton" class="btn btn-primary">Complete Login</button>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/dashboardConnector.js"></script>
+    <script src="js/sso.js"></script>
+    <script src="js/login.js"></script>
+</body>
+</html>
