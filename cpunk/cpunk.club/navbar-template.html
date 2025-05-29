@@ -2,8 +2,8 @@
 <nav class="navbar">
     <div class="navbar-content">
         <div class="navbar-logo">
-            <img src="/logo.png" alt="CPUNK Logo">
-            <span class="navbar-logo-text">CPUNK</span>
+            <img src="/logo.png" alt="CPUNK Logo" data-i18n-alt="nav.logoAlt">
+            <span class="navbar-logo-text" data-i18n="nav.cpunk">CPUNK</span>
         </div>
         <button class="menu-toggle" id="menuToggle">
             <span class="bar"></span>
@@ -12,84 +12,96 @@
         </button>
         <div class="navbar-menu" id="navbarMenu">
             <ul class="navbar-nav">
-                <li><a href="index.html"><span class="menu-icon">🏠</span> Home</a></li>
+                <li><a href="index.html"><span class="menu-icon">🏠</span> <span data-i18n="nav.home">Home</span></a></li>
                 <li class="dropdown">
-                    <a href="#" class="dropdown-toggle">$CPUNK</a>
+                    <a href="#" class="dropdown-toggle" data-i18n="nav.cpunk">$CPUNK</a>
                     <ul class="dropdown-menu">
                         <li>
                             <a href="about.html">
-                                <span class="menu-icon">ℹ️</span> About Us
+                                <span class="menu-icon">ℹ️</span> <span data-i18n="nav.about">About Us</span>
                             </a>
                         </li>
                         <li>
                             <a href="whitepaper.html">
-                                <span class="menu-icon">📄</span> Whitepaper
+                                <span class="menu-icon">📄</span> <span data-i18n="nav.whitepaper">Whitepaper</span>
                             </a>
                         </li>
                         <li>
                             <a href="mainnet_party.html">
-                                <span class="menu-icon">🎉</span> Mainnet Party
+                                <span class="menu-icon">🎉</span> <span data-i18n="nav.mainnetParty">Mainnet Party</span>
                             </a>
                         </li>
                     </ul>
                 </li>
                 <li class="dropdown">
-                    <a href="#" class="dropdown-toggle">Services</a>
+                    <a href="#" class="dropdown-toggle" data-i18n="nav.services">Services</a>
                     <ul class="dropdown-menu">
                         <li>
                             <a href="lookup.html">
-                                <span class="menu-icon">🔍</span> DNA Lookup
+                                <span class="menu-icon">🔍</span> <span data-i18n="nav.lookup">DNA Lookup</span>
                             </a>
                         </li>
                         <li>
                             <a href="delegate.html">
-                                <span class="menu-icon">🌿</span> Delegate
+                                <span class="menu-icon">🌿</span> <span data-i18n="nav.delegation">Delegate</span>
                             </a>
                         </li>
                         <li>
                             <a href="proposals.html">
-                                <span class="menu-icon">📝</span> Improvement Proposals
+                                <span class="menu-icon">📝</span> <span data-i18n="nav.proposals">Improvement Proposals</span>
                             </a>
                         </li>
                         <li>
                             <a href="network.html">
-                                <span class="menu-icon">🖥️</span> Install Network
+                                <span class="menu-icon">🖥️</span> <span data-i18n="nav.network">Install Network</span>
                             </a>
                         </li>
                         <li>
                             <a href="network-stats.html">
-                                <span class="menu-icon">📊</span> Network Stats
+                                <span class="menu-icon">📊</span> <span data-i18n="nav.networkStats">Network Stats</span>
                             </a>
                         </li>
                     </ul>
                 </li>
                 <li class="dropdown">
-                    <a href="#" class="dropdown-toggle">Social</a>
+                    <a href="#" class="dropdown-toggle" data-i18n="nav.social">Social</a>
                     <ul class="dropdown-menu">
                         <li>
                             <a href="board.html">
-                                <span class="menu-icon">📋</span> Community Board
+                                <span class="menu-icon">📋</span> <span data-i18n="nav.board">Community Board</span>
                             </a>
                         </li>
                         <li class="dropdown-divider"></li>
                         <li>
                             <a href="https://twitter.com/OfficialCpunk" target="_blank">
-                                <span class="social-icon">𝕏</span> Twitter
+                                <span class="social-icon">𝕏</span> <span data-i18n="nav.twitter">Twitter</span>
                             </a>
                         </li>
                         <li>
                             <a href="https://instagram.com/cpunk_official" target="_blank">
-                                <span class="social-icon">📸</span> Instagram
+                                <span class="social-icon">📸</span> <span data-i18n="nav.instagram">Instagram</span>
                             </a>
                         </li>
                         <li>
                             <a href="https://t.me/chippunk_official" target="_blank">
-                                <span class="social-icon">✈️</span> Telegram
+                                <span class="social-icon">✈️</span> <span data-i18n="nav.telegram">Telegram</span>
                             </a>
                         </li>
                     </ul>
                 </li>
-                <li><a href="login.html"><span class="menu-icon">🔐</span> Login</a></li>
+                <li><a href="login.html"><span class="menu-icon">🔐</span> <span data-i18n="nav.login">Login</span></a></li>
+                <li class="dropdown">
+                    <a href="#" class="dropdown-toggle language-selector">
+                        <span class="lang-text">EN</span>
+                    </a>
+                    <ul class="dropdown-menu lang-dropdown">
+                        <li><a href="#" data-lang="en">🇺🇸 EN</a></li>
+                        <li><a href="#" data-lang="es">🇪🇸 ES</a></li>
+                        <li><a href="#" data-lang="tr">🇹🇷 TR</a></li>
+                        <li><a href="#" data-lang="ru">🇷🇺 RU</a></li>
+                        <li><a href="#" data-lang="it">🇮🇹 IT</a></li>
+                    </ul>
+                </li>
             </ul>
         </div>
     </div>

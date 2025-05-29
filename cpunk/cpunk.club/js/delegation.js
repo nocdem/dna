@@ -823,125 +823,18 @@ Please activate my rewards.</div>
                 `;
                 errorMessage.style.display = 'block';
             }
-            
-            return;
-            
-            // Old wallet loading code removed - no longer needed with SSO
-
-                    wallet.details.forEach(networkData => {
-                        // Check if wallet is on selected network
-                        if (networkData.network !== selectedNetwork) return;
-
-                        // Get tokens based on network
-                        const delegationToken = networkData.tokens.find(token => token.tokenName === config.delegationToken);
-                        const feeToken = networkData.tokens.find(token => token.tokenName === config.feeToken);
-                        
-                        if (!delegationToken || !feeToken) return;
-
-                        const delegationBalance = parseFloat(delegationToken.balance);
-                        const feeBalance = parseFloat(feeToken.balance);
-                        
-                        // Check minimum balances
-                        if (delegationBalance < config.minDelegation || feeBalance < config.minFee) return;
-                        
-                        validWalletsCount++;
-                        
-                        // Create wallet object for CpunkUI
-                        const walletObj = {
-                            name: wallet.name,
-                            network: networkData.network,
-                            address: networkData.address,
-                            tokens: [
-                                { tokenName: config.delegationToken, balance: delegationBalance },
-                                { tokenName: config.feeToken, balance: feeBalance }
-                            ]
-                        };
-                        
-                        // Create wallet card using CpunkUI
-                        const walletCard = CpunkUI.createWalletCard(walletObj, async (selectedWalletObj) => {
-                            // Update selected wallet info
-                            selectedWallet = selectedWalletObj.name;
-                            availableBalance = delegationBalance;
-
-                            // Update the wallet display
-                            selectedWalletDisplay.textContent = `${selectedWalletObj.name} (${selectedWalletObj.network}) - Balance: ${CpunkUtils.formatBalance(delegationBalance)} ${config.delegationToken}`;
-
-                            // Check if address is registered in DNA before showing delegation form
-                            const isDnaRegistered = await checkDnaRegistration(networkData.address);
-
-                            if (isDnaRegistered) {
-                                // Show the delegation form
-                                delegationForm.style.display = 'block';
-
-                                // Pre-fill rewards address with wallet address
-                                rewardsAddress.value = networkData.address;
-
-                                // Store the rewards address for later use in delegation recording
-                                delegationRewardsAddress = networkData.address;
-
-                                // Update balance warning based on amount
-                                updateBalanceWarning();
-
-                                // Validate the form
-                                validateForm();
-                                
-                                // Reset submit button to original state in case it was changed
-                                submitDelegation.textContent = 'Submit Delegation';
-                                submitDelegation.onclick = originalSubmitHandler;
-                                
-                                // Update tax rate info display
-                                updateTaxRateInfo();
-                                
-                                // Update delegation help text
-                                const delegationHelpText = document.getElementById('delegationHelpText');
-                                if (delegationHelpText) {
-                                    delegationHelpText.textContent = `Minimum: ${config.minDelegation} ${config.delegationToken}, Maximum: ${config.maxDelegation} ${config.delegationToken}`;
-                                }
-                            } else {
-                                // Show DNA registration message but hide the form
-                                delegationForm.style.display = 'none';
-
-                                // Show prominent registration message
-                                errorMessage.innerHTML = `
-                                    <strong>DNA Registration Required</strong><br>
-                                    Your address ${networkData.address.substring(0, 10)}...${networkData.address.substring(networkData.address.length - 10)}
-                                    is not registered in the DNA system.<br><br>
-                                    <a href="register.html" style="display: inline-block; padding: 10px 20px; background-color: #f97834; color: white; text-decoration: none; border-radius: 5px; margin-top: 10px;">
-                                        Register DNA Now
-                                    </a>
-                                `;
-                                errorMessage.style.display = 'block';
-                            }
-                        });
-
-                        walletsList.appendChild(walletCard);
-                    });
-                });
-
-                if (validWalletsCount === 0) {
-                    walletsList.innerHTML = `
-                        <div style="padding: 15px; background-color: #2b1816; border-radius: 5px; text-align: center;">
-                            <p>No wallets with sufficient balance found on ${selectedNetwork} network.</p>
-                            <p>Please ensure you have:</p>
-                            <ul style="list-style: none; padding: 0; margin: 10px 0;">
-                                <li>• At least ${config.minDelegation} ${config.delegationToken}</li>
-                                <li>• At least ${config.minFee} ${config.feeToken} for fees</li>
-                            </ul>
-                        </div>
-                    `;
-                }
-            }
         } catch (error) {
             CpunkUtils.logDebug('Error loading wallet list', 'error', {
                 message: error.message,
                 stack: error.stack
             });
             
-            walletsList.innerHTML = `
+            errorMessage.innerHTML = `
                 <div style="padding: 15px; background-color: #2b1816; border-radius: 5px; text-align: center; color: #ff4444;">
                     <p>Error loading wallets: ${error.message}</p>
                 </div>
             `;
+            errorMessage.style.display = 'block';
         }
     }
 

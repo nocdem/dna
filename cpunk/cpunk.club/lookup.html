@@ -22,23 +22,23 @@
     
     <div class="container">
         <div class="intro-section">
-            <p>🔍 DNA (Distributed Naming & Addressing) provides a way to associate friendly nicknames with wallet addresses on the Cellframe blockchain.</p>
-            <p>Use this page to look up information about a registered nickname or wallet address.</p>
+            <p data-i18n="pages.lookupIntro">🔍 DNA (Distributed Naming & Addressing) provides a way to associate friendly nicknames with wallet addresses on the Cellframe blockchain.</p>
+            <p data-i18n="pages.lookupDescription">Use this page to look up information about a registered nickname or wallet address.</p>
         </div>
 
         <div class="highlight-box">
             <div id="lookupForm">
                 <div class="search-box">
-                    <input type="text" id="searchInput" placeholder="Enter nickname or wallet address" required>
-                    <button type="submit" id="searchButton" class="help-button">Search</button>
+                    <input type="text" id="searchInput" data-i18n="pages.searchPlaceholder" placeholder="Enter nickname or wallet address" required>
+                    <button type="submit" id="searchButton" class="help-button" data-i18n="pages.searchButton">Search</button>
                 </div>
-                <div class="help-text">Enter a DNA nickname (e.g., 'cpunk') or a wallet address</div>
+                <div class="help-text" data-i18n="pages.helpText">Enter a DNA nickname (e.g., 'cpunk') or a wallet address</div>
             </div>
 
             <div class="recent-searches" id="recentSearches" style="display: none;">
                 <div class="recent-searches-header">
-                    <div class="recent-searches-title">Recent Searches</div>
-                    <div class="recent-searches-clear" id="clearSearches">Clear All</div>
+                    <div class="recent-searches-title" data-i18n="pages.recentSearches">Recent Searches</div>
+                    <div class="recent-searches-clear" id="clearSearches" data-i18n="pages.clearAll">Clear All</div>
                 </div>
                 <div class="recent-searches-list" id="recentSearchesList">
                     <!-- Recent searches will be populated here -->
@@ -46,7 +46,7 @@
             </div>
         </div>
 
-        <div id="loading" class="loading" style="display: none;">Searching DNA records</div>
+        <div id="loading" class="loading" style="display: none;" data-i18n="pages.searchingDna">Searching DNA records</div>
         <div id="result" class="result">
             <!-- Results will be displayed here -->
         </div>
@@ -62,7 +62,8 @@
     <script src="js/cpunk-api-console.js"></script>
 
     <!-- Script to load navbar template -->
-    <script src="js/navbar.js"></script>
+    <script src="js/translation.js"></script>
+        <script src="js/navbar.js"></script>
     <script src="js/sso.js"></script>
 
     <!-- Page-specific script -->

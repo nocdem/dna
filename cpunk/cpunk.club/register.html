@@ -27,48 +27,48 @@
                 <div class="pricing-tier">
                     <div class="tier-header">3 Characters</div>
                     <div class="tier-price"><span class="tier-cpunk">500</span> CPUNK</div>
-                    <div>Premium Short Names</div>
+                    <div data-i18n="register.premiumShort">Premium Short Names</div>
                 </div>
                 <div class="pricing-tier">
                     <div class="tier-header">4 Characters</div>
                     <div class="tier-price"><span class="tier-cpunk">100</span> CPUNK</div>
-                    <div>Popular Length</div>
+                    <div data-i18n="register.popularLength">Popular Length</div>
                 </div>
                 <div class="pricing-tier">
-                    <div class="tier-popular">BEST VALUE</div>
+                    <div class="tier-popular" data-i18n="register.bestValue">BEST VALUE</div>
                     <div class="tier-header">5+ Characters</div>
                     <div class="tier-price"><span class="tier-cpunk">5</span> CPUNK</div>
-                    <div>Standard Names</div>
+                    <div data-i18n="register.standardNames">Standard Names</div>
                 </div>
             </div>
         </div>
 
         <div class="intro-section">
-            <p>Register your DNA (Distributed Naming & Addressing) by connecting to your local PQ dashboard and completing the following steps:</p>
+            <p data-i18n="register.introText">Register your DNA (Distributed Naming & Addressing) by connecting to your local PQ dashboard and completing the following steps:</p>
             <div class="registration-steps">
                 <div class="step-item" id="step1">
                     <div class="step-number">1</div>
-                    <div class="step-text">Connect to your local PQ dashboard</div>
+                    <div class="step-text" data-i18n="register.step1">Connect to your local PQ dashboard</div>
                     <div class="step-check">✓</div>
                 </div>
                 <div class="step-item" id="step2">
                     <div class="step-number">2</div>
-                    <div class="step-text">Select a wallet to associate with your DNA</div>
+                    <div class="step-text" data-i18n="register.step2">Select a wallet to associate with your DNA</div>
                     <div class="step-check">✓</div>
                 </div>
                 <div class="step-item" id="step3">
                     <div class="step-number">3</div>
-                    <div class="step-text">Choose a unique DNA nickname</div>
+                    <div class="step-text" data-i18n="register.step3">Choose a unique DNA nickname</div>
                     <div class="step-check">✓</div>
                 </div>
                 <div class="step-item" id="step4">
                     <div class="step-number">4</div>
-                    <div class="step-text">Confirm registration with a CPUNK payment</div>
+                    <div class="step-text" data-i18n="register.step4">Confirm registration with a CPUNK payment</div>
                     <div class="step-check">✓</div>
                 </div>
                 <div class="step-item" id="step5">
                     <div class="step-number">5</div>
-                    <div class="step-text">Wait for transaction verification</div>
+                    <div class="step-text" data-i18n="register.step5">Wait for transaction verification</div>
                     <div class="step-check">✓</div>
                 </div>
             </div>
@@ -76,7 +76,7 @@
 
         <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
             <div class="status-header" style="margin-bottom: 0;">
-                <span>Dashboard Status:</span>
+                <span data-i18n="register.dashboardStatus">Dashboard Status:</span>
                 <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
             </div>
             <button id="connectButton" class="help-button" style="margin: 0; width: auto;">Connect</button>
@@ -178,7 +178,8 @@
     <script src="js/dashboardConnector.js"></script>
     
     <!-- Script to load navbar template -->
-    <script src="js/navbar.js"></script>
+    <script src="js/translation.js"></script>
+        <script src="js/navbar.js"></script>
     
     <!-- Page specific script -->
     <script src="js/register.js"></script>

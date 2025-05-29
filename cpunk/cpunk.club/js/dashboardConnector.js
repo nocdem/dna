@@ -316,7 +316,7 @@ const CpunkDashboard = (function() {
                 
                 return sessionId;
             } else {
-                throw new Error(response.errorMsg || 'Failed to connect to dashboard');
+                throw new Error(response.errorMsg || t('dashboard.failedToConnect'));
             }
         } catch (error) {
             console.error('Connection error:', error);
@@ -326,7 +326,7 @@ const CpunkDashboard = (function() {
                 showError(`Error connecting to dashboard: ${error.message}`, 'connectionError');
             }
             
-            updateStatus('disconnected', 'Connection Failed');
+            updateStatus('disconnected', t('dashboard.connectionFailed'));
             
             if (elements.connectButton) {
                 elements.connectButton.textContent = 'Connect to Dashboard';
@@ -343,12 +343,12 @@ const CpunkDashboard = (function() {
      */
     async function loadWallets() {
         if (!sessionId) {
-            throw new Error('Not connected to dashboard');
+            throw new Error(t('dashboard.notConnectedToDashboard'));
         }
 
         try {
             if (elements.walletsList) {
-                elements.walletsList.innerHTML = '<div style="text-align: center; padding: 20px;">Loading wallets...</div>';
+                elements.walletsList.innerHTML = `<div style="text-align: center; padding: 20px;">${t('dashboard.loadingWallets')}</div>`;
             }
 
             const response = await makeRequest('GetWallets', { id: sessionId });
@@ -359,7 +359,7 @@ const CpunkDashboard = (function() {
                 
                 if (allWallets.length === 0) {
                     if (elements.walletsList) {
-                        elements.walletsList.innerHTML = '<div style="color: var(--error); text-align: center; padding: 20px;">No wallets found in your dashboard.</div>';
+                        elements.walletsList.innerHTML = `<div style="color: var(--error); text-align: center; padding: 20px;">${t('dashboard.noWalletsFound')}</div>`;
                     }
                     return [];
                 }
@@ -427,7 +427,7 @@ const CpunkDashboard = (function() {
      */
     async function selectWallet(walletName) {
         if (!sessionId) {
-            throw new Error('Not connected to dashboard');
+            throw new Error(t('dashboard.notConnectedToDashboard'));
         }
 
         try {
@@ -514,7 +514,7 @@ const CpunkDashboard = (function() {
     async function loadDNAs(walletName, walletAddress) {
         try {
             if (elements.dnaList) {
-                elements.dnaList.innerHTML = '<div style="text-align: center; padding: 20px;">Loading DNA nicknames...</div>';
+                elements.dnaList.innerHTML = `<div style="text-align: center; padding: 20px;">${t('dashboard.loadingDnaNicknames')}</div>`;
             }
 
             // Query the DNA API to find nicknames registered to this address

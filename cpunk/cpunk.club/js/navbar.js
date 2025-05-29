@@ -20,6 +20,9 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Setup mobile menu functionality
                 setupMobileMenu();
                 
+                // Setup language switcher
+                setupLanguageSwitcher();
+                
                 // Update navbar with SSO state if SSO is loaded
                 if (typeof CpunkSSO !== 'undefined') {
                     const sso = CpunkSSO.getInstance();
@@ -143,4 +146,54 @@ function setupMobileMenu() {
             });
         }
     });
+}
+
+// Setup language switcher functionality
+function setupLanguageSwitcher() {
+    const languageLinks = document.querySelectorAll('[data-lang]');
+    const langText = document.querySelector('.lang-text');
+    
+    languageLinks.forEach(link => {
+        link.addEventListener('click', function(e) {
+            e.preventDefault();
+            const selectedLang = this.getAttribute('data-lang');
+            
+            console.log('Language clicked:', selectedLang);
+            
+            // Update the display text
+            if (langText) {
+                langText.textContent = selectedLang.toUpperCase();
+            }
+            
+            // Change language using the translation system
+            if (window.i18n) {
+                console.log('Translation system found, changing language to:', selectedLang);
+                window.i18n.setLanguage(selectedLang);
+            } else {
+                console.log('Translation system not found, waiting...');
+                // Wait for translation system to load
+                setTimeout(() => {
+                    if (window.i18n) {
+                        console.log('Translation system loaded, changing language to:', selectedLang);
+                        window.i18n.setLanguage(selectedLang);
+                    } else {
+                        console.log('Translation system still not available');
+                    }
+                }, 500);
+            }
+            
+            // Close dropdown on mobile
+            if (window.innerWidth <= 768) {
+                const dropdown = this.closest('.dropdown');
+                if (dropdown) {
+                    dropdown.classList.remove('active');
+                }
+            }
+        });
+    });
+    
+    // Set initial language text based on current language
+    if (langText && window.i18n && window.i18n.currentLanguage) {
+        langText.textContent = window.i18n.currentLanguage.toUpperCase();
+    }
 }

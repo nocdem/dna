@@ -31,7 +31,7 @@
             position: relative;
         }
     </style>
-    <title>CPUNK - Quantum-Safe MEME Coin | Built on Cellframe</title>
+    <title data-i18n="pages.homeTitle">CPUNK - Quantum-Safe MEME Coin | Built on Cellframe</title>
     <link rel="stylesheet" href="css/main.css">
     <link rel="stylesheet" href="css/index-page.css">
     <link rel="stylesheet" href="css/shared-navigation.css">
@@ -63,29 +63,30 @@
     </script>
 </head>
 <body>
+    <!-- Scripts loaded early to ensure translation system is ready -->
+    <script src="js/translation.js"></script>
+    <script src="js/navbar.js"></script>
+    <script src="js/sso.js"></script>
+    
     <!-- Navbar will be added here by JS -->
     <div class="navbar-placeholder"></div>
     
     <div class="container">
-        <!-- Script to load navbar template (located in external JS file) -->
-        <script src="js/navbar.js"></script>
-        <script src="js/sso.js"></script>
-
         <header class="highlight-box" id="intro-section">
-            <h1>🚀 Welcome to ChipPunk ($CPUNK)</h1>
+            <h1 data-i18n="pages.homeWelcome">🚀 Welcome to ChipPunk ($CPUNK)</h1>
             <div class="updates-content">
-                <div class="detail-item">- The world's first Quantum-Safe MEME Coin built on the Cellframe blockchain. We combine the fun of meme culture with cutting-edge quantum-resistant technology.</div>
-                <div class="detail-item">- Join our community of innovators, enthusiasts, and visionaries who believe in the power of decentralization and quantum-safe security.</div>
+                <div class="detail-item" data-i18n="pages.homeDescription1">- The world's first Quantum-Safe MEME Coin built on the Cellframe blockchain. We combine the fun of meme culture with cutting-edge quantum-resistant technology.</div>
+                <div class="detail-item" data-i18n="pages.homeDescription2">- Join our community of innovators, enthusiasts, and visionaries who believe in the power of decentralization and quantum-safe security.</div>
             </div>
         </header>
 
         <section class="stats-grid">
             <div class="stats-box">
-                <h2>Total Delegation Rewards</h2>
+                <h2 data-i18n="pages.totalDelegationRewards">Total Delegation Rewards</h2>
                 <div id="rewards" class="rewards-value">Loading...</div>
             </div>
             <div class="stats-box">
-                <h2>Treasury Status</h2>
+                <h2 data-i18n="pages.treasuryStatus">Treasury Status</h2>
                 <div id="treasury" class="treasury-info">
                     <div class="treasury-item">
                         <span class="treasury-label">CELL Balance:</span>
@@ -105,58 +106,58 @@
 
         <section class="info-grid">
             <article class="info-item">
-                <h3>🎯 Token Details</h3>
+                <h3 data-i18n="pages.tokenDetails">🎯 Token Details</h3>
                 <div class="price-details">
                     <div class="price-detail-item">
-                        <span>Circulating Supply:</span>
+                        <span data-i18n="pages.circulatingSupply">Circulating Supply:</span>
                         <span>1,000,000,000 CPUNK</span>
                     </div>
                     <div class="price-detail-item">
-                        <span>Total Supply:</span>
+                        <span data-i18n="pages.totalSupply">Total Supply:</span>
                         <span>1,000,000,000 CPUNK</span>
                     </div>
                     <div class="price-detail-item" id="marketCap">
-                        <span>Market Cap:</span>
+                        <span data-i18n="pages.marketCap">Market Cap:</span>
                         <span id="marketCapValue">Loading...</span>
                     </div>
                     <div class="price-detail-item">
-                        <span>Ownership:</span>
-                        <span>100% Community</span>
+                        <span data-i18n="pages.ownership">Ownership:</span>
+                        <span data-i18n="pages.communityOwned">100% Community</span>
                     </div>
                 </div>
             </article>
             <article class="info-item">
-                <h3>💰 Token Price</h3>
+                <h3 data-i18n="pages.tokenPrice">💰 Token Price</h3>
                 <div id="tokenPrice" class="token-price-container">Loading...</div>
             </article>
         </section>
 
         <section class="info-item" style="margin-top: 20px;">
-            <h3>🌐 Delegation Status</h3>
+            <h3 data-i18n="pages.delegationStatus">🌐 Delegation Status</h3>
             <div class="network-stats">
-                <div class="detail-item">Active Delegations: Coming Soon...</div>
-                <div class="detail-item">Total Staked: Coming Soon...</div>
+                <div class="detail-item" data-i18n="pages.activeDelegations">Active Delegations: Coming Soon...</div>
+                <div class="detail-item" data-i18n="pages.totalStaked">Total Staked: Coming Soon...</div>
             </div>
         </section>
 
         <section class="highlight-box" id="updates-section">
-            <h3>📢 Updates</h3>
+            <h3 data-i18n="pages.updates">📢 Updates</h3>
             <div class="updates-content" id="updates-content">
-                <div class="detail-item loading">Loading updates...</div>
+                <div class="detail-item loading" data-i18n="pages.loadingUpdates">Loading updates...</div>
             </div>
         </section>
 
         <section class="highlight-box" id="news-section">
-            <h3>🎉 Latest News</h3>
+            <h3 data-i18n="pages.latestNews">🎉 Latest News</h3>
             <div class="updates-content" id="news-content">
-                <div class="detail-item loading">Loading news...</div>
+                <div class="detail-item loading" data-i18n="pages.loadingNews">Loading news...</div>
             </div>
         </section>
     </div>
 
     <footer>
         <div class="footer-content" style="text-align: center; margin-top: 30px; padding: 10px; font-size: 0.8em; color: #888;">
-            © 2025 CPUNK - All rights reserved
+            <span data-i18n="pages.copyright">© 2025 CPUNK - All rights reserved</span>
         </div>
     </footer>
 

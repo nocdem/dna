@@ -612,10 +612,10 @@ document.addEventListener('DOMContentLoaded', function() {
         
         // Check nickname format first using utility
         if (!CpunkUtils.isValidNicknameFormat(nickname)) {
-            let errorMessage = "Invalid nickname format. ";
+            let errorMessage = t('register.invalidNickname') + " ";
             
             if (nickname.length < 3) {
-                errorMessage += "Must be at least 3 characters.";
+                errorMessage += t('register.minCharacters');
             } else if (nickname.length > 36) {
                 errorMessage += "Must be 36 characters or less.";
             } else {
@@ -639,7 +639,7 @@ document.addEventListener('DOMContentLoaded', function() {
         if (walletAddress && currentBalances.cpunk < price) {
             CpunkUtils.logDebug(`Insufficient CPUNK balance: ${currentBalances.cpunk}/${price}`, 'warning');
             
-            dnaValidationStatus.textContent = `Insufficient CPUNK balance. You need at least ${price} CPUNK to register this nickname.`;
+            dnaValidationStatus.textContent = t('register.insufficientBalance', {price: price});
             dnaValidationStatus.className = 'validation-message validation-error';
             dnaValidationStatus.style.display = 'block';
             
@@ -708,7 +708,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     return true;
                 } else {
                     // General unavailability
-                    dnaValidationStatus.textContent = "This nickname is already taken. Please choose another.";
+                    dnaValidationStatus.textContent = t('register.alreadyTaken');
                     dnaValidationStatus.className = 'validation-message validation-unavailable';
                     dnaValidationStatus.style.display = 'block';
                 }
@@ -722,7 +722,7 @@ document.addEventListener('DOMContentLoaded', function() {
             }
             
             // Valid and available
-            dnaValidationStatus.textContent = "✓ Nickname is available for registration";
+            dnaValidationStatus.textContent = t('register.nicknameAvailable');
             dnaValidationStatus.className = 'validation-message validation-success';
             dnaValidationStatus.style.display = 'block';
             
@@ -782,7 +782,7 @@ document.addEventListener('DOMContentLoaded', function() {
     async function registerDNA() {
         // Check if user is authenticated
         if (!sessionId || !walletAddress) {
-            CpunkUI.showError('Please connect your wallet first');
+            CpunkUI.showError(t('register.connectWalletFirst'));
             return;
         }
 
