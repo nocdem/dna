@@ -13,22 +13,37 @@ This project is optimized for Claude Code development. All necessary instruction
 
 ```
 cpunk.club/                    # Main web platform
-├── *.html                     # Core pages (index, voting, messaging, etc.)
+├── *.html                     # Core pages (20+ pages)
 ├── css/                       # Stylesheets (minified for production)
 ├── js/                        # JavaScript modules
-│   ├── unused/               # Moved unused files
-│   └── *.js                  # Active modules
-├── doc/                      # Documentation (not deployed)
-│   ├── backup-system.md      # File backup system guide
-│   ├── cellframe-*.md        # Cellframe blockchain docs
-│   └── *.md                  # Other guides
-├── backup/                   # Automated backups (git ignored)
-├── backup-system.sh          # Backup management script
+│   ├── authentication.js      # Centralized auth module
+│   ├── sso.js                # Single Sign-On system
+│   ├── translation.js        # Multi-language support
+│   ├── dashboardConnector.js # Cellframe API client
+│   ├── board.js              # Community board
+│   ├── unused/               # Deprecated files
+│   └── *.js                  # Other modules
+├── lang/                      # Translation files (8 languages)
+├── doc/                       # Documentation (not deployed)
+├── backup/                    # Automated backups (git ignored)
+├── OAuth/                     # Social auth endpoints
+├── configs/                   # Network configurations
+├── certs/                     # Digital certificates
 └── CHANGELOG.md              # Version history
 
+backend/                       # Cellframe plugin (Python)
+├── cpunk-gdb-server.py       # Main plugin entry
+├── handlers.py               # HTTP routing
+├── gdb_ops.py               # Database operations
+└── manifest.json            # Plugin metadata
+
+docs/                         # Platform documentation
+├── API_REFERENCE.md         # API endpoints
+├── PLATFORM_FEATURES.md     # Feature overview
+└── *.md                     # Various guides
+
 cellframe/                    # Blockchain components (git ignored)
-node-management/              # Automation scripts (git ignored)
-dev-tools/                    # Development utilities (git ignored)
+dev-tools/                    # Development utilities
 ```
 
 ## 🔧 Development Workflow
@@ -46,10 +61,15 @@ dev-tools/                    # Development utilities (git ignored)
 ### Key Features:
 
 - **DNA Registration** - Distributed naming system
-- **Wallet Delegation** - Reward tracking and management  
-- **Community Features** - Messaging, voting, proposals
+- **Wallet Delegation** - Validator-based staking model
+- **Community Features** - Messaging, voting, proposals, board
 - **OAuth Integration** - GitHub, Google, LinkedIn, Twitter
 - **Content Management** - User profiles and content distribution
+- **Multilingual Support** - 8 languages (EN, ES, IT, RU, TR, AR, FR, ZH)
+- **Single Sign-On** - Unified authentication across all pages
+- **Network Statistics** - Real-time blockchain monitoring
+- **CPUNK Improvement Proposals** - Community governance (CIP system)
+- **Mainnet Party** - Event registration with invitation codes
 
 ## 📖 Documentation Index
 
@@ -82,23 +102,53 @@ This project uses Protocol Mode for Claude Code sessions:
 
 ## 📊 Current Status
 
-**Version**: 0.1.5  
-**Last Updated**: 2025-05-26
+**Version**: 0.1.14  
+**Last Updated**: 2025-05-31
 
 ### Recent Improvements:
-- ✅ Console.log cleanup across all JS files
-- ✅ CSS minification (27% size reduction)
-- ✅ Viewport accessibility improvements
-- ✅ Unused file cleanup and organization
-- ✅ Automated backup system implementation
-- ✅ Settings.js modularization (social + wallet integration)
+- ✅ Full multilingual support (8 languages)
+- ✅ Quantum apocalypse awareness messaging
+- ✅ Community board with DNA verification
+- ✅ SSO system implementation
+- ✅ Validator delegation model
+- ✅ Network statistics page
+- ✅ CPUNK Improvement Proposals system
+- ✅ Mainnet party event management
+- ✅ OAuth social authentication
+- ✅ Automated backup system
 
-### Ready for Development:
-- All core features functional
-- Clean, optimized codebase
-- Comprehensive documentation
-- Safety systems in place
-- Claude Code optimized workflow
+### Platform Highlights:
+- **Quantum-Safe**: Built on Cellframe's quantum-resistant blockchain
+- **Community-Driven**: Governance through CIP proposals
+- **Global Reach**: 8 language support
+- **Developer-Friendly**: Comprehensive documentation and APIs
+- **Production-Ready**: Live at https://cpunk.club
+
+### Technical Stack:
+- **Frontend**: HTML5, CSS3, JavaScript (ES6+)
+- **Backend**: PHP 7.4+, Python 3.8+ (Cellframe plugin)
+- **Blockchain**: Cellframe Network
+- **Database**: Cellframe Global Database (GDB)
+- **Authentication**: OAuth 2.0, Cellframe Wallet
+
+## 🚀 Getting Started
+
+### For Users:
+1. Visit https://cpunk.club
+2. Click "Login" to authenticate with your Cellframe wallet
+3. Register your DNA (Distributed Name Address)
+4. Explore features: delegation, voting, messaging, etc.
+
+### For Developers:
+1. Read [CLAUDE.md](CLAUDE.md) for development guidelines
+2. Check [docs/](docs/) for API documentation
+3. Use the backup system before editing files
+4. Follow the Protocol Mode guidelines
+
+### For Node Operators:
+1. Install Cellframe node: [Installation Guide](cpunk.club/doc/cellframe-node-setup-guide.md)
+2. Download CPUNK network configs from https://cpunk.club/network.html
+3. Join the network and start earning rewards
 
 ---
 

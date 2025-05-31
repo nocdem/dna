@@ -19,10 +19,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 This repository contains the CPUNK cryptocurrency platform, a "Quantum-Safe MEME Coin" built on the Cellframe blockchain. The platform is primarily a web application with these key features:
 
 1. DNA registration (Distributed Naming & Addressing)
-2. Wallet delegation and rewards tracking
-3. User authentication and profile management
-4. Community features (messaging, voting)
+2. Wallet delegation and rewards tracking with validator model
+3. User authentication and profile management with SSO
+4. Community features (messaging, voting, board posts)
 5. Content management and distribution
+6. Multilingual support (8 languages: EN, ES, IT, RU, TR, AR, FR, ZH)
+7. OAuth integration (GitHub, Google, LinkedIn, Twitter)
+8. CPUNK Improvement Proposals (CIP) system
+9. Network statistics and monitoring
+10. Mainnet party event management
 
 ## Repository Configuration
 
@@ -71,20 +76,41 @@ This repository contains the CPUNK cryptocurrency platform, a "Quantum-Safe MEME
 
 #### 1. cpunk.club/ - Main CPUNK Web Platform
 - **Core Pages**: HTML files for platform features (dashboard, delegation, voting, messaging, etc.)
-- **css/**: Page-specific stylesheets
+- **css/**: Page-specific stylesheets (minified for production)
 - **js/**: JavaScript modules for platform functionality
+  - authentication.js - Centralized auth module
+  - sso.js - Single Sign-On implementation
+  - translation.js - Multilingual support
+  - dashboardConnector.js - Cellframe node API
+  - cpunk-transaction.js - Transaction handling
+  - board.js - Community board feature
+  - unused/ - Deprecated files
+- **lang/**: Translation files (8 languages)
+  - ar.json (Arabic)
+  - en.json (English)
+  - es.json (Spanish) 
+  - fr.json (French)
+  - it.json (Italian)
+  - ru.json (Russian)
+  - tr.json (Turkish)
+  - zh.json (Chinese)
 - **doc/**: Cellframe and CPUNK documentation
   - cellframe-node-reference.md (Complete CLI reference)
   - cellframe-comprehensive-guide.md (Overall platform guide)
   - cellframe-developer-reference.md (Developer documentation)
   - cellframe-node-setup-guide.md (Installation guide)
   - cpunk-improvement-proposals-guide.md (CIP documentation)
+  - multilang-implementation-guide.md (Translation guide)
+  - sso-reference.md (SSO implementation)
+  - deployment-guide.md (Deployment procedures)
+  - development-guide.md (Development workflow)
+  - quick-reference.md (Quick commands)
 - **configs/**: Network configuration files (Cpunk.cfg, chain-0.cfg, main.cfg)
 - **certs/**: Digital certificates (cpunk.master.*.dcert, cpunk.root.*.dcert)
 - **devel/**: Development and test files
-- **backup/**: Backup directory
+- **backup/**: Backup directory (git ignored)
 - **OAuth Integration**: PHP files for GitHub, Google, LinkedIn, Twitter authentication
-- **Data Files**: Various .txt files for data storage
+- **Data Files**: Various .txt files for data storage (git ignored)
 
 #### 2. cellframe/ - Cellframe Blockchain Components
 - **cellframe-node/**: Core blockchain node implementation
@@ -93,10 +119,14 @@ This repository contains the CPUNK cryptocurrency platform, a "Quantum-Safe MEME
 - **cellframe-tool-sign/**: Command-line signing utility
 - **cellframe-java/**: Java bindings (CellframeSDK JAR)
 
-#### 3. node-management/ - Automated Node Management
-- **auto_up.sh**: Main automation script for node health monitoring
-- **all_collect.sh**: Collection utilities
-- **CLAUDE.md**: Specific instructions for node management
+#### 3. docs/ - Top-level Platform Documentation
+- **README.md**: Documentation index
+- **API_REFERENCE.md**: Platform API endpoints
+- **OAUTH_SETUP.md**: OAuth configuration guide
+- **PLATFORM_FEATURES.md**: Feature overview
+- **cellframe-*.md**: Cellframe documentation copies
+- **dashboardConnector.md**: JavaScript API documentation
+- **poh-concept.md**: Proof of Humanity concept
 
 #### 4. dev-tools/ - Development Utilities
 - **deploy-to-github.sh**: GitHub deployment script
@@ -129,11 +159,13 @@ dna_restore {backup_index}  # Restore DNA registrations from backup
 
 ### Excluded from Git:
 - cellframe/ directory and all subdirectories
-- node-management/ directory
-- dev-tools/ directory
+- node_management/ directory (if exists)
 - All .txt files
 - deployment.log
 - Configuration files (hosts, rsync_exclude.txt, static_addresses.txt)
+- oauth_config.php (production credentials)
+- backup/ directory contents
+- node_modules/ directory
 
 ## Core Principles
 
@@ -229,6 +261,33 @@ For fast reference during Claude Code sessions:
 
 For active development tasks and priorities, see: **[TODO.md](/home/nocdem/projects/TODO.md)**
 
+### Recent Additions (as of 2025-05-31):
+- **Multilingual Support**: Full translation system with 8 languages
+- **Community Board**: Public wall for user posts with DNA verification
+- **SSO System**: Centralized authentication across all pages
+- **Validator Delegation Model**: Updated from simple staking to validator model
+- **Network Statistics**: Comprehensive network monitoring page
+- **CPUNK Improvement Proposals**: Community governance system
+- **Mainnet Party**: Event registration and management system
+
+## File Types and Purposes
+
+### Data Storage Files (.txt)
+- **admins.txt**: List of admin DNA addresses
+- **news.txt**: Platform news and updates
+- **updates.txt**: System update log
+- **party_list.txt**: Mainnet party registrations
+- **invitation_codes.txt**: Valid invitation codes
+- **code_attendees.txt**: Used invitation codes
+- **content.txt**: User-generated content
+- **data.txt**: General data storage
+
+### Configuration Files
+- **oauth_config.template.php**: Template for OAuth credentials
+- **robots.txt**: SEO crawler configuration
+- **sitemap.xml**: SEO sitemap
+- **package.json**: Node.js dependencies
+
 ## Memories
 
 - KEEP IT SIMPLE
@@ -236,3 +295,5 @@ For active development tasks and priorities, see: **[TODO.md](/home/nocdem/proje
 - Log all deployments to ~/projects/deployment.log with the date and a brief description of the change
 - ALWAYS use backup system before editing files
 - Project is Claude Code optimized with comprehensive documentation
+- Check translation files when updating UI text
+- Test SSO functionality after authentication changes
