@@ -101,6 +101,32 @@ This repository contains the CPUNK cryptocurrency platform, a "Quantum-Safe MEME
 #### 4. dev-tools/ - Development Utilities
 - **deploy-to-github.sh**: GitHub deployment script
 
+#### 5. backend/ - CPUNK GDB Server (Cellframe Plugin)
+- **cpunk-gdb-server.py**: Main entry point for the Cellframe blockchain plugin
+- **handlers.py**: HTTP request routing for DNA registration endpoints
+- **gdb_ops.py**: Global Database operations for managing DNA registrations
+- **config.py**: Configuration management (TEST_MODE, URL endpoints)
+- **utils.py**: Utility functions for validation and address parsing
+- **response_helpers.py**: JSON response formatting
+- **manifest.json**: Plugin metadata (version 0.1.1)
+
+##### Backend Commands:
+```bash
+# The backend runs as a Cellframe node plugin
+# It automatically starts when the Cellframe node loads the plugin
+# HTTP server runs on /{Config.URL} endpoint (default: /cpunk_gdb)
+
+# CLI command available within Cellframe node:
+dna_restore {backup_index}  # Restore DNA registrations from backup
+```
+
+##### Backend API Endpoints:
+- **POST /cpunk_gdb**: Register (`add`) or update (`update`) DNA names
+- **GET /cpunk_gdb?lookup={name_or_address}**: Lookup by name or wallet
+- **GET /cpunk_gdb?tx_validate={hash}&network={net}**: Validate transaction
+- **GET /cpunk_gdb?by_telegram={username}**: Lookup by Telegram username
+- **GET /cpunk_gdb?all_delegations=1**: Get all delegations
+
 ### Excluded from Git:
 - cellframe/ directory and all subdirectories
 - node-management/ directory
@@ -198,6 +224,10 @@ For fast reference during Claude Code sessions:
 - **[Quick Reference](cpunk.club/doc/quick-reference.md)** - Essential commands and patterns
 - **[Development Guide](cpunk.club/doc/development-guide.md)** - Complete development workflow
 - **[Backup System](cpunk.club/doc/backup-system.md)** - File safety and recovery procedures
+
+## Current Tasks
+
+For active development tasks and priorities, see: **[TODO.md](/home/nocdem/projects/TODO.md)**
 
 ## Memories
 
