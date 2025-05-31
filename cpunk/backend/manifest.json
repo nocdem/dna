@@ -1,0 +1,8 @@
+{
+    "name": "cpunk-gdb-server",
+    "version": "0.1.1",
+    "author": "Mika Hyttinen (@CELLgainz)",
+    "dependencies": [],
+    "description": "Backend for handling GDB reading and writing for DNA",
+    "type": "python"
+}

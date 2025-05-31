@@ -1,0 +1,13 @@
+{
+    "NET_IDS": [
+        { "name": "riemann", "id": "0x000000000000dddd" },
+        { "name": "raiden", "id": "0x000000000000bbbb" },
+        { "name": "KelVPN", "id": "0x1807202300000000" },
+        { "name": "Backbone", "id": "0x0404202200000000" },
+        { "name": "mileena", "id": "0x000000000000cccc" },
+        { "name": "subzero", "id": "0x000000000000acca" },
+        { "name": "cpunk_testnet", "id":"0x2884202288800000" }
+    ],
+    "DISALLOWED_NAMES": ["admin", "root", "system", "network", "cpunk", "demlabs", "cellframe"],
+    "ALLOWED_PUBKEYS": []
+}
