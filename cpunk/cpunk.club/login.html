@@ -19,7 +19,7 @@
         <script src="js/translation.js"></script>
         <script src="js/navbar.js"></script>
 
-        <h1 class="page-title">Single Sign-On</h1>
+        <h1 class="page-title" data-i18n="login.title">Single Sign-On</h1>
         
         <div class="info-section">
             <p data-i18n="pages.ssoDescription">Connect your PQ wallet to access the CPUNK platform. Your DNA identity will be used for authentication across all platform features.</p>
@@ -29,21 +29,21 @@
         <div class="status-section" style="margin-bottom: 20px; padding: 15px;">
             <div class="status-box" style="display: flex; justify-content: space-between; align-items: center;">
                 <div class="status-header" style="margin-bottom: 0;">
-                    <span style="font-weight: bold; margin-right: 8px;">Dashboard Status:</span>
-                    <span class="status-indicator status-disconnected" id="statusIndicator">Disconnected</span>
+                    <span style="font-weight: bold; margin-right: 8px;" data-i18n="login.dashboardStatus">Dashboard Status:</span>
+                    <span class="status-indicator status-disconnected" id="statusIndicator" data-i18n="login.disconnected">Disconnected</span>
                 </div>
-                <button id="connectButton" class="help-button" style="margin: 0; width: auto !important; min-width: 120px;">Connect</button>
+                <button id="connectButton" class="help-button" style="margin: 0; width: auto !important; min-width: 120px;" data-i18n="login.connect">Connect</button>
             </div>
             <div class="error-message" id="connectionError" style="display: none; margin-top: 10px;"></div>
         </div>
 
         <!-- Wallet Selection Section -->
         <div id="walletSection" class="section" style="display: none;">
-            <h2>Select Your Wallet</h2>
-            <p>Choose your wallet - this will be your backbone wallet address:</p>
+            <h2 data-i18n="login.selectWallet">Select Your Wallet</h2>
+            <p data-i18n="login.chooseWallet">Choose your wallet - this will be your backbone wallet address:</p>
 
             <div id="walletsList" class="wallets-container">
-                <div class="loading">Loading wallets</div>
+                <div class="loading" data-i18n="login.loadingWallets">Loading wallets</div>
             </div>
 
             <div class="error-message" id="walletError"></div>
@@ -51,11 +51,11 @@
 
         <!-- DNA Selection Section -->
         <div id="dnaSection" class="section" style="display: none;">
-            <h2>Select Your DNA</h2>
-            <p>Choose your DNA identity for this session:</p>
+            <h2 data-i18n="login.selectDna">Select Your DNA</h2>
+            <p data-i18n="login.chooseDna">Choose your DNA identity for this session:</p>
             
             <div id="dnaList" class="dna-container">
-                <div class="loading">Loading DNA registrations</div>
+                <div class="loading" data-i18n="login.loadingDna">Loading DNA registrations</div>
             </div>
             
             <div class="error-message" id="dnaError"></div>
@@ -63,7 +63,7 @@
 
         <!-- Login Button -->
         <div id="loginSection" class="section" style="display: none;">
-            <button id="loginButton" class="btn btn-primary">Complete Login</button>
+            <button id="loginButton" class="btn btn-primary" data-i18n="login.completeLogin">Complete Login</button>
         </div>
     </div>
 

@@ -127,10 +127,11 @@ async function fetchTokenPrice() {
         }
     } catch (error) {
         console.error('Error fetching token price:', error);
-        document.getElementById('token-price').textContent = 'Data unavailable';
-        document.getElementById('price-change').textContent = 'Data unavailable';
-        document.getElementById('market-cap').textContent = 'Data unavailable';
-        document.getElementById('trading-volume').textContent = 'Data unavailable';
+        const dataUnavailableText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.dataUnavailable : 'Data unavailable';
+        document.getElementById('token-price').textContent = dataUnavailableText;
+        document.getElementById('price-change').textContent = dataUnavailableText;
+        document.getElementById('market-cap').textContent = dataUnavailableText;
+        document.getElementById('trading-volume').textContent = dataUnavailableText;
     }
 }
 
@@ -144,9 +145,10 @@ async function fetchNetworkHealth() {
         const text = await response.text();
         
         // Set all values to Coming Soon
-        let activeNodes = 'Coming Soon';
-        let blockHeight = 'Coming Soon';
-        let networkStatus = 'Coming Soon';
+        const comingSoonText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.comingSoon : 'Coming Soon';
+        let activeNodes = comingSoonText;
+        let blockHeight = comingSoonText;
+        let networkStatus = comingSoonText;
         
         // Update network health display
         document.getElementById('active-nodes').textContent = activeNodes;
@@ -154,9 +156,10 @@ async function fetchNetworkHealth() {
         document.getElementById('network-status').textContent = networkStatus;
     } catch (error) {
         console.error('Error fetching network health:', error);
-        document.getElementById('active-nodes').textContent = 'Coming Soon';
-        document.getElementById('block-height').textContent = 'Coming Soon';
-        document.getElementById('network-status').textContent = 'Coming Soon';
+        const comingSoonText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.comingSoon : 'Coming Soon';
+        document.getElementById('active-nodes').textContent = comingSoonText;
+        document.getElementById('block-height').textContent = comingSoonText;
+        document.getElementById('network-status').textContent = comingSoonText;
     }
 }
 
@@ -208,10 +211,12 @@ async function fetchTreasuryData() {
         document.getElementById('treasury-updated').textContent = `Last updated: ${timestamp}`;
     } catch (error) {
         console.error('Error fetching treasury data:', error);
-        document.getElementById('treasury-cell').textContent = 'Data unavailable';
-        document.getElementById('treasury-cpunk').textContent = 'Data unavailable';
-        document.getElementById('treasury-staked').textContent = 'Data unavailable';
-        document.getElementById('treasury-updated').textContent = 'Last updated: Unable to load data';
+        const dataUnavailableText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.dataUnavailable : 'Data unavailable';
+        const lastUpdatedPrefix = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.treasuryStatus ? window.currentTranslations.networkStats.treasuryStatus.lastUpdated : 'Last updated:';
+        document.getElementById('treasury-cell').textContent = dataUnavailableText;
+        document.getElementById('treasury-cpunk').textContent = dataUnavailableText;
+        document.getElementById('treasury-staked').textContent = dataUnavailableText;
+        document.getElementById('treasury-updated').textContent = `${lastUpdatedPrefix} ${dataUnavailableText}`;
     }
 }
 
@@ -221,16 +226,18 @@ async function fetchTreasuryData() {
 async function fetchDelegationStats() {
     try {
         // Display "Coming Soon" instead of mock data
-        document.getElementById('active-delegations').textContent = 'Coming Soon';
-        document.getElementById('total-staked').textContent = 'Coming Soon';
-        document.getElementById('total-rewards').textContent = 'Coming Soon';
-        document.getElementById('average-apy').textContent = 'Coming Soon';
+        const comingSoonText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.comingSoon : 'Coming Soon';
+        document.getElementById('active-delegations').textContent = comingSoonText;
+        document.getElementById('total-staked').textContent = comingSoonText;
+        document.getElementById('total-rewards').textContent = comingSoonText;
+        document.getElementById('average-apy').textContent = comingSoonText;
     } catch (error) {
         console.error('Error fetching delegation stats:', error);
-        document.getElementById('active-delegations').textContent = 'Data unavailable';
-        document.getElementById('total-staked').textContent = 'Data unavailable';
-        document.getElementById('total-rewards').textContent = 'Data unavailable';
-        document.getElementById('average-apy').textContent = 'Data unavailable';
+        const dataUnavailableText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.dataUnavailable : 'Data unavailable';
+        document.getElementById('active-delegations').textContent = dataUnavailableText;
+        document.getElementById('total-staked').textContent = dataUnavailableText;
+        document.getElementById('total-rewards').textContent = dataUnavailableText;
+        document.getElementById('average-apy').textContent = dataUnavailableText;
     }
 }
 
@@ -317,7 +324,7 @@ async function fetchRecentTransactions() {
                                     ${displayAddress}
                                 </div>
                                 <div class="dna-names" id="dna-${holder.position}" data-address="${holder.address}" style="${isKnownAddress ? 'display: none;' : ''}">
-                                    <div class="dna-loading">Loading DNA...</div>
+                                    <div class="dna-loading" data-i18n="networkStats.topHolders.loadingDna">Loading DNA...</div>
                                 </div>
                                 <div class="holder-balance">${formatNumber(holder.balance)} CPUNK</div>
                             </div>
@@ -325,7 +332,8 @@ async function fetchRecentTransactions() {
                     `;
                 }).join('');
                 
-                transactionsContainer.innerHTML = holdersList || '<div class="loading-message">No holder data available</div>';
+                const noHolderDataText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.noHolderData : 'No holder data available';
+                transactionsContainer.innerHTML = holdersList || `<div class="loading-message">${noHolderDataText}</div>`;
                 
                 // After displaying the holders, fetch DNA information for each
                 setTimeout(() => {
@@ -337,11 +345,13 @@ async function fetchRecentTransactions() {
         }
         
         // If we get here, we couldn't parse the data
-        transactionsContainer.innerHTML = '<div class="loading-message">Holder data being collected...</div>';
+        const holderDataCollectingText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.holderDataCollecting : 'Holder data being collected...';
+        transactionsContainer.innerHTML = `<div class="loading-message">${holderDataCollectingText}</div>`;
     } catch (error) {
         console.error('Error fetching holders:', error);
+        const errorLoadingDataText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.errorLoadingData : 'Error loading holder data';
         document.getElementById('transactions-list').innerHTML = 
-            '<div class="loading-message">Error loading holder data</div>';
+            `<div class="loading-message">${errorLoadingDataText}</div>`;
     }
 }
 
@@ -354,8 +364,9 @@ async function fetchDnaStats() {
         const response = await fetch('netstats.txt');
         const text = await response.text();
         
-        let totalRegistrations = 'Data unavailable';
-        let registryRevenue = 'Data unavailable';
+        const dataUnavailableText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.dataUnavailable : 'Data unavailable';
+        let totalRegistrations = dataUnavailableText;
+        let registryRevenue = dataUnavailableText;
         
         // Parse the netstats.txt file for CPUNK ledger information
         if (text) {
@@ -389,8 +400,9 @@ async function fetchDnaStats() {
         document.getElementById('registry-revenue').textContent = registryRevenue;
     } catch (error) {
         console.error('Error fetching CPUNK stats:', error);
-        document.getElementById('total-registrations').textContent = 'Data unavailable';
-        document.getElementById('registry-revenue').textContent = 'Data unavailable';
+        const dataUnavailableText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.dataUnavailable : 'Data unavailable';
+        document.getElementById('total-registrations').textContent = dataUnavailableText;
+        document.getElementById('registry-revenue').textContent = dataUnavailableText;
     }
 }
 
@@ -526,13 +538,15 @@ async function fetchDnaForTopHolders(holders, staticAddresses = new Map()) {
 async function fetchSocialStats() {
     try {
         // Display "Coming Soon" instead of mock data
-        document.getElementById('telegram-members').textContent = 'Coming Soon';
-        document.getElementById('twitter-followers').textContent = 'Coming Soon';
-        document.getElementById('community-growth').textContent = 'Coming Soon';
+        const comingSoonText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.comingSoon : 'Coming Soon';
+        document.getElementById('telegram-members').textContent = comingSoonText;
+        document.getElementById('twitter-followers').textContent = comingSoonText;
+        document.getElementById('community-growth').textContent = comingSoonText;
     } catch (error) {
         console.error('Error fetching social stats:', error);
-        document.getElementById('telegram-members').textContent = 'Data unavailable';
-        document.getElementById('twitter-followers').textContent = 'Data unavailable';
-        document.getElementById('community-growth').textContent = 'Data unavailable';
+        const dataUnavailableText = window.currentTranslations && window.currentTranslations.networkStats && window.currentTranslations.networkStats.loadingStates ? window.currentTranslations.networkStats.loadingStates.dataUnavailable : 'Data unavailable';
+        document.getElementById('telegram-members').textContent = dataUnavailableText;
+        document.getElementById('twitter-followers').textContent = dataUnavailableText;
+        document.getElementById('community-growth').textContent = dataUnavailableText;
     }
 }

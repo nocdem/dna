@@ -3,6 +3,9 @@
  * Handles SSO authentication, dashboard connection, DNA lookup, and reservation processing
  */
 
+// Get translation instance
+const translation = window.translation || window.CpunkTranslation || { translate: (key, params) => key };
+
 // API Configuration
 const TREASURY_WALLET = 'Rj7J7MiX2bWy8sNyZcoLqkZuNznvU4KbK6RHgqrGj9iqwKPhoVKE1xNrEMmgtVsnyTZtFhftMPAJbaswuSLp7UeBS7jiRmE5uvuUJaKA';
 const RESERVATION_AMOUNT = 1000000; // 1,000,000 CPUNK on Backbone network
@@ -256,7 +259,8 @@ async function checkExistingReservation(dnaName) {
         if (data.wallet_reserved) {
             // Update reservation info to show confirmed status
             if (reservationInfo) {
-                reservationInfo.innerHTML = '🎉 <span class="highlight">Reservation Confirmed!</span> You\'re all set for the Cellframe Mainnet Birthday Bash.';
+                const confirmed = translation.translate('mainnetParty.reservation.alreadyReserved');
+                reservationInfo.innerHTML = confirmed;
             }
             
             // Wallet already has a reservation - just show profile
@@ -278,7 +282,8 @@ async function checkExistingReservation(dnaName) {
         else if (data.reserved) {
             // Update reservation info to show confirmed status
             if (reservationInfo) {
-                reservationInfo.innerHTML = '🎉 <span class="highlight">Reservation Confirmed!</span> You\'re all set for the Cellframe Mainnet Birthday Bash.';
+                const confirmed = translation.translate('mainnetParty.reservation.alreadyReserved');
+                reservationInfo.innerHTML = confirmed;
             }
             
             // DNA already reserved - just show profile
@@ -317,10 +322,11 @@ async function checkExistingReservation(dnaName) {
 async function processReservation() {
     if (!selectedWallet || !selectedDnaNickname) {
         // Show error using CpunkUI if available
+        const errorMsg = translation.translate('mainnetParty.errors.missingData');
         if (typeof CpunkUI !== 'undefined' && CpunkUI.showError) {
-            CpunkUI.showError('Wallet or DNA data missing', 'dnaError');
+            CpunkUI.showError(errorMsg, 'dnaError');
         } else {
-            dnaError.textContent = 'Wallet or DNA data missing';
+            dnaError.textContent = errorMsg;
             dnaError.style.display = 'block';
         }
         return;
@@ -329,10 +335,11 @@ async function processReservation() {
     // Check if wallet has sufficient CPUNK balance for the minimum requirement
     if (selectedWallet.cpunkBalance < MIN_WALLET_BALANCE) {
         // Show error using CpunkUI if available
+        const errorMsg = translation.translate('mainnetParty.errors.insufficientBalance', { amount: MIN_WALLET_BALANCE.toLocaleString() });
         if (typeof CpunkUI !== 'undefined' && CpunkUI.showError) {
-            CpunkUI.showError(`Insufficient CPUNK balance. You need at least ${MIN_WALLET_BALANCE.toLocaleString()} CPUNK in your wallet to reserve a spot.`, 'dnaError');
+            CpunkUI.showError(errorMsg, 'dnaError');
         } else {
-            dnaError.textContent = `Insufficient CPUNK balance. You need at least ${MIN_WALLET_BALANCE.toLocaleString()} CPUNK in your wallet to reserve a spot.`;
+            dnaError.textContent = errorMsg;
             dnaError.style.display = 'block';
         }
         return;
@@ -341,10 +348,11 @@ async function processReservation() {
     // Also check if wallet has enough for the actual transaction amount
     if (selectedWallet.cpunkBalance < RESERVATION_AMOUNT) {
         // Show error using CpunkUI if available
+        const errorMsg2 = translation.translate('mainnetParty.errors.insufficientForTransaction', { amount: RESERVATION_AMOUNT.toLocaleString() });
         if (typeof CpunkUI !== 'undefined' && CpunkUI.showError) {
-            CpunkUI.showError(`Insufficient CPUNK balance for the transaction. You need at least ${RESERVATION_AMOUNT} CPUNK.`, 'dnaError');
+            CpunkUI.showError(errorMsg2, 'dnaError');
         } else {
-            dnaError.textContent = `Insufficient CPUNK balance for the transaction. You need at least ${RESERVATION_AMOUNT} CPUNK.`;
+            dnaError.textContent = errorMsg2;
             dnaError.style.display = 'block';
         }
         return;
@@ -377,10 +385,11 @@ async function processReservation() {
         }
         
         if (!primaryNickname) {
-            throw new Error('No DNA nickname found for reservation');
+            throw new Error(translation.translate('mainnetParty.errors.noNickname'));
         }
         
-        txStatus.innerHTML = '<span class="tx-status-highlight">Sending transaction...</span>';
+        const sendingMsg = translation.translate('mainnetParty.transaction.sending');
+        txStatus.innerHTML = `<span class="tx-status-highlight">${sendingMsg}</span>`;
         
         // Format the payment amount correctly (with Cellframe format)
         // Match the format used in DNA registration for consistency
@@ -904,12 +913,17 @@ function showReservationFailed(txHash, dnaName) {
     
     // Update transaction status
     txStatus.style.display = 'none';
+    const notVerifiedTitle = translation.translate('mainnetParty.transaction.notVerified');
+    const notVerifiedDesc = translation.translate('mainnetParty.transaction.notVerifiedDesc');
+    const notVerifiedNote = translation.translate('mainnetParty.transaction.notVerifiedNote');
+    const tryAgain = translation.translate('mainnetParty.transaction.tryAgain');
+    
     txError.innerHTML = `
-        <h3>Transaction Not Verified</h3>
-        <p>We were unable to verify your payment transaction after multiple attempts.</p>
+        <h3>${notVerifiedTitle}</h3>
+        <p>${notVerifiedDesc}</p>
         <p>Transaction Hash: <code>${txHash}</code></p>
-        <p>If your transaction completes later, your reservation will still be processed.</p>
-        <button onclick="window.location.reload()" class="action-button" style="margin-top: 20px;">Try Again</button>
+        <p>${notVerifiedNote}</p>
+        <button onclick="window.location.reload()" class="action-button" style="margin-top: 20px;">${tryAgain}</button>
     `;
     txError.style.display = 'block';
 }
@@ -1030,9 +1044,10 @@ function renderAttendees() {
     attendeesListElement.innerHTML = '';
 
     if (attendeesList.length === 0) {
+        const noAttendeesMsg = translation.translate('mainnetParty.attendees.noAttendees');
         attendeesListElement.innerHTML = `
             <div style="text-align: center; padding: 20px; color: var(--text-dim);">
-                No confirmed attendees yet. Be the first to register!
+                ${noAttendeesMsg}
             </div>
         `;
         return;
@@ -1096,11 +1111,13 @@ function updateCountdown() {
         // Update the UI to show the event is now
         const eventBanner = document.querySelector('.event-banner');
         if (eventBanner) {
+            const nowTitle = translation.translate('mainnetParty.eventNow.title');
+            const nowLocation = translation.translate('mainnetParty.eventNow.location');
             eventBanner.innerHTML = `
                 <div class="banner-content">
-                    <h2 style="color: var(--success);">The Event Is Happening Now! 🎉</h2>
+                    <h2 style="color: var(--success);">${nowTitle}</h2>
                     <p style="text-align: center; margin-top: 20px;">
-                        "The Post-Quantum Ark", Istanbul
+                        ${nowLocation}
                     </p>
                 </div>
             `;
@@ -1144,7 +1161,8 @@ async function validateInvitationCode() {
 
     // Check if code is empty
     if (!code) {
-        showCodeStatus('Please enter an invitation code', 'error');
+        const emptyMsg = translation.translate('mainnetParty.errors.codeEmpty');
+        showCodeStatus(emptyMsg, 'error');
         return;
     }
 
@@ -1187,15 +1205,18 @@ async function validateInvitationCode() {
             };
 
             // Show success message
-            showCodeStatus('Valid invitation code!', 'success');
+            const validMsg = translation.translate('mainnetParty.invitationCode.validMessage');
+            showCodeStatus(validMsg, 'success');
 
             // Show valid code details
             codeType.textContent = data.description || data.code_type;
-            codeDescription.textContent = 'This code allows you to reserve your spot without CPUNK payment.';
+            const codeDetailsMsg = translation.translate('mainnetParty.invitationCode.codeDetails');
+            codeDescription.textContent = codeDetailsMsg;
             validCodeDetails.style.display = 'block';
         } else {
             // Show error message
-            showCodeStatus(data.message || 'Invalid invitation code', 'error');
+            const invalidMsg = translation.translate('mainnetParty.errors.codeInvalid');
+            showCodeStatus(data.message || invalidMsg, 'error');
             validCodeDetails.style.display = 'none';
             validatedCode = null;
         }
@@ -1213,7 +1234,8 @@ async function validateInvitationCode() {
         validateCodeButton.textContent = 'Validate';
 
         // Show error message
-        showCodeStatus('Error validating code. Please try again.', 'error');
+        const codeErrorMsg = translation.translate('mainnetParty.errors.codeError');
+        showCodeStatus(codeErrorMsg, 'error');
     }
 }
 
@@ -1408,6 +1430,7 @@ document.addEventListener('DOMContentLoaded', () => {
         console.log('API Console initialized for mainnet party page');
     }
     
+    
     // Initialize SSO
     if (typeof CpunkSSO !== 'undefined') {
         sso = CpunkSSO.getInstance();
@@ -1416,7 +1439,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log('User authenticated:', user.dna);
                 // Hide login required section and update reservation info
                 if (loginRequiredSection) loginRequiredSection.style.display = 'none';
-                if (reservationInfo) reservationInfo.innerHTML = 'Secure your attendance by reserving with <span class="highlight">1,000,000 CPUNK</span> on the <span class="highlight">Backbone</span> network.';
+                if (reservationInfo) {
+                    const infoMsg = translation.translate('mainnetParty.reservation.info');
+                    reservationInfo.innerHTML = infoMsg;
+                }
                 
                 // Get wallet and DNA info from SSO
                 walletAddress = sso.getCurrentWallet();
@@ -1482,7 +1508,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.log('User not authenticated');
                 // Show login required section and restore original reservation info
                 if (loginRequiredSection) loginRequiredSection.style.display = 'block';
-                if (reservationInfo) reservationInfo.innerHTML = 'Secure your attendance by reserving with <span class="highlight">1,000,000 CPUNK</span> on the <span class="highlight">Backbone</span> network. Login to access reservation functionality.';
+                if (reservationInfo) {
+                    const infoMsg = translation.translate('mainnetParty.reservation.info');
+                    const loginPromptMsg = translation.translate('mainnetParty.reservation.loginPrompt');
+                    reservationInfo.innerHTML = `${infoMsg} ${loginPromptMsg}`;
+                }
             }
         });
     }

@@ -2,6 +2,166 @@
 
 All notable changes to CPUNK platform will be documented in this file.
 
+## [0.1.14] - 2025-05-31
+
+### Added
+- **New primary mission item for quantum apocalypse awareness** - Added first mission item emphasizing CPUNK's role in quantum resistance education
+- **Mission subtitle for quantum era messaging** - Added supporting subtitle about tools and education for the quantum era
+- **Complete multilingual translations** for new mission content in all 5 languages:
+  - English: "Lead the charge in raising awareness about the looming 'quantum apocalypse' and the urgent need for quantum-resistant blockchain technology"
+  - Spanish: Professional cryptocurrency translations with quantum terminology
+  - Italian: Accurate blockchain terminology with quantum resistance messaging
+  - Russian: Technical translations maintaining quantum safety emphasis
+  - Turkish: Native quantum technology awareness messaging
+- **Updated about.html structure** - Added new mission item (missionItem0) with 🌐 emoji and subtitle with proper data-i18n attributes
+- **Enhanced CSS styling** - Added mission-subtitle class with accent color styling and proper spacing
+- **Renumbered existing mission items** - Updated missionItem1-3 to maintain consistency while adding the new primary mission
+
+### Updated
+- All language files (en.json, es.json, it.json, ru.json, tr.json) with new translation keys missionItem0 and missionSubtitle
+- About page HTML structure to include quantum apocalypse awareness as the primary mission focus
+- CSS styling for mission subtitle with accent color and proper formatting
+
+## [0.1.13] - 2025-05-31
+
+### Added
+- **Complete multilingual support for network statistics page** - Comprehensive refactor with translations in all 5 languages (en, es, it, ru, tr)
+- **New networkStats translation section** - Added extensive translation keys for all network statistics content:
+  - Page title, meta descriptions, and SEO content
+  - Token metrics section with all data labels (price, market cap, volume, etc.)
+  - Network health section with node status indicators
+  - Treasury status section with balance and update information
+  - Delegation statistics section with staking metrics
+  - Top holders section with loading states and DNA information
+  - Circulation statistics section with address and token data
+  - Network resources section with link descriptions
+  - Community growth section with social media metrics
+  - Footer section with refresh notes and copyright
+  - Loading states for all dynamic content types
+- **Data-i18n attributes for all static content** - Added internationalization attributes to all text elements in network-stats.html
+- **Dynamic translation support in JavaScript** - Updated network-stats.js to use translations for:
+  - All loading messages and error states
+  - Dynamic content like "Coming Soon" and "Data unavailable"
+  - Treasury update timestamps and status messages
+  - Top holders loading states and DNA lookup messages
+- **SEO multilingual support** - Added translation support for meta tags, OpenGraph, and Twitter Card content
+- **Complete language coverage** with appropriate translations:
+  - Spanish (es.json) - Professional cryptocurrency and technical translations
+  - Italian (it.json) - Accurate blockchain terminology and interface text
+  - Russian (ru.json) - Comprehensive crypto platform translations
+  - Turkish (tr.json) - Complete localization for Turkish users
+- **Enhanced user experience** - All network statistics content now displays in user's selected language
+- **Improved loading states** - All dynamic loading messages now respect language preferences
+
+### Technical Details
+- Added networkStats translation object with 7 main sections and 40+ translation keys
+- Updated HTML template with comprehensive data-i18n attribute coverage
+- Enhanced JavaScript internationalization for all dynamic content generation
+- Maintained fallback English text for compatibility and development
+
+## [0.1.12] - 2025-05-31
+
+### Added
+- Complete translations for installation page (network.html) in all supported languages (en, es, it, ru, tr)
+- New translation keys for installation sections including:
+  - Page title and quick installation header
+  - OS-specific installation commands and descriptions
+  - Copy command buttons and explanations
+  - Verification section with commands for all platforms
+  - Manual installation section with file categories
+  - All button labels and instructions
+- Data-i18n attributes to all static text elements in network.html
+- Improved manual installation section design with better layout
+- Enhanced download button styling with consistent sizing and hover effects
+- Updated copy-to-clipboard functionality to use translation keys for success/error messages
+- **Detailed installation paths for manual installation** - Added specific file paths for each operating system:
+  - Linux paths: `/opt/cellframe-node/etc/network/` and `/opt/cellframe-node/share/ca/`
+  - Windows paths: `%PROGRAMFILES%\cellframe-node\etc\network\` and `%PROGRAMFILES%\cellframe-node\share\ca\`
+  - macOS paths: `/Applications/Cellframe.app/Contents/Resources/etc/network/` and `/Applications/Cellframe.app/Contents/Resources/share/ca/`
+- Installation path translations in all 5 supported languages (English, Spanish, Italian, Russian, Turkish)
+- Important note section explaining the need to restart the Cellframe node service after manual installation
+
+### Improved
+- Manual installation section now features a grid layout for better organization
+- Download buttons are now consistently sized and styled
+- Better mobile responsiveness for download sections
+- Removed deprecated "View manual installation guide" link as requested
+- **Enhanced manual installation guidance** - Users now have clear, OS-specific instructions for where to place configuration and certificate files
+- More descriptive installation instructions that guide users through the complete manual installation process
+
+### Changed
+- Updated network.html to use translation keys instead of hardcoded text
+- Replaced static button text with translatable content
+- Modified CSS for improved button styling and layout consistency
+- **Updated manual installation description** to be more informative and user-friendly
+
+## [0.1.11] - 2025-05-31
+
+### Added
+- Complete translations for mainnet_party.html page in all supported languages (en, es, it, ru, tr)
+- New translation keys for mainnet party sections including:
+  - Event description and features
+  - Countdown labels
+  - Reservation rules and instructions
+  - Wallet and DNA selection
+  - Invitation code system
+  - Transaction processing messages
+  - Confirmation details
+  - Attendees list
+  - Error messages
+- Data-i18n attributes to all static text elements in mainnet_party.html
+- Translation support for dynamically generated text in mainnet_party.js
+
+### Updated
+- All language files with comprehensive mainnet party translations
+- mainnet_party.html to use translation system for all text content
+- mainnet_party.js to use translation system for dynamic messages and error handling
+
+## [0.1.10] - 2025-05-31
+
+### Added
+- Complete translations for whitepaper.html page in all supported languages (en, es, it, ru, tr)
+- New translation keys for all whitepaper sections, subsections, and content
+- Data-i18n attributes to all text elements in whitepaper.html
+
+### Updated
+- All language files with whitepaper translations including table of contents, sections, and token allocation data
+- whitepaper.html to use translation system for all text content
+
+## [0.1.9] - 2025-05-31
+
+### Added
+- Complete translations for about.html page in all supported languages (en, es, it, ru, tr)
+- New translation keys for Council application modal and all about page sections
+- Data-i18n attributes to all translatable content in about.html
+
+### Updated
+- All language files with missing about page translations
+- about.html to use translation system for all text content
+
+## [0.1.8] - 2025-05-30
+
+### Added
+- Implemented validator delegation model replacing simple staking
+  - Create validator wallet with sig_dil signature
+  - Create node and delegate certificates
+  - Use CreateOrderValidator API instead of CreateOrderStaker
+  - Execute srv_stake delegate command with order hash
+- Added network parameter support to transaction verification
+  - Updated cpunk-utils.js to pass network parameter
+  - Updated dna-proxy.php to forward network parameter
+  - Supports KelVPN and other network verification
+- Improved wallet matching using DNA lookup
+  - Get user's network-specific address from DNA
+  - Match dashboard wallet by network address
+  - Support for multi-network delegation
+
+### Fixed
+- Fixed wallet balance loading for delegation
+- Fixed scientific notation formatting for small amounts (e.g., 0.00000001)
+- Fixed session ID missing error in CpunkTransaction
+- Removed minimum delegation amount validation during refactoring
+
 ## [0.1.7] - 2025-05-28
 
 ### Changed

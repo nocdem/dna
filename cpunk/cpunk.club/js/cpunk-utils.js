@@ -353,9 +353,10 @@ const CpunkUtils = (function() {
      * @param {function} onVerify - Callback on successful verification
      * @param {function} onFail - Callback on failed verification
      * @param {function} onAttempt - Callback on each verification attempt
+     * @param {string} network - Network name (optional)
      * @returns {Array} - Array of timer IDs
      */
-    function startTransactionVerification(txHash, onVerify, onFail, onAttempt) {
+    function startTransactionVerification(txHash, onVerify, onFail, onAttempt, network = null) {
         const MAX_ATTEMPTS = 10;
         let verificationAttempts = 0;
         const verificationTimers = [];
@@ -395,7 +396,7 @@ const CpunkUtils = (function() {
 
                 // Try to verify the transaction
                 try {
-                    const verified = await verifyTransaction(txHash);
+                    const verified = await verifyTransaction(txHash, network);
 
                     if (verified) {
                         // Success! Clear all pending timers and call the success callback
@@ -445,11 +446,34 @@ const CpunkUtils = (function() {
     /**
      * Verify transaction
      * @param {string} txHash - Transaction hash to verify
+     * @param {string} network - Network name (optional, defaults to Backbone)
      * @returns {Promise<boolean>} - Whether the transaction is verified
      */
-    async function verifyTransaction(txHash) {
+    async function verifyTransaction(txHash, network = null) {
         try {
-            const data = await dnaLookup('tx_validate', txHash);
+            // Build the validation URL with network parameter if provided
+            let url = `${config.dnaProxyUrl}?tx_validate=${encodeURIComponent(txHash)}`;
+            if (network && network !== 'Backbone') {
+                url += `&network=${encodeURIComponent(network.toLowerCase())}`;
+            }
+            
+            logDebug(`Verifying transaction on ${network || 'Backbone'}`, 'info', {
+                url: url,
+                txHash: txHash,
+                network: network
+            });
+            
+            const response = await fetch(url);
+            const responseText = await response.text();
+            
+            // Parse the response
+            let data;
+            try {
+                data = JSON.parse(responseText);
+            } catch (e) {
+                // If not JSON, use the text response
+                data = responseText;
+            }
             
             // Check if verification was successful
             let isVerified = false;
@@ -462,11 +486,20 @@ const CpunkUtils = (function() {
                 isVerified = data.status_code === 0 && data.message === "OK";
             }
 
+            if (config.debug.enabled) {
+                logDebug(`Transaction verification for ${network || 'Backbone'}`, isVerified ? 'info' : 'warning', {
+                    txHash: txHash,
+                    network: network || 'Backbone',
+                    verified: isVerified
+                });
+            }
+
             return isVerified;
         } catch (error) {
             if (config.debug.enabled) {
                 logDebug('Transaction verification error', 'error', {
                     txHash: txHash,
+                    network: network || 'Backbone',
                     error: error.message,
                     stack: error.stack
                 });

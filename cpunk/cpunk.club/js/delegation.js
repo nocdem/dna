@@ -11,6 +11,12 @@ let currentOrderHash = null;
 let delegationRewardsAddress = null;
 let delegationAmountValue = null;
 
+// Validator components for new delegation model
+let validatorWalletName = null;
+let validatorNodeCert = null;
+let validatorDelegateCert = null;
+let validatorNodeAddress = null;
+
 // Network configuration
 const NETWORK_CONFIG = {
     'Backbone': {
@@ -107,6 +113,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 walletAddress = userData.wallet;
                 currentDna = userData.dna;
                 sessionId = userData.sessionId;
+                
+                // Set session ID in CpunkTransaction
+                if (sessionId && typeof CpunkTransaction !== 'undefined') {
+                    CpunkTransaction.setSessionId(sessionId);
+                }
                 
                 // Update UI to show authenticated state
                 if (statusIndicator) {
@@ -354,6 +365,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Start verification process using CpunkTransaction
         CpunkTransaction.startVerification({
             txHash: txHash,
+            network: selectedNetwork,
             onVerificationStart: (txHash) => {
                 // Update verification status
                 CpunkUI.updateVerificationUI('pending', {
@@ -396,12 +408,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 // Hide verification section after successful completion
                 verificationSection.style.display = 'none';
 
-                // Show delegation success with copyable message format
+                // Show delegation success with server commands
                 delegationForm.style.display = 'block';
                 successMessage.style.display = 'block';
+                
+                // Calculate the actual tax for the command (100 - display tax)
+                const commandTax = (100 - calculateNetworkTax(selectedNetwork, delegationAmountValue)).toFixed(1);
+                
                 successMessage.innerHTML = `
-                    <h3>Delegation Successful! ✅</h3>
-                    <p>Your transaction has been verified and your delegation is now active.</p>
+                    <h3>Delegation Request Prepared! ✅</h3>
+                    <p>Your validator components have been generated:</p>
+                    
+                    <div style="margin-top: 15px; padding: 10px; background-color: rgba(0,0,0,0.2); border-radius: 4px;">
+                        <div><strong>Validator Wallet:</strong> ${validatorWalletName}</div>
+                        <div><strong>Node Certificate:</strong> ${validatorNodeCert}</div>
+                        <div><strong>Delegate Certificate:</strong> ${validatorDelegateCert}</div>
+                        <div><strong>Node Address:</strong> ${validatorNodeAddress}</div>
+                    </div>
+                    
                     <div class="hash-info">
                         <div class="hash-row">
                             <span class="hash-label">Transaction Hash:</span>
@@ -420,6 +444,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         <div id="copyableMessage" style="background-color: rgba(0,0,0,0.2); padding: 15px; border-radius: 6px; margin: 10px 0; font-family: monospace; white-space: pre-wrap;">Delegation Completed ✅
 Transaction Hash: ${txHash}
 Order Hash: ${currentOrderHash}
+Validator Wallet: ${validatorWalletName}
+Node Certificate: ${validatorNodeCert}
 Please activate my rewards.</div>
                         
                         <button onclick="copyDelegationMessage()" class="copy-button" style="display: block; margin: 10px auto; width: auto; padding: 8px 15px;">
@@ -469,7 +495,7 @@ Please activate my rewards.</div>
             });
 
             // Try to verify using CpunkTransaction
-            const verified = await CpunkTransaction.verifyTransaction(txHash);
+            const verified = await CpunkTransaction.verifyTransaction(txHash, selectedNetwork);
 
             if (verified) {
                 // Record delegation in DNA profile after successful verification
@@ -495,12 +521,24 @@ Please activate my rewards.</div>
                 // Hide verification section after successful completion
                 verificationSection.style.display = 'none';
 
-                // Show delegation success with copyable message format
+                // Show delegation success with server commands
                 delegationForm.style.display = 'block';
                 successMessage.style.display = 'block';
+                
+                // Calculate the actual tax for the command (100 - display tax)
+                const commandTax = (100 - calculateNetworkTax(selectedNetwork, delegationAmountValue)).toFixed(1);
+                
                 successMessage.innerHTML = `
-                    <h3>Delegation Successful! ✅</h3>
-                    <p>Your transaction has been verified and your delegation is now active.</p>
+                    <h3>Delegation Request Prepared! ✅</h3>
+                    <p>Your validator components have been generated:</p>
+                    
+                    <div style="margin-top: 15px; padding: 10px; background-color: rgba(0,0,0,0.2); border-radius: 4px;">
+                        <div><strong>Validator Wallet:</strong> ${validatorWalletName}</div>
+                        <div><strong>Node Certificate:</strong> ${validatorNodeCert}</div>
+                        <div><strong>Delegate Certificate:</strong> ${validatorDelegateCert}</div>
+                        <div><strong>Node Address:</strong> ${validatorNodeAddress}</div>
+                    </div>
+                    
                     <div class="hash-info">
                         <div class="hash-row">
                             <span class="hash-label">Transaction Hash:</span>
@@ -519,6 +557,8 @@ Please activate my rewards.</div>
                         <div id="copyableMessage" style="background-color: rgba(0,0,0,0.2); padding: 15px; border-radius: 6px; margin: 10px 0; font-family: monospace; white-space: pre-wrap;">Delegation Completed ✅
 Transaction Hash: ${txHash}
 Order Hash: ${currentOrderHash}
+Validator Wallet: ${validatorWalletName}
+Node Certificate: ${validatorNodeCert}
 Please activate my rewards.</div>
                         
                         <button onclick="copyDelegationMessage()" class="copy-button" style="display: block; margin: 10px auto; width: auto; padding: 8px 15px;">
@@ -662,16 +702,6 @@ Please activate my rewards.</div>
             delegationAmountError.style.display = 'block';
             delegationAmount.classList.add('invalid');
             isValid = false;
-        } else if (config && amount < config.minDelegation) {
-            delegationAmountError.textContent = `Minimum delegation amount is ${config.minDelegation} ${config.delegationToken}`;
-            delegationAmountError.style.display = 'block';
-            delegationAmount.classList.add('invalid');
-            isValid = false;
-        } else if (config && amount > config.maxDelegation) {
-            delegationAmountError.textContent = `Maximum delegation amount is ${config.maxDelegation} ${config.delegationToken}`;
-            delegationAmountError.style.display = 'block';
-            delegationAmount.classList.add('invalid');
-            isValid = false;
         } else if (amount > availableBalance) {
             delegationAmountError.textContent = 'Amount exceeds available balance';
             delegationAmountError.style.display = 'block';
@@ -772,27 +802,132 @@ Please activate my rewards.</div>
                 return;
             }
 
-            // For SSO authentication, we don't need to show wallet selection
-            // Use the authenticated wallet directly
-            walletsSection.style.display = 'none';
+            CpunkUtils.logDebug(`Loading wallets for network: ${selectedNetwork}`, 'info');
+
+            // Step 1: Get user's address on the selected network using DNA lookup
+            console.log('=== DNA-BASED WALLET MATCHING ===');
+            console.log('Current DNA:', currentDna);
+            console.log('Selected Network:', selectedNetwork);
+
+            // Use DNA lookup to get the address for the selected network
+            const dnaResult = await CpunkUtils.checkDnaRegistration(currentDna);
+            if (!dnaResult.isRegistered) {
+                throw new Error('DNA not registered');
+            }
+
+            // Parse the DNA response to get network addresses
+            const dnaResponse = await fetch(`dna-proxy.php?lookup=${currentDna}`);
+            const dnaData = await dnaResponse.json();
+            
+            console.log('DNA lookup response:', dnaData);
+
+            if (!dnaData.response_data) {
+                throw new Error('Failed to get DNA data');
+            }
+
+            // Find the address for the selected network in wallet_addresses
+            const walletAddresses = dnaData.response_data.wallet_addresses;
+            console.log('Wallet addresses:', walletAddresses);
+            console.log('Looking for network:', selectedNetwork);
+            
+            let targetNetworkAddress = null;
+            if (walletAddresses) {
+                for (const [networkName, address] of Object.entries(walletAddresses)) {
+                    console.log(`Checking: "${networkName}" vs "${selectedNetwork}"`);
+                    if (networkName.toLowerCase() === selectedNetwork.toLowerCase()) {
+                        targetNetworkAddress = address;
+                        break;
+                    }
+                }
+            }
+
+            if (!targetNetworkAddress) {
+                console.log('Failed to find network. Available networks:', Object.keys(walletAddresses || {}));
+                throw new Error(`No address found for network ${selectedNetwork} in DNA wallet addresses`);
+            }
+
+            console.log(`Target address for ${selectedNetwork}:`, targetNetworkAddress);
+
+            // Step 2: Get all wallets and find which one has this address
+            const walletsResponse = await CpunkUtils.dashboardRequest('GetWallets', {
+                id: sessionId
+            });
+
+            if (!walletsResponse || !walletsResponse.data) {
+                throw new Error('Failed to get wallets from dashboard');
+            }
+
+            let matchedWalletName = null;
+            let matchedWalletAddress = targetNetworkAddress;
+
+            for (const wallet of walletsResponse.data) {
+                try {
+                    const walletName = wallet.name || wallet.walletName || wallet;
+                    const walletData = await getWalletData(walletName);
+                    
+                    if (!walletData || !walletData.data) continue;
+
+                    // Look for the target address in this wallet's networks
+                    for (const networkItem of walletData.data) {
+                        if (networkItem.network === selectedNetwork && networkItem.address === targetNetworkAddress) {
+                            matchedWalletName = walletName;
+                            
+                            // Get balance for this network
+                            if (networkItem.tokens) {
+                                const config = NETWORK_CONFIG[selectedNetwork];
+                                const delegationToken = config.delegationToken;
+                                
+                                const tokenData = networkItem.tokens.find(token => 
+                                    token.tokenName === delegationToken
+                                );
+                                
+                                if (tokenData && tokenData.balance) {
+                                    availableBalance = parseFloat(tokenData.balance);
+                                    console.log(`Found ${delegationToken} balance: ${availableBalance}`);
+                                }
+                            }
+                            break;
+                        }
+                    }
+                    
+                    if (matchedWalletName) break;
+                    
+                } catch (walletError) {
+                    console.log(`Error checking wallet:`, walletError.message);
+                    continue;
+                }
+            }
+
+            if (!matchedWalletName) {
+                throw new Error(`No wallet found with address ${targetNetworkAddress} on network ${selectedNetwork}`);
+            }
+
+            console.log('Matched wallet:', {
+                walletName: matchedWalletName,
+                address: matchedWalletAddress,
+                balance: availableBalance
+            });
+
+            // Store the matched wallet name globally
+            window.selectedWallet = matchedWalletName;
             
             const config = NETWORK_CONFIG[selectedNetwork];
             
             // Check if address is registered in DNA before showing delegation form
-            const isDnaRegistered = await checkDnaRegistration(walletAddress);
+            const isDnaRegistered = await checkDnaRegistration(matchedWalletAddress);
 
             if (isDnaRegistered) {
                 // Show the delegation form
                 delegationForm.style.display = 'block';
 
-                // Pre-fill rewards address with wallet address
-                rewardsAddress.value = walletAddress;
+                // Pre-fill rewards address with matched wallet address
+                rewardsAddress.value = matchedWalletAddress;
 
                 // Store the rewards address for later use in delegation recording
-                delegationRewardsAddress = walletAddress;
+                delegationRewardsAddress = matchedWalletAddress;
 
                 // Update selected wallet display
-                selectedWalletDisplay.textContent = `${currentDna} - Wallet: ${walletAddress.substring(0, 10)}...${walletAddress.substring(walletAddress.length - 10)}`;
+                selectedWalletDisplay.textContent = `${currentDna} - ${matchedWalletName} (${availableBalance.toFixed(4)} ${config.delegationToken})`;
 
                 // Update balance warning based on amount
                 updateBalanceWarning();
@@ -815,7 +950,7 @@ Please activate my rewards.</div>
                 // Show prominent registration message
                 errorMessage.innerHTML = `
                     <strong>DNA Registration Required</strong><br>
-                    Your address ${walletAddress.substring(0, 10)}...${walletAddress.substring(walletAddress.length - 10)}
+                    Your address ${matchedWalletAddress.substring(0, 10)}...${matchedWalletAddress.substring(matchedWalletAddress.length - 10)}
                     is not registered in the DNA system.<br><br>
                     <a href="register.html" style="display: inline-block; padding: 10px 20px; background-color: #f97834; color: white; text-decoration: none; border-radius: 5px; margin-top: 10px;">
                         Register DNA Now
@@ -855,6 +990,93 @@ Please activate my rewards.</div>
         }
     }
 
+    /**
+     * Create validator order by calling the server to execute CLI commands
+     */
+    async function createValidatorOrder(params) {
+        try {
+            const { walletName, network, value, tax, amount } = params;
+            
+            CpunkUtils.logDebug('Creating validator order on server', 'info', params);
+            
+            // Call the validator creation endpoint
+            const url = `dna-proxy.php?action=create_validator&dna=${encodeURIComponent(currentDna)}&network=${encodeURIComponent(network)}&amount=${encodeURIComponent(amount)}&tax_addr=${encodeURIComponent(delegationRewardsAddress)}&wallet_name=${encodeURIComponent(walletName)}`;
+            
+            const response = await fetch(url);
+            const result = await response.json();
+            
+            if (result.status === 'ok' && result.data && result.data.success) {
+                return {
+                    success: true,
+                    txHash: result.data.tx_hash,
+                    orderHash: result.data.order_hash,
+                    validatorWallet: result.data.validator_wallet,
+                    nodeCert: result.data.node_cert,
+                    nodeAddress: result.data.node_address,
+                    outputs: result.data.outputs
+                };
+            } else {
+                throw new Error(result.error || 'Failed to create validator order');
+            }
+            
+        } catch (error) {
+            CpunkUtils.logDebug('Validator order error', 'error', {
+                params: params,
+                error: error.message,
+                stack: error.stack
+            });
+            throw error;
+        }
+    }
+
+    /**
+     * Create validator components (wallet and certificates)
+     * NOTE: This is a placeholder that returns test values since we're creating components directly on server
+     */
+    async function createValidatorComponents(dna) {
+        try {
+            // Generate unique validator ID
+            const uuid = crypto.randomUUID().slice(0, 8);
+            const validatorPrefix = `${dna}-${uuid}`;
+            
+            CpunkUtils.logDebug('Creating validator components', 'info', { validatorPrefix });
+            
+            // Since we're creating these on the server directly, we'll just return the expected values
+            // The actual creation happens on the server side when executing srv_stake commands
+            
+            const walletName = validatorPrefix;
+            const nodeCertName = `${validatorPrefix}-node`;
+            const delegateCertName = `${validatorPrefix}-delegate`;
+            
+            // Generate a placeholder node address (will be replaced by actual address on server)
+            // Format: XXXX::XXXX::XXXX::XXXX
+            const nodeAddress = Array(4).fill(0).map(() => 
+                Math.floor(Math.random() * 65536).toString(16).toUpperCase().padStart(4, '0')
+            ).join('::');
+            
+            CpunkUtils.logDebug('Validator components prepared', 'info', {
+                wallet: walletName,
+                nodeCert: nodeCertName,  
+                delegateCert: delegateCertName,
+                nodeAddress: nodeAddress
+            });
+            
+            return {
+                walletName: walletName,
+                nodeCert: nodeCertName,
+                delegateCert: delegateCertName,
+                nodeAddress: nodeAddress
+            };
+            
+        } catch (error) {
+            CpunkUtils.logDebug('Failed to prepare validator components', 'error', {
+                error: error.message,
+                stack: error.stack
+            });
+            throw error;
+        }
+    }
+
     async function handleDelegationSubmission() {
         if (!await validateForm()) return;
 
@@ -872,39 +1094,40 @@ Please activate my rewards.</div>
             delegationRewardsAddress = rewardsAddress.value.trim();
             delegationAmountValue = amount;
 
-            // Format the value as datoshi
-            // For integers (like 1), format as "1.0e+18"
-            // For non-integers (like 0.01), format as "0.01e+18"
-            const formattedAmount = Number.isInteger(amount)
-                ? `${amount.toFixed(1)}e+18`
-                : `${amount}e+18`;
+            // Create validator and execute delegation on server
+            submitDelegation.innerHTML = '<span class="loading-spinner"></span>Creating validator...';
 
             // Build the request parameters
             // The tax rate for the API needs to be (100 - taxRate)
             const apiTaxRate = (100 - tax).toFixed(1);
             
-            CpunkUtils.logDebug('Creating staking order', 'info', {
-                walletName: selectedWallet,
+            CpunkUtils.logDebug('Creating validator order', 'info', {
+                walletName: window.selectedWallet,
                 network: selectedNetwork,
-                value: formattedAmount,
+                amount: amount,
                 tax: apiTaxRate
             });
 
-            // Call the CreateOrderStaker API using CpunkTransaction
-            // For SSO authentication, we'll need to use a different approach
-            // since we don't have a wallet name from the dashboard
-            const result = await CpunkTransaction.createStakingOrder({
-                walletAddress: walletAddress, // Use wallet address instead of name
+            // Call the validator creation endpoint on server
+            const result = await createValidatorOrder({
+                walletName: window.selectedWallet,
                 network: selectedNetwork,
-                value: formattedAmount,
+                amount: amount,
                 tax: apiTaxRate
             });
 
             if (result.success) {
                 CpunkUtils.logDebug("Delegation order created:", 'info', {
                     orderHash: result.orderHash,
-                    txHash: result.txHash
+                    txHash: result.txHash,
+                    validator: result
                 });
+
+                // Store validator components for success message
+                validatorWalletName = result.validatorWallet;
+                validatorNodeCert = result.nodeCert;
+                validatorDelegateCert = result.delegateCert || `${result.validatorWallet}-delegate`;
+                validatorNodeAddress = result.nodeAddress;
 
                 // Show verification section with both hashes
                 showVerificationSection(result.txHash, result.orderHash);

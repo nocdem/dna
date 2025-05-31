@@ -54,25 +54,25 @@
         <!-- Login Required Section -->
         <div class="login-required" id="loginRequired" style="display: none;">
             <div class="info-section">
-                <h1>Settings - Authentication Required</h1>
-                <p>You need to log in to access your profile settings.</p>
-                <button id="loginBtn" class="btn btn-primary">Login</button>
+                <h1 data-i18n="settings.authenticationRequired">Settings - Authentication Required</h1>
+                <p data-i18n="settings.loginToAccess">You need to log in to access your profile settings.</p>
+                <button id="loginBtn" class="btn btn-primary" data-i18n="nav.login">Login</button>
             </div>
         </div>
 
         <!-- DNA Display Section (after login) -->
         <div class="dna-display" id="dnaDisplay" style="display: none;">
             <div class="info-section">
-                <h1>Settings</h1>
-                <p>Welcome back! Click your DNA name below to access your profile settings.</p>
+                <h1 data-i18n="settings.title">Settings</h1>
+                <p data-i18n="settings.welcomeBack">Welcome back! Click your DNA name below to access your profile settings.</p>
                 
                 <div class="dna-card" id="dnaCard" style="cursor: pointer; border: 2px solid var(--accent-color); padding: 20px; margin: 20px 0; border-radius: 10px; text-align: center;">
                     <div class="dna-avatar" style="font-size: 48px; margin-bottom: 10px;">👤</div>
                     <div class="dna-name" id="dnaName" style="font-size: 24px; font-weight: bold; color: var(--accent-color);">DNA_NAME</div>
-                    <div class="dna-subtitle" style="margin-top: 5px; opacity: 0.7;">Click to access settings</div>
+                    <div class="dna-subtitle" style="margin-top: 5px; opacity: 0.7;" data-i18n="settings.clickToAccess">Click to access settings</div>
                 </div>
                 
-                <button id="logoutBtn" class="btn btn-secondary" style="margin-top: 10px;">Logout</button>
+                <button id="logoutBtn" class="btn btn-secondary" style="margin-top: 10px;" data-i18n="settings.logout">Logout</button>
             </div>
         </div>
 
@@ -81,21 +81,21 @@
 
         <!-- Wallet Selection Section -->
         <div id="walletSection" class="section" style="display: none;">
-            <h2>Select Your Wallet</h2>
-            <p>Choose the wallet associated with your DNA registration:</p>
+            <h2 data-i18n="login.selectWallet">Select Your Wallet</h2>
+            <p data-i18n="settings.chooseWalletForDna">Choose the wallet associated with your DNA registration:</p>
 
             <div id="walletsList" class="wallets-container">
-                <div class="loading">Loading wallets</div>
+                <div class="loading" data-i18n="login.loadingWallets">Loading wallets</div>
             </div>
 
-            <button id="continueButton" disabled>Continue with Selected Wallet</button>
+            <button id="continueButton" disabled data-i18n="settings.continueWithWallet">Continue with Selected Wallet</button>
             <div class="error-message" id="walletError"></div>
         </div>
 
         <!-- DNA Verification Section -->
         <div id="dnaSection" class="section" style="display: none;">
-            <h2>DNA Registration</h2>
-            <div id="dnaStatus" class="loading">Checking DNA registration</div>
+            <h2 data-i18n="settings.dnaRegistration">DNA Registration</h2>
+            <div id="dnaStatus" class="loading" data-i18n="settings.checkingDnaRegistration">Checking DNA registration</div>
             <div class="error-message" id="dnaError"></div>
 
             <div id="dnaDetails" style="display:none;">
@@ -111,43 +111,43 @@
                     <div class="profile-stats">
                         <div class="stats-item">
                             <div class="stats-value" id="nicknamesCount">0</div>
-                            <div class="stats-label">Nicknames</div>
+                            <div class="stats-label" data-i18n="settings.nicknames">Nicknames</div>
                         </div>
                         <div class="stats-item">
                             <div class="stats-value" id="socialsCount">0</div>
-                            <div class="stats-label">Social Profiles</div>
+                            <div class="stats-label" data-i18n="settings.socialProfiles">Social Profiles</div>
                         </div>
                         <div class="stats-item">
                             <div class="stats-value" id="walletsCount">0</div>
-                            <div class="stats-label">External Wallets</div>
+                            <div class="stats-label" data-i18n="settings.externalWallets">External Wallets</div>
                         </div>
                     </div>
                 </div>
 
-                <button id="editButton">Edit Profile Settings</button>
+                <button id="editButton" data-i18n="settings.editProfileSettings">Edit Profile Settings</button>
             </div>
         </div>
 
         <!-- Profile Settings Form -->
         <div id="editSection" class="section" style="display: none;">
-            <h2>Edit Your Profile</h2>
+            <h2 data-i18n="settings.editYourProfile">Edit Your Profile</h2>
 
             <!-- Tab Navigation -->
             <div class="tab-navigation">
                 <button class="tab-button active" data-tab="info-tab">
-                    <span>📋 Info</span>
+                    <span data-i18n="settings.info">📋 Info</span>
                 </button>
                 <button class="tab-button" data-tab="dna-tab">
-                    <span>🧬 DNA</span>
+                    <span data-i18n="settings.dna">🧬 DNA</span>
                 </button>
                 <button class="tab-button" data-tab="socials-tab">
-                    <span>👥 Socials</span>
+                    <span data-i18n="settings.socials">👥 Socials</span>
                 </button>
                 <button class="tab-button" data-tab="wallets-tab">
-                    <span>💰 Wallets</span>
+                    <span data-i18n="settings.wallets">💰 Wallets</span>
                 </button>
                 <button class="tab-button" data-tab="delegations-tab">
-                    <span>📊 Delegations</span>
+                    <span data-i18n="settings.delegations">📊 Delegations</span>
                 </button>
             </div>
 
@@ -155,40 +155,40 @@
                 <!-- Info Tab Content -->
                 <div id="info-tab" class="tab-content active">
                     <div class="form-group">
-                        <label for="profileDescription">Profile Description</label>
-                        <textarea id="profileDescription" rows="3" placeholder="Write a short bio about yourself"></textarea>
-                        <div class="help-text">This will be displayed on your public profile (optional)</div>
+                        <label for="profileDescription" data-i18n="settings.profileDescription">Profile Description</label>
+                        <textarea id="profileDescription" rows="3" data-i18n-placeholder="settings.writeBio" placeholder="Write a short bio about yourself"></textarea>
+                        <div class="help-text" data-i18n="settings.profileDescriptionHelp">This will be displayed on your public profile (optional)</div>
                     </div>
 
                     <div class="form-group">
-                        <label for="profileImageUrl">Profile Image URL</label>
-                        <input type="url" id="profileImageUrl" placeholder="https://example.com/your-image.jpg">
-                        <div class="help-text">Enter a URL to your profile image (optional)</div>
+                        <label for="profileImageUrl" data-i18n="settings.profileImageUrl">Profile Image URL</label>
+                        <input type="url" id="profileImageUrl" data-i18n-placeholder="settings.imageUrlPlaceholder" placeholder="https://example.com/your-image.jpg">
+                        <div class="help-text" data-i18n="settings.profileImageHelp">Enter a URL to your profile image (optional)</div>
                     </div>
 
                     <div class="form-group">
-                        <label>Public Key Hash</label>
+                        <label data-i18n="settings.publicKeyHash">Public Key Hash</label>
                         <input type="text" id="pubkeyHash" class="form-control" readonly style="background-color: var(--section-bg);">
-                        <div class="help-text">Your public key hash used to verify your identity (read-only)</div>
+                        <div class="help-text" data-i18n="settings.publicKeyHashHelp">Your public key hash used to verify your identity (read-only)</div>
                     </div>
                 </div>
 
                 <!-- DNA Tab Content -->
                 <div id="dna-tab" class="tab-content">
                     <div class="authentication-info" style="margin-bottom: 20px; padding: 15px; background-color: rgba(0, 0, 0, 0.2); border-radius: 6px;">
-                        <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 1em;">DNA Registration Information</h4>
-                        <p style="font-size: 0.9em; margin-bottom: 8px; opacity: 0.9;">
+                        <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 1em;" data-i18n="settings.dnaRegistrationInfo">DNA Registration Information</h4>
+                        <p style="font-size: 0.9em; margin-bottom: 8px; opacity: 0.9;" data-i18n="settings.dnaRegistrationDesc">
                             This section displays information about DNA registrations linked to your selected wallet. DNA (Distributed Name and Address) is your unique identifier within the CPUNK ecosystem.
                         </p>
                     </div>
 
                     <div id="linkedDNAs" class="dna-list">
-                        <div class="loading">Loading DNA information...</div>
+                        <div class="loading" data-i18n="settings.loadingDnaInfo">Loading DNA information...</div>
                     </div>
 
                     <div id="noDNAs" class="dna-info" style="display: none; text-align: center; padding: 20px;">
-                        <p>No DNA registrations found for this wallet.</p>
-                        <p>You can register a new DNA using the CPUNK platform.</p>
+                        <p data-i18n="settings.noDnaFound">No DNA registrations found for this wallet.</p>
+                        <p data-i18n="settings.canRegisterDna">You can register a new DNA using the CPUNK platform.</p>
                     </div>
                 </div>
 
@@ -196,23 +196,23 @@
                 <div id="socials-tab" class="tab-content">
                     <!-- Social Account Verification Section -->
                     <div class="authentication-info" style="margin-bottom: 20px; padding: 15px; background-color: rgba(0, 0, 0, 0.2); border-radius: 6px;">
-                        <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 1em;">Social Account Verification</h4>
-                        <p style="font-size: 0.9em; margin-bottom: 0; opacity: 0.9;">
+                        <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 1em;" data-i18n="settings.socialAccountVerification">Social Account Verification</h4>
+                        <p style="font-size: 0.9em; margin-bottom: 0; opacity: 0.9;" data-i18n="settings.socialAccountDesc">
                             Linking your social accounts to your DNA profile strengthens your identity within the CPUNK ecosystem and enhances your proof of humanity. Verifying multiple platforms further boosts your credibility and community presence.
                         </p>
                         <p style="font-size: 0.9em; margin-top: 10px; margin-bottom: 0;">
-                            <span style="color: #ff6b6b; font-weight: bold;">Be advised:</span> Once linked, these connections are permanent and cannot be changed or removed.
+                            <span style="color: #ff6b6b; font-weight: bold;" data-i18n="settings.beAdvised">Be advised:</span> <span data-i18n="settings.permanentConnections">Once linked, these connections are permanent and cannot be changed or removed.</span>
                         </p>
                     </div>
                     
                     <!-- Social Accounts Summary Box -->
                     <div id="socialsSummary" class="socials-summary" style="margin-bottom: 20px; background-color: rgba(0, 0, 0, 0.1); border-radius: 6px; padding: 15px; border: 1px solid var(--border-color);">
-                        <h4 style="margin-top: 0; margin-bottom: 15px; font-size: 1em; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;">Connected Accounts</h4>
+                        <h4 style="margin-top: 0; margin-bottom: 15px; font-size: 1em; border-bottom: 1px solid var(--border-color); padding-bottom: 8px;" data-i18n="settings.connectedAccounts">Connected Accounts</h4>
                         <div id="socialsList" class="socials-list">
                             <!-- Social account entries will be added here dynamically via JavaScript -->
-                            <div class="loading">Loading connected accounts...</div>
+                            <div class="loading" data-i18n="settings.loadingConnectedAccounts">Loading connected accounts...</div>
                         </div>
-                        <div id="noSocials" style="display: none; text-align: center; padding: 10px; font-size: 0.9em; opacity: 0.7;">
+                        <div id="noSocials" style="display: none; text-align: center; padding: 10px; font-size: 0.9em; opacity: 0.7;" data-i18n="settings.noSocialsConnected">
                             No social accounts connected yet
                         </div>
                     </div>
@@ -242,7 +242,7 @@
                     
                     <!-- Instructions for connecting new accounts -->
                     <div class="connect-instructions" style="margin-top: 20px; text-align: center; padding: 15px; background-color: rgba(0, 0, 0, 0.2); border-radius: 6px;">
-                        <p style="margin-bottom: 10px;">Want to connect additional social accounts?</p>
+                        <p style="margin-bottom: 10px;" data-i18n="settings.connectAdditionalAccounts">Want to connect additional social accounts?</p>
                         <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 10px;">
                             <button type="button" id="connectTwitterButton2" class="connect-btn" style="background-color: #1DA1F2; color: white; border: none; padding: 8px 16px; border-radius: 4px; cursor: pointer;">
                                 🐦 Twitter
@@ -266,7 +266,7 @@
                 <!-- Wallets Tab Content -->
                 <div id="wallets-tab" class="tab-content">
                     <div class="info-section" style="margin-bottom: 10px; padding: 8px;">
-                        <p style="margin: 0; font-size: 0.9em;">Connect your Web3 wallets for verification and cross-chain functionality.</p>
+                        <p style="margin: 0; font-size: 0.9em;" data-i18n="settings.connectWeb3Wallets">Connect your Web3 wallets for verification and cross-chain functionality.</p>
                     </div>
 
                     <div class="wallet-container" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; margin-bottom: 15px;">
@@ -370,23 +370,23 @@
                 <!-- Delegations Tab Content -->
                 <div id="delegations-tab" class="tab-content">
                     <div class="authentication-info" style="margin-bottom: 20px; padding: 15px; background-color: rgba(0, 0, 0, 0.2); border-radius: 6px;">
-                        <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 1em;">Delegation History</h4>
-                        <p style="font-size: 0.9em; margin-bottom: 8px; opacity: 0.9;">
+                        <h4 style="margin-top: 0; margin-bottom: 10px; font-size: 1em;" data-i18n="settings.delegationHistory">Delegation History</h4>
+                        <p style="font-size: 0.9em; margin-bottom: 8px; opacity: 0.9;" data-i18n="settings.delegationHistoryDesc">
                             This section displays your delegation history on the CPUNK platform. Delegations represent your contributions to the CPUNK ecosystem.
                         </p>
                     </div>
 
                     <div id="delegationsList" class="delegations-list">
-                        <div class="loading">Loading delegation history...</div>
+                        <div class="loading" data-i18n="settings.loadingDelegationHistory">Loading delegation history...</div>
                     </div>
 
                     <div id="noDelegations" class="delegations-info" style="display: none; text-align: center; padding: 20px;">
-                        <p>No delegations found for this wallet.</p>
-                        <p>Participate in the CPUNK ecosystem to start delegating.</p>
+                        <p data-i18n="settings.noDelegationsFound">No delegations found for this wallet.</p>
+                        <p data-i18n="settings.participateToDelegate">Participate in the CPUNK ecosystem to start delegating.</p>
                     </div>
                 </div>
 
-                <button id="saveButton">Save Profile Changes</button>
+                <button id="saveButton" data-i18n="settings.saveProfileChanges">Save Profile Changes</button>
                 <div class="success-message" id="saveSuccess"></div>
                 <div class="error-message" id="saveError"></div>
             </div>
@@ -396,16 +396,16 @@
         <div id="telegramVerificationModal" class="modal-overlay">
             <div class="modal-container">
                 <button id="closeModalButton" class="modal-close">&times;</button>
-                <h3 class="modal-title">Verify Your Telegram Account</h3>
+                <h3 class="modal-title" data-i18n="settings.verifyTelegramAccount">Verify Your Telegram Account</h3>
                 <div class="modal-content">
-                    <p>To verify your Telegram account, you'll need to interact with our verification bot. Please follow these steps:</p>
+                    <p data-i18n="settings.telegramVerificationInstructions">To verify your Telegram account, you'll need to interact with our verification bot. Please follow these steps:</p>
 
                     <div class="verification-steps">
                         <ol>
-                            <li>Copy your DNA nickname shown below</li>
-                            <li>Click the link to open our verification bot on Telegram</li>
-                            <li>Send your DNA nickname to the bot when asked</li>
-                            <li>Once verified, return to this page and reload</li>
+                            <li data-i18n="settings.copyDnaNickname">Copy your DNA nickname shown below</li>
+                            <li data-i18n="settings.clickTelegramLink">Click the link to open our verification bot on Telegram</li>
+                            <li data-i18n="settings.sendDnaToBot">Send your DNA nickname to the bot when asked</li>
+                            <li data-i18n="settings.returnAndReload">Once verified, return to this page and reload</li>
                         </ol>
                     </div>
 
@@ -413,9 +413,9 @@
                         <!-- DNA nickname will be inserted here -->
                     </div>
 
-                    <button id="copyGuidButton" class="copy-guid-btn">Copy DNA Nickname</button>
+                    <button id="copyGuidButton" class="copy-guid-btn" data-i18n="settings.copyDnaNickname">Copy DNA Nickname</button>
 
-                    <a id="telegramBotLink" href="https://t.me/CpunkVerifyBot" target="_blank" class="bot-link">
+                    <a id="telegramBotLink" href="https://t.me/CpunkVerifyBot" target="_blank" class="bot-link" data-i18n="settings.openTelegramBot">
                         Open Telegram Bot
                     </a>
                 </div>

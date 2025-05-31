@@ -180,13 +180,14 @@ const CpunkTransaction = (function() {
      * Start verification process for a transaction
      * @param {Object} params - Verification parameters
      * @param {string} params.txHash - Transaction hash to verify
+     * @param {string} params.network - Network name (optional)
      * @param {Function} params.onVerificationStart - Callback when verification starts
      * @param {Function} params.onVerificationSuccess - Callback when verification succeeds
      * @param {Function} params.onVerificationFail - Callback when verification fails
      * @param {Function} params.onVerificationAttempt - Callback on each verification attempt
      */
     function startVerification(params) {
-        const { txHash, onVerificationStart, onVerificationSuccess, onVerificationFail, onVerificationAttempt } = params;
+        const { txHash, network, onVerificationStart, onVerificationSuccess, onVerificationFail, onVerificationAttempt } = params;
         
         // Clear any existing verification timers
         clearVerificationTimers();
@@ -214,7 +215,8 @@ const CpunkTransaction = (function() {
                     if (typeof onVerificationAttempt === 'function') {
                         onVerificationAttempt(attempt, maxAttempts);
                     }
-                }
+                },
+                network
             );
         } else {
             // Fallback implementation if CpunkUtils is not available
@@ -302,17 +304,21 @@ const CpunkTransaction = (function() {
     /**
      * Verify a transaction
      * @param {string} txHash - Transaction hash to verify
+     * @param {string} network - Network name (optional)
      * @returns {Promise<boolean>} - Whether verification was successful
      */
-    async function verifyTransaction(txHash) {
+    async function verifyTransaction(txHash, network = null) {
         try {
             // If CpunkUtils is available, use it
             if (typeof CpunkUtils !== 'undefined' && CpunkUtils.verifyTransaction) {
-                return await CpunkUtils.verifyTransaction(txHash);
+                return await CpunkUtils.verifyTransaction(txHash, network);
             }
             
             // Fallback implementation
-            const url = `${config.dnaProxyUrl}?tx_validate=${encodeURIComponent(txHash)}`;
+            let url = `${config.dnaProxyUrl}?tx_validate=${encodeURIComponent(txHash)}`;
+            if (network && network !== 'Backbone') {
+                url += `&network=${encodeURIComponent(network)}`;
+            }
             const response = await fetch(url);
             const data = await response.text();
             

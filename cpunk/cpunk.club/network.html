@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CPUNK Network Installation - Setup Your Node</title>
+    <title data-i18n="install.title">CPUNK Network Installation - Setup Your Node</title>
     <link rel="stylesheet" href="css/main.css">
     <link rel="stylesheet" href="css/network-page.css">
     <link rel="stylesheet" href="css/shared-navigation.css">
@@ -27,29 +27,29 @@
         <script src="js/sso.js"></script>
 
         <div class="intro-section">
-            <h2 data-i18n="pages.networkQuickInstall">Quick Install CPUNK Network</h2>
-            <p data-i18n="pages.networkChooseOs">Choose your operating system and copy the installation command to your terminal.</p>
+            <h2 data-i18n="install.quickInstall">Quick Install CPUNK Network</h2>
+            <p data-i18n="install.chooseOs">Choose your operating system and copy the installation command to your terminal.</p>
         </div>
         
         <div class="step-container">
             <div class="step-header">
                 <div class="step-number">🐧</div>
-                <div class="step-title">Linux Installation</div>
+                <div class="step-title" data-i18n="install.linuxInstallation">Linux Installation</div>
             </div>
             <div class="step-content">
-                <p><strong>Copy and paste this command in your terminal:</strong></p>
+                <p><strong data-i18n="install.copyCommand">Copy and paste this command in your terminal:</strong></p>
                 <div class="code-block">
                     <pre><span class="command-line">curl -fsSL https://cpunk.club/install.sh | sudo bash</span></pre>
                 </div>
-                <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy Command</button>
+                <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)" data-i18n="install.copyButton">Copy Command</button>
                 <details style="margin-top: 20px;">
-                    <summary style="cursor: pointer; color: var(--primary);">What does this do?</summary>
+                    <summary style="cursor: pointer; color: var(--primary);" data-i18n="install.whatDoesThisDo">What does this do?</summary>
                     <ul style="margin-top: 10px; color: var(--text-secondary);">
-                        <li>Downloads and installs Cellframe node if not already installed</li>
-                        <li>Downloads all CPUNK network configuration files</li>
-                        <li>Installs certificates to the correct locations</li>
-                        <li>Restarts the node service</li>
-                        <li>Verifies the installation</li>
+                        <li data-i18n="install.installStep1">Downloads and installs Cellframe node if not already installed</li>
+                        <li data-i18n="install.installStep2">Downloads all CPUNK network configuration files</li>
+                        <li data-i18n="install.installStep3">Installs certificates to the correct locations</li>
+                        <li data-i18n="install.installStep4">Restarts the node service</li>
+                        <li data-i18n="install.installStep5">Verifies the installation</li>
                     </ul>
                 </details>
             </div>
@@ -58,22 +58,22 @@
         <div class="step-container">
             <div class="step-header">
                 <div class="step-number">🪟</div>
-                <div class="step-title">Windows Installation</div>
+                <div class="step-title" data-i18n="install.windowsInstallation">Windows Installation</div>
             </div>
             <div class="step-content">
-                <p><strong>Copy and paste this command in PowerShell (run as Administrator):</strong></p>
+                <p><strong data-i18n="install.copyCommandPowershell">Copy and paste this command in PowerShell (run as Administrator):</strong></p>
                 <div class="code-block">
                     <pre><span class="command-line">iex ((New-Object System.Net.WebClient).DownloadString('https://cpunk.club/install.ps1'))</span></pre>
                 </div>
-                <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy Command</button>
+                <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)" data-i18n="install.copyButton">Copy Command</button>
                 <details style="margin-top: 20px;">
-                    <summary style="cursor: pointer; color: var(--primary);">What does this do?</summary>
+                    <summary style="cursor: pointer; color: var(--primary);" data-i18n="install.whatDoesThisDo">What does this do?</summary>
                     <ul style="margin-top: 10px; color: var(--text-secondary);">
-                        <li>Downloads and installs Cellframe node if not already installed</li>
-                        <li>Downloads all CPUNK network configuration files</li>
-                        <li>Installs certificates to the correct locations</li>
-                        <li>Restarts the node service</li>
-                        <li>Verifies the installation</li>
+                        <li data-i18n="install.installStep1">Downloads and installs Cellframe node if not already installed</li>
+                        <li data-i18n="install.installStep2">Downloads all CPUNK network configuration files</li>
+                        <li data-i18n="install.installStep3">Installs certificates to the correct locations</li>
+                        <li data-i18n="install.installStep4">Restarts the node service</li>
+                        <li data-i18n="install.installStep5">Verifies the installation</li>
                     </ul>
                 </details>
             </div>
@@ -82,22 +82,22 @@
         <div class="step-container">
             <div class="step-header">
                 <div class="step-number">🍎</div>
-                <div class="step-title">macOS Installation</div>
+                <div class="step-title" data-i18n="install.macosInstallation">macOS Installation</div>
             </div>
             <div class="step-content">
-                <p><strong>Copy and paste this command in Terminal:</strong></p>
+                <p><strong data-i18n="install.copyCommandTerminal">Copy and paste this command in Terminal:</strong></p>
                 <div class="code-block">
                     <pre><span class="command-line">curl -fsSL https://cpunk.club/install-mac.sh | bash</span></pre>
                 </div>
-                <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy Command</button>
+                <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)" data-i18n="install.copyButton">Copy Command</button>
                 <details style="margin-top: 20px;">
-                    <summary style="cursor: pointer; color: var(--primary);">What does this do?</summary>
+                    <summary style="cursor: pointer; color: var(--primary);" data-i18n="install.whatDoesThisDo">What does this do?</summary>
                     <ul style="margin-top: 10px; color: var(--text-secondary);">
-                        <li>Downloads and installs Cellframe node if not already installed</li>
-                        <li>Downloads all CPUNK network configuration files</li>
-                        <li>Installs certificates to the correct locations</li>
-                        <li>Restarts the node service</li>
-                        <li>Verifies the installation</li>
+                        <li data-i18n="install.installStep1">Downloads and installs Cellframe node if not already installed</li>
+                        <li data-i18n="install.installStep2">Downloads all CPUNK network configuration files</li>
+                        <li data-i18n="install.installStep3">Installs certificates to the correct locations</li>
+                        <li data-i18n="install.installStep4">Restarts the node service</li>
+                        <li data-i18n="install.installStep5">Verifies the installation</li>
                     </ul>
                 </details>
             </div>
@@ -106,55 +106,143 @@
         <div class="step-container">
             <div class="step-header">
                 <div class="step-number">✓</div>
-                <div class="step-title">Verify Installation</div>
+                <div class="step-title" data-i18n="install.verifyInstallation">Verify Installation</div>
             </div>
             <div class="step-content">
-                <p>After installation completes, verify CPUNK network is active:</p>
+                <p data-i18n="install.verifyDescription">After installation completes, verify CPUNK network is active:</p>
                 <div class="install-paths">
                     <div class="os-path linux-path">
                         <div class="os-icon">🐧</div>
-                        <strong>Linux/macOS:</strong>
+                        <strong data-i18n="install.linuxMacVerify">Linux/macOS:</strong>
                         <div class="code-block">
                             <pre><span class="command-line">/opt/cellframe-node/bin/cellframe-node-cli net list | grep Cpunk</span></pre>
                         </div>
-                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)" data-i18n="install.copyVerify">Copy</button>
                     </div>
                     <div class="os-path windows-path">
                         <div class="os-icon">🪟</div>
-                        <strong>Windows:</strong>
+                        <strong data-i18n="install.windowsVerify">Windows:</strong>
                         <div class="code-block">
                             <pre><span class="command-line">& "C:\Program Files\cellframe-node\cellframe-node-cli.exe" net list | Select-String "Cpunk"</span></pre>
                         </div>
-                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)">Copy</button>
+                        <button class="copy-button" onclick="copyCodeToClipboard(this.previousElementSibling)" data-i18n="install.copyVerify">Copy</button>
                     </div>
                 </div>
-                <p style="margin-top: 15px; color: var(--success);">✓ You should see "Cpunk" in the network list if installation was successful.</p>
+                <p style="margin-top: 15px; color: var(--success);" data-i18n="install.verifySuccess">✓ You should see "Cpunk" in the network list if installation was successful.</p>
             </div>
         </div>
 
-        <div class="step-container" style="background-color: rgba(249, 120, 52, 0.1); border: 1px solid var(--primary);">
+        <div class="step-container manual-install" style="background-color: rgba(249, 120, 52, 0.1); border: 1px solid var(--primary);">
             <div class="step-header">
                 <div class="step-number">📥</div>
-                <div class="step-title">Manual Installation Files</div>
+                <div class="step-title" data-i18n="install.manualInstallation">Manual Installation Files</div>
             </div>
             <div class="step-content">
-                <p>If you prefer manual installation, download these files:</p>
-                <div class="download-section" style="margin-top: 15px;">
-                    <h4>Configuration Files:</h4>
-                    <a href="configs/Cpunk.cfg" download class="download-button">Cpunk.cfg</a>
-                    <a href="configs/chain-0.cfg" download class="download-button">chain-0.cfg</a>
-                    <a href="configs/main.cfg" download class="download-button">main.cfg</a>
+                <p data-i18n="install.manualDescription">If you prefer manual installation, download these files and place them in the specified locations for your operating system:</p>
+                
+                <div class="download-grid">
+                    <div class="download-section">
+                        <h4 data-i18n="install.configurationFiles">Configuration Files:</h4>
+                        <div class="download-buttons">
+                            <a href="configs/Cpunk.cfg" download class="download-button">Cpunk.cfg</a>
+                            <a href="configs/chain-0.cfg" download class="download-button">chain-0.cfg</a>
+                            <a href="configs/main.cfg" download class="download-button">main.cfg</a>
+                        </div>
+                    </div>
+                    <div class="download-section">
+                        <h4 data-i18n="install.certificateFiles">Certificate Files:</h4>
+                        <div class="download-buttons">
+                            <a href="certs/cpunk.root.0.dcert" download class="download-button">cpunk.root.0.dcert</a>
+                            <a href="certs/cpunk.root.1.dcert" download class="download-button">cpunk.root.1.dcert</a>
+                            <a href="certs/cpunk.root.2.dcert" download class="download-button">cpunk.root.2.dcert</a>
+                            <a href="certs/cpunk.master.0.dcert" download class="download-button">cpunk.master.0.dcert</a>
+                            <a href="certs/cpunk.master.1.dcert" download class="download-button">cpunk.master.1.dcert</a>
+                            <a href="certs/cpunk.master.2.dcert" download class="download-button">cpunk.master.2.dcert</a>
+                        </div>
+                    </div>
                 </div>
-                <div class="download-section certificate-downloads" style="margin-top: 15px;">
-                    <h4>Certificate Files:</h4>
-                    <a href="certs/cpunk.root.0.dcert" download class="download-button">cpunk.root.0.dcert</a>
-                    <a href="certs/cpunk.root.1.dcert" download class="download-button">cpunk.root.1.dcert</a>
-                    <a href="certs/cpunk.root.2.dcert" download class="download-button">cpunk.root.2.dcert</a>
-                    <a href="certs/cpunk.master.0.dcert" download class="download-button">cpunk.master.0.dcert</a>
-                    <a href="certs/cpunk.master.1.dcert" download class="download-button">cpunk.master.1.dcert</a>
-                    <a href="certs/cpunk.master.2.dcert" download class="download-button">cpunk.master.2.dcert</a>
+
+                <!-- More Info Button -->
+                <div class="more-info-section" style="margin-top: 20px;">
+                    <button id="moreInfoButton" class="more-info-button" onclick="toggleInstallationPaths()">
+                        <span class="arrow">»</span>
+                    </button>
                 </div>
-                <p style="margin-top: 15px;"><a href="doc/cellframe-node-setup-guide.md" style="color: var(--primary);">View manual installation guide →</a></p>
+
+                <div id="installationPaths" class="installation-paths" style="margin-top: 25px; display: none;">
+                    <h4 data-i18n="install.installationPaths">Installation Paths by Operating System:</h4>
+                    
+                    <div class="os-path-section">
+                        <div class="os-header">
+                            <strong data-i18n="install.linuxPaths">Linux Installation Paths:</strong>
+                        </div>
+                        <div class="path-details">
+                            <div class="file-path">
+                                <span data-i18n="install.configFiles">Configuration Files:</span>
+                                <ul>
+                                    <li><code>Cpunk.cfg</code> → <code data-i18n="install.linuxCpunkPath">/opt/cellframe-node/etc/network/Cpunk.cfg</code></li>
+                                    <li><code>chain-0.cfg</code> → <code data-i18n="install.linuxChainPath">/opt/cellframe-node/etc/network/Cpunk/chain-0.cfg</code></li>
+                                    <li><code>main.cfg</code> → <code data-i18n="install.linuxMainPath">/opt/cellframe-node/etc/network/Cpunk/main.cfg</code></li>
+                                </ul>
+                            </div>
+                            <div class="file-path">
+                                <span data-i18n="install.certFiles">Certificate Files:</span>
+                                <ul>
+                                    <li data-i18n="install.linuxCertPath">All .dcert files → <code>/opt/cellframe-node/share/ca/</code></li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="os-path-section">
+                        <div class="os-header">
+                            <strong data-i18n="install.windowsPaths">Windows Installation Paths:</strong>
+                        </div>
+                        <div class="path-details">
+                            <div class="file-path">
+                                <span data-i18n="install.configFiles">Configuration Files:</span>
+                                <ul>
+                                    <li><code>Cpunk.cfg</code> → <code data-i18n="install.windowsCpunkPath">%PROGRAMFILES%\cellframe-node\etc\network\Cpunk.cfg</code></li>
+                                    <li><code>chain-0.cfg</code> → <code data-i18n="install.windowsChainPath">%PROGRAMFILES%\cellframe-node\etc\network\Cpunk\chain-0.cfg</code></li>
+                                    <li><code>main.cfg</code> → <code data-i18n="install.windowsMainPath">%PROGRAMFILES%\cellframe-node\etc\network\Cpunk\main.cfg</code></li>
+                                </ul>
+                            </div>
+                            <div class="file-path">
+                                <span data-i18n="install.certFiles">Certificate Files:</span>
+                                <ul>
+                                    <li data-i18n="install.windowsCertPath">All .dcert files → <code>%PROGRAMFILES%\cellframe-node\share\ca\</code></li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="os-path-section">
+                        <div class="os-header">
+                            <strong data-i18n="install.macosPaths">macOS Installation Paths:</strong>
+                        </div>
+                        <div class="path-details">
+                            <div class="file-path">
+                                <span data-i18n="install.configFiles">Configuration Files:</span>
+                                <ul>
+                                    <li><code>Cpunk.cfg</code> → <code data-i18n="install.macosCpunkPath">/Applications/Cellframe.app/Contents/Resources/etc/network/Cpunk.cfg</code></li>
+                                    <li><code>chain-0.cfg</code> → <code data-i18n="install.macosChainPath">/Applications/Cellframe.app/Contents/Resources/etc/network/Cpunk/chain-0.cfg</code></li>
+                                    <li><code>main.cfg</code> → <code data-i18n="install.macosMainPath">/Applications/Cellframe.app/Contents/Resources/etc/network/Cpunk/main.cfg</code></li>
+                                </ul>
+                            </div>
+                            <div class="file-path">
+                                <span data-i18n="install.certFiles">Certificate Files:</span>
+                                <ul>
+                                    <li data-i18n="install.macosCertPath">All .dcert files → <code>/Applications/Cellframe.app/Contents/Resources/share/ca/</code></li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="manual-install-note" style="margin-top: 20px; padding: 15px; background-color: rgba(0, 123, 255, 0.1); border-radius: 8px; border-left: 4px solid var(--info);">
+                        <p><strong data-i18n="install.manualNote">Important Note:</strong></p>
+                        <p data-i18n="install.manualNoteDesc">After placing the files in the correct locations, restart the Cellframe node service to apply the new network configuration. You may need administrative privileges to write to these directories.</p>
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -174,7 +262,9 @@
             navigator.clipboard.writeText(code).then(() => {
                 const button = codeBlock.nextElementSibling;
                 const originalText = button.textContent;
-                button.textContent = 'Copied!';
+                const copiedText = window.translationManager && window.translationManager.t ? 
+                    window.translationManager.t('install.copied') : 'Copied!';
+                button.textContent = copiedText;
                 button.style.backgroundColor = 'var(--success)';
                 
                 setTimeout(() => {
@@ -183,11 +273,13 @@
                 }, 1500);
             }).catch(err => {
                 const button = codeBlock.nextElementSibling;
-                button.textContent = 'Error!';
+                const errorText = window.translationManager && window.translationManager.t ? 
+                    window.translationManager.t('install.copyError') : 'Error!';
+                button.textContent = errorText;
                 button.style.backgroundColor = 'var(--error)';
                 
                 setTimeout(() => {
-                    button.textContent = 'Copy';
+                    button.textContent = button.getAttribute('data-original-text') || 'Copy';
                     button.style.backgroundColor = '';
                 }, 1500);
             });
@@ -202,6 +294,17 @@
                 console.log('User not authenticated');
             }
         });
+
+        // Toggle installation paths visibility
+        function toggleInstallationPaths() {
+            const pathsDiv = document.getElementById('installationPaths');
+            
+            if (pathsDiv.style.display === 'none') {
+                pathsDiv.style.display = 'block';
+            } else {
+                pathsDiv.style.display = 'none';
+            }
+        }
     </script>
 </body>
 </html>

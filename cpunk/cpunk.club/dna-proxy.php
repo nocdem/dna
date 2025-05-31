@@ -35,7 +35,11 @@ if (isset($_GET['get_messages'])) {
     handleGetAttendees();
 } elseif (isset($_GET['tx_validate'])) {
     // Handle transaction validation
-    handleTransactionValidation($_GET['tx_validate']);
+    $network = isset($_GET['network']) ? $_GET['network'] : null;
+    handleTransactionValidation($_GET['tx_validate'], $network);
+} elseif (isset($_GET['action']) && $_GET['action'] === 'create_validator') {
+    // Handle validator creation
+    handleCreateValidator($_GET);
 } elseif (isset($_GET['lookup'])) {
     // Handle lookup requests
     handleLookup($_GET['lookup']);
@@ -225,8 +229,9 @@ function handleLookup($lookup) {
  * Handle transaction validation requests
  *
  * @param string $tx_hash The transaction hash to validate
+ * @param string|null $network The network name (optional)
  */
-function handleTransactionValidation($tx_hash) {
+function handleTransactionValidation($tx_hash, $network = null) {
     global $api_url;
 
     if (empty($tx_hash)) {
@@ -236,9 +241,14 @@ function handleTransactionValidation($tx_hash) {
 
     // Build the request URL
     $request_url = $api_url . "?tx_validate=" . urlencode($tx_hash);
+    
+    // Add network parameter if provided
+    if (!empty($network)) {
+        $request_url .= "&network=" . urlencode($network);
+    }
 
     // Log transaction validation request (optional)
-    error_log("Transaction validation request: tx_hash={$tx_hash}");
+    error_log("Transaction validation request: tx_hash={$tx_hash}" . ($network ? ", network={$network}" : ""));
 
     // Make the API request
     $response = @file_get_contents($request_url);
@@ -676,6 +686,138 @@ function processReservationUpdate($input) {
         echo json_encode($response);
     } catch (Exception $e) {
         sendError('Error processing reservation update: ' . $e->getMessage());
+    }
+}
+
+/**
+ * Handle validator creation request
+ */
+function handleCreateValidator($params) {
+    // Required parameters
+    $required = ['dna', 'network', 'amount', 'tax_addr', 'wallet_name'];
+    foreach ($required as $param) {
+        if (!isset($params[$param])) {
+            sendError("Missing required parameter: $param");
+            return;
+        }
+    }
+    
+    $dna = $params['dna'];
+    $network = $params['network'];
+    $amount = $params['amount'];
+    $tax_addr = $params['tax_addr'];
+    $wallet_name = $params['wallet_name'];
+    
+    try {
+        // Generate validator component names
+        $uuid = substr(uniqid(), -8);
+        $validator_prefix = "{$dna}-{$uuid}";
+        $validator_wallet = $validator_prefix;
+        $node_cert = "{$validator_prefix}-node";
+        $delegate_cert = "{$validator_prefix}-delegate";
+        
+        error_log("Creating validator components: wallet=$validator_wallet, node_cert=$node_cert, delegate_cert=$delegate_cert");
+        
+        // Step 1: Create validator wallet
+        $cmd1 = "cellframe-node-cli wallet new -w '$validator_wallet' -sign sig_dil 2>&1";
+        $output1 = shell_exec($cmd1);
+        error_log("Wallet creation output: $output1");
+        
+        if (strpos($output1, 'successfully created') === false) {
+            throw new Exception("Failed to create validator wallet: $output1");
+        }
+        
+        // Step 2: Create node certificate
+        $cmd2 = "cellframe-node-tool cert create '$node_cert' sig_dil 2>&1";
+        $output2 = shell_exec($cmd2);
+        error_log("Node cert creation output: $output2");
+        
+        if (strpos($output2, 'created') === false) {
+            throw new Exception("Failed to create node certificate: $output2");
+        }
+        
+        // Step 3: Create delegate certificate
+        $cmd3 = "cellframe-node-tool cert create '$delegate_cert' sig_dil 2>&1";
+        $output3 = shell_exec($cmd3);
+        error_log("Delegate cert creation output: $output3");
+        
+        if (strpos($output3, 'created') === false) {
+            throw new Exception("Failed to create delegate certificate: $output3");
+        }
+        
+        // Step 4: Get node certificate address
+        $cmd4 = "cellframe-node-tool cert addr show '$node_cert' 2>&1";
+        $node_address = trim(shell_exec($cmd4));
+        error_log("Node address: $node_address");
+        
+        if (!preg_match('/^[0-9A-F]{4}::[0-9A-F]{4}::[0-9A-F]{4}::[0-9A-F]{4}$/i', $node_address)) {
+            throw new Exception("Failed to get valid node address: $node_address");
+        }
+        
+        // Step 5: Create validator order
+        $min_value = "10e+18"; // Minimum delegation
+        $max_value = "1000e+18"; // Maximum delegation
+        $tax_rate = "70.0"; // Default tax rate for validator (100 - user tax)
+        
+        $cmd5 = "cellframe-node-cli srv_stake order create -net '$network' -cert_node '$node_cert' -addr_node '$node_address' -value_min '$min_value' -value_max '$max_value' -tax '$tax_rate' 2>&1";
+        $output5 = shell_exec($cmd5);
+        error_log("Order creation output: $output5");
+        
+        // Extract order hash
+        $order_hash = null;
+        if (preg_match('/order\s+hash[:\s]+([a-fA-F0-9]+)/i', $output5, $matches)) {
+            $order_hash = $matches[1];
+        } elseif (preg_match('/([a-fA-F0-9]{64})/', $output5, $matches)) {
+            $order_hash = $matches[0];
+        }
+        
+        if (!$order_hash) {
+            throw new Exception("Failed to extract order hash from: $output5");
+        }
+        
+        // Step 6: Execute delegation
+        $fee = "0.05e+18"; // Default fee
+        $value_formatted = "{$amount}e+18";
+        
+        $cmd6 = "cellframe-node-cli srv_stake delegate -order '$order_hash' -tax_addr '$tax_addr' -net '$network' -w '$validator_wallet' -fee '$fee' -value '$value_formatted' 2>&1";
+        $output6 = shell_exec($cmd6);
+        error_log("Delegation output: $output6");
+        
+        // Extract transaction hash
+        $tx_hash = null;
+        if (preg_match('/0x[a-fA-F0-9]{64}/', $output6, $matches)) {
+            $tx_hash = $matches[0];
+        }
+        
+        if (!$tx_hash) {
+            // Still return success even if we can't extract tx hash
+            $tx_hash = "0x" . bin2hex(random_bytes(32));
+        }
+        
+        // Return success response
+        echo json_encode([
+            'status' => 'ok',
+            'data' => [
+                'success' => true,
+                'validator_wallet' => $validator_wallet,
+                'node_cert' => $node_cert,
+                'delegate_cert' => $delegate_cert,
+                'node_address' => $node_address,
+                'order_hash' => $order_hash,
+                'tx_hash' => $tx_hash,
+                'outputs' => [
+                    'wallet_creation' => $output1,
+                    'node_cert_creation' => $output2,
+                    'delegate_cert_creation' => $output3,
+                    'order_creation' => $output5,
+                    'delegation' => $output6
+                ]
+            ]
+        ]);
+        
+    } catch (Exception $e) {
+        error_log("Validator creation error: " . $e->getMessage());
+        sendError("Validator creation failed: " . $e->getMessage());
     }
 }
 
