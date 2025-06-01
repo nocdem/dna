@@ -38,6 +38,24 @@ function showDnaDisplay() {
     const sso = CpunkSSO.getInstance();
     const user = sso.getCurrentUser();
     
+    // Log all user data to console
+    console.log('=== Settings Page - User Data ===');
+    console.log('Full user object:', user);
+    if (user) {
+        console.log('DNA:', user.dna);
+        console.log('Wallet Name:', user.wallet);
+        console.log('Wallet Address:', user.address);
+        console.log('Session ID:', user.sessionId);
+    }
+    
+    // Also log what's in sessionStorage
+    console.log('--- SessionStorage Data ---');
+    console.log('cpunk_dashboard_session:', sessionStorage.getItem('cpunk_dashboard_session'));
+    console.log('cpunk_selected_dna:', sessionStorage.getItem('cpunk_selected_dna'));
+    console.log('cpunk_wallet_name:', sessionStorage.getItem('cpunk_wallet_name'));
+    console.log('cpunk_backbone_address:', sessionStorage.getItem('cpunk_backbone_address'));
+    console.log('================================');
+    
     if (user && user.dna) {
         document.getElementById('dnaName').textContent = user.dna;
         document.getElementById('loginRequired').style.display = 'none';
@@ -52,6 +70,14 @@ function showDnaDisplay() {
                 CpunkSSO.getInstance().logout();
             });
         }
+        
+        // Set wallet address and check DNA registration immediately
+        if (user.address) {
+            walletAddress = user.address;
+            currentDna = user.dna;
+            // Check DNA registration in the background
+            checkDnaRegistration(false);
+        }
     }
 }
 
@@ -63,8 +89,8 @@ function showSettingsContent() {
     // Get wallet address from SSO
     const sso = CpunkSSO.getInstance();
     const user = sso.getCurrentUser();
-    if (user && user.wallet) {
-        walletAddress = user.wallet;
+    if (user && user.address) {
+        walletAddress = user.address;
         currentDna = user.dna;
     }
     
@@ -142,7 +168,7 @@ function initializeSettings() {
     
     if (userData) {
         // Store wallet and DNA info
-        walletAddress = userData.wallet;
+        walletAddress = userData.address;
         currentDna = userData.dna;
         
         // Update Social Integration module with wallet address
