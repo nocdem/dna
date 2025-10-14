@@ -33,6 +33,7 @@ private slots:
     void onContactSelected(QListWidgetItem *item);
     void onSendMessage();
     void onRefreshMessages();
+    void onCheckForUpdates();
 
 private:
     void setupUI();

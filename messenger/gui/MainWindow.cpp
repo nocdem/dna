@@ -11,6 +11,10 @@
 #include <QDateTime>
 #include <QDir>
 #include <QFileInfo>
+#include <QMenuBar>
+#include <QMenu>
+#include <QAction>
+#include <QProcess>
 
 // Platform-specific includes for identity detection
 #ifdef _WIN32
@@ -111,6 +115,14 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
+    // Create menu bar
+    QMenuBar *menuBar = new QMenuBar(this);
+    setMenuBar(menuBar);
+
+    QMenu *helpMenu = menuBar->addMenu("Help");
+    QAction *updateAction = helpMenu->addAction("Check for Updates");
+    connect(updateAction, &QAction::triggered, this, &MainWindow::onCheckForUpdates);
+
     // Central widget with splitter
     QWidget *centralWidget = new QWidget(this);
     setCentralWidget(centralWidget);
@@ -282,4 +294,96 @@ void MainWindow::onRefreshMessages() {
         loadConversation(currentContact);
     }
     statusLabel->setText("Messages refreshed");
+}
+
+void MainWindow::onCheckForUpdates() {
+    QString currentVersion = QString(PQSIGNUM_VERSION);
+
+    QMessageBox::information(this, "Check for Updates",
+                             QString("Current version: %1\n\nChecking latest version on GitHub...").arg(currentVersion));
+
+    // Get latest commit count from GitHub
+    QProcess process;
+    QString latestVersion = "unknown";
+
+#ifdef _WIN32
+    // Windows: use PowerShell to fetch version
+    process.start("powershell", QStringList()
+                  << "-Command"
+                  << "$sha = (git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>$null).Split()[0]; "
+                     "if ($sha) { git rev-list --count $sha 2>$null } else { Write-Output 'unknown' }");
+#else
+    // Linux: fetch version from GitHub
+    process.start("sh", QStringList()
+                  << "-c"
+                  << "git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>/dev/null | "
+                     "cut -f1 | xargs -I{} git rev-list --count {} 2>/dev/null || echo 'unknown'");
+#endif
+
+    if (process.waitForFinished(10000)) {  // 10 second timeout
+        latestVersion = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+    }
+
+    if (latestVersion == "unknown" || latestVersion.isEmpty()) {
+        QMessageBox::warning(this, "Update Check Failed",
+                             "Could not fetch latest version from GitHub.\n"
+                             "Make sure you have git installed and internet connection.");
+        return;
+    }
+
+    // Compare versions
+    bool ok;
+    int currentV = currentVersion.toInt(&ok);
+    if (!ok) currentV = 0;
+
+    int latestV = latestVersion.toInt(&ok);
+    if (!ok) latestV = 0;
+
+    if (latestV > currentV) {
+        // Update available
+        QMessageBox::StandardButton reply = QMessageBox::question(this, "Update Available",
+                                            QString("New version available!\n\n"
+                                                    "Current version: %1\n"
+                                                    "Latest version:  %2\n\n"
+                                                    "Do you want to update now?").arg(currentVersion, latestVersion),
+                                            QMessageBox::Yes | QMessageBox::No);
+
+        if (reply == QMessageBox::Yes) {
+#ifdef _WIN32
+            // Windows: Launch installer in background
+            QProcess::startDetached("cmd", QStringList()
+                                    << "/c"
+                                    << "start /min cmd /c \"cd C:\\dna-messenger && install_windows.bat\"");
+            QMessageBox::information(this, "Updating",
+                                     "Update started in background.\n"
+                                     "DNA Messenger will now exit.\n"
+                                     "Please wait for the update to complete and restart.");
+            QApplication::quit();
+#else
+            // Linux: Update in place
+            QProcess updateProcess;
+            updateProcess.start("sh", QStringList()
+                              << "-c"
+                              << "REPO=$(git rev-parse --show-toplevel 2>/dev/null); "
+                                 "if [ -n \"$REPO\" ]; then "
+                                 "cd \"$REPO\" && git pull origin main && "
+                                 "cd build && cmake .. && make -j$(nproc); "
+                                 "else echo 'Not a git repository'; fi");
+
+            if (updateProcess.waitForFinished(60000)) {  // 60 second timeout
+                QMessageBox::information(this, "Update Complete",
+                                         "Update complete!\n\n"
+                                         "Please restart DNA Messenger to use the new version.");
+                QApplication::quit();
+            } else {
+                QMessageBox::critical(this, "Update Failed",
+                                      "Update failed!\n"
+                                      "Make sure you're running from the git repository.");
+            }
+#endif
+        }
+    } else {
+        QMessageBox::information(this, "Up to Date",
+                                 QString("You are running the latest version: %1").arg(currentVersion));
+    }
 }
