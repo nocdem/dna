@@ -223,6 +223,21 @@ int messenger_read_message(messenger_context_t *ctx, int message_id);
  */
 int messenger_delete_message(messenger_context_t *ctx, int message_id);
 
+/**
+ * Delete local identity files
+ *
+ * Deletes only local files:
+ * - Local private key files (~/.dna/<identity>-*.pqkey)
+ * - Local public key bundle (~/.dna/<identity>.pub)
+ *
+ * NOTE: Does NOT delete from keyserver (public keys remain for message verification)
+ *
+ * @param ctx: Messenger context
+ * @param identity: Identity name to delete
+ * @return: 0 on success, -1 on error
+ */
+int messenger_delete_identity(messenger_context_t *ctx, const char *identity);
+
 #ifdef __cplusplus
 }
 #endif
