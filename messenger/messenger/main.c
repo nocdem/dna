@@ -24,9 +24,8 @@ void print_main_menu(void) {
     printf("1. Create new identity (auto-login)\n");
     printf("2. Restore identity from seed phrase\n");
     printf("3. Lookup identity (from server)\n");
-    printf("4. Delete identity\n");
-    printf("5. Configure server\n");
-    printf("6. Exit\n");
+    printf("4. Configure server\n");
+    printf("5. Exit\n");
     printf("\n");
     printf("Choice: ");
 }
@@ -292,39 +291,6 @@ int main(void) {
                 }
 
                 case 4: {
-                    // Delete identity
-                    printf("\nIdentity to delete: ");
-                    char delete_id[100];
-                    if (!fgets(delete_id, sizeof(delete_id), stdin)) break;
-                    delete_id[strcspn(delete_id, "\n")] = 0;
-
-                    if (strlen(delete_id) == 0) {
-                        printf("Error: Identity name cannot be empty\n");
-                        break;
-                    }
-
-                    printf("\nWARNING: This will permanently delete LOCAL files:\n");
-                    printf("  - Private key files (~/.dna/%s-*.pqkey)\n", delete_id);
-                    printf("  - Public key bundle (~/.dna/%s.pub)\n\n", delete_id);
-                    printf("NOTE: Keyserver entry will be preserved for message verification.\n\n");
-                    printf("Delete local identity '%s'? (Y/N): ", delete_id);
-
-                    char confirm[10];
-                    if (fgets(confirm, sizeof(confirm), stdin) &&
-                        (confirm[0] == 'Y' || confirm[0] == 'y')) {
-
-                        messenger_context_t *temp_ctx = messenger_init("system");
-                        if (temp_ctx) {
-                            messenger_delete_identity(temp_ctx, delete_id);
-                            messenger_free(temp_ctx);
-                        }
-                    } else {
-                        printf("Cancelled.\n");
-                    }
-                    break;
-                }
-
-                case 5: {
                     // Configure server
                     dna_config_t config;
                     if (dna_config_setup(&config) == 0) {
@@ -336,7 +302,7 @@ int main(void) {
                     break;
                 }
 
-                case 6:
+                case 5:
                     printf("\nGoodbye!\n\n");
                     return 0;
 
