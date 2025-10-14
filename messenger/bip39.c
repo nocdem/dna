@@ -224,7 +224,7 @@ bool bip39_validate_mnemonic(const char *mnemonic) {
     size_t entropy_len = entropy_bits / 8;
 
     // Extract entropy from word indices
-    uint8_t entropy[32] = {0};
+    uint8_t entropy[33] = {0};  // 33 bytes needed for 24-word mnemonic (264 bits)
 
     for (int i = 0; i < word_count; i++) {
         uint16_t index = word_indices[i];
@@ -236,7 +236,7 @@ bool bip39_validate_mnemonic(const char *mnemonic) {
                 size_t byte_index = (bit_index + bit) / 8;
                 size_t bit_in_byte = 7 - ((bit_index + bit) % 8);
 
-                if (byte_index < 32) {
+                if (byte_index < 33) {
                     entropy[byte_index] |= (1 << bit_in_byte);
                 }
             }

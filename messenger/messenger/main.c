@@ -22,9 +22,10 @@ void print_main_menu(void) {
     printf("=========================================\n");
     printf("\n");
     printf("1. Create new identity (auto-login)\n");
-    printf("2. Lookup identity (from server)\n");
-    printf("3. Configure server\n");
-    printf("4. Exit\n");
+    printf("2. Restore identity from seed phrase\n");
+    printf("3. Lookup identity (from server)\n");
+    printf("4. Configure server\n");
+    printf("5. Exit\n");
     printf("\n");
     printf("Choice: ");
 }
@@ -194,6 +195,74 @@ int main(void) {
                 }
 
                 case 2: {
+                    // Restore identity from seed phrase
+                    printf("\nRestore identity name: ");
+                    char restore_id[100];
+                    if (!fgets(restore_id, sizeof(restore_id), stdin)) break;
+                    restore_id[strcspn(restore_id, "\n")] = 0;
+
+                    if (strlen(restore_id) == 0) {
+                        printf("Error: Identity name cannot be empty\n");
+                        break;
+                    }
+
+                    // Ask for restore method: file or interactive
+                    printf("\nRestore from:\n");
+                    printf("  1. File (24 words + optional passphrase)\n");
+                    printf("  2. Interactive (manual input)\n");
+                    printf("\nChoice: ");
+
+                    char method_input[10];
+                    if (!fgets(method_input, sizeof(method_input), stdin)) break;
+                    int restore_method = atoi(method_input);
+
+                    messenger_context_t *temp_ctx = messenger_init("system");
+                    if (!temp_ctx) break;
+
+                    int restore_result = -1;
+
+                    if (restore_method == 1) {
+                        // File-based restore
+                        printf("\nSeed file path: ");
+                        char seed_file[512];
+                        if (!fgets(seed_file, sizeof(seed_file), stdin)) {
+                            messenger_free(temp_ctx);
+                            break;
+                        }
+                        seed_file[strcspn(seed_file, "\n")] = 0;
+
+                        if (strlen(seed_file) == 0) {
+                            printf("Error: File path cannot be empty\n");
+                            messenger_free(temp_ctx);
+                            break;
+                        }
+
+                        restore_result = messenger_restore_keys_from_file(temp_ctx, restore_id, seed_file);
+                    } else if (restore_method == 2) {
+                        // Interactive restore
+                        restore_result = messenger_restore_keys(temp_ctx, restore_id);
+                    } else {
+                        printf("Error: Invalid choice\n");
+                        messenger_free(temp_ctx);
+                        break;
+                    }
+
+                    if (restore_result == 0) {
+                        messenger_free(temp_ctx);
+
+                        // Auto-login after successful key restoration
+                        ctx = messenger_init(restore_id);
+                        if (ctx) {
+                            strcpy(current_identity, restore_id);
+                            printf("\n✓ Logged in as '%s'\n", restore_id);
+                        }
+                    } else {
+                        messenger_free(temp_ctx);
+                    }
+                    break;
+                }
+
+                case 3: {
                     // Lookup identity from server
                     printf("\nIdentity to lookup: ");
                     char lookup_id[100];
@@ -220,7 +289,7 @@ int main(void) {
                     break;
                 }
 
-                case 3: {
+                case 4: {
                     // Configure server
                     dna_config_t config;
                     if (dna_config_setup(&config) == 0) {
@@ -232,7 +301,7 @@ int main(void) {
                     break;
                 }
 
-                case 4:
+                case 5:
                     printf("\nGoodbye!\n\n");
                     return 0;
 

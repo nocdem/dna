@@ -214,19 +214,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
 
     free(bundle);
     printf("  ✓ ASCII armored public key created\n");
-
     printf("\n✓ Public keys exported successfully!\n");
-    printf("\nExported file: %s\n", output_file);
-    printf("  Format: ASCII armored\n");
-    printf("  Total size: %zu bytes\n", total_size);
-    printf("\nShare this file with others so they can:\n");
-    printf("  - Verify your signatures\n");
-    printf("  - Encrypt files for you\n");
-    printf("\nExample usage by others:\n");
-    printf("  # Encrypt a file for you:\n");
-    printf("  qgp --encrypt --file secret.txt --recipient %s\n", output_file);
-    printf("\n  # Verify your signature:\n");
-    printf("  qgp --verify --file document.pdf --pubkey %s\n", output_file);
 
     ret = EXIT_SUCCESS;
 

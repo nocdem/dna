@@ -16,6 +16,8 @@
 #include "qgp_dilithium.h"
 #include "qgp_kyber.h"
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
+#include "bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
+#include "kyber_deterministic.h"  // For crypto_kem_keypair_derand
 
 // Global configuration
 static dna_config_t g_config;
@@ -145,35 +147,44 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
         return -1;
     }
 
-    // Read the exported public key bundle to extract keys for PostgreSQL upload
-    FILE *f = fopen(pubkey_path, "rb");
-    if (!f) {
-        fprintf(stderr, "Error: Cannot open exported public key\n");
+    // Read the ASCII-armored public key bundle
+    char *type = NULL;
+    uint8_t *pubkey_data = NULL;
+    size_t pubkey_data_size = 0;
+    char **headers = NULL;
+    size_t header_count = 0;
+
+    if (read_armored_file(pubkey_path, &type, &pubkey_data, &pubkey_data_size,
+                          &headers, &header_count) != 0) {
+        fprintf(stderr, "Error: Failed to read ASCII-armored public key\n");
         return -1;
     }
 
-    // Read public key bundle header (24 bytes) + keys
+    // Parse header (20 bytes): magic[8] + version + sign_key_type + enc_key_type + reserved + sign_size(4) + enc_size(4)
+    if (pubkey_data_size < 20) {
+        fprintf(stderr, "Error: Public key data too small\n");
+        free(type);
+        free(pubkey_data);
+        for (size_t i = 0; i < header_count; i++) free(headers[i]);
+        free(headers);
+        return -1;
+    }
+
+    uint32_t sign_pubkey_size, enc_pubkey_size;
+    memcpy(&sign_pubkey_size, pubkey_data + 12, 4);  // offset 12: after magic+version+types+reserved
+    memcpy(&enc_pubkey_size, pubkey_data + 16, 4);   // offset 16
+
+    // Extract keys (after 20-byte header)
     uint8_t dilithium_pk[1952];
     uint8_t kyber_pk[800];
+    memcpy(dilithium_pk, pubkey_data + 20, sizeof(dilithium_pk));
+    memcpy(kyber_pk, pubkey_data + 20 + sign_pubkey_size, sizeof(kyber_pk));
 
-    // Skip header (24 bytes)
-    fseek(f, 24, SEEK_SET);
-
-    // Read Dilithium3 public key (1952 bytes)
-    if (fread(dilithium_pk, 1, sizeof(dilithium_pk), f) != sizeof(dilithium_pk)) {
-        fprintf(stderr, "Error: Failed to read signing public key\n");
-        fclose(f);
-        return -1;
-    }
-
-    // Read Kyber512 public key (800 bytes)
-    if (fread(kyber_pk, 1, sizeof(kyber_pk), f) != sizeof(kyber_pk)) {
-        fprintf(stderr, "Error: Failed to read encryption public key\n");
-        fclose(f);
-        return -1;
-    }
-
-    fclose(f);
+    // Cleanup
+    free(type);
+    free(pubkey_data);
+    for (size_t i = 0; i < header_count; i++) free(headers[i]);
+    free(headers);
 
     // Upload public keys to keyserver
     if (messenger_store_pubkey(ctx, identity, dilithium_pk, sizeof(dilithium_pk),
@@ -194,6 +205,479 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     }
 
     printf("\n✓ Keys uploaded to keyserver\n");
+    printf("✓ Identity '%s' is now ready to use!\n\n", identity);
+    return 0;
+}
+
+int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
+    if (!ctx || !identity) {
+        return -1;
+    }
+
+    // Check if identity already exists in keyserver
+    uint8_t *existing_sign = NULL, *existing_enc = NULL;
+    size_t sign_len = 0, enc_len = 0;
+
+    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
+        free(existing_sign);
+        free(existing_enc);
+        fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
+        fprintf(stderr, "Please choose a different name or delete the existing identity first.\n\n");
+        return -1;
+    }
+
+    // Create ~/.dna directory
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        fprintf(stderr, "Error: Cannot get home directory\n");
+        return -1;
+    }
+
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    // Use QGP's restore function which prompts for mnemonic and passphrase
+    if (cmd_restore_key_from_seed(identity, "dilithium", dna_dir) != 0) {
+        fprintf(stderr, "Error: Key restoration failed\n");
+        return -1;
+    }
+
+    // Export public key bundle
+    char pubkey_path[512];
+    snprintf(pubkey_path, sizeof(pubkey_path), "%s/%s.pub", dna_dir, identity);
+
+    if (cmd_export_pubkey(identity, dna_dir, pubkey_path) != 0) {
+        fprintf(stderr, "Error: Failed to export public key\n");
+        return -1;
+    }
+
+    // Read the ASCII-armored public key bundle
+    char *type = NULL;
+    uint8_t *pubkey_data = NULL;
+    size_t pubkey_data_size = 0;
+    char **headers = NULL;
+    size_t header_count = 0;
+
+    if (read_armored_file(pubkey_path, &type, &pubkey_data, &pubkey_data_size,
+                          &headers, &header_count) != 0) {
+        fprintf(stderr, "Error: Failed to read ASCII-armored public key\n");
+        return -1;
+    }
+
+    // Parse header (20 bytes): magic[8] + version + sign_key_type + enc_key_type + reserved + sign_size(4) + enc_size(4)
+    if (pubkey_data_size < 20) {
+        fprintf(stderr, "Error: Public key data too small\n");
+        free(type);
+        free(pubkey_data);
+        for (size_t i = 0; i < header_count; i++) free(headers[i]);
+        free(headers);
+        return -1;
+    }
+
+    uint32_t sign_pubkey_size, enc_pubkey_size;
+    memcpy(&sign_pubkey_size, pubkey_data + 12, 4);  // offset 12: after magic+version+types+reserved
+    memcpy(&enc_pubkey_size, pubkey_data + 16, 4);   // offset 16
+
+    // Extract keys (after 20-byte header)
+    uint8_t dilithium_pk[1952];
+    uint8_t kyber_pk[800];
+    memcpy(dilithium_pk, pubkey_data + 20, sizeof(dilithium_pk));
+    memcpy(kyber_pk, pubkey_data + 20 + sign_pubkey_size, sizeof(kyber_pk));
+
+    // Cleanup
+    free(type);
+    free(pubkey_data);
+    for (size_t i = 0; i < header_count; i++) free(headers[i]);
+    free(headers);
+
+    // Upload public keys to keyserver
+    if (messenger_store_pubkey(ctx, identity, dilithium_pk, sizeof(dilithium_pk),
+                                kyber_pk, sizeof(kyber_pk)) != 0) {
+        fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
+        return -1;
+    }
+
+    // Rename key files for messenger compatibility
+    // Messenger expects: <identity>-dilithium.pqkey and <identity>-kyber512.pqkey
+    // QGP creates: <identity>-dilithium3.pqkey and <identity>-kyber512.pqkey
+    char dilithium3_path[512], dilithium_path[512];
+    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
+
+    if (rename(dilithium3_path, dilithium_path) != 0) {
+        fprintf(stderr, "Warning: Could not rename signing key file\n");
+    }
+
+    printf("\n✓ Keys restored and uploaded to keyserver\n");
+    printf("✓ Identity '%s' is now ready to use!\n\n", identity);
+    return 0;
+}
+
+int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *identity, const char *seed_file) {
+    if (!ctx || !identity || !seed_file) {
+        return -1;
+    }
+
+    // For restore, identity MUST exist in keyserver
+    // We're verifying the restored keys match what's already there
+    uint8_t *keyserver_sign = NULL, *keyserver_enc = NULL;
+    size_t keyserver_sign_len = 0, keyserver_enc_len = 0;
+
+    if (messenger_load_pubkey(ctx, identity, &keyserver_sign, &keyserver_sign_len, &keyserver_enc, &keyserver_enc_len) != 0) {
+        fprintf(stderr, "\nError: Identity '%s' not found in keyserver!\n", identity);
+        fprintf(stderr, "Cannot restore - no keys to verify against.\n");
+        fprintf(stderr, "Use 'Generate new identity' if this is a new identity.\n\n");
+        return -1;
+    }
+
+    // Read seed phrase from file
+    FILE *f = fopen(seed_file, "r");
+    if (!f) {
+        fprintf(stderr, "Error: Cannot open seed file: %s\n", seed_file);
+        return -1;
+    }
+
+    char line[2048];
+    if (!fgets(line, sizeof(line), f)) {
+        fprintf(stderr, "Error: Failed to read seed file\n");
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+
+    // Remove trailing newline
+    size_t len = strlen(line);
+    if (len > 0 && line[len - 1] == '\n') {
+        line[len - 1] = '\0';
+    }
+
+    // Parse line: "word1 word2 ... word24 [passphrase]"
+    char mnemonic[BIP39_MAX_MNEMONIC_LENGTH];
+    char passphrase[256] = {0};
+
+    // Split into words
+    char *words[25];  // 24 words + optional passphrase
+    int word_count = 0;
+
+    char *token = strtok(line, " ");
+    while (token != NULL && word_count < 25) {
+        words[word_count++] = token;
+        token = strtok(NULL, " ");
+    }
+
+    if (word_count < 24) {
+        fprintf(stderr, "Error: Seed file must contain at least 24 words\n");
+        fprintf(stderr, "Found only %d words\n", word_count);
+        return -1;
+    }
+
+    // Build mnemonic from first 24 words
+    mnemonic[0] = '\0';
+    for (int i = 0; i < 24; i++) {
+        if (i > 0) strcat(mnemonic, " ");
+        strcat(mnemonic, words[i]);
+    }
+
+    // If 25th word exists, it's the passphrase
+    if (word_count >= 25) {
+        strncpy(passphrase, words[24], sizeof(passphrase) - 1);
+        passphrase[sizeof(passphrase) - 1] = '\0';
+    }
+
+    printf("Restoring identity '%s' from seed file\n", identity);
+    printf("  Mnemonic: %d words\n", 24);
+    printf("  Passphrase: %s\n\n", word_count >= 25 ? "yes" : "no");
+
+    // Validate mnemonic
+    if (!bip39_validate_mnemonic(mnemonic)) {
+        fprintf(stderr, "Error: Invalid BIP39 mnemonic in seed file\n");
+        memset(mnemonic, 0, sizeof(mnemonic));
+        memset(passphrase, 0, sizeof(passphrase));
+        return -1;
+    }
+
+    // Derive seeds from mnemonic
+    uint8_t signing_seed[32];
+    uint8_t encryption_seed[32];
+
+    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed) != 0) {
+        fprintf(stderr, "Error: Seed derivation failed\n");
+        memset(mnemonic, 0, sizeof(mnemonic));
+        memset(passphrase, 0, sizeof(passphrase));
+        return -1;
+    }
+
+    // Zero out mnemonic and passphrase
+    memset(mnemonic, 0, sizeof(mnemonic));
+    memset(passphrase, 0, sizeof(passphrase));
+
+    // Create ~/.dna directory
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        fprintf(stderr, "Error: Cannot get home directory\n");
+        memset(signing_seed, 0, sizeof(signing_seed));
+        memset(encryption_seed, 0, sizeof(encryption_seed));
+        return -1;
+    }
+
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    // Create directory if needed
+    if (!qgp_platform_is_directory(dna_dir)) {
+        if (qgp_platform_mkdir(dna_dir) != 0) {
+            fprintf(stderr, "Error: Cannot create directory: %s\n", dna_dir);
+            memset(signing_seed, 0, sizeof(signing_seed));
+            memset(encryption_seed, 0, sizeof(encryption_seed));
+            return -1;
+        }
+    }
+
+    // Generate Dilithium3 signing key from seed
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
+
+    qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DILITHIUM3, QGP_KEY_PURPOSE_SIGNING);
+    if (!sign_key) {
+        fprintf(stderr, "Error: Memory allocation failed for signing key\n");
+        memset(signing_seed, 0, sizeof(signing_seed));
+        memset(encryption_seed, 0, sizeof(encryption_seed));
+        return -1;
+    }
+
+    strncpy(sign_key->name, identity, sizeof(sign_key->name) - 1);
+
+    uint8_t *dilithium_pk = calloc(1, QGP_DILITHIUM3_PUBLICKEYBYTES);
+    uint8_t *dilithium_sk = calloc(1, QGP_DILITHIUM3_SECRETKEYBYTES);
+
+    if (!dilithium_pk || !dilithium_sk) {
+        fprintf(stderr, "Error: Memory allocation failed for Dilithium3 buffers\n");
+        free(dilithium_pk);
+        free(dilithium_sk);
+        qgp_key_free(sign_key);
+        memset(signing_seed, 0, sizeof(signing_seed));
+        memset(encryption_seed, 0, sizeof(encryption_seed));
+        return -1;
+    }
+
+    if (qgp_dilithium3_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
+        fprintf(stderr, "Error: Dilithium3 key generation from seed failed\n");
+        free(dilithium_pk);
+        free(dilithium_sk);
+        qgp_key_free(sign_key);
+        memset(signing_seed, 0, sizeof(signing_seed));
+        memset(encryption_seed, 0, sizeof(encryption_seed));
+        return -1;
+    }
+
+    sign_key->public_key = dilithium_pk;
+    sign_key->public_key_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+    sign_key->private_key = dilithium_sk;
+    sign_key->private_key_size = QGP_DILITHIUM3_SECRETKEYBYTES;
+
+    if (qgp_key_save(sign_key, dilithium_path) != 0) {
+        fprintf(stderr, "Error: Failed to save signing key\n");
+        qgp_key_free(sign_key);
+        memset(signing_seed, 0, sizeof(signing_seed));
+        memset(encryption_seed, 0, sizeof(encryption_seed));
+        return -1;
+    }
+
+    printf("✓ Dilithium3 signing key generated from seed\n");
+
+    // Copy dilithium public key for verification before freeing
+    uint8_t dilithium_pk_verify[1952];
+    memcpy(dilithium_pk_verify, dilithium_pk, sizeof(dilithium_pk_verify));
+
+    qgp_key_free(sign_key);
+
+    // Generate Kyber512 encryption key from seed
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s-kyber512.pqkey", dna_dir, identity);
+
+    qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KYBER512, QGP_KEY_PURPOSE_ENCRYPTION);
+    if (!enc_key) {
+        fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
+        memset(signing_seed, 0, sizeof(signing_seed));
+        memset(encryption_seed, 0, sizeof(encryption_seed));
+        return -1;
+    }
+
+    strncpy(enc_key->name, identity, sizeof(enc_key->name) - 1);
+
+    uint8_t *kyber_pk = calloc(1, 800);
+    uint8_t *kyber_sk = calloc(1, 1632);
+
+    if (!kyber_pk || !kyber_sk) {
+        fprintf(stderr, "Error: Memory allocation failed for Kyber512 buffers\n");
+        free(kyber_pk);
+        free(kyber_sk);
+        qgp_key_free(enc_key);
+        memset(signing_seed, 0, sizeof(signing_seed));
+        memset(encryption_seed, 0, sizeof(encryption_seed));
+        return -1;
+    }
+
+    if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
+        fprintf(stderr, "Error: Kyber512 key generation from seed failed\n");
+        free(kyber_pk);
+        free(kyber_sk);
+        qgp_key_free(enc_key);
+        memset(signing_seed, 0, sizeof(signing_seed));
+        memset(encryption_seed, 0, sizeof(encryption_seed));
+        return -1;
+    }
+
+    enc_key->public_key = kyber_pk;
+    enc_key->public_key_size = 800;
+    enc_key->private_key = kyber_sk;
+    enc_key->private_key_size = 1632;
+
+    if (qgp_key_save(enc_key, kyber_path) != 0) {
+        fprintf(stderr, "Error: Failed to save encryption key\n");
+        qgp_key_free(enc_key);
+        memset(signing_seed, 0, sizeof(signing_seed));
+        memset(encryption_seed, 0, sizeof(encryption_seed));
+        return -1;
+    }
+
+    printf("✓ Kyber512 encryption key generated from seed\n");
+
+    // Copy kyber public key for verification before freeing
+    uint8_t kyber_pk_verify[800];
+    memcpy(kyber_pk_verify, kyber_pk, sizeof(kyber_pk_verify));
+
+    qgp_key_free(enc_key);
+
+    // Secure wipe seeds
+    memset(signing_seed, 0, sizeof(signing_seed));
+    memset(encryption_seed, 0, sizeof(encryption_seed));
+
+    // Export public key bundle
+    char pubkey_path[512];
+    snprintf(pubkey_path, sizeof(pubkey_path), "%s/%s.pub", dna_dir, identity);
+
+    if (cmd_export_pubkey(identity, dna_dir, pubkey_path) != 0) {
+        fprintf(stderr, "Error: Failed to export public key\n");
+        return -1;
+    }
+
+    // Read the restored .pub file to get ASCII-armored public key
+    char *restored_type = NULL;
+    uint8_t *restored_pubkey_data = NULL;
+    size_t restored_pubkey_size = 0;
+    char **restored_headers = NULL;
+    size_t restored_header_count = 0;
+
+    if (read_armored_file(pubkey_path, &restored_type, &restored_pubkey_data, &restored_pubkey_size,
+                          &restored_headers, &restored_header_count) != 0) {
+        fprintf(stderr, "Error: Failed to read restored ASCII-armored public key\n");
+        free(keyserver_sign);
+        free(keyserver_enc);
+        return -1;
+    }
+
+    // Parse keyserver data (also ASCII-armored)
+    char *keyserver_type = NULL;
+    uint8_t *keyserver_pubkey_data = NULL;
+    size_t keyserver_pubkey_size = 0;
+    char **keyserver_headers = NULL;
+    size_t keyserver_header_count = 0;
+
+    // keyserver_sign contains ASCII-armored data, parse it
+    // Write to temp file, then read it back
+    char temp_path[512];
+    snprintf(temp_path, sizeof(temp_path), "/tmp/.dna_verify_%s.pub", identity);
+    FILE *temp_f = fopen(temp_path, "w");
+    if (!temp_f) {
+        fprintf(stderr, "Error: Cannot create temp file for verification\n");
+        free(restored_type);
+        free(restored_pubkey_data);
+        for (size_t i = 0; i < restored_header_count; i++) free(restored_headers[i]);
+        free(restored_headers);
+        free(keyserver_sign);
+        free(keyserver_enc);
+        return -1;
+    }
+    fwrite(keyserver_sign, 1, keyserver_sign_len, temp_f);
+    fclose(temp_f);
+
+    if (read_armored_file(temp_path, &keyserver_type, &keyserver_pubkey_data, &keyserver_pubkey_size,
+                          &keyserver_headers, &keyserver_header_count) != 0) {
+        fprintf(stderr, "Error: Failed to parse keyserver ASCII-armored public key\n");
+        remove(temp_path);
+        free(restored_type);
+        free(restored_pubkey_data);
+        for (size_t i = 0; i < restored_header_count; i++) free(restored_headers[i]);
+        free(restored_headers);
+        free(keyserver_sign);
+        free(keyserver_enc);
+        return -1;
+    }
+    remove(temp_path);
+
+    // Verify restored keys match keyserver
+    printf("\nVerifying restored keys against keyserver...\n");
+
+    if (restored_pubkey_size != keyserver_pubkey_size) {
+        fprintf(stderr, "\nError: Public key size mismatch!\n");
+        fprintf(stderr, "  Keyserver: %zu bytes\n", keyserver_pubkey_size);
+        fprintf(stderr, "  Restored:  %zu bytes\n", restored_pubkey_size);
+        fprintf(stderr, "  The restored identity is WRONG - incorrect seed or identity!\n\n");
+        free(restored_type);
+        free(restored_pubkey_data);
+        for (size_t i = 0; i < restored_header_count; i++) free(restored_headers[i]);
+        free(restored_headers);
+        free(keyserver_type);
+        free(keyserver_pubkey_data);
+        for (size_t i = 0; i < keyserver_header_count; i++) free(keyserver_headers[i]);
+        free(keyserver_headers);
+        free(keyserver_sign);
+        free(keyserver_enc);
+        return -1;
+    }
+
+    if (memcmp(keyserver_pubkey_data, restored_pubkey_data, restored_pubkey_size) != 0) {
+        fprintf(stderr, "\nError: Public keys DOES NOT MATCH keyserver!\n");
+        fprintf(stderr, "  The restored identity is WRONG - incorrect seed or identity!\n\n");
+        free(restored_type);
+        free(restored_pubkey_data);
+        for (size_t i = 0; i < restored_header_count; i++) free(restored_headers[i]);
+        free(restored_headers);
+        free(keyserver_type);
+        free(keyserver_pubkey_data);
+        for (size_t i = 0; i < keyserver_header_count; i++) free(keyserver_headers[i]);
+        free(keyserver_headers);
+        free(keyserver_sign);
+        free(keyserver_enc);
+        return -1;
+    }
+
+    // Keys match! Clean up
+    free(restored_type);
+    free(restored_pubkey_data);
+    for (size_t i = 0; i < restored_header_count; i++) free(restored_headers[i]);
+    free(restored_headers);
+    free(keyserver_type);
+    free(keyserver_pubkey_data);
+    for (size_t i = 0; i < keyserver_header_count; i++) free(keyserver_headers[i]);
+    free(keyserver_headers);
+    free(keyserver_sign);
+    free(keyserver_enc);
+
+    printf("✓ Signing public key verified against keyserver\n");
+    printf("✓ Encryption public key verified against keyserver\n");
+
+    // Rename signing key file for messenger compatibility
+    char dilithium3_path[512], dilithium_renamed[512];
+    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
+    snprintf(dilithium_renamed, sizeof(dilithium_renamed), "%s/%s-dilithium.pqkey", dna_dir, identity);
+
+    if (rename(dilithium3_path, dilithium_renamed) != 0) {
+        fprintf(stderr, "Warning: Could not rename signing key file\n");
+    }
+
+    printf("\n✓ Keys restored from file and verified against keyserver\n");
     printf("✓ Identity '%s' is now ready to use!\n\n", identity);
     return 0;
 }
