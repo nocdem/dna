@@ -314,19 +314,23 @@ int main(void) {
                     printf("Checking latest version on GitHub...\n");
 
                     // Get latest commit count from GitHub
+                    char latest_version[32] = "unknown";
+
+#ifndef _WIN32
+                    // Linux: fetch version from GitHub
                     char version_cmd[512];
                     snprintf(version_cmd, sizeof(version_cmd),
                             "git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>/dev/null | "
                             "cut -f1 | xargs -I{} git rev-list --count {} 2>/dev/null || echo 'unknown'");
 
                     FILE *fp = popen(version_cmd, "r");
-                    char latest_version[32] = "unknown";
                     if (fp) {
                         if (fgets(latest_version, sizeof(latest_version), fp)) {
                             latest_version[strcspn(latest_version, "\n")] = 0;
                         }
                         pclose(fp);
                     }
+#endif
 
                     if (strcmp(latest_version, "unknown") != 0) {
                         printf("Latest version: 0.1.%s\n", latest_version);
