@@ -16,6 +16,17 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+where vcpkg >nul 2>&1
+if %errorlevel% neq 0 (
+    echo ERROR: vcpkg not found
+    echo Please install vcpkg from: https://github.com/microsoft/vcpkg
+    pause
+    exit /b 1
+)
+
+echo Installing dependencies via vcpkg...
+vcpkg install openssl:x64-windows libpq:x64-windows qt5-base:x64-windows
+
 cd /d C:\dna-messenger
 if %errorlevel% neq 0 (
     echo ERROR: Directory not found
