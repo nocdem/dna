@@ -1108,7 +1108,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     printf(" Message #%d from %s\n", message_id, sender);
     printf("========================================\n\n");
 
-    // Load recipient's private Kyber512 key from filesystem using qgp_key_load
+    // Load recipient's private Kyber512 key from filesystem
     const char *home = qgp_platform_home_dir();
     char kyber_path[512];
     snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s-kyber512.pqkey", home, ctx->identity);
