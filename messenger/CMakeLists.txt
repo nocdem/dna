@@ -71,9 +71,8 @@ endif()
 add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
 add_subdirectory(crypto/dilithium)  # Dilithium3 signatures
 
-# Main executable
-add_executable(${PROJECT_NAME}
-    main.c
+# Common source files (shared between CLI and library)
+set(COMMON_SOURCES
     keygen.c
     sign.c
     verify.c
@@ -100,6 +99,40 @@ add_executable(${PROJECT_NAME}
     qgp_utils_standalone.c
     # Cross-platform abstraction layer
     ${PLATFORM_SOURCES}
+)
+
+# DNA Messenger Library (libdna)
+add_library(dna_lib STATIC
+    dna_api.c
+    ${COMMON_SOURCES}
+)
+
+target_link_libraries(dna_lib
+    OpenSSL::Crypto
+    kyber512
+    dilithium
+    ${PLATFORM_LIBS}
+)
+
+if(NOT WIN32)
+    target_link_libraries(dna_lib m pthread)
+endif()
+
+target_include_directories(dna_lib PUBLIC
+    ${CMAKE_SOURCE_DIR}
+    ${OPENSSL_INCLUDE_DIR}
+)
+
+if(WIN32)
+    target_include_directories(dna_lib PUBLIC
+        ${CMAKE_SOURCE_DIR}/win32
+    )
+endif()
+
+# Main CLI executable
+add_executable(${PROJECT_NAME}
+    main.c
+    ${COMMON_SOURCES}
 )
 
 # Link flags
@@ -152,6 +185,16 @@ else()
     endif()
     message(STATUS "Release build enabled")
 endif()
+
+# Example: basic_usage
+add_executable(basic_usage examples/basic_usage.c)
+target_link_libraries(basic_usage dna_lib)
+target_include_directories(basic_usage PRIVATE ${CMAKE_SOURCE_DIR})
+
+# Example: multi_recipient
+add_executable(multi_recipient examples/multi_recipient.c)
+target_link_libraries(multi_recipient dna_lib)
+target_include_directories(multi_recipient PRIVATE ${CMAKE_SOURCE_DIR})
 
 # Platform-specific install paths
 if(WIN32)
