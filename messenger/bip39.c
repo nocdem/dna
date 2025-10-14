@@ -12,6 +12,7 @@
 
 #include "bip39.h"
 #include "bip39_wordlist.h"
+#include "qgp_random.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,22 +23,10 @@
 
 /**
  * Get random bytes for entropy generation
- * Uses /dev/urandom for cryptographically secure random bytes
+ * Uses cross-platform qgp_randombytes() for cryptographically secure random bytes
  */
 static int get_random_bytes(uint8_t *output, size_t len) {
-    FILE *urandom = fopen("/dev/urandom", "rb");
-    if (!urandom) {
-        return -1;
-    }
-
-    size_t read = fread(output, 1, len, urandom);
-    fclose(urandom);
-
-    if (read != len) {
-        return -1;
-    }
-
-    return 0;
+    return qgp_randombytes(output, len);
 }
 
 /**

@@ -27,7 +27,7 @@ int dna_config_load(dna_config_t *config) {
     FILE *f = fopen(config_path, "r");
     if (!f) {
         // Default config if file doesn't exist
-        strcpy(config->server_host, "localhost");
+        strcpy(config->server_host, "ai.cpunk.io");
         config->server_port = 5432;
         strcpy(config->database, "dna_messenger");
         strcpy(config->username, "dna");
