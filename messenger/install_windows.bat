@@ -55,6 +55,25 @@ if %errorlevel% neq 0 (
 )
 
 echo.
-echo SUCCESS! Executable: C:\dna-messenger\build\Release\dna_messenger.exe
+echo =========================================
+echo  Installation Complete
+echo =========================================
+echo.
+echo Executable: C:\dna-messenger\build\Release\dna_messenger.exe
+echo.
+echo To run:
+echo   cd C:\dna-messenger\build\Release
+echo   dna_messenger.exe
+echo.
+echo On first run, configure server (option 4):
+echo   - Server: ai.cpunk.io
+echo.
+echo Features:
+echo   + Post-quantum encryption (Dilithium3 + Kyber512)
+echo   + BIP39 seed phrase key generation
+echo   + End-to-end encrypted messaging
+echo   + Message search and filtering
+echo   + Conversation history
+echo   + Cross-platform (Linux and Windows)
 echo.
 pause

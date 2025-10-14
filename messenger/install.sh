@@ -38,7 +38,7 @@ if command -v apt-get &> /dev/null; then
     # Debian/Ubuntu
     echo "Detected Debian/Ubuntu system"
     sudo apt-get update
-    sudo apt-get install -y git cmake gcc libssl-dev libpq-dev
+    sudo apt-get install -y git cmake gcc g++ libssl-dev libpq-dev qtbase5-dev qtbase5-dev-tools
 elif command -v dnf &> /dev/null; then
     # Fedora/RHEL
     echo "Detected Fedora/RHEL system"
@@ -81,17 +81,25 @@ if [ $? -eq 0 ]; then
     echo " Installation Complete"
     echo "========================================="
     echo ""
-    echo "Binary: $(pwd)/dna_messenger"
+    echo "Binaries:"
+    echo "  CLI: $(pwd)/dna_messenger"
+    echo "  GUI: $(pwd)/gui/dna_messenger_gui"
     echo ""
     echo "To run:"
     echo "  cd $(pwd)"
-    echo "  ./dna_messenger"
+    echo "  ./dna_messenger              # CLI version"
+    echo "  ./gui/dna_messenger_gui      # GUI version"
     echo ""
     echo "On first run, configure server (option 4):"
-    echo "  - DNA Server: ai.cpunk.io"
-    echo "  - Uses default port/database/credentials"
+    echo "  - Server: ai.cpunk.io"
     echo ""
-    echo "For local testing, use 'localhost' as server"
+    echo "Features:"
+    echo "  ✓ Post-quantum encryption (Dilithium3 + Kyber512)"
+    echo "  ✓ BIP39 seed phrase key generation"
+    echo "  ✓ End-to-end encrypted messaging"
+    echo "  ✓ Message search & filtering"
+    echo "  ✓ Conversation history"
+    echo "  ✓ Cross-platform (Linux & Windows)"
     echo ""
 else
     echo ""
