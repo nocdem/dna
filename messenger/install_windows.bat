@@ -143,7 +143,6 @@ echo ===========================================================================
 echo Step 4: Configure with CMake
 echo ============================================================================
 echo.
-
 REM Check if vcpkg toolchain file exists
 if exist "C:\vcpkg\scripts\buildsystems\vcpkg.cmake" (
     echo Found vcpkg toolchain at C:\vcpkg\scripts\buildsystems\vcpkg.cmake
