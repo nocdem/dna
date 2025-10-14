@@ -315,14 +315,25 @@ int main(void) {
 
                     // Get latest commit count from GitHub
                     char latest_version[32] = "unknown";
-
-#ifndef _WIN32
-                    // Linux: fetch version from GitHub
                     char version_cmd[512];
+
+#ifdef _WIN32
+                    // Windows: use PowerShell to fetch version
+                    snprintf(version_cmd, sizeof(version_cmd),
+                            "powershell -Command \"$sha = (git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>$null).Split()[0]; "
+                            "if ($sha) { git rev-list --count $sha 2>$null } else { Write-Output 'unknown' }\"");
+                    FILE *fp = _popen(version_cmd, "r");
+                    if (fp) {
+                        if (fgets(latest_version, sizeof(latest_version), fp)) {
+                            latest_version[strcspn(latest_version, "\r\n")] = 0;
+                        }
+                        _pclose(fp);
+                    }
+#else
+                    // Linux: fetch version from GitHub
                     snprintf(version_cmd, sizeof(version_cmd),
                             "git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>/dev/null | "
                             "cut -f1 | xargs -I{} git rev-list --count {} 2>/dev/null || echo 'unknown'");
-
                     FILE *fp = popen(version_cmd, "r");
                     if (fp) {
                         if (fgets(latest_version, sizeof(latest_version), fp)) {
