@@ -98,7 +98,7 @@ The binary will be created at `build/dna`.
 
 DNA Messenger uses a **shared PostgreSQL database** that all users connect to:
 - **No separate server application** - PostgreSQL IS the server
-- **Clients connect directly** to the database
+- **Clients connect directly** to the database (e.g., ai.cpunk.io:5432)
 - **All messages are E2E encrypted** before being stored
 - **Private keys never leave** the user's computer
 
@@ -184,17 +184,21 @@ sudo pacman -S postgresql-libs
 
 ```bash
 # First run - configure server
-./messenger_test
+./dna_messenger
 # Choose option 4: Configure server
-# Enter your server details:
-#   Server host: 192.168.0.1 (or your-server.com)
-#   Server port: 5432
+# Enter your DNA Messenger server address:
+#   DNA Server (IP or hostname): ai.cpunk.io
+#
+# Server port, database, username, and password use defaults:
+#   Port: 5432
 #   Database: dna_messenger
 #   Username: dna
 #   Password: dna_password
 
 # Settings are saved to ~/.dna/config
 # All future runs will use these settings automatically
+
+# For local development/testing, use "localhost" as the server
 ```
 
 ### Usage Example
