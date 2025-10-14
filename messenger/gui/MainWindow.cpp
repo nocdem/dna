@@ -42,7 +42,7 @@ QString MainWindow::getLocalIdentity() {
     FindClose(hFind);
 
     if (filename.endsWith("-dilithium.pqkey")) {
-        return filename.left(filename.length() - 17);  // Remove suffix
+        return filename.left(filename.length() - 16);  // Remove suffix (16 chars: "-dilithium.pqkey")
     }
     return QString();
 #else
@@ -58,7 +58,7 @@ QString MainWindow::getLocalIdentity() {
         globfree(&globResult);
 
         if (filename.endsWith("-dilithium.pqkey")) {
-            return filename.left(filename.length() - 17);  // Remove suffix
+            return filename.left(filename.length() - 16);  // Remove suffix (16 chars: "-dilithium.pqkey")
         }
     }
 
