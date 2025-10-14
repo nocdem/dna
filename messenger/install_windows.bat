@@ -144,17 +144,23 @@ echo Step 4: Configure with CMake
 echo ============================================================================
 echo.
 REM Check if vcpkg toolchain file exists
-if exist "C:\vcpkg\scripts\buildsystems\vcpkg.cmake" (
-    echo Found vcpkg toolchain at C:\vcpkg\scripts\buildsystems\vcpkg.cmake
-    echo Running cmake with vcpkg toolchain...
-    echo.
-    cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64
-) else (
-    echo vcpkg toolchain not found at C:\vcpkg\scripts\buildsystems\vcpkg.cmake
-    echo Trying standard CMake - may fail if OpenSSL not found
-    echo.
-    cmake .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
-)
+if exist "C:\vcpkg\scripts\buildsystems\vcpkg.cmake" goto USE_VCPKG
+goto NO_VCPKG
+
+:USE_VCPKG
+echo Found vcpkg toolchain
+echo Running cmake with vcpkg...
+echo.
+cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64
+goto CMAKE_DONE
+
+:NO_VCPKG
+echo vcpkg not found, trying standard CMake
+echo.
+cmake .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
+goto CMAKE_DONE
+
+:CMAKE_DONE
 
 if %ERRORLEVEL% NEQ 0 (
     echo.
