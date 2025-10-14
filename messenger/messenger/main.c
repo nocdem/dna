@@ -9,6 +9,12 @@
 #include "../messenger.h"
 #include "../dna_config.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <glob.h>
+#endif
+
 void print_main_menu(void) {
     printf("\n");
     printf("=========================================\n");
@@ -61,26 +67,73 @@ void list_local_identities(void) {
 
 char* get_local_identity(void) {
     const char *home = getenv("HOME");
-    if (!home) return NULL;
+    if (!home) {
+        // Windows fallback
+        home = getenv("USERPROFILE");
+        if (!home) return NULL;
+    }
 
     char dna_dir[512];
     snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
 
-    // Check for *-dilithium.pqkey files
-    char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "ls %s/*-dilithium.pqkey 2>/dev/null | head -1 | sed 's/.*\\///;s/-dilithium.pqkey$//'", dna_dir);
-
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return NULL;
-
+    // Platform-independent: directly check for dilithium key files
     static char identity[100];
-    if (fgets(identity, sizeof(identity), fp)) {
-        identity[strcspn(identity, "\n")] = 0;
-        pclose(fp);
+
+#ifdef _WIN32
+    // Windows: use FindFirstFile
+    char search_path[600];
+    snprintf(search_path, sizeof(search_path), "%s\\*-dilithium.pqkey", dna_dir);
+
+    WIN32_FIND_DATAA find_data;
+    HANDLE hFind = FindFirstFileA(search_path, &find_data);
+
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return NULL;
+    }
+
+    // Extract identity from filename (remove -dilithium.pqkey suffix)
+    strncpy(identity, find_data.cFileName, sizeof(identity) - 1);
+    identity[sizeof(identity) - 1] = '\0';
+
+    char *suffix = strstr(identity, "-dilithium.pqkey");
+    if (suffix) {
+        *suffix = '\0';
+    }
+
+    FindClose(hFind);
+    return strlen(identity) > 0 ? identity : NULL;
+#else
+    // Unix: use glob
+    char pattern[600];
+    snprintf(pattern, sizeof(pattern), "%s/*-dilithium.pqkey", dna_dir);
+
+    glob_t glob_result;
+    if (glob(pattern, GLOB_NOSORT, NULL, &glob_result) == 0 && glob_result.gl_pathc > 0) {
+        // Extract filename from path
+        const char *path = glob_result.gl_pathv[0];
+        const char *filename = strrchr(path, '/');
+        if (filename) {
+            filename++; // Skip the '/'
+        } else {
+            filename = path;
+        }
+
+        // Extract identity (remove -dilithium.pqkey suffix)
+        strncpy(identity, filename, sizeof(identity) - 1);
+        identity[sizeof(identity) - 1] = '\0';
+
+        char *suffix = strstr(identity, "-dilithium.pqkey");
+        if (suffix) {
+            *suffix = '\0';
+        }
+
+        globfree(&glob_result);
         return strlen(identity) > 0 ? identity : NULL;
     }
-    pclose(fp);
+
+    globfree(&glob_result);
     return NULL;
+#endif
 }
 
 int main(void) {
