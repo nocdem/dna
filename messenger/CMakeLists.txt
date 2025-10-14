@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(dna C)
+project(dna C CXX)  # Support both C and C++ for Qt GUI
 
 # Version (DNA Messenger starts fresh)
 set(VERSION_MAJOR 0)
@@ -113,6 +113,7 @@ set(COMMON_SOURCES
 # DNA Messenger Library (libdna)
 add_library(dna_lib STATIC
     dna_api.c
+    messenger.c
     ${COMMON_SOURCES}
 )
 
@@ -120,6 +121,7 @@ target_link_libraries(dna_lib
     OpenSSL::Crypto
     kyber512
     dilithium
+    ${PQ_LIBRARY}
     ${PLATFORM_LIBS}
 )
 
@@ -130,6 +132,7 @@ endif()
 target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}
     ${OPENSSL_INCLUDE_DIR}
+    ${PQ_INCLUDE_DIR}
 )
 
 if(WIN32)
@@ -142,6 +145,20 @@ endif()
 add_executable(dna_messenger messenger/main.c messenger.c)
 target_link_libraries(dna_messenger dna_lib ${PQ_LIBRARY})
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
+
+# DNA Messenger GUI (Phase 5) - Optional Qt GUI
+option(BUILD_GUI "Build Qt GUI application" ON)
+if(BUILD_GUI)
+    find_package(Qt5 QUIET COMPONENTS Core Widgets)
+    if(Qt5_FOUND)
+        message(STATUS "Qt5 found: ${Qt5_VERSION}")
+        message(STATUS "Building GUI application")
+        add_subdirectory(gui)
+    else()
+        message(STATUS "Qt5 not found. Skipping GUI build.")
+        message(STATUS "Install Qt5: sudo apt-get install qtbase5-dev")
+    endif()
+endif()
 
 # Build type configuration
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
