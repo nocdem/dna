@@ -1,5 +1,6 @@
 /*
- * DNA Messenger - Test Program (PostgreSQL)
+ * DNA Messenger - CLI Client
+ * Post-quantum end-to-end encrypted messaging
  */
 
 #include <stdio.h>

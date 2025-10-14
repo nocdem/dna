@@ -210,10 +210,10 @@ add_executable(multi_recipient examples/multi_recipient.c)
 target_link_libraries(multi_recipient dna_lib)
 target_include_directories(multi_recipient PRIVATE ${CMAKE_SOURCE_DIR})
 
-# Example: messenger_test (Phase 3)
-add_executable(messenger_test examples/messenger_test.c messenger.c)
-target_link_libraries(messenger_test dna_lib ${PQ_LIBRARY})
-target_include_directories(messenger_test PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
+# DNA Messenger CLI (Phase 3)
+add_executable(dna_messenger messenger/main.c messenger.c)
+target_link_libraries(dna_messenger dna_lib ${PQ_LIBRARY})
+target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
 
 # Platform-specific install paths
 if(WIN32)
