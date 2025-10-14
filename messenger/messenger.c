@@ -821,6 +821,60 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
     return 0;
 }
 
+/**
+ * Get contact list (identities from keyserver)
+ */
+int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out, int *count_out) {
+    if (!ctx || !identities_out || !count_out) {
+        return -1;
+    }
+
+    const char *query = "SELECT identity FROM keyserver ORDER BY identity";
+    PGresult *res = PQexec(ctx->pg_conn, query);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Get contact list failed: %s\n", PQerrorMessage(ctx->pg_conn));
+        PQclear(res);
+        return -1;
+    }
+
+    int rows = PQntuples(res);
+    *count_out = rows;
+
+    if (rows == 0) {
+        *identities_out = NULL;
+        PQclear(res);
+        return 0;
+    }
+
+    // Allocate array of string pointers
+    char **identities = (char**)malloc(sizeof(char*) * rows);
+    if (!identities) {
+        fprintf(stderr, "Memory allocation failed\n");
+        PQclear(res);
+        return -1;
+    }
+
+    // Copy each identity string
+    for (int i = 0; i < rows; i++) {
+        const char *identity = PQgetvalue(res, i, 0);
+        identities[i] = strdup(identity);
+        if (!identities[i]) {
+            // Clean up on failure
+            for (int j = 0; j < i; j++) {
+                free(identities[j]);
+            }
+            free(identities);
+            PQclear(res);
+            return -1;
+        }
+    }
+
+    *identities_out = identities;
+    PQclear(res);
+    return 0;
+}
+
 // ============================================================================
 // MESSAGE OPERATIONS
 // ============================================================================
@@ -1282,6 +1336,95 @@ int messenger_show_conversation(messenger_context_t *ctx, const char *other_iden
     printf("\n");
     PQclear(res);
     return 0;
+}
+
+/**
+ * Get conversation with another user (returns message array for GUI)
+ */
+int messenger_get_conversation(messenger_context_t *ctx, const char *other_identity,
+                                 message_info_t **messages_out, int *count_out) {
+    if (!ctx || !other_identity || !messages_out || !count_out) {
+        return -1;
+    }
+
+    const char *paramValues[4] = {ctx->identity, other_identity, other_identity, ctx->identity};
+    const char *query =
+        "SELECT id, sender, recipient, created_at FROM messages "
+        "WHERE (sender = $1 AND recipient = $2) OR (sender = $3 AND recipient = $4) "
+        "ORDER BY created_at ASC";
+
+    PGresult *res = PQexecParams(ctx->pg_conn, query, 4, NULL, paramValues, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Get conversation failed: %s\n", PQerrorMessage(ctx->pg_conn));
+        PQclear(res);
+        return -1;
+    }
+
+    int rows = PQntuples(res);
+    *count_out = rows;
+
+    if (rows == 0) {
+        *messages_out = NULL;
+        PQclear(res);
+        return 0;
+    }
+
+    // Allocate array of message_info_t
+    message_info_t *messages = (message_info_t*)calloc(rows, sizeof(message_info_t));
+    if (!messages) {
+        fprintf(stderr, "Memory allocation failed\n");
+        PQclear(res);
+        return -1;
+    }
+
+    // Copy message data
+    for (int i = 0; i < rows; i++) {
+        const char *id_str = PQgetvalue(res, i, 0);
+        const char *sender = PQgetvalue(res, i, 1);
+        const char *recipient = PQgetvalue(res, i, 2);
+        const char *timestamp = PQgetvalue(res, i, 3);
+
+        messages[i].id = atoi(id_str);
+        messages[i].sender = strdup(sender);
+        messages[i].recipient = strdup(recipient);
+        messages[i].timestamp = strdup(timestamp);
+        messages[i].plaintext = NULL;  // Not decrypted
+
+        if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp) {
+            // Clean up on failure
+            for (int j = 0; j <= i; j++) {
+                free(messages[j].sender);
+                free(messages[j].recipient);
+                free(messages[j].timestamp);
+                free(messages[j].plaintext);
+            }
+            free(messages);
+            PQclear(res);
+            return -1;
+        }
+    }
+
+    *messages_out = messages;
+    PQclear(res);
+    return 0;
+}
+
+/**
+ * Free message array
+ */
+void messenger_free_messages(message_info_t *messages, int count) {
+    if (!messages) {
+        return;
+    }
+
+    for (int i = 0; i < count; i++) {
+        free(messages[i].sender);
+        free(messages[i].recipient);
+        free(messages[i].timestamp);
+        free(messages[i].plaintext);
+    }
+    free(messages);
 }
 
 int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,

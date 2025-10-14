@@ -118,14 +118,20 @@ void MainWindow::loadContacts() {
     contactList->clear();
 
     // Load contacts from keyserver
-    // For now, just show a placeholder
-    // TODO: Implement messenger_list_pubkeys() integration
+    char **identities = NULL;
+    int count = 0;
 
-    contactList->addItem("alice");
-    contactList->addItem("bob");
-    contactList->addItem("charlie");
+    if (messenger_get_contact_list(ctx, &identities, &count) == 0) {
+        for (int i = 0; i < count; i++) {
+            contactList->addItem(QString::fromUtf8(identities[i]));
+            free(identities[i]);
+        }
+        free(identities);
 
-    statusLabel->setText("Contacts loaded");
+        statusLabel->setText(QString("%1 contacts loaded").arg(count));
+    } else {
+        statusLabel->setText("Failed to load contacts");
+    }
 }
 
 void MainWindow::onContactSelected(QListWidgetItem *item) {
@@ -144,13 +150,40 @@ void MainWindow::loadConversation(const QString &contact) {
 
     messageDisplay->append(QString("=== Conversation with %1 ===\n").arg(contact));
 
-    // TODO: Load messages from database using messenger_show_conversation()
-    // For now, show placeholder
-    messageDisplay->append("[12:00] You: Hey there!");
-    messageDisplay->append("[12:01] " + contact + ": Hi! How are you?");
-    messageDisplay->append("[12:02] You: Doing great, thanks!");
+    // Load messages from database
+    message_info_t *messages = NULL;
+    int count = 0;
 
-    statusLabel->setText(QString("Viewing conversation with %1").arg(contact));
+    if (messenger_get_conversation(ctx, contact.toUtf8().constData(), &messages, &count) == 0) {
+        if (count == 0) {
+            messageDisplay->append("(no messages exchanged)");
+        } else {
+            for (int i = 0; i < count; i++) {
+                QString sender = QString::fromUtf8(messages[i].sender);
+                QString timestamp = QString::fromUtf8(messages[i].timestamp);
+
+                // Format timestamp (extract time from "YYYY-MM-DD HH:MM:SS")
+                QString timeOnly = timestamp.mid(11, 5);  // Extract "HH:MM"
+
+                if (sender == currentIdentity) {
+                    messageDisplay->append(QString("[%1] You: [message #%2]")
+                                           .arg(timeOnly)
+                                           .arg(messages[i].id));
+                } else {
+                    messageDisplay->append(QString("[%1] %2: [message #%3]")
+                                           .arg(timeOnly)
+                                           .arg(sender)
+                                           .arg(messages[i].id));
+                }
+            }
+        }
+
+        messenger_free_messages(messages, count);
+        statusLabel->setText(QString("Loaded %1 messages with %2").arg(count).arg(contact));
+    } else {
+        messageDisplay->append("Failed to load conversation");
+        statusLabel->setText("Error loading conversation");
+    }
 }
 
 void MainWindow::onSendMessage() {

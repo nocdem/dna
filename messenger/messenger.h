@@ -36,6 +36,18 @@ typedef struct {
     dna_context_t *dna_ctx;      // DNA API context
 } messenger_context_t;
 
+/**
+ * Message Info
+ * Represents a single message in a conversation
+ */
+typedef struct {
+    int id;                      // Message ID
+    char *sender;                // Sender identity
+    char *recipient;             // Recipient identity
+    char *timestamp;             // Timestamp string
+    char *plaintext;             // Decrypted message text (NULL if not decrypted)
+} message_info_t;
+
 // ============================================================================
 // INITIALIZATION
 // ============================================================================
@@ -156,6 +168,18 @@ int messenger_load_pubkey(
 int messenger_list_pubkeys(messenger_context_t *ctx);
 
 /**
+ * Get contact list (identities from keyserver)
+ *
+ * Returns array of identity strings. Caller must free each string and the array.
+ *
+ * @param ctx: Messenger context
+ * @param identities_out: Output array of identity strings (caller must free)
+ * @param count_out: Number of identities returned
+ * @return: 0 on success, -1 on error
+ */
+int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out, int *count_out);
+
+/**
  * Delete public key from keyserver
  *
  * @param ctx: Messenger context
@@ -245,6 +269,30 @@ int messenger_search_by_sender(messenger_context_t *ctx, const char *sender);
  * @return: 0 on success, -1 on error
  */
 int messenger_show_conversation(messenger_context_t *ctx, const char *other_identity);
+
+/**
+ * Get conversation with another user
+ *
+ * Returns array of messages exchanged with another user (both sent and received),
+ * sorted by timestamp. Messages are NOT decrypted (plaintext field is NULL).
+ * Caller must free the array using messenger_free_messages().
+ *
+ * @param ctx: Messenger context
+ * @param other_identity: The other person's identity
+ * @param messages_out: Output array of message_info_t (caller must free)
+ * @param count_out: Number of messages returned
+ * @return: 0 on success, -1 on error
+ */
+int messenger_get_conversation(messenger_context_t *ctx, const char *other_identity,
+                                 message_info_t **messages_out, int *count_out);
+
+/**
+ * Free message array
+ *
+ * @param messages: Array of message_info_t to free
+ * @param count: Number of messages in array
+ */
+void messenger_free_messages(message_info_t *messages, int count);
 
 /**
  * Search messages by date range
