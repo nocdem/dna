@@ -59,11 +59,16 @@ echo =========================================
 echo  Installation Complete
 echo =========================================
 echo.
-echo Executable: C:\dna-messenger\build\Release\dna_messenger.exe
+echo Binaries:
+echo   CLI: C:\dna-messenger\build\Release\dna_messenger.exe
+echo   GUI: C:\dna-messenger\build\gui\Release\dna_messenger_gui.exe
 echo.
 echo To run:
 echo   cd C:\dna-messenger\build\Release
-echo   dna_messenger.exe
+echo   dna_messenger.exe           (CLI version)
+echo.
+echo   cd C:\dna-messenger\build\gui\Release
+echo   dna_messenger_gui.exe       (GUI version)
 echo.
 echo On first run, configure server (option 4):
 echo   - Server: ai.cpunk.io
