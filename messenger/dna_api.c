@@ -35,6 +35,9 @@ struct dna_context {
 #define DAP_ENC_KEY_TYPE_KEM_KYBER512 23
 
 // Header structure (same as encrypt.c/decrypt.c)
+#ifdef _MSC_VER
+#pragma pack(push, 1)
+#endif
 typedef struct {
     char magic[8];
     uint8_t version;
@@ -43,13 +46,24 @@ typedef struct {
     uint8_t reserved;
     uint32_t encrypted_size;
     uint32_t signature_size;
-} __attribute__((packed)) dna_enc_header_t;
+}
+#ifndef _MSC_VER
+__attribute__((packed))
+#endif
+dna_enc_header_t;
 
 // Recipient entry
 typedef struct {
     uint8_t kyber_ciphertext[768];
     uint8_t wrapped_dek[40];
-} __attribute__((packed)) dna_recipient_entry_t;
+}
+#ifndef _MSC_VER
+__attribute__((packed))
+#endif
+dna_recipient_entry_t;
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif
 
 // ============================================================================
 // VERSION AND ERROR HANDLING
