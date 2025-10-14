@@ -15,6 +15,7 @@
 #include "qgp_platform.h"
 #include "qgp_dilithium.h"
 #include "qgp_kyber.h"
+#include "qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
 #include "bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
 #include "kyber_deterministic.h"  // For crypto_kem_keypair_derand
@@ -899,26 +900,23 @@ int messenger_send_message(
         return -1;
     }
 
-    // Load sender's private signing key from filesystem
+    // Load sender's private signing key from filesystem using qgp_key_load
     const char *home = qgp_platform_home_dir();
     char dilithium_path[512];
     snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s-dilithium.pqkey", home, ctx->identity);
 
-    FILE *f = fopen(dilithium_path, "rb");
-    if (!f) {
+    qgp_key_t *sender_sign_key = NULL;
+    if (qgp_key_load(dilithium_path, &sender_sign_key) != 0) {
         fprintf(stderr, "Error: Cannot load private key from %s\n", dilithium_path);
         free(sign_pubkey);
         free(enc_pubkey);
         return -1;
     }
 
-    uint8_t sender_sign_privkey[4032];  // Dilithium3 private key size (correct!)
-    size_t read_size = fread(sender_sign_privkey, 1, sizeof(sender_sign_privkey), f);
-    fclose(f);
-
-    if (read_size != sizeof(sender_sign_privkey)) {
-        fprintf(stderr, "Error: Invalid private key size: %zu (expected %zu)\n",
-                read_size, sizeof(sender_sign_privkey));
+    if (sender_sign_key->private_key_size != 4032) {
+        fprintf(stderr, "Error: Invalid Dilithium3 private key size: %zu (expected 4032)\n",
+                sender_sign_key->private_key_size);
+        qgp_key_free(sender_sign_key);
         free(sign_pubkey);
         free(enc_pubkey);
         return -1;
@@ -932,7 +930,7 @@ int messenger_send_message(
     if (messenger_load_pubkey(ctx, ctx->identity, &sender_sign_pubkey_pg, &sender_sign_len,
                                &sender_enc_pubkey_pg, &sender_enc_len) != 0) {
         fprintf(stderr, "Error: Could not load sender's public key from keyserver\n");
-        memset(sender_sign_privkey, 0, sizeof(sender_sign_privkey));
+        qgp_key_free(sender_sign_key);
         free(sign_pubkey);
         free(enc_pubkey);
         return -1;
@@ -948,13 +946,13 @@ int messenger_send_message(
         strlen(message),
         enc_pubkey,  // Recipient's Kyber512 public key (800 bytes)
         sender_sign_pubkey_pg,  // Sender's Dilithium3 public key (1952 bytes)
-        sender_sign_privkey,  // Sender's Dilithium3 private key (4016 bytes)
+        sender_sign_key->private_key,  // Sender's Dilithium3 private key (4032 bytes)
         &ciphertext,
         &ciphertext_len
     );
 
-    // Secure wipe of private key
-    memset(sender_sign_privkey, 0, sizeof(sender_sign_privkey));
+    // Free sender signing key (secure wipes private key internally)
+    qgp_key_free(sender_sign_key);
 
     free(sign_pubkey);
     free(enc_pubkey);
@@ -1110,24 +1108,22 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     printf(" Message #%d from %s\n", message_id, sender);
     printf("========================================\n\n");
 
-    // Load recipient's private Kyber512 key from filesystem
+    // Load recipient's private Kyber512 key from filesystem using qgp_key_load
     const char *home = qgp_platform_home_dir();
     char kyber_path[512];
     snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s-kyber512.pqkey", home, ctx->identity);
 
-    FILE *f = fopen(kyber_path, "rb");
-    if (!f) {
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
         fprintf(stderr, "Error: Cannot load private key from %s\n", kyber_path);
         PQclear(res);
         return -1;
     }
 
-    uint8_t kyber_privkey[1632];  // Kyber512 private key size
-    size_t read_size = fread(kyber_privkey, 1, sizeof(kyber_privkey), f);
-    fclose(f);
-
-    if (read_size != sizeof(kyber_privkey)) {
-        fprintf(stderr, "Error: Invalid private key size\n");
+    if (kyber_key->private_key_size != 1632) {
+        fprintf(stderr, "Error: Invalid Kyber512 private key size: %zu (expected 1632)\n",
+                kyber_key->private_key_size);
+        qgp_key_free(kyber_key);
         PQclear(res);
         return -1;
     }
@@ -1142,15 +1138,15 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
         ctx->dna_ctx,
         ciphertext,
         ciphertext_len,
-        kyber_privkey,
+        kyber_key->private_key,
         &plaintext,
         &plaintext_len,
         &sender_sign_pubkey_from_msg,
         &sender_sign_pubkey_len
     );
 
-    // Secure wipe
-    memset(kyber_privkey, 0, sizeof(kyber_privkey));
+    // Free Kyber key (secure wipes private key internally)
+    qgp_key_free(kyber_key);
 
     if (err != DNA_OK) {
         fprintf(stderr, "Error: Decryption failed: %s\n", dna_error_string(err));
