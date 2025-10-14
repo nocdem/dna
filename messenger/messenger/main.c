@@ -59,9 +59,44 @@ void list_local_identities(void) {
     printf("\n");
 }
 
+char* get_local_identity(void) {
+    const char *home = getenv("HOME");
+    if (!home) return NULL;
+
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    // Check for *-dilithium.pqkey files
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "ls %s/*-dilithium.pqkey 2>/dev/null | head -1 | sed 's/.*\\///;s/-dilithium.pqkey$//'", dna_dir);
+
+    FILE *fp = popen(cmd, "r");
+    if (!fp) return NULL;
+
+    static char identity[100];
+    if (fgets(identity, sizeof(identity), fp)) {
+        identity[strcspn(identity, "\n")] = 0;
+        pclose(fp);
+        return strlen(identity) > 0 ? identity : NULL;
+    }
+    pclose(fp);
+    return NULL;
+}
+
 int main(void) {
     messenger_context_t *ctx = NULL;
     char current_identity[100] = {0};
+
+    // Check for existing local identity
+    char *existing_identity = get_local_identity();
+    if (existing_identity) {
+        // Auto-login with existing identity
+        ctx = messenger_init(existing_identity);
+        if (ctx) {
+            strcpy(current_identity, existing_identity);
+            printf("\n✓ Auto-logged in as '%s'\n", existing_identity);
+        }
+    }
 
     while (1) {
         // Not logged in
