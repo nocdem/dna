@@ -2,17 +2,8 @@
 REM ============================================================================
 REM DNA Messenger - Windows Installation Script
 REM ============================================================================
-REM This script installs DNA Messenger on Windows
-REM
-REM Prerequisites:
-REM   - Git for Windows
-REM   - CMake
-REM   - Visual Studio Build Tools (or full Visual Studio)
-REM   - PostgreSQL client library (libpq)
-REM
-REM Usage:
-REM   install_windows.bat
-REM ============================================================================
+
+setlocal enabledelayedexpansion
 
 echo ============================================================================
 echo DNA Messenger - Windows Installation
@@ -20,14 +11,14 @@ echo ===========================================================================
 echo.
 
 REM Configuration
-set "DNA_DIR=C:\dna-messenger"
-set "BUILD_TYPE=Release"
-set "GIT_REPO=https://github.com/nocdem/dna-messenger.git"
-set "GIT_BRANCH=main"
+set DNA_DIR=C:\dna-messenger
+set BUILD_TYPE=Release
+set GIT_REPO=https://github.com/nocdem/dna-messenger.git
+set GIT_BRANCH=main
 
 REM Check if Git is installed
 where git >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
+if errorlevel 1 (
     echo [ERROR] Git is not installed or not in PATH
     echo.
     echo Please install Git for Windows:
@@ -39,15 +30,11 @@ if %ERRORLEVEL% NEQ 0 (
 
 REM Check if CMake is installed
 where cmake >nul 2>&1
-if %ERRORLEVEL% NEQ 0 (
+if errorlevel 1 (
     echo [ERROR] CMake is not installed or not in PATH
     echo.
     echo Please install CMake:
     echo   https://cmake.org/download/
-    echo   Select "Add CMake to system PATH" during installation
-    echo.
-    echo Or using winget:
-    echo   winget install Kitware.CMake
     echo.
     pause
     exit /b 1
@@ -63,18 +50,19 @@ if exist "%DNA_DIR%\.git" (
     echo Repository exists, updating...
     cd /d "%DNA_DIR%"
 
-    REM Check for local changes
-    git diff --quiet
-    if %ERRORLEVEL% NEQ 0 (
+    REM Stash any local changes
+    git diff --quiet >nul 2>&1
+    if errorlevel 1 (
         echo [WARNING] Local changes detected, stashing...
-        git stash save "Auto-stash by installer"
+        git stash save "Auto-stash by installer" >nul 2>&1
     )
 
     git fetch origin
     git checkout %GIT_BRANCH%
     git pull origin %GIT_BRANCH%
-    if %ERRORLEVEL% NEQ 0 (
+    if errorlevel 1 (
         echo [ERROR] Failed to update repository
+        pause
         exit /b 1
     )
     echo [OK] Repository updated
@@ -84,8 +72,9 @@ if exist "%DNA_DIR%\.git" (
         rmdir /S /Q "%DNA_DIR%"
     )
     git clone %GIT_REPO% "%DNA_DIR%"
-    if %ERRORLEVEL% NEQ 0 (
+    if errorlevel 1 (
         echo [ERROR] Failed to clone repository
+        pause
         exit /b 1
     )
     cd /d "%DNA_DIR%"
@@ -99,25 +88,26 @@ echo Step 2: Install Dependencies
 echo ============================================================================
 echo.
 
-echo Checking for PostgreSQL client library...
+echo DNA Messenger requires:
+echo   - PostgreSQL libpq (client library)
+echo   - OpenSSL
 echo.
-echo DNA Messenger requires PostgreSQL libpq (client library only).
+echo Installation with vcpkg (recommended):
+echo   1. Install vcpkg:
+echo      cd C:\
+echo      git clone https://github.com/Microsoft/vcpkg.git
+echo      cd vcpkg
+echo      .\bootstrap-vcpkg.bat
+echo      .\vcpkg integrate install
 echo.
-echo Installation options:
-echo   1. PostgreSQL installer (includes libpq):
-echo      https://www.postgresql.org/download/windows/
+echo   2. Install dependencies:
+echo      cd C:\vcpkg
+echo      .\vcpkg install openssl:x64-windows libpq:x64-windows
 echo.
-echo   2. vcpkg (recommended for developers):
-echo      vcpkg install libpq:x64-windows
-echo      vcpkg integrate install
-echo.
-echo   3. Pre-built binaries:
-echo      Download from https://www.postgresql.org/ftp/odbc/versions/msi/
-echo.
-set /p CONTINUE="Have you installed libpq? (Y/N): "
+set /p CONTINUE="Have you installed dependencies? (Y/N): "
 if /i not "%CONTINUE%"=="Y" (
     echo.
-    echo Please install libpq first, then run this script again.
+    echo Please install dependencies first, then run this script again.
     pause
     exit /b 1
 )
@@ -143,47 +133,29 @@ echo ===========================================================================
 echo Step 4: Configure with CMake
 echo ============================================================================
 echo.
-REM Check if vcpkg toolchain file exists
-if exist "C:\vcpkg\scripts\buildsystems\vcpkg.cmake" goto USE_VCPKG
-goto NO_VCPKG
 
-:USE_VCPKG
-echo Found vcpkg toolchain
-echo Running cmake with vcpkg...
-echo.
-cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64
-goto CMAKE_DONE
+REM Check if vcpkg toolchain exists
+set VCPKG_CMAKE=C:\vcpkg\scripts\buildsystems\vcpkg.cmake
 
-:NO_VCPKG
-echo vcpkg not found, trying standard CMake
-echo.
-cmake .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
-goto CMAKE_DONE
+if exist "%VCPKG_CMAKE%" (
+    echo Found vcpkg toolchain
+    echo Configuring with vcpkg...
+    echo.
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=%VCPKG_CMAKE% -A x64
+) else (
+    echo vcpkg not found, using standard CMake
+    echo.
+    cmake .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
+)
 
-:CMAKE_DONE
-
-if %ERRORLEVEL% NEQ 0 (
+if errorlevel 1 (
     echo.
     echo [ERROR] CMake configuration failed
     echo.
-    echo Possible issues:
-    echo   - Visual Studio not installed
-    echo   - PostgreSQL libpq not found
-    echo   - OpenSSL not found
-    echo.
-    echo To fix, install dependencies with vcpkg:
-    echo   1. Install vcpkg if not already installed:
-    echo      cd C:\
-    echo      git clone https://github.com/Microsoft/vcpkg.git
-    echo      cd vcpkg
-    echo      .\bootstrap-vcpkg.bat
-    echo      .\vcpkg integrate install
-    echo.
-    echo   2. Install dependencies:
-    echo      cd C:\vcpkg
-    echo      .\vcpkg install openssl:x64-windows libpq:x64-windows
-    echo.
-    echo   3. Run this script again
+    echo Please ensure:
+    echo   - Visual Studio Build Tools are installed
+    echo   - vcpkg dependencies are installed
+    echo   - vcpkg integrate install has been run
     echo.
     pause
     exit /b 1
@@ -201,7 +173,7 @@ echo.
 echo Building...
 cmake --build . --config %BUILD_TYPE% -j
 
-if %ERRORLEVEL% NEQ 0 (
+if errorlevel 1 (
     echo [ERROR] Build failed
     pause
     exit /b 1
@@ -231,6 +203,6 @@ echo.
 echo For local testing, use "localhost" as server
 echo.
 echo ============================================================================
-
 echo.
+
 pause
