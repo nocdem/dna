@@ -42,8 +42,9 @@ void print_user_menu(const char *identity) {
     printf("4. Delete message\n");
     printf("5. List sent messages\n");
     printf("6. List keyserver\n");
-    printf("7. Check for updates\n");
-    printf("8. Exit\n");
+    printf("7. Search messages\n");
+    printf("8. Check for updates\n");
+    printf("9. Exit\n");
     printf("\n");
     printf("Choice: ");
 }
@@ -400,6 +401,86 @@ int main(void) {
                     break;
 
                 case 7: {
+                    // Search messages submenu
+                    printf("\n=== Search Messages ===\n");
+                    printf("1. Search by sender\n");
+                    printf("2. Show conversation\n");
+                    printf("3. Search by date range\n");
+                    printf("\nChoice: ");
+
+                    char search_input[10];
+                    if (!fgets(search_input, sizeof(search_input), stdin)) break;
+                    int search_choice = atoi(search_input);
+
+                    switch (search_choice) {
+                        case 1: {
+                            // Search by sender
+                            printf("\nSender identity: ");
+                            char sender[100];
+                            if (!fgets(sender, sizeof(sender), stdin)) break;
+                            sender[strcspn(sender, "\n")] = 0;
+
+                            if (strlen(sender) > 0) {
+                                messenger_search_by_sender(ctx, sender);
+                            } else {
+                                printf("Error: Sender identity required\n");
+                            }
+                            break;
+                        }
+
+                        case 2: {
+                            // Show conversation
+                            printf("\nOther identity: ");
+                            char other[100];
+                            if (!fgets(other, sizeof(other), stdin)) break;
+                            other[strcspn(other, "\n")] = 0;
+
+                            if (strlen(other) > 0) {
+                                messenger_show_conversation(ctx, other);
+                            } else {
+                                printf("Error: Identity required\n");
+                            }
+                            break;
+                        }
+
+                        case 3: {
+                            // Search by date range
+                            printf("\nStart date (YYYY-MM-DD or leave empty): ");
+                            char start[20];
+                            if (!fgets(start, sizeof(start), stdin)) break;
+                            start[strcspn(start, "\n")] = 0;
+
+                            printf("End date (YYYY-MM-DD or leave empty): ");
+                            char end[20];
+                            if (!fgets(end, sizeof(end), stdin)) break;
+                            end[strcspn(end, "\n")] = 0;
+
+                            printf("Include sent messages? (Y/N): ");
+                            char sent_input[10];
+                            if (!fgets(sent_input, sizeof(sent_input), stdin)) break;
+                            bool include_sent = (sent_input[0] == 'Y' || sent_input[0] == 'y');
+
+                            printf("Include received messages? (Y/N): ");
+                            char recv_input[10];
+                            if (!fgets(recv_input, sizeof(recv_input), stdin)) break;
+                            bool include_received = (recv_input[0] == 'Y' || recv_input[0] == 'y');
+
+                            messenger_search_by_date(ctx,
+                                strlen(start) > 0 ? start : NULL,
+                                strlen(end) > 0 ? end : NULL,
+                                include_sent,
+                                include_received);
+                            break;
+                        }
+
+                        default:
+                            printf("Invalid search option\n");
+                            break;
+                    }
+                    break;
+                }
+
+                case 8: {
                     // Check for updates
                     printf("\n=== Check for Updates ===\n");
                     printf("Current version: %s\n", PQSIGNUM_VERSION);
@@ -499,7 +580,7 @@ int main(void) {
                     break;
                 }
 
-                case 8:
+                case 9:
                     // Exit
                     messenger_free(ctx);
                     printf("\nGoodbye!\n\n");

@@ -1191,3 +1191,194 @@ int messenger_delete_message(messenger_context_t *ctx, int message_id) {
     PQclear(res);
     return 0;
 }
+
+// ============================================================================
+// MESSAGE SEARCH/FILTERING
+// ============================================================================
+
+int messenger_search_by_sender(messenger_context_t *ctx, const char *sender) {
+    if (!ctx || !sender) {
+        return -1;
+    }
+
+    const char *paramValues[2] = {ctx->identity, sender};
+    const char *query =
+        "SELECT id, sender, created_at FROM messages "
+        "WHERE recipient = $1 AND sender = $2 "
+        "ORDER BY created_at DESC";
+
+    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, paramValues, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Search by sender failed: %s\n", PQerrorMessage(ctx->pg_conn));
+        PQclear(res);
+        return -1;
+    }
+
+    int rows = PQntuples(res);
+    printf("\n=== Messages from %s to %s (%d messages) ===\n\n", sender, ctx->identity, rows);
+
+    for (int i = 0; i < rows; i++) {
+        const char *id = PQgetvalue(res, i, 0);
+        const char *timestamp = PQgetvalue(res, i, 2);
+        printf("  [%s] %s\n", id, timestamp);
+    }
+
+    if (rows == 0) {
+        printf("  (no messages from %s)\n", sender);
+    }
+
+    printf("\n");
+    PQclear(res);
+    return 0;
+}
+
+int messenger_show_conversation(messenger_context_t *ctx, const char *other_identity) {
+    if (!ctx || !other_identity) {
+        return -1;
+    }
+
+    const char *paramValues[4] = {ctx->identity, other_identity, other_identity, ctx->identity};
+    const char *query =
+        "SELECT id, sender, recipient, created_at FROM messages "
+        "WHERE (sender = $1 AND recipient = $2) OR (sender = $3 AND recipient = $4) "
+        "ORDER BY created_at ASC";
+
+    PGresult *res = PQexecParams(ctx->pg_conn, query, 4, NULL, paramValues, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Show conversation failed: %s\n", PQerrorMessage(ctx->pg_conn));
+        PQclear(res);
+        return -1;
+    }
+
+    int rows = PQntuples(res);
+    printf("\n");
+    printf("========================================\n");
+    printf(" Conversation: %s <-> %s\n", ctx->identity, other_identity);
+    printf(" (%d messages)\n", rows);
+    printf("========================================\n\n");
+
+    for (int i = 0; i < rows; i++) {
+        const char *id = PQgetvalue(res, i, 0);
+        const char *sender = PQgetvalue(res, i, 1);
+        const char *recipient = PQgetvalue(res, i, 2);
+        const char *timestamp = PQgetvalue(res, i, 3);
+
+        // Format: [ID] timestamp sender -> recipient
+        if (strcmp(sender, ctx->identity) == 0) {
+            // Message sent by current user
+            printf("  [%s] %s  You -> %s\n", id, timestamp, recipient);
+        } else {
+            // Message received by current user
+            printf("  [%s] %s  %s -> You\n", id, timestamp, sender);
+        }
+    }
+
+    if (rows == 0) {
+        printf("  (no messages exchanged)\n");
+    }
+
+    printf("\n");
+    PQclear(res);
+    return 0;
+}
+
+int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
+                              const char *end_date, bool include_sent, bool include_received) {
+    if (!ctx) {
+        return -1;
+    }
+
+    if (!include_sent && !include_received) {
+        fprintf(stderr, "Error: Must include either sent or received messages\n");
+        return -1;
+    }
+
+    // Build dynamic query based on parameters
+    char query[1024];
+    int param_count = 1;  // Start with identity
+    const char *paramValues[5];
+    paramValues[0] = ctx->identity;
+
+    // Base query
+    strcpy(query, "SELECT id, sender, recipient, created_at FROM messages WHERE ");
+
+    // Sender/recipient conditions
+    if (include_sent && include_received) {
+        strcat(query, "(sender = $1 OR recipient = $1)");
+    } else if (include_sent) {
+        strcat(query, "sender = $1");
+    } else {
+        strcat(query, "recipient = $1");
+    }
+
+    // Date range conditions
+    if (start_date) {
+        param_count++;
+        char condition[64];
+        snprintf(condition, sizeof(condition), " AND created_at >= $%d", param_count);
+        strcat(query, condition);
+        paramValues[param_count - 1] = start_date;
+    }
+
+    if (end_date) {
+        param_count++;
+        char condition[64];
+        snprintf(condition, sizeof(condition), " AND created_at < $%d", param_count);
+        strcat(query, condition);
+        paramValues[param_count - 1] = end_date;
+    }
+
+    strcat(query, " ORDER BY created_at DESC");
+
+    PGresult *res = PQexecParams(ctx->pg_conn, query, param_count, NULL, paramValues, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Search by date failed: %s\n", PQerrorMessage(ctx->pg_conn));
+        PQclear(res);
+        return -1;
+    }
+
+    int rows = PQntuples(res);
+
+    printf("\n=== Messages");
+    if (start_date || end_date) {
+        printf(" (");
+        if (start_date) printf("from %s", start_date);
+        if (start_date && end_date) printf(" ");
+        if (end_date) printf("to %s", end_date);
+        printf(")");
+    }
+    if (include_sent && include_received) {
+        printf(" - Sent & Received");
+    } else if (include_sent) {
+        printf(" - Sent Only");
+    } else {
+        printf(" - Received Only");
+    }
+    printf(" ===\n\n");
+
+    printf("Found %d messages:\n\n", rows);
+
+    for (int i = 0; i < rows; i++) {
+        const char *id = PQgetvalue(res, i, 0);
+        const char *sender = PQgetvalue(res, i, 1);
+        const char *recipient = PQgetvalue(res, i, 2);
+        const char *timestamp = PQgetvalue(res, i, 3);
+
+        if (strcmp(sender, ctx->identity) == 0) {
+            printf("  [%s] %s  To: %s\n", id, timestamp, recipient);
+        } else {
+            printf("  [%s] %s  From: %s\n", id, timestamp, sender);
+        }
+    }
+
+    if (rows == 0) {
+        printf("  (no messages found)\n");
+    }
+
+    printf("\n");
+    PQclear(res);
+    return 0;
+}

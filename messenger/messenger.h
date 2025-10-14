@@ -223,6 +223,44 @@ int messenger_read_message(messenger_context_t *ctx, int message_id);
  */
 int messenger_delete_message(messenger_context_t *ctx, int message_id);
 
+/**
+ * Search messages by sender
+ *
+ * Shows all messages from a specific sender to current user
+ *
+ * @param ctx: Messenger context
+ * @param sender: Sender's identity to search for
+ * @return: 0 on success, -1 on error
+ */
+int messenger_search_by_sender(messenger_context_t *ctx, const char *sender);
+
+/**
+ * Show conversation with another user
+ *
+ * Shows all messages exchanged with another user (both sent and received),
+ * sorted by timestamp
+ *
+ * @param ctx: Messenger context
+ * @param other_identity: The other person's identity
+ * @return: 0 on success, -1 on error
+ */
+int messenger_show_conversation(messenger_context_t *ctx, const char *other_identity);
+
+/**
+ * Search messages by date range
+ *
+ * Shows messages (sent or received) within a specific date range
+ *
+ * @param ctx: Messenger context
+ * @param start_date: Start date (format: "YYYY-MM-DD") or NULL for no start limit
+ * @param end_date: End date (format: "YYYY-MM-DD") or NULL for no end limit
+ * @param include_sent: Include sent messages
+ * @param include_received: Include received messages
+ * @return: 0 on success, -1 on error
+ */
+int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
+                              const char *end_date, bool include_sent, bool include_received);
+
 #ifdef __cplusplus
 }
 #endif
