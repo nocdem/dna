@@ -149,19 +149,17 @@ set "VCPKG_TOOLCHAIN=C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
 
 if exist "%VCPKG_TOOLCHAIN%" (
     echo Found vcpkg toolchain at %VCPKG_TOOLCHAIN%
-    echo Running: cmake .. -DCMAKE_TOOLCHAIN_FILE=%VCPKG_TOOLCHAIN% -A x64
+    echo Running: cmake .. -DCMAKE_TOOLCHAIN_FILE="%VCPKG_TOOLCHAIN%" -A x64
     echo.
-    cmake .. -DCMAKE_TOOLCHAIN_FILE=%VCPKG_TOOLCHAIN% -A x64
-    set CMAKE_RESULT=%ERRORLEVEL%
+    cmake .. "-DCMAKE_TOOLCHAIN_FILE=%VCPKG_TOOLCHAIN%" -A x64
 ) else (
     echo vcpkg toolchain not found at %VCPKG_TOOLCHAIN%
-    echo Trying standard CMake (may fail if OpenSSL not found)...
+    echo Trying standard CMake ^(may fail if OpenSSL not found^)...
     echo.
     cmake .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
-    set CMAKE_RESULT=%ERRORLEVEL%
 )
 
-if %CMAKE_RESULT% NEQ 0 (
+if %ERRORLEVEL% NEQ 0 (
     echo.
     echo [ERROR] CMake configuration failed
     echo.
