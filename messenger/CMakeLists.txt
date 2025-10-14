@@ -96,7 +96,6 @@ set(COMMON_SOURCES
     bip39_pbkdf2.c
     seed_derivation.c
     kyber_deterministic.c
-    config.c
     dna_config.c
     # SDK Independence: New crypto modules
     qgp_random.c
@@ -139,48 +138,10 @@ if(WIN32)
     )
 endif()
 
-# Main CLI executable (with messenger support)
-add_executable(${PROJECT_NAME}
-    main.c
-    messenger.c
-    ${COMMON_SOURCES}
-)
-
-# Link flags
-set_property(TARGET ${PROJECT_NAME} APPEND_STRING PROPERTY LINK_FLAGS "-D_GNU_SOURCE")
-
-# Link libraries (SDK Independence: No SDK libraries needed)
-target_link_libraries(${PROJECT_NAME}
-    dna_lib          # DNA Messenger API library
-    OpenSSL::Crypto  # OpenSSL (AES, SHA256, Base64, Random)
-    kyber512         # Vendored Kyber512 KEM (includes FIPS202/SHAKE256)
-    dilithium        # Vendored Dilithium3 signatures
-    ${PQ_LIBRARY}    # PostgreSQL libpq for keyserver and messages
-    ${PLATFORM_LIBS} # Platform-specific libraries (bcrypt on Windows)
-)
-
-# Platform-specific link libraries
-if(NOT WIN32)
-    # Linux/Unix only
-    target_link_libraries(${PROJECT_NAME}
-        m                # Math library
-        pthread          # Threading
-    )
-endif()
-
-# Include directories (SDK Independence: No SDK includes needed)
-target_include_directories(${PROJECT_NAME} PRIVATE
-    ${CMAKE_SOURCE_DIR}        # QGP source directory
-    ${OPENSSL_INCLUDE_DIR}     # OpenSSL headers
-    ${PQ_INCLUDE_DIR}          # PostgreSQL headers
-)
-
-# Windows-specific includes for POSIX compatibility headers
-if(WIN32)
-    target_include_directories(${PROJECT_NAME} PRIVATE
-        ${CMAKE_SOURCE_DIR}/win32  # POSIX compatibility headers (getopt.h, dirent.h)
-    )
-endif()
+# DNA Messenger CLI (Phase 3)
+add_executable(dna_messenger messenger/main.c messenger.c)
+target_link_libraries(dna_messenger dna_lib ${PQ_LIBRARY})
+target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
 
 # Build type configuration
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -200,26 +161,11 @@ else()
     message(STATUS "Release build enabled")
 endif()
 
-# Example: basic_usage
-add_executable(basic_usage examples/basic_usage.c)
-target_link_libraries(basic_usage dna_lib)
-target_include_directories(basic_usage PRIVATE ${CMAKE_SOURCE_DIR})
-
-# Example: multi_recipient
-add_executable(multi_recipient examples/multi_recipient.c)
-target_link_libraries(multi_recipient dna_lib)
-target_include_directories(multi_recipient PRIVATE ${CMAKE_SOURCE_DIR})
-
-# DNA Messenger CLI (Phase 3)
-add_executable(dna_messenger messenger/main.c messenger.c)
-target_link_libraries(dna_messenger dna_lib ${PQ_LIBRARY})
-target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
-
 # Platform-specific install paths
 if(WIN32)
     # Windows: Install to current directory
-    install(TARGETS ${PROJECT_NAME} DESTINATION .)
+    install(TARGETS dna_messenger DESTINATION .)
 else()
     # Linux/Unix: Install to /usr/local/bin
-    install(TARGETS ${PROJECT_NAME} DESTINATION bin)
+    install(TARGETS dna_messenger DESTINATION bin)
 endif()

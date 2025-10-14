@@ -309,9 +309,8 @@ int cmd_keyring_import(const char *pubkey_file, const char *name) {
  * @return: 0 on success, non-zero on error
  */
 int cmd_keyring_list(void) {
-    // Get default key name from config
-    const qgp_config_t *config = qgp_config_get();
-    const char *default_key = config ? config->default_key_name : NULL;
+    // DNA Messenger doesn't use default keys
+    const char *default_key = NULL;
     char *index_path = get_keyring_index_path();
     FILE *f = fopen(index_path, "r");
     free(index_path);
