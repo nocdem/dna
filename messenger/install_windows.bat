@@ -136,8 +136,15 @@ echo Step 4: Configure with CMake
 echo ============================================================================
 echo.
 
-echo Running CMake configuration...
-cmake .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
+REM Check if vcpkg is available
+where vcpkg >nul 2>&1
+if %ERRORLEVEL% EQU 0 (
+    echo Found vcpkg, using vcpkg toolchain...
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64
+) else (
+    echo vcpkg not found, trying standard CMake...
+    cmake .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
+)
 
 if %ERRORLEVEL% NEQ 0 (
     echo [ERROR] CMake configuration failed
@@ -147,9 +154,18 @@ if %ERRORLEVEL% NEQ 0 (
     echo   - PostgreSQL libpq not found
     echo   - OpenSSL not found
     echo.
-    echo For libpq, try:
-    echo   vcpkg install libpq:x64-windows openssl:x64-windows
-    echo   vcpkg integrate install
+    echo To fix, install dependencies with vcpkg:
+    echo   1. Install vcpkg:
+    echo      cd C:\
+    echo      git clone https://github.com/Microsoft/vcpkg.git
+    echo      cd vcpkg
+    echo      .\bootstrap-vcpkg.bat
+    echo      .\vcpkg integrate install
+    echo.
+    echo   2. Install dependencies:
+    echo      .\vcpkg install openssl:x64-windows libpq:x64-windows
+    echo.
+    echo   3. Run this script again
     echo.
     pause
     exit /b 1
