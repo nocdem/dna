@@ -152,7 +152,8 @@ dna_error_t dna_encrypt_message(
  * @param plaintext: Plaintext message buffer
  * @param plaintext_len: Plaintext length
  * @param recipient_enc_pubkey: Recipient's Kyber512 public key (800 bytes)
- * @param sender_sign_privkey: Sender's Dilithium3 private key (4016 bytes)
+ * @param sender_sign_pubkey: Sender's Dilithium3 public key (1952 bytes)
+ * @param sender_sign_privkey: Sender's Dilithium3 private key (4032 bytes)
  * @param ciphertext_out: Output ciphertext buffer (caller must free)
  * @param ciphertext_len_out: Output ciphertext length
  * @return: DNA_OK on success, error code otherwise
@@ -162,6 +163,7 @@ dna_error_t dna_encrypt_message_raw(
     const uint8_t *plaintext,
     size_t plaintext_len,
     const uint8_t *recipient_enc_pubkey,
+    const uint8_t *sender_sign_pubkey,
     const uint8_t *sender_sign_privkey,
     uint8_t **ciphertext_out,
     size_t *ciphertext_len_out
@@ -202,6 +204,30 @@ dna_error_t dna_decrypt_message(
     size_t *plaintext_len_out,
     uint8_t **sender_pubkey_out,
     size_t *sender_pubkey_len_out
+);
+
+/**
+ * Decrypt message with raw keys (for PostgreSQL integration)
+ *
+ * @param ctx: DNA context
+ * @param ciphertext: Encrypted message buffer
+ * @param ciphertext_len: Ciphertext length
+ * @param recipient_enc_privkey: Recipient's Kyber512 private key (1632 bytes)
+ * @param plaintext_out: Output plaintext buffer (caller must free)
+ * @param plaintext_len_out: Output plaintext length
+ * @param sender_sign_pubkey_out: Sender's Dilithium3 public key (caller must free)
+ * @param sender_sign_pubkey_len_out: Sender's public key length
+ * @return: DNA_OK on success, error code otherwise
+ */
+dna_error_t dna_decrypt_message_raw(
+    dna_context_t *ctx,
+    const uint8_t *ciphertext,
+    size_t ciphertext_len,
+    const uint8_t *recipient_enc_privkey,
+    uint8_t **plaintext_out,
+    size_t *plaintext_len_out,
+    uint8_t **sender_sign_pubkey_out,
+    size_t *sender_sign_pubkey_len_out
 );
 
 // ============================================================================

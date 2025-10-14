@@ -32,9 +32,10 @@ void print_user_menu(const char *identity) {
     printf("\n");
     printf("1. Send message\n");
     printf("2. List inbox\n");
-    printf("3. List sent messages\n");
-    printf("4. List keyserver\n");
-    printf("5. Logout\n");
+    printf("3. Read message\n");
+    printf("4. List sent messages\n");
+    printf("5. List keyserver\n");
+    printf("6. Logout\n");
     printf("\n");
     printf("Choice: ");
 }
@@ -209,15 +210,30 @@ int main(void) {
                     messenger_list_messages(ctx);
                     break;
 
-                case 3:
+                case 3: {
+                    // Read message
+                    printf("\nMessage ID: ");
+                    char id_input[32];
+                    if (!fgets(id_input, sizeof(id_input), stdin)) break;
+                    int message_id = atoi(id_input);
+
+                    if (message_id > 0) {
+                        messenger_read_message(ctx, message_id);
+                    } else {
+                        printf("Error: Invalid message ID\n");
+                    }
+                    break;
+                }
+
+                case 4:
                     messenger_list_sent_messages(ctx);
                     break;
 
-                case 4:
+                case 5:
                     messenger_list_pubkeys(ctx);
                     break;
 
-                case 5:
+                case 6:
                     // Logout
                     messenger_free(ctx);
                     ctx = NULL;

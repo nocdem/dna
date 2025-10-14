@@ -122,7 +122,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
 
     // Generate Dilithium3 signing key
     uint8_t dilithium_pk[1952];  // Dilithium3 public key size
-    uint8_t dilithium_sk[4016];  // Dilithium3 secret key size
+    uint8_t dilithium_sk[4032];  // Dilithium3 secret key size (correct size!)
 
     if (qgp_dilithium3_keypair(dilithium_pk, dilithium_sk) != 0) {
         fprintf(stderr, "Error: Dilithium key generation failed\n");
@@ -352,13 +352,27 @@ int messenger_send_message(
         return -1;
     }
 
-    uint8_t sender_sign_privkey[4016];  // Dilithium3 private key size
+    uint8_t sender_sign_privkey[4032];  // Dilithium3 private key size (correct!)
     size_t read_size = fread(sender_sign_privkey, 1, sizeof(sender_sign_privkey), f);
     fclose(f);
 
     if (read_size != sizeof(sender_sign_privkey)) {
         fprintf(stderr, "Error: Invalid private key size: %zu (expected %zu)\n",
                 read_size, sizeof(sender_sign_privkey));
+        free(sign_pubkey);
+        free(enc_pubkey);
+        return -1;
+    }
+
+    // Load sender's public signing key from PostgreSQL
+    uint8_t *sender_sign_pubkey_pg = NULL;
+    uint8_t *sender_enc_pubkey_pg = NULL;
+    size_t sender_sign_len = 0, sender_enc_len = 0;
+
+    if (messenger_load_pubkey(ctx, ctx->identity, &sender_sign_pubkey_pg, &sender_sign_len,
+                               &sender_enc_pubkey_pg, &sender_enc_len) != 0) {
+        fprintf(stderr, "Error: Could not load sender's public key from keyserver\n");
+        memset(sender_sign_privkey, 0, sizeof(sender_sign_privkey));
         free(sign_pubkey);
         free(enc_pubkey);
         return -1;
@@ -373,6 +387,7 @@ int messenger_send_message(
         (const uint8_t*)message,
         strlen(message),
         enc_pubkey,  // Recipient's Kyber512 public key (800 bytes)
+        sender_sign_pubkey_pg,  // Sender's Dilithium3 public key (1952 bytes)
         sender_sign_privkey,  // Sender's Dilithium3 private key (4016 bytes)
         &ciphertext,
         &ciphertext_len
@@ -383,6 +398,8 @@ int messenger_send_message(
 
     free(sign_pubkey);
     free(enc_pubkey);
+    free(sender_sign_pubkey_pg);
+    free(sender_enc_pubkey_pg);
 
     if (err != DNA_OK) {
         fprintf(stderr, "Error: Encryption failed: %s\n", dna_error_string(err));
@@ -504,9 +521,124 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
         return -1;
     }
 
-    // TODO: Implement message decryption
-    fprintf(stderr, "Error: messenger_read_message not yet implemented\n");
-    return -1;
+    // Fetch message from database
+    char id_str[32];
+    snprintf(id_str, sizeof(id_str), "%d", message_id);
+    const char *paramValues[1] = {id_str};
+    const char *query = "SELECT sender, ciphertext FROM messages WHERE id = $1 AND recipient = $2";
+
+    const char *params[2] = {id_str, ctx->identity};
+    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 1); // Binary result
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        fprintf(stderr, "Fetch message failed: %s\n", PQerrorMessage(ctx->pg_conn));
+        PQclear(res);
+        return -1;
+    }
+
+    if (PQntuples(res) == 0) {
+        fprintf(stderr, "Message %d not found or not for you\n", message_id);
+        PQclear(res);
+        return -1;
+    }
+
+    const char *sender = PQgetvalue(res, 0, 0);
+    const uint8_t *ciphertext = (const uint8_t*)PQgetvalue(res, 0, 1);
+    size_t ciphertext_len = PQgetlength(res, 0, 1);
+
+    printf("\n========================================\n");
+    printf(" Message #%d from %s\n", message_id, sender);
+    printf("========================================\n\n");
+
+    // Load recipient's private Kyber512 key from filesystem
+    const char *home = qgp_platform_home_dir();
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s-kyber512.pqkey", home, ctx->identity);
+
+    FILE *f = fopen(kyber_path, "rb");
+    if (!f) {
+        fprintf(stderr, "Error: Cannot load private key from %s\n", kyber_path);
+        PQclear(res);
+        return -1;
+    }
+
+    uint8_t kyber_privkey[1632];  // Kyber512 private key size
+    size_t read_size = fread(kyber_privkey, 1, sizeof(kyber_privkey), f);
+    fclose(f);
+
+    if (read_size != sizeof(kyber_privkey)) {
+        fprintf(stderr, "Error: Invalid private key size\n");
+        PQclear(res);
+        return -1;
+    }
+
+    // Decrypt message using raw key
+    uint8_t *plaintext = NULL;
+    size_t plaintext_len = 0;
+    uint8_t *sender_sign_pubkey_from_msg = NULL;
+    size_t sender_sign_pubkey_len = 0;
+
+    dna_error_t err = dna_decrypt_message_raw(
+        ctx->dna_ctx,
+        ciphertext,
+        ciphertext_len,
+        kyber_privkey,
+        &plaintext,
+        &plaintext_len,
+        &sender_sign_pubkey_from_msg,
+        &sender_sign_pubkey_len
+    );
+
+    // Secure wipe
+    memset(kyber_privkey, 0, sizeof(kyber_privkey));
+
+    if (err != DNA_OK) {
+        fprintf(stderr, "Error: Decryption failed: %s\n", dna_error_string(err));
+        PQclear(res);
+        return -1;
+    }
+
+    // Verify sender's public key against keyserver
+    uint8_t *sender_sign_pubkey_keyserver = NULL;
+    uint8_t *sender_enc_pubkey_keyserver = NULL;
+    size_t sender_sign_len_keyserver = 0, sender_enc_len_keyserver = 0;
+
+    if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
+                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver) != 0) {
+        fprintf(stderr, "Warning: Could not verify sender '%s' against keyserver\n", sender);
+        fprintf(stderr, "Message decrypted but sender identity NOT verified!\n");
+    } else {
+        // Compare public keys
+        if (sender_sign_len_keyserver != sender_sign_pubkey_len ||
+            memcmp(sender_sign_pubkey_keyserver, sender_sign_pubkey_from_msg, sender_sign_pubkey_len) != 0) {
+            fprintf(stderr, "ERROR: Sender public key mismatch!\n");
+            fprintf(stderr, "The message claims to be from '%s' but the signature doesn't match keyserver.\n", sender);
+            fprintf(stderr, "Possible spoofing attempt!\n");
+            free(plaintext);
+            free(sender_sign_pubkey_from_msg);
+            free(sender_sign_pubkey_keyserver);
+            free(sender_enc_pubkey_keyserver);
+            PQclear(res);
+            return -1;
+        }
+        free(sender_sign_pubkey_keyserver);
+        free(sender_enc_pubkey_keyserver);
+    }
+
+    // Display message
+    printf("Message:\n");
+    printf("----------------------------------------\n");
+    printf("%.*s\n", (int)plaintext_len, plaintext);
+    printf("----------------------------------------\n");
+    printf("✓ Signature verified from %s\n", sender);
+    printf("✓ Sender identity verified against keyserver\n");
+
+    // Cleanup
+    free(plaintext);
+    free(sender_sign_pubkey_from_msg);
+    PQclear(res);
+    printf("\n");
+    return 0;
 }
 
 int messenger_delete_pubkey(messenger_context_t *ctx, const char *identity) {
