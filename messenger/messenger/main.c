@@ -40,7 +40,7 @@ void print_user_menu(const char *identity) {
     printf("3. Read message\n");
     printf("4. List sent messages\n");
     printf("5. List keyserver\n");
-    printf("6. Logout\n");
+    printf("6. Exit\n");
     printf("\n");
     printf("Choice: ");
 }
@@ -307,12 +307,10 @@ int main(void) {
                     break;
 
                 case 6:
-                    // Logout
+                    // Exit
                     messenger_free(ctx);
-                    ctx = NULL;
-                    current_identity[0] = '\0';
-                    printf("\n✓ Logged out\n");
-                    break;
+                    printf("\nGoodbye!\n\n");
+                    return 0;
 
                 default:
                     printf("Invalid choice\n");
