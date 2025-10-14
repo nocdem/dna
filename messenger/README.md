@@ -6,10 +6,20 @@ DNA Messenger is a secure, privacy-focused messaging system built on post-quantu
 
 ## Project Status
 
-🚧 **In Development** - Fork preparation phase
+🚧 **In Development** - Phase 3: CLI Messenger (Active)
 
-**Current Version:** 0.1.0-alpha
+**Current Version:** 0.1.43-alpha
 **Based On:** QGP 1.2.x (file encryption tool)
+
+### Recent Updates (2025-10-14)
+
+- ✅ **PostgreSQL Integration**: Shared keyserver and message storage
+- ✅ **BIP39 Recovery**: 24-word mnemonic seed phrases for key backup/restore
+- ✅ **File-based Restore**: Import keys from seed phrase files
+- ✅ **Windows Support**: Cross-platform BIP39 generation and ASCII-only display
+- ✅ **Auto-login**: Automatic identity detection on startup
+- ✅ **End-to-End Encryption**: Messages encrypted with post-quantum algorithms
+- ✅ **Keyserver Verification**: Restored keys validated against server
 
 ## What is DNA Messenger?
 
@@ -263,23 +273,30 @@ make
 
 ## Development Roadmap
 
-### Phase 1: Foundation (Current)
+### Phase 1: Foundation ✅ COMPLETE
 - [x] Fork from QGP
-- [ ] Repository cleanup and branding
-- [ ] Update build system
-- [ ] Create development documentation
+- [x] Repository cleanup and branding
+- [x] Update build system
+- [x] Create development documentation
 
-### Phase 2: Library API (Next)
-- [ ] Design memory-based API
-- [ ] Implement message encryption/decryption
-- [ ] Create contact management
-- [ ] Build keyring integration
+### Phase 2: Library API ✅ COMPLETE
+- [x] Design memory-based API (dna_api.h)
+- [x] Implement message encryption/decryption
+- [x] Create contact management (keyserver)
+- [x] Build keyring integration
 
-### Phase 3: CLI Messenger (Reference Implementation)
-- [ ] Command-line chat interface
-- [ ] Local message storage
-- [ ] Contact list management
-- [ ] Message send/receive
+### Phase 3: CLI Messenger 🚧 IN PROGRESS
+- [x] Command-line chat interface
+- [x] PostgreSQL message storage
+- [x] Contact list management (keyserver table)
+- [x] Message send/receive
+- [x] BIP39 mnemonic key generation
+- [x] Key restore from seed phrase
+- [x] Auto-login for existing identities
+- [x] Windows support
+- [ ] Message deletion
+- [ ] Identity deletion
+- [ ] Message search/filtering
 
 ### Phase 4: Network Layer
 - [ ] WebSocket transport
@@ -305,19 +322,31 @@ make
 - [ ] Group messaging
 - [ ] Voice/video calls (future)
 
-## Current Features (Inherited from QGP)
+## Current Features
 
-Since DNA Messenger is newly forked, it currently has all QGP features:
+### Messaging Features
+- ✅ **Post-Quantum Encryption**: Kyber512 + Dilithium3 for quantum-resistant security
+- ✅ **End-to-End Encryption**: Messages encrypted on device before transmission
+- ✅ **PostgreSQL Backend**: Shared database for keyserver and message storage
+- ✅ **Identity Management**: Create and restore identities with BIP39 recovery
+- ✅ **Message Operations**: Send, receive, list inbox/sent messages
+- ✅ **Auto-login**: Automatic detection of existing local identities
+- ✅ **Cross-Platform**: Linux and Windows support
 
-- Post-quantum key generation (Dilithium3, Kyber512)
-- File signing and verification
-- File encryption/decryption
-- Multi-recipient encryption
-- ASCII armor support
-- Keyring management
-- BIP39 mnemonic key recovery
+### Key Management
+- ✅ **BIP39 Recovery Phrases**: 24-word mnemonic for key backup
+- ✅ **Deterministic Keys**: Same seed always produces same keys
+- ✅ **File-based Restore**: Import keys from seed phrase files
+- ✅ **Keyserver Verification**: Restored keys validated against server
+- ✅ **Secure Storage**: Private keys stored locally (~/.dna/)
+- ✅ **Public Key Sharing**: Automatic upload to shared keyserver
 
-These will be adapted for messenger use in upcoming development phases.
+### Cryptographic Features
+- ✅ **Dilithium3 Signatures**: NIST ML-DSA-65 (FIPS 204) for authentication
+- ✅ **Kyber512 KEM**: Post-quantum key encapsulation
+- ✅ **AES-256-GCM**: Authenticated symmetric encryption
+- ✅ **PBKDF2-HMAC-SHA512**: Key derivation from passphrases
+- ✅ **ASCII Armor**: Human-readable key export format
 
 ## Contributing
 
