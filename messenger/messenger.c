@@ -15,6 +15,7 @@
 #include "qgp_platform.h"
 #include "qgp_dilithium.h"
 #include "qgp_kyber.h"
+#include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
 
 // Global configuration
 static dna_config_t g_config;
@@ -103,8 +104,6 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
         return -1;
     }
 
-    printf("\n[Generating keys for '%s']\n", identity);
-
     // Check if identity already exists in keyserver
     uint8_t *existing_sign = NULL, *existing_enc = NULL;
     size_t sign_len = 0, enc_len = 0;
@@ -127,55 +126,54 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     char dna_dir[512];
     snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
 
-    if (qgp_platform_mkdir(dna_dir) != 0 && errno != EEXIST) {
-        fprintf(stderr, "Error: Cannot create %s\n", dna_dir);
+    // Use the QGP function to generate keys with BIP39 seed phrase
+    // This will show the user their recovery seed and generate keys deterministically
+    if (cmd_gen_key_from_seed(identity, "dilithium", dna_dir) != 0) {
+        fprintf(stderr, "Error: Key generation failed\n");
         return -1;
     }
 
-    // Generate Dilithium3 signing key
-    uint8_t dilithium_pk[1952];  // Dilithium3 public key size
-    uint8_t dilithium_sk[4032];  // Dilithium3 secret key size (correct size!)
+    // cmd_gen_key_from_seed creates keys in QGP format which includes public keys
+    // Now we need to export the public keys and upload to keyserver
 
-    if (qgp_dilithium3_keypair(dilithium_pk, dilithium_sk) != 0) {
-        fprintf(stderr, "Error: Dilithium key generation failed\n");
+    char pubkey_path[512];
+    snprintf(pubkey_path, sizeof(pubkey_path), "%s/%s.pub", dna_dir, identity);
+
+    // Export public key bundle
+    if (cmd_export_pubkey(identity, dna_dir, pubkey_path) != 0) {
+        fprintf(stderr, "Error: Failed to export public key\n");
         return -1;
     }
 
-    printf("✓ Dilithium3 signing key generated\n");
-
-    // Generate Kyber512 encryption key
-    uint8_t kyber_pk[800];   // Kyber512 public key size
-    uint8_t kyber_sk[1632];  // Kyber512 secret key size
-
-    if (qgp_kyber512_keypair(kyber_pk, kyber_sk) != 0) {
-        fprintf(stderr, "Error: Kyber key generation failed\n");
-        return -1;
-    }
-
-    printf("✓ Kyber512 encryption key generated\n");
-
-    // Save private keys to filesystem
-    char dilithium_path[512], kyber_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s-kyber512.pqkey", dna_dir, identity);
-
-    FILE *f = fopen(dilithium_path, "wb");
+    // Read the exported public key bundle to extract keys for PostgreSQL upload
+    FILE *f = fopen(pubkey_path, "rb");
     if (!f) {
-        fprintf(stderr, "Error: Cannot create %s\n", dilithium_path);
+        fprintf(stderr, "Error: Cannot open exported public key\n");
         return -1;
     }
-    fwrite(dilithium_sk, 1, sizeof(dilithium_sk), f);
-    fclose(f);
-    printf("✓ Private signing key saved: %s\n", dilithium_path);
 
-    f = fopen(kyber_path, "wb");
-    if (!f) {
-        fprintf(stderr, "Error: Cannot create %s\n", kyber_path);
+    // Read public key bundle header (24 bytes) + keys
+    uint8_t dilithium_pk[1952];
+    uint8_t kyber_pk[800];
+
+    // Skip header (24 bytes)
+    fseek(f, 24, SEEK_SET);
+
+    // Read Dilithium3 public key (1952 bytes)
+    if (fread(dilithium_pk, 1, sizeof(dilithium_pk), f) != sizeof(dilithium_pk)) {
+        fprintf(stderr, "Error: Failed to read signing public key\n");
+        fclose(f);
         return -1;
     }
-    fwrite(kyber_sk, 1, sizeof(kyber_sk), f);
+
+    // Read Kyber512 public key (800 bytes)
+    if (fread(kyber_pk, 1, sizeof(kyber_pk), f) != sizeof(kyber_pk)) {
+        fprintf(stderr, "Error: Failed to read encryption public key\n");
+        fclose(f);
+        return -1;
+    }
+
     fclose(f);
-    printf("✓ Private encryption key saved: %s\n", kyber_path);
 
     // Upload public keys to keyserver
     if (messenger_store_pubkey(ctx, identity, dilithium_pk, sizeof(dilithium_pk),
@@ -184,7 +182,19 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
         return -1;
     }
 
-    printf("✓ Key generation complete for '%s'\n\n", identity);
+    // Rename key files for messenger compatibility
+    // Messenger expects: <identity>-dilithium.pqkey and <identity>-kyber512.pqkey
+    // QGP creates: <identity>-dilithium3.pqkey and <identity>-kyber512.pqkey
+    char dilithium3_path[512], dilithium_path[512];
+    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
+
+    if (rename(dilithium3_path, dilithium_path) != 0) {
+        fprintf(stderr, "Warning: Could not rename signing key file\n");
+    }
+
+    printf("\n✓ Keys uploaded to keyserver\n");
+    printf("✓ Identity '%s' is now ready to use!\n\n", identity);
     return 0;
 }
 
