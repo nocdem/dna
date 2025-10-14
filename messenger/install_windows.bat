@@ -145,16 +145,14 @@ echo ===========================================================================
 echo.
 
 REM Check if vcpkg toolchain file exists
-set "VCPKG_TOOLCHAIN=C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
-
-if exist "%VCPKG_TOOLCHAIN%" (
-    echo Found vcpkg toolchain at %VCPKG_TOOLCHAIN%
-    echo Running: cmake .. -DCMAKE_TOOLCHAIN_FILE="%VCPKG_TOOLCHAIN%" -A x64
+if exist "C:\vcpkg\scripts\buildsystems\vcpkg.cmake" (
+    echo Found vcpkg toolchain at C:\vcpkg\scripts\buildsystems\vcpkg.cmake
+    echo Running cmake with vcpkg toolchain...
     echo.
-    cmake .. "-DCMAKE_TOOLCHAIN_FILE=%VCPKG_TOOLCHAIN%" -A x64
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64
 ) else (
-    echo vcpkg toolchain not found at %VCPKG_TOOLCHAIN%
-    echo Trying standard CMake ^(may fail if OpenSSL not found^)...
+    echo vcpkg toolchain not found at C:\vcpkg\scripts\buildsystems\vcpkg.cmake
+    echo Trying standard CMake - may fail if OpenSSL not found
     echo.
     cmake .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
 )
