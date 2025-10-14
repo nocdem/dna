@@ -15,11 +15,10 @@ void print_main_menu(void) {
     printf(" DNA Messenger\n");
     printf("=========================================\n");
     printf("\n");
-    printf("1. Create new identity\n");
-    printf("2. Choose existing identity\n");
-    printf("3. Lookup identity (from server)\n");
-    printf("4. Configure server\n");
-    printf("5. Exit\n");
+    printf("1. Create new identity (auto-login)\n");
+    printf("2. Lookup identity (from server)\n");
+    printf("3. Configure server\n");
+    printf("4. Exit\n");
     printf("\n");
     printf("Choice: ");
 }
@@ -75,51 +74,37 @@ int main(void) {
 
             switch (choice) {
                 case 1: {
-                    // Create new identity
+                    // Create new identity and auto-login
                     printf("\nNew identity name: ");
                     char new_id[100];
                     if (!fgets(new_id, sizeof(new_id), stdin)) break;
                     new_id[strcspn(new_id, "\n")] = 0;
 
+                    if (strlen(new_id) == 0) {
+                        printf("Error: Identity name cannot be empty\n");
+                        break;
+                    }
+
                     // Initialize temporary context for keygen
                     messenger_context_t *temp_ctx = messenger_init("system");
                     if (temp_ctx) {
-                        messenger_generate_keys(temp_ctx, new_id);
-                        messenger_free(temp_ctx);
+                        if (messenger_generate_keys(temp_ctx, new_id) == 0) {
+                            messenger_free(temp_ctx);
+
+                            // Auto-login after successful key generation
+                            ctx = messenger_init(new_id);
+                            if (ctx) {
+                                strcpy(current_identity, new_id);
+                                printf("\n✓ Logged in as '%s'\n", new_id);
+                            }
+                        } else {
+                            messenger_free(temp_ctx);
+                        }
                     }
                     break;
                 }
 
                 case 2: {
-                    // Choose existing identity
-                    list_local_identities();
-                    printf("Identity to login as: ");
-                    char identity[100];
-                    if (!fgets(identity, sizeof(identity), stdin)) break;
-                    identity[strcspn(identity, "\n")] = 0;
-
-                    // Check if private keys exist
-                    const char *home = getenv("HOME");
-                    char key_path[512];
-                    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium.pqkey", home, identity);
-
-                    FILE *f = fopen(key_path, "rb");
-                    if (!f) {
-                        printf("Error: Identity '%s' not found\n", identity);
-                        break;
-                    }
-                    fclose(f);
-
-                    // Login
-                    ctx = messenger_init(identity);
-                    if (ctx) {
-                        strcpy(current_identity, identity);
-                        printf("\n✓ Logged in as '%s'\n", identity);
-                    }
-                    break;
-                }
-
-                case 3: {
                     // Lookup identity from server
                     printf("\nIdentity to lookup: ");
                     char lookup_id[100];
@@ -146,7 +131,7 @@ int main(void) {
                     break;
                 }
 
-                case 4: {
+                case 3: {
                     // Configure server
                     dna_config_t config;
                     if (dna_config_setup(&config) == 0) {
@@ -158,7 +143,7 @@ int main(void) {
                     break;
                 }
 
-                case 5:
+                case 4:
                     printf("\nGoodbye!\n\n");
                     return 0;
 

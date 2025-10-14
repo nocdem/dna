@@ -105,6 +105,18 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
 
     printf("\n[Generating keys for '%s']\n", identity);
 
+    // Check if identity already exists in keyserver
+    uint8_t *existing_sign = NULL, *existing_enc = NULL;
+    size_t sign_len = 0, enc_len = 0;
+
+    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
+        free(existing_sign);
+        free(existing_enc);
+        fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
+        fprintf(stderr, "Please choose a different name.\n\n");
+        return -1;
+    }
+
     // Create ~/.dna directory
     const char *home = qgp_platform_home_dir();
     if (!home) {
