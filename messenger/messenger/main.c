@@ -319,19 +319,36 @@ int main(void) {
 
                         printf("\nUpdating DNA Messenger...\n\n");
 
+                        // Find git repository root (where .git directory is)
+                        char update_cmd[2048];
+
 #ifdef _WIN32
-                        // Windows: run install script
-                        system("cd /d C:\\dna-messenger && git pull origin main && "
-                               "cd build && cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64 && "
-                               "cmake --build . --config Release");
+                        // Windows: find repo and update
+                        snprintf(update_cmd, sizeof(update_cmd),
+                                "powershell -Command \"$repo = git rev-parse --show-toplevel 2>$null; "
+                                "if ($repo) { cd $repo; git pull origin main; cd build; "
+                                "cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64; "
+                                "cmake --build . --config Release } else { Write-Host 'Not a git repository' }\"");
 #else
-                        // Linux: run install script
-                        system("cd /opt/dna-messenger && git pull origin main && "
-                               "cd build && cmake .. && make -j$(nproc)");
+                        // Linux: find repo and update
+                        snprintf(update_cmd, sizeof(update_cmd),
+                                "REPO=$(git rev-parse --show-toplevel 2>/dev/null); "
+                                "if [ -n \"$REPO\" ]; then "
+                                "cd \"$REPO\" && git pull origin main && "
+                                "cd build && cmake .. && make -j$(nproc); "
+                                "else echo 'Not a git repository'; fi");
 #endif
 
-                        printf("\n✓ Update complete!\n");
-                        printf("Please restart DNA Messenger to use the new version.\n");
+                        int result = system(update_cmd);
+
+                        if (result == 0) {
+                            printf("\n✓ Update complete!\n");
+                            printf("Please restart DNA Messenger to use the new version.\n");
+                        } else {
+                            printf("\n✗ Update failed!\n");
+                            printf("Make sure you're running from the git repository.\n");
+                        }
+
                         messenger_free(ctx);
                         return 0;
                     } else {
