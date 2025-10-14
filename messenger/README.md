@@ -183,12 +183,18 @@ sudo pacman -S postgresql-libs
 #### Running the Messenger
 
 ```bash
-# Connect to the DNA server
-export DNA_SERVER="postgresql://dna:dna_password@your-server.com:5432/dna_messenger"
+# First run - configure server
 ./messenger_test
+# Choose option 4: Configure server
+# Enter your server details:
+#   Server host: 192.168.0.1 (or your-server.com)
+#   Server port: 5432
+#   Database: dna_messenger
+#   Username: dna
+#   Password: dna_password
 
-# Or edit ~/.bashrc to make it permanent:
-echo 'export DNA_SERVER="postgresql://dna:password@server.com:5432/dna_messenger"' >> ~/.bashrc
+# Settings are saved to ~/.dna/config
+# All future runs will use these settings automatically
 ```
 
 ### Usage Example
