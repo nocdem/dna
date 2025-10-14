@@ -125,65 +125,25 @@ int dna_config_setup(dna_config_t *config) {
 
     printf("\n=== DNA Messenger - Server Configuration ===\n\n");
 
-    // Server host
-    printf("Server host (IP or domain): ");
+    // Only ask for server IP/hostname
+    printf("DNA Server (IP or hostname): ");
     if (!fgets(config->server_host, sizeof(config->server_host), stdin)) {
         return -1;
     }
     config->server_host[strcspn(config->server_host, "\n")] = 0;
 
-    // Server port
-    printf("Server port [5432]: ");
-    char port_str[16];
-    if (!fgets(port_str, sizeof(port_str), stdin)) {
+    if (strlen(config->server_host) == 0) {
+        fprintf(stderr, "Error: Server address required\n");
         return -1;
     }
-    port_str[strcspn(port_str, "\n")] = 0;
-    if (port_str[0] == '\0') {
-        config->server_port = 5432;
-    } else {
-        config->server_port = atoi(port_str);
-    }
 
-    // Database name
-    printf("Database name [dna_messenger]: ");
-    char db[64];
-    if (!fgets(db, sizeof(db), stdin)) {
-        return -1;
-    }
-    db[strcspn(db, "\n")] = 0;
-    if (db[0] == '\0') {
-        strcpy(config->database, "dna_messenger");
-    } else {
-        strncpy(config->database, db, sizeof(config->database) - 1);
-    }
+    // Set defaults (standard DNA Messenger values)
+    config->server_port = 5432;
+    strcpy(config->database, "dna_messenger");
+    strcpy(config->username, "dna");
+    strcpy(config->password, "dna_password");
 
-    // Username
-    printf("Username [dna]: ");
-    char user[64];
-    if (!fgets(user, sizeof(user), stdin)) {
-        return -1;
-    }
-    user[strcspn(user, "\n")] = 0;
-    if (user[0] == '\0') {
-        strcpy(config->username, "dna");
-    } else {
-        strncpy(config->username, user, sizeof(config->username) - 1);
-    }
-
-    // Password
-    printf("Password [dna_password]: ");
-    char pass[128];
-    if (!fgets(pass, sizeof(pass), stdin)) {
-        return -1;
-    }
-    pass[strcspn(pass, "\n")] = 0;
-    if (pass[0] == '\0') {
-        strcpy(config->password, "dna_password");
-    } else {
-        strncpy(config->password, pass, sizeof(config->password) - 1);
-    }
-
+    printf("\n✓ Server configured: %s:%d\n", config->server_host, config->server_port);
     printf("\n");
     return 0;
 }
