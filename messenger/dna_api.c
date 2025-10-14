@@ -61,6 +61,21 @@ typedef struct {
 __attribute__((packed))
 #endif
 dna_recipient_entry_t;
+
+// Public key bundle header (for parsing .pub files)
+typedef struct {
+    char magic[8];
+    uint8_t version;
+    uint8_t sign_key_type;
+    uint8_t enc_key_type;
+    uint8_t reserved;
+    uint32_t sign_pubkey_size;
+    uint32_t enc_pubkey_size;
+}
+#ifndef _MSC_VER
+__attribute__((packed))
+#endif
+pubkey_bundle_header_t;
 #ifdef _MSC_VER
 #pragma pack(pop)
 #endif
@@ -311,16 +326,6 @@ dna_error_t dna_encrypt_message(
         free(pubkey_path);
 
         // Parse bundle header
-        typedef struct {
-            char magic[8];
-            uint8_t version;
-            uint8_t sign_key_type;
-            uint8_t enc_key_type;
-            uint8_t reserved;
-            uint32_t sign_pubkey_size;
-            uint32_t enc_pubkey_size;
-        } __attribute__((packed)) pubkey_bundle_header_t;
-
         if (bundle_size < sizeof(pubkey_bundle_header_t)) {
             free(bundle_data);
             result = DNA_ERROR_KEY_INVALID;
