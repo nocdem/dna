@@ -62,6 +62,14 @@ echo.
 if exist "%DNA_DIR%\.git" (
     echo Repository exists, updating...
     cd /d "%DNA_DIR%"
+
+    REM Check for local changes
+    git diff --quiet
+    if %ERRORLEVEL% NEQ 0 (
+        echo [WARNING] Local changes detected, stashing...
+        git stash save "Auto-stash by installer"
+    )
+
     git fetch origin
     git checkout %GIT_BRANCH%
     git pull origin %GIT_BRANCH%
@@ -136,17 +144,25 @@ echo Step 4: Configure with CMake
 echo ============================================================================
 echo.
 
-REM Check if vcpkg is available
-where vcpkg >nul 2>&1
-if %ERRORLEVEL% EQU 0 (
-    echo Found vcpkg, using vcpkg toolchain...
-    cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64
+REM Check if vcpkg toolchain file exists
+set "VCPKG_TOOLCHAIN=C:/vcpkg/scripts/buildsystems/vcpkg.cmake"
+
+if exist "%VCPKG_TOOLCHAIN%" (
+    echo Found vcpkg toolchain at %VCPKG_TOOLCHAIN%
+    echo Running: cmake .. -DCMAKE_TOOLCHAIN_FILE=%VCPKG_TOOLCHAIN% -A x64
+    echo.
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=%VCPKG_TOOLCHAIN% -A x64
+    set CMAKE_RESULT=%ERRORLEVEL%
 ) else (
-    echo vcpkg not found, trying standard CMake...
+    echo vcpkg toolchain not found at %VCPKG_TOOLCHAIN%
+    echo Trying standard CMake (may fail if OpenSSL not found)...
+    echo.
     cmake .. -DCMAKE_BUILD_TYPE=%BUILD_TYPE%
+    set CMAKE_RESULT=%ERRORLEVEL%
 )
 
-if %ERRORLEVEL% NEQ 0 (
+if %CMAKE_RESULT% NEQ 0 (
+    echo.
     echo [ERROR] CMake configuration failed
     echo.
     echo Possible issues:
@@ -155,7 +171,7 @@ if %ERRORLEVEL% NEQ 0 (
     echo   - OpenSSL not found
     echo.
     echo To fix, install dependencies with vcpkg:
-    echo   1. Install vcpkg:
+    echo   1. Install vcpkg if not already installed:
     echo      cd C:\
     echo      git clone https://github.com/Microsoft/vcpkg.git
     echo      cd vcpkg
@@ -163,6 +179,7 @@ if %ERRORLEVEL% NEQ 0 (
     echo      .\vcpkg integrate install
     echo.
     echo   2. Install dependencies:
+    echo      cd C:\vcpkg
     echo      .\vcpkg install openssl:x64-windows libpq:x64-windows
     echo.
     echo   3. Run this script again
@@ -171,6 +188,7 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b 1
 )
 
+echo.
 echo [OK] CMake configuration successful
 
 echo.
