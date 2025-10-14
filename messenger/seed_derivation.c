@@ -115,10 +115,10 @@ void qgp_display_mnemonic(const char *mnemonic) {
     }
 
     printf("\n");
-    printf("╔═══════════════════════════════════════════════════════════════════════╗\n");
-    printf("║                         BIP39 RECOVERY PHRASE                         ║\n");
-    printf("╠═══════════════════════════════════════════════════════════════════════╣\n");
-    printf("║                                                                       ║\n");
+    printf("=========================================================================\n");
+    printf("                         BIP39 RECOVERY PHRASE                           \n");
+    printf("=========================================================================\n");
+    printf("\n");
 
     // Split mnemonic into words
     char *mnemonic_copy = strdup(mnemonic);
@@ -130,25 +130,25 @@ void qgp_display_mnemonic(const char *mnemonic) {
     int word_num = 1;
 
     while (token != NULL) {
-        printf("║  %2d. %-15s", word_num, token);
+        printf("  %2d. %-15s", word_num, token);
 
         // Print in two columns
         token = strtok(NULL, " ");
         if (token != NULL) {
-            printf("  %2d. %-15s  ║\n", word_num + 1, token);
+            printf("  %2d. %-15s\n", word_num + 1, token);
             word_num += 2;
             token = strtok(NULL, " ");
         } else {
-            printf("                     ║\n");
+            printf("\n");
             break;
         }
     }
 
-    printf("║                                                                       ║\n");
-    printf("╠═══════════════════════════════════════════════════════════════════════╣\n");
-    printf("║ ⚠️  IMPORTANT: Write down these words in order and store securely    ║\n");
-    printf("║     This phrase can recover your keys. Keep it safe!                 ║\n");
-    printf("╚═══════════════════════════════════════════════════════════════════════╝\n");
+    printf("\n");
+    printf("=========================================================================\n");
+    printf(" WARNING: Write down these words in order and store securely!\n");
+    printf("          This phrase can recover your keys. Keep it safe!\n");
+    printf("=========================================================================\n");
     printf("\n");
 
     free(mnemonic_copy);
