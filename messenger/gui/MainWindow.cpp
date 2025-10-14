@@ -9,22 +9,83 @@
 #include <QInputDialog>
 #include <QStringList>
 #include <QDateTime>
+#include <QDir>
+#include <QFileInfo>
+
+// Platform-specific includes for identity detection
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <glob.h>
+#endif
+
+QString MainWindow::getLocalIdentity() {
+    QDir homeDir = QDir::home();
+    QDir dnaDir = QDir(homeDir.filePath(".dna"));
+
+    if (!dnaDir.exists()) {
+        return QString();  // No .dna directory
+    }
+
+#ifdef _WIN32
+    // Windows: use FindFirstFile
+    QString searchPath = dnaDir.filePath("*-dilithium.pqkey");
+    WIN32_FIND_DATAA findData;
+    HANDLE hFind = FindFirstFileA(searchPath.toUtf8().constData(), &findData);
+
+    if (hFind == INVALID_HANDLE_VALUE) {
+        return QString();  // No identity files found
+    }
+
+    // Extract identity from filename (remove -dilithium.pqkey suffix)
+    QString filename = QString::fromUtf8(findData.cFileName);
+    FindClose(hFind);
+
+    if (filename.endsWith("-dilithium.pqkey")) {
+        return filename.left(filename.length() - 17);  // Remove suffix
+    }
+    return QString();
+#else
+    // Unix: use glob
+    QString pattern = dnaDir.filePath("*-dilithium.pqkey");
+    glob_t globResult;
+
+    if (glob(pattern.toUtf8().constData(), GLOB_NOSORT, NULL, &globResult) == 0 && globResult.gl_pathc > 0) {
+        // Extract filename from path
+        QString path = QString::fromUtf8(globResult.gl_pathv[0]);
+        QString filename = QFileInfo(path).fileName();
+
+        globfree(&globResult);
+
+        if (filename.endsWith("-dilithium.pqkey")) {
+            return filename.left(filename.length() - 17);  // Remove suffix
+        }
+    }
+
+    globfree(&globResult);
+    return QString();
+#endif
+}
 
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ctx(nullptr) {
 
-    // Get local identity or prompt for login
-    // For now, use a simple dialog
-    bool ok;
-    currentIdentity = QInputDialog::getText(this, "DNA Messenger Login",
-                                             "Enter your identity:",
-                                             QLineEdit::Normal,
-                                             "", &ok);
+    // Auto-detect local identity
+    currentIdentity = getLocalIdentity();
 
-    if (!ok || currentIdentity.isEmpty()) {
-        QMessageBox::critical(this, "Error", "Identity required to start messenger");
-        QApplication::quit();
-        return;
+    if (currentIdentity.isEmpty()) {
+        // No local identity found, prompt for manual entry
+        bool ok;
+        currentIdentity = QInputDialog::getText(this, "DNA Messenger Login",
+                                                 "No local identity found.\nEnter your identity:",
+                                                 QLineEdit::Normal,
+                                                 "", &ok);
+
+        if (!ok || currentIdentity.isEmpty()) {
+            QMessageBox::critical(this, "Error", "Identity required to start messenger");
+            QApplication::quit();
+            return;
+        }
     }
 
     // Initialize messenger context

@@ -38,6 +38,7 @@ private:
     void setupUI();
     void loadContacts();
     void loadConversation(const QString &contact);
+    QString getLocalIdentity();
 
     // Messenger context
     messenger_context_t *ctx;
