@@ -11,21 +11,13 @@
 #include <time.h>
 #include <errno.h>
 #include "messenger.h"
+#include "dna_config.h"
 #include "qgp_platform.h"
 #include "qgp_dilithium.h"
 #include "qgp_kyber.h"
 
-// PostgreSQL connection string (configurable via environment variable)
-// Set DNA_SERVER environment variable to connect to remote server
-// Example: export DNA_SERVER="postgresql://dna:password@192.168.1.100:5432/dna_messenger"
-static const char* get_pg_conninfo(void) {
-    const char *server = getenv("DNA_SERVER");
-    if (server && server[0] != '\0') {
-        return server;
-    }
-    // Default: localhost
-    return "postgresql://dna:dna_password@localhost:5432/dna_messenger";
-}
+// Global configuration
+static dna_config_t g_config;
 
 // ============================================================================
 // INITIALIZATION
@@ -34,6 +26,12 @@ static const char* get_pg_conninfo(void) {
 messenger_context_t* messenger_init(const char *identity) {
     if (!identity) {
         fprintf(stderr, "Error: Identity required\n");
+        return NULL;
+    }
+
+    // Load configuration
+    if (dna_config_load(&g_config) != 0) {
+        fprintf(stderr, "Error: Failed to load configuration\n");
         return NULL;
     }
 
@@ -49,8 +47,12 @@ messenger_context_t* messenger_init(const char *identity) {
         return NULL;
     }
 
+    // Build connection string from config
+    char connstring[512];
+    dna_config_build_connstring(&g_config, connstring, sizeof(connstring));
+
     // Connect to PostgreSQL
-    ctx->pg_conn = PQconnectdb(get_pg_conninfo());
+    ctx->pg_conn = PQconnectdb(connstring);
     if (PQstatus(ctx->pg_conn) != CONNECTION_OK) {
         fprintf(stderr, "PostgreSQL connection failed: %s\n", PQerrorMessage(ctx->pg_conn));
         PQfinish(ctx->pg_conn);

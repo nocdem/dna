@@ -97,6 +97,7 @@ set(COMMON_SOURCES
     seed_derivation.c
     kyber_deterministic.c
     config.c
+    dna_config.c
     # SDK Independence: New crypto modules
     qgp_random.c
     qgp_aes.c
