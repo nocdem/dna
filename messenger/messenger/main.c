@@ -355,12 +355,9 @@ int main(void) {
                         char update_cmd[2048];
 
 #ifdef _WIN32
-                        // Windows: find repo and update
+                        // Windows: run installer script
                         snprintf(update_cmd, sizeof(update_cmd),
-                                "powershell -Command \"$repo = git rev-parse --show-toplevel 2>$null; "
-                                "if ($repo) { cd $repo; git pull origin main; cd build; "
-                                "cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64; "
-                                "cmake --build . --config Release } else { Write-Host 'Not a git repository' }\"");
+                                "cd C:\\dna-messenger && install_windows.bat");
 #else
                         // Linux: find repo and update
                         snprintf(update_cmd, sizeof(update_cmd),
