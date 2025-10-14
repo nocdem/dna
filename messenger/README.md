@@ -1,162 +1,39 @@
 # DNA Messenger
 
-**Post-quantum end-to-end encrypted messaging platform**
+**Post-quantum encrypted messaging platform**
 
-DNA Messenger is a secure, privacy-focused messaging system built on post-quantum cryptographic algorithms. Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp), DNA Messenger focuses on real-time communication while maintaining quantum-resistant security.
+DNA Messenger is a secure messaging system using post-quantum cryptographic algorithms (Kyber512 + Dilithium3) that remain secure even against future quantum computer attacks.
 
-## Project Status
+## Status
 
-🚧 **In Development** - Phase 3: CLI Messenger (Active)
+🚧 **Alpha Development** - Version 0.1.43
 
-**Current Version:** 0.1.43-alpha
-**Based On:** QGP 1.2.x (file encryption tool)
+**Working Features:**
+- ✅ End-to-end encryption with post-quantum algorithms
+- ✅ 24-word BIP39 recovery phrases for key backup
+- ✅ Cross-platform (Linux & Windows)
+- ✅ Shared keyserver at ai.cpunk.io
 
-### Recent Updates (2025-10-14)
+## Quick Start
 
-- ✅ **PostgreSQL Integration**: Shared keyserver and message storage
-- ✅ **BIP39 Recovery**: 24-word mnemonic seed phrases for key backup/restore
-- ✅ **File-based Restore**: Import keys from seed phrase files
-- ✅ **Windows Support**: Cross-platform BIP39 generation and ASCII-only display
-- ✅ **Auto-login**: Automatic identity detection on startup
-- ✅ **End-to-End Encryption**: Messages encrypted with post-quantum algorithms
-- ✅ **Keyserver Verification**: Restored keys validated against server
-
-## What is DNA Messenger?
-
-DNA Messenger is designed for secure, quantum-resistant real-time messaging. Unlike traditional messengers, DNA uses post-quantum cryptographic algorithms that remain secure even against future quantum computer attacks.
-
-### Key Features (Planned)
-
-- 🔐 **Post-Quantum Security**: Kyber512 key encapsulation + Dilithium3 signatures
-- 💬 **End-to-End Encryption**: Messages encrypted on sender device, decrypted only by recipient
-- 🔑 **No Central Key Server**: Peer-to-peer key exchange
-- 📱 **Multi-Platform**: Linux, Windows, macOS, Android, iOS (future)
-- 🎯 **Privacy-First**: No metadata collection, no phone number required
-- 🌐 **Decentralized**: No single point of failure
-
-## Differences from QGP (Parent Project)
-
-| Feature | QGP (File Tool) | DNA Messenger |
-|---------|----------------|---------------|
-| **Primary Use** | File encryption/signing | Real-time messaging |
-| **Interface** | CLI tool | Library + GUI apps |
-| **Operations** | File-based I/O | Memory-based buffers |
-| **Storage** | Filesystem (~/.qgp) | Database (SQLite) |
-| **Transport** | Manual (email, USB) | Network (WebSocket, P2P) |
-| **Forward Secrecy** | No (long-term keys) | Yes (planned, session keys) |
-| **Multi-Device** | Manual key copy | Automatic sync (planned) |
-
-## Architecture
-
-```
-┌─────────────────────────────────────────┐
-│  Application Layer                      │
-│  - Desktop App (Qt, planned)            │
-│  - Mobile App (Flutter, planned)        │
-│  - CLI Client (reference implementation)│
-└─────────────────────────────────────────┘
-                ↓ (uses)
-┌─────────────────────────────────────────┐
-│  libdna (Core Library)                  │
-│  - Message encryption/decryption        │
-│  - Contact management                   │
-│  - Key management                       │
-│  - Session handling                     │
-└─────────────────────────────────────────┘
-                ↓ (uses)
-┌─────────────────────────────────────────┐
-│  Crypto Core (vendored pq-crystals)     │
-│  - Kyber512 KEM                         │
-│  - Dilithium3 signatures                │
-│  - AES-256-GCM                          │
-└─────────────────────────────────────────┘
-```
-
-## Building
-
-DNA Messenger supports Linux, Windows, and macOS.
-
-### Linux Build
-
-#### Prerequisites
+### Linux
 
 ```bash
-# Debian/Ubuntu
-sudo apt-get install cmake gcc libssl-dev libpq-dev postgresql
+# Install dependencies
+sudo apt install cmake gcc libssl-dev libpq-dev
 
-# Fedora/RHEL
-sudo dnf install cmake gcc openssl-devel libpq-devel postgresql-server
-
-# Arch Linux
-sudo pacman -S cmake gcc openssl postgresql
-```
-
-#### Build Steps
-
-```bash
-cd /opt/dna-messenger
+# Build
+git clone https://github.com/nocdem/dna-messenger.git
+cd dna-messenger
 mkdir build && cd build
 cmake ..
 make
+
+# Run
+./dna_messenger
 ```
 
-The binary will be created at `build/dna`.
-
-## Usage
-
-DNA Messenger connects to a shared server at **ai.cpunk.io** by default. No server setup needed!
-
-### Quick Start
-
-```bash
-# Run the messenger
-./build/dna_messenger
-
-# First time? It will auto-configure to ai.cpunk.io
-# Just create your identity and start messaging!
-```
-
-### Usage Example
-
-```
-1. Create new identity
-   - Enter name (e.g., "alice")
-   - Keys generated automatically
-   - Public keys uploaded to server
-
-2. Choose existing identity
-   - Select from local private keys
-   - Login to messenger
-
-3. Send message
-   - Format: recipient@message
-   - Example: bob@Hello Bob!
-
-4. List inbox
-   - See received messages
-
-5. List sent messages
-   - See messages you sent
-```
-
-### Security Model
-
-**End-to-End Encryption:**
-- Messages are encrypted on sender's device before upload
-- Only recipient's private key can decrypt
-- PostgreSQL server only stores ciphertext
-- Even if database is compromised, messages remain secure
-
-**Key Storage:**
-- Private keys: `~/.dna/<identity>-dilithium.pqkey` (local filesystem, never uploaded)
-- Public keys: PostgreSQL `keyserver` table (shared with all users)
-
-**Trust Model:**
-- You trust the PostgreSQL server to deliver messages
-- You DON'T trust the server with plaintext (all messages encrypted)
-- Post-quantum algorithms protect against quantum attacks
-
-### Windows Build
+### Windows
 
 ```cmd
 git clone https://github.com/nocdem/dna-messenger.git
@@ -165,155 +42,112 @@ mkdir build
 cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . --config Release
+
+dna_messenger.exe
 ```
 
-### macOS Build
+### First Run
 
-```bash
-brew install cmake openssl
-mkdir build && cd build
-cmake .. -DOPENSSL_ROOT_DIR=/usr/local/opt/openssl
-make
+```
+1. Create new identity
+   - Choose a username
+   - Write down your 24-word recovery phrase
+   - Keys uploaded to ai.cpunk.io
+
+2. Send a message
+   - Enter recipient username
+   - Type your message
+   - Message encrypted and sent
+
+3. Read messages
+   - List your inbox
+   - Messages decrypted locally
 ```
 
-## Development Roadmap
+## How It Works
 
-### Phase 1: Foundation ✅ COMPLETE
-- [x] Fork from QGP
-- [x] Repository cleanup and branding
-- [x] Update build system
-- [x] Create development documentation
+**Architecture:**
+- Client application (this program)
+- Shared PostgreSQL server (ai.cpunk.io:5432)
+- Your private keys stay on your device
 
-### Phase 2: Library API ✅ COMPLETE
-- [x] Design memory-based API (dna_api.h)
-- [x] Implement message encryption/decryption
-- [x] Create contact management (keyserver)
-- [x] Build keyring integration
+**Security:**
+- Messages encrypted on your device before sending
+- Only recipient can decrypt (end-to-end encryption)
+- Server only stores encrypted ciphertext
+- Post-quantum algorithms protect against quantum computers
 
-### Phase 3: CLI Messenger 🚧 IN PROGRESS
-- [x] Command-line chat interface
-- [x] PostgreSQL message storage
-- [x] Contact list management (keyserver table)
-- [x] Message send/receive
-- [x] BIP39 mnemonic key generation
-- [x] Key restore from seed phrase
-- [x] Auto-login for existing identities
-- [x] Windows support
-- [ ] Message deletion
-- [ ] Identity deletion
-- [ ] Message search/filtering
+**Key Management:**
+- Private keys: `~/.dna/` (never leave your computer)
+- Public keys: Shared keyserver (ai.cpunk.io)
+- Recovery: 24-word BIP39 mnemonic phrase
 
-### Phase 4: Network Layer
-- [ ] WebSocket transport
-- [ ] P2P discovery
-- [ ] Message routing
-- [ ] Offline message queue
+## Commands
 
-### Phase 5: Desktop App
-- [ ] Qt-based GUI
-- [ ] Windows/Linux/macOS support
-- [ ] Notification system
-- [ ] File transfer
+```
+1. Create new identity       - Generate new keys
+2. Restore from seed phrase  - Recover keys from backup
+3. Lookup identity          - Find user on keyserver
+4. Configure server         - Change server (default: ai.cpunk.io)
+5. Exit
 
-### Phase 6: Mobile Apps
-- [ ] Flutter cross-platform app
-- [ ] Android support
-- [ ] iOS support
-- [ ] Push notifications
+After login:
+- Send message              - Encrypt and send
+- List inbox               - View received messages
+- Read message             - Decrypt and display
+- List sent messages       - View sent messages
+- List keyserver           - See all users
+- Check for updates        - Update to latest version
+```
 
-### Phase 7: Advanced Features
-- [ ] Forward secrecy (session keys)
-- [ ] Multi-device synchronization
-- [ ] Group messaging
-- [ ] Voice/video calls (future)
+## Cryptography
 
-## Current Features
-
-### Messaging Features
-- ✅ **Post-Quantum Encryption**: Kyber512 + Dilithium3 for quantum-resistant security
-- ✅ **End-to-End Encryption**: Messages encrypted on device before transmission
-- ✅ **PostgreSQL Backend**: Shared database for keyserver and message storage
-- ✅ **Identity Management**: Create and restore identities with BIP39 recovery
-- ✅ **Message Operations**: Send, receive, list inbox/sent messages
-- ✅ **Auto-login**: Automatic detection of existing local identities
-- ✅ **Cross-Platform**: Linux and Windows support
-
-### Key Management
-- ✅ **BIP39 Recovery Phrases**: 24-word mnemonic for key backup
-- ✅ **Deterministic Keys**: Same seed always produces same keys
-- ✅ **File-based Restore**: Import keys from seed phrase files
-- ✅ **Keyserver Verification**: Restored keys validated against server
-- ✅ **Secure Storage**: Private keys stored locally (~/.dna/)
-- ✅ **Public Key Sharing**: Automatic upload to shared keyserver
-
-### Cryptographic Features
-- ✅ **Dilithium3 Signatures**: NIST ML-DSA-65 (FIPS 204) for authentication
-- ✅ **Kyber512 KEM**: Post-quantum key encapsulation
-- ✅ **AES-256-GCM**: Authenticated symmetric encryption
-- ✅ **PBKDF2-HMAC-SHA512**: Key derivation from passphrases
-- ✅ **ASCII Armor**: Human-readable key export format
-
-## Contributing
-
-DNA Messenger is in early development. Contributions welcome!
-
-**Development Guidelines:**
-- See `CLAUDE.md` for AI-assisted development instructions
-- See `ROADMAP.md` for detailed development plan
-- Follow existing code style (C with vendored crypto)
-- All crypto operations must use post-quantum algorithms
-
-## Security
-
-### Cryptographic Algorithms
-
-- **Key Encapsulation:** Kyber512 (NIST PQC Level 1)
-- **Signatures:** Dilithium3 (ML-DSA-65, FIPS 204)
-- **Symmetric Encryption:** AES-256-GCM (authenticated encryption)
+- **Key Encapsulation:** Kyber512 (NIST PQC)
+- **Signatures:** Dilithium3 (NIST FIPS 204)
+- **Symmetric:** AES-256-GCM
 - **Key Derivation:** PBKDF2-HMAC-SHA512
 
-### Security Model
+## Recovery
 
-DNA Messenger provides:
-- **Confidentiality:** Messages encrypted end-to-end
-- **Authenticity:** Sender identity verified via signatures
-- **Integrity:** Tampering detected via authentication tags
-- **Forward Secrecy:** (Planned) Session keys rotated periodically
+**Backup Your Keys:**
+1. Write down your 24-word recovery phrase
+2. Store it safely (never digitally)
+3. Optional: Add passphrase for extra security
 
-### Threat Model
+**Restore Your Keys:**
+1. Choose "Restore from seed phrase"
+2. Enter your 24 words
+3. Keys regenerated and verified against server
 
-**Protected Against:**
-- Network eavesdropping
-- Man-in-the-middle attacks
-- Quantum computer attacks (post-quantum algorithms)
-- Message tampering
+## Development
 
-**NOT Protected Against:**
-- Compromised devices (malware, keyloggers)
-- Physical access to unlocked device
-- Social engineering
+**Current Phase:** Phase 3 - CLI Messenger
+
+**Roadmap:**
+- Phase 1: Foundation ✅ Complete
+- Phase 2: Library API ✅ Complete
+- Phase 3: CLI Messenger 🚧 In Progress
+- Phase 4: Network Layer (WebSocket)
+- Phase 5: Desktop GUI (Qt)
+- Phase 6: Mobile Apps (Flutter)
+
+**Contributing:**
+- Fork the repository
+- See CLAUDE.md for development guidelines
+- All crypto must use post-quantum algorithms
 
 ## License
 
 GNU General Public License v3.0
 
-DNA Messenger is forked from QGP and inherits its GPL-3.0 license.
-
-## Acknowledgments
-
-- **QGP Project:** Original file encryption tool
-- **pq-crystals:** Kyber and Dilithium implementations
-- **OpenSSL:** AES-GCM and cryptographic utilities
+Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 
 ## Links
 
-- **Parent Project:** [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
-- **Documentation:** See `docs/` directory
-- **Issue Tracker:** GitHub Issues (coming soon)
-- **Discussion:** GitHub Discussions (coming soon)
+- **GitHub:** https://github.com/nocdem/dna-messenger
+- **Parent Project:** https://github.com/nocdem/qgp
+- **Server:** ai.cpunk.io:5432
 
 ---
 
-**Status:** Early development - Not ready for production use
-
-**Warning:** DNA Messenger is currently in alpha development. Do not use for sensitive communications yet.
+⚠️ **Warning:** Alpha software. Do not use for sensitive communications yet.
