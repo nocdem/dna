@@ -309,8 +309,9 @@ int main(void) {
 
                 case 6: {
                     // Check for updates
-                    printf("\nChecking for updates...\n");
-                    printf("This will pull latest code from GitHub and rebuild.\n");
+                    printf("\n=== Check for Updates ===\n");
+                    printf("Current version: %s\n", PQSIGNUM_VERSION);
+                    printf("\nThis will pull latest code from GitHub and rebuild.\n");
                     printf("Continue? (Y/N): ");
 
                     char confirm[10];
