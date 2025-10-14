@@ -311,6 +311,37 @@ int main(void) {
                     // Check for updates
                     printf("\n=== Check for Updates ===\n");
                     printf("Current version: %s\n", PQSIGNUM_VERSION);
+                    printf("Checking latest version on GitHub...\n");
+
+                    // Get latest commit count from GitHub
+                    char version_cmd[512];
+                    snprintf(version_cmd, sizeof(version_cmd),
+                            "git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>/dev/null | "
+                            "cut -f1 | xargs -I{} git rev-list --count {} 2>/dev/null || echo 'unknown'");
+
+                    FILE *fp = popen(version_cmd, "r");
+                    char latest_version[32] = "unknown";
+                    if (fp) {
+                        if (fgets(latest_version, sizeof(latest_version), fp)) {
+                            latest_version[strcspn(latest_version, "\n")] = 0;
+                        }
+                        pclose(fp);
+                    }
+
+                    if (strcmp(latest_version, "unknown") != 0) {
+                        printf("Latest version: 0.1.%s\n", latest_version);
+
+                        int current = atoi(PQSIGNUM_VERSION + 4); // Skip "0.1."
+                        int latest = atoi(latest_version);
+
+                        if (current >= latest) {
+                            printf("\n✓ You are up to date!\n");
+                            break;
+                        }
+                    } else {
+                        printf("Latest version: Could not fetch from GitHub\n");
+                    }
+
                     printf("\nThis will pull latest code from GitHub and rebuild.\n");
                     printf("Continue? (Y/N): ");
 
