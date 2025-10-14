@@ -145,6 +145,28 @@ dna_error_t dna_encrypt_message(
     size_t *ciphertext_len_out
 );
 
+/**
+ * Encrypt message with raw keys (for PostgreSQL integration)
+ *
+ * @param ctx: DNA context
+ * @param plaintext: Plaintext message buffer
+ * @param plaintext_len: Plaintext length
+ * @param recipient_enc_pubkey: Recipient's Kyber512 public key (800 bytes)
+ * @param sender_sign_privkey: Sender's Dilithium3 private key (4016 bytes)
+ * @param ciphertext_out: Output ciphertext buffer (caller must free)
+ * @param ciphertext_len_out: Output ciphertext length
+ * @return: DNA_OK on success, error code otherwise
+ */
+dna_error_t dna_encrypt_message_raw(
+    dna_context_t *ctx,
+    const uint8_t *plaintext,
+    size_t plaintext_len,
+    const uint8_t *recipient_enc_pubkey,
+    const uint8_t *sender_sign_privkey,
+    uint8_t **ciphertext_out,
+    size_t *ciphertext_len_out
+);
+
 // ============================================================================
 // MESSAGE DECRYPTION
 // ============================================================================

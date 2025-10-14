@@ -67,6 +67,15 @@ if(OPENSSL_FOUND)
     message(STATUS "OpenSSL libraries: ${OPENSSL_LIBRARIES}")
 endif()
 
+# PostgreSQL for keyserver and message storage (Phase 3+4)
+find_library(PQ_LIBRARY pq)
+find_path(PQ_INCLUDE_DIR libpq-fe.h PATHS /usr/include/postgresql)
+if(NOT PQ_LIBRARY OR NOT PQ_INCLUDE_DIR)
+    message(FATAL_ERROR "PostgreSQL libpq not found. Install libpq-dev")
+endif()
+message(STATUS "PostgreSQL libpq found: ${PQ_LIBRARY}")
+message(STATUS "PostgreSQL include: ${PQ_INCLUDE_DIR}")
+
 # SDK Independence: Vendored cryptographic implementations
 add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
 add_subdirectory(crypto/dilithium)  # Dilithium3 signatures
@@ -129,9 +138,10 @@ if(WIN32)
     )
 endif()
 
-# Main CLI executable
+# Main CLI executable (with messenger support)
 add_executable(${PROJECT_NAME}
     main.c
+    messenger.c
     ${COMMON_SOURCES}
 )
 
@@ -140,9 +150,11 @@ set_property(TARGET ${PROJECT_NAME} APPEND_STRING PROPERTY LINK_FLAGS "-D_GNU_SO
 
 # Link libraries (SDK Independence: No SDK libraries needed)
 target_link_libraries(${PROJECT_NAME}
+    dna_lib          # DNA Messenger API library
     OpenSSL::Crypto  # OpenSSL (AES, SHA256, Base64, Random)
     kyber512         # Vendored Kyber512 KEM (includes FIPS202/SHAKE256)
     dilithium        # Vendored Dilithium3 signatures
+    ${PQ_LIBRARY}    # PostgreSQL libpq for keyserver and messages
     ${PLATFORM_LIBS} # Platform-specific libraries (bcrypt on Windows)
 )
 
@@ -159,6 +171,7 @@ endif()
 target_include_directories(${PROJECT_NAME} PRIVATE
     ${CMAKE_SOURCE_DIR}        # QGP source directory
     ${OPENSSL_INCLUDE_DIR}     # OpenSSL headers
+    ${PQ_INCLUDE_DIR}          # PostgreSQL headers
 )
 
 # Windows-specific includes for POSIX compatibility headers
@@ -195,6 +208,11 @@ target_include_directories(basic_usage PRIVATE ${CMAKE_SOURCE_DIR})
 add_executable(multi_recipient examples/multi_recipient.c)
 target_link_libraries(multi_recipient dna_lib)
 target_include_directories(multi_recipient PRIVATE ${CMAKE_SOURCE_DIR})
+
+# Example: messenger_test (Phase 3)
+add_executable(messenger_test examples/messenger_test.c messenger.c)
+target_link_libraries(messenger_test dna_lib ${PQ_LIBRARY})
+target_include_directories(messenger_test PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
 
 # Platform-specific install paths
 if(WIN32)

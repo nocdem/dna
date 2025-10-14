@@ -72,13 +72,13 @@ DNA Messenger supports Linux, Windows, and macOS.
 
 ```bash
 # Debian/Ubuntu
-sudo apt-get install cmake gcc libssl-dev
+sudo apt-get install cmake gcc libssl-dev libpq-dev postgresql
 
 # Fedora/RHEL
-sudo dnf install cmake gcc openssl-devel
+sudo dnf install cmake gcc openssl-devel libpq-devel postgresql-server
 
 # Arch Linux
-sudo pacman -S cmake gcc openssl
+sudo pacman -S cmake gcc openssl postgresql
 ```
 
 #### Build Steps
@@ -91,6 +91,145 @@ make
 ```
 
 The binary will be created at `build/dna`.
+
+## Phase 3: CLI Messenger (Current)
+
+### Architecture
+
+DNA Messenger uses a **shared PostgreSQL database** that all users connect to:
+- **No separate server application** - PostgreSQL IS the server
+- **Clients connect directly** to the database
+- **All messages are E2E encrypted** before being stored
+- **Private keys never leave** the user's computer
+
+### Server Setup (Administrator Only)
+
+**You only need ONE PostgreSQL server that everyone connects to.**
+
+#### Install PostgreSQL on Your Server
+
+```bash
+# On your VPS/cloud server (Ubuntu/Debian)
+sudo apt install postgresql
+
+# Configure PostgreSQL to accept network connections
+sudo nano /etc/postgresql/*/main/postgresql.conf
+# Change: listen_addresses = '*'
+
+sudo nano /etc/postgresql/*/main/pg_hba.conf
+# Add: host    dna_messenger    dna    0.0.0.0/0    md5
+
+sudo systemctl restart postgresql
+```
+
+#### Create Database and Tables
+
+```bash
+sudo -u postgres psql <<EOF
+CREATE DATABASE dna_messenger;
+CREATE USER dna WITH ENCRYPTED PASSWORD 'dna_password';
+GRANT ALL PRIVILEGES ON DATABASE dna_messenger TO dna;
+\c dna_messenger
+GRANT ALL ON SCHEMA public TO dna;
+
+CREATE TABLE keyserver (
+    id SERIAL PRIMARY KEY,
+    identity TEXT UNIQUE NOT NULL,
+    signing_pubkey BYTEA NOT NULL,
+    signing_pubkey_len INTEGER NOT NULL,
+    encryption_pubkey BYTEA NOT NULL,
+    encryption_pubkey_len INTEGER NOT NULL,
+    fingerprint TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE messages (
+    id SERIAL PRIMARY KEY,
+    sender TEXT NOT NULL,
+    recipient TEXT NOT NULL,
+    ciphertext BYTEA NOT NULL,
+    ciphertext_len INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO dna;
+GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO dna;
+EOF
+```
+
+#### Firewall (Open PostgreSQL Port)
+
+```bash
+sudo ufw allow 5432/tcp
+```
+
+### Client Setup (All Users)
+
+#### Prerequisites (Client Only)
+
+**Users only need the PostgreSQL client library, NOT the server:**
+
+```bash
+# Debian/Ubuntu
+sudo apt install libpq5
+
+# Fedora/RHEL
+sudo dnf install libpq
+
+# Arch Linux
+sudo pacman -S postgresql-libs
+```
+
+#### Running the Messenger
+
+```bash
+# Connect to the DNA server
+export DNA_SERVER="postgresql://dna:dna_password@your-server.com:5432/dna_messenger"
+./messenger_test
+
+# Or edit ~/.bashrc to make it permanent:
+echo 'export DNA_SERVER="postgresql://dna:password@server.com:5432/dna_messenger"' >> ~/.bashrc
+```
+
+### Usage Example
+
+```
+1. Create new identity
+   - Enter name (e.g., "alice")
+   - Keys generated automatically
+   - Public keys uploaded to server
+
+2. Choose existing identity
+   - Select from local private keys
+   - Login to messenger
+
+3. Send message
+   - Format: recipient@message
+   - Example: bob@Hello Bob!
+
+4. List inbox
+   - See received messages
+
+5. List sent messages
+   - See messages you sent
+```
+
+### Security Model
+
+**End-to-End Encryption:**
+- Messages are encrypted on sender's device before upload
+- Only recipient's private key can decrypt
+- PostgreSQL server only stores ciphertext
+- Even if database is compromised, messages remain secure
+
+**Key Storage:**
+- Private keys: `~/.dna/<identity>-dilithium.pqkey` (local filesystem, never uploaded)
+- Public keys: PostgreSQL `keyserver` table (shared with all users)
+
+**Trust Model:**
+- You trust the PostgreSQL server to deliver messages
+- You DON'T trust the server with plaintext (all messages encrypted)
+- Post-quantum algorithms protect against quantum attacks
 
 ### Windows Build
 

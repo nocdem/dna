@@ -515,6 +515,180 @@ cleanup:
     return result;
 }
 
+/**
+ * Encrypt message with raw keys (for PostgreSQL integration)
+ * Single recipient version
+ */
+dna_error_t dna_encrypt_message_raw(
+    dna_context_t *ctx,
+    const uint8_t *plaintext,
+    size_t plaintext_len,
+    const uint8_t *recipient_enc_pubkey,
+    const uint8_t *sender_sign_privkey,
+    uint8_t **ciphertext_out,
+    size_t *ciphertext_len_out)
+{
+    if (!ctx || !plaintext || !recipient_enc_pubkey || !sender_sign_privkey ||
+        !ciphertext_out || !ciphertext_len_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    dna_error_t result = DNA_ERROR_INTERNAL;
+    qgp_signature_t *signature = NULL;
+    uint8_t *dek = NULL;
+    uint8_t *encrypted_data = NULL;
+    uint8_t *output_buffer = NULL;
+    dna_recipient_entry_t recipient_entry;
+    uint8_t nonce[12];
+    uint8_t tag[16];
+    uint8_t sender_sign_pubkey[QGP_DILITHIUM3_PUBLICKEYBYTES];
+    size_t encrypted_size = 0;
+    size_t signature_size = 0;
+
+    // Derive sender's public key from private key
+    // For Dilithium3, public key is embedded in private key at offset 2592
+    memcpy(sender_sign_pubkey, sender_sign_privkey + 2592, QGP_DILITHIUM3_PUBLICKEYBYTES);
+
+    // Create signature
+    signature = qgp_signature_new(QGP_SIG_TYPE_DILITHIUM,
+                                   QGP_DILITHIUM3_PUBLICKEYBYTES,
+                                   QGP_DILITHIUM3_BYTES);
+    if (!signature) {
+        result = DNA_ERROR_MEMORY;
+        goto cleanup;
+    }
+
+    memcpy(qgp_signature_get_pubkey(signature), sender_sign_pubkey,
+           QGP_DILITHIUM3_PUBLICKEYBYTES);
+
+    size_t actual_sig_len = 0;
+    if (qgp_dilithium3_signature(qgp_signature_get_bytes(signature),
+                                  &actual_sig_len, plaintext, plaintext_len,
+                                  sender_sign_privkey) != 0) {
+        result = DNA_ERROR_CRYPTO;
+        goto cleanup;
+    }
+
+    signature->signature_size = actual_sig_len;
+    signature_size = qgp_signature_get_size(signature);
+
+    // Generate random DEK (32 bytes)
+    dek = malloc(32);
+    if (!dek || qgp_randombytes(dek, 32) != 0) {
+        result = DNA_ERROR_CRYPTO;
+        goto cleanup;
+    }
+
+    // Encrypt with AES-256-GCM
+    dna_enc_header_t header_for_aad;
+    memset(&header_for_aad, 0, sizeof(header_for_aad));
+    memcpy(header_for_aad.magic, DNA_ENC_MAGIC, 8);
+    header_for_aad.version = DNA_ENC_VERSION;
+    header_for_aad.enc_key_type = DAP_ENC_KEY_TYPE_KEM_KYBER512;
+    header_for_aad.recipient_count = 1;
+    header_for_aad.encrypted_size = (uint32_t)plaintext_len;
+    header_for_aad.signature_size = (uint32_t)signature_size;
+
+    encrypted_data = malloc(plaintext_len);
+    if (!encrypted_data) {
+        result = DNA_ERROR_MEMORY;
+        goto cleanup;
+    }
+
+    if (qgp_aes256_encrypt(dek, plaintext, plaintext_len,
+                           (uint8_t*)&header_for_aad, sizeof(header_for_aad),
+                           encrypted_data, &encrypted_size,
+                           nonce, tag) != 0) {
+        result = DNA_ERROR_CRYPTO;
+        goto cleanup;
+    }
+
+    // Create recipient entry (wrap DEK for recipient)
+    uint8_t kyber_ct[QGP_KYBER512_CIPHERTEXTBYTES];
+    uint8_t kek[QGP_KYBER512_BYTES];
+
+    if (qgp_kyber512_enc(kyber_ct, kek, recipient_enc_pubkey) != 0) {
+        memset(kek, 0, QGP_KYBER512_BYTES);
+        result = DNA_ERROR_CRYPTO;
+        goto cleanup;
+    }
+
+    if (aes256_wrap_key(dek, 32, kek, recipient_entry.wrapped_dek) != 0) {
+        memset(kek, 0, QGP_KYBER512_BYTES);
+        result = DNA_ERROR_CRYPTO;
+        goto cleanup;
+    }
+
+    memcpy(recipient_entry.kyber_ciphertext, kyber_ct, 768);
+    memset(kek, 0, QGP_KYBER512_BYTES);
+
+    // Serialize signature
+    uint8_t *sig_bytes = malloc(signature_size);
+    if (!sig_bytes || qgp_signature_serialize(signature, sig_bytes) == 0) {
+        free(sig_bytes);
+        result = DNA_ERROR_CRYPTO;
+        goto cleanup;
+    }
+
+    // Calculate total output size
+    size_t total_size = sizeof(dna_enc_header_t) +
+                       sizeof(dna_recipient_entry_t) +
+                       12 + encrypted_size + 16 + signature_size;
+
+    output_buffer = malloc(total_size);
+    if (!output_buffer) {
+        free(sig_bytes);
+        result = DNA_ERROR_MEMORY;
+        goto cleanup;
+    }
+
+    // Assemble output buffer
+    size_t offset = 0;
+
+    // Header
+    dna_enc_header_t header;
+    memcpy(&header, &header_for_aad, sizeof(header));
+    memcpy(output_buffer + offset, &header, sizeof(header));
+    offset += sizeof(header);
+
+    // Recipient entry (single)
+    memcpy(output_buffer + offset, &recipient_entry, sizeof(dna_recipient_entry_t));
+    offset += sizeof(dna_recipient_entry_t);
+
+    // Nonce
+    memcpy(output_buffer + offset, nonce, 12);
+    offset += 12;
+
+    // Encrypted data
+    memcpy(output_buffer + offset, encrypted_data, encrypted_size);
+    offset += encrypted_size;
+
+    // Tag
+    memcpy(output_buffer + offset, tag, 16);
+    offset += 16;
+
+    // Signature
+    memcpy(output_buffer + offset, sig_bytes, signature_size);
+    offset += signature_size;
+
+    free(sig_bytes);
+
+    *ciphertext_out = output_buffer;
+    *ciphertext_len_out = total_size;
+    result = DNA_OK;
+
+cleanup:
+    if (signature) qgp_signature_free(signature);
+    if (dek) {
+        memset(dek, 0, 32);
+        free(dek);
+    }
+    if (encrypted_data) free(encrypted_data);
+    if (result != DNA_OK && output_buffer) free(output_buffer);
+
+    return result;
+}
+
 // ============================================================================
 // MESSAGE DECRYPTION (Memory-based)
 // ============================================================================
