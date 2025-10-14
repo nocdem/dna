@@ -1,0 +1,84 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+*.cover
+.tox/
+
+# Old Python implementation (obsolete, replaced by C implementation)
+pqsignum/
+
+# Build artifacts
+build/
+*.a
+*.o
+*.so
+
+# Keys and sensitive data
+*.key
+*.pem
+*.priv
+keys/
+wallets/
+
+# Logs
+*.log
+logs/
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# OS
+Thumbs.db
+
+# Internal development docs (not for public repo)
+CLAUDE.md
+PROJECT_STATUS.md
+dev.md
+
+# Planning docs (completed, not needed in repo)
+*_PLAN.md
+*_ANALYSIS.md
+*_ARCHITECTURE.md
+*_STATUS.md
+*_SUMMARY.md
+*_DECISIONS.md
+*_DISCOVERIES.md
+CONTRIBUTORS.md
+FOLDER_ANALYSIS.md
+
+# Test files
+*.asc
+*.sig
+*.enc
+*.pqkey
+*.dcert
+*_test.*
