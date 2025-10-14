@@ -355,9 +355,15 @@ int main(void) {
                         char update_cmd[2048];
 
 #ifdef _WIN32
-                        // Windows: run installer script
+                        // Windows: Exit and run installer script in background
+                        printf("Exiting and launching update...\n");
+                        messenger_free(ctx);
+
+                        // Launch installer in background and exit
                         snprintf(update_cmd, sizeof(update_cmd),
-                                "cd C:\\dna-messenger && install_windows.bat");
+                                "start /min cmd /c \"cd C:\\dna-messenger && install_windows.bat\"");
+                        system(update_cmd);
+                        return 0;
 #else
                         // Linux: find repo and update
                         snprintf(update_cmd, sizeof(update_cmd),
@@ -366,7 +372,6 @@ int main(void) {
                                 "cd \"$REPO\" && git pull origin main && "
                                 "cd build && cmake .. && make -j$(nproc); "
                                 "else echo 'Not a git repository'; fi");
-#endif
 
                         int result = system(update_cmd);
 
@@ -380,6 +385,7 @@ int main(void) {
 
                         messenger_free(ctx);
                         return 0;
+#endif
                     } else {
                         printf("Update cancelled.\n");
                     }
