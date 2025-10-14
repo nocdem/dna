@@ -40,7 +40,8 @@ void print_user_menu(const char *identity) {
     printf("3. Read message\n");
     printf("4. List sent messages\n");
     printf("5. List keyserver\n");
-    printf("6. Exit\n");
+    printf("6. Check for updates\n");
+    printf("7. Exit\n");
     printf("\n");
     printf("Choice: ");
 }
@@ -306,7 +307,40 @@ int main(void) {
                     messenger_list_pubkeys(ctx);
                     break;
 
-                case 6:
+                case 6: {
+                    // Check for updates
+                    printf("\nChecking for updates...\n");
+                    printf("This will pull latest code from GitHub and rebuild.\n");
+                    printf("Continue? (Y/N): ");
+
+                    char confirm[10];
+                    if (fgets(confirm, sizeof(confirm), stdin) &&
+                        (confirm[0] == 'Y' || confirm[0] == 'y')) {
+
+                        printf("\nUpdating DNA Messenger...\n\n");
+
+#ifdef _WIN32
+                        // Windows: run install script
+                        system("cd /d C:\\dna-messenger && git pull origin main && "
+                               "cd build && cmake .. -DCMAKE_TOOLCHAIN_FILE=C:/vcpkg/scripts/buildsystems/vcpkg.cmake -A x64 && "
+                               "cmake --build . --config Release");
+#else
+                        // Linux: run install script
+                        system("cd /opt/dna-messenger && git pull origin main && "
+                               "cd build && cmake .. && make -j$(nproc)");
+#endif
+
+                        printf("\n✓ Update complete!\n");
+                        printf("Please restart DNA Messenger to use the new version.\n");
+                        messenger_free(ctx);
+                        return 0;
+                    } else {
+                        printf("Update cancelled.\n");
+                    }
+                    break;
+                }
+
+                case 7:
                     // Exit
                     messenger_free(ctx);
                     printf("\nGoodbye!\n\n");
