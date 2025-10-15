@@ -19,6 +19,9 @@
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
 #include "bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
 #include "kyber_deterministic.h"  // For crypto_kem_keypair_derand
+#include "qgp_aes.h"  // For qgp_aes256_encrypt
+#include "aes_keywrap.h"  // For aes256_wrap_key
+#include "qgp_random.h"  // For qgp_randombytes
 
 // Global configuration
 static dna_config_t g_config;
@@ -880,6 +883,236 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
 // MESSAGE OPERATIONS
 // ============================================================================
 
+// Multi-recipient encryption header and entry structures
+typedef struct {
+    char magic[8];              // "PQSIGENC"
+    uint8_t version;            // 0x05 (GCM)
+    uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512
+    uint8_t recipient_count;    // Number of recipients (1-255)
+    uint8_t reserved;
+    uint32_t encrypted_size;    // Size of encrypted data
+    uint32_t signature_size;    // Size of signature
+} messenger_enc_header_t;
+
+typedef struct {
+    uint8_t kyber_ciphertext[768];    // Kyber512 ciphertext
+    uint8_t wrapped_dek[40];          // AES-wrapped DEK (32-byte + 8-byte IV)
+} messenger_recipient_entry_t;
+
+/**
+ * Multi-recipient encryption (adapted from encrypt.c)
+ *
+ * @param plaintext: Message to encrypt
+ * @param plaintext_len: Message length
+ * @param recipient_enc_pubkeys: Array of recipient Kyber512 public keys (800 bytes each)
+ * @param recipient_count: Number of recipients (including sender)
+ * @param sender_sign_key: Sender's Dilithium3 signing key
+ * @param ciphertext_out: Output ciphertext (caller must free)
+ * @param ciphertext_len_out: Output ciphertext length
+ * @return: 0 on success, -1 on error
+ */
+static int messenger_encrypt_multi_recipient(
+    const char *plaintext,
+    size_t plaintext_len,
+    uint8_t **recipient_enc_pubkeys,
+    size_t recipient_count,
+    qgp_key_t *sender_sign_key,
+    uint8_t **ciphertext_out,
+    size_t *ciphertext_len_out
+) {
+    uint8_t *dek = NULL;
+    uint8_t *encrypted_data = NULL;
+    messenger_recipient_entry_t *recipient_entries = NULL;
+    uint8_t *signature_data = NULL;
+    uint8_t *output_buffer = NULL;
+    uint8_t nonce[12];
+    uint8_t tag[16];
+    size_t encrypted_size = 0;
+    size_t signature_size = 0;
+    int ret = -1;
+
+    // Step 1: Generate random 32-byte DEK
+    dek = malloc(32);
+    if (!dek) {
+        fprintf(stderr, "Error: Memory allocation failed for DEK\n");
+        goto cleanup;
+    }
+
+    if (qgp_randombytes(dek, 32) != 0) {
+        fprintf(stderr, "Error: Failed to generate random DEK\n");
+        goto cleanup;
+    }
+
+    // Step 2: Sign plaintext with Dilithium3
+    qgp_signature_t *signature = qgp_signature_new(QGP_SIG_TYPE_DILITHIUM,
+                                                     QGP_DILITHIUM3_PUBLICKEYBYTES,
+                                                     QGP_DILITHIUM3_BYTES);
+    if (!signature) {
+        fprintf(stderr, "Error: Memory allocation failed for signature\n");
+        goto cleanup;
+    }
+
+    memcpy(qgp_signature_get_pubkey(signature), sender_sign_key->public_key,
+           QGP_DILITHIUM3_PUBLICKEYBYTES);
+
+    size_t actual_sig_len = 0;
+    if (qgp_dilithium3_signature(qgp_signature_get_bytes(signature), &actual_sig_len,
+                                  (const uint8_t*)plaintext, plaintext_len,
+                                  sender_sign_key->private_key) != 0) {
+        fprintf(stderr, "Error: Dilithium3 signature creation failed\n");
+        qgp_signature_free(signature);
+        goto cleanup;
+    }
+
+    signature->signature_size = actual_sig_len;
+
+    // Round-trip verification
+    if (qgp_dilithium3_verify(qgp_signature_get_bytes(signature), actual_sig_len,
+                               (const uint8_t*)plaintext, plaintext_len,
+                               qgp_signature_get_pubkey(signature)) != 0) {
+        fprintf(stderr, "Error: Round-trip verification FAILED\n");
+        qgp_signature_free(signature);
+        goto cleanup;
+    }
+
+    signature_size = qgp_signature_get_size(signature);
+    signature_data = malloc(signature_size);
+    if (!signature_data) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        qgp_signature_free(signature);
+        goto cleanup;
+    }
+
+    if (qgp_signature_serialize(signature, signature_data) == 0) {
+        fprintf(stderr, "Error: Signature serialization failed\n");
+        qgp_signature_free(signature);
+        goto cleanup;
+    }
+    qgp_signature_free(signature);
+
+    // Step 3: Encrypt plaintext with AES-256-GCM using DEK
+    messenger_enc_header_t header_for_aad;
+    memset(&header_for_aad, 0, sizeof(header_for_aad));
+    memcpy(header_for_aad.magic, "PQSIGENC", 8);
+    header_for_aad.version = 0x05;
+    header_for_aad.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
+    header_for_aad.recipient_count = (uint8_t)recipient_count;
+    header_for_aad.encrypted_size = (uint32_t)plaintext_len;
+    header_for_aad.signature_size = (uint32_t)signature_size;
+
+    encrypted_data = malloc(plaintext_len);
+    if (!encrypted_data) {
+        fprintf(stderr, "Error: Memory allocation failed for ciphertext\n");
+        goto cleanup;
+    }
+
+    if (qgp_aes256_encrypt(dek, (const uint8_t*)plaintext, plaintext_len,
+                           (uint8_t*)&header_for_aad, sizeof(header_for_aad),
+                           encrypted_data, &encrypted_size,
+                           nonce, tag) != 0) {
+        fprintf(stderr, "Error: AES-256-GCM encryption failed\n");
+        goto cleanup;
+    }
+
+    // Step 4: Create recipient entries (wrap DEK for each recipient)
+    recipient_entries = calloc(recipient_count, sizeof(messenger_recipient_entry_t));
+    if (!recipient_entries) {
+        fprintf(stderr, "Error: Memory allocation failed for recipient entries\n");
+        goto cleanup;
+    }
+
+    for (size_t i = 0; i < recipient_count; i++) {
+        uint8_t kyber_ciphertext[768];
+        uint8_t kek[32];  // KEK = shared secret from Kyber
+
+        // Kyber512 encapsulation
+        if (qgp_kyber512_enc(kyber_ciphertext, kek, recipient_enc_pubkeys[i]) != 0) {
+            fprintf(stderr, "Error: Kyber512 encapsulation failed for recipient %zu\n", i+1);
+            memset(kek, 0, 32);
+            goto cleanup;
+        }
+
+        // Wrap DEK with KEK
+        uint8_t wrapped_dek[40];
+        if (aes256_wrap_key(dek, 32, kek, wrapped_dek) != 0) {
+            fprintf(stderr, "Error: Failed to wrap DEK for recipient %zu\n", i+1);
+            memset(kek, 0, 32);
+            goto cleanup;
+        }
+
+        // Store recipient entry
+        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ciphertext, 768);
+        memcpy(recipient_entries[i].wrapped_dek, wrapped_dek, 40);
+
+        // Wipe KEK
+        memset(kek, 0, 32);
+    }
+
+    // Step 5: Build output buffer
+    // Format: [header | recipient_entries | nonce | ciphertext | tag | signature]
+    size_t total_size = sizeof(messenger_enc_header_t) +
+                       (sizeof(messenger_recipient_entry_t) * recipient_count) +
+                       12 + encrypted_size + 16 + signature_size;
+
+    output_buffer = malloc(total_size);
+    if (!output_buffer) {
+        fprintf(stderr, "Error: Memory allocation failed for output\n");
+        goto cleanup;
+    }
+
+    size_t offset = 0;
+
+    // Header
+    messenger_enc_header_t header;
+    memset(&header, 0, sizeof(header));
+    memcpy(header.magic, "PQSIGENC", 8);
+    header.version = 0x05;
+    header.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
+    header.recipient_count = (uint8_t)recipient_count;
+    header.encrypted_size = (uint32_t)encrypted_size;
+    header.signature_size = (uint32_t)signature_size;
+
+    memcpy(output_buffer + offset, &header, sizeof(header));
+    offset += sizeof(header);
+
+    // Recipient entries
+    memcpy(output_buffer + offset, recipient_entries,
+           sizeof(messenger_recipient_entry_t) * recipient_count);
+    offset += sizeof(messenger_recipient_entry_t) * recipient_count;
+
+    // Nonce (12 bytes)
+    memcpy(output_buffer + offset, nonce, 12);
+    offset += 12;
+
+    // Encrypted data
+    memcpy(output_buffer + offset, encrypted_data, encrypted_size);
+    offset += encrypted_size;
+
+    // Tag (16 bytes)
+    memcpy(output_buffer + offset, tag, 16);
+    offset += 16;
+
+    // Signature
+    memcpy(output_buffer + offset, signature_data, signature_size);
+    offset += signature_size;
+
+    *ciphertext_out = output_buffer;
+    *ciphertext_len_out = total_size;
+    ret = 0;
+
+cleanup:
+    if (dek) {
+        memset(dek, 0, 32);
+        free(dek);
+    }
+    if (encrypted_data) free(encrypted_data);
+    if (recipient_entries) free(recipient_entries);
+    if (signature_data) free(signature_data);
+    if (ret != 0 && output_buffer) free(output_buffer);
+
+    return ret;
+}
+
 int messenger_send_message(
     messenger_context_t *ctx,
     const char **recipients,
@@ -897,13 +1130,21 @@ int messenger_send_message(
         printf("  - %s\n", recipients[i]);
     }
 
-    // NOTE: Single recipient only for now (PostgreSQL keyserver limitation)
-    // Multi-recipient encryption requires implementing raw-key multi-recipient in DNA API
-    if (recipient_count != 1) {
-        fprintf(stderr, "Error: Currently only single recipient supported\n");
-        fprintf(stderr, "TODO: Implement multi-recipient with PostgreSQL keyserver\n");
+    // Build full recipient list: sender + recipients (sender as first recipient)
+    // This allows sender to decrypt their own sent messages
+    size_t total_recipients = recipient_count + 1;
+    const char **all_recipients = malloc(sizeof(char*) * total_recipients);
+    if (!all_recipients) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
         return -1;
     }
+
+    all_recipients[0] = ctx->identity;  // Sender is first recipient
+    for (size_t i = 0; i < recipient_count; i++) {
+        all_recipients[i + 1] = recipients[i];
+    }
+
+    printf("✓ Sender '%s' added as first recipient (can decrypt own sent messages)\n", ctx->identity);
 
     // Load sender's private signing key from filesystem
     const char *home = qgp_platform_home_dir();
@@ -913,52 +1154,73 @@ int messenger_send_message(
     qgp_key_t *sender_sign_key = NULL;
     if (qgp_key_load(dilithium_path, &sender_sign_key) != 0) {
         fprintf(stderr, "Error: Cannot load sender's signing key from %s\n", dilithium_path);
+        free(all_recipients);
         return -1;
     }
 
-    // Load recipient's public key from keyserver
-    uint8_t *recipient_enc_pubkey = NULL;
-    uint8_t *recipient_sign_pubkey = NULL;
-    size_t enc_len = 0, sign_len = 0;
+    // Load all recipient public keys from keyserver (including sender)
+    uint8_t **enc_pubkeys = calloc(total_recipients, sizeof(uint8_t*));
+    uint8_t **sign_pubkeys = calloc(total_recipients, sizeof(uint8_t*));
 
-    if (messenger_load_pubkey(ctx, recipients[0],
-                               &recipient_sign_pubkey, &sign_len,
-                               &recipient_enc_pubkey, &enc_len) != 0) {
-        fprintf(stderr, "Error: Cannot load public key for '%s' from keyserver\n", recipients[0]);
+    if (!enc_pubkeys || !sign_pubkeys) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        free(enc_pubkeys);
+        free(sign_pubkeys);
+        free(all_recipients);
         qgp_key_free(sender_sign_key);
         return -1;
     }
 
-    printf("✓ Loaded public key for '%s' from keyserver\n", recipients[0]);
+    // Load public keys for all recipients from keyserver
+    for (size_t i = 0; i < total_recipients; i++) {
+        size_t sign_len = 0, enc_len = 0;
+        if (messenger_load_pubkey(ctx, all_recipients[i],
+                                   &sign_pubkeys[i], &sign_len,
+                                   &enc_pubkeys[i], &enc_len) != 0) {
+            fprintf(stderr, "Error: Cannot load public key for '%s' from keyserver\n", all_recipients[i]);
 
-    // Single recipient encryption using raw keys
+            // Cleanup on error
+            for (size_t j = 0; j < total_recipients; j++) {
+                free(enc_pubkeys[j]);
+                free(sign_pubkeys[j]);
+            }
+            free(enc_pubkeys);
+            free(sign_pubkeys);
+            free(all_recipients);
+            qgp_key_free(sender_sign_key);
+            return -1;
+        }
+        printf("✓ Loaded public key for '%s' from keyserver\n", all_recipients[i]);
+    }
+
+    // Multi-recipient encryption implementation
     uint8_t *ciphertext = NULL;
     size_t ciphertext_len = 0;
-
-    dna_error_t err = dna_encrypt_message_raw(
-        ctx->dna_ctx,
-        (const uint8_t*)message,
-        strlen(message),
-        recipient_enc_pubkey,  // Recipient's Kyber512 public key
-        sender_sign_key->public_key,  // Sender's Dilithium3 public key
-        sender_sign_key->private_key, // Sender's Dilithium3 private key
-        &ciphertext,
-        &ciphertext_len
+    int ret = messenger_encrypt_multi_recipient(
+        message, strlen(message),
+        enc_pubkeys, total_recipients,
+        sender_sign_key,
+        &ciphertext, &ciphertext_len
     );
 
     // Cleanup keys
-    free(recipient_enc_pubkey);
-    free(recipient_sign_pubkey);
+    for (size_t i = 0; i < total_recipients; i++) {
+        free(enc_pubkeys[i]);
+        free(sign_pubkeys[i]);
+    }
+    free(enc_pubkeys);
+    free(sign_pubkeys);
+    free(all_recipients);
     qgp_key_free(sender_sign_key);
 
-    if (err != DNA_OK) {
-        fprintf(stderr, "Error: Encryption failed: %s\n", dna_error_string(err));
+    if (ret != 0) {
+        fprintf(stderr, "Error: Multi-recipient encryption failed\n");
         return -1;
     }
 
-    printf("✓ Message encrypted (%zu bytes)\n", ciphertext_len);
+    printf("✓ Message encrypted (%zu bytes) for %zu recipient(s)\n", ciphertext_len, total_recipients);
 
-    // Store in database
+    // Store in database - one row per actual recipient (not including sender)
     const char *query =
         "INSERT INTO messages (sender, recipient, ciphertext, ciphertext_len) "
         "VALUES ($1, $2, $3, $4::integer)";
@@ -971,24 +1233,31 @@ int messenger_send_message(
     int paramFormats[4] = {0, 0, 1, 0}; // text, text, binary, text
 
     paramValues[0] = ctx->identity;
-    paramValues[1] = recipients[0];
     paramValues[2] = (const char*)ciphertext;
     paramLengths[2] = (int)ciphertext_len;
     paramValues[3] = len_str;
 
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 4, NULL, paramValues, paramLengths, paramFormats, 0);
+    // Store one row for each actual recipient (not sender)
+    for (size_t i = 0; i < recipient_count; i++) {
+        paramValues[1] = recipients[i];
 
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Store message failed: %s\n", PQerrorMessage(ctx->pg_conn));
+        PGresult *res = PQexecParams(ctx->pg_conn, query, 4, NULL, paramValues, paramLengths, paramFormats, 0);
+
+        if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+            fprintf(stderr, "Store message failed for recipient '%s': %s\n",
+                    recipients[i], PQerrorMessage(ctx->pg_conn));
+            PQclear(res);
+            free(ciphertext);
+            return -1;
+        }
+
         PQclear(res);
-        free(ciphertext);
-        return -1;
+        printf("✓ Message stored for '%s'\n", recipients[i]);
     }
 
-    PQclear(res);
     free(ciphertext);
 
-    printf("✓ Message sent successfully\n\n");
+    printf("✓ Message sent successfully to %zu recipient(s)\n\n", recipient_count);
     return 0;
 }
 
