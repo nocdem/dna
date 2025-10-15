@@ -1,8 +1,8 @@
 # DNA Messenger - Development Roadmap
 
-**Version:** 0.1.0-alpha
-**Last Updated:** 2025-10-14
-**Project Status:** Fork Preparation Phase
+**Version:** 0.1.105-alpha
+**Last Updated:** 2025-10-15
+**Project Status:** Phase 4 (Network Layer) - Phase 5 Complete
 
 ---
 
@@ -14,10 +14,10 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 1: Fork Preparation ✅ IN PROGRESS
+## Phase 1: Fork Preparation ✅ COMPLETE
 
 **Timeline:** 1-2 days
-**Status:** 90% complete
+**Status:** Complete
 
 ### Objectives
 - Fork QGP repository
@@ -25,31 +25,30 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - Verify build system works
 - Initialize git repository
 
-### Tasks
+### Completed Tasks
 - [x] Create fork at `/opt/dna-messenger`
 - [x] Clean up build artifacts
 - [x] Update `README.md` with DNA Messenger branding
 - [x] Update `CLAUDE.md` with messenger development guidelines
 - [x] Create `ROADMAP.md` (this file)
-- [ ] Update `CMakeLists.txt` (project name, version)
-- [ ] Update `main.c` (help text, version info)
-- [ ] Verify build works (`make` runs successfully)
-- [ ] Initialize git repository
-- [ ] Create initial commit
+- [x] Update `CMakeLists.txt` (project name, version)
+- [x] Update `main.c` (help text, version info)
+- [x] Verify build works (`make` runs successfully)
+- [x] Initialize git repository
+- [x] Create initial commit
 
 ### Deliverables
-- Forked repository with DNA branding
-- Updated documentation
-- Working build system
-- Initial git commit
+- ✅ Forked repository with DNA branding
+- ✅ Updated documentation
+- ✅ Working build system
+- ✅ Initial git commit
 
 ---
 
-## Phase 2: Library API Design
+## Phase 2: Library API Design ✅ COMPLETE
 
 **Timeline:** 1-2 weeks
-**Status:** Not started
-**Prerequisites:** Phase 1 complete
+**Status:** Complete
 
 ### Objectives
 - Design memory-based API for messenger operations
@@ -57,88 +56,73 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - Create public API header (`dna_api.h`)
 - Write API documentation
 
-### Tasks
-
-#### API Design
-- [ ] Design `dna_api.h` (public API header)
-- [ ] Define error codes (`dna_error_t`)
-- [ ] Define context structure (`dna_context_t`)
-- [ ] Define buffer structure (`dna_buffer_t`)
-
-#### Core Functions
-- [ ] Context management (`dna_context_new`, `dna_context_free`)
-- [ ] Key generation (`dna_keygen_signing`, `dna_keygen_encryption`)
-- [ ] Message encryption (`dna_encrypt_message`)
-- [ ] Message decryption (`dna_decrypt_message`)
-- [ ] Signature functions (`dna_sign`, `dna_verify`)
-
-#### Refactoring
-- [ ] Refactor `encrypt.c` for memory-based operations
-- [ ] Refactor `decrypt.c` for memory-based operations
-- [ ] Refactor `sign.c` and `verify.c` for memory-based operations
-- [ ] Create buffer management utilities
-
-#### Documentation
-- [ ] API reference documentation (`docs/API.md`)
-- [ ] Integration examples (`examples/basic_usage.c`)
-- [ ] Memory management guidelines
+### Completed Tasks
+- [x] Design `dna_api.h` (public API header)
+- [x] Define error codes (`dna_error_t`)
+- [x] Define context structure (`dna_context_t`)
+- [x] Define buffer structure (`dna_buffer_t`)
+- [x] Context management (`dna_context_new`, `dna_context_free`)
+- [x] Key generation (`dna_keygen_signing`, `dna_keygen_encryption`)
+- [x] Message encryption (`dna_encrypt_message`)
+- [x] Message decryption (`dna_decrypt_message`)
+- [x] Signature functions (`dna_sign`, `dna_verify`)
+- [x] Multi-recipient encryption support
+- [x] Refactor for memory-based operations
+- [x] Buffer management utilities
+- [x] API documentation
 
 ### Deliverables
-- `dna_api.h` - Public API header
-- `libdna.so` / `dna.dll` - Shared library
-- `libdna.a` - Static library
-- API documentation
-- Integration examples
+- ✅ `dna_api.h` - Public API header
+- ✅ `libdna.a` - Static library
+- ✅ API documentation
+- ✅ Integration examples
 
 ---
 
-## Phase 3: CLI Messenger Client
+## Phase 3: CLI Messenger Client ✅ COMPLETE
 
 **Timeline:** 2-3 weeks
-**Status:** Not started
-**Prerequisites:** Phase 2 complete
+**Status:** Complete
 
 ### Objectives
 - Build reference messenger implementation
 - Command-line chat interface
-- Local message storage
+- PostgreSQL message storage
 - Contact management
 
-### Tasks
-
-#### CLI Interface
-- [ ] Command-line argument parsing
-- [ ] Interactive chat mode
-- [ ] Contact list commands
-- [ ] Message history commands
-
-#### Message Storage
-- [ ] Design local storage format (SQLite)
-- [ ] Message persistence
-- [ ] Contact database
-- [ ] Key storage integration
-
-#### Messaging Operations
-- [ ] Send message (encrypt for recipient)
-- [ ] Receive message (decrypt from sender)
-- [ ] List conversations
-- [ ] Search message history
-
-#### Contact Management
-- [ ] Add contact (import public key)
-- [ ] List contacts
-- [ ] Delete contact
-- [ ] Key fingerprint verification
+### Completed Tasks
+- [x] Command-line argument parsing
+- [x] Interactive chat mode
+- [x] Contact list commands
+- [x] Message history commands
+- [x] PostgreSQL database integration
+- [x] Message persistence
+- [x] Contact database
+- [x] Key storage integration (`~/.dna/`)
+- [x] Send message (encrypt for recipient)
+- [x] Receive message (decrypt from sender)
+- [x] List conversations
+- [x] Search message history
+- [x] Add contact (import public key)
+- [x] List contacts
+- [x] Delete contact
+- [x] BIP39 mnemonic key generation (24 words)
+- [x] File-based seed phrase restore
+- [x] Keyserver verification for restored keys
+- [x] Auto-login for existing identities
+- [x] Windows support (cross-platform)
+- [x] Message deletion
+- [x] Message search/filtering by date and sender
 
 ### Deliverables
-- `dna` - CLI messenger client
-- Local message database
-- Contact management system
-- User documentation
+- ✅ `dna_messenger` - CLI messenger client
+- ✅ PostgreSQL message database
+- ✅ Contact management system
+- ✅ User documentation
 
 ---
 
-## Phase 4: Network Layer
+## Phase 4: Network Layer 🚧 IN PROGRESS
 
 **Timeline:** 3-4 weeks
 **Status:** Not started
@@ -182,11 +166,10 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 5: Desktop Application
+## Phase 5: Desktop Application ✅ COMPLETE
 
 **Timeline:** 4-6 weeks
-**Status:** Not started
-**Prerequisites:** Phase 4 complete
+**Status:** Complete
 
 ### Objectives
 - Qt-based desktop GUI
@@ -194,37 +177,58 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - Rich messaging features
 - System notifications
 
-### Tasks
+### Completed Tasks
 
 #### GUI Development
-- [ ] Qt application framework
-- [ ] Conversation list view
-- [ ] Chat window interface
-- [ ] Contact management UI
-- [ ] Settings panel
+- [x] Qt5 application framework
+- [x] Conversation list view (contacts and groups)
+- [x] Chat window interface
+- [x] Contact management UI
+- [x] Settings panel (themes, font scaling)
+- [x] Custom title bar (frameless window)
 
 #### Features
-- [ ] Rich text formatting
-- [ ] File transfer
-- [ ] Image previews
-- [ ] Emoji support
-- [ ] System tray integration
+- [x] Real-time message display
+- [x] Message timestamps
+- [x] Delivery and read receipts (✓✓ checkmarks)
+- [x] Desktop notifications (system tray)
+- [x] System tray integration
+- [x] Auto-update mechanism (Windows batch script)
+- [x] Theme switching (cpunk.io cyan, cpunk.club orange)
+- [x] Dynamic font scaling (1x, 2x, 3x, 4x)
+- [x] Multi-recipient encryption
+- [x] Message decryption (sent and received)
+- [x] Auto-detect local identity from ~/.dna/
+- [x] Notification sound effects
+
+#### Group Messaging
+- [x] Create groups with member selection
+- [x] Group conversation display
+- [x] Send messages to groups
+- [x] Manage group members (add/remove)
+- [x] Edit group name and description
+- [x] Delete group (creator only)
+- [x] Leave group (members only)
+- [x] Creator marked with crown icon (👑)
+- [x] Contextual Group Settings button
+- [x] PostgreSQL groups tables (migration)
 
 #### Platform Support
-- [ ] Linux build
-- [ ] Windows build
-- [ ] macOS build
-- [ ] Application packaging (AppImage, MSI, DMG)
+- [x] Linux build
+- [x] Windows build
+- [ ] macOS build (future)
+- [x] Cross-platform compilation
 
 ### Deliverables
-- `dna-desktop` - Desktop application
-- Installation packages
-- User manual
-- Platform-specific builds
+- ✅ `dna_messenger_gui` - Desktop application
+- ✅ Installation guide
+- ✅ User manual (README.md)
+- ✅ Platform-specific builds (Linux, Windows)
+- ✅ Full group messaging feature
 
 ---
 
-## Phase 6: Mobile Applications
+## Phase 6: Mobile Applications 📋 PLANNED
 
 **Timeline:** 6-8 weeks
 **Status:** Not started
@@ -266,7 +270,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 7: Advanced Security Features
+## Phase 7: Advanced Security Features 📋 PLANNED
 
 **Timeline:** 4-6 weeks
 **Status:** Not started
@@ -304,115 +308,75 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 8: Group Messaging
-
-**Timeline:** 4-5 weeks
-**Status:** Not started
-**Prerequisites:** Phase 7 complete
-
-### Objectives
-- Group chat support
-- Group key management
-- Group administration
-
-### Tasks
-
-#### Group Implementation
-- [ ] Group creation
-- [ ] Member management
-- [ ] Group encryption (sender keys)
-- [ ] Group message history
-
-#### Group Administration
-- [ ] Add/remove members
-- [ ] Admin permissions
-- [ ] Group settings
-- [ ] Group invitations
-
-### Deliverables
-- Group messaging feature
-- Group administration tools
-- Group security documentation
-
----
-
-## Future Enhancements (Phase 9+)
+## Phase 8+: Future Enhancements 📋 PLANNED
 
 ### Voice/Video Calls
-- WebRTC integration
-- TURN server infrastructure
-- Call encryption
-- Screen sharing
+- [ ] WebRTC integration
+- [ ] TURN server infrastructure
+- [ ] Call encryption
+- [ ] Screen sharing
 
 ### Advanced Features
-- Stickers and GIFs
-- Bots and automation
-- Channels (broadcast mode)
-- Stories/Status updates
+- [ ] Stickers and GIFs
+- [ ] Bots and automation
+- [ ] Channels (broadcast mode)
+- [ ] Stories/Status updates
+- [ ] Rich text formatting
+- [ ] File transfer
 
 ### Infrastructure
-- Decentralized architecture (Matrix-style federation)
-- Tor integration (metadata protection)
-- Bridge to other platforms (Signal, WhatsApp)
+- [ ] Decentralized architecture (Matrix-style federation)
+- [ ] Tor integration (metadata protection)
+- [ ] Bridge to other platforms (Signal, WhatsApp)
 
 ### Enterprise Features
-- Organization management
-- Compliance tools
-- Audit logging
-- SSO integration
+- [ ] Organization management
+- [ ] Compliance tools
+- [ ] Audit logging
+- [ ] SSO integration
 
 ---
 
 ## Success Criteria
 
-### Phase 1-2 (Foundation)
+### Phase 1-2 (Foundation) ✅
 - ✅ Repository forked and branded
 - ✅ Library API compiles without errors
 - ✅ Memory-based operations working
 - ✅ API documentation complete
 
-### Phase 3 (CLI Messenger)
+### Phase 3 (CLI Messenger) ✅
 - ✅ Alice can send message to Bob via CLI
 - ✅ Bob can decrypt and read message
 - ✅ Messages persist across sessions
 - ✅ Contact list works
 
-### Phase 4 (Network)
-- ✅ Messages delivered over network
-- ✅ Offline messages queued and delivered
-- ✅ Connection resilience tested
-- ✅ Multi-client support
+### Phase 4 (Network) 🚧
+- ⏳ Messages delivered over network
+- ⏳ Offline messages queued and delivered
+- ⏳ Connection resilience tested
+- ⏳ Multi-client support
 
-### Phase 5-6 (Desktop/Mobile)
-- ✅ GUI applications working on all platforms
-- ✅ File transfer functional
-- ✅ Push notifications working (mobile)
-- ✅ User onboarding smooth
+### Phase 5 (Desktop) ✅
+- ✅ GUI application working on Linux and Windows
+- ✅ Contacts and groups displayed
+- ✅ Message send/receive functional
+- ✅ Delivery/read receipts working
+- ✅ Group messaging with full UI
+- ✅ Desktop notifications working
+- ✅ Theme system functional
+- ✅ Auto-update mechanism working
 
-### Phase 7-8 (Advanced Features)
-- ✅ Forward secrecy working
-- ✅ Multi-device sync functional
-- ✅ Group messaging working
-- ✅ Security audit passed
+### Phase 6 (Mobile) 📋
+- ⏳ Mobile app working on Android and iOS
+- ⏳ Push notifications working
+- ⏳ Biometric authentication
+- ⏳ User onboarding smooth
 
----
-
-## Risk Management
-
-### Technical Risks
-- **Cryptographic bugs**: Mitigate with extensive testing and code review
-- **Network complexity**: Start with simple relay server, add P2P later
-- **Cross-platform issues**: Test on all platforms continuously
-
-### Resource Risks
-- **Development time**: Phases can be extended if needed
-- **Testing effort**: Automate testing where possible
-- **Documentation**: Write docs as features are developed
-
-### Security Risks
-- **Quantum attacks**: Already mitigated (post-quantum algorithms)
-- **Implementation bugs**: Code review + security audit
-- **Side-channel attacks**: Address in Phase 7 (secure memory)
+### Phase 7-8 (Advanced Features) 📋
+- ⏳ Forward secrecy working
+- ⏳ Multi-device sync functional
+- ⏳ Security audit passed
 
 ---
 
@@ -420,22 +384,61 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 | Version | Phase | Status | Description |
 |---------|-------|--------|-------------|
-| 0.1.0 | Phase 1 | In Progress | Fork preparation |
-| 0.2.0 | Phase 2 | Planned | Library API |
-| 0.3.0 | Phase 3 | Planned | CLI messenger |
-| 0.4.0 | Phase 4 | Planned | Network layer |
-| 1.0.0 | Phase 5 | Planned | Desktop app (first stable release) |
-| 1.1.0 | Phase 6 | Planned | Mobile apps |
-| 1.2.0 | Phase 7 | Planned | Advanced security |
-| 1.3.0 | Phase 8 | Planned | Group messaging |
+| 0.1.0 | Phase 1 | ✅ Complete | Fork preparation |
+| 0.2.0 | Phase 2 | ✅ Complete | Library API |
+| 0.3.0 | Phase 3 | ✅ Complete | CLI messenger |
+| 0.4.0 | Phase 4 | 🚧 In Progress | Network layer |
+| 1.0.0 | Phase 5 | ✅ Complete | Desktop app (first stable release candidate) |
+| 1.1.0 | Phase 6 | 📋 Planned | Mobile apps |
+| 1.2.0 | Phase 7 | 📋 Planned | Advanced security |
+| 1.3.0 | Phase 8 | 📋 Planned | Future enhancements |
+
+**Current Version:** 0.1.105-alpha (103 commits since fork)
+
+---
+
+## Risk Management
+
+### Technical Risks
+- **Cryptographic bugs**: Mitigated with extensive testing, code review, and use of proven algorithms
+- **Network complexity**: Start with simple relay server, add P2P later
+- **Cross-platform issues**: Continuous testing on all platforms
+
+### Resource Risks
+- **Development time**: Phases can be extended if needed
+- **Testing effort**: Automated testing where possible
+- **Documentation**: Write docs as features are developed
+
+### Security Risks
+- **Quantum attacks**: Already mitigated (post-quantum algorithms)
+- **Implementation bugs**: Code review + security audit planned
+- **Side-channel attacks**: To be addressed in Phase 7 (secure memory)
+
+---
+
+## Current Status Summary
+
+### ✅ Completed
+- **Phase 1:** Fork Preparation
+- **Phase 2:** Library API Design
+- **Phase 3:** CLI Messenger Client
+- **Phase 5:** Desktop Application (with groups!)
+
+### 🚧 In Progress
+- **Phase 4:** Network Layer (next priority)
+
+### 📋 Planned
+- **Phase 6:** Mobile Applications
+- **Phase 7:** Advanced Security Features
+- **Phase 8+:** Future Enhancements
 
 ---
 
 ## Contributing
 
-DNA Messenger is in early development. Contributions welcome!
+DNA Messenger is in active development. Contributions welcome!
 
-**Current Phase:** Fork Preparation
+**Current Phase:** Network Layer (Phase 4)
 **How to Contribute:**
 - Check `CLAUDE.md` for development guidelines
 - Pick tasks from current phase
@@ -445,5 +448,6 @@ DNA Messenger is in early development. Contributions welcome!
 ---
 
 **Project Start:** 2025-10-14
-**Current Version:** 0.1.0-alpha
-**Next Milestone:** Library API Design (v0.2.0)
+**Current Version:** 0.1.105-alpha
+**Next Milestone:** Network Layer (Phase 4)
+**Recent Achievement:** Full group messaging feature complete! 🎉

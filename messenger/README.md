@@ -61,10 +61,12 @@ Release\dna_messenger.exe
 ### GUI Version
 
 1. **Launch** the app - auto-detects your identity from `~/.dna/`
-2. **Select a contact** from the left panel
+2. **Select a contact or group** from the left panel
 3. **Type and send** messages - encrypted automatically
-4. **Customize** via Settings menu (themes, font sizes)
-5. **Update** via Help menu → Check for Updates
+4. **Create groups** via ➕ Create Group button
+5. **Manage groups** via ⚙️ Group Settings button (when group selected)
+6. **Customize** via Settings menu (themes, font sizes)
+7. **Update** via Help menu → Check for Updates
 
 ### CLI Version
 
@@ -72,51 +74,108 @@ Release\dna_messenger.exe
 First run: Create new identity or restore from 24-word recovery phrase
 
 Main menu:
-1. Send message              - Encrypt and send to recipient
+1. Send message              - Encrypt and send to recipient(s)
 2. List inbox               - View received messages
 3. Read message             - Decrypt and display
 4. List sent messages       - View your sent messages
 5. List keyserver           - See all users
-6. Check for updates        - Update to latest version
-7. Logout
+6. Create group             - Create new group chat
+7. Manage groups            - Add/remove members, settings
+8. Check for updates        - Update to latest version
+9. Logout
 ```
-
-## Roadmap
-
-### ✅ Completed
-
-- **Phase 1:** Foundation (forked from QGP)
-- **Phase 2:** Library API (memory-based encryption)
-- **Phase 3:** CLI Messenger (PostgreSQL storage, BIP39 recovery)
-- **Phase 5:** Desktop GUI (Qt5, themes, auto-updates, font scaling)
-
-### 🚧 In Progress
-
-- **Phase 4:** Network Layer (WebSocket transport, P2P discovery, offline queue)
-
-### 📋 Planned
-
-- **Phase 6:** Mobile Apps (Flutter for iOS/Android)
-- **Phase 7:** Advanced Features (forward secrecy, multi-device sync, group messaging)
 
 ## Features
 
 **Current:**
 - ✅ End-to-end encryption with post-quantum algorithms
-- ✅ Multi-recipient messaging (group messages)
+- ✅ Multi-recipient messaging (broadcast to multiple users)
+- ✅ Persistent group chats with member management
 - ✅ 24-word BIP39 recovery phrases
 - ✅ Cross-platform (Linux & Windows)
 - ✅ Shared keyserver at ai.cpunk.io
 - ✅ Auto-update mechanism
 - ✅ Theme switching (cpunk.io cyan / cpunk.club orange)
 - ✅ Dynamic font scaling (1x - 4x)
+- ✅ Message delivery and read receipts
+- ✅ Desktop notifications
 
 **Coming Soon:**
 - 🚧 Real-time WebSocket messaging
 - 🚧 P2P message routing
 - 📋 Forward secrecy (ephemeral session keys)
 - 📋 Multi-device synchronization
-- 📋 Mobile applications
+- 📋 Mobile applications (Flutter)
+- 📋 Voice/video calls
+
+## Roadmap
+
+### ✅ Phase 1: Fork Preparation (Complete)
+- Repository forked from QGP
+- DNA Messenger branding applied
+- Build system configured
+
+### ✅ Phase 2: Library API (Complete)
+- Memory-based encryption/decryption API
+- Public API header (`dna_api.h`)
+- Multi-recipient encryption support
+- Contact management (keyserver)
+
+### ✅ Phase 3: CLI Messenger Client (Complete)
+- Command-line chat interface
+- PostgreSQL message storage
+- Contact list management
+- Message send/receive/search
+- BIP39 mnemonic key generation
+- File-based seed phrase restore
+- Auto-login for existing identities
+- Cross-platform support (Linux & Windows)
+
+### 🚧 Phase 4: Network Layer (In Progress)
+- [ ] WebSocket transport
+- [ ] P2P discovery
+- [ ] Real-time message routing
+- [ ] Offline message queue
+- [ ] Connection resilience
+
+### ✅ Phase 5: Qt Desktop App (Complete)
+- Qt5 GUI with contact list and chat area
+- Message send/receive functionality
+- Real contacts from keyserver
+- Real conversations from database
+- Message decryption (sent and received)
+- Multi-recipient encryption support
+- Auto-update mechanism
+- Message timestamps
+- Auto-detect local identity
+- Delivery/read receipts
+- Desktop notifications
+- Theme system (2 themes)
+- Font scaling (1x-4x)
+- **Group messaging with full UI**
+
+### 📋 Phase 6: Mobile Apps (Planned)
+- Flutter mobile app
+- Android and iOS support
+- Push notifications
+- Background sync
+- Biometric authentication
+
+### 📋 Phase 7: Advanced Security (Planned)
+- Forward secrecy (session keys)
+- Multi-device synchronization
+- Secure memory management
+- Key verification (QR codes)
+- Disappearing messages
+
+### 📋 Phase 8+: Future Enhancements (Planned)
+- Voice/video calls (WebRTC)
+- Stickers and rich media
+- Channels (broadcast mode)
+- Decentralized architecture
+- Tor integration
+
+**For detailed roadmap, see [ROADMAP.md](./ROADMAP.md)**
 
 ## Architecture
 
@@ -151,6 +210,28 @@ Main menu:
 2. Enter your 24 words
 3. Keys regenerated and verified against keyserver
 
+## Groups
+
+**Create Groups:**
+- Click ➕ Create Group button
+- Enter group name and description
+- Select initial members
+- You're automatically added as creator
+
+**Manage Groups:**
+- Select group from contact list
+- Click ⚙️ Group Settings button
+- Edit name/description
+- Add/remove members
+- Delete group (creator only)
+- Leave group (members only)
+
+**Group Messaging:**
+- Messages automatically sent to all members
+- End-to-end encrypted for each recipient
+- Creator marked with 👑 icon
+- Full member list visible to all
+
 ## License
 
 GNU General Public License v3.0
@@ -162,6 +243,8 @@ Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 - **GitHub:** https://github.com/nocdem/dna-messenger
 - **Parent Project:** https://github.com/nocdem/qgp
 - **Server:** ai.cpunk.io:5432
+- **Roadmap:** [ROADMAP.md](./ROADMAP.md)
+- **Development Guide:** [CLAUDE.md](./CLAUDE.md)
 
 ---
 

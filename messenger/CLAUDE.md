@@ -9,7 +9,7 @@
 
 **Binary Location:** `/opt/dna-messenger/build/dna_messenger`
 
-**Status:** 🚧 IN DEVELOPMENT - Phase 4: Network Layer (v0.1.52-alpha)
+**Status:** 🚧 IN DEVELOPMENT - Phase 4: Network Layer (v0.1.105-alpha)
 
 ---
 
@@ -81,12 +81,16 @@ DNA Messenger is designed for **real-time encrypted messaging**, NOT file operat
 - [x] Auto-update mechanism (Windows batch script)
 - [x] Message timestamps display
 - [x] Auto-detect local identity from ~/.dna/
+- [x] Delivery and read receipts
+- [x] Desktop notifications (system tray)
+- [x] Theme system (cpunk.io cyan, cpunk.club orange)
+- [x] Font scaling (1x-4x)
+- [x] Group messaging with full UI (create, manage, send)
 
 ### Phase 6-7: Mobile & Advanced Features (Future)
 - [ ] Flutter mobile app
 - [ ] Forward secrecy (session keys)
 - [ ] Multi-device synchronization
-- [ ] Group messaging
 
 ---
 
@@ -336,6 +340,11 @@ dna_error_t dna_decrypt_message(
 - ✅ Multi-recipient encryption with sender-as-first-recipient
 - ✅ Message persistence and decryption
 - ✅ Auto-update mechanism
+- ✅ Delivery and read receipts
+- ✅ Desktop notifications
+- ✅ Theme system (2 themes)
+- ✅ Font scaling (1x-4x)
+- ✅ Full group messaging feature (create, manage members, send messages)
 
 **Phase 4 Tasks:**
 1. Design WebSocket protocol for real-time messaging
@@ -357,8 +366,7 @@ dna_error_t dna_decrypt_message(
 1. Flutter mobile app
 2. Forward secrecy (session keys)
 3. Multi-device synchronization
-4. Group messaging
-5. Voice/video calling (future)
+4. Voice/video calling (future)
 
 ---
 
@@ -390,13 +398,16 @@ dna_error_t dna_decrypt_message(
 ---
 
 **Last Updated:** 2025-10-15
-**Version:** 0.1.52-alpha
+**Version:** 0.1.105-alpha
 **Status:** Phase 4 - Network Layer (Active Development)
 **Repository:** `/opt/dna-messenger`
 
-**Recent Changes (v0.1.52):**
-- Multi-recipient encryption with sender-as-first-recipient pattern
-- GUI decryption for both sent and received messages
-- Full Qt5 GUI messenger functionality (Phase 5 complete)
-- Windows auto-update batch script
-- Cross-platform identity auto-detection
+**Recent Changes (v0.1.105):**
+- Full group messaging feature (backend + GUI)
+- Database migration for groups tables
+- Create groups with member selection
+- Manage group members (add/remove)
+- Group settings (edit name/description, delete/leave)
+- Delivery and read receipts with debugging
+- Fixed notification system (respects read status)
+- Theme system and font scaling improvements
