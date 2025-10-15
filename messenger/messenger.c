@@ -1124,6 +1124,19 @@ int messenger_send_message(
         return -1;
     }
 
+    // Debug: show what we received
+    printf("\n========== DEBUG: messenger_send_message() called ==========\n");
+    printf("Version: %s (commit %s, built %s)\n", PQSIGNUM_VERSION, BUILD_HASH, BUILD_TS);
+    printf("\nSender: '%s'\n", ctx->identity);
+    printf("\nRecipients (%zu):\n", recipient_count);
+    for (size_t i = 0; i < recipient_count; i++) {
+        printf("  [%zu] = '%s' (length: %zu)\n", i, recipients[i], strlen(recipients[i]));
+    }
+    printf("\nMessage body:\n");
+    printf("  Text: '%s'\n", message);
+    printf("  Length: %zu bytes\n", strlen(message));
+    printf("===========================================================\n\n");
+
     // Display recipients
     printf("\n[Sending message to %zu recipient(s)]\n", recipient_count);
     for (size_t i = 0; i < recipient_count; i++) {
