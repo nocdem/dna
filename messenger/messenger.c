@@ -1233,28 +1233,39 @@ int messenger_send_message(
 
     printf("✓ Message encrypted (%zu bytes) for %zu recipient(s)\n", ciphertext_len, total_recipients);
 
+    // Generate unique message_group_id (use microsecond timestamp for uniqueness)
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    int message_group_id = (int)(ts.tv_sec * 1000000 + ts.tv_nsec / 1000);
+
+    printf("✓ Assigned message_group_id: %d\n", message_group_id);
+
     // Store in database - one row per actual recipient (not including sender)
     const char *query =
-        "INSERT INTO messages (sender, recipient, ciphertext, ciphertext_len) "
-        "VALUES ($1, $2, $3, $4::integer)";
+        "INSERT INTO messages (sender, recipient, ciphertext, ciphertext_len, message_group_id) "
+        "VALUES ($1, $2, $3, $4::integer, $5::integer)";
 
     char len_str[32];
     snprintf(len_str, sizeof(len_str), "%zu", ciphertext_len);
 
-    const char *paramValues[4];
-    int paramLengths[4];
-    int paramFormats[4] = {0, 0, 1, 0}; // text, text, binary, text
+    char group_id_str[32];
+    snprintf(group_id_str, sizeof(group_id_str), "%d", message_group_id);
+
+    const char *paramValues[5];
+    int paramLengths[5];
+    int paramFormats[5] = {0, 0, 1, 0, 0}; // text, text, binary, text, text
 
     paramValues[0] = ctx->identity;
     paramValues[2] = (const char*)ciphertext;
     paramLengths[2] = (int)ciphertext_len;
     paramValues[3] = len_str;
+    paramValues[4] = group_id_str;
 
     // Store one row for each actual recipient (not sender)
     for (size_t i = 0; i < recipient_count; i++) {
         paramValues[1] = recipients[i];
 
-        PGresult *res = PQexecParams(ctx->pg_conn, query, 4, NULL, paramValues, paramLengths, paramFormats, 0);
+        PGresult *res = PQexecParams(ctx->pg_conn, query, 5, NULL, paramValues, paramLengths, paramFormats, 0);
 
         if (PQresultStatus(res) != PGRES_COMMAND_OK) {
             fprintf(stderr, "Store message failed for recipient '%s': %s\n",

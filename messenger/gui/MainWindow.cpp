@@ -10,6 +10,7 @@
 #include <QScreen>
 #include <QMessageBox>
 #include <QInputDialog>
+#include <QDialog>
 #include <QStringList>
 #include <QDateTime>
 #include <QDir>
@@ -473,6 +474,49 @@ void MainWindow::setupUI() {
     );
     rightLayout->addWidget(messageDisplay);
 
+    // Recipients label
+    recipientsLabel = new QLabel(QString::fromUtf8("📨 To: ..."));
+    recipientsLabel->setStyleSheet(
+        "QLabel {"
+        "   background: rgba(0, 217, 255, 0.1);"
+        "   color: #00D9FF;"
+        "   border: 2px solid rgba(0, 217, 255, 0.3);"
+        "   border-radius: 10px;"
+        "   padding: 10px 15px;"
+        "   font-family: 'Orbitron'; font-size: 42px;"
+        "}"
+    );
+    rightLayout->addWidget(recipientsLabel);
+
+    // Recipients button row
+    QHBoxLayout *recipientsButtonLayout = new QHBoxLayout;
+    recipientsButtonLayout->addStretch();
+
+    addRecipientsButton = new QPushButton(QString::fromUtf8("➕ Add Recipients"));
+    addRecipientsButton->setStyleSheet(
+        "QPushButton {"
+        "   background: rgba(0, 217, 255, 0.2);"
+        "   color: #00D9FF;"
+        "   border: 2px solid #00D9FF;"
+        "   border-radius: 12px;"
+        "   padding: 10px 20px;"
+        "   font-weight: bold;"
+        "   font-family: 'Orbitron'; font-size: 42px;"
+        "}"
+        "QPushButton:hover {"
+        "   background: rgba(0, 217, 255, 0.3);"
+        "   border: 2px solid #33E6FF;"
+        "}"
+        "QPushButton:pressed {"
+        "   background: rgba(0, 217, 255, 0.4);"
+        "   border: 2px solid #00D9FF;"
+        "}"
+    );
+    connect(addRecipientsButton, &QPushButton::clicked, this, &MainWindow::onAddRecipients);
+    recipientsButtonLayout->addWidget(addRecipientsButton);
+
+    rightLayout->addLayout(recipientsButtonLayout);
+
     // Message input area
     QHBoxLayout *inputLayout = new QHBoxLayout;
     messageInput = new QLineEdit;
@@ -577,6 +621,12 @@ void MainWindow::onContactSelected(QListWidgetItem *item) {
     } else {
         currentContact = contactText;
     }
+
+    // Clear additional recipients when selecting a new contact
+    additionalRecipients.clear();
+
+    // Update recipients label
+    recipientsLabel->setText(QString::fromUtf8("📨 To: ") + currentContact);
 
     // Mark all messages from this contact as read
     messenger_mark_conversation_read(ctx, currentContact.toUtf8().constData());
@@ -745,15 +795,25 @@ void MainWindow::onSendMessage() {
         return;
     }
 
-    // Send message using messenger API (single recipient for now)
-    // IMPORTANT: Store QByteArray to keep the data alive during the call
-    QByteArray recipientBytes = currentContact.toUtf8();
+    // Build recipient list: currentContact + additionalRecipients
+    QVector<QByteArray> recipientBytes;  // Store QByteArray to keep data alive
+    QVector<const char*> recipients;
+
+    // Add primary recipient
+    recipientBytes.append(currentContact.toUtf8());
+    recipients.append(recipientBytes.last().constData());
+
+    // Add additional recipients
+    for (const QString &recipient : additionalRecipients) {
+        recipientBytes.append(recipient.toUtf8());
+        recipients.append(recipientBytes.last().constData());
+    }
+
     QByteArray messageBytes = message.toUtf8();
-    const char *recipient = recipientBytes.constData();
 
     int result = messenger_send_message(ctx,
-                                         &recipient,
-                                         1,  // Single recipient
+                                         recipients.data(),
+                                         recipients.size(),
                                          messageBytes.constData());
 
     if (result == 0) {
@@ -1567,6 +1627,90 @@ void MainWindow::applyFontScale(double scale) {
     else scaleText = QString::number(scale) + "x";
     
     statusLabel->setText(QString::fromUtf8("📏 Font Scale: %1").arg(scaleText));
+}
+
+void MainWindow::onAddRecipients() {
+    if (currentContact.isEmpty()) {
+        QMessageBox::warning(this, "No Contact Selected",
+                             "Please select a primary contact first");
+        return;
+    }
+
+    // Create dialog for multi-selection
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString::fromUtf8("➕ Add Recipients"));
+    dialog.setModal(true);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QLabel *label = new QLabel(QString::fromUtf8("Select additional recipients:"));
+    layout->addWidget(label);
+
+    // List widget with multi-selection
+    QListWidget *listWidget = new QListWidget(&dialog);
+    listWidget->setSelectionMode(QAbstractItemView::MultiSelection);
+
+    // Load all contacts except current contact
+    char **identities = NULL;
+    int count = 0;
+
+    if (messenger_get_contact_list(ctx, &identities, &count) == 0) {
+        for (int i = 0; i < count; i++) {
+            QString contact = QString::fromUtf8(identities[i]);
+            // Don't include current contact or sender
+            if (contact != currentContact && contact != currentIdentity) {
+                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("👤 ") + contact);
+                listWidget->addItem(item);
+
+                // Pre-select if already in additionalRecipients
+                if (additionalRecipients.contains(contact)) {
+                    item->setSelected(true);
+                }
+            }
+            free(identities[i]);
+        }
+        free(identities);
+    }
+
+    layout->addWidget(listWidget);
+
+    // Buttons
+    QHBoxLayout *buttonLayout = new QHBoxLayout;
+    QPushButton *okButton = new QPushButton(QString::fromUtf8("✅ OK"));
+    QPushButton *cancelButton = new QPushButton(QString::fromUtf8("❌ Cancel"));
+
+    connect(okButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    buttonLayout->addWidget(okButton);
+    buttonLayout->addWidget(cancelButton);
+    layout->addLayout(buttonLayout);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        // Update additionalRecipients list
+        additionalRecipients.clear();
+
+        for (int i = 0; i < listWidget->count(); i++) {
+            QListWidgetItem *item = listWidget->item(i);
+            if (item->isSelected()) {
+                // Strip emoji prefix "👤 "
+                QString contact = item->text();
+                if (contact.startsWith(QString::fromUtf8("👤 "))) {
+                    contact = contact.mid(3);
+                }
+                additionalRecipients.append(contact);
+            }
+        }
+
+        // Update recipients label
+        QString recipientsText = QString::fromUtf8("📨 To: ") + currentContact;
+        if (!additionalRecipients.isEmpty()) {
+            recipientsText += ", " + additionalRecipients.join(", ");
+        }
+        recipientsLabel->setText(recipientsText);
+
+        statusLabel->setText(QString::fromUtf8("✨ %1 additional recipient(s) added").arg(additionalRecipients.count()));
+    }
 }
 
 // Window dragging

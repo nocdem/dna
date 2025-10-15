@@ -49,6 +49,7 @@ private slots:
     void checkForNewMessages();
     void checkForStatusUpdates();
     void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
+    void onAddRecipients();
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
@@ -73,7 +74,9 @@ private:
     QLineEdit *messageInput;
     QPushButton *sendButton;
     QPushButton *refreshButton;
+    QPushButton *addRecipientsButton;
     QLabel *statusLabel;
+    QLabel *recipientsLabel;
 
     // Custom title bar components
     QWidget *titleBar;
@@ -97,6 +100,9 @@ private:
     QSystemTrayIcon *trayIcon;
     QMenu *trayMenu;
     QSoundEffect *notificationSound;
+
+    // Multi-recipient support
+    QStringList additionalRecipients;
 };
 
 #endif // MAINWINDOW_H
