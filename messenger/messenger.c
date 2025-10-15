@@ -897,50 +897,68 @@ int messenger_send_message(
         printf("  - %s\n", recipients[i]);
     }
 
-    // Build full recipient list: sender + recipients (sender as first recipient)
-    // This allows sender to decrypt their own sent messages
-    size_t total_recipients = recipient_count + 1;
-    const char **all_recipients = malloc(sizeof(char*) * total_recipients);
-    if (!all_recipients) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
+    // NOTE: Single recipient only for now (PostgreSQL keyserver limitation)
+    // Multi-recipient encryption requires implementing raw-key multi-recipient in DNA API
+    if (recipient_count != 1) {
+        fprintf(stderr, "Error: Currently only single recipient supported\n");
+        fprintf(stderr, "TODO: Implement multi-recipient with PostgreSQL keyserver\n");
         return -1;
     }
 
-    all_recipients[0] = ctx->identity;  // Sender is first recipient
-    for (size_t i = 0; i < recipient_count; i++) {
-        all_recipients[i + 1] = recipients[i];
+    // Load sender's private signing key from filesystem
+    const char *home = qgp_platform_home_dir();
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s-dilithium.pqkey", home, ctx->identity);
+
+    qgp_key_t *sender_sign_key = NULL;
+    if (qgp_key_load(dilithium_path, &sender_sign_key) != 0) {
+        fprintf(stderr, "Error: Cannot load sender's signing key from %s\n", dilithium_path);
+        return -1;
     }
 
-    printf("✓ Sender '%s' added as first recipient (can decrypt own sent messages)\n", ctx->identity);
+    // Load recipient's public key from keyserver
+    uint8_t *recipient_enc_pubkey = NULL;
+    uint8_t *recipient_sign_pubkey = NULL;
+    size_t enc_len = 0, sign_len = 0;
 
-    // Encrypt message using multi-recipient DNA API
-    // This uses dna_encrypt_message() which already implements QGP's multi-recipient encryption
+    if (messenger_load_pubkey(ctx, recipients[0],
+                               &recipient_sign_pubkey, &sign_len,
+                               &recipient_enc_pubkey, &enc_len) != 0) {
+        fprintf(stderr, "Error: Cannot load public key for '%s' from keyserver\n", recipients[0]);
+        qgp_key_free(sender_sign_key);
+        return -1;
+    }
+
+    printf("✓ Loaded public key for '%s' from keyserver\n", recipients[0]);
+
+    // Single recipient encryption using raw keys
     uint8_t *ciphertext = NULL;
     size_t ciphertext_len = 0;
 
-    dna_error_t err = dna_encrypt_message(
+    dna_error_t err = dna_encrypt_message_raw(
         ctx->dna_ctx,
         (const uint8_t*)message,
         strlen(message),
-        all_recipients,      // Array of recipients (sender + recipients)
-        total_recipients,    // Total count (sender + recipients)
-        ctx->identity,       // Sender's identity for signing
+        recipient_enc_pubkey,  // Recipient's Kyber512 public key
+        sender_sign_key->public_key,  // Sender's Dilithium3 public key
+        sender_sign_key->private_key, // Sender's Dilithium3 private key
         &ciphertext,
         &ciphertext_len
     );
 
-    free(all_recipients);
+    // Cleanup keys
+    free(recipient_enc_pubkey);
+    free(recipient_sign_pubkey);
+    qgp_key_free(sender_sign_key);
 
     if (err != DNA_OK) {
         fprintf(stderr, "Error: Encryption failed: %s\n", dna_error_string(err));
         return -1;
     }
 
-    printf("✓ Message encrypted (%zu bytes) for %zu recipient(s)\n", ciphertext_len, total_recipients);
+    printf("✓ Message encrypted (%zu bytes)\n", ciphertext_len);
 
-    // Store in database - one row per actual recipient (excluding sender)
-    // The ciphertext contains wrapped DEKs for all recipients (including sender)
-    // So each recipient can decrypt using their own private key
+    // Store in database
     const char *query =
         "INSERT INTO messages (sender, recipient, ciphertext, ciphertext_len) "
         "VALUES ($1, $2, $3, $4::integer)";
@@ -948,34 +966,29 @@ int messenger_send_message(
     char len_str[32];
     snprintf(len_str, sizeof(len_str), "%zu", ciphertext_len);
 
-    // Insert one message row for each recipient (NOT including sender)
-    for (size_t i = 0; i < recipient_count; i++) {
-        const char *paramValues[4];
-        int paramLengths[4];
-        int paramFormats[4] = {0, 0, 1, 0}; // text, text, binary, text
+    const char *paramValues[4];
+    int paramLengths[4];
+    int paramFormats[4] = {0, 0, 1, 0}; // text, text, binary, text
 
-        paramValues[0] = ctx->identity;
-        paramValues[1] = recipients[i];
-        paramValues[2] = (const char*)ciphertext;
-        paramLengths[2] = (int)ciphertext_len;
-        paramValues[3] = len_str;
+    paramValues[0] = ctx->identity;
+    paramValues[1] = recipients[0];
+    paramValues[2] = (const char*)ciphertext;
+    paramLengths[2] = (int)ciphertext_len;
+    paramValues[3] = len_str;
 
-        PGresult *res = PQexecParams(ctx->pg_conn, query, 4, NULL, paramValues, paramLengths, paramFormats, 0);
+    PGresult *res = PQexecParams(ctx->pg_conn, query, 4, NULL, paramValues, paramLengths, paramFormats, 0);
 
-        if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-            fprintf(stderr, "Store message failed for '%s': %s\n", recipients[i], PQerrorMessage(ctx->pg_conn));
-            PQclear(res);
-            free(ciphertext);
-            return -1;
-        }
-
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Store message failed: %s\n", PQerrorMessage(ctx->pg_conn));
         PQclear(res);
-        printf("✓ Message stored for recipient '%s'\n", recipients[i]);
+        free(ciphertext);
+        return -1;
     }
 
+    PQclear(res);
     free(ciphertext);
 
-    printf("✓ Message sent to %zu recipient(s)\n", recipient_count);
+    printf("✓ Message sent successfully\n\n");
     return 0;
 }
 
