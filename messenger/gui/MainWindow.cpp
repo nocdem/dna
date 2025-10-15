@@ -151,6 +151,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(pollTimer, &QTimer::timeout, this, &MainWindow::checkForNewMessages);
     pollTimer->start(5000);
 
+    // Initialize status polling timer (10 seconds)
+    statusPollTimer = new QTimer(this);
+    connect(statusPollTimer, &QTimer::timeout, this, &MainWindow::checkForStatusUpdates);
+    statusPollTimer->start(10000);
+
     // Load saved preferences
     QSettings settings("DNA Messenger", "GUI");
     QString savedTheme = settings.value("theme", "io").toString();  // Default to "io" theme
@@ -572,6 +577,10 @@ void MainWindow::onContactSelected(QListWidgetItem *item) {
     } else {
         currentContact = contactText;
     }
+
+    // Mark all messages from this contact as read
+    messenger_mark_conversation_read(ctx, currentContact.toUtf8().constData());
+
     loadConversation(currentContact);
 }
 
@@ -632,6 +641,25 @@ void MainWindow::loadConversation(const QString &contact) {
                 }
 
                 if (sender == currentIdentity) {
+                    // Generate status checkmark
+                    QString statusCheckmark;
+                    QString status = messages[i].status ? QString::fromUtf8(messages[i].status) : "sent";
+
+                    if (status == "read") {
+                        // Double checkmark colored (theme-aware)
+                        if (currentTheme == "club") {
+                            statusCheckmark = QString::fromUtf8("<span style='color: #FF8C42;'>✓✓</span>");
+                        } else {
+                            statusCheckmark = QString::fromUtf8("<span style='color: #00D9FF;'>✓✓</span>");
+                        }
+                    } else if (status == "delivered") {
+                        // Double checkmark gray
+                        statusCheckmark = QString::fromUtf8("<span style='color: #888888;'>✓✓</span>");
+                    } else {
+                        // Single checkmark gray (sent)
+                        statusCheckmark = QString::fromUtf8("<span style='color: #888888;'>✓</span>");
+                    }
+
                     // Sent messages - theme-aware bubble aligned right
                     QString sentBubble;
                     if (currentTheme == "club") {
@@ -641,11 +669,11 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF8C42, stop:1 #FFB380); "
                             "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
                             "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #FF8C42;'>"
-                            "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4</div>"
-                            "<div style='font-family: 'Orbitron'; font-size: %5px; line-height: 1.4;'>%6</div>"
+                            "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4 %5</div>"
+                            "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     } else {
                         // cpunk.io: cyan gradient (default)
                         sentBubble = QString(
@@ -653,11 +681,11 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00D9FF, stop:1 #0D8B9C); "
                             "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
                             "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #00D9FF;'>"
-                            "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4</div>"
-                            "<div style='font-family: 'Orbitron'; font-size: %5px; line-height: 1.4;'>%6</div>"
+                            "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4 %5</div>"
+                            "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     }
                     messageDisplay->append(sentBubble);
                 } else {
@@ -736,6 +764,9 @@ void MainWindow::onSendMessage() {
         int metaFontSize = static_cast<int>(13 * fontScale);
         int messageFontSize = static_cast<int>(18 * fontScale);
 
+        // New message starts with "sent" status (single gray checkmark)
+        QString statusCheckmark = QString::fromUtf8("<span style='color: #888888;'>✓</span>");
+
         QString sentBubble;
         if (currentTheme == "club") {
             // cpunk.club: orange gradient
@@ -744,11 +775,11 @@ void MainWindow::onSendMessage() {
                 "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF8C42, stop:1 #FFB380); "
                 "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
                 "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #FF8C42;'>"
-                "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4</div>"
-                "<div style='font-family: 'Orbitron'; font-size: %5px; line-height: 1.4;'>%6</div>"
+                "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4 %5</div>"
+                "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                 "</div>"
                 "</div>"
-            ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp).arg(messageFontSize).arg(message.toHtmlEscaped());
+            ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp, statusCheckmark).arg(messageFontSize).arg(message.toHtmlEscaped());
         } else {
             // cpunk.io: cyan gradient (default)
             sentBubble = QString(
@@ -756,11 +787,11 @@ void MainWindow::onSendMessage() {
                 "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00D9FF, stop:1 #0D8B9C); "
                 "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
                 "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #00D9FF;'>"
-                "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4</div>"
-                "<div style='font-family: 'Orbitron'; font-size: %5px; line-height: 1.4;'>%6</div>"
+                "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4 %5</div>"
+                "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                 "</div>"
                 "</div>"
-            ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp).arg(messageFontSize).arg(message.toHtmlEscaped());
+            ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp, statusCheckmark).arg(messageFontSize).arg(message.toHtmlEscaped());
         }
         messageDisplay->append(sentBubble);
         messageInput->clear();
@@ -817,6 +848,9 @@ void MainWindow::checkForNewMessages() {
             lastCheckedMessageId = msgId;
         }
 
+        // Mark message as delivered (recipient has fetched it)
+        messenger_mark_delivered(ctx, msgId);
+
         // Play notification sound
         notificationSound->play();
 
@@ -833,6 +867,42 @@ void MainWindow::checkForNewMessages() {
         if (currentContact == sender) {
             loadConversation(currentContact);
         }
+    }
+
+    PQclear(res);
+}
+
+void MainWindow::checkForStatusUpdates() {
+    // Only check if we have an active conversation open
+    if (!ctx || currentContact.isEmpty()) {
+        return;
+    }
+
+    // Query for status updates on sent messages in current conversation
+    // This allows the sender to see when their messages are delivered/read
+    const char *query =
+        "SELECT COUNT(*) FROM messages "
+        "WHERE sender = $1 AND recipient = $2 "
+        "AND status IN ('delivered', 'read')";
+
+    const char *params[2] = {
+        currentIdentity.toUtf8().constData(),
+        currentContact.toUtf8().constData()
+    };
+
+    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        PQclear(res);
+        return;
+    }
+
+    // If any sent messages have been delivered or read, refresh the conversation
+    // to update the checkmarks
+    int statusCount = atoi(PQgetvalue(res, 0, 0));
+    if (statusCount > 0) {
+        // Silently refresh conversation to update checkmarks
+        loadConversation(currentContact);
     }
 
     PQclear(res);

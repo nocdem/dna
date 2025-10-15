@@ -45,6 +45,9 @@ typedef struct {
     char *sender;                // Sender identity
     char *recipient;             // Recipient identity
     char *timestamp;             // Timestamp string
+    char *status;                // Message status: "sent", "delivered", "read"
+    char *delivered_at;          // Delivery timestamp (NULL if not delivered)
+    char *read_at;               // Read timestamp (NULL if not read)
     char *plaintext;             // Decrypted message text (NULL if not decrypted)
 } message_info_t;
 
@@ -323,6 +326,34 @@ void messenger_free_messages(message_info_t *messages, int count);
  */
 int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
                               const char *end_date, bool include_sent, bool include_received);
+
+// ============================================================================
+// MESSAGE STATUS / READ RECEIPTS
+// ============================================================================
+
+/**
+ * Mark message as delivered
+ *
+ * Called when recipient fetches the message from server.
+ * Updates status from 'sent' to 'delivered' and sets delivered_at timestamp.
+ *
+ * @param ctx: Messenger context
+ * @param message_id: Message ID to mark as delivered
+ * @return: 0 on success, -1 on error
+ */
+int messenger_mark_delivered(messenger_context_t *ctx, int message_id);
+
+/**
+ * Mark all messages in conversation as read
+ *
+ * Called when recipient opens the conversation.
+ * Updates status from 'sent'/'delivered' to 'read' and sets read_at timestamp.
+ *
+ * @param ctx: Messenger context
+ * @param sender_identity: The sender whose messages to mark as read
+ * @return: 0 on success, -1 on error
+ */
+int messenger_mark_conversation_read(messenger_context_t *ctx, const char *sender_identity);
 
 #ifdef __cplusplus
 }

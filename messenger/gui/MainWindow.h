@@ -47,6 +47,7 @@ private slots:
     void onMinimizeWindow();
     void onCloseWindow();
     void checkForNewMessages();
+    void checkForStatusUpdates();
     void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
 
 protected:
@@ -91,6 +92,7 @@ private:
 
     // Notification system
     QTimer *pollTimer;
+    QTimer *statusPollTimer;
     int lastCheckedMessageId;
     QSystemTrayIcon *trayIcon;
     QMenu *trayMenu;

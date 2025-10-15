@@ -1730,7 +1730,7 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
 
     const char *paramValues[4] = {ctx->identity, other_identity, other_identity, ctx->identity};
     const char *query =
-        "SELECT id, sender, recipient, created_at FROM messages "
+        "SELECT id, sender, recipient, created_at, status, delivered_at, read_at FROM messages "
         "WHERE (sender = $1 AND recipient = $2) OR (sender = $3 AND recipient = $4) "
         "ORDER BY created_at ASC";
 
@@ -1765,19 +1765,28 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         const char *sender = PQgetvalue(res, i, 1);
         const char *recipient = PQgetvalue(res, i, 2);
         const char *timestamp = PQgetvalue(res, i, 3);
+        const char *status = PQgetvalue(res, i, 4);
+        const char *delivered_at = PQgetvalue(res, i, 5);
+        const char *read_at = PQgetvalue(res, i, 6);
 
         messages[i].id = atoi(id_str);
         messages[i].sender = strdup(sender);
         messages[i].recipient = strdup(recipient);
         messages[i].timestamp = strdup(timestamp);
+        messages[i].status = strdup(status ? status : "sent");
+        messages[i].delivered_at = delivered_at ? strdup(delivered_at) : NULL;
+        messages[i].read_at = read_at ? strdup(read_at) : NULL;
         messages[i].plaintext = NULL;  // Not decrypted
 
-        if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp) {
+        if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp || !messages[i].status) {
             // Clean up on failure
             for (int j = 0; j <= i; j++) {
                 free(messages[j].sender);
                 free(messages[j].recipient);
                 free(messages[j].timestamp);
+                free(messages[j].status);
+                free(messages[j].delivered_at);
+                free(messages[j].read_at);
                 free(messages[j].plaintext);
             }
             free(messages);
@@ -1803,6 +1812,9 @@ void messenger_free_messages(message_info_t *messages, int count) {
         free(messages[i].sender);
         free(messages[i].recipient);
         free(messages[i].timestamp);
+        free(messages[i].status);
+        free(messages[i].delivered_at);
+        free(messages[i].read_at);
         free(messages[i].plaintext);
     }
     free(messages);
@@ -1903,6 +1915,59 @@ int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
     }
 
     printf("\n");
+    PQclear(res);
+    return 0;
+}
+
+// ============================================================================
+// MESSAGE STATUS / READ RECEIPTS
+// ============================================================================
+
+int messenger_mark_delivered(messenger_context_t *ctx, int message_id) {
+    if (!ctx) {
+        return -1;
+    }
+
+    char id_str[32];
+    snprintf(id_str, sizeof(id_str), "%d", message_id);
+
+    const char *query =
+        "UPDATE messages "
+        "SET status = 'delivered', delivered_at = CURRENT_TIMESTAMP "
+        "WHERE id = $1 AND status = 'sent'";
+
+    const char *params[1] = {id_str};
+    PGresult *res = PQexecParams(ctx->pg_conn, query, 1, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Mark delivered failed: %s\n", PQerrorMessage(ctx->pg_conn));
+        PQclear(res);
+        return -1;
+    }
+
+    PQclear(res);
+    return 0;
+}
+
+int messenger_mark_conversation_read(messenger_context_t *ctx, const char *sender_identity) {
+    if (!ctx || !sender_identity) {
+        return -1;
+    }
+
+    const char *query =
+        "UPDATE messages "
+        "SET status = 'read', read_at = CURRENT_TIMESTAMP "
+        "WHERE recipient = $1 AND sender = $2 AND status IN ('sent', 'delivered')";
+
+    const char *params[2] = {ctx->identity, sender_identity};
+    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        fprintf(stderr, "Mark conversation read failed: %s\n", PQerrorMessage(ctx->pg_conn));
+        PQclear(res);
+        return -1;
+    }
+
     PQclear(res);
     return 0;
 }
