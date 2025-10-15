@@ -737,12 +737,17 @@ void MainWindow::onCheckForUpdates() {
             }
 
             printf("Launching update script...\n");
+
+            // Build command with proper escaping for Windows
+            QString command = QString("start \"DNA Messenger Updater\" /D \"%1\" cmd /c \"%2\"")
+                .arg(QDir::toNativeSeparators(repoRoot))
+                .arg(QDir::toNativeSeparators(updateScript));
+
+            printf("Command: %s\n", command.toUtf8().constData());
             printf("==========================================\n\n");
 
             // Launch updater script in new window
-            QProcess::startDetached("cmd", QStringList()
-                                    << "/c"
-                                    << QString("start \"DNA Messenger Updater\" cmd /c \"%1\"").arg(updateScript));
+            QProcess::startDetached("cmd", QStringList() << "/c" << command);
             QMessageBox::information(this, QString::fromUtf8("✨ Updating"),
                                      QString::fromUtf8("Update process started.\n\n"
                                      "DNA Messenger will now close.\n"
