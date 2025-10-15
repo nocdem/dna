@@ -23,7 +23,7 @@ Secure messaging using post-quantum cryptography (Kyber512 + Dilithium3) that re
 
 ```bash
 # Install dependencies
-sudo apt install cmake gcc libssl-dev libpq-dev qt5-default
+sudo apt install cmake gcc libssl-dev libpq-dev qtbase5-dev qtmultimedia5-dev
 
 # Build
 git clone https://github.com/nocdem/dna-messenger.git
