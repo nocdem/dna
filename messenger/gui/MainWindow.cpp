@@ -5,6 +5,7 @@
 
 #include "MainWindow.h"
 #include <QApplication>
+#include <QCoreApplication>
 #include <QMessageBox>
 #include <QInputDialog>
 #include <QStringList>
@@ -670,16 +671,62 @@ void MainWindow::onCheckForUpdates() {
 
         if (reply == QMessageBox::Yes) {
 #ifdef _WIN32
-            // Windows: Launch updater script in new window and close GUI
-            // The updater waits for GUI to close, then rebuilds
+            // Windows: Launch updater script from the repository root
+            // Find the repository root by looking for .git directory
+            QString exePath = QCoreApplication::applicationDirPath();
+            QDir dir(exePath);
+
+            printf("\n========== DEBUG: Windows Update ==========\n");
+            printf("Executable path: %s\n", exePath.toUtf8().constData());
+            printf("Looking for .git directory...\n");
+
+            // Navigate up to find repository root (where .git exists)
+            QString repoRoot;
+            while (dir.cdUp()) {
+                QString currentPath = dir.absolutePath();
+                printf("  Checking: %s\n", currentPath.toUtf8().constData());
+                if (dir.exists(".git")) {
+                    repoRoot = currentPath;
+                    printf("  Found .git at: %s\n", repoRoot.toUtf8().constData());
+                    break;
+                }
+            }
+
+            if (repoRoot.isEmpty()) {
+                printf("ERROR: Could not find repository root\n");
+                printf("==========================================\n\n");
+                QMessageBox::critical(this, QString::fromUtf8("❌ Update Failed"),
+                                     QString::fromUtf8("Could not find repository root.\n\n"
+                                     "Searched from: %1\n\n"
+                                     "Make sure you are running from a git repository.").arg(exePath));
+                return;
+            }
+
+            QString updateScript = repoRoot + "\\update_windows.bat";
+            printf("Update script path: %s\n", updateScript.toUtf8().constData());
+
+            if (!QFileInfo::exists(updateScript)) {
+                printf("ERROR: Update script not found at: %s\n", updateScript.toUtf8().constData());
+                printf("==========================================\n\n");
+                QMessageBox::critical(this, QString::fromUtf8("❌ Update Failed"),
+                                     QString::fromUtf8("Update script not found:\n%1\n\n"
+                                     "Please update manually using:\n"
+                                     "git pull && cmake --build build --config Release").arg(updateScript));
+                return;
+            }
+
+            printf("Launching update script...\n");
+            printf("==========================================\n\n");
+
+            // Launch updater script in new window
             QProcess::startDetached("cmd", QStringList()
                                     << "/c"
-                                    << "start \"DNA Messenger Updater\" cmd /c \"C:\\dna-messenger\\update_windows.bat\"");
-            QMessageBox::information(this, "Updating",
-                                     "Update process started.\n\n"
+                                    << QString("start \"DNA Messenger Updater\" cmd /c \"%1\"").arg(updateScript));
+            QMessageBox::information(this, QString::fromUtf8("✨ Updating"),
+                                     QString::fromUtf8("Update process started.\n\n"
                                      "DNA Messenger will now close.\n"
                                      "A command window will appear to show update progress.\n\n"
-                                     "Please restart DNA Messenger when the update completes.");
+                                     "Please restart DNA Messenger when the update completes."));
             QApplication::quit();
 #else
             // Linux: Update in place
