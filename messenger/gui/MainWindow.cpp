@@ -79,7 +79,7 @@ QString MainWindow::getLocalIdentity() {
 }
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0) {
+    : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0), currentGroupId(-1), currentContactType(TYPE_CONTACT) {
 
     // Remove native window frame for custom title bar
     setWindowFlags(Qt::FramelessWindowHint);
@@ -592,46 +592,101 @@ void MainWindow::setupUI() {
 
 void MainWindow::loadContacts() {
     contactList->clear();
+    contactItems.clear();
+
+    int totalItems = 0;
 
     // Load contacts from keyserver
     char **identities = NULL;
-    int count = 0;
+    int contactCount = 0;
 
-    if (messenger_get_contact_list(ctx, &identities, &count) == 0) {
-        for (int i = 0; i < count; i++) {
-            QString contact = QString::fromUtf8("👤 ") + QString::fromUtf8(identities[i]);
-            contactList->addItem(contact);
+    if (messenger_get_contact_list(ctx, &identities, &contactCount) == 0) {
+        for (int i = 0; i < contactCount; i++) {
+            QString identity = QString::fromUtf8(identities[i]);
+            QString displayText = QString::fromUtf8("👤 ") + identity;
+            contactList->addItem(displayText);
+
+            // Store contact metadata
+            ContactItem item;
+            item.type = TYPE_CONTACT;
+            item.name = identity;
+            item.groupId = -1;
+            contactItems[displayText] = item;
+
             free(identities[i]);
+            totalItems++;
         }
         free(identities);
+    }
 
-        statusLabel->setText(QString::fromUtf8("✨ %1 contacts loaded").arg(count));
+    // Load groups
+    group_info_t *groups = NULL;
+    int groupCount = 0;
+
+    if (messenger_get_groups(ctx, &groups, &groupCount) == 0) {
+        for (int i = 0; i < groupCount; i++) {
+            QString groupName = QString::fromUtf8(groups[i].name);
+            QString displayText = QString::fromUtf8("👥 ") + groupName;
+            contactList->addItem(displayText);
+
+            // Store group metadata
+            ContactItem item;
+            item.type = TYPE_GROUP;
+            item.name = groupName;
+            item.groupId = groups[i].id;
+            contactItems[displayText] = item;
+
+            totalItems++;
+        }
+        messenger_free_groups(groups, groupCount);
+    }
+
+    if (totalItems > 0) {
+        statusLabel->setText(QString::fromUtf8("✨ %1 contact(s) and %2 group(s) loaded")
+                             .arg(contactCount).arg(groupCount));
     } else {
-        statusLabel->setText(QString::fromUtf8("❌ Failed to load contacts"));
+        statusLabel->setText(QString::fromUtf8("❌ No contacts or groups found"));
     }
 }
 
 void MainWindow::onContactSelected(QListWidgetItem *item) {
     if (!item) return;
 
-    // Strip emoji prefix "👤 " from contact name
-    QString contactText = item->text();
-    if (contactText.startsWith(QString::fromUtf8("👤 "))) {
-        currentContact = contactText.mid(3);  // Skip "👤 " (emoji + space = 3 chars in UTF-8)
-    } else {
-        currentContact = contactText;
+    QString itemText = item->text();
+
+    // Look up item metadata
+    if (!contactItems.contains(itemText)) {
+        return;
     }
 
-    // Clear additional recipients when selecting a new contact
+    ContactItem contactItem = contactItems[itemText];
+    currentContactType = contactItem.type;
+
+    // Clear additional recipients when selecting a new item
     additionalRecipients.clear();
 
-    // Update recipients label
-    recipientsLabel->setText(QString::fromUtf8("📨 To: ") + currentContact);
+    if (contactItem.type == TYPE_CONTACT) {
+        // Handle contact selection
+        currentContact = contactItem.name;
+        currentGroupId = -1;
 
-    // Mark all messages from this contact as read
-    messenger_mark_conversation_read(ctx, currentContact.toUtf8().constData());
+        // Update recipients label
+        recipientsLabel->setText(QString::fromUtf8("📨 To: ") + currentContact);
 
-    loadConversation(currentContact);
+        // Mark all messages from this contact as read
+        messenger_mark_conversation_read(ctx, currentContact.toUtf8().constData());
+
+        loadConversation(currentContact);
+    } else if (contactItem.type == TYPE_GROUP) {
+        // Handle group selection
+        currentContact.clear();
+        currentGroupId = contactItem.groupId;
+
+        // Update recipients label
+        recipientsLabel->setText(QString::fromUtf8("📨 To: Group - ") + contactItem.name);
+
+        loadGroupConversation(currentGroupId);
+    }
 }
 
 void MainWindow::loadConversation(const QString &contact) {
@@ -783,38 +838,185 @@ void MainWindow::loadConversation(const QString &contact) {
     }
 }
 
-void MainWindow::onSendMessage() {
-    if (currentContact.isEmpty()) {
-        QMessageBox::warning(this, "No Contact Selected",
-                             "Please select a contact from the list first");
+void MainWindow::loadGroupConversation(int groupId) {
+    messageDisplay->clear();
+
+    if (groupId < 0) {
         return;
     }
 
+    // Calculate font sizes for message bubbles
+    int headerFontSize = static_cast<int>(24 * fontScale);
+    int metaFontSize = static_cast<int>(13 * fontScale);
+    int messageFontSize = static_cast<int>(18 * fontScale);
+
+    // Get group info for header
+    group_info_t groupInfo;
+    if (messenger_get_group_info(ctx, groupId, &groupInfo) == 0) {
+        // Display group header
+        messageDisplay->setHtml(QString(
+            "<div style='text-align: center; background: rgba(0, 217, 255, 0.2); "
+            "padding: 15px; border-radius: 15px; margin-bottom: 15px; border: 2px solid #00D9FF;'>"
+            "<span style='font-family: 'Orbitron'; font-size: %1px; font-weight: bold; color: #00D9FF;'>%2 Group: %3 %4</span>"
+            "</div>"
+        ).arg(headerFontSize + 18).arg(QString::fromUtf8("👥"), QString::fromUtf8(groupInfo.name), QString::fromUtf8("✨")));
+
+        // Free group info strings
+        free(groupInfo.name);
+        if (groupInfo.description) free(groupInfo.description);
+        if (groupInfo.creator) free(groupInfo.creator);
+        if (groupInfo.created_at) free(groupInfo.created_at);
+    } else {
+        messageDisplay->setHtml(QString(
+            "<div style='text-align: center; background: rgba(0, 217, 255, 0.2); "
+            "padding: 15px; border-radius: 15px; margin-bottom: 15px; border: 2px solid #00D9FF;'>"
+            "<span style='font-family: 'Orbitron'; font-size: %1px; font-weight: bold; color: #00D9FF;'>%2 Group Conversation %3</span>"
+            "</div>"
+        ).arg(headerFontSize + 18).arg(QString::fromUtf8("👥"), QString::fromUtf8("✨")));
+    }
+
+    // Load messages from database
+    message_info_t *messages = NULL;
+    int count = 0;
+
+    if (messenger_get_group_conversation(ctx, groupId, &messages, &count) == 0) {
+        if (count == 0) {
+            messageDisplay->append(QString(
+                "<div style='text-align: center; color: rgba(0, 217, 255, 0.6); padding: 30px; font-style: italic; font-family: 'Orbitron'; font-size: %1px;'>"
+                "%2"
+                "</div>"
+            ).arg(messageFontSize).arg(QString::fromUtf8("💭 No messages yet. Start the conversation!")));
+        } else {
+            for (int i = 0; i < count; i++) {
+                QString sender = QString::fromUtf8(messages[i].sender);
+                QString timestamp = QString::fromUtf8(messages[i].timestamp);
+
+                // Format timestamp (extract time from "YYYY-MM-DD HH:MM:SS")
+                QString timeOnly = timestamp.mid(11, 5);  // Extract "HH:MM"
+
+                // Decrypt message
+                QString messageText = "[encrypted]";
+                char *plaintext = NULL;
+                size_t plaintext_len = 0;
+
+                if (messenger_decrypt_message(ctx, messages[i].id, &plaintext, &plaintext_len) == 0) {
+                    messageText = QString::fromUtf8(plaintext, plaintext_len);
+                    free(plaintext);
+                } else {
+                    messageText = QString::fromUtf8("🔒 [decryption failed]");
+                }
+
+                if (sender == currentIdentity) {
+                    // Sent messages by current user
+                    QString statusCheckmark = QString::fromUtf8("<span style='color: #888888;'>✓</span>");
+
+                    QString sentBubble;
+                    if (currentTheme == "club") {
+                        sentBubble = QString(
+                            "<div style='text-align: right; margin: 8px 0;'>"
+                            "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF8C42, stop:1 #FFB380); "
+                            "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
+                            "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #FF8C42;'>"
+                            "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4 %5</div>"
+                            "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
+                            "</div>"
+                            "</div>"
+                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                    } else {
+                        sentBubble = QString(
+                            "<div style='text-align: right; margin: 8px 0;'>"
+                            "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00D9FF, stop:1 #0D8B9C); "
+                            "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
+                            "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #00D9FF;'>"
+                            "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4 %5</div>"
+                            "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
+                            "</div>"
+                            "</div>"
+                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                    }
+                    messageDisplay->append(sentBubble);
+                } else {
+                    // Messages from other group members
+                    QString receivedBubble;
+                    if (currentTheme == "club") {
+                        receivedBubble = QString(
+                            "<div style='text-align: left; margin: 8px 0;'>"
+                            "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2B1F16, stop:1 #3D2B1F); "
+                            "color: #FFB380; padding: 15px 20px; border-radius: 20px 20px 20px 5px; "
+                            "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid rgba(255, 140, 66, 0.5);'>"
+                            "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 %3 %4 %5</div>"
+                            "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
+                            "</div>"
+                            "</div>"
+                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                    } else {
+                        receivedBubble = QString(
+                            "<div style='text-align: left; margin: 8px 0;'>"
+                            "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0D3438, stop:1 #0A5A62); "
+                            "color: #00D9FF; padding: 15px 20px; border-radius: 20px 20px 20px 5px; "
+                            "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid rgba(0, 217, 255, 0.5);'>"
+                            "<div style='font-family: 'Orbitron'; font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 %3 %4 %5</div>"
+                            "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
+                            "</div>"
+                            "</div>"
+                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                    }
+                    messageDisplay->append(receivedBubble);
+                }
+            }
+        }
+
+        messenger_free_messages(messages, count);
+        statusLabel->setText(QString::fromUtf8("✨ Loaded %1 group messages").arg(count));
+    } else {
+        messageDisplay->append(QString(
+            "<div style='text-align: center; color: #FF6B35; padding: 20px; font-family: 'Orbitron'; font-size: %1px; font-weight: bold;'>"
+            "%2"
+            "</div>"
+        ).arg(messageFontSize).arg(QString::fromUtf8("❌ Failed to load group conversation")));
+        statusLabel->setText(QString::fromUtf8("❌ Error loading group conversation"));
+    }
+}
+
+void MainWindow::onSendMessage() {
     QString message = messageInput->text().trimmed();
     if (message.isEmpty()) {
         return;
     }
 
-    // Build recipient list: currentContact + additionalRecipients
-    QVector<QByteArray> recipientBytes;  // Store QByteArray to keep data alive
-    QVector<const char*> recipients;
+    int result = -1;
 
-    // Add primary recipient
-    recipientBytes.append(currentContact.toUtf8());
-    recipients.append(recipientBytes.last().constData());
+    // Check if we're sending to a group or contact
+    if (currentContactType == TYPE_GROUP && currentGroupId >= 0) {
+        // Send to group
+        QByteArray messageBytes = message.toUtf8();
+        result = messenger_send_group_message(ctx, currentGroupId, messageBytes.constData());
+    } else if (currentContactType == TYPE_CONTACT && !currentContact.isEmpty()) {
+        // Send to contact(s)
+        // Build recipient list: currentContact + additionalRecipients
+        QVector<QByteArray> recipientBytes;  // Store QByteArray to keep data alive
+        QVector<const char*> recipients;
 
-    // Add additional recipients
-    for (const QString &recipient : additionalRecipients) {
-        recipientBytes.append(recipient.toUtf8());
+        // Add primary recipient
+        recipientBytes.append(currentContact.toUtf8());
         recipients.append(recipientBytes.last().constData());
-    }
 
-    QByteArray messageBytes = message.toUtf8();
+        // Add additional recipients
+        for (const QString &recipient : additionalRecipients) {
+            recipientBytes.append(recipient.toUtf8());
+            recipients.append(recipientBytes.last().constData());
+        }
 
-    int result = messenger_send_message(ctx,
+        QByteArray messageBytes = message.toUtf8();
+        result = messenger_send_message(ctx,
                                          recipients.data(),
                                          recipients.size(),
                                          messageBytes.constData());
+    } else {
+        QMessageBox::warning(this, "No Selection",
+                             "Please select a contact or group from the list first");
+        return;
+    }
 
     if (result == 0) {
         // Success - add message bubble to display with theme-aware colors
@@ -864,8 +1066,10 @@ void MainWindow::onSendMessage() {
 }
 
 void MainWindow::onRefreshMessages() {
-    if (!currentContact.isEmpty()) {
+    if (currentContactType == TYPE_CONTACT && !currentContact.isEmpty()) {
         loadConversation(currentContact);
+    } else if (currentContactType == TYPE_GROUP && currentGroupId >= 0) {
+        loadGroupConversation(currentGroupId);
     }
     statusLabel->setText(QString::fromUtf8("✨ Messages refreshed"));
 }
@@ -1739,4 +1943,28 @@ void MainWindow::onMinimizeWindow() {
 
 void MainWindow::onCloseWindow() {
     QApplication::quit();
+}
+
+// Group management functions
+void MainWindow::onCreateGroup() {
+    QMessageBox::information(this, "Create Group", "Group creation dialog - Coming soon!");
+    // TODO: Implement group creation dialog
+}
+
+void MainWindow::onGroupSettings() {
+    if (currentContactType != TYPE_GROUP || currentGroupId < 0) {
+        QMessageBox::warning(this, "No Group Selected", "Please select a group first");
+        return;
+    }
+    QMessageBox::information(this, "Group Settings", "Group settings dialog - Coming soon!");
+    // TODO: Implement group settings dialog (rename, change description)
+}
+
+void MainWindow::onManageGroupMembers() {
+    if (currentContactType != TYPE_GROUP || currentGroupId < 0) {
+        QMessageBox::warning(this, "No Group Selected", "Please select a group first");
+        return;
+    }
+    QMessageBox::information(this, "Manage Members", "Member management dialog - Coming soon!");
+    // TODO: Implement member management dialog (add/remove members)
 }

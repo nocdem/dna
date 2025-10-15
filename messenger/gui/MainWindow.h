@@ -50,6 +50,9 @@ private slots:
     void checkForStatusUpdates();
     void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
     void onAddRecipients();
+    void onCreateGroup();
+    void onGroupSettings();
+    void onManageGroupMembers();
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
@@ -59,14 +62,29 @@ private:
     void setupUI();
     void loadContacts();
     void loadConversation(const QString &contact);
+    void loadGroupConversation(int groupId);
     QString getLocalIdentity();
     void applyTheme(const QString &themeName);
     void applyFontScale(double scale);
+
+    // Contact/Group item type
+    enum ContactType {
+        TYPE_CONTACT,
+        TYPE_GROUP
+    };
+
+    struct ContactItem {
+        ContactType type;
+        QString name;
+        int groupId;  // Only used for groups
+    };
 
     // Messenger context
     messenger_context_t *ctx;
     QString currentIdentity;
     QString currentContact;
+    int currentGroupId;
+    ContactType currentContactType;
 
     // UI Components
     QListWidget *contactList;
@@ -75,6 +93,8 @@ private:
     QPushButton *sendButton;
     QPushButton *refreshButton;
     QPushButton *addRecipientsButton;
+    QPushButton *createGroupButton;
+    QPushButton *groupSettingsButton;
     QLabel *statusLabel;
     QLabel *recipientsLabel;
 
@@ -103,6 +123,9 @@ private:
 
     // Multi-recipient support
     QStringList additionalRecipients;
+
+    // Contact/Group mapping
+    QMap<QString, ContactItem> contactItems;
 };
 
 #endif // MAINWINDOW_H
