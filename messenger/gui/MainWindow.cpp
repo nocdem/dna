@@ -104,8 +104,13 @@ MainWindow::MainWindow(QWidget *parent)
     setupUI();
     loadContacts();
 
-    setWindowTitle(QString("DNA Messenger - %1").arg(currentIdentity));
+    setWindowTitle(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(currentIdentity));
     resize(800, 600);
+
+    // Print debug info on startup
+    printf("DNA Messenger GUI v%s (commit %s)\n", PQSIGNUM_VERSION, BUILD_HASH);
+    printf("Build date: %s\n", BUILD_TS);
+    printf("Identity: %s\n", currentIdentity.toUtf8().constData());
 }
 
 MainWindow::~MainWindow() {
