@@ -132,50 +132,51 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
-    // Set cute colorful theme
+    // Set cpunk.io theme - dark teal with cyan accents
     setStyleSheet(
         "QMainWindow {"
         "   background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-        "       stop:0 #E8F5FF, stop:1 #FFF0F5);"
+        "       stop:0 #0A2A2E, stop:1 #0D3438);"
         "}"
         "QMenuBar {"
-        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "       stop:0 #FFB6C1, stop:1 #B0E0E6);"
-        "   color: #2C3E50;"
+        "   background: #0D3438;"
+        "   color: #00D9FF;"
         "   padding: 8px;"
         "   font-weight: bold;"
         "   font-size: 48px;"
-        "   border-radius: 0px;"
+        "   border-bottom: 2px solid #00D9FF;"
         "}"
         "QMenuBar::item {"
         "   padding: 8px 15px;"
+        "   color: #00D9FF;"
         "}"
         "QMenuBar::item:selected {"
-        "   background: rgba(255, 255, 255, 0.3);"
+        "   background: rgba(0, 217, 255, 0.2);"
         "   border-radius: 5px;"
         "}"
         "QMenu {"
-        "   background: #FFFFFF;"
-        "   border: 2px solid #FFB6C1;"
+        "   background: #0D3438;"
+        "   border: 2px solid #00D9FF;"
         "   border-radius: 10px;"
         "   padding: 8px;"
         "   font-size: 48px;"
+        "   color: #00D9FF;"
         "}"
         "QMenu::item {"
         "   padding: 10px 20px;"
+        "   color: #00D9FF;"
         "}"
         "QMenu::item:selected {"
-        "   background: #FFE4E1;"
+        "   background: rgba(0, 217, 255, 0.3);"
         "   border-radius: 5px;"
         "}"
         "QStatusBar {"
-        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "       stop:0 #B0E0E6, stop:1 #FFB6C1);"
-        "   color: #2C3E50;"
+        "   background: #0D3438;"
+        "   color: #00D9FF;"
         "   font-weight: bold;"
         "   font-size: 48px;"
         "   padding: 8px;"
-        "   border-top: 2px solid rgba(255, 255, 255, 0.5);"
+        "   border-top: 2px solid #00D9FF;"
         "}"
     );
 
@@ -197,8 +198,7 @@ void MainWindow::setupUI() {
     QWidget *leftPanel = new QWidget;
     leftPanel->setStyleSheet(
         "QWidget {"
-        "   background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-        "       stop:0 #FFE4E1, stop:1 #E0F7FA);"
+        "   background: #0A2A2E;"
         "   border-radius: 15px;"
         "   padding: 10px;"
         "}"
@@ -209,7 +209,7 @@ void MainWindow::setupUI() {
     contactsLabel->setStyleSheet(
         "font-weight: bold; "
         "font-size: 72px; "
-        "color: #FF69B4; "
+        "color: #00D9FF; "
         "background: transparent; "
         "padding: 10px;"
     );
@@ -218,31 +218,30 @@ void MainWindow::setupUI() {
     contactList = new QListWidget;
     contactList->setStyleSheet(
         "QListWidget {"
-        "   background: white;"
-        "   border: 2px solid #FFB6C1;"
+        "   background: #0D3438;"
+        "   border: 2px solid #00D9FF;"
         "   border-radius: 10px;"
         "   padding: 8px;"
         "   font-size: 54px;"
+        "   color: #00D9FF;"
         "}"
         "QListWidget::item {"
-        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "       stop:0 #FFF0F5, stop:1 #F0F8FF);"
-        "   border: 1px solid #FFE4E1;"
+        "   background: rgba(0, 217, 255, 0.1);"
+        "   border: 1px solid rgba(0, 217, 255, 0.3);"
         "   border-radius: 10px;"
         "   padding: 15px;"
         "   margin: 5px;"
+        "   color: #00D9FF;"
         "}"
         "QListWidget::item:hover {"
-        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "       stop:0 #FFE4E1, stop:1 #E0F7FA);"
-        "   border: 2px solid #FF69B4;"
+        "   background: rgba(0, 217, 255, 0.2);"
+        "   border: 2px solid #00D9FF;"
         "}"
         "QListWidget::item:selected {"
-        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "       stop:0 #FFB6C1, stop:1 #87CEEB);"
-        "   color: white;"
+        "   background: rgba(0, 217, 255, 0.3);"
+        "   color: #FFFFFF;"
         "   font-weight: bold;"
-        "   border: 2px solid #FF1493;"
+        "   border: 2px solid #00D9FF;"
         "}"
     );
     connect(contactList, &QListWidget::itemClicked, this, &MainWindow::onContactSelected);
@@ -251,23 +250,21 @@ void MainWindow::setupUI() {
     refreshButton = new QPushButton(QString::fromUtf8("🔄 Refresh"));
     refreshButton->setStyleSheet(
         "QPushButton {"
-        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "       stop:0 #87CEEB, stop:1 #98D8E8);"
-        "   color: white;"
-        "   border: 2px solid #5CACEE;"
+        "   background: rgba(0, 217, 255, 0.2);"
+        "   color: #00D9FF;"
+        "   border: 2px solid #00D9FF;"
         "   border-radius: 15px;"
         "   padding: 15px;"
         "   font-weight: bold;"
         "   font-size: 54px;"
         "}"
         "QPushButton:hover {"
-        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "       stop:0 #5CACEE, stop:1 #87CEEB);"
-        "   border: 2px solid #4682B4;"
+        "   background: rgba(0, 217, 255, 0.3);"
+        "   border: 2px solid #33E6FF;"
         "}"
         "QPushButton:pressed {"
-        "   background: #4682B4;"
-        "   border: 2px solid #36648B;"
+        "   background: rgba(0, 217, 255, 0.4);"
+        "   border: 2px solid #00D9FF;"
         "}"
     );
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshMessages);
@@ -279,8 +276,7 @@ void MainWindow::setupUI() {
     QWidget *rightPanel = new QWidget;
     rightPanel->setStyleSheet(
         "QWidget {"
-        "   background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-        "       stop:0 #F0F8FF, stop:1 #FFF5EE);"
+        "   background: #0A2A2E;"
         "   border-radius: 15px;"
         "   padding: 10px;"
         "}"
@@ -291,7 +287,7 @@ void MainWindow::setupUI() {
     chatLabel->setStyleSheet(
         "font-weight: bold; "
         "font-size: 72px; "
-        "color: #4682B4; "
+        "color: #00D9FF; "
         "background: transparent; "
         "padding: 10px;"
     );
@@ -301,12 +297,12 @@ void MainWindow::setupUI() {
     messageDisplay->setReadOnly(true);
     messageDisplay->setStyleSheet(
         "QTextEdit {"
-        "   background: white;"
-        "   border: 2px solid #B0E0E6;"
+        "   background: #0D3438;"
+        "   border: 2px solid #00D9FF;"
         "   border-radius: 10px;"
         "   padding: 15px;"
         "   font-size: 48px;"
-        "   color: #2C3E50;"
+        "   color: #00D9FF;"
         "}"
     );
     rightLayout->addWidget(messageDisplay);
@@ -317,16 +313,16 @@ void MainWindow::setupUI() {
     messageInput->setPlaceholderText(QString::fromUtf8("✏️ Type a message..."));
     messageInput->setStyleSheet(
         "QLineEdit {"
-        "   background: white;"
-        "   border: 2px solid #FFB6C1;"
+        "   background: #0D3438;"
+        "   border: 2px solid #00D9FF;"
         "   border-radius: 15px;"
         "   padding: 15px 20px;"
         "   font-size: 54px;"
-        "   color: #2C3E50;"
+        "   color: #00D9FF;"
         "}"
         "QLineEdit:focus {"
-        "   border: 2px solid #FF69B4;"
-        "   background: #FFF0F5;"
+        "   border: 2px solid #33E6FF;"
+        "   background: rgba(0, 217, 255, 0.1);"
         "}"
     );
     connect(messageInput, &QLineEdit::returnPressed, this, &MainWindow::onSendMessage);
@@ -336,9 +332,9 @@ void MainWindow::setupUI() {
     sendButton->setStyleSheet(
         "QPushButton {"
         "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "       stop:0 #FF69B4, stop:1 #FFB6C1);"
+        "       stop:0 #FF6B35, stop:1 #FF8C42);"
         "   color: white;"
-        "   border: 2px solid #FF1493;"
+        "   border: 2px solid #FF6B35;"
         "   border-radius: 15px;"
         "   padding: 15px 30px;"
         "   font-weight: bold;"
@@ -346,12 +342,12 @@ void MainWindow::setupUI() {
         "}"
         "QPushButton:hover {"
         "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
-        "       stop:0 #FF1493, stop:1 #FF69B4);"
-        "   border: 2px solid #C71585;"
+        "       stop:0 #FF8C42, stop:1 #FFA55C);"
+        "   border: 2px solid #FF8C42;"
         "}"
         "QPushButton:pressed {"
-        "   background: #C71585;"
-        "   border: 2px solid #8B0A50;"
+        "   background: #FF5722;"
+        "   border: 2px solid #E64A19;"
         "}"
     );
     connect(sendButton, &QPushButton::clicked, this, &MainWindow::onSendMessage);
@@ -364,8 +360,7 @@ void MainWindow::setupUI() {
     QSplitter *splitter = new QSplitter(Qt::Horizontal);
     splitter->setStyleSheet(
         "QSplitter::handle {"
-        "   background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
-        "       stop:0 #FFB6C1, stop:1 #B0E0E6);"
+        "   background: #00D9FF;"
         "   width: 3px;"
         "}"
     );
@@ -422,11 +417,11 @@ void MainWindow::loadConversation(const QString &contact) {
         return;
     }
 
-    // Cute header with emoji
+    // Cute header with emoji - cpunk.io theme
     messageDisplay->setHtml(QString(
-        "<div style='text-align: center; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFB6C1, stop:1 #87CEEB); "
-        "padding: 15px; border-radius: 15px; margin-bottom: 15px;'>"
-        "<span style='font-size: 66px; font-weight: bold; color: white;'>%1 Conversation with %2 %3</span>"
+        "<div style='text-align: center; background: rgba(0, 217, 255, 0.2); "
+        "padding: 15px; border-radius: 15px; margin-bottom: 15px; border: 2px solid #00D9FF;'>"
+        "<span style='font-size: 66px; font-weight: bold; color: #00D9FF;'>%1 Conversation with %2 %3</span>"
         "</div>"
     ).arg(QString::fromUtf8("💬"), contact, QString::fromUtf8("✨")));
 
@@ -437,7 +432,7 @@ void MainWindow::loadConversation(const QString &contact) {
     if (messenger_get_conversation(ctx, contact.toUtf8().constData(), &messages, &count) == 0) {
         if (count == 0) {
             messageDisplay->append(
-                "<div style='text-align: center; color: #999; padding: 30px; font-style: italic; font-size: 54px;'>"
+                "<div style='text-align: center; color: rgba(0, 217, 255, 0.6); padding: 30px; font-style: italic; font-size: 54px;'>"
                 + QString::fromUtf8("💭 No messages yet. Start the conversation!") +
                 "</div>"
             );
@@ -467,24 +462,24 @@ void MainWindow::loadConversation(const QString &contact) {
                 }
 
                 if (sender == currentIdentity) {
-                    // Sent messages - cute pink bubble aligned right
+                    // Sent messages - cyan/teal gradient bubble aligned right
                     messageDisplay->append(QString(
                         "<div style='text-align: right; margin: 8px 0;'>"
-                        "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF69B4, stop:1 #FFB6C1); "
+                        "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00D9FF, stop:1 #0D8B9C); "
                         "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
-                        "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.15);'>"
+                        "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #00D9FF;'>"
                         "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 You %2 %3</div>"
                         "<div style='font-size: 54px; line-height: 1.4;'>%4</div>"
                         "</div>"
                         "</div>"
                     ).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, messageText.toHtmlEscaped()));
                 } else {
-                    // Received messages - cute blue bubble aligned left
+                    // Received messages - darker teal bubble aligned left
                     messageDisplay->append(QString(
                         "<div style='text-align: left; margin: 8px 0;'>"
-                        "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #87CEEB, stop:1 #B0E0E6); "
-                        "color: white; padding: 15px 20px; border-radius: 20px 20px 20px 5px; "
-                        "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.15);'>"
+                        "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0D3438, stop:1 #0A5A62); "
+                        "color: #00D9FF; padding: 15px 20px; border-radius: 20px 20px 20px 5px; "
+                        "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid rgba(0, 217, 255, 0.5);'>"
                         "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 %2 %3 %4</div>"
                         "<div style='font-size: 54px; line-height: 1.4;'>%5</div>"
                         "</div>"
@@ -498,7 +493,7 @@ void MainWindow::loadConversation(const QString &contact) {
         statusLabel->setText(QString::fromUtf8("✨ Loaded %1 messages with %2").arg(count).arg(contact));
     } else {
         messageDisplay->append(
-            "<div style='text-align: center; color: #ff4444; padding: 20px;'>"
+            "<div style='text-align: center; color: #FF6B35; padding: 20px; font-size: 54px; font-weight: bold;'>"
             + QString::fromUtf8("❌ Failed to load conversation") +
             "</div>"
         );
@@ -530,13 +525,13 @@ void MainWindow::onSendMessage() {
                                          messageBytes.constData());
 
     if (result == 0) {
-        // Success - add cute message bubble to display
+        // Success - add message bubble to display with cpunk.io cyan theme
         QString timestamp = QDateTime::currentDateTime().toString("HH:mm");
         messageDisplay->append(QString(
             "<div style='text-align: right; margin: 8px 0;'>"
-            "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF69B4, stop:1 #FFB6C1); "
+            "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00D9FF, stop:1 #0D8B9C); "
             "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
-            "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.15);'>"
+            "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #00D9FF;'>"
             "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 You %2 %3</div>"
             "<div style='font-size: 54px; line-height: 1.4;'>%4</div>"
             "</div>"
