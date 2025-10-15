@@ -53,6 +53,9 @@ private slots:
     void onCreateGroup();
     void onGroupSettings();
     void onManageGroupMembers();
+    void onUserMenuClicked();
+    void onLogout();
+    void onManageIdentities();
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
@@ -95,6 +98,7 @@ private:
     QPushButton *addRecipientsButton;
     QPushButton *createGroupButton;
     QPushButton *groupSettingsButton;
+    QPushButton *userMenuButton;
     QLabel *statusLabel;
     QLabel *recipientsLabel;
 

@@ -157,8 +157,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(statusPollTimer, &QTimer::timeout, this, &MainWindow::checkForStatusUpdates);
     statusPollTimer->start(10000);
 
-    // Load saved preferences
+    // Load saved preferences and save current identity
     QSettings settings("DNA Messenger", "GUI");
+    settings.setValue("currentIdentity", currentIdentity);  // Save logged-in user
     QString savedTheme = settings.value("theme", "io").toString();  // Default to "io" theme
     double savedFontScale = settings.value("fontScale", 3.0).toDouble();  // Default to 3x (Large)
 
@@ -380,6 +381,32 @@ void MainWindow::setupUI() {
         "background: transparent; "
         "padding: 10px;"
     );
+
+    // User menu button at very top
+    userMenuButton = new QPushButton(QString::fromUtf8("👤 ") + currentIdentity);
+    userMenuButton->setStyleSheet(
+        "QPushButton {"
+        "   background: rgba(0, 217, 255, 0.15);"
+        "   color: #00D9FF;"
+        "   border: 2px solid #00D9FF;"
+        "   border-radius: 15px;"
+        "   padding: 15px;"
+        "   font-weight: bold;"
+        "   font-family: 'Orbitron'; font-size: 48px;"
+        "   text-align: left;"
+        "}"
+        "QPushButton:hover {"
+        "   background: rgba(0, 217, 255, 0.25);"
+        "   border: 2px solid #33E6FF;"
+        "}"
+        "QPushButton:pressed {"
+        "   background: rgba(0, 217, 255, 0.35);"
+        "   border: 2px solid #00D9FF;"
+        "}"
+    );
+    connect(userMenuButton, &QPushButton::clicked, this, &MainWindow::onUserMenuClicked);
+    leftLayout->addWidget(userMenuButton);
+
     leftLayout->addWidget(contactsLabel);
 
     contactList = new QListWidget;
@@ -2624,4 +2651,170 @@ void MainWindow::onManageGroupMembers() {
     if (groupInfo.description) free(groupInfo.description);
     free(groupInfo.creator);
     free(groupInfo.created_at);
+}
+
+// User menu functions
+void MainWindow::onUserMenuClicked() {
+    // Create popup menu
+    QMenu menu(this);
+    menu.setStyleSheet(
+        "QMenu {"
+        "   background: #0D3438;"
+        "   border: 2px solid #00D9FF;"
+        "   border-radius: 10px;"
+        "   padding: 10px;"
+        "   font-family: 'Orbitron';"
+        "   font-size: 36px;"
+        "   color: #00D9FF;"
+        "}"
+        "QMenu::item {"
+        "   background: transparent;"
+        "   padding: 10px 20px;"
+        "   border-radius: 5px;"
+        "}"
+        "QMenu::item:selected {"
+        "   background: rgba(0, 217, 255, 0.3);"
+        "   color: #FFFFFF;"
+        "}"
+    );
+
+    QAction *logoutAction = menu.addAction(QString::fromUtf8("🚪 Logout"));
+    QAction *manageIdentitiesAction = menu.addAction(QString::fromUtf8("🔑 Manage Identities"));
+
+    connect(logoutAction, &QAction::triggered, this, &MainWindow::onLogout);
+    connect(manageIdentitiesAction, &QAction::triggered, this, &MainWindow::onManageIdentities);
+
+    // Show menu below the button
+    QPoint globalPos = userMenuButton->mapToGlobal(QPoint(0, userMenuButton->height()));
+    menu.exec(globalPos);
+}
+
+void MainWindow::onLogout() {
+    QMessageBox::StandardButton reply = QMessageBox::question(
+        this,
+        "Logout",
+        QString::fromUtf8("Are you sure you want to logout?"),
+        QMessageBox::Yes | QMessageBox::No
+    );
+
+    if (reply == QMessageBox::Yes) {
+        // Clear saved identity from config
+        QSettings settings("DNA Messenger", "GUI");
+        settings.remove("currentIdentity");
+
+        QMessageBox::information(this, "Logout",
+            QString::fromUtf8("Logged out successfully.\n\nThe application will now close.\n"
+                             "You can login with a different identity on next launch."));
+
+        // Close the application
+        QApplication::quit();
+    }
+}
+
+void MainWindow::onManageIdentities() {
+    // Create dialog
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString::fromUtf8("🔑 Manage Identities"));
+    dialog.setMinimumSize(700, 500);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    // Info label
+    QLabel *infoLabel = new QLabel(
+        QString::fromUtf8("Current Identity: %1\n\n"
+                         "Identity keys are stored in: ~/.dna/\n"
+                         "Each identity has its own encryption and signing keys.")
+        .arg(currentIdentity)
+    );
+    infoLabel->setStyleSheet("background: rgba(0, 217, 255, 0.1); padding: 15px; border-radius: 5px;");
+    infoLabel->setWordWrap(true);
+    layout->addWidget(infoLabel);
+
+    // List available identities from ~/.dna/ directory
+    QLabel *listLabel = new QLabel(QString::fromUtf8("📂 Available Identities:"));
+    layout->addWidget(listLabel);
+
+    QListWidget *identityList = new QListWidget();
+
+    QDir homeDir = QDir::home();
+    QDir dnaDir = homeDir.filePath(".dna");
+
+    if (dnaDir.exists()) {
+        QStringList keyFiles = dnaDir.entryList(QStringList() << "*-dilithium.pqkey", QDir::Files);
+        for (const QString &keyFile : keyFiles) {
+            QString identity = keyFile;
+            identity.remove("-dilithium.pqkey");
+
+            QString displayText = QString::fromUtf8("🔑 ") + identity;
+            if (identity == currentIdentity) {
+                displayText += QString::fromUtf8(" (current)");
+            }
+            identityList->addItem(displayText);
+        }
+    }
+
+    layout->addWidget(identityList);
+
+    // Action buttons
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+
+    QPushButton *switchButton = new QPushButton(QString::fromUtf8("🔄 Switch Identity"));
+    connect(switchButton, &QPushButton::clicked, [this, identityList, &dialog]() {
+        QListWidgetItem *selectedItem = identityList->currentItem();
+        if (!selectedItem) {
+            QMessageBox::warning(this, "No Selection", "Please select an identity to switch to");
+            return;
+        }
+
+        QString selectedText = selectedItem->text();
+        // Remove emoji and "(current)" marker
+        selectedText = selectedText.remove(QString::fromUtf8("🔑 ")).remove(QString::fromUtf8(" (current)")).trimmed();
+
+        if (selectedText == currentIdentity) {
+            QMessageBox::information(this, "Already Current",
+                QString::fromUtf8("You are already logged in as '%1'").arg(selectedText));
+            return;
+        }
+
+        QMessageBox::StandardButton reply = QMessageBox::question(
+            this,
+            "Switch Identity",
+            QString::fromUtf8("Switch to identity '%1'?\n\n"
+                             "The application will restart.").arg(selectedText),
+            QMessageBox::Yes | QMessageBox::No
+        );
+
+        if (reply == QMessageBox::Yes) {
+            // Save new identity to config
+            QSettings settings("DNA Messenger", "GUI");
+            settings.setValue("currentIdentity", selectedText);
+
+            QMessageBox::information(this, "Identity Switched",
+                QString::fromUtf8("Identity switched to '%1'.\n\n"
+                                 "The application will now restart.").arg(selectedText));
+
+            // Restart the application
+            dialog.accept();
+            QApplication::quit();
+            QProcess::startDetached(QApplication::applicationFilePath(), QStringList());
+        }
+    });
+    buttonLayout->addWidget(switchButton);
+
+    QPushButton *closeButton = new QPushButton(QString::fromUtf8("❌ Close"));
+    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    buttonLayout->addWidget(closeButton);
+
+    layout->addLayout(buttonLayout);
+
+    // Additional info
+    QLabel *noteLabel = new QLabel(
+        QString::fromUtf8("💡 Note: To create a new identity, use the CLI tool:\n"
+                         "   ./dna_messenger")
+    );
+    noteLabel->setStyleSheet("color: gray; font-size: 10px;");
+    noteLabel->setWordWrap(true);
+    layout->addWidget(noteLabel);
+
+    dialog.exec();
 }
