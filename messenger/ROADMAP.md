@@ -228,6 +228,57 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
+## Phase 5.5: Web-Based Messenger 🚧 IN PROGRESS
+
+**Timeline:** 3-4 weeks
+**Status:** Active development (branch: `feature/web-messenger`)
+**Prerequisites:** Phase 2 complete
+
+### Objectives
+- WebAssembly-based cryptography
+- Browser-based messaging client
+- No native dependencies (pure web)
+- Cross-platform compatibility
+
+### Tasks
+
+#### WebAssembly Build
+- [x] Emscripten toolchain setup
+- [x] DNA API compilation to WASM
+- [x] JavaScript wrapper functions
+- [x] Browser crypto module export
+
+#### Web Frontend
+- [ ] HTML5/CSS3 responsive UI
+- [ ] JavaScript messaging interface
+- [ ] Contact list management
+- [ ] Message display and composition
+- [ ] Local storage for keys (IndexedDB)
+
+#### Features
+- [ ] Client-side encryption/decryption
+- [ ] Message persistence (browser storage)
+- [ ] Real-time updates (WebSocket)
+- [ ] Responsive design (mobile-friendly)
+- [ ] Progressive Web App (PWA) support
+
+#### Platform Support
+- [ ] Chrome/Chromium
+- [ ] Firefox
+- [ ] Safari
+- [ ] Edge
+- [ ] Mobile browsers
+
+### Deliverables
+- `dna_wasm.js` / `dna_wasm.wasm` - WebAssembly crypto module
+- `index.html` - Web messenger interface
+- Browser extension (future)
+- PWA manifest and service worker
+
+**Branch:** `feature/web-messenger`
+
+---
+
 ## Phase 6: Mobile Applications 📋 PLANNED
 
 **Timeline:** 6-8 weeks
@@ -387,7 +438,8 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 | 0.1.0 | Phase 1 | ✅ Complete | Fork preparation |
 | 0.2.0 | Phase 2 | ✅ Complete | Library API |
 | 0.3.0 | Phase 3 | ✅ Complete | CLI messenger |
-| 0.4.0 | Phase 4 | 🚧 In Progress | Network layer |
+| 0.4.0 | Phase 4 | 📋 Planned | Network layer |
+| 0.5.0 | Phase 5.5 | 🚧 In Progress | Web messenger (WebAssembly) |
 | 1.0.0 | Phase 5 | ✅ Complete | Desktop app (first stable release candidate) |
 | 1.1.0 | Phase 6 | 📋 Planned | Mobile apps |
 | 1.2.0 | Phase 7 | 📋 Planned | Advanced security |
@@ -425,7 +477,8 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - **Phase 5:** Desktop Application (with groups!)
 
 ### 🚧 In Progress
-- **Phase 4:** Network Layer (next priority)
+- **Phase 4:** Network Layer (planned next)
+- **Phase 5.5:** Web-Based Messenger (active on `feature/web-messenger` branch)
 
 ### 📋 Planned
 - **Phase 6:** Mobile Applications
