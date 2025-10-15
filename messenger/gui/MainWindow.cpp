@@ -327,6 +327,8 @@ void MainWindow::setupUI() {
     // Content widget for the splitter
     QWidget *contentWidget = new QWidget;
     QHBoxLayout *mainLayout = new QHBoxLayout(contentWidget);
+    mainLayout->setContentsMargins(10, 10, 10, 10);
+    mainLayout->setSpacing(10);
 
     // Left side: Contact list
     QWidget *leftPanel = new QWidget;
@@ -506,8 +508,8 @@ void MainWindow::setupUI() {
     mainLayout->addWidget(splitter);
     contentWidget->setLayout(mainLayout);
 
-    // Add content to main vertical layout
-    mainVerticalLayout->addWidget(contentWidget);
+    // Add content to main vertical layout with stretch factor to fill remaining space
+    mainVerticalLayout->addWidget(contentWidget, 1);
 
     // Status bar
     statusLabel = new QLabel(QString::fromUtf8("✨ Ready"));
