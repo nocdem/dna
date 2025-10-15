@@ -34,12 +34,15 @@ private slots:
     void onSendMessage();
     void onRefreshMessages();
     void onCheckForUpdates();
+    void onThemeIO();
+    void onThemeClub();
 
 private:
     void setupUI();
     void loadContacts();
     void loadConversation(const QString &contact);
     QString getLocalIdentity();
+    void applyTheme(const QString &themeName);
 
     // Messenger context
     messenger_context_t *ctx;
@@ -53,6 +56,9 @@ private:
     QPushButton *sendButton;
     QPushButton *refreshButton;
     QLabel *statusLabel;
+
+    // Theme management
+    QString currentTheme;
 };
 
 #endif // MAINWINDOW_H
