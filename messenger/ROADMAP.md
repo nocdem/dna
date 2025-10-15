@@ -375,6 +375,17 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [ ] Rich text formatting
 - [ ] File transfer
 
+### CF20 Wallet Integration (Cellframe cpunk Network)
+- [ ] Read local Cellframe wallet files
+- [ ] Connect via public RPC to cpunk network
+- [ ] Display CF20 token balances
+- [ ] Send CF20 tokens directly in messenger
+- [ ] Receive CF20 tokens with QR codes
+- [ ] Transaction history and tracking
+- [ ] Wallet address management
+- [ ] Payment notifications and confirmations
+- [ ] Integration with Cellframe node API
+
 ### Infrastructure
 - [ ] Decentralized architecture (Matrix-style federation)
 - [ ] Tor integration (metadata protection)

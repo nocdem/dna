@@ -337,6 +337,11 @@ void MainWindow::setupUI() {
     connect(fontLargeAction, &QAction::triggered, this, &MainWindow::onFontScaleLarge);
     connect(fontExtraLargeAction, &QAction::triggered, this, &MainWindow::onFontScaleExtraLarge);
 
+    // Wallet menu
+    QMenu *walletMenu = menuBar->addMenu(QString::fromUtf8("💰 Wallet"));
+    QAction *walletAction = walletMenu->addAction(QString::fromUtf8("💳 Open Wallet"));
+    connect(walletAction, &QAction::triggered, this, &MainWindow::onWallet);
+
     // Help menu
     QMenu *helpMenu = menuBar->addMenu(QString::fromUtf8("💝 Help"));
     QAction *updateAction = helpMenu->addAction(QString::fromUtf8("✨ Check for Updates"));
@@ -2802,4 +2807,48 @@ void MainWindow::onManageIdentities() {
     layout->addWidget(noteLabel);
 
     dialog.exec();
+}
+
+void MainWindow::onWallet() {
+    QMessageBox msgBox(this);
+    msgBox.setWindowTitle(QString::fromUtf8("💰 CF20 Wallet"));
+    msgBox.setIcon(QMessageBox::Information);
+    msgBox.setText(QString::fromUtf8("🚧 CF20 Wallet - Coming Soon!\n\n"
+                                     "Integrated Cellframe CF20 token wallet for cpunk network.\n\n"
+                                     "Planned Features:\n"
+                                     "• 💳 Read local Cellframe wallet files\n"
+                                     "• 🌐 Connect via public RPC to cpunk network\n"
+                                     "• 💰 View CF20 token balances\n"
+                                     "• 💸 Send/receive CF20 tokens directly in messenger\n"
+                                     "• 📊 Transaction history\n"
+                                     "• 🔐 Secure wallet integration\n\n"
+                                     "Network: Cellframe cpunk\n"
+                                     "Status: To be implemented in Phase 8+"));
+    msgBox.setStandardButtons(QMessageBox::Ok);
+
+    // Style the message box
+    msgBox.setStyleSheet(
+        "QMessageBox {"
+        "   background: #0D3438;"
+        "   color: #00D9FF;"
+        "   font-family: 'Orbitron';"
+        "}"
+        "QLabel {"
+        "   color: #00D9FF;"
+        "   font-size: 12px;"
+        "}"
+        "QPushButton {"
+        "   background: rgba(0, 217, 255, 0.2);"
+        "   color: #00D9FF;"
+        "   border: 2px solid #00D9FF;"
+        "   border-radius: 5px;"
+        "   padding: 8px 20px;"
+        "   font-weight: bold;"
+        "}"
+        "QPushButton:hover {"
+        "   background: rgba(0, 217, 255, 0.3);"
+        "}"
+    );
+
+    msgBox.exec();
 }

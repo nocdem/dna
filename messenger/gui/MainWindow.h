@@ -56,6 +56,7 @@ private slots:
     void onUserMenuClicked();
     void onLogout();
     void onManageIdentities();
+    void onWallet();
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
