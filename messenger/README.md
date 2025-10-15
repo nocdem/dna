@@ -56,35 +56,6 @@ REM Or run CLI
 Release\dna_messenger.exe
 ```
 
-## How to Use
-
-### GUI Version
-
-1. **Launch** the app - auto-detects your identity from `~/.dna/`
-2. **Select a contact or group** from the left panel
-3. **Type and send** messages - encrypted automatically
-4. **Create groups** via ➕ Create Group button
-5. **Manage groups** via ⚙️ Group Settings button (when group selected)
-6. **Customize** via Settings menu (themes, font sizes)
-7. **Update** via Help menu → Check for Updates
-
-### CLI Version
-
-```
-First run: Create new identity or restore from 24-word recovery phrase
-
-Main menu:
-1. Send message              - Encrypt and send to recipient(s)
-2. List inbox               - View received messages
-3. Read message             - Decrypt and display
-4. List sent messages       - View your sent messages
-5. List keyserver           - See all users
-6. Create group             - Create new group chat
-7. Manage groups            - Add/remove members, settings
-8. Check for updates        - Update to latest version
-9. Logout
-```
-
 ## Features
 
 **Current:**
@@ -101,11 +72,12 @@ Main menu:
 - ✅ Desktop notifications
 
 **Coming Soon:**
-- 🚧 Real-time WebSocket messaging
-- 🚧 P2P message routing
-- 📋 Forward secrecy (ephemeral session keys)
-- 📋 Multi-device synchronization
+- 🚧 Hypercore Protocol P2P networking (Phase 5)
+- 🚧 Distributed keyserver with Hyperbee (Phase 5)
+- 🚧 Web-based messenger (Phase 5.5)
+- 📋 CF20 Wallet for cpunk network payments
 - 📋 Mobile applications (Flutter)
+- 📋 Forward secrecy (ephemeral session keys)
 - 📋 Voice/video calls
 
 ## Roadmap
@@ -131,14 +103,7 @@ Main menu:
 - Auto-login for existing identities
 - Cross-platform support (Linux & Windows)
 
-### 🚧 Phase 4: Network Layer (Planned)
-- [ ] WebSocket transport
-- [ ] P2P discovery
-- [ ] Real-time message routing
-- [ ] Offline message queue
-- [ ] Connection resilience
-
-### ✅ Phase 5: Qt Desktop App (Complete)
+### ✅ Phase 4: Qt Desktop App (Complete)
 - Qt5 GUI with contact list and chat area
 - Message send/receive functionality
 - Real contacts from keyserver
@@ -153,6 +118,16 @@ Main menu:
 - Theme system (2 themes)
 - Font scaling (1x-4x)
 - **Group messaging with full UI**
+- **CF20 Wallet integration (planned)**
+
+### 🚧 Phase 5: Network Layer - Hypercore Protocol (Planned)
+- [ ] Hyperswarm P2P networking with DHT
+- [ ] Distributed keyserver using Hyperbee
+- [ ] Hypercore append-only message logs
+- [ ] Real-time message replication
+- [ ] NAT traversal (works behind firewalls)
+- [ ] Offline-first with automatic sync
+- [ ] Node.js bridge daemon (IPC layer)
 
 ### 🚧 Phase 5.5: Web-Based Messenger (In Progress - branch: feature/web-messenger)
 - [x] WebAssembly crypto module (Emscripten compilation)
@@ -165,21 +140,22 @@ Main menu:
 - [ ] Client-side encryption/decryption
 - [ ] IndexedDB for local key storage
 
-### 📋 Phase 6: Mobile Apps (Planned)
-- Flutter mobile app
-- Android and iOS support
-- Push notifications
-- Background sync
-- Biometric authentication
-
-### 📋 Phase 7: Advanced Security (Planned)
+### 📋 Phase 6: Advanced Security (Planned)
 - Forward secrecy (session keys)
 - Multi-device synchronization
 - Secure memory management
 - Key verification (QR codes)
 - Disappearing messages
 
+### 📋 Phase 7: Mobile Apps (Planned)
+- Flutter mobile app
+- Android and iOS support
+- Push notifications
+- Background sync
+- Biometric authentication
+
 ### 📋 Phase 8+: Future Enhancements (Planned)
+- CF20 Wallet integration (Cellframe cpunk network)
 - Voice/video calls (WebRTC)
 - Stickers and rich media
 - Channels (broadcast mode)
@@ -190,17 +166,27 @@ Main menu:
 
 ## Architecture
 
-**Components:**
+**Current (Phase 4):**
 - Client application (GUI or CLI)
-- Shared PostgreSQL server (ai.cpunk.io:5432)
-- Keyserver for public key distribution
+- PostgreSQL message storage (ai.cpunk.io:5432)
+- Centralized keyserver for public key distribution
 - Your private keys stay on your device (`~/.dna/`)
+
+**Future (Phase 5 - Hypercore Protocol):**
+- Fully peer-to-peer (no centralized servers)
+- Hyperswarm for P2P networking and NAT traversal
+- Distributed keyserver using Hyperbee
+- Hypercore append-only logs for message storage
+- Each user maintains their own Hyperbee (OUTBOX)
+- Users replicate contacts' Hyperbees (INBOX)
+- Node.js bridge daemon for Hypercore Protocol integration
 
 **Security:**
 - Messages encrypted on your device before sending
 - Only recipient can decrypt (end-to-end encryption)
-- Server only stores encrypted ciphertext
-- Post-quantum algorithms protect against quantum computers
+- Post-quantum algorithms (Kyber512 + Dilithium3)
+- Append-only logs are cryptographically signed and immutable
+- Transport layer encrypted with Noise protocol (Hypercore native)
 
 ## Cryptography
 
@@ -221,28 +207,6 @@ Main menu:
 2. Enter your 24 words
 3. Keys regenerated and verified against keyserver
 
-## Groups
-
-**Create Groups:**
-- Click ➕ Create Group button
-- Enter group name and description
-- Select initial members
-- You're automatically added as creator
-
-**Manage Groups:**
-- Select group from contact list
-- Click ⚙️ Group Settings button
-- Edit name/description
-- Add/remove members
-- Delete group (creator only)
-- Leave group (members only)
-
-**Group Messaging:**
-- Messages automatically sent to all members
-- End-to-end encrypted for each recipient
-- Creator marked with 👑 icon
-- Full member list visible to all
-
 ## License
 
 GNU General Public License v3.0
@@ -256,6 +220,12 @@ Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 - **Server:** ai.cpunk.io:5432
 - **Roadmap:** [ROADMAP.md](./ROADMAP.md)
 - **Development Guide:** [CLAUDE.md](./CLAUDE.md)
+- **cpunk.io:** https://cpunk.io
+- **cpunk.club:** https://cpunk.club
+
+### About cpunk
+
+cpunk is the **world's first meme coin** on the Cellframe Network. CF20 wallet integration (Phase 8+) will enable payment operations directly within DNA Messenger, allowing users to send/receive cpunk tokens for services, tips, and peer-to-peer transactions on the cpunk network.
 
 ---
 
