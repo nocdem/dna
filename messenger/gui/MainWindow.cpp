@@ -1254,24 +1254,9 @@ void MainWindow::checkForStatusUpdates() {
         return;
     }
 
-    // Log status updates for debugging
+    // Silently refresh conversation to update checkmarks if there were any updates
     int count = PQntuples(res);
     if (count > 0) {
-        printf("[STATUS_UPDATE] %d message(s) with status updates in conversation with %s:\n",
-               count, currentContact.toUtf8().constData());
-        for (int i = 0; i < count; i++) {
-            int msgId = atoi(PQgetvalue(res, i, 0));
-            QString status = QString::fromUtf8(PQgetvalue(res, i, 1));
-            QString deliveredAt = PQgetisnull(res, i, 2) ? "null" : QString::fromUtf8(PQgetvalue(res, i, 2));
-            QString readAt = PQgetisnull(res, i, 3) ? "null" : QString::fromUtf8(PQgetvalue(res, i, 3));
-
-            printf("  - Message ID %d: status=%s, delivered=%s, read=%s\n",
-                   msgId, status.toUtf8().constData(),
-                   deliveredAt.toUtf8().constData(),
-                   readAt.toUtf8().constData());
-        }
-
-        // Silently refresh conversation to update checkmarks
         loadConversation(currentContact);
     }
 
