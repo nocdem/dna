@@ -355,6 +355,195 @@ int messenger_mark_delivered(messenger_context_t *ctx, int message_id);
  */
 int messenger_mark_conversation_read(messenger_context_t *ctx, const char *sender_identity);
 
+// ============================================================================
+// GROUP MANAGEMENT
+// ============================================================================
+
+/**
+ * Group Info
+ * Represents a group with its metadata
+ */
+typedef struct {
+    int id;                      // Group ID
+    char *name;                  // Group name
+    char *description;           // Optional description
+    char *creator;               // Creator identity
+    char *created_at;            // Creation timestamp
+    int member_count;            // Number of members
+} group_info_t;
+
+/**
+ * Create a new group
+ *
+ * @param ctx: Messenger context
+ * @param name: Group name
+ * @param description: Optional group description (can be NULL)
+ * @param members: Array of member identities (excluding creator, who is added automatically)
+ * @param member_count: Number of members
+ * @param group_id_out: Output group ID
+ * @return: 0 on success, -1 on error
+ */
+int messenger_create_group(
+    messenger_context_t *ctx,
+    const char *name,
+    const char *description,
+    const char **members,
+    size_t member_count,
+    int *group_id_out
+);
+
+/**
+ * Get list of all groups current user belongs to
+ *
+ * @param ctx: Messenger context
+ * @param groups_out: Output array of group_info_t (caller must free with messenger_free_groups)
+ * @param count_out: Number of groups returned
+ * @return: 0 on success, -1 on error
+ */
+int messenger_get_groups(
+    messenger_context_t *ctx,
+    group_info_t **groups_out,
+    int *count_out
+);
+
+/**
+ * Get group info by ID
+ *
+ * @param ctx: Messenger context
+ * @param group_id: Group ID
+ * @param group_out: Output group_info_t (caller must free fields)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_get_group_info(
+    messenger_context_t *ctx,
+    int group_id,
+    group_info_t *group_out
+);
+
+/**
+ * Get members of a specific group
+ *
+ * @param ctx: Messenger context
+ * @param group_id: Group ID
+ * @param members_out: Output array of identity strings (caller must free)
+ * @param count_out: Number of members returned
+ * @return: 0 on success, -1 on error
+ */
+int messenger_get_group_members(
+    messenger_context_t *ctx,
+    int group_id,
+    char ***members_out,
+    int *count_out
+);
+
+/**
+ * Add member to group
+ *
+ * @param ctx: Messenger context
+ * @param group_id: Group ID
+ * @param member: Identity to add
+ * @return: 0 on success, -1 on error
+ */
+int messenger_add_group_member(
+    messenger_context_t *ctx,
+    int group_id,
+    const char *member
+);
+
+/**
+ * Remove member from group
+ *
+ * @param ctx: Messenger context
+ * @param group_id: Group ID
+ * @param member: Identity to remove
+ * @return: 0 on success, -1 on error
+ */
+int messenger_remove_group_member(
+    messenger_context_t *ctx,
+    int group_id,
+    const char *member
+);
+
+/**
+ * Leave a group
+ *
+ * @param ctx: Messenger context
+ * @param group_id: Group ID
+ * @return: 0 on success, -1 on error
+ */
+int messenger_leave_group(
+    messenger_context_t *ctx,
+    int group_id
+);
+
+/**
+ * Delete a group (creator only)
+ *
+ * @param ctx: Messenger context
+ * @param group_id: Group ID
+ * @return: 0 on success, -1 on error
+ */
+int messenger_delete_group(
+    messenger_context_t *ctx,
+    int group_id
+);
+
+/**
+ * Update group info (name, description)
+ *
+ * @param ctx: Messenger context
+ * @param group_id: Group ID
+ * @param name: New name (NULL to keep current)
+ * @param description: New description (NULL to keep current)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_update_group_info(
+    messenger_context_t *ctx,
+    int group_id,
+    const char *name,
+    const char *description
+);
+
+/**
+ * Send message to group
+ *
+ * Automatically sends to all group members.
+ *
+ * @param ctx: Messenger context
+ * @param group_id: Group ID
+ * @param message: Message text
+ * @return: 0 on success, -1 on error
+ */
+int messenger_send_group_message(
+    messenger_context_t *ctx,
+    int group_id,
+    const char *message
+);
+
+/**
+ * Get conversation for a group
+ *
+ * @param ctx: Messenger context
+ * @param group_id: Group ID
+ * @param messages_out: Output array of message_info_t (caller must free)
+ * @param count_out: Number of messages returned
+ * @return: 0 on success, -1 on error
+ */
+int messenger_get_group_conversation(
+    messenger_context_t *ctx,
+    int group_id,
+    message_info_t **messages_out,
+    int *count_out
+);
+
+/**
+ * Free group array
+ *
+ * @param groups: Array of group_info_t to free
+ * @param count: Number of groups in array
+ */
+void messenger_free_groups(group_info_t *groups, int count);
+
 #ifdef __cplusplus
 }
 #endif
