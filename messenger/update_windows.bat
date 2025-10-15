@@ -51,11 +51,24 @@ echo.
 
 echo DEBUG: Checking for .git directory...
 if not exist .git (
-    echo ERROR: Not a git repository (no .git directory found)
+    echo WARNING: Not a git repository (no .git directory found)
     echo Current directory: %CD%
     echo.
-    pause
-    exit /b 1
+    echo Falling back to install_windows.bat...
+    echo.
+
+    REM Check if install_windows.bat exists
+    if exist install_windows.bat (
+        echo Running install_windows.bat...
+        call install_windows.bat
+        exit /b %errorlevel%
+    ) else (
+        echo ERROR: install_windows.bat not found
+        echo Cannot update without git repository or install script
+        echo.
+        pause
+        exit /b 1
+    )
 )
 echo DEBUG: .git directory found
 
