@@ -2,7 +2,7 @@
 
 **Post-quantum encrypted messaging platform**
 
-DNA Messenger is a secure messaging system using post-quantum cryptographic algorithms (Kyber512 + Dilithium3) that remain secure even against future quantum computer attacks.
+Secure messaging using post-quantum cryptography (Kyber512 + Dilithium3) that remains secure against future quantum computer attacks.
 
 ## Status
 
@@ -13,14 +13,9 @@ DNA Messenger is a secure messaging system using post-quantum cryptographic algo
 - **Minor:** 1 (Current feature set)
 - **Patch:** Auto-incremented with each commit
 
-**Working Features:**
-- ✅ End-to-end encryption with post-quantum algorithms
-- ✅ Qt5 graphical interface (Windows & Linux)
-- ✅ Multi-recipient messaging (group messages)
-- ✅ 24-word BIP39 recovery phrases for key backup
-- ✅ Cross-platform (Linux & Windows)
-- ✅ Shared keyserver at ai.cpunk.io
-- ✅ Auto-update mechanism
+**Available in two versions:**
+- **GUI:** Qt5 graphical interface with theme support and auto-updates
+- **CLI:** Command-line interface for terminal users
 
 ## Quick Start
 
@@ -38,7 +33,7 @@ cmake ..
 make
 
 # Run GUI
-./dna_messenger_gui
+./gui/dna_messenger_gui
 
 # Or run CLI
 ./dna_messenger
@@ -61,30 +56,75 @@ REM Or run CLI
 Release\dna_messenger.exe
 ```
 
-### First Run
+## How to Use
+
+### GUI Version
+
+1. **Launch** the app - auto-detects your identity from `~/.dna/`
+2. **Select a contact** from the left panel
+3. **Type and send** messages - encrypted automatically
+4. **Customize** via Settings menu (themes, font sizes)
+5. **Update** via Help menu → Check for Updates
+
+### CLI Version
 
 ```
-1. Create new identity
-   - Choose a username
-   - Write down your 24-word recovery phrase
-   - Keys uploaded to ai.cpunk.io
+First run: Create new identity or restore from 24-word recovery phrase
 
-2. Send a message
-   - Enter recipient username
-   - Type your message
-   - Message encrypted and sent
-
-3. Read messages
-   - List your inbox
-   - Messages decrypted locally
+Main menu:
+1. Send message              - Encrypt and send to recipient
+2. List inbox               - View received messages
+3. Read message             - Decrypt and display
+4. List sent messages       - View your sent messages
+5. List keyserver           - See all users
+6. Check for updates        - Update to latest version
+7. Logout
 ```
 
-## How It Works
+## Roadmap
 
-**Architecture:**
-- Client application (this program)
+### ✅ Completed
+
+- **Phase 1:** Foundation (forked from QGP)
+- **Phase 2:** Library API (memory-based encryption)
+- **Phase 3:** CLI Messenger (PostgreSQL storage, BIP39 recovery)
+- **Phase 5:** Desktop GUI (Qt5, themes, auto-updates, font scaling)
+
+### 🚧 In Progress
+
+- **Phase 4:** Network Layer (WebSocket transport, P2P discovery, offline queue)
+
+### 📋 Planned
+
+- **Phase 6:** Mobile Apps (Flutter for iOS/Android)
+- **Phase 7:** Advanced Features (forward secrecy, multi-device sync, group messaging)
+
+## Features
+
+**Current:**
+- ✅ End-to-end encryption with post-quantum algorithms
+- ✅ Multi-recipient messaging (group messages)
+- ✅ 24-word BIP39 recovery phrases
+- ✅ Cross-platform (Linux & Windows)
+- ✅ Shared keyserver at ai.cpunk.io
+- ✅ Auto-update mechanism
+- ✅ Theme switching (cpunk.io cyan / cpunk.club orange)
+- ✅ Dynamic font scaling (1x - 4x)
+
+**Coming Soon:**
+- 🚧 Real-time WebSocket messaging
+- 🚧 P2P message routing
+- 📋 Forward secrecy (ephemeral session keys)
+- 📋 Multi-device synchronization
+- 📋 Mobile applications
+
+## Architecture
+
+**Components:**
+- Client application (GUI or CLI)
 - Shared PostgreSQL server (ai.cpunk.io:5432)
-- Your private keys stay on your device
+- Keyserver for public key distribution
+- Your private keys stay on your device (`~/.dna/`)
 
 **Security:**
 - Messages encrypted on your device before sending
@@ -92,64 +132,24 @@ Release\dna_messenger.exe
 - Server only stores encrypted ciphertext
 - Post-quantum algorithms protect against quantum computers
 
-**Key Management:**
-- Private keys: `~/.dna/` (never leave your computer)
-- Public keys: Shared keyserver (ai.cpunk.io)
-- Recovery: 24-word BIP39 mnemonic phrase
-
-## Commands
-
-```
-1. Create new identity       - Generate new keys
-2. Restore from seed phrase  - Recover keys from backup
-3. Lookup identity          - Find user on keyserver
-4. Configure server         - Change server (default: ai.cpunk.io)
-5. Exit
-
-After login:
-- Send message              - Encrypt and send
-- List inbox               - View received messages
-- Read message             - Decrypt and display
-- List sent messages       - View sent messages
-- List keyserver           - See all users
-- Check for updates        - Update to latest version
-```
-
 ## Cryptography
 
-- **Key Encapsulation:** Kyber512 (NIST PQC)
-- **Signatures:** Dilithium3 (NIST FIPS 204)
-- **Symmetric:** AES-256-GCM
+- **Key Encapsulation:** Kyber512 (NIST PQC Level 1)
+- **Signatures:** Dilithium3 (ML-DSA-65, FIPS 204)
+- **Symmetric:** AES-256-GCM (AEAD)
 - **Key Derivation:** PBKDF2-HMAC-SHA512
 
 ## Recovery
 
 **Backup Your Keys:**
-1. Write down your 24-word recovery phrase
-2. Store it safely (never digitally)
+1. Write down your 24-word recovery phrase during identity creation
+2. Store it safely offline (never digitally)
 3. Optional: Add passphrase for extra security
 
 **Restore Your Keys:**
-1. Choose "Restore from seed phrase"
+1. Choose "Restore from seed phrase" at startup
 2. Enter your 24 words
-3. Keys regenerated and verified against server
-
-## Development
-
-**Current Phase:** Phase 4 - Network Layer
-
-**Roadmap:**
-- Phase 1: Foundation ✅ Complete
-- Phase 2: Library API ✅ Complete
-- Phase 3: CLI Messenger ✅ Complete
-- Phase 4: Network Layer 🚧 In Progress
-- Phase 5: Desktop GUI (Qt) ✅ Complete
-- Phase 6: Mobile Apps (Flutter) - Future
-
-**Contributing:**
-- Fork the repository
-- See CLAUDE.md for development guidelines
-- All crypto must use post-quantum algorithms
+3. Keys regenerated and verified against keyserver
 
 ## License
 
