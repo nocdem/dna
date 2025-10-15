@@ -40,6 +40,12 @@ private slots:
     void onFontScaleMedium();
     void onFontScaleLarge();
     void onFontScaleExtraLarge();
+    void onMinimizeWindow();
+    void onCloseWindow();
+
+protected:
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
 
 private:
     void setupUI();
@@ -61,6 +67,15 @@ private:
     QPushButton *sendButton;
     QPushButton *refreshButton;
     QLabel *statusLabel;
+
+    // Custom title bar components
+    QWidget *titleBar;
+    QLabel *titleLabel;
+    QPushButton *minimizeButton;
+    QPushButton *closeButton;
+
+    // Window dragging
+    QPoint dragPosition;
 
     // Theme management
     QString currentTheme;

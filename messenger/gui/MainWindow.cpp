@@ -20,6 +20,7 @@
 #include <QProcess>
 #include <QSettings>
 #include <QFontDatabase>
+#include <QMouseEvent>
 
 // Platform-specific includes for identity detection
 #ifdef _WIN32
@@ -79,6 +80,9 @@ QString MainWindow::getLocalIdentity() {
 MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ctx(nullptr) {
 
+    // Remove native window frame for custom title bar
+    setWindowFlags(Qt::FramelessWindowHint);
+
     // Auto-detect local identity
     currentIdentity = getLocalIdentity();
 
@@ -130,8 +134,6 @@ MainWindow::MainWindow(QWidget *parent)
     applyTheme(savedTheme);
     applyFontScale(savedFontScale);
 
-    setWindowTitle(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(currentIdentity));
-
     // Scale window to 80% of screen size
     QScreen *screen = QGuiApplication::primaryScreen();
     QRect screenGeometry = screen->availableGeometry();
@@ -155,6 +157,82 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
+    // Create custom title bar
+    titleBar = new QWidget(this);
+    titleBar->setFixedHeight(60);
+    titleBar->setStyleSheet(
+        "QWidget {"
+        "   background: #0D3438;"
+        "   border-bottom: 2px solid #00D9FF;"
+        "}"
+    );
+
+    QHBoxLayout *titleLayout = new QHBoxLayout(titleBar);
+    titleLayout->setContentsMargins(20, 0, 0, 0);
+    titleLayout->setSpacing(10);
+
+    // Title label (version + username)
+    titleLabel = new QLabel(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(currentIdentity), titleBar);
+    titleLabel->setStyleSheet(
+        "font-family: 'Orbitron';"
+        "font-size: 48px;"
+        "font-weight: bold;"
+        "color: #00D9FF;"
+        "background: transparent;"
+        "border: none;"
+    );
+    titleLayout->addWidget(titleLabel);
+
+    titleLayout->addStretch();
+
+    // Minimize button
+    minimizeButton = new QPushButton(QString::fromUtf8("➖"), titleBar);
+    minimizeButton->setFixedSize(50, 50);
+    minimizeButton->setStyleSheet(
+        "QPushButton {"
+        "   background: rgba(0, 217, 255, 0.2);"
+        "   color: #00D9FF;"
+        "   border: 2px solid #00D9FF;"
+        "   border-radius: 10px;"
+        "   font-family: 'Orbitron';"
+        "   font-size: 24px;"
+        "   font-weight: bold;"
+        "}"
+        "QPushButton:hover {"
+        "   background: rgba(0, 217, 255, 0.3);"
+        "}"
+        "QPushButton:pressed {"
+        "   background: rgba(0, 217, 255, 0.4);"
+        "}"
+    );
+    connect(minimizeButton, &QPushButton::clicked, this, &MainWindow::onMinimizeWindow);
+    titleLayout->addWidget(minimizeButton);
+
+    // Close button
+    closeButton = new QPushButton(QString::fromUtf8("✖"), titleBar);
+    closeButton->setFixedSize(50, 50);
+    closeButton->setStyleSheet(
+        "QPushButton {"
+        "   background: rgba(255, 107, 53, 0.3);"
+        "   color: #FF6B35;"
+        "   border: 2px solid #FF6B35;"
+        "   border-radius: 10px;"
+        "   font-family: 'Orbitron';"
+        "   font-size: 24px;"
+        "   font-weight: bold;"
+        "}"
+        "QPushButton:hover {"
+        "   background: rgba(255, 107, 53, 0.5);"
+        "}"
+        "QPushButton:pressed {"
+        "   background: rgba(255, 107, 53, 0.7);"
+        "}"
+    );
+    connect(closeButton, &QPushButton::clicked, this, &MainWindow::onCloseWindow);
+    titleLayout->addWidget(closeButton);
+
+    titleBar->setLayout(titleLayout);
+
     // Set cpunk.io theme - dark teal with cyan accents
     setStyleSheet(
         "QMainWindow {"
@@ -233,11 +311,20 @@ void MainWindow::setupUI() {
     QAction *updateAction = helpMenu->addAction(QString::fromUtf8("✨ Check for Updates"));
     connect(updateAction, &QAction::triggered, this, &MainWindow::onCheckForUpdates);
 
-    // Central widget with splitter
+    // Central widget with vertical layout for title bar + content
     QWidget *centralWidget = new QWidget(this);
     setCentralWidget(centralWidget);
 
-    QHBoxLayout *mainLayout = new QHBoxLayout(centralWidget);
+    QVBoxLayout *mainVerticalLayout = new QVBoxLayout(centralWidget);
+    mainVerticalLayout->setContentsMargins(0, 0, 0, 0);
+    mainVerticalLayout->setSpacing(0);
+
+    // Add title bar at the top
+    mainVerticalLayout->addWidget(titleBar);
+
+    // Content widget for the splitter
+    QWidget *contentWidget = new QWidget;
+    QHBoxLayout *mainLayout = new QHBoxLayout(contentWidget);
 
     // Left side: Contact list
     QWidget *leftPanel = new QWidget;
@@ -415,6 +502,10 @@ void MainWindow::setupUI() {
     splitter->setStretchFactor(1, 3);  // Right panel: 75%
 
     mainLayout->addWidget(splitter);
+    contentWidget->setLayout(mainLayout);
+
+    // Add content to main vertical layout
+    mainVerticalLayout->addWidget(contentWidget);
 
     // Status bar
     statusLabel = new QLabel(QString::fromUtf8("✨ Ready"));
@@ -1310,4 +1401,28 @@ void MainWindow::applyFontScale(double scale) {
     else scaleText = QString::number(scale) + "x";
     
     statusLabel->setText(QString::fromUtf8("📏 Font Scale: %1").arg(scaleText));
+}
+
+// Window dragging
+void MainWindow::mousePressEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton && titleBar->geometry().contains(event->pos())) {
+        dragPosition = event->globalPos() - frameGeometry().topLeft();
+        event->accept();
+    }
+}
+
+void MainWindow::mouseMoveEvent(QMouseEvent *event) {
+    if (event->buttons() & Qt::LeftButton && !dragPosition.isNull()) {
+        move(event->globalPos() - dragPosition);
+        event->accept();
+    }
+}
+
+// Window control buttons
+void MainWindow::onMinimizeWindow() {
+    showMinimized();
+}
+
+void MainWindow::onCloseWindow() {
+    QApplication::quit();
 }
