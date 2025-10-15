@@ -323,6 +323,10 @@ void MainWindow::onRefreshMessages() {
 void MainWindow::onCheckForUpdates() {
     QString currentVersion = QString(PQSIGNUM_VERSION);
 
+    printf("\n========== DEBUG: Update Check ==========\n");
+    printf("Current version: %s (commit %s, built %s)\n",
+           PQSIGNUM_VERSION, BUILD_HASH, BUILD_TS);
+
     QMessageBox::information(this, "Check for Updates",
                              QString("Current version: %1\n\nChecking latest version on GitHub...").arg(currentVersion));
 
@@ -332,28 +336,45 @@ void MainWindow::onCheckForUpdates() {
 
 #ifdef _WIN32
     // Windows: use PowerShell to fetch version
-    process.start("powershell", QStringList()
-                  << "-Command"
-                  << "$sha = (git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>$null).Split()[0]; "
-                     "if ($sha) { git rev-list --count $sha 2>$null } else { Write-Output 'unknown' }");
+    QString command = "$sha = (git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>$null).Split()[0]; "
+                      "if ($sha) { git rev-list --count $sha 2>$null } else { Write-Output 'unknown' }";
+    printf("Command: powershell -Command \"%s\"\n", command.toUtf8().constData());
+    process.start("powershell", QStringList() << "-Command" << command);
 #else
     // Linux: fetch version from GitHub
-    process.start("sh", QStringList()
-                  << "-c"
-                  << "git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>/dev/null | "
-                     "cut -f1 | xargs -I{} git rev-list --count {} 2>/dev/null || echo 'unknown'");
+    QString command = "git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>/dev/null | "
+                      "cut -f1 | xargs -I{} git rev-list --count {} 2>/dev/null || echo 'unknown'";
+    printf("Command: sh -c \"%s\"\n", command.toUtf8().constData());
+    process.start("sh", QStringList() << "-c" << command);
 #endif
+
+    printf("Waiting for command to finish (10 second timeout)...\n");
 
     if (process.waitForFinished(10000)) {  // 10 second timeout
         latestVersion = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+        QString errorOutput = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        int exitCode = process.exitCode();
+
+        printf("Command finished:\n");
+        printf("  Exit code: %d\n", exitCode);
+        printf("  stdout: '%s'\n", latestVersion.toUtf8().constData());
+        printf("  stderr: '%s'\n", errorOutput.toUtf8().constData());
+    } else {
+        printf("Command timed out!\n");
+        QString errorOutput = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        printf("  stderr: '%s'\n", errorOutput.toUtf8().constData());
     }
 
     if (latestVersion == "unknown" || latestVersion.isEmpty()) {
+        printf("ERROR: Failed to fetch version (result: '%s')\n", latestVersion.toUtf8().constData());
+        printf("=========================================\n\n");
         QMessageBox::warning(this, "Update Check Failed",
                              "Could not fetch latest version from GitHub.\n"
                              "Make sure you have git installed and internet connection.");
         return;
     }
+
+    printf("Successfully fetched latest version: %s\n", latestVersion.toUtf8().constData());
 
     // Compare versions
     bool ok;
@@ -363,7 +384,13 @@ void MainWindow::onCheckForUpdates() {
     int latestV = latestVersion.toInt(&ok);
     if (!ok) latestV = 0;
 
+    printf("Version comparison:\n");
+    printf("  Current: %d\n", currentV);
+    printf("  Latest:  %d\n", latestV);
+
     if (latestV > currentV) {
+        printf("Result: UPDATE AVAILABLE\n");
+        printf("=========================================\n\n");
         // Update available
         QMessageBox::StandardButton reply = QMessageBox::question(this, "Update Available",
                                             QString("New version available!\n\n"
@@ -409,6 +436,8 @@ void MainWindow::onCheckForUpdates() {
 #endif
         }
     } else {
+        printf("Result: UP TO DATE\n");
+        printf("=========================================\n\n");
         QMessageBox::information(this, "Up to Date",
                                  QString("You are running the latest version: %1").arg(currentVersion));
     }
