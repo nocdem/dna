@@ -1465,9 +1465,10 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     }
 
     // Fetch message from database
+    // Support decrypting both received messages (recipient = identity) AND sent messages (sender = identity)
     char id_str[32];
     snprintf(id_str, sizeof(id_str), "%d", message_id);
-    const char *query = "SELECT sender, ciphertext FROM messages WHERE id = $1 AND recipient = $2";
+    const char *query = "SELECT sender, ciphertext FROM messages WHERE id = $1 AND (recipient = $2 OR sender = $2)";
 
     const char *params[2] = {id_str, ctx->identity};
     PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 1); // Binary result
