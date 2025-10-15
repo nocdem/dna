@@ -384,7 +384,6 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [ ] Transaction history and tracking
 - [ ] Wallet address management
 - [ ] Payment notifications and confirmations
-- [ ] Integration with Cellframe node API
 
 ### Infrastructure
 - [ ] Decentralized architecture (Matrix-style federation)
