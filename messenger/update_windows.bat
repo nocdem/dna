@@ -10,13 +10,31 @@ echo DEBUG: Script location: %~dp0
 echo DEBUG: Current directory: %CD%
 echo.
 echo Waiting for application to close...
-timeout /t 3 /nobreak >nul
+timeout /t 2 /nobreak >nul
 
-REM Kill any remaining processes
+REM Kill any remaining processes and wait for them to terminate
 echo DEBUG: Killing any remaining processes...
 taskkill /F /IM dna_messenger_gui.exe >nul 2>&1
 taskkill /F /IM dna_messenger.exe >nul 2>&1
-timeout /t 2 /nobreak >nul
+
+REM Wait up to 15 seconds for processes to terminate
+echo DEBUG: Waiting for processes to terminate...
+set COUNTER=0
+:WAIT_LOOP
+tasklist /FI "IMAGENAME eq dna_messenger_gui.exe" 2>nul | find /I "dna_messenger_gui.exe" >nul
+if %errorlevel% equ 0 (
+    set /a COUNTER+=1
+    if %COUNTER% gtr 15 (
+        echo WARNING: Process still running after 15 seconds, forcing shutdown...
+        taskkill /F /IM dna_messenger_gui.exe >nul 2>&1
+        timeout /t 2 /nobreak >nul
+        goto WAIT_DONE
+    )
+    timeout /t 1 /nobreak >nul
+    goto WAIT_LOOP
+)
+:WAIT_DONE
+echo DEBUG: All processes terminated
 
 REM Change to the directory where this script is located
 echo DEBUG: Changing to script directory...
