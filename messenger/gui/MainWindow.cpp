@@ -281,9 +281,8 @@ void MainWindow::setupUI() {
         "}"
     );
 
-    // Create menu bar
-    QMenuBar *menuBar = new QMenuBar(this);
-    setMenuBar(menuBar);
+    // Create menu bar (not using setMenuBar to keep it below title bar)
+    QMenuBar *menuBar = new QMenuBar();
 
     // Settings menu
     QMenu *settingsMenu = menuBar->addMenu(QString::fromUtf8("⚙️ Settings"));
@@ -321,6 +320,9 @@ void MainWindow::setupUI() {
 
     // Add title bar at the top
     mainVerticalLayout->addWidget(titleBar);
+
+    // Add menu bar below title bar
+    mainVerticalLayout->addWidget(menuBar);
 
     // Content widget for the splitter
     QWidget *contentWidget = new QWidget;
@@ -1405,9 +1407,13 @@ void MainWindow::applyFontScale(double scale) {
 
 // Window dragging
 void MainWindow::mousePressEvent(QMouseEvent *event) {
-    if (event->button() == Qt::LeftButton && titleBar->geometry().contains(event->pos())) {
-        dragPosition = event->globalPos() - frameGeometry().topLeft();
-        event->accept();
+    if (event->button() == Qt::LeftButton) {
+        // Map click position to titleBar's coordinate system
+        QPoint titleBarPos = titleBar->mapFromGlobal(event->globalPos());
+        if (titleBar->rect().contains(titleBarPos)) {
+            dragPosition = event->globalPos() - frameGeometry().topLeft();
+            event->accept();
+        }
     }
 }
 
