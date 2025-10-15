@@ -1,5 +1,7 @@
 <RCC>
     <qresource prefix="/">
         <file>fonts/Orbitron.ttf</file>
+        <file>icons/dna_icon.png</file>
+        <file>sounds/message.wav</file>
     </qresource>
 </RCC>

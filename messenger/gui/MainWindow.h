@@ -16,6 +16,10 @@
 #include <QSplitter>
 #include <QLabel>
 #include <QStatusBar>
+#include <QTimer>
+#include <QSystemTrayIcon>
+#include <QMenu>
+#include <QSoundEffect>
 
 // Forward declarations for C API
 extern "C" {
@@ -42,6 +46,8 @@ private slots:
     void onFontScaleExtraLarge();
     void onMinimizeWindow();
     void onCloseWindow();
+    void checkForNewMessages();
+    void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason);
 
 protected:
     void mousePressEvent(QMouseEvent *event) override;
@@ -82,6 +88,13 @@ private:
 
     // Font scale management
     double fontScale;
+
+    // Notification system
+    QTimer *pollTimer;
+    int lastCheckedMessageId;
+    QSystemTrayIcon *trayIcon;
+    QMenu *trayMenu;
+    QSoundEffect *notificationSound;
 };
 
 #endif // MAINWINDOW_H

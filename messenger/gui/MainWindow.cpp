@@ -78,7 +78,7 @@ QString MainWindow::getLocalIdentity() {
 }
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), ctx(nullptr) {
+    : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0) {
 
     // Remove native window frame for custom title bar
     setWindowFlags(Qt::FramelessWindowHint);
@@ -125,6 +125,31 @@ MainWindow::MainWindow(QWidget *parent)
 
     setupUI();
     loadContacts();
+
+    // Initialize system tray icon
+    trayIcon = new QSystemTrayIcon(this);
+    trayIcon->setIcon(QIcon(":/icons/dna_icon.png"));
+    trayIcon->setToolTip("DNA Messenger");
+
+    trayMenu = new QMenu(this);
+    trayMenu->addAction("Show", this, &MainWindow::show);
+    trayMenu->addAction("Exit", qApp, &QApplication::quit);
+    trayIcon->setContextMenu(trayMenu);
+
+    connect(trayIcon, &QSystemTrayIcon::activated,
+            this, &MainWindow::onTrayIconActivated);
+
+    trayIcon->show();
+
+    // Initialize notification sound
+    notificationSound = new QSoundEffect(this);
+    notificationSound->setSource(QUrl("qrc:/sounds/message.wav"));
+    notificationSound->setVolume(0.5);
+
+    // Initialize polling timer (5 seconds)
+    pollTimer = new QTimer(this);
+    connect(pollTimer, &QTimer::timeout, this, &MainWindow::checkForNewMessages);
+    pollTimer->start(5000);
 
     // Load saved preferences
     QSettings settings("DNA Messenger", "GUI");
@@ -752,6 +777,73 @@ void MainWindow::onRefreshMessages() {
         loadConversation(currentContact);
     }
     statusLabel->setText(QString::fromUtf8("✨ Messages refreshed"));
+}
+
+void MainWindow::checkForNewMessages() {
+    if (!ctx || currentIdentity.isEmpty()) {
+        return;
+    }
+
+    // Query for new messages since lastCheckedMessageId
+    char id_str[32];
+    snprintf(id_str, sizeof(id_str), "%d", lastCheckedMessageId);
+
+    const char *query =
+        "SELECT id, sender, created_at "
+        "FROM messages "
+        "WHERE recipient = $1 AND id > $2 "
+        "ORDER BY id ASC";
+
+    const char *params[2] = {
+        currentIdentity.toUtf8().constData(),
+        id_str
+    };
+
+    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        PQclear(res);
+        return;
+    }
+
+    int count = PQntuples(res);
+
+    for (int i = 0; i < count; i++) {
+        int msgId = atoi(PQgetvalue(res, i, 0));
+        QString sender = QString::fromUtf8(PQgetvalue(res, i, 1));
+        QString timestamp = QString::fromUtf8(PQgetvalue(res, i, 2));
+
+        if (msgId > lastCheckedMessageId) {
+            lastCheckedMessageId = msgId;
+        }
+
+        // Play notification sound
+        notificationSound->play();
+
+        // Show desktop notification
+        QString notificationTitle = QString::fromUtf8("💌 New Message");
+        QString notificationBody = QString("From: %1\n%2")
+            .arg(sender)
+            .arg(timestamp);
+
+        trayIcon->showMessage(notificationTitle, notificationBody,
+                              QSystemTrayIcon::Information, 5000);
+
+        // If viewing this contact, refresh conversation
+        if (currentContact == sender) {
+            loadConversation(currentContact);
+        }
+    }
+
+    PQclear(res);
+}
+
+void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {
+    if (reason == QSystemTrayIcon::DoubleClick) {
+        show();
+        raise();
+        activateWindow();
+    }
 }
 
 void MainWindow::onCheckForUpdates() {

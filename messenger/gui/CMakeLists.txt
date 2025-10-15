@@ -3,7 +3,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 # Find Qt5
-find_package(Qt5 REQUIRED COMPONENTS Core Widgets)
+find_package(Qt5 REQUIRED COMPONENTS Core Widgets Multimedia)
 
 # Enable automatic MOC (Meta-Object Compiler)
 set(CMAKE_AUTOMOC ON)
@@ -25,6 +25,7 @@ add_executable(dna_messenger_gui ${GUI_SOURCES})
 target_link_libraries(dna_messenger_gui
     Qt5::Core
     Qt5::Widgets
+    Qt5::Multimedia
     dna_lib
     ${PQ_LIBRARY}
 )
