@@ -1982,9 +1982,13 @@ int messenger_mark_conversation_read(messenger_context_t *ctx, const char *sende
         return -1;
     }
 
+    // Update messages to 'read' status
+    // If delivered_at is NULL (message went directly from sent to read), set it to current timestamp
     const char *query =
         "UPDATE messages "
-        "SET status = 'read', read_at = CURRENT_TIMESTAMP "
+        "SET status = 'read', "
+        "    delivered_at = COALESCE(delivered_at, CURRENT_TIMESTAMP), "
+        "    read_at = CURRENT_TIMESTAMP "
         "WHERE recipient = $1 AND sender = $2 AND status IN ('sent', 'delivered')";
 
     const char *params[2] = {ctx->identity, sender_identity};
