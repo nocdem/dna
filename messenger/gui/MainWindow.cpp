@@ -833,14 +833,11 @@ void MainWindow::onCheckForUpdates() {
             printf("Native repo root: %s\n", nativeRepoRoot.toUtf8().constData());
             printf("==========================================\n\n");
 
-            // Launch updater script in new window
+            // Launch updater script in new window and quit immediately
             // Use empty quotes for window title, then /D for working directory
             QProcess::startDetached("cmd", QStringList() << "/c" << "start" << "\"\"" << "/D" << nativeRepoRoot << nativeUpdateScript);
-            QMessageBox::information(this, QString::fromUtf8("✨ Updating"),
-                                     QString::fromUtf8("Update process started.\n\n"
-                                     "DNA Messenger will now close.\n"
-                                     "A command window will appear to show update progress.\n\n"
-                                     "Please restart DNA Messenger when the update completes."));
+
+            // Quit immediately so updater can replace the executable
             QApplication::quit();
 #else
             // Linux: Update in place
