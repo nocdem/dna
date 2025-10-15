@@ -233,20 +233,35 @@ void MainWindow::loadConversation(const QString &contact) {
         } else {
             for (int i = 0; i < count; i++) {
                 QString sender = QString::fromUtf8(messages[i].sender);
+                QString recipient = QString::fromUtf8(messages[i].recipient);
                 QString timestamp = QString::fromUtf8(messages[i].timestamp);
 
                 // Format timestamp (extract time from "YYYY-MM-DD HH:MM:SS")
                 QString timeOnly = timestamp.mid(11, 5);  // Extract "HH:MM"
 
+                // Decrypt message if it's for current user
+                QString messageText = "[encrypted]";
+                if (recipient == currentIdentity) {
+                    char *plaintext = NULL;
+                    size_t plaintext_len = 0;
+
+                    if (messenger_decrypt_message(ctx, messages[i].id, &plaintext, &plaintext_len) == 0) {
+                        messageText = QString::fromUtf8(plaintext, plaintext_len);
+                        free(plaintext);
+                    } else {
+                        messageText = "[decryption failed]";
+                    }
+                }
+
                 if (sender == currentIdentity) {
-                    messageDisplay->append(QString("[%1] You: [message #%2]")
+                    messageDisplay->append(QString("[%1] You: %2")
                                            .arg(timeOnly)
-                                           .arg(messages[i].id));
+                                           .arg(messageText));
                 } else {
-                    messageDisplay->append(QString("[%1] %2: [message #%3]")
+                    messageDisplay->append(QString("[%1] %2: %3")
                                            .arg(timeOnly)
                                            .arg(sender)
-                                           .arg(messages[i].id));
+                                           .arg(messageText));
                 }
             }
         }

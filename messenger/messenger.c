@@ -1197,6 +1197,116 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     return 0;
 }
 
+int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
+                                char **plaintext_out, size_t *plaintext_len_out) {
+    if (!ctx || !plaintext_out || !plaintext_len_out) {
+        return -1;
+    }
+
+    // Fetch message from database
+    char id_str[32];
+    snprintf(id_str, sizeof(id_str), "%d", message_id);
+    const char *query = "SELECT sender, ciphertext FROM messages WHERE id = $1 AND recipient = $2";
+
+    const char *params[2] = {id_str, ctx->identity};
+    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 1); // Binary result
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        PQclear(res);
+        return -1;
+    }
+
+    if (PQntuples(res) == 0) {
+        PQclear(res);
+        return -1;
+    }
+
+    const char *sender = PQgetvalue(res, 0, 0);
+    const uint8_t *ciphertext = (const uint8_t*)PQgetvalue(res, 0, 1);
+    size_t ciphertext_len = PQgetlength(res, 0, 1);
+
+    // Load recipient's private Kyber512 key from filesystem
+    const char *home = qgp_platform_home_dir();
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s-kyber512.pqkey", home, ctx->identity);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+        PQclear(res);
+        return -1;
+    }
+
+    if (kyber_key->private_key_size != 1632) {
+        qgp_key_free(kyber_key);
+        PQclear(res);
+        return -1;
+    }
+
+    // Decrypt message using raw key
+    uint8_t *plaintext = NULL;
+    size_t plaintext_len = 0;
+    uint8_t *sender_sign_pubkey_from_msg = NULL;
+    size_t sender_sign_pubkey_len = 0;
+
+    dna_error_t err = dna_decrypt_message_raw(
+        ctx->dna_ctx,
+        ciphertext,
+        ciphertext_len,
+        kyber_key->private_key,
+        &plaintext,
+        &plaintext_len,
+        &sender_sign_pubkey_from_msg,
+        &sender_sign_pubkey_len
+    );
+
+    // Free Kyber key (secure wipes private key internally)
+    qgp_key_free(kyber_key);
+
+    if (err != DNA_OK) {
+        PQclear(res);
+        return -1;
+    }
+
+    // Verify sender's public key against keyserver
+    uint8_t *sender_sign_pubkey_keyserver = NULL;
+    uint8_t *sender_enc_pubkey_keyserver = NULL;
+    size_t sender_sign_len_keyserver = 0, sender_enc_len_keyserver = 0;
+
+    if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
+                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver) == 0) {
+        // Compare public keys
+        if (sender_sign_len_keyserver != sender_sign_pubkey_len ||
+            memcmp(sender_sign_pubkey_keyserver, sender_sign_pubkey_from_msg, sender_sign_pubkey_len) != 0) {
+            // Signature mismatch - possible spoofing
+            free(plaintext);
+            free(sender_sign_pubkey_from_msg);
+            free(sender_sign_pubkey_keyserver);
+            free(sender_enc_pubkey_keyserver);
+            PQclear(res);
+            return -1;
+        }
+        free(sender_sign_pubkey_keyserver);
+        free(sender_enc_pubkey_keyserver);
+    }
+
+    free(sender_sign_pubkey_from_msg);
+    PQclear(res);
+
+    // Return plaintext as null-terminated string
+    *plaintext_out = (char*)malloc(plaintext_len + 1);
+    if (!*plaintext_out) {
+        free(plaintext);
+        return -1;
+    }
+
+    memcpy(*plaintext_out, plaintext, plaintext_len);
+    (*plaintext_out)[plaintext_len] = '\0';
+    *plaintext_len_out = plaintext_len;
+
+    free(plaintext);
+    return 0;
+}
+
 int messenger_delete_pubkey(messenger_context_t *ctx, const char *identity) {
     if (!ctx || !identity) {
         return -1;

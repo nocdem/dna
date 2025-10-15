@@ -239,6 +239,18 @@ int messenger_list_sent_messages(messenger_context_t *ctx);
 int messenger_read_message(messenger_context_t *ctx, int message_id);
 
 /**
+ * Decrypt a message and return plaintext
+ *
+ * @param ctx: Messenger context
+ * @param message_id: Message ID
+ * @param plaintext_out: Output plaintext (caller must free)
+ * @param plaintext_len_out: Output plaintext length
+ * @return: 0 on success, -1 on error
+ */
+int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
+                                char **plaintext_out, size_t *plaintext_len_out);
+
+/**
  * Delete message
  *
  * @param ctx: Messenger context
