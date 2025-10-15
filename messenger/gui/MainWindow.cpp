@@ -437,6 +437,55 @@ void MainWindow::setupUI() {
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshMessages);
     leftLayout->addWidget(refreshButton);
 
+    // Create Group button
+    createGroupButton = new QPushButton(QString::fromUtf8("➕ Create Group"));
+    createGroupButton->setStyleSheet(
+        "QPushButton {"
+        "   background: rgba(0, 217, 255, 0.2);"
+        "   color: #00D9FF;"
+        "   border: 2px solid #00D9FF;"
+        "   border-radius: 15px;"
+        "   padding: 15px;"
+        "   font-weight: bold;"
+        "   font-family: 'Orbitron'; font-size: 48px;"
+        "}"
+        "QPushButton:hover {"
+        "   background: rgba(0, 217, 255, 0.3);"
+        "   border: 2px solid #33E6FF;"
+        "}"
+        "QPushButton:pressed {"
+        "   background: rgba(0, 217, 255, 0.4);"
+        "   border: 2px solid #00D9FF;"
+        "}"
+    );
+    connect(createGroupButton, &QPushButton::clicked, this, &MainWindow::onCreateGroup);
+    leftLayout->addWidget(createGroupButton);
+
+    // Group Settings button (initially hidden, shown when group selected)
+    groupSettingsButton = new QPushButton(QString::fromUtf8("⚙️ Group Settings"));
+    groupSettingsButton->setStyleSheet(
+        "QPushButton {"
+        "   background: rgba(255, 140, 66, 0.2);"
+        "   color: #FF8C42;"
+        "   border: 2px solid #FF8C42;"
+        "   border-radius: 15px;"
+        "   padding: 15px;"
+        "   font-weight: bold;"
+        "   font-family: 'Orbitron'; font-size: 48px;"
+        "}"
+        "QPushButton:hover {"
+        "   background: rgba(255, 140, 66, 0.3);"
+        "   border: 2px solid #FFB380;"
+        "}"
+        "QPushButton:pressed {"
+        "   background: rgba(255, 140, 66, 0.4);"
+        "   border: 2px solid #FF8C42;"
+        "}"
+    );
+    connect(groupSettingsButton, &QPushButton::clicked, this, &MainWindow::onGroupSettings);
+    groupSettingsButton->setVisible(false);  // Hidden by default
+    leftLayout->addWidget(groupSettingsButton);
+
     leftPanel->setLayout(leftLayout);
 
     // Right side: Chat area
@@ -670,6 +719,9 @@ void MainWindow::onContactSelected(QListWidgetItem *item) {
         currentContact = contactItem.name;
         currentGroupId = -1;
 
+        // Hide Group Settings button for contacts
+        groupSettingsButton->setVisible(false);
+
         // Update recipients label
         recipientsLabel->setText(QString::fromUtf8("📨 To: ") + currentContact);
 
@@ -681,6 +733,9 @@ void MainWindow::onContactSelected(QListWidgetItem *item) {
         // Handle group selection
         currentContact.clear();
         currentGroupId = contactItem.groupId;
+
+        // Show Group Settings button for groups
+        groupSettingsButton->setVisible(true);
 
         // Update recipients label
         recipientsLabel->setText(QString::fromUtf8("📨 To: Group - ") + contactItem.name);
@@ -1947,8 +2002,131 @@ void MainWindow::onCloseWindow() {
 
 // Group management functions
 void MainWindow::onCreateGroup() {
-    QMessageBox::information(this, "Create Group", "Group creation dialog - Coming soon!");
-    // TODO: Implement group creation dialog
+    // Create dialog
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString::fromUtf8("➕ Create New Group"));
+    dialog.setMinimumSize(600, 500);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    // Group name input
+    QLabel *nameLabel = new QLabel(QString::fromUtf8("📝 Group Name:"));
+    QLineEdit *nameEdit = new QLineEdit();
+    nameEdit->setPlaceholderText("Enter group name (required)");
+    layout->addWidget(nameLabel);
+    layout->addWidget(nameEdit);
+
+    // Description input
+    QLabel *descLabel = new QLabel(QString::fromUtf8("📄 Description (optional):"));
+    QLineEdit *descEdit = new QLineEdit();
+    descEdit->setPlaceholderText("Enter group description");
+    layout->addWidget(descLabel);
+    layout->addWidget(descEdit);
+
+    // Member selection
+    QLabel *memberLabel = new QLabel(QString::fromUtf8("👥 Select Members:"));
+    layout->addWidget(memberLabel);
+
+    QListWidget *memberList = new QListWidget();
+    memberList->setSelectionMode(QAbstractItemView::MultiSelection);
+
+    // Load contacts (excluding current user)
+    char **identities = NULL;
+    int contactCount = 0;
+    if (messenger_get_contact_list(ctx, &identities, &contactCount) == 0) {
+        for (int i = 0; i < contactCount; i++) {
+            QString identity = QString::fromUtf8(identities[i]);
+            if (identity != currentIdentity) {  // Exclude self
+                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("👤 ") + identity);
+                memberList->addItem(item);
+            }
+            free(identities[i]);
+        }
+        free(identities);
+    }
+
+    layout->addWidget(memberList);
+
+    // Info label
+    QLabel *infoLabel = new QLabel(QString::fromUtf8("💡 Hold Ctrl/Cmd to select multiple members"));
+    infoLabel->setStyleSheet("color: gray; font-size: 10px;");
+    layout->addWidget(infoLabel);
+
+    // Buttons
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    QPushButton *okButton = new QPushButton(QString::fromUtf8("✅ Create"));
+    QPushButton *cancelButton = new QPushButton(QString::fromUtf8("❌ Cancel"));
+
+    connect(okButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    buttonLayout->addWidget(okButton);
+    buttonLayout->addWidget(cancelButton);
+    layout->addLayout(buttonLayout);
+
+    // Show dialog
+    if (dialog.exec() == QDialog::Accepted) {
+        QString groupName = nameEdit->text().trimmed();
+        QString description = descEdit->text().trimmed();
+
+        // Validate group name
+        if (groupName.isEmpty()) {
+            QMessageBox::warning(this, "Invalid Input", "Group name cannot be empty");
+            return;
+        }
+
+        // Collect selected members
+        QStringList selectedMembers;
+        for (int i = 0; i < memberList->count(); i++) {
+            QListWidgetItem *item = memberList->item(i);
+            if (item->isSelected()) {
+                // Strip emoji prefix
+                QString member = item->text();
+                if (member.startsWith(QString::fromUtf8("👤 "))) {
+                    member = member.mid(3);
+                }
+                selectedMembers.append(member);
+            }
+        }
+
+        // Validate at least one member selected
+        if (selectedMembers.isEmpty()) {
+            QMessageBox::warning(this, "Invalid Input", "Please select at least one member");
+            return;
+        }
+
+        // Convert to C array
+        QList<QByteArray> memberBytes;
+        QVector<const char*> memberPtrs;
+        for (const QString &member : selectedMembers) {
+            memberBytes.append(member.toUtf8());
+        }
+        for (const QByteArray &bytes : memberBytes) {
+            memberPtrs.append(bytes.constData());
+        }
+
+        // Create group
+        int groupId = -1;
+        QByteArray nameBytes = groupName.toUtf8();
+        QByteArray descBytes = description.isEmpty() ? QByteArray() : description.toUtf8();
+
+        int result = messenger_create_group(
+            ctx,
+            nameBytes.constData(),
+            description.isEmpty() ? NULL : descBytes.constData(),
+            memberPtrs.data(),
+            memberPtrs.size(),
+            &groupId
+        );
+
+        if (result == 0) {
+            QMessageBox::information(this, "Success",
+                QString::fromUtf8("✨ Group '%1' created successfully!").arg(groupName));
+            loadContacts();  // Refresh contact list
+        } else {
+            QMessageBox::critical(this, "Error", "Failed to create group");
+        }
+    }
 }
 
 void MainWindow::onGroupSettings() {
@@ -1956,8 +2134,178 @@ void MainWindow::onGroupSettings() {
         QMessageBox::warning(this, "No Group Selected", "Please select a group first");
         return;
     }
-    QMessageBox::information(this, "Group Settings", "Group settings dialog - Coming soon!");
-    // TODO: Implement group settings dialog (rename, change description)
+
+    // Get current group info
+    group_info_t groupInfo;
+    if (messenger_get_group_info(ctx, currentGroupId, &groupInfo) != 0) {
+        QMessageBox::critical(this, "Error", "Failed to load group information");
+        return;
+    }
+
+    // Create dialog
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString::fromUtf8("⚙️ Group Settings"));
+    dialog.setMinimumSize(500, 400);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    // Display read-only info
+    QLabel *infoLabel = new QLabel(
+        QString::fromUtf8("👥 Group ID: %1\n"
+                         "👤 Creator: %2\n"
+                         "📅 Created: %3\n"
+                         "👥 Members: %4")
+        .arg(groupInfo.id)
+        .arg(QString::fromUtf8(groupInfo.creator))
+        .arg(QString::fromUtf8(groupInfo.created_at))
+        .arg(groupInfo.member_count)
+    );
+    infoLabel->setStyleSheet("background: rgba(0, 217, 255, 0.1); padding: 10px; border-radius: 5px;");
+    layout->addWidget(infoLabel);
+
+    // Group name input
+    QLabel *nameLabel = new QLabel(QString::fromUtf8("📝 Group Name:"));
+    QLineEdit *nameEdit = new QLineEdit();
+    nameEdit->setText(QString::fromUtf8(groupInfo.name));
+    layout->addWidget(nameLabel);
+    layout->addWidget(nameEdit);
+
+    // Description input
+    QLabel *descLabel = new QLabel(QString::fromUtf8("📄 Description:"));
+    QLineEdit *descEdit = new QLineEdit();
+    if (groupInfo.description) {
+        descEdit->setText(QString::fromUtf8(groupInfo.description));
+    }
+    layout->addWidget(descLabel);
+    layout->addWidget(descEdit);
+
+    // Action buttons
+    QHBoxLayout *actionLayout = new QHBoxLayout();
+
+    QPushButton *manageMembersButton = new QPushButton(QString::fromUtf8("👥 Manage Members"));
+    connect(manageMembersButton, &QPushButton::clicked, [this, &dialog]() {
+        dialog.accept();  // Close settings dialog
+        onManageGroupMembers();  // Open members dialog
+    });
+    actionLayout->addWidget(manageMembersButton);
+
+    // Delete button (only for creator)
+    bool isCreator = (QString::fromUtf8(groupInfo.creator) == currentIdentity);
+    if (isCreator) {
+        QPushButton *deleteButton = new QPushButton(QString::fromUtf8("🗑️ Delete Group"));
+        deleteButton->setStyleSheet("background: rgba(255, 0, 0, 0.2); color: red;");
+        connect(deleteButton, &QPushButton::clicked, [this, &dialog, &groupInfo]() {
+            QMessageBox::StandardButton reply = QMessageBox::question(
+                this,
+                "Confirm Delete",
+                QString::fromUtf8("Are you sure you want to delete the group '%1'?\n"
+                                 "This action cannot be undone!")
+                    .arg(QString::fromUtf8(groupInfo.name)),
+                QMessageBox::Yes | QMessageBox::No
+            );
+
+            if (reply == QMessageBox::Yes) {
+                if (messenger_delete_group(ctx, currentGroupId) == 0) {
+                    QMessageBox::information(this, "Success", "Group deleted successfully");
+                    loadContacts();  // Refresh contact list
+                    currentGroupId = -1;
+                    currentContactType = TYPE_CONTACT;
+                    messageDisplay->clear();
+                    dialog.reject();
+                } else {
+                    QMessageBox::critical(this, "Error", "Failed to delete group");
+                }
+            }
+        });
+        actionLayout->addWidget(deleteButton);
+    } else {
+        // Leave group button (for non-creators)
+        QPushButton *leaveButton = new QPushButton(QString::fromUtf8("🚪 Leave Group"));
+        leaveButton->setStyleSheet("background: rgba(255, 140, 0, 0.2); color: orange;");
+        connect(leaveButton, &QPushButton::clicked, [this, &dialog, &groupInfo]() {
+            QMessageBox::StandardButton reply = QMessageBox::question(
+                this,
+                "Confirm Leave",
+                QString::fromUtf8("Are you sure you want to leave the group '%1'?")
+                    .arg(QString::fromUtf8(groupInfo.name)),
+                QMessageBox::Yes | QMessageBox::No
+            );
+
+            if (reply == QMessageBox::Yes) {
+                if (messenger_leave_group(ctx, currentGroupId) == 0) {
+                    QMessageBox::information(this, "Success", "Left group successfully");
+                    loadContacts();  // Refresh contact list
+                    currentGroupId = -1;
+                    currentContactType = TYPE_CONTACT;
+                    messageDisplay->clear();
+                    dialog.reject();
+                } else {
+                    QMessageBox::critical(this, "Error", "Failed to leave group");
+                }
+            }
+        });
+        actionLayout->addWidget(leaveButton);
+    }
+
+    layout->addLayout(actionLayout);
+
+    // Save/Cancel buttons
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    QPushButton *saveButton = new QPushButton(QString::fromUtf8("💾 Save"));
+    QPushButton *cancelButton = new QPushButton(QString::fromUtf8("❌ Cancel"));
+
+    connect(saveButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
+
+    buttonLayout->addWidget(saveButton);
+    buttonLayout->addWidget(cancelButton);
+    layout->addLayout(buttonLayout);
+
+    // Show dialog
+    if (dialog.exec() == QDialog::Accepted) {
+        QString newName = nameEdit->text().trimmed();
+        QString newDesc = descEdit->text().trimmed();
+
+        // Validate name
+        if (newName.isEmpty()) {
+            QMessageBox::warning(this, "Invalid Input", "Group name cannot be empty");
+            // Free group info before returning
+            free(groupInfo.name);
+            if (groupInfo.description) free(groupInfo.description);
+            free(groupInfo.creator);
+            free(groupInfo.created_at);
+            return;
+        }
+
+        // Check if anything changed
+        bool nameChanged = (newName != QString::fromUtf8(groupInfo.name));
+        bool descChanged = (newDesc != QString::fromUtf8(groupInfo.description ? groupInfo.description : ""));
+
+        if (nameChanged || descChanged) {
+            QByteArray nameBytes = newName.toUtf8();
+            QByteArray descBytes = newDesc.toUtf8();
+
+            int result = messenger_update_group_info(
+                ctx,
+                currentGroupId,
+                nameChanged ? nameBytes.constData() : NULL,
+                descChanged ? descBytes.constData() : NULL
+            );
+
+            if (result == 0) {
+                QMessageBox::information(this, "Success", "Group settings updated successfully");
+                loadContacts();  // Refresh contact list
+            } else {
+                QMessageBox::critical(this, "Error", "Failed to update group settings");
+            }
+        }
+    }
+
+    // Free group info
+    free(groupInfo.name);
+    if (groupInfo.description) free(groupInfo.description);
+    free(groupInfo.creator);
+    free(groupInfo.created_at);
 }
 
 void MainWindow::onManageGroupMembers() {
@@ -1965,6 +2313,291 @@ void MainWindow::onManageGroupMembers() {
         QMessageBox::warning(this, "No Group Selected", "Please select a group first");
         return;
     }
-    QMessageBox::information(this, "Manage Members", "Member management dialog - Coming soon!");
-    // TODO: Implement member management dialog (add/remove members)
+
+    // Get current group info
+    group_info_t groupInfo;
+    if (messenger_get_group_info(ctx, currentGroupId, &groupInfo) != 0) {
+        QMessageBox::critical(this, "Error", "Failed to load group information");
+        return;
+    }
+
+    // Get current members
+    char **members = NULL;
+    int memberCount = 0;
+    if (messenger_get_group_members(ctx, currentGroupId, &members, &memberCount) != 0) {
+        QMessageBox::critical(this, "Error", "Failed to load group members");
+        free(groupInfo.name);
+        if (groupInfo.description) free(groupInfo.description);
+        free(groupInfo.creator);
+        free(groupInfo.created_at);
+        return;
+    }
+
+    // Create dialog
+    QDialog dialog(this);
+    dialog.setWindowTitle(QString::fromUtf8("👥 Manage Group Members"));
+    dialog.setMinimumSize(600, 500);
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    // Group info header
+    QLabel *headerLabel = new QLabel(
+        QString::fromUtf8("Group: %1\n"
+                         "Members: %2")
+        .arg(QString::fromUtf8(groupInfo.name))
+        .arg(memberCount)
+    );
+    headerLabel->setStyleSheet("background: rgba(0, 217, 255, 0.1); padding: 10px; border-radius: 5px; font-weight: bold;");
+    layout->addWidget(headerLabel);
+
+    // Current members list
+    QLabel *currentLabel = new QLabel(QString::fromUtf8("📋 Current Members:"));
+    layout->addWidget(currentLabel);
+
+    QListWidget *currentMembersList = new QListWidget();
+    currentMembersList->setSelectionMode(QAbstractItemView::MultiSelection);
+
+    // Populate current members
+    for (int i = 0; i < memberCount; i++) {
+        QString member = QString::fromUtf8(members[i]);
+        QString displayText = QString::fromUtf8("👤 ") + member;
+
+        // Mark creator with special icon
+        if (member == QString::fromUtf8(groupInfo.creator)) {
+            displayText += QString::fromUtf8(" 👑 (Creator)");
+        }
+
+        QListWidgetItem *item = new QListWidgetItem(displayText);
+
+        // Don't allow removing creator or self
+        if (member == QString::fromUtf8(groupInfo.creator) || member == currentIdentity) {
+            item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+            item->setForeground(Qt::gray);
+        }
+
+        currentMembersList->addItem(item);
+    }
+
+    layout->addWidget(currentMembersList);
+
+    // Remove members button
+    QPushButton *removeButton = new QPushButton(QString::fromUtf8("➖ Remove Selected Members"));
+    removeButton->setStyleSheet("background: rgba(255, 0, 0, 0.2); color: red;");
+    connect(removeButton, &QPushButton::clicked, [this, currentMembersList, &groupInfo]() {
+        QStringList toRemove;
+        for (int i = 0; i < currentMembersList->count(); i++) {
+            QListWidgetItem *item = currentMembersList->item(i);
+            if (item->isSelected()) {
+                QString memberText = item->text();
+                // Strip emoji and extract member name
+                if (memberText.startsWith(QString::fromUtf8("👤 "))) {
+                    memberText = memberText.mid(3);
+                    // Remove " 👑 (Creator)" suffix if present
+                    int crownPos = memberText.indexOf(QString::fromUtf8(" 👑"));
+                    if (crownPos >= 0) {
+                        memberText = memberText.left(crownPos);
+                    }
+                    toRemove.append(memberText);
+                }
+            }
+        }
+
+        if (toRemove.isEmpty()) {
+            QMessageBox::information(this, "No Selection", "Please select members to remove");
+            return;
+        }
+
+        QMessageBox::StandardButton reply = QMessageBox::question(
+            this,
+            "Confirm Remove",
+            QString::fromUtf8("Remove %1 member(s) from the group?").arg(toRemove.count()),
+            QMessageBox::Yes | QMessageBox::No
+        );
+
+        if (reply == QMessageBox::Yes) {
+            int removed = 0;
+            for (const QString &member : toRemove) {
+                QByteArray memberBytes = member.toUtf8();
+                if (messenger_remove_group_member(ctx, currentGroupId, memberBytes.constData()) == 0) {
+                    removed++;
+                }
+            }
+
+            if (removed > 0) {
+                QMessageBox::information(this, "Success",
+                    QString::fromUtf8("✨ Removed %1 member(s)").arg(removed));
+
+                // Refresh the members list
+                currentMembersList->clear();
+                char **updatedMembers = NULL;
+                int updatedCount = 0;
+                if (messenger_get_group_members(ctx, currentGroupId, &updatedMembers, &updatedCount) == 0) {
+                    for (int i = 0; i < updatedCount; i++) {
+                        QString member = QString::fromUtf8(updatedMembers[i]);
+                        QString displayText = QString::fromUtf8("👤 ") + member;
+
+                        if (member == QString::fromUtf8(groupInfo.creator)) {
+                            displayText += QString::fromUtf8(" 👑 (Creator)");
+                        }
+
+                        QListWidgetItem *item = new QListWidgetItem(displayText);
+                        if (member == QString::fromUtf8(groupInfo.creator) || member == currentIdentity) {
+                            item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+                            item->setForeground(Qt::gray);
+                        }
+                        currentMembersList->addItem(item);
+
+                        free(updatedMembers[i]);
+                    }
+                    free(updatedMembers);
+                }
+            } else {
+                QMessageBox::warning(this, "Error", "Failed to remove members");
+            }
+        }
+    });
+    layout->addWidget(removeButton);
+
+    // Separator
+    QFrame *separator = new QFrame();
+    separator->setFrameShape(QFrame::HLine);
+    separator->setFrameShadow(QFrame::Sunken);
+    layout->addWidget(separator);
+
+    // Add new members section
+    QLabel *addLabel = new QLabel(QString::fromUtf8("➕ Add New Members:"));
+    layout->addWidget(addLabel);
+
+    QListWidget *availableContactsList = new QListWidget();
+    availableContactsList->setSelectionMode(QAbstractItemView::MultiSelection);
+
+    // Load all contacts
+    char **allContacts = NULL;
+    int contactCount = 0;
+    if (messenger_get_contact_list(ctx, &allContacts, &contactCount) == 0) {
+        // Create set of current members for quick lookup
+        QSet<QString> currentMembers;
+        for (int i = 0; i < memberCount; i++) {
+            currentMembers.insert(QString::fromUtf8(members[i]));
+        }
+
+        // Add contacts that are not already members
+        for (int i = 0; i < contactCount; i++) {
+            QString contact = QString::fromUtf8(allContacts[i]);
+            if (!currentMembers.contains(contact)) {
+                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("👤 ") + contact);
+                availableContactsList->addItem(item);
+            }
+            free(allContacts[i]);
+        }
+        free(allContacts);
+    }
+
+    layout->addWidget(availableContactsList);
+
+    // Add members button
+    QPushButton *addButton = new QPushButton(QString::fromUtf8("➕ Add Selected Members"));
+    addButton->setStyleSheet("background: rgba(0, 217, 255, 0.2); color: #00D9FF;");
+    connect(addButton, &QPushButton::clicked, [this, availableContactsList, currentMembersList, &groupInfo]() {
+        QStringList toAdd;
+        for (int i = 0; i < availableContactsList->count(); i++) {
+            QListWidgetItem *item = availableContactsList->item(i);
+            if (item->isSelected()) {
+                QString contactText = item->text();
+                // Strip emoji prefix
+                if (contactText.startsWith(QString::fromUtf8("👤 "))) {
+                    contactText = contactText.mid(3);
+                    toAdd.append(contactText);
+                }
+            }
+        }
+
+        if (toAdd.isEmpty()) {
+            QMessageBox::information(this, "No Selection", "Please select members to add");
+            return;
+        }
+
+        int added = 0;
+        for (const QString &member : toAdd) {
+            QByteArray memberBytes = member.toUtf8();
+            if (messenger_add_group_member(ctx, currentGroupId, memberBytes.constData()) == 0) {
+                added++;
+            }
+        }
+
+        if (added > 0) {
+            QMessageBox::information(this, "Success",
+                QString::fromUtf8("✨ Added %1 member(s)").arg(added));
+
+            // Refresh both lists
+            currentMembersList->clear();
+            availableContactsList->clear();
+
+            // Reload members
+            char **updatedMembers = NULL;
+            int updatedCount = 0;
+            if (messenger_get_group_members(ctx, currentGroupId, &updatedMembers, &updatedCount) == 0) {
+                QSet<QString> updatedMemberSet;
+                for (int i = 0; i < updatedCount; i++) {
+                    QString member = QString::fromUtf8(updatedMembers[i]);
+                    updatedMemberSet.insert(member);
+
+                    QString displayText = QString::fromUtf8("👤 ") + member;
+                    if (member == QString::fromUtf8(groupInfo.creator)) {
+                        displayText += QString::fromUtf8(" 👑 (Creator)");
+                    }
+
+                    QListWidgetItem *item = new QListWidgetItem(displayText);
+                    if (member == QString::fromUtf8(groupInfo.creator) || member == currentIdentity) {
+                        item->setFlags(item->flags() & ~Qt::ItemIsSelectable);
+                        item->setForeground(Qt::gray);
+                    }
+                    currentMembersList->addItem(item);
+
+                    free(updatedMembers[i]);
+                }
+                free(updatedMembers);
+
+                // Reload available contacts
+                char **allContacts = NULL;
+                int contactCount = 0;
+                if (messenger_get_contact_list(ctx, &allContacts, &contactCount) == 0) {
+                    for (int i = 0; i < contactCount; i++) {
+                        QString contact = QString::fromUtf8(allContacts[i]);
+                        if (!updatedMemberSet.contains(contact)) {
+                            availableContactsList->addItem(QString::fromUtf8("👤 ") + contact);
+                        }
+                        free(allContacts[i]);
+                    }
+                    free(allContacts);
+                }
+            }
+        } else {
+            QMessageBox::warning(this, "Error", "Failed to add members");
+        }
+    });
+    layout->addWidget(addButton);
+
+    // Close button
+    QHBoxLayout *buttonLayout = new QHBoxLayout();
+    QPushButton *closeButton = new QPushButton(QString::fromUtf8("✅ Done"));
+    connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
+    buttonLayout->addWidget(closeButton);
+    layout->addLayout(buttonLayout);
+
+    // Show dialog
+    dialog.exec();
+
+    // Refresh contact list after dialog closes (in case members changed)
+    loadContacts();
+
+    // Free allocated memory
+    for (int i = 0; i < memberCount; i++) {
+        free(members[i]);
+    }
+    free(members);
+    free(groupInfo.name);
+    if (groupInfo.description) free(groupInfo.description);
+    free(groupInfo.creator);
+    free(groupInfo.created_at);
 }
