@@ -38,7 +38,7 @@ if command -v apt-get &> /dev/null; then
     # Debian/Ubuntu
     echo "Detected Debian/Ubuntu system"
     sudo apt-get update
-    sudo apt-get install -y git cmake gcc g++ libssl-dev libpq-dev qtbase5-dev qtbase5-dev-tools
+    sudo apt-get install -y git cmake gcc g++ libssl-dev libpq-dev qtbase5-dev qtbase5-dev-tools qtmultimedia5-dev
 elif command -v dnf &> /dev/null; then
     # Fedora/RHEL
     echo "Detected Fedora/RHEL system"

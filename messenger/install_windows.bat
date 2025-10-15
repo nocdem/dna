@@ -25,7 +25,7 @@ if %errorlevel% neq 0 (
 )
 
 echo Installing dependencies via vcpkg...
-vcpkg install openssl:x64-windows libpq:x64-windows qt5-base:x64-windows
+vcpkg install openssl:x64-windows libpq:x64-windows qt5-base:x64-windows qt5-multimedia:x64-windows
 
 cd /d C:\dna-messenger
 if %errorlevel% neq 0 (
