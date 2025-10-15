@@ -144,7 +144,7 @@ void MainWindow::setupUI() {
         "   color: #2C3E50;"
         "   padding: 8px;"
         "   font-weight: bold;"
-        "   font-size: 16px;"
+        "   font-size: 48px;"
         "   border-radius: 0px;"
         "}"
         "QMenuBar::item {"
@@ -159,7 +159,7 @@ void MainWindow::setupUI() {
         "   border: 2px solid #FFB6C1;"
         "   border-radius: 10px;"
         "   padding: 8px;"
-        "   font-size: 16px;"
+        "   font-size: 48px;"
         "}"
         "QMenu::item {"
         "   padding: 10px 20px;"
@@ -173,7 +173,7 @@ void MainWindow::setupUI() {
         "       stop:0 #B0E0E6, stop:1 #FFB6C1);"
         "   color: #2C3E50;"
         "   font-weight: bold;"
-        "   font-size: 16px;"
+        "   font-size: 48px;"
         "   padding: 8px;"
         "   border-top: 2px solid rgba(255, 255, 255, 0.5);"
         "}"
@@ -208,7 +208,7 @@ void MainWindow::setupUI() {
     QLabel *contactsLabel = new QLabel(QString::fromUtf8("👥 Contacts"));
     contactsLabel->setStyleSheet(
         "font-weight: bold; "
-        "font-size: 24px; "
+        "font-size: 72px; "
         "color: #FF69B4; "
         "background: transparent; "
         "padding: 10px;"
@@ -222,7 +222,7 @@ void MainWindow::setupUI() {
         "   border: 2px solid #FFB6C1;"
         "   border-radius: 10px;"
         "   padding: 8px;"
-        "   font-size: 18px;"
+        "   font-size: 54px;"
         "}"
         "QListWidget::item {"
         "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
@@ -258,7 +258,7 @@ void MainWindow::setupUI() {
         "   border-radius: 15px;"
         "   padding: 15px;"
         "   font-weight: bold;"
-        "   font-size: 18px;"
+        "   font-size: 54px;"
         "}"
         "QPushButton:hover {"
         "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
@@ -290,7 +290,7 @@ void MainWindow::setupUI() {
     QLabel *chatLabel = new QLabel(QString::fromUtf8("💬 Conversation"));
     chatLabel->setStyleSheet(
         "font-weight: bold; "
-        "font-size: 24px; "
+        "font-size: 72px; "
         "color: #4682B4; "
         "background: transparent; "
         "padding: 10px;"
@@ -305,7 +305,7 @@ void MainWindow::setupUI() {
         "   border: 2px solid #B0E0E6;"
         "   border-radius: 10px;"
         "   padding: 15px;"
-        "   font-size: 16px;"
+        "   font-size: 48px;"
         "   color: #2C3E50;"
         "}"
     );
@@ -321,7 +321,7 @@ void MainWindow::setupUI() {
         "   border: 2px solid #FFB6C1;"
         "   border-radius: 15px;"
         "   padding: 15px 20px;"
-        "   font-size: 18px;"
+        "   font-size: 54px;"
         "   color: #2C3E50;"
         "}"
         "QLineEdit:focus {"
@@ -342,7 +342,7 @@ void MainWindow::setupUI() {
         "   border-radius: 15px;"
         "   padding: 15px 30px;"
         "   font-weight: bold;"
-        "   font-size: 18px;"
+        "   font-size: 54px;"
         "}"
         "QPushButton:hover {"
         "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
@@ -426,7 +426,7 @@ void MainWindow::loadConversation(const QString &contact) {
     messageDisplay->setHtml(QString(
         "<div style='text-align: center; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFB6C1, stop:1 #87CEEB); "
         "padding: 15px; border-radius: 15px; margin-bottom: 15px;'>"
-        "<span style='font-size: 22px; font-weight: bold; color: white;'>%1 Conversation with %2 %3</span>"
+        "<span style='font-size: 66px; font-weight: bold; color: white;'>%1 Conversation with %2 %3</span>"
         "</div>"
     ).arg(QString::fromUtf8("💬"), contact, QString::fromUtf8("✨")));
 
@@ -437,7 +437,7 @@ void MainWindow::loadConversation(const QString &contact) {
     if (messenger_get_conversation(ctx, contact.toUtf8().constData(), &messages, &count) == 0) {
         if (count == 0) {
             messageDisplay->append(
-                "<div style='text-align: center; color: #999; padding: 30px; font-style: italic; font-size: 18px;'>"
+                "<div style='text-align: center; color: #999; padding: 30px; font-style: italic; font-size: 54px;'>"
                 + QString::fromUtf8("💭 No messages yet. Start the conversation!") +
                 "</div>"
             );
@@ -473,8 +473,8 @@ void MainWindow::loadConversation(const QString &contact) {
                         "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF69B4, stop:1 #FFB6C1); "
                         "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
                         "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.15);'>"
-                        "<div style='font-size: 13px; opacity: 0.9; margin-bottom: 5px;'>%1 You %2 %3</div>"
-                        "<div style='font-size: 18px; line-height: 1.4;'>%4</div>"
+                        "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 You %2 %3</div>"
+                        "<div style='font-size: 54px; line-height: 1.4;'>%4</div>"
                         "</div>"
                         "</div>"
                     ).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, messageText.toHtmlEscaped()));
@@ -485,8 +485,8 @@ void MainWindow::loadConversation(const QString &contact) {
                         "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #87CEEB, stop:1 #B0E0E6); "
                         "color: white; padding: 15px 20px; border-radius: 20px 20px 20px 5px; "
                         "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.15);'>"
-                        "<div style='font-size: 13px; opacity: 0.9; margin-bottom: 5px;'>%1 %2 %3 %4</div>"
-                        "<div style='font-size: 18px; line-height: 1.4;'>%5</div>"
+                        "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 %2 %3 %4</div>"
+                        "<div style='font-size: 54px; line-height: 1.4;'>%5</div>"
                         "</div>"
                         "</div>"
                     ).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly, messageText.toHtmlEscaped()));
@@ -537,8 +537,8 @@ void MainWindow::onSendMessage() {
             "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF69B4, stop:1 #FFB6C1); "
             "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
             "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.15);'>"
-            "<div style='font-size: 13px; opacity: 0.9; margin-bottom: 5px;'>%1 You %2 %3</div>"
-            "<div style='font-size: 18px; line-height: 1.4;'>%4</div>"
+            "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 You %2 %3</div>"
+            "<div style='font-size: 54px; line-height: 1.4;'>%4</div>"
             "</div>"
             "</div>"
         ).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp, message.toHtmlEscaped()));
