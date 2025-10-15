@@ -294,11 +294,15 @@ void MainWindow::onSendMessage() {
     }
 
     // Send message using messenger API (single recipient for now)
-    const char *recipient = currentContact.toUtf8().constData();
+    // IMPORTANT: Store QByteArray to keep the data alive during the call
+    QByteArray recipientBytes = currentContact.toUtf8();
+    QByteArray messageBytes = message.toUtf8();
+    const char *recipient = recipientBytes.constData();
+
     int result = messenger_send_message(ctx,
                                          &recipient,
                                          1,  // Single recipient
-                                         message.toUtf8().constData());
+                                         messageBytes.constData());
 
     if (result == 0) {
         // Success - add to display
