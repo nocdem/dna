@@ -86,6 +86,20 @@ DNA Messenger is designed for **real-time encrypted messaging**, NOT file operat
 - [x] Theme system (cpunk.io cyan, cpunk.club orange)
 - [x] Font scaling (1x-4x)
 - [x] Group messaging with full UI (create, manage, send)
+- [x] User menu with logout and identity management
+
+### Phase 5.5: Web-Based Messenger 🚧 IN PROGRESS (branch: feature/web-messenger)
+- [x] Emscripten toolchain setup
+- [x] DNA API compilation to WebAssembly
+- [x] JavaScript wrapper functions
+- [x] Browser crypto module export (dna_wasm.js/wasm)
+- [ ] HTML5/CSS3 responsive UI
+- [ ] JavaScript messaging interface
+- [ ] Contact list management
+- [ ] Message display and composition
+- [ ] Local storage for keys (IndexedDB)
+- [ ] Client-side encryption/decryption
+- [ ] Progressive Web App (PWA) support
 
 ### Phase 6-7: Mobile & Advanced Features (Future)
 - [ ] Flutter mobile app
@@ -331,6 +345,8 @@ dna_error_t dna_decrypt_message(
 
 ## NEXT IMMEDIATE TASKS
 
+**For detailed development roadmap with timelines, objectives, and deliverables, see [ROADMAP.md](./ROADMAP.md)**
+
 ### Current Phase: Network Layer (Phase 4)
 
 **Phase 5 Completed:**
@@ -345,6 +361,14 @@ dna_error_t dna_decrypt_message(
 - ✅ Theme system (2 themes)
 - ✅ Font scaling (1x-4x)
 - ✅ Full group messaging feature (create, manage members, send messages)
+- ✅ User menu with logout and identity management
+
+**Phase 5.5 In Progress (branch: feature/web-messenger):**
+- ✅ WebAssembly compilation of DNA API
+- ✅ JavaScript wrappers for browser usage
+- 🚧 HTML5/CSS3 web interface
+- 🚧 Browser-based messaging client
+- 📋 Progressive Web App (PWA) support
 
 **Phase 4 Tasks:**
 1. Design WebSocket protocol for real-time messaging
@@ -404,6 +428,9 @@ dna_error_t dna_decrypt_message(
 
 **Recent Changes (v0.1.105):**
 - Full group messaging feature (backend + GUI)
+- User menu with logout and identity management
+- QSettings-based persistent login state
+- Identity switching with app restart
 - Database migration for groups tables
 - Create groups with member selection
 - Manage group members (add/remove)
@@ -411,3 +438,4 @@ dna_error_t dna_decrypt_message(
 - Delivery and read receipts with debugging
 - Fixed notification system (respects read status)
 - Theme system and font scaling improvements
+- Phase 5.5: WebAssembly build (feature/web-messenger branch)

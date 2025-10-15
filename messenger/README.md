@@ -131,7 +131,7 @@ Main menu:
 - Auto-login for existing identities
 - Cross-platform support (Linux & Windows)
 
-### 🚧 Phase 4: Network Layer (In Progress)
+### 🚧 Phase 4: Network Layer (Planned)
 - [ ] WebSocket transport
 - [ ] P2P discovery
 - [ ] Real-time message routing
@@ -153,6 +153,17 @@ Main menu:
 - Theme system (2 themes)
 - Font scaling (1x-4x)
 - **Group messaging with full UI**
+
+### 🚧 Phase 5.5: Web-Based Messenger (In Progress - branch: feature/web-messenger)
+- [x] WebAssembly crypto module (Emscripten compilation)
+- [x] DNA API compiled to WASM (dna_wasm.js/wasm)
+- [x] JavaScript wrapper functions
+- [ ] HTML5/CSS3 responsive UI
+- [ ] Browser-based client (no native dependencies)
+- [ ] Progressive Web App (PWA) support
+- [ ] Cross-browser compatibility (Chrome, Firefox, Safari, Edge)
+- [ ] Client-side encryption/decryption
+- [ ] IndexedDB for local key storage
 
 ### 📋 Phase 6: Mobile Apps (Planned)
 - Flutter mobile app
