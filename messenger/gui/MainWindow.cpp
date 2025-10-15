@@ -120,12 +120,49 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
+    // Set cute colorful theme
+    setStyleSheet(
+        "QMainWindow {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
+        "       stop:0 #E8F5FF, stop:1 #FFF0F5);"
+        "}"
+        "QMenuBar {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #FFB6C1, stop:1 #B0E0E6);"
+        "   color: #2C3E50;"
+        "   padding: 5px;"
+        "   font-weight: bold;"
+        "   border-radius: 0px;"
+        "}"
+        "QMenuBar::item:selected {"
+        "   background: rgba(255, 255, 255, 0.3);"
+        "   border-radius: 5px;"
+        "}"
+        "QMenu {"
+        "   background: #FFFFFF;"
+        "   border: 2px solid #FFB6C1;"
+        "   border-radius: 10px;"
+        "   padding: 5px;"
+        "}"
+        "QMenu::item:selected {"
+        "   background: #FFE4E1;"
+        "   border-radius: 5px;"
+        "}"
+        "QStatusBar {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #B0E0E6, stop:1 #FFB6C1);"
+        "   color: #2C3E50;"
+        "   font-weight: bold;"
+        "   border-top: 2px solid rgba(255, 255, 255, 0.5);"
+        "}"
+    );
+
     // Create menu bar
     QMenuBar *menuBar = new QMenuBar(this);
     setMenuBar(menuBar);
 
-    QMenu *helpMenu = menuBar->addMenu("Help");
-    QAction *updateAction = helpMenu->addAction("Check for Updates");
+    QMenu *helpMenu = menuBar->addMenu(QString::fromUtf8("💝 Help"));
+    QAction *updateAction = helpMenu->addAction(QString::fromUtf8("✨ Check for Updates"));
     connect(updateAction, &QAction::triggered, this, &MainWindow::onCheckForUpdates);
 
     // Central widget with splitter
@@ -136,17 +173,81 @@ void MainWindow::setupUI() {
 
     // Left side: Contact list
     QWidget *leftPanel = new QWidget;
+    leftPanel->setStyleSheet(
+        "QWidget {"
+        "   background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+        "       stop:0 #FFE4E1, stop:1 #E0F7FA);"
+        "   border-radius: 15px;"
+        "   padding: 10px;"
+        "}"
+    );
     QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
 
-    QLabel *contactsLabel = new QLabel("Contacts");
-    contactsLabel->setStyleSheet("font-weight: bold; font-size: 14px;");
+    QLabel *contactsLabel = new QLabel(QString::fromUtf8("👥 Contacts"));
+    contactsLabel->setStyleSheet(
+        "font-weight: bold; "
+        "font-size: 16px; "
+        "color: #FF69B4; "
+        "background: transparent; "
+        "padding: 5px;"
+    );
     leftLayout->addWidget(contactsLabel);
 
     contactList = new QListWidget;
+    contactList->setStyleSheet(
+        "QListWidget {"
+        "   background: white;"
+        "   border: 2px solid #FFB6C1;"
+        "   border-radius: 10px;"
+        "   padding: 5px;"
+        "   font-size: 13px;"
+        "}"
+        "QListWidget::item {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #FFF0F5, stop:1 #F0F8FF);"
+        "   border: 1px solid #FFE4E1;"
+        "   border-radius: 8px;"
+        "   padding: 8px;"
+        "   margin: 3px;"
+        "}"
+        "QListWidget::item:hover {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #FFE4E1, stop:1 #E0F7FA);"
+        "   border: 2px solid #FF69B4;"
+        "}"
+        "QListWidget::item:selected {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #FFB6C1, stop:1 #87CEEB);"
+        "   color: white;"
+        "   font-weight: bold;"
+        "   border: 2px solid #FF1493;"
+        "}"
+    );
     connect(contactList, &QListWidget::itemClicked, this, &MainWindow::onContactSelected);
     leftLayout->addWidget(contactList);
 
-    refreshButton = new QPushButton("Refresh");
+    refreshButton = new QPushButton(QString::fromUtf8("🔄 Refresh"));
+    refreshButton->setStyleSheet(
+        "QPushButton {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #87CEEB, stop:1 #98D8E8);"
+        "   color: white;"
+        "   border: 2px solid #5CACEE;"
+        "   border-radius: 12px;"
+        "   padding: 10px;"
+        "   font-weight: bold;"
+        "   font-size: 13px;"
+        "}"
+        "QPushButton:hover {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #5CACEE, stop:1 #87CEEB);"
+        "   border: 2px solid #4682B4;"
+        "}"
+        "QPushButton:pressed {"
+        "   background: #4682B4;"
+        "   border: 2px solid #36648B;"
+        "}"
+    );
     connect(refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshMessages);
     leftLayout->addWidget(refreshButton);
 
@@ -154,24 +255,83 @@ void MainWindow::setupUI() {
 
     // Right side: Chat area
     QWidget *rightPanel = new QWidget;
+    rightPanel->setStyleSheet(
+        "QWidget {"
+        "   background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+        "       stop:0 #F0F8FF, stop:1 #FFF5EE);"
+        "   border-radius: 15px;"
+        "   padding: 10px;"
+        "}"
+    );
     QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
 
-    QLabel *chatLabel = new QLabel("Conversation");
-    chatLabel->setStyleSheet("font-weight: bold; font-size: 14px;");
+    QLabel *chatLabel = new QLabel(QString::fromUtf8("💬 Conversation"));
+    chatLabel->setStyleSheet(
+        "font-weight: bold; "
+        "font-size: 16px; "
+        "color: #4682B4; "
+        "background: transparent; "
+        "padding: 5px;"
+    );
     rightLayout->addWidget(chatLabel);
 
     messageDisplay = new QTextEdit;
     messageDisplay->setReadOnly(true);
+    messageDisplay->setStyleSheet(
+        "QTextEdit {"
+        "   background: white;"
+        "   border: 2px solid #B0E0E6;"
+        "   border-radius: 10px;"
+        "   padding: 10px;"
+        "   font-size: 13px;"
+        "   color: #2C3E50;"
+        "}"
+    );
     rightLayout->addWidget(messageDisplay);
 
     // Message input area
     QHBoxLayout *inputLayout = new QHBoxLayout;
     messageInput = new QLineEdit;
-    messageInput->setPlaceholderText("Type a message...");
+    messageInput->setPlaceholderText(QString::fromUtf8("✏️ Type a message..."));
+    messageInput->setStyleSheet(
+        "QLineEdit {"
+        "   background: white;"
+        "   border: 2px solid #FFB6C1;"
+        "   border-radius: 12px;"
+        "   padding: 10px 15px;"
+        "   font-size: 13px;"
+        "   color: #2C3E50;"
+        "}"
+        "QLineEdit:focus {"
+        "   border: 2px solid #FF69B4;"
+        "   background: #FFF0F5;"
+        "}"
+    );
     connect(messageInput, &QLineEdit::returnPressed, this, &MainWindow::onSendMessage);
     inputLayout->addWidget(messageInput);
 
-    sendButton = new QPushButton("Send");
+    sendButton = new QPushButton(QString::fromUtf8("💌 Send"));
+    sendButton->setStyleSheet(
+        "QPushButton {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #FF69B4, stop:1 #FFB6C1);"
+        "   color: white;"
+        "   border: 2px solid #FF1493;"
+        "   border-radius: 12px;"
+        "   padding: 10px 20px;"
+        "   font-weight: bold;"
+        "   font-size: 13px;"
+        "}"
+        "QPushButton:hover {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #FF1493, stop:1 #FF69B4);"
+        "   border: 2px solid #C71585;"
+        "}"
+        "QPushButton:pressed {"
+        "   background: #C71585;"
+        "   border: 2px solid #8B0A50;"
+        "}"
+    );
     connect(sendButton, &QPushButton::clicked, this, &MainWindow::onSendMessage);
     inputLayout->addWidget(sendButton);
 
@@ -180,6 +340,13 @@ void MainWindow::setupUI() {
 
     // Add panels to splitter
     QSplitter *splitter = new QSplitter(Qt::Horizontal);
+    splitter->setStyleSheet(
+        "QSplitter::handle {"
+        "   background: qlineargradient(x1:0, y1:0, x2:0, y2:1, "
+        "       stop:0 #FFB6C1, stop:1 #B0E0E6);"
+        "   width: 3px;"
+        "}"
+    );
     splitter->addWidget(leftPanel);
     splitter->addWidget(rightPanel);
     splitter->setStretchFactor(0, 1);  // Left panel: 25%
@@ -188,7 +355,7 @@ void MainWindow::setupUI() {
     mainLayout->addWidget(splitter);
 
     // Status bar
-    statusLabel = new QLabel("Ready");
+    statusLabel = new QLabel(QString::fromUtf8("✨ Ready"));
     statusBar()->addWidget(statusLabel);
 }
 
@@ -201,21 +368,28 @@ void MainWindow::loadContacts() {
 
     if (messenger_get_contact_list(ctx, &identities, &count) == 0) {
         for (int i = 0; i < count; i++) {
-            contactList->addItem(QString::fromUtf8(identities[i]));
+            QString contact = QString::fromUtf8("👤 ") + QString::fromUtf8(identities[i]);
+            contactList->addItem(contact);
             free(identities[i]);
         }
         free(identities);
 
-        statusLabel->setText(QString("%1 contacts loaded").arg(count));
+        statusLabel->setText(QString::fromUtf8("✨ %1 contacts loaded").arg(count));
     } else {
-        statusLabel->setText("Failed to load contacts");
+        statusLabel->setText(QString::fromUtf8("❌ Failed to load contacts"));
     }
 }
 
 void MainWindow::onContactSelected(QListWidgetItem *item) {
     if (!item) return;
 
-    currentContact = item->text();
+    // Strip emoji prefix "👤 " from contact name
+    QString contactText = item->text();
+    if (contactText.startsWith(QString::fromUtf8("👤 "))) {
+        currentContact = contactText.mid(3);  // Skip "👤 " (emoji + space = 3 chars in UTF-8)
+    } else {
+        currentContact = contactText;
+    }
     loadConversation(currentContact);
 }
 
@@ -226,7 +400,13 @@ void MainWindow::loadConversation(const QString &contact) {
         return;
     }
 
-    messageDisplay->append(QString("=== Conversation with %1 ===\n").arg(contact));
+    // Cute header with emoji
+    messageDisplay->setHtml(QString(
+        "<div style='text-align: center; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FFB6C1, stop:1 #87CEEB); "
+        "padding: 10px; border-radius: 10px; margin-bottom: 10px;'>"
+        "<span style='font-size: 16px; font-weight: bold; color: white;'>%1 Conversation with %2 %3</span>"
+        "</div>"
+    ).arg(QString::fromUtf8("💬"), contact, QString::fromUtf8("✨")));
 
     // Load messages from database
     message_info_t *messages = NULL;
@@ -234,7 +414,11 @@ void MainWindow::loadConversation(const QString &contact) {
 
     if (messenger_get_conversation(ctx, contact.toUtf8().constData(), &messages, &count) == 0) {
         if (count == 0) {
-            messageDisplay->append("(no messages exchanged)");
+            messageDisplay->append(
+                "<div style='text-align: center; color: #999; padding: 20px; font-style: italic;'>"
+                + QString::fromUtf8("💭 No messages yet. Start the conversation!") +
+                "</div>"
+            );
         } else {
             for (int i = 0; i < count; i++) {
                 QString sender = QString::fromUtf8(messages[i].sender);
@@ -256,28 +440,47 @@ void MainWindow::loadConversation(const QString &contact) {
                         messageText = QString::fromUtf8(plaintext, plaintext_len);
                         free(plaintext);
                     } else {
-                        messageText = "[decryption failed]";
+                        messageText = QString::fromUtf8("🔒 [decryption failed]");
                     }
                 }
 
                 if (sender == currentIdentity) {
-                    messageDisplay->append(QString("[%1] You: %2")
-                                           .arg(timeOnly)
-                                           .arg(messageText));
+                    // Sent messages - cute pink bubble aligned right
+                    messageDisplay->append(QString(
+                        "<div style='text-align: right; margin: 5px 0;'>"
+                        "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF69B4, stop:1 #FFB6C1); "
+                        "color: white; padding: 10px 15px; border-radius: 15px 15px 5px 15px; "
+                        "max-width: 70%; text-align: left; box-shadow: 2px 2px 5px rgba(0,0,0,0.1);'>"
+                        "<div style='font-size: 10px; opacity: 0.8; margin-bottom: 3px;'>%1 You %2 %3</div>"
+                        "<div style='font-size: 13px;'>%4</div>"
+                        "</div>"
+                        "</div>"
+                    ).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, messageText.toHtmlEscaped()));
                 } else {
-                    messageDisplay->append(QString("[%1] %2: %3")
-                                           .arg(timeOnly)
-                                           .arg(sender)
-                                           .arg(messageText));
+                    // Received messages - cute blue bubble aligned left
+                    messageDisplay->append(QString(
+                        "<div style='text-align: left; margin: 5px 0;'>"
+                        "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #87CEEB, stop:1 #B0E0E6); "
+                        "color: white; padding: 10px 15px; border-radius: 15px 15px 15px 5px; "
+                        "max-width: 70%; text-align: left; box-shadow: 2px 2px 5px rgba(0,0,0,0.1);'>"
+                        "<div style='font-size: 10px; opacity: 0.8; margin-bottom: 3px;'>%1 %2 %3 %4</div>"
+                        "<div style='font-size: 13px;'>%5</div>"
+                        "</div>"
+                        "</div>"
+                    ).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly, messageText.toHtmlEscaped()));
                 }
             }
         }
 
         messenger_free_messages(messages, count);
-        statusLabel->setText(QString("Loaded %1 messages with %2").arg(count).arg(contact));
+        statusLabel->setText(QString::fromUtf8("✨ Loaded %1 messages with %2").arg(count).arg(contact));
     } else {
-        messageDisplay->append("Failed to load conversation");
-        statusLabel->setText("Error loading conversation");
+        messageDisplay->append(
+            "<div style='text-align: center; color: #ff4444; padding: 20px;'>"
+            + QString::fromUtf8("❌ Failed to load conversation") +
+            "</div>"
+        );
+        statusLabel->setText(QString::fromUtf8("❌ Error loading conversation"));
     }
 }
 
@@ -305,15 +508,24 @@ void MainWindow::onSendMessage() {
                                          messageBytes.constData());
 
     if (result == 0) {
-        // Success - add to display
+        // Success - add cute message bubble to display
         QString timestamp = QDateTime::currentDateTime().toString("HH:mm");
-        messageDisplay->append(QString("[%1] You: %2").arg(timestamp, message));
+        messageDisplay->append(QString(
+            "<div style='text-align: right; margin: 5px 0;'>"
+            "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF69B4, stop:1 #FFB6C1); "
+            "color: white; padding: 10px 15px; border-radius: 15px 15px 5px 15px; "
+            "max-width: 70%; text-align: left; box-shadow: 2px 2px 5px rgba(0,0,0,0.1);'>"
+            "<div style='font-size: 10px; opacity: 0.8; margin-bottom: 3px;'>%1 You %2 %3</div>"
+            "<div style='font-size: 13px;'>%4</div>"
+            "</div>"
+            "</div>"
+        ).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp, message.toHtmlEscaped()));
         messageInput->clear();
-        statusLabel->setText("Message sent");
+        statusLabel->setText(QString::fromUtf8("✨ Message sent"));
     } else {
-        QMessageBox::critical(this, "Send Failed",
-                              "Failed to send message. Check console for details.");
-        statusLabel->setText("Message send failed");
+        QMessageBox::critical(this, QString::fromUtf8("❌ Send Failed"),
+                              QString::fromUtf8("Failed to send message. Check console for details."));
+        statusLabel->setText(QString::fromUtf8("❌ Message send failed"));
     }
 }
 
@@ -321,7 +533,7 @@ void MainWindow::onRefreshMessages() {
     if (!currentContact.isEmpty()) {
         loadConversation(currentContact);
     }
-    statusLabel->setText("Messages refreshed");
+    statusLabel->setText(QString::fromUtf8("✨ Messages refreshed"));
 }
 
 void MainWindow::onCheckForUpdates() {
