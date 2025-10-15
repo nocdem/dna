@@ -839,7 +839,7 @@ void MainWindow::onCheckForUpdates() {
 
             printf("Launching update script...\n");
 
-            // Build command - use /D to set working directory, and use empty string for window title
+            // Build command
             QString nativeUpdateScript = QDir::toNativeSeparators(updateScript);
             QString nativeRepoRoot = QDir::toNativeSeparators(repoRoot);
 
@@ -847,9 +847,9 @@ void MainWindow::onCheckForUpdates() {
             printf("Native repo root: %s\n", nativeRepoRoot.toUtf8().constData());
             printf("==========================================\n\n");
 
-            // Launch updater script in new window and quit immediately
-            // Use empty quotes for window title, then /D for working directory
-            QProcess::startDetached("cmd", QStringList() << "/c" << "start" << "\"\"" << "/D" << nativeRepoRoot << nativeUpdateScript);
+            // Launch updater script in new window - use cmd /k to keep window open
+            // The script will change to the correct directory itself
+            QProcess::startDetached("cmd", QStringList() << "/k" << nativeUpdateScript);
 
             // Quit immediately so updater can replace the executable
             QApplication::quit();
