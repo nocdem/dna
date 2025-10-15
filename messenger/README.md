@@ -6,13 +6,16 @@ DNA Messenger is a secure messaging system using post-quantum cryptographic algo
 
 ## Status
 
-🚧 **Alpha Development** - Version 0.1.43
+🚧 **Alpha Development** - Version 0.1.52
 
 **Working Features:**
 - ✅ End-to-end encryption with post-quantum algorithms
+- ✅ Qt5 graphical interface (Windows & Linux)
+- ✅ Multi-recipient messaging (group messages)
 - ✅ 24-word BIP39 recovery phrases for key backup
 - ✅ Cross-platform (Linux & Windows)
 - ✅ Shared keyserver at ai.cpunk.io
+- ✅ Auto-update mechanism
 
 ## Quick Start
 
@@ -20,7 +23,7 @@ DNA Messenger is a secure messaging system using post-quantum cryptographic algo
 
 ```bash
 # Install dependencies
-sudo apt install cmake gcc libssl-dev libpq-dev
+sudo apt install cmake gcc libssl-dev libpq-dev qt5-default
 
 # Build
 git clone https://github.com/nocdem/dna-messenger.git
@@ -29,7 +32,10 @@ mkdir build && cd build
 cmake ..
 make
 
-# Run
+# Run GUI
+./dna_messenger_gui
+
+# Or run CLI
 ./dna_messenger
 ```
 
@@ -43,7 +49,11 @@ cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
 cmake --build . --config Release
 
-dna_messenger.exe
+REM Run GUI
+gui\Release\dna_messenger_gui.exe
+
+REM Or run CLI
+Release\dna_messenger.exe
 ```
 
 ### First Run
@@ -121,15 +131,15 @@ After login:
 
 ## Development
 
-**Current Phase:** Phase 3 - CLI Messenger
+**Current Phase:** Phase 4 - Network Layer
 
 **Roadmap:**
 - Phase 1: Foundation ✅ Complete
 - Phase 2: Library API ✅ Complete
-- Phase 3: CLI Messenger 🚧 In Progress
-- Phase 4: Network Layer (WebSocket)
-- Phase 5: Desktop GUI (Qt)
-- Phase 6: Mobile Apps (Flutter)
+- Phase 3: CLI Messenger ✅ Complete
+- Phase 4: Network Layer 🚧 In Progress
+- Phase 5: Desktop GUI (Qt) ✅ Complete
+- Phase 6: Mobile Apps (Flutter) - Future
 
 **Contributing:**
 - Fork the repository
