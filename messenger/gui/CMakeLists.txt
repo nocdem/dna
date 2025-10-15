@@ -15,6 +15,7 @@ set(GUI_SOURCES
     main.cpp
     MainWindow.cpp
     MainWindow.h
+    resources.qrc
 )
 
 # Create GUI executable

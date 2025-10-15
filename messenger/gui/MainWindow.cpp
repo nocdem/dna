@@ -19,6 +19,7 @@
 #include <QAction>
 #include <QProcess>
 #include <QSettings>
+#include <QFontDatabase>
 
 // Platform-specific includes for identity detection
 #ifdef _WIN32
@@ -103,6 +104,19 @@ MainWindow::MainWindow(QWidget *parent)
                               QString("Failed to initialize messenger for '%1'").arg(currentIdentity));
         QApplication::quit();
         return;
+    }
+
+    // Load futuristic font from resources
+    int fontId = QFontDatabase::addApplicationFont(":/fonts/Orbitron.ttf");
+    if (fontId != -1) {
+        QStringList fontFamilies = QFontDatabase::applicationFontFamilies(fontId);
+        if (!fontFamilies.isEmpty()) {
+            QFont orbitronFont(fontFamilies.at(0));
+            QApplication::setFont(orbitronFont);
+            printf("Loaded Orbitron font\n");
+        }
+    } else {
+        printf("Failed to load Orbitron font\n");
     }
 
     setupUI();
