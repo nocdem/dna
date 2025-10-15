@@ -339,16 +339,23 @@ void MainWindow::onCheckForUpdates() {
     QString latestVersion = "unknown";
 
 #ifdef _WIN32
-    // Windows: use PowerShell to fetch version
-    QString command = "$sha = (git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>$null).Split()[0]; "
-                      "if ($sha) { git rev-list --count $sha 2>$null } else { Write-Output 'unknown' }";
-    printf("Command: powershell -Command \"%s\"\n", command.toUtf8().constData());
+    // Windows: use PowerShell with GitHub API
+    // Fetch 100 commits and count them (this gives approximate version number)
+    QString command = "try { "
+                      "$commits = Invoke-RestMethod -Uri 'https://api.github.com/repos/nocdem/dna-messenger/commits?per_page=100' "
+                      "-Headers @{'User-Agent'='DNA-Messenger'} -ErrorAction Stop; "
+                      "Write-Output $commits.Count "
+                      "} catch { Write-Output 'unknown' }";
+    printf("Command: powershell (GitHub API - fetch 100 commits)\n");
     process.start("powershell", QStringList() << "-Command" << command);
 #else
-    // Linux: fetch version from GitHub
-    QString command = "git ls-remote https://github.com/nocdem/dna-messenger.git HEAD 2>/dev/null | "
-                      "cut -f1 | xargs -I{} git rev-list --count {} 2>/dev/null || echo 'unknown'";
-    printf("Command: sh -c \"%s\"\n", command.toUtf8().constData());
+    // Linux: Use curl with GitHub API
+    // Fetch 100 commits and count them
+    QString command = "curl -s -H 'User-Agent: DNA-Messenger' "
+                      "'https://api.github.com/repos/nocdem/dna-messenger/commits?per_page=100' 2>/dev/null | "
+                      "grep -c '\"sha\"' || echo 'unknown'";
+
+    printf("Command: curl (GitHub API - fetch 100 commits)\n");
     process.start("sh", QStringList() << "-c" << command);
 #endif
 
