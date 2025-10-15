@@ -239,9 +239,11 @@ void MainWindow::loadConversation(const QString &contact) {
                 // Format timestamp (extract time from "YYYY-MM-DD HH:MM:SS")
                 QString timeOnly = timestamp.mid(11, 5);  // Extract "HH:MM"
 
-                // Decrypt message if it's for current user
+                // Decrypt message if current user can decrypt it
+                // This includes: received messages (recipient == currentIdentity)
+                // AND sent messages (sender == currentIdentity, thanks to sender-as-first-recipient)
                 QString messageText = "[encrypted]";
-                if (recipient == currentIdentity) {
+                if (recipient == currentIdentity || sender == currentIdentity) {
                     char *plaintext = NULL;
                     size_t plaintext_len = 0;
 
