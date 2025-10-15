@@ -6,7 +6,12 @@ DNA Messenger is a secure messaging system using post-quantum cryptographic algo
 
 ## Status
 
-🚧 **Alpha Development** - Version 0.1.52
+🚧 **Alpha Development**
+
+**Version:** 0.1.x (x = git commit count)
+- **Major:** 0 (Alpha - breaking changes expected)
+- **Minor:** 1 (Current feature set)
+- **Patch:** Auto-incremented with each commit
 
 **Working Features:**
 - ✅ End-to-end encryption with post-quantum algorithms

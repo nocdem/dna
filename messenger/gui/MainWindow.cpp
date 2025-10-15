@@ -334,72 +334,118 @@ void MainWindow::onCheckForUpdates() {
     QMessageBox::information(this, "Check for Updates",
                              QString("Current version: %1\n\nChecking latest version on GitHub...").arg(currentVersion));
 
-    // Get latest commit count from GitHub
-    QProcess process;
-    QString latestVersion = "unknown";
+    // Step 1: Fetch MAJOR.MINOR from README
+    QProcess readmeProcess;
+    QString majorMinor = "unknown";
 
 #ifdef _WIN32
-    // Windows: use PowerShell with GitHub API
-    // Fetch 100 commits and count them (this gives approximate version number)
-    QString command = "try { "
-                      "$commits = Invoke-RestMethod -Uri 'https://api.github.com/repos/nocdem/dna-messenger/commits?per_page=100' "
-                      "-Headers @{'User-Agent'='DNA-Messenger'} -ErrorAction Stop; "
-                      "Write-Output $commits.Count "
-                      "} catch { Write-Output 'unknown' }";
-    printf("Command: powershell (GitHub API - fetch 100 commits)\n");
-    process.start("powershell", QStringList() << "-Command" << command);
+    QString readmeCommand = "try { "
+                           "$readme = Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/nocdem/dna-messenger/main/README.md' "
+                           "-Headers @{'User-Agent'='DNA-Messenger'} -ErrorAction Stop; "
+                           "if ($readme -match '- \\*\\*Major:\\*\\*\\s+(\\d+)') { $major = $matches[1] }; "
+                           "if ($readme -match '- \\*\\*Minor:\\*\\*\\s+(\\d+)') { $minor = $matches[1] }; "
+                           "Write-Output \"$major.$minor\" "
+                           "} catch { Write-Output 'unknown' }";
+    printf("Step 1: Fetching MAJOR.MINOR from README...\n");
+    readmeProcess.start("powershell", QStringList() << "-Command" << readmeCommand);
 #else
-    // Linux: Use curl with GitHub API
-    // Fetch 100 commits and count them
-    QString command = "curl -s -H 'User-Agent: DNA-Messenger' "
-                      "'https://api.github.com/repos/nocdem/dna-messenger/commits?per_page=100' 2>/dev/null | "
-                      "grep -c '\"sha\"' || echo 'unknown'";
-
-    printf("Command: curl (GitHub API - fetch 100 commits)\n");
-    process.start("sh", QStringList() << "-c" << command);
+    QString readmeCommand = "curl -s -H 'User-Agent: DNA-Messenger' "
+                           "'https://raw.githubusercontent.com/nocdem/dna-messenger/main/README.md' 2>/dev/null | "
+                           "awk '/- \\*\\*Major:\\*\\*/ {major=$3} /- \\*\\*Minor:\\*\\*/ {minor=$3} END {print major\".\"minor}' || echo 'unknown'";
+    printf("Step 1: Fetching MAJOR.MINOR from README...\n");
+    readmeProcess.start("sh", QStringList() << "-c" << readmeCommand);
 #endif
 
-    printf("Waiting for command to finish (10 second timeout)...\n");
-
-    if (process.waitForFinished(10000)) {  // 10 second timeout
-        latestVersion = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
-        QString errorOutput = QString::fromUtf8(process.readAllStandardError()).trimmed();
-        int exitCode = process.exitCode();
-
-        printf("Command finished:\n");
-        printf("  Exit code: %d\n", exitCode);
-        printf("  stdout: '%s'\n", latestVersion.toUtf8().constData());
-        printf("  stderr: '%s'\n", errorOutput.toUtf8().constData());
+    if (readmeProcess.waitForFinished(10000)) {
+        majorMinor = QString::fromUtf8(readmeProcess.readAllStandardOutput()).trimmed();
+        printf("  Result: %s\n", majorMinor.toUtf8().constData());
     } else {
-        printf("Command timed out!\n");
-        QString errorOutput = QString::fromUtf8(process.readAllStandardError()).trimmed();
-        printf("  stderr: '%s'\n", errorOutput.toUtf8().constData());
+        printf("  Timed out!\n");
     }
 
-    if (latestVersion == "unknown" || latestVersion.isEmpty()) {
-        printf("ERROR: Failed to fetch version (result: '%s')\n", latestVersion.toUtf8().constData());
+    if (majorMinor == "unknown" || majorMinor.isEmpty() || !majorMinor.contains('.')) {
+        printf("ERROR: Failed to fetch MAJOR.MINOR from README\n");
         printf("=========================================\n\n");
         QMessageBox::warning(this, "Update Check Failed",
-                             "Could not fetch latest version from GitHub.\n"
-                             "Make sure you have git installed and internet connection.");
+                             "Could not fetch version info from GitHub README.");
         return;
     }
 
-    printf("Successfully fetched latest version: %s\n", latestVersion.toUtf8().constData());
+    // Step 2: Fetch PATCH (commit count) from GitHub
+    QProcess commitProcess;
+    QString patch = "unknown";
 
-    // Compare versions
-    bool ok;
-    int currentV = currentVersion.toInt(&ok);
-    if (!ok) currentV = 0;
+#ifdef _WIN32
+    QString commitCommand = "try { "
+                           "$commits = Invoke-RestMethod -Uri 'https://api.github.com/repos/nocdem/dna-messenger/commits?per_page=100' "
+                           "-Headers @{'User-Agent'='DNA-Messenger'} -ErrorAction Stop; "
+                           "Write-Output $commits.Count "
+                           "} catch { Write-Output 'unknown' }";
+    printf("Step 2: Fetching PATCH (commit count) from GitHub API...\n");
+    commitProcess.start("powershell", QStringList() << "-Command" << commitCommand);
+#else
+    QString commitCommand = "curl -s -H 'User-Agent: DNA-Messenger' "
+                           "'https://api.github.com/repos/nocdem/dna-messenger/commits?per_page=100' 2>/dev/null | "
+                           "grep -c '\"sha\"' || echo 'unknown'";
+    printf("Step 2: Fetching PATCH (commit count) from GitHub API...\n");
+    commitProcess.start("sh", QStringList() << "-c" << commitCommand);
+#endif
 
-    int latestV = latestVersion.toInt(&ok);
-    if (!ok) latestV = 0;
+    if (commitProcess.waitForFinished(10000)) {
+        patch = QString::fromUtf8(commitProcess.readAllStandardOutput()).trimmed();
+        printf("  Result: %s\n", patch.toUtf8().constData());
+    } else {
+        printf("  Timed out!\n");
+    }
+
+    if (patch == "unknown" || patch.isEmpty()) {
+        printf("ERROR: Failed to fetch commit count\n");
+        printf("=========================================\n\n");
+        QMessageBox::warning(this, "Update Check Failed",
+                             "Could not fetch commit count from GitHub.");
+        return;
+    }
+
+    // Step 3: Combine into full version
+    QString latestVersion = majorMinor + "." + patch;
+    printf("Step 3: Combined latest version: %s\n", latestVersion.toUtf8().constData());
+
+    // Compare versions (semantic versioning: major.minor.patch)
+    QStringList currentParts = currentVersion.split('.');
+    QStringList latestParts = latestVersion.split('.');
+
+    int currentMajor = 0, currentMinor = 0, currentPatch = 0;
+    int latestMajor = 0, latestMinor = 0, latestPatch = 0;
+
+    if (currentParts.size() >= 3) {
+        currentMajor = currentParts[0].toInt();
+        currentMinor = currentParts[1].toInt();
+        currentPatch = currentParts[2].toInt();
+    }
+
+    if (latestParts.size() >= 3) {
+        latestMajor = latestParts[0].toInt();
+        latestMinor = latestParts[1].toInt();
+        latestPatch = latestParts[2].toInt();
+    }
 
     printf("Version comparison:\n");
-    printf("  Current: %d\n", currentV);
-    printf("  Latest:  %d\n", latestV);
+    printf("  Current: %d.%d.%d (%s)\n", currentMajor, currentMinor, currentPatch,
+           currentVersion.toUtf8().constData());
+    printf("  Latest:  %d.%d.%d (%s)\n", latestMajor, latestMinor, latestPatch,
+           latestVersion.toUtf8().constData());
 
-    if (latestV > currentV) {
+    // Compare: major first, then minor, then patch
+    bool updateAvailable = false;
+    if (latestMajor > currentMajor) {
+        updateAvailable = true;
+    } else if (latestMajor == currentMajor && latestMinor > currentMinor) {
+        updateAvailable = true;
+    } else if (latestMajor == currentMajor && latestMinor == currentMinor && latestPatch > currentPatch) {
+        updateAvailable = true;
+    }
+
+    if (updateAvailable) {
         printf("Result: UPDATE AVAILABLE\n");
         printf("=========================================\n\n");
         // Update available
