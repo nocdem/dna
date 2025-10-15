@@ -367,14 +367,16 @@ void MainWindow::onCheckForUpdates() {
 
         if (reply == QMessageBox::Yes) {
 #ifdef _WIN32
-            // Windows: Launch installer in background
+            // Windows: Launch updater script in new window and close GUI
+            // The updater waits for GUI to close, then rebuilds
             QProcess::startDetached("cmd", QStringList()
                                     << "/c"
-                                    << "start /min cmd /c \"cd C:\\dna-messenger && install_windows.bat\"");
+                                    << "start \"DNA Messenger Updater\" cmd /c \"C:\\dna-messenger\\update_windows.bat\"");
             QMessageBox::information(this, "Updating",
-                                     "Update started in background.\n"
-                                     "DNA Messenger will now exit.\n"
-                                     "Please wait for the update to complete and restart.");
+                                     "Update process started.\n\n"
+                                     "DNA Messenger will now close.\n"
+                                     "A command window will appear to show update progress.\n\n"
+                                     "Please restart DNA Messenger when the update completes.");
             QApplication::quit();
 #else
             // Linux: Update in place
