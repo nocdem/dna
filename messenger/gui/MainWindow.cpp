@@ -799,16 +799,17 @@ void MainWindow::onCheckForUpdates() {
 
             printf("Launching update script...\n");
 
-            // Build command with proper escaping for Windows
-            QString command = QString("start \"DNA Messenger Updater\" /D \"%1\" cmd /c \"%2\"")
-                .arg(QDir::toNativeSeparators(repoRoot))
-                .arg(QDir::toNativeSeparators(updateScript));
+            // Build command - use /D to set working directory, and use empty string for window title
+            QString nativeUpdateScript = QDir::toNativeSeparators(updateScript);
+            QString nativeRepoRoot = QDir::toNativeSeparators(repoRoot);
 
-            printf("Command: %s\n", command.toUtf8().constData());
+            printf("Native script path: %s\n", nativeUpdateScript.toUtf8().constData());
+            printf("Native repo root: %s\n", nativeRepoRoot.toUtf8().constData());
             printf("==========================================\n\n");
 
             // Launch updater script in new window
-            QProcess::startDetached("cmd", QStringList() << "/c" << command);
+            // Use empty quotes for window title, then /D for working directory
+            QProcess::startDetached("cmd", QStringList() << "/c" << "start" << "\"\"" << "/D" << nativeRepoRoot << nativeUpdateScript);
             QMessageBox::information(this, QString::fromUtf8("✨ Updating"),
                                      QString::fromUtf8("Update process started.\n\n"
                                      "DNA Messenger will now close.\n"
