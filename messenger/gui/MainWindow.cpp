@@ -79,7 +79,7 @@ QString MainWindow::getLocalIdentity() {
 }
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0), currentGroupId(-1), currentContactType(TYPE_CONTACT) {
+    : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0), currentGroupId(-1), currentContactType(TYPE_CONTACT), fontScale(3.0) {
 
     // Remove native window frame for custom title bar
     setWindowFlags(Qt::FramelessWindowHint);
@@ -1134,14 +1134,14 @@ void MainWindow::checkForNewMessages() {
         return;
     }
 
-    // Query for new messages since lastCheckedMessageId
+    // Query for new UNREAD messages since lastCheckedMessageId
     char id_str[32];
     snprintf(id_str, sizeof(id_str), "%d", lastCheckedMessageId);
 
     const char *query =
-        "SELECT id, sender, created_at "
+        "SELECT id, sender, created_at, status "
         "FROM messages "
-        "WHERE recipient = $1 AND id > $2 "
+        "WHERE recipient = $1 AND id > $2 AND status != 'read' "
         "ORDER BY id ASC";
 
     const char *params[2] = {
@@ -1162,29 +1162,39 @@ void MainWindow::checkForNewMessages() {
         int msgId = atoi(PQgetvalue(res, i, 0));
         QString sender = QString::fromUtf8(PQgetvalue(res, i, 1));
         QString timestamp = QString::fromUtf8(PQgetvalue(res, i, 2));
+        QString status = QString::fromUtf8(PQgetvalue(res, i, 3));
 
         if (msgId > lastCheckedMessageId) {
             lastCheckedMessageId = msgId;
         }
 
         // Mark message as delivered (recipient has fetched it)
-        messenger_mark_delivered(ctx, msgId);
+        int markResult = messenger_mark_delivered(ctx, msgId);
+        printf("[DELIVERY] Message ID %d marked as delivered (result: %d)\n", msgId, markResult);
 
-        // Play notification sound
-        notificationSound->play();
+        // Only notify if message is not already read
+        if (status != "read") {
+            // Play notification sound
+            notificationSound->play();
 
-        // Show desktop notification
-        QString notificationTitle = QString::fromUtf8("💌 New Message");
-        QString notificationBody = QString("From: %1\n%2")
-            .arg(sender)
-            .arg(timestamp);
+            // Show desktop notification
+            QString notificationTitle = QString::fromUtf8("💌 New Message");
+            QString notificationBody = QString("From: %1\n%2")
+                .arg(sender)
+                .arg(timestamp);
 
-        trayIcon->showMessage(notificationTitle, notificationBody,
-                              QSystemTrayIcon::Information, 5000);
+            trayIcon->showMessage(notificationTitle, notificationBody,
+                                  QSystemTrayIcon::Information, 5000);
 
-        // If viewing this contact, refresh conversation
+            printf("[NOTIFICATION] New message from %s (ID: %d, status: %s)\n",
+                   sender.toUtf8().constData(), msgId, status.toUtf8().constData());
+        }
+
+        // If viewing this contact, refresh conversation and mark as read
         if (currentContact == sender) {
             loadConversation(currentContact);
+            messenger_mark_conversation_read(ctx, sender.toUtf8().constData());
+            printf("[READ] Conversation with %s marked as read\n", sender.toUtf8().constData());
         }
     }
 
@@ -1197,12 +1207,13 @@ void MainWindow::checkForStatusUpdates() {
         return;
     }
 
-    // Query for status updates on sent messages in current conversation
-    // This allows the sender to see when their messages are delivered/read
+    // Query for detailed status updates on sent messages in current conversation
     const char *query =
-        "SELECT COUNT(*) FROM messages "
+        "SELECT id, status, delivered_at, read_at "
+        "FROM messages "
         "WHERE sender = $1 AND recipient = $2 "
-        "AND status IN ('delivered', 'read')";
+        "AND status IN ('delivered', 'read') "
+        "ORDER BY id DESC LIMIT 5";
 
     const char *params[2] = {
         currentIdentity.toUtf8().constData(),
@@ -1216,10 +1227,23 @@ void MainWindow::checkForStatusUpdates() {
         return;
     }
 
-    // If any sent messages have been delivered or read, refresh the conversation
-    // to update the checkmarks
-    int statusCount = atoi(PQgetvalue(res, 0, 0));
-    if (statusCount > 0) {
+    // Log status updates for debugging
+    int count = PQntuples(res);
+    if (count > 0) {
+        printf("[STATUS_UPDATE] %d message(s) with status updates in conversation with %s:\n",
+               count, currentContact.toUtf8().constData());
+        for (int i = 0; i < count; i++) {
+            int msgId = atoi(PQgetvalue(res, i, 0));
+            QString status = QString::fromUtf8(PQgetvalue(res, i, 1));
+            QString deliveredAt = PQgetisnull(res, i, 2) ? "null" : QString::fromUtf8(PQgetvalue(res, i, 2));
+            QString readAt = PQgetisnull(res, i, 3) ? "null" : QString::fromUtf8(PQgetvalue(res, i, 3));
+
+            printf("  - Message ID %d: status=%s, delivered=%s, read=%s\n",
+                   msgId, status.toUtf8().constData(),
+                   deliveredAt.toUtf8().constData(),
+                   readAt.toUtf8().constData());
+        }
+
         // Silently refresh conversation to update checkmarks
         loadConversation(currentContact);
     }
