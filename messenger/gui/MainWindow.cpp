@@ -108,10 +108,13 @@ MainWindow::MainWindow(QWidget *parent)
     setupUI();
     loadContacts();
 
-    // Load saved theme preference
+    // Load saved preferences
     QSettings settings("DNA Messenger", "GUI");
     QString savedTheme = settings.value("theme", "io").toString();  // Default to "io" theme
+    double savedFontScale = settings.value("fontScale", 3.0).toDouble();  // Default to 3x (Large)
+
     applyTheme(savedTheme);
+    applyFontScale(savedFontScale);
 
     setWindowTitle(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(currentIdentity));
 
@@ -192,11 +195,24 @@ void MainWindow::setupUI() {
 
     // Settings menu
     QMenu *settingsMenu = menuBar->addMenu(QString::fromUtf8("⚙️ Settings"));
+
+    // Theme submenu
     QMenu *themeMenu = settingsMenu->addMenu(QString::fromUtf8("🎨 Theme"));
     QAction *themeIOAction = themeMenu->addAction(QString::fromUtf8("🌊 cpunk.io (Cyan)"));
     QAction *themeClubAction = themeMenu->addAction(QString::fromUtf8("🔥 cpunk.club (Orange)"));
     connect(themeIOAction, &QAction::triggered, this, &MainWindow::onThemeIO);
     connect(themeClubAction, &QAction::triggered, this, &MainWindow::onThemeClub);
+
+    // Font Scale submenu
+    QMenu *fontScaleMenu = settingsMenu->addMenu(QString::fromUtf8("📏 Font Scale"));
+    QAction *fontSmallAction = fontScaleMenu->addAction(QString::fromUtf8("🔤 Small (1x)"));
+    QAction *fontMediumAction = fontScaleMenu->addAction(QString::fromUtf8("🔡 Medium (2x)"));
+    QAction *fontLargeAction = fontScaleMenu->addAction(QString::fromUtf8("🔠 Large (3x)"));
+    QAction *fontExtraLargeAction = fontScaleMenu->addAction(QString::fromUtf8("🅰️ Extra Large (4x)"));
+    connect(fontSmallAction, &QAction::triggered, this, &MainWindow::onFontScaleSmall);
+    connect(fontMediumAction, &QAction::triggered, this, &MainWindow::onFontScaleMedium);
+    connect(fontLargeAction, &QAction::triggered, this, &MainWindow::onFontScaleLarge);
+    connect(fontExtraLargeAction, &QAction::triggered, this, &MainWindow::onFontScaleExtraLarge);
 
     // Help menu
     QMenu *helpMenu = menuBar->addMenu(QString::fromUtf8("💝 Help"));
@@ -432,13 +448,18 @@ void MainWindow::loadConversation(const QString &contact) {
         return;
     }
 
+    // Calculate font sizes for message bubbles
+    int headerFontSize = static_cast<int>(24 * fontScale);
+    int metaFontSize = static_cast<int>(13 * fontScale);
+    int messageFontSize = static_cast<int>(18 * fontScale);
+
     // Cute header with emoji - cpunk.io theme
     messageDisplay->setHtml(QString(
         "<div style='text-align: center; background: rgba(0, 217, 255, 0.2); "
         "padding: 15px; border-radius: 15px; margin-bottom: 15px; border: 2px solid #00D9FF;'>"
-        "<span style='font-size: 66px; font-weight: bold; color: #00D9FF;'>%1 Conversation with %2 %3</span>"
+        "<span style='font-size: %1px; font-weight: bold; color: #00D9FF;'>%2 Conversation with %3 %4</span>"
         "</div>"
-    ).arg(QString::fromUtf8("💬"), contact, QString::fromUtf8("✨")));
+    ).arg(headerFontSize + 18).arg(QString::fromUtf8("💬"), contact, QString::fromUtf8("✨")));
 
     // Load messages from database
     message_info_t *messages = NULL;
@@ -446,11 +467,11 @@ void MainWindow::loadConversation(const QString &contact) {
 
     if (messenger_get_conversation(ctx, contact.toUtf8().constData(), &messages, &count) == 0) {
         if (count == 0) {
-            messageDisplay->append(
-                "<div style='text-align: center; color: rgba(0, 217, 255, 0.6); padding: 30px; font-style: italic; font-size: 54px;'>"
-                + QString::fromUtf8("💭 No messages yet. Start the conversation!") +
+            messageDisplay->append(QString(
+                "<div style='text-align: center; color: rgba(0, 217, 255, 0.6); padding: 30px; font-style: italic; font-size: %1px;'>"
+                "%2"
                 "</div>"
-            );
+            ).arg(messageFontSize).arg(QString::fromUtf8("💭 No messages yet. Start the conversation!")));
         } else {
             for (int i = 0; i < count; i++) {
                 QString sender = QString::fromUtf8(messages[i].sender);
@@ -486,11 +507,11 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF8C42, stop:1 #FFB380); "
                             "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
                             "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #FF8C42;'>"
-                            "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 You %2 %3</div>"
-                            "<div style='font-size: 54px; line-height: 1.4;'>%4</div>"
+                            "<div style='font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4</div>"
+                            "<div style='font-size: %5px; line-height: 1.4;'>%6</div>"
                             "</div>"
                             "</div>"
-                        ).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     } else {
                         // cpunk.io: cyan gradient (default)
                         sentBubble = QString(
@@ -498,11 +519,11 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00D9FF, stop:1 #0D8B9C); "
                             "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
                             "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #00D9FF;'>"
-                            "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 You %2 %3</div>"
-                            "<div style='font-size: 54px; line-height: 1.4;'>%4</div>"
+                            "<div style='font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4</div>"
+                            "<div style='font-size: %5px; line-height: 1.4;'>%6</div>"
                             "</div>"
                             "</div>"
-                        ).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     }
                     messageDisplay->append(sentBubble);
                 } else {
@@ -515,11 +536,11 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #2B1F16, stop:1 #3D2B1F); "
                             "color: #FFB380; padding: 15px 20px; border-radius: 20px 20px 20px 5px; "
                             "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid rgba(255, 140, 66, 0.5);'>"
-                            "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 %2 %3 %4</div>"
-                            "<div style='font-size: 54px; line-height: 1.4;'>%5</div>"
+                            "<div style='font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 %3 %4 %5</div>"
+                            "<div style='font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly, messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     } else {
                         // cpunk.io: darker teal (default)
                         receivedBubble = QString(
@@ -527,11 +548,11 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #0D3438, stop:1 #0A5A62); "
                             "color: #00D9FF; padding: 15px 20px; border-radius: 20px 20px 20px 5px; "
                             "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid rgba(0, 217, 255, 0.5);'>"
-                            "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 %2 %3 %4</div>"
-                            "<div style='font-size: 54px; line-height: 1.4;'>%5</div>"
+                            "<div style='font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 %3 %4 %5</div>"
+                            "<div style='font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly, messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     }
                     messageDisplay->append(receivedBubble);
                 }
@@ -541,11 +562,11 @@ void MainWindow::loadConversation(const QString &contact) {
         messenger_free_messages(messages, count);
         statusLabel->setText(QString::fromUtf8("✨ Loaded %1 messages with %2").arg(count).arg(contact));
     } else {
-        messageDisplay->append(
-            "<div style='text-align: center; color: #FF6B35; padding: 20px; font-size: 54px; font-weight: bold;'>"
-            + QString::fromUtf8("❌ Failed to load conversation") +
+        messageDisplay->append(QString(
+            "<div style='text-align: center; color: #FF6B35; padding: 20px; font-size: %1px; font-weight: bold;'>"
+            "%2"
             "</div>"
-        );
+        ).arg(messageFontSize).arg(QString::fromUtf8("❌ Failed to load conversation")));
         statusLabel->setText(QString::fromUtf8("❌ Error loading conversation"));
     }
 }
@@ -576,6 +597,11 @@ void MainWindow::onSendMessage() {
     if (result == 0) {
         // Success - add message bubble to display with theme-aware colors
         QString timestamp = QDateTime::currentDateTime().toString("HH:mm");
+
+        // Calculate font sizes for message bubbles
+        int metaFontSize = static_cast<int>(13 * fontScale);
+        int messageFontSize = static_cast<int>(18 * fontScale);
+
         QString sentBubble;
         if (currentTheme == "club") {
             // cpunk.club: orange gradient
@@ -584,11 +610,11 @@ void MainWindow::onSendMessage() {
                 "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #FF8C42, stop:1 #FFB380); "
                 "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
                 "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #FF8C42;'>"
-                "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 You %2 %3</div>"
-                "<div style='font-size: 54px; line-height: 1.4;'>%4</div>"
+                "<div style='font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4</div>"
+                "<div style='font-size: %5px; line-height: 1.4;'>%6</div>"
                 "</div>"
                 "</div>"
-            ).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp, message.toHtmlEscaped());
+            ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp).arg(messageFontSize).arg(message.toHtmlEscaped());
         } else {
             // cpunk.io: cyan gradient (default)
             sentBubble = QString(
@@ -596,11 +622,11 @@ void MainWindow::onSendMessage() {
                 "<div style='display: inline-block; background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #00D9FF, stop:1 #0D8B9C); "
                 "color: white; padding: 15px 20px; border-radius: 20px 20px 5px 20px; "
                 "max-width: 70%; text-align: left; box-shadow: 2px 2px 8px rgba(0,0,0,0.3); border: 2px solid #00D9FF;'>"
-                "<div style='font-size: 39px; opacity: 0.9; margin-bottom: 5px;'>%1 You %2 %3</div>"
-                "<div style='font-size: 54px; line-height: 1.4;'>%4</div>"
+                "<div style='font-size: %1px; opacity: 0.9; margin-bottom: 5px;'>%2 You %3 %4</div>"
+                "<div style='font-size: %5px; line-height: 1.4;'>%6</div>"
                 "</div>"
                 "</div>"
-            ).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp, message.toHtmlEscaped());
+            ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp).arg(messageFontSize).arg(message.toHtmlEscaped());
         }
         messageDisplay->append(sentBubble);
         messageInput->clear();
@@ -857,15 +883,22 @@ void MainWindow::onThemeClub() {
 
 void MainWindow::applyTheme(const QString &themeName) {
     currentTheme = themeName;
-    
+
     // Save theme preference
     QSettings settings("DNA Messenger", "GUI");
     settings.setValue("theme", themeName);
-    
+
+    // Calculate font sizes based on scale (base sizes: 16px menu, 18px list, 24px headers, 13px meta, 18px message)
+    int menuFontSize = static_cast<int>(16 * fontScale);
+    int listFontSize = static_cast<int>(18 * fontScale);
+    int headerFontSize = static_cast<int>(24 * fontScale);
+    int metaFontSize = static_cast<int>(13 * fontScale);
+    int messageFontSize = static_cast<int>(18 * fontScale);
+
     // Apply theme colors based on selection
     if (themeName == "io") {
         // cpunk.io theme - dark teal with cyan accents
-        setStyleSheet(
+        setStyleSheet(QString(
             "QMainWindow {"
             "   background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
             "       stop:0 #0A2A2E, stop:1 #0D3438);"
@@ -875,7 +908,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   color: #00D9FF;"
             "   padding: 8px;"
             "   font-weight: bold;"
-            "   font-size: 48px;"
+            "   font-size: %1px;"
             "   border-bottom: 2px solid #00D9FF;"
             "}"
             "QMenuBar::item {"
@@ -891,7 +924,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   border: 2px solid #00D9FF;"
             "   border-radius: 10px;"
             "   padding: 8px;"
-            "   font-size: 48px;"
+            "   font-size: %1px;"
             "   color: #00D9FF;"
             "}"
             "QMenu::item {"
@@ -906,12 +939,12 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   background: #0D3438;"
             "   color: #00D9FF;"
             "   font-weight: bold;"
-            "   font-size: 48px;"
+            "   font-size: %1px;"
             "   padding: 8px;"
             "   border-top: 2px solid #00D9FF;"
             "}"
-        );
-        
+        ).arg(menuFontSize));
+
         contactList->parentWidget()->setStyleSheet(
             "QWidget {"
             "   background: #0A2A2E;"
@@ -919,22 +952,22 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   padding: 10px;"
             "}"
         );
-        
-        contactList->parentWidget()->findChild<QLabel*>()->setStyleSheet(
+
+        contactList->parentWidget()->findChild<QLabel*>()->setStyleSheet(QString(
             "font-weight: bold; "
-            "font-size: 72px; "
+            "font-size: %1px; "
             "color: #00D9FF; "
             "background: transparent; "
             "padding: 10px;"
-        );
-        
-        contactList->setStyleSheet(
+        ).arg(headerFontSize));
+
+        contactList->setStyleSheet(QString(
             "QListWidget {"
             "   background: #0D3438;"
             "   border: 2px solid #00D9FF;"
             "   border-radius: 10px;"
             "   padding: 8px;"
-            "   font-size: 54px;"
+            "   font-size: %1px;"
             "   color: #00D9FF;"
             "}"
             "QListWidget::item {"
@@ -955,9 +988,9 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   font-weight: bold;"
             "   border: 2px solid #00D9FF;"
             "}"
-        );
-        
-        refreshButton->setStyleSheet(
+        ).arg(listFontSize));
+
+        refreshButton->setStyleSheet(QString(
             "QPushButton {"
             "   background: rgba(0, 217, 255, 0.2);"
             "   color: #00D9FF;"
@@ -965,7 +998,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   border-radius: 15px;"
             "   padding: 15px;"
             "   font-weight: bold;"
-            "   font-size: 54px;"
+            "   font-size: %1px;"
             "}"
             "QPushButton:hover {"
             "   background: rgba(0, 217, 255, 0.3);"
@@ -975,8 +1008,8 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   background: rgba(0, 217, 255, 0.4);"
             "   border: 2px solid #00D9FF;"
             "}"
-        );
-        
+        ).arg(listFontSize));
+
         messageDisplay->parentWidget()->setStyleSheet(
             "QWidget {"
             "   background: #0A2A2E;"
@@ -984,42 +1017,42 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   padding: 10px;"
             "}"
         );
-        
-        messageDisplay->parentWidget()->findChildren<QLabel*>()[0]->setStyleSheet(
+
+        messageDisplay->parentWidget()->findChildren<QLabel*>()[0]->setStyleSheet(QString(
             "font-weight: bold; "
-            "font-size: 72px; "
+            "font-size: %1px; "
             "color: #00D9FF; "
             "background: transparent; "
             "padding: 10px;"
-        );
-        
-        messageDisplay->setStyleSheet(
+        ).arg(headerFontSize));
+
+        messageDisplay->setStyleSheet(QString(
             "QTextEdit {"
             "   background: #0D3438;"
             "   border: 2px solid #00D9FF;"
             "   border-radius: 10px;"
             "   padding: 15px;"
-            "   font-size: 48px;"
+            "   font-size: %1px;"
             "   color: #00D9FF;"
             "}"
-        );
-        
-        messageInput->setStyleSheet(
+        ).arg(menuFontSize));
+
+        messageInput->setStyleSheet(QString(
             "QLineEdit {"
             "   background: #0D3438;"
             "   border: 2px solid #00D9FF;"
             "   border-radius: 15px;"
             "   padding: 15px 20px;"
-            "   font-size: 54px;"
+            "   font-size: %1px;"
             "   color: #00D9FF;"
             "}"
             "QLineEdit:focus {"
             "   border: 2px solid #33E6FF;"
             "   background: rgba(0, 217, 255, 0.1);"
             "}"
-        );
-        
-        sendButton->setStyleSheet(
+        ).arg(listFontSize));
+
+        sendButton->setStyleSheet(QString(
             "QPushButton {"
             "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
             "       stop:0 #FF6B35, stop:1 #FF8C42);"
@@ -1028,7 +1061,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   border-radius: 15px;"
             "   padding: 15px 30px;"
             "   font-weight: bold;"
-            "   font-size: 54px;"
+            "   font-size: %1px;"
             "}"
             "QPushButton:hover {"
             "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
@@ -1039,13 +1072,13 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   background: #FF5722;"
             "   border: 2px solid #E64A19;"
             "}"
-        );
-        
+        ).arg(listFontSize));
+
         statusLabel->setText(QString::fromUtf8("🌊 Theme: cpunk.io (Cyan)"));
-        
+
     } else if (themeName == "club") {
         // cpunk.club theme - dark brown with orange accents
-        setStyleSheet(
+        setStyleSheet(QString(
             "QMainWindow {"
             "   background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
             "       stop:0 #1A1410, stop:1 #2B1F16);"
@@ -1055,7 +1088,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   color: #FF8C42;"
             "   padding: 8px;"
             "   font-weight: bold;"
-            "   font-size: 48px;"
+            "   font-size: %1px;"
             "   border-bottom: 2px solid #FF8C42;"
             "}"
             "QMenuBar::item {"
@@ -1071,7 +1104,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   border: 2px solid #FF8C42;"
             "   border-radius: 10px;"
             "   padding: 8px;"
-            "   font-size: 48px;"
+            "   font-size: %1px;"
             "   color: #FF8C42;"
             "}"
             "QMenu::item {"
@@ -1086,12 +1119,12 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   background: #2B1F16;"
             "   color: #FF8C42;"
             "   font-weight: bold;"
-            "   font-size: 48px;"
+            "   font-size: %1px;"
             "   padding: 8px;"
             "   border-top: 2px solid #FF8C42;"
             "}"
-        );
-        
+        ).arg(menuFontSize));
+
         contactList->parentWidget()->setStyleSheet(
             "QWidget {"
             "   background: #1A1410;"
@@ -1099,22 +1132,22 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   padding: 10px;"
             "}"
         );
-        
-        contactList->parentWidget()->findChild<QLabel*>()->setStyleSheet(
+
+        contactList->parentWidget()->findChild<QLabel*>()->setStyleSheet(QString(
             "font-weight: bold; "
-            "font-size: 72px; "
+            "font-size: %1px; "
             "color: #FF8C42; "
             "background: transparent; "
             "padding: 10px;"
-        );
-        
-        contactList->setStyleSheet(
+        ).arg(headerFontSize));
+
+        contactList->setStyleSheet(QString(
             "QListWidget {"
             "   background: #2B1F16;"
             "   border: 2px solid #FF8C42;"
             "   border-radius: 10px;"
             "   padding: 8px;"
-            "   font-size: 54px;"
+            "   font-size: %1px;"
             "   color: #FFB380;"
             "}"
             "QListWidget::item {"
@@ -1135,9 +1168,9 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   font-weight: bold;"
             "   border: 2px solid #FF8C42;"
             "}"
-        );
-        
-        refreshButton->setStyleSheet(
+        ).arg(listFontSize));
+
+        refreshButton->setStyleSheet(QString(
             "QPushButton {"
             "   background: rgba(255, 140, 66, 0.2);"
             "   color: #FF8C42;"
@@ -1145,7 +1178,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   border-radius: 15px;"
             "   padding: 15px;"
             "   font-weight: bold;"
-            "   font-size: 54px;"
+            "   font-size: %1px;"
             "}"
             "QPushButton:hover {"
             "   background: rgba(255, 140, 66, 0.3);"
@@ -1155,8 +1188,8 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   background: rgba(255, 140, 66, 0.4);"
             "   border: 2px solid #FF8C42;"
             "}"
-        );
-        
+        ).arg(listFontSize));
+
         messageDisplay->parentWidget()->setStyleSheet(
             "QWidget {"
             "   background: #1A1410;"
@@ -1164,42 +1197,42 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   padding: 10px;"
             "}"
         );
-        
-        messageDisplay->parentWidget()->findChildren<QLabel*>()[0]->setStyleSheet(
+
+        messageDisplay->parentWidget()->findChildren<QLabel*>()[0]->setStyleSheet(QString(
             "font-weight: bold; "
-            "font-size: 72px; "
+            "font-size: %1px; "
             "   color: #FF8C42; "
             "background: transparent; "
             "padding: 10px;"
-        );
-        
-        messageDisplay->setStyleSheet(
+        ).arg(headerFontSize));
+
+        messageDisplay->setStyleSheet(QString(
             "QTextEdit {"
             "   background: #2B1F16;"
             "   border: 2px solid #FF8C42;"
             "   border-radius: 10px;"
             "   padding: 15px;"
-            "   font-size: 48px;"
+            "   font-size: %1px;"
             "   color: #FFB380;"
             "}"
-        );
-        
-        messageInput->setStyleSheet(
+        ).arg(menuFontSize));
+
+        messageInput->setStyleSheet(QString(
             "QLineEdit {"
             "   background: #2B1F16;"
             "   border: 2px solid #FF8C42;"
             "   border-radius: 15px;"
             "   padding: 15px 20px;"
-            "   font-size: 54px;"
+            "   font-size: %1px;"
             "   color: #FFB380;"
             "}"
             "QLineEdit:focus {"
             "   border: 2px solid #FFB380;"
             "   background: rgba(255, 140, 66, 0.1);"
             "}"
-        );
-        
-        sendButton->setStyleSheet(
+        ).arg(listFontSize));
+
+        sendButton->setStyleSheet(QString(
             "QPushButton {"
             "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
             "       stop:0 #00D9FF, stop:1 #00B8CC);"
@@ -1208,7 +1241,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   border-radius: 15px;"
             "   padding: 15px 30px;"
             "   font-weight: bold;"
-            "   font-size: 54px;"
+            "   font-size: %1px;"
             "}"
             "QPushButton:hover {"
             "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
@@ -1219,8 +1252,8 @@ void MainWindow::applyTheme(const QString &themeName) {
             "   background: #00B8CC;"
             "   border: 2px solid #009AA8;"
             "}"
-        );
-        
+        ).arg(listFontSize));
+
         statusLabel->setText(QString::fromUtf8("🔥 Theme: cpunk.club (Orange)"));
     }
     
@@ -1228,4 +1261,41 @@ void MainWindow::applyTheme(const QString &themeName) {
     if (!currentContact.isEmpty()) {
         loadConversation(currentContact);
     }
+}
+
+void MainWindow::onFontScaleSmall() {
+    applyFontScale(1.0);
+}
+
+void MainWindow::onFontScaleMedium() {
+    applyFontScale(2.0);
+}
+
+void MainWindow::onFontScaleLarge() {
+    applyFontScale(3.0);
+}
+
+void MainWindow::onFontScaleExtraLarge() {
+    applyFontScale(4.0);
+}
+
+void MainWindow::applyFontScale(double scale) {
+    fontScale = scale;
+    
+    // Save font scale preference
+    QSettings settings("DNA Messenger", "GUI");
+    settings.setValue("fontScale", scale);
+    
+    // Re-apply the current theme with new font sizes
+    applyTheme(currentTheme);
+    
+    // Update status bar
+    QString scaleText;
+    if (scale == 1.0) scaleText = "Small (1x)";
+    else if (scale == 2.0) scaleText = "Medium (2x)";
+    else if (scale == 3.0) scaleText = "Large (3x)";
+    else if (scale == 4.0) scaleText = "Extra Large (4x)";
+    else scaleText = QString::number(scale) + "x";
+    
+    statusLabel->setText(QString::fromUtf8("📏 Font Scale: %1").arg(scaleText));
 }

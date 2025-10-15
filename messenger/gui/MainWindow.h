@@ -36,6 +36,10 @@ private slots:
     void onCheckForUpdates();
     void onThemeIO();
     void onThemeClub();
+    void onFontScaleSmall();
+    void onFontScaleMedium();
+    void onFontScaleLarge();
+    void onFontScaleExtraLarge();
 
 private:
     void setupUI();
@@ -43,6 +47,7 @@ private:
     void loadConversation(const QString &contact);
     QString getLocalIdentity();
     void applyTheme(const QString &themeName);
+    void applyFontScale(double scale);
 
     // Messenger context
     messenger_context_t *ctx;
@@ -59,6 +64,9 @@ private:
 
     // Theme management
     QString currentTheme;
+
+    // Font scale management
+    double fontScale;
 };
 
 #endif // MAINWINDOW_H
