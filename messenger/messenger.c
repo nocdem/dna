@@ -10,6 +10,11 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/time.h>
+#endif
 #include "messenger.h"
 #include "dna_config.h"
 #include "qgp_platform.h"
@@ -1234,9 +1239,21 @@ int messenger_send_message(
     printf("✓ Message encrypted (%zu bytes) for %zu recipient(s)\n", ciphertext_len, total_recipients);
 
     // Generate unique message_group_id (use microsecond timestamp for uniqueness)
+#ifdef _WIN32
+    // Windows: Use GetSystemTimeAsFileTime()
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    ULARGE_INTEGER uli;
+    uli.LowPart = ft.dwLowDateTime;
+    uli.HighPart = ft.dwHighDateTime;
+    // Convert 100-nanosecond intervals to microseconds
+    int message_group_id = (int)(uli.QuadPart / 10);
+#else
+    // POSIX: Use clock_gettime()
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     int message_group_id = (int)(ts.tv_sec * 1000000 + ts.tv_nsec / 1000);
+#endif
 
     printf("✓ Assigned message_group_id: %d\n", message_group_id);
 
