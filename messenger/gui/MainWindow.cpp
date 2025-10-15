@@ -251,12 +251,6 @@ void MainWindow::loadConversation(const QString &contact) {
                         messageText = QString::fromUtf8(plaintext, plaintext_len);
                         free(plaintext);
                     } else {
-                        // Debug: print decryption failure details
-                        printf("GUI: Failed to decrypt message ID %d (sender=%s, recipient=%s, currentIdentity=%s)\n",
-                               messages[i].id,
-                               sender.toUtf8().constData(),
-                               recipient.toUtf8().constData(),
-                               currentIdentity.toUtf8().constData());
                         messageText = "[decryption failed]";
                     }
                 }
