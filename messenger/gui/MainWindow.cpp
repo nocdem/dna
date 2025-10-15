@@ -286,9 +286,11 @@ void MainWindow::onSendMessage() {
         return;
     }
 
-    // Send message using messenger API
+    // Send message using messenger API (single recipient for now)
+    const char *recipient = currentContact.toUtf8().constData();
     int result = messenger_send_message(ctx,
-                                         currentContact.toUtf8().constData(),
+                                         &recipient,
+                                         1,  // Single recipient
                                          message.toUtf8().constData());
 
     if (result == 0) {

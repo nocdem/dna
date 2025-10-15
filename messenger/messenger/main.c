@@ -347,7 +347,9 @@ int main(void) {
                         break;
                     }
 
-                    messenger_send_message(ctx, recipient, message);
+                    // Send to single recipient (multi-recipient support can be added later)
+                    const char *recipients[] = {recipient};
+                    messenger_send_message(ctx, recipients, 1, message);
                     break;
                 }
 

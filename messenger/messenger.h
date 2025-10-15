@@ -193,19 +193,22 @@ int messenger_delete_pubkey(messenger_context_t *ctx, const char *identity);
 // ============================================================================
 
 /**
- * Send message to recipient
+ * Send message to recipient(s)
  *
  * Encrypts message and stores in messages table.
+ * Sender is automatically added as first recipient so they can decrypt their own sent messages.
  * In Phase 3, messages are stored in PostgreSQL (ready for network access).
  *
  * @param ctx: Messenger context
- * @param recipient: Recipient's identity
+ * @param recipients: Array of recipient identities (1-254, sender is added automatically)
+ * @param recipient_count: Number of recipients (1-254)
  * @param message: Plaintext message
  * @return: 0 on success, -1 on error
  */
 int messenger_send_message(
     messenger_context_t *ctx,
-    const char *recipient,
+    const char **recipients,
+    size_t recipient_count,
     const char *message
 );
 
