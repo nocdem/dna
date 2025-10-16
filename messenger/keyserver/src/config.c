@@ -69,6 +69,14 @@ static void parse_line(const char *line, config_t *config) {
         return;
     }
 
+    // Trim whitespace from key
+    char *k = key;
+    while (*k == ' ' || *k == '\t') k++;
+    size_t klen = strlen(k);
+    while (klen > 0 && (k[klen-1] == ' ' || k[klen-1] == '\t')) {
+        k[--klen] = '\0';
+    }
+
     // Trim whitespace from value
     char *v = value;
     while (*v == ' ' || *v == '\t') v++;
@@ -78,29 +86,29 @@ static void parse_line(const char *line, config_t *config) {
     }
 
     // Server settings
-    if (strcmp(key, "bind_address") == 0) {
+    if (strcmp(k, "bind_address") == 0) {
         strncpy(config->bind_address, v, sizeof(config->bind_address) - 1);
-    } else if (strcmp(key, "port") == 0) {
+    } else if (strcmp(k, "port") == 0) {
         config->port = atoi(v);
-    } else if (strcmp(key, "max_connections") == 0) {
+    } else if (strcmp(k, "max_connections") == 0) {
         config->max_connections = atoi(v);
     }
     // Database settings
-    else if (strcmp(key, "host") == 0) {
+    else if (strcmp(k, "host") == 0) {
         strncpy(config->db_host, v, sizeof(config->db_host) - 1);
-    } else if (strcmp(key, "dbname") == 0) {
+    } else if (strcmp(k, "dbname") == 0) {
         strncpy(config->db_name, v, sizeof(config->db_name) - 1);
-    } else if (strcmp(key, "user") == 0) {
+    } else if (strcmp(k, "user") == 0) {
         strncpy(config->db_user, v, sizeof(config->db_user) - 1);
-    } else if (strcmp(key, "password") == 0) {
+    } else if (strcmp(k, "password") == 0) {
         strncpy(config->db_password, v, sizeof(config->db_password) - 1);
     }
     // Security
-    else if (strcmp(key, "verify_json_path") == 0) {
+    else if (strcmp(k, "verify_json_path") == 0) {
         strncpy(config->verify_json_path, v, sizeof(config->verify_json_path) - 1);
     }
     // Logging
-    else if (strcmp(key, "level") == 0) {
+    else if (strcmp(k, "level") == 0) {
         strncpy(config->log_level, v, sizeof(config->log_level) - 1);
     }
 }
