@@ -1,0 +1,58 @@
+# DNA Messenger Keyserver Configuration
+
+[server]
+# HTTP server settings
+bind_address = 0.0.0.0
+port = 8080
+
+# Max concurrent connections
+max_connections = 1000
+
+[database]
+# PostgreSQL connection
+host = localhost
+port = 5432
+dbname = dna_keyserver
+user = keyserver_user
+password = your_password_here
+
+# Connection pool
+pool_size = 10
+pool_timeout = 5
+
+[security]
+# Signature verification
+verify_json_path = ../utils/verify_json
+verify_timeout = 5
+
+# Timestamp validation (seconds)
+max_timestamp_skew = 3600
+
+# Rate limiting (requests per time period)
+rate_limit_register_count = 10
+rate_limit_register_period = 3600
+rate_limit_lookup_count = 100
+rate_limit_lookup_period = 60
+rate_limit_list_count = 10
+rate_limit_list_period = 60
+
+[validation]
+# Handle/device format
+handle_min_length = 3
+handle_max_length = 32
+device_min_length = 3
+device_max_length = 32
+
+# Key sizes (base64 decoded)
+dilithium_pub_size = 2592
+kyber_pub_size = 800
+
+[logging]
+# Log level: debug, info, warn, error
+level = info
+
+# Log file (empty = stdout)
+file =
+
+# Log format: json, text
+format = text
