@@ -140,14 +140,116 @@ char* get_local_identity(void) {
 #endif
 }
 
-int main(void) {
+void print_usage(const char *prog) {
+    printf("DNA Messenger - Post-quantum encrypted messaging\n\n");
+    printf("Usage:\n");
+    printf("  %s                    # Interactive mode\n", prog);
+    printf("  %s -r recipient -m \"message\"   # Send message\n", prog);
+    printf("  %s -i                # List inbox\n", prog);
+    printf("  %s -g <id>           # Get message by ID\n", prog);
+    printf("  %s -l                # List keyserver users\n\n", prog);
+    printf("Options:\n");
+    printf("  -r <recipient>  Recipient identity (can be comma-separated for multiple)\n");
+    printf("  -m <message>    Message to send\n");
+    printf("  -i              List inbox messages\n");
+    printf("  -g <id>         Get and display message by ID\n");
+    printf("  -l              List all users in keyserver\n");
+    printf("  -h              Show this help\n\n");
+}
+
+int main(int argc, char *argv[]) {
     messenger_context_t *ctx = NULL;
     char current_identity[100] = {0};
 
-    // Check for existing local identity
+    // Parse command-line arguments first
+    char *recipient = NULL;
+    char *message = NULL;
+    bool list_inbox = false;
+    bool list_keyserver = false;
+    int get_message_id = 0;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
+            recipient = argv[++i];
+        } else if (strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
+            message = argv[++i];
+        } else if (strcmp(argv[i], "-i") == 0) {
+            list_inbox = true;
+        } else if (strcmp(argv[i], "-l") == 0) {
+            list_keyserver = true;
+        } else if (strcmp(argv[i], "-g") == 0 && i + 1 < argc) {
+            get_message_id = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        } else {
+            printf("Unknown option: %s\n", argv[i]);
+            print_usage(argv[0]);
+            return 1;
+        }
+    }
+
+    // CLI mode: execute command and exit
+    if (recipient || list_inbox || list_keyserver || get_message_id > 0) {
+        // For CLI mode, we need an identity
+        char *existing_identity = get_local_identity();
+        if (!existing_identity) {
+            printf("Error: No identity found. Please create one first.\n");
+            printf("Run without arguments to enter interactive mode and create an identity.\n");
+            return 1;
+        }
+
+        ctx = messenger_init(existing_identity);
+        if (!ctx) {
+            printf("Error: Failed to initialize messenger\n");
+            return 1;
+        }
+
+        strcpy(current_identity, existing_identity);
+
+        // Execute command
+        if (recipient && message) {
+            // Send message
+            // Parse recipients (comma-separated)
+            const char *recipients[64]; // Max 64 recipients
+            int recipient_count = 0;
+
+            char *recipient_copy = strdup(recipient);
+            char *token = strtok(recipient_copy, ",");
+            while (token && recipient_count < 64) {
+                // Trim whitespace
+                while (*token == ' ') token++;
+                recipients[recipient_count++] = token;
+                token = strtok(NULL, ",");
+            }
+
+            if (recipient_count > 0) {
+                messenger_send_message(ctx, recipients, recipient_count, message);
+            }
+            free(recipient_copy);
+        } else if (list_inbox) {
+            // List inbox
+            messenger_list_messages(ctx);
+        } else if (list_keyserver) {
+            // List keyserver users
+            messenger_list_pubkeys(ctx);
+        } else if (get_message_id > 0) {
+            // Get specific message
+            messenger_read_message(ctx, get_message_id);
+        } else {
+            printf("Error: Invalid command combination\n");
+            print_usage(argv[0]);
+            messenger_free(ctx);
+            return 1;
+        }
+
+        messenger_free(ctx);
+        return 0;
+    }
+
+    // Interactive mode
     char *existing_identity = get_local_identity();
     if (existing_identity) {
-        // Auto-login with existing identity
         ctx = messenger_init(existing_identity);
         if (ctx) {
             strcpy(current_identity, existing_identity);
