@@ -33,17 +33,12 @@ void db_disconnect(PGconn *conn) {
 }
 
 int db_insert_identity(PGconn *conn, const identity_t *identity) {
-    const char *paramValues[9];
-    char identity_str[MAX_IDENTITY_LENGTH + 1];
-
-    // Build identity string
-    snprintf(identity_str, sizeof(identity_str), "%s/%s",
-             identity->handle, identity->device);
+    const char *paramValues[7];
 
     // Check if identity already exists
     const char *check_sql =
-        "SELECT 1 FROM keyserver_identities WHERE identity = $1";
-    const char *check_params[1] = {identity_str};
+        "SELECT 1 FROM keyserver_identities WHERE dna = $1";
+    const char *check_params[1] = {identity->dna};
 
     PGresult *res = PQexecParams(conn, check_sql, 1, NULL, check_params,
                                  NULL, NULL, 0);
@@ -56,7 +51,7 @@ int db_insert_identity(PGconn *conn, const identity_t *identity) {
 
     if (PQntuples(res) > 0) {
         PQclear(res);
-        LOG_WARN("Identity already exists: %s", identity_str);
+        LOG_WARN("Identity already exists: %s", identity->dna);
         return -3;  // Already exists
     }
     PQclear(res);
@@ -64,25 +59,23 @@ int db_insert_identity(PGconn *conn, const identity_t *identity) {
     // Insert new identity (version must be 1 for registration)
     const char *sql =
         "INSERT INTO keyserver_identities "
-        "(handle, device, identity, dilithium_pub, kyber_pub, inbox_key, "
+        "(dna, dilithium_pub, kyber_pub, cf20pub, "
         " version, updated_at, sig, schema_version) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)";
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, 1)";
 
     char version_str[32], updated_at_str[32];
     snprintf(version_str, sizeof(version_str), "%d", identity->version);
     snprintf(updated_at_str, sizeof(updated_at_str), "%d", identity->updated_at);
 
-    paramValues[0] = identity->handle;
-    paramValues[1] = identity->device;
-    paramValues[2] = identity_str;
-    paramValues[3] = identity->dilithium_pub;
-    paramValues[4] = identity->kyber_pub;
-    paramValues[5] = identity->inbox_key;
-    paramValues[6] = version_str;
-    paramValues[7] = updated_at_str;
-    paramValues[8] = identity->sig;
+    paramValues[0] = identity->dna;
+    paramValues[1] = identity->dilithium_pub;
+    paramValues[2] = identity->kyber_pub;
+    paramValues[3] = identity->cf20pub;
+    paramValues[4] = version_str;
+    paramValues[5] = updated_at_str;
+    paramValues[6] = identity->sig;
 
-    res = PQexecParams(conn, sql, 9, NULL, paramValues, NULL, NULL, 0);
+    res = PQexecParams(conn, sql, 7, NULL, paramValues, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
         LOG_ERROR("Insert failed: %s", PQerrorMessage(conn));
@@ -91,22 +84,17 @@ int db_insert_identity(PGconn *conn, const identity_t *identity) {
     }
 
     PQclear(res);
-    LOG_INFO("Registered identity: %s (version %d)", identity_str, identity->version);
+    LOG_INFO("Registered identity: %s (version %d)", identity->dna, identity->version);
     return 0;
 }
 
 int db_update_identity(PGconn *conn, const identity_t *identity) {
-    const char *paramValues[9];
-    char identity_str[MAX_IDENTITY_LENGTH + 1];
-
-    // Build identity string
-    snprintf(identity_str, sizeof(identity_str), "%s/%s",
-             identity->handle, identity->device);
+    const char *paramValues[6];
 
     // Check if identity exists and get current version
     const char *check_sql =
-        "SELECT version FROM keyserver_identities WHERE identity = $1";
-    const char *check_params[1] = {identity_str};
+        "SELECT version FROM keyserver_identities WHERE dna = $1";
+    const char *check_params[1] = {identity->dna};
 
     PGresult *res = PQexecParams(conn, check_sql, 1, NULL, check_params,
                                  NULL, NULL, 0);
@@ -119,7 +107,7 @@ int db_update_identity(PGconn *conn, const identity_t *identity) {
 
     if (PQntuples(res) == 0) {
         PQclear(res);
-        LOG_WARN("Identity not found for update: %s", identity_str);
+        LOG_WARN("Identity not found for update: %s", identity->dna);
         return -4;  // Not found
     }
 
@@ -136,9 +124,9 @@ int db_update_identity(PGconn *conn, const identity_t *identity) {
     // Update existing identity
     const char *sql =
         "UPDATE keyserver_identities SET "
-        "dilithium_pub = $1, kyber_pub = $2, inbox_key = $3, "
+        "dilithium_pub = $1, kyber_pub = $2, cf20pub = $3, "
         "version = $4, updated_at = $5, sig = $6, last_updated = NOW() "
-        "WHERE identity = $7";
+        "WHERE dna = $7";
 
     char version_str[32], updated_at_str[32];
     snprintf(version_str, sizeof(version_str), "%d", identity->version);
@@ -146,11 +134,11 @@ int db_update_identity(PGconn *conn, const identity_t *identity) {
 
     paramValues[0] = identity->dilithium_pub;
     paramValues[1] = identity->kyber_pub;
-    paramValues[2] = identity->inbox_key;
+    paramValues[2] = identity->cf20pub;
     paramValues[3] = version_str;
     paramValues[4] = updated_at_str;
     paramValues[5] = identity->sig;
-    paramValues[6] = identity_str;
+    paramValues[6] = identity->dna;
 
     res = PQexecParams(conn, sql, 7, NULL, paramValues, NULL, NULL, 0);
 
@@ -161,22 +149,17 @@ int db_update_identity(PGconn *conn, const identity_t *identity) {
     }
 
     PQclear(res);
-    LOG_INFO("Updated identity: %s (version %d)", identity_str, identity->version);
+    LOG_INFO("Updated identity: %s (version %d)", identity->dna, identity->version);
     return 0;
 }
 
 int db_insert_or_update_identity(PGconn *conn, const identity_t *identity) {
-    const char *paramValues[9];
-    char identity_str[MAX_IDENTITY_LENGTH + 1];
-
-    // Build identity string
-    snprintf(identity_str, sizeof(identity_str), "%s/%s",
-             identity->handle, identity->device);
+    const char *paramValues[7];
 
     // Check if identity exists and get current version
     const char *check_sql =
-        "SELECT version FROM keyserver_identities WHERE identity = $1";
-    const char *check_params[1] = {identity_str};
+        "SELECT version FROM keyserver_identities WHERE dna = $1";
+    const char *check_params[1] = {identity->dna};
 
     PGresult *res = PQexecParams(conn, check_sql, 1, NULL, check_params,
                                  NULL, NULL, 0);
@@ -203,29 +186,27 @@ int db_insert_or_update_identity(PGconn *conn, const identity_t *identity) {
     // Insert or update
     const char *sql =
         "INSERT INTO keyserver_identities "
-        "(handle, device, identity, dilithium_pub, kyber_pub, inbox_key, "
+        "(dna, dilithium_pub, kyber_pub, cf20pub, "
         " version, updated_at, sig, schema_version) "
-        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1) "
-        "ON CONFLICT (identity) DO UPDATE SET "
-        "dilithium_pub = $4, kyber_pub = $5, inbox_key = $6, "
-        "version = $7, updated_at = $8, sig = $9, "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, 1) "
+        "ON CONFLICT (dna) DO UPDATE SET "
+        "dilithium_pub = $2, kyber_pub = $3, cf20pub = $4, "
+        "version = $5, updated_at = $6, sig = $7, "
         "last_updated = NOW()";
 
     char version_str[32], updated_at_str[32];
     snprintf(version_str, sizeof(version_str), "%d", identity->version);
     snprintf(updated_at_str, sizeof(updated_at_str), "%d", identity->updated_at);
 
-    paramValues[0] = identity->handle;
-    paramValues[1] = identity->device;
-    paramValues[2] = identity_str;
-    paramValues[3] = identity->dilithium_pub;
-    paramValues[4] = identity->kyber_pub;
-    paramValues[5] = identity->inbox_key;
-    paramValues[6] = version_str;
-    paramValues[7] = updated_at_str;
-    paramValues[8] = identity->sig;
+    paramValues[0] = identity->dna;
+    paramValues[1] = identity->dilithium_pub;
+    paramValues[2] = identity->kyber_pub;
+    paramValues[3] = identity->cf20pub;
+    paramValues[4] = version_str;
+    paramValues[5] = updated_at_str;
+    paramValues[6] = identity->sig;
 
-    res = PQexecParams(conn, sql, 9, NULL, paramValues, NULL, NULL, 0);
+    res = PQexecParams(conn, sql, 7, NULL, paramValues, NULL, NULL, 0);
 
     if (PQresultStatus(res) != PGRES_COMMAND_OK) {
         LOG_ERROR("Insert/update failed: %s", PQerrorMessage(conn));
@@ -234,19 +215,19 @@ int db_insert_or_update_identity(PGconn *conn, const identity_t *identity) {
     }
 
     PQclear(res);
-    LOG_INFO("Stored identity: %s (version %d)", identity_str, identity->version);
+    LOG_INFO("Stored identity: %s (version %d)", identity->dna, identity->version);
     return 0;
 }
 
-int db_lookup_identity(PGconn *conn, const char *identity_str, identity_t *identity) {
+int db_lookup_identity(PGconn *conn, const char *dna, identity_t *identity) {
     const char *sql =
-        "SELECT handle, device, identity, dilithium_pub, kyber_pub, inbox_key, "
+        "SELECT dna, dilithium_pub, kyber_pub, cf20pub, "
         "version, updated_at, sig, schema_version, "
         "TO_CHAR(registered_at, 'YYYY-MM-DD HH24:MI:SS'), "
         "TO_CHAR(last_updated, 'YYYY-MM-DD HH24:MI:SS') "
-        "FROM keyserver_identities WHERE identity = $1";
+        "FROM keyserver_identities WHERE dna = $1";
 
-    const char *paramValues[1] = {identity_str};
+    const char *paramValues[1] = {dna};
 
     PGresult *res = PQexecParams(conn, sql, 1, NULL, paramValues,
                                  NULL, NULL, 0);
@@ -263,18 +244,16 @@ int db_lookup_identity(PGconn *conn, const char *identity_str, identity_t *ident
     }
 
     // Populate identity structure
-    strncpy(identity->handle, PQgetvalue(res, 0, 0), MAX_HANDLE_LENGTH);
-    strncpy(identity->device, PQgetvalue(res, 0, 1), MAX_HANDLE_LENGTH);
-    strncpy(identity->identity, PQgetvalue(res, 0, 2), MAX_IDENTITY_LENGTH);
-    identity->dilithium_pub = strdup(PQgetvalue(res, 0, 3));
-    identity->kyber_pub = strdup(PQgetvalue(res, 0, 4));
-    strncpy(identity->inbox_key, PQgetvalue(res, 0, 5), INBOX_KEY_HEX_LENGTH);
-    identity->version = atoi(PQgetvalue(res, 0, 6));
-    identity->updated_at = atoi(PQgetvalue(res, 0, 7));
-    identity->sig = strdup(PQgetvalue(res, 0, 8));
-    identity->schema_version = atoi(PQgetvalue(res, 0, 9));
-    strncpy(identity->registered_at, PQgetvalue(res, 0, 10), 31);
-    strncpy(identity->last_updated, PQgetvalue(res, 0, 11), 31);
+    strncpy(identity->dna, PQgetvalue(res, 0, 0), MAX_DNA_LENGTH);
+    identity->dilithium_pub = strdup(PQgetvalue(res, 0, 1));
+    identity->kyber_pub = strdup(PQgetvalue(res, 0, 2));
+    strncpy(identity->cf20pub, PQgetvalue(res, 0, 3), CF20_ADDRESS_LENGTH);
+    identity->version = atoi(PQgetvalue(res, 0, 4));
+    identity->updated_at = atoi(PQgetvalue(res, 0, 5));
+    identity->sig = strdup(PQgetvalue(res, 0, 6));
+    identity->schema_version = atoi(PQgetvalue(res, 0, 7));
+    strncpy(identity->registered_at, PQgetvalue(res, 0, 8), 31);
+    strncpy(identity->last_updated, PQgetvalue(res, 0, 9), 31);
 
     PQclear(res);
     return 0;
@@ -288,19 +267,19 @@ int db_list_identities(PGconn *conn, int limit, int offset, const char *search,
 
     if (search && strlen(search) > 0) {
         snprintf(sql, sizeof(sql),
-                 "SELECT handle, device, identity, version, "
+                 "SELECT dna, version, "
                  "TO_CHAR(registered_at, 'YYYY-MM-DD HH24:MI:SS'), "
                  "TO_CHAR(last_updated, 'YYYY-MM-DD HH24:MI:SS') "
                  "FROM keyserver_identities "
-                 "WHERE handle LIKE $1 "
+                 "WHERE dna LIKE $1 "
                  "ORDER BY registered_at DESC LIMIT $2 OFFSET $3");
 
-        char search_pattern[MAX_HANDLE_LENGTH + 2];
+        char search_pattern[MAX_DNA_LENGTH + 2];
         snprintf(search_pattern, sizeof(search_pattern), "%s%%", search);
         paramValues[param_count++] = search_pattern;
     } else {
         snprintf(sql, sizeof(sql),
-                 "SELECT handle, device, identity, version, "
+                 "SELECT dna, version, "
                  "TO_CHAR(registered_at, 'YYYY-MM-DD HH24:MI:SS'), "
                  "TO_CHAR(last_updated, 'YYYY-MM-DD HH24:MI:SS') "
                  "FROM keyserver_identities "
@@ -333,12 +312,10 @@ int db_list_identities(PGconn *conn, int limit, int offset, const char *search,
 
     for (int i = 0; i < *count; i++) {
         identity_t *id = &(*identities)[i];
-        strncpy(id->handle, PQgetvalue(res, i, 0), MAX_HANDLE_LENGTH);
-        strncpy(id->device, PQgetvalue(res, i, 1), MAX_HANDLE_LENGTH);
-        strncpy(id->identity, PQgetvalue(res, i, 2), MAX_IDENTITY_LENGTH);
-        id->version = atoi(PQgetvalue(res, i, 3));
-        strncpy(id->registered_at, PQgetvalue(res, i, 4), 31);
-        strncpy(id->last_updated, PQgetvalue(res, i, 5), 31);
+        strncpy(id->dna, PQgetvalue(res, i, 0), MAX_DNA_LENGTH);
+        id->version = atoi(PQgetvalue(res, i, 1));
+        strncpy(id->registered_at, PQgetvalue(res, i, 2), 31);
+        strncpy(id->last_updated, PQgetvalue(res, i, 3), 31);
     }
 
     PQclear(res);

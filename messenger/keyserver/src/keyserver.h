@@ -22,11 +22,10 @@
 #define DEFAULT_DB_NAME "dna_keyserver"
 
 // Validation limits
-#define MIN_HANDLE_LENGTH 3
-#define MAX_HANDLE_LENGTH 32
-#define MAX_IDENTITY_LENGTH 65  // "handle/device"
+#define MIN_DNA_LENGTH 3
+#define MAX_DNA_LENGTH 32
 #define MAX_PUBKEY_B64 4096
-#define INBOX_KEY_HEX_LENGTH 64
+#define CF20_ADDRESS_LENGTH 103  // Cellframe address (can be empty)
 #define MAX_TIMESTAMP_SKEW 3600  // 1 hour
 
 // Rate limits
@@ -45,16 +44,14 @@
 // Identity structure
 typedef struct {
     int id;
-    char handle[MAX_HANDLE_LENGTH + 1];
-    char device[MAX_HANDLE_LENGTH + 1];
-    char identity[MAX_IDENTITY_LENGTH + 1];
+    char dna[MAX_DNA_LENGTH + 1];  // DNA handle (single identity)
     char *dilithium_pub;
     char *kyber_pub;
-    char inbox_key[INBOX_KEY_HEX_LENGTH + 1];
+    char cf20pub[CF20_ADDRESS_LENGTH + 1];  // Cellframe address (empty for now)
     int version;
     int updated_at;
     char *sig;
-    int schema_version;
+    int schema_version;  // Payload format version (v field)
     char registered_at[32];
     char last_updated[32];
 } identity_t;

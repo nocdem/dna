@@ -19,28 +19,12 @@
 int validate_register_payload(json_object *payload, char *error_msg, size_t error_len);
 
 /**
- * Validate handle format
+ * Validate DNA handle format
  *
- * @param handle: Handle string to validate
+ * @param dna: DNA handle string to validate
  * @return true if valid, false otherwise
  */
-bool validate_handle(const char *handle);
-
-/**
- * Validate device format
- *
- * @param device: Device string to validate
- * @return true if valid, false otherwise
- */
-bool validate_device(const char *device);
-
-/**
- * Validate inbox_key format (64 hex chars)
- *
- * @param inbox_key: Inbox key string to validate
- * @return true if valid, false otherwise
- */
-bool validate_inbox_key(const char *inbox_key);
+bool validate_dna(const char *dna);
 
 /**
  * Validate timestamp (within allowed skew)

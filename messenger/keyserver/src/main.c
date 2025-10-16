@@ -122,10 +122,10 @@ static enum MHD_Result answer_to_connection(void *cls, struct MHD_Connection *co
             return api_list_handler(connection, db_conn, url);
         }
 
-        // Route: GET /api/keyserver/lookup/<identity>
+        // Route: GET /api/keyserver/lookup/<dna>
         if (strncmp(url, "/api/keyserver/lookup/", 22) == 0) {
-            const char *identity = url + 22;
-            return api_lookup_handler(connection, db_conn, identity);
+            const char *dna = url + 22;
+            return api_lookup_handler(connection, db_conn, dna);
         }
     }
 
@@ -216,7 +216,7 @@ int main(int argc, char *argv[]) {
     printf("Endpoints:\n");
     printf("  POST /api/keyserver/register\n");
     printf("  POST /api/keyserver/update\n");
-    printf("  GET  /api/keyserver/lookup/<identity>\n");
+    printf("  GET  /api/keyserver/lookup/<dna>\n");
     printf("  GET  /api/keyserver/list\n");
     printf("  GET  /api/keyserver/health\n");
     printf("\n");

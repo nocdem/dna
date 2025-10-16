@@ -8,15 +8,13 @@ DROP TABLE IF EXISTS keyserver_identities CASCADE;
 CREATE TABLE keyserver_identities (
     id SERIAL PRIMARY KEY,
 
-    -- Identity (handle/device format)
-    handle VARCHAR(32) NOT NULL,
-    device VARCHAR(32) NOT NULL DEFAULT 'default',
-    identity VARCHAR(65) UNIQUE NOT NULL, -- "handle/device"
+    -- Identity (single DNA handle)
+    dna VARCHAR(32) UNIQUE NOT NULL,
 
     -- Public keys (base64 encoded)
     dilithium_pub TEXT NOT NULL,     -- ~2605 bytes decoded
     kyber_pub TEXT NOT NULL,          -- ~1096 bytes decoded
-    inbox_key CHAR(64) NOT NULL,      -- hex 32-byte key (for future P2P)
+    cf20pub VARCHAR(103) NOT NULL DEFAULT '',  -- Cellframe address (empty for now)
 
     -- Versioning (monotonic counter)
     version INTEGER NOT NULL DEFAULT 1,
@@ -25,7 +23,7 @@ CREATE TABLE keyserver_identities (
     -- Signature (Dilithium3)
     sig TEXT NOT NULL,                -- base64 signature of canonical JSON
 
-    -- Schema version
+    -- Schema version (payload format version)
     schema_version INTEGER NOT NULL DEFAULT 1,
 
     -- Server timestamps
@@ -33,14 +31,11 @@ CREATE TABLE keyserver_identities (
     last_updated TIMESTAMP DEFAULT NOW(),
 
     -- Constraints
-    CONSTRAINT unique_identity UNIQUE(handle, device),
     CONSTRAINT positive_version CHECK (version > 0)
 );
 
 -- Indexes for performance
-CREATE INDEX idx_identity ON keyserver_identities(identity);
-CREATE INDEX idx_handle ON keyserver_identities(handle);
-CREATE INDEX idx_handle_device ON keyserver_identities(handle, device);
+CREATE INDEX idx_dna ON keyserver_identities(dna);
 CREATE INDEX idx_registered_at ON keyserver_identities(registered_at DESC);
 CREATE INDEX idx_last_updated ON keyserver_identities(last_updated DESC);
 
@@ -61,15 +56,14 @@ CREATE TRIGGER trigger_update_last_updated
 
 -- Comments
 COMMENT ON TABLE keyserver_identities IS 'DNA Messenger public key registry';
-COMMENT ON COLUMN keyserver_identities.handle IS 'User handle (3-32 alphanumeric + underscore)';
-COMMENT ON COLUMN keyserver_identities.device IS 'Device identifier (default: "default")';
-COMMENT ON COLUMN keyserver_identities.identity IS 'Full identity string: handle/device';
+COMMENT ON COLUMN keyserver_identities.dna IS 'DNA handle (3-32 alphanumeric + underscore)';
 COMMENT ON COLUMN keyserver_identities.dilithium_pub IS 'Dilithium3 public key (base64)';
 COMMENT ON COLUMN keyserver_identities.kyber_pub IS 'Kyber512 public key (base64)';
-COMMENT ON COLUMN keyserver_identities.inbox_key IS 'Hypercore INBOX key (hex, for future P2P)';
+COMMENT ON COLUMN keyserver_identities.cf20pub IS 'Cellframe address (empty for now, for future blockchain proof)';
 COMMENT ON COLUMN keyserver_identities.version IS 'Monotonic version number (prevents replay)';
 COMMENT ON COLUMN keyserver_identities.updated_at IS 'Client-provided Unix timestamp';
 COMMENT ON COLUMN keyserver_identities.sig IS 'Dilithium3 signature of JSON payload';
+COMMENT ON COLUMN keyserver_identities.schema_version IS 'Payload format version (v field in JSON)';
 
 -- Grant permissions (adjust user as needed)
 -- GRANT SELECT, INSERT, UPDATE ON keyserver_identities TO keyserver_user;

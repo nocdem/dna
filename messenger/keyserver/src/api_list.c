@@ -63,9 +63,7 @@ enum MHD_Result api_list_handler(struct MHD_Connection *connection, PGconn *db_c
     json_object *identities_array = json_object_new_array();
     for (int i = 0; i < count; i++) {
         json_object *id_obj = json_object_new_object();
-        json_object_object_add(id_obj, "identity", json_object_new_string(identities[i].identity));
-        json_object_object_add(id_obj, "handle", json_object_new_string(identities[i].handle));
-        json_object_object_add(id_obj, "device", json_object_new_string(identities[i].device));
+        json_object_object_add(id_obj, "dna", json_object_new_string(identities[i].dna));
         json_object_object_add(id_obj, "version", json_object_new_int(identities[i].version));
         json_object_object_add(id_obj, "registered_at", json_object_new_string(identities[i].registered_at));
         json_object_object_add(id_obj, "last_updated", json_object_new_string(identities[i].last_updated));

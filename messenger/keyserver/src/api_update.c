@@ -41,11 +41,8 @@ enum MHD_Result api_update_handler(struct MHD_Connection *connection, PGconn *db
 
     // Extract fields
     json_object *field;
-    json_object_object_get_ex(payload, "handle", &field);
-    const char *handle = json_object_get_string(field);
-
-    json_object_object_get_ex(payload, "device", &field);
-    const char *device = json_object_get_string(field);
+    json_object_object_get_ex(payload, "dna", &field);
+    const char *dna = json_object_get_string(field);
 
     json_object_object_get_ex(payload, "dilithium_pub", &field);
     const char *dilithium_pub = json_object_get_string(field);
@@ -53,8 +50,8 @@ enum MHD_Result api_update_handler(struct MHD_Connection *connection, PGconn *db
     json_object_object_get_ex(payload, "kyber_pub", &field);
     const char *kyber_pub = json_object_get_string(field);
 
-    json_object_object_get_ex(payload, "inbox_key", &field);
-    const char *inbox_key = json_object_get_string(field);
+    json_object_object_get_ex(payload, "cf20pub", &field);
+    const char *cf20pub = json_object_get_string(field);
 
     json_object_object_get_ex(payload, "version", &field);
     int version = json_object_get_int(field);
@@ -73,7 +70,7 @@ enum MHD_Result api_update_handler(struct MHD_Connection *connection, PGconn *db
     const char *signature = json_object_get_string(field);
 
     // Verify signature
-    LOG_INFO("Verifying signature for %s/%s (update)", handle, device);
+    LOG_INFO("Verifying signature for %s (update)", dna);
     int sig_result = signature_verify(payload, signature, dilithium_pub,
                                       g_config.verify_json_path,
                                       g_config.verify_timeout);
@@ -94,11 +91,10 @@ enum MHD_Result api_update_handler(struct MHD_Connection *connection, PGconn *db
     identity_t identity;
     memset(&identity, 0, sizeof(identity));
 
-    strncpy(identity.handle, handle, MAX_HANDLE_LENGTH);
-    strncpy(identity.device, device, MAX_HANDLE_LENGTH);
+    strncpy(identity.dna, dna, MAX_DNA_LENGTH);
     identity.dilithium_pub = (char*)dilithium_pub;
     identity.kyber_pub = (char*)kyber_pub;
-    strncpy(identity.inbox_key, inbox_key, INBOX_KEY_HEX_LENGTH);
+    strncpy(identity.cf20pub, cf20pub, CF20_ADDRESS_LENGTH);
     identity.version = version;
     identity.updated_at = updated_at;
     identity.sig = (char*)signature;
@@ -128,17 +124,14 @@ enum MHD_Result api_update_handler(struct MHD_Connection *connection, PGconn *db
     }
 
     // Success response
-    char identity_str[MAX_IDENTITY_LENGTH + 1];
-    snprintf(identity_str, sizeof(identity_str), "%s/%s", handle, device);
-
     json_object *response = json_object_new_object();
     json_object_object_add(response, "success", json_object_new_boolean(true));
-    json_object_object_add(response, "identity", json_object_new_string(identity_str));
+    json_object_object_add(response, "dna", json_object_new_string(dna));
     json_object_object_add(response, "version", json_object_new_int(version));
     json_object_object_add(response, "message", json_object_new_string("Identity updated successfully"));
 
     json_object_put(payload);
 
-    LOG_INFO("Updated: %s (version %d)", identity_str, version);
+    LOG_INFO("Updated: %s (version %d)", dna, version);
     return http_send_json_response(connection, HTTP_OK, response);
 }

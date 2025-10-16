@@ -51,14 +51,14 @@ int db_update_identity(PGconn *conn, const identity_t *identity);
 int db_insert_or_update_identity(PGconn *conn, const identity_t *identity);
 
 /**
- * Lookup identity by handle/device
+ * Lookup identity by DNA handle
  *
  * @param conn: Database connection
- * @param identity_str: Identity string "handle/device"
+ * @param dna: DNA handle string
  * @param identity: Identity structure to populate
  * @return 0 on success, -1 on error, -2 if not found
  */
-int db_lookup_identity(PGconn *conn, const char *identity_str, identity_t *identity);
+int db_lookup_identity(PGconn *conn, const char *dna, identity_t *identity);
 
 /**
  * List all identities with pagination

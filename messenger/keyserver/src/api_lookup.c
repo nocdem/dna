@@ -9,7 +9,7 @@
 #include <string.h>
 
 enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, PGconn *db_conn,
-                                    const char *identity_str) {
+                                    const char *dna) {
     char client_ip[46];
 
     // Get client IP
@@ -23,26 +23,18 @@ enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, PGconn *db
         return http_send_error(connection, HTTP_TOO_MANY_REQUESTS, "Rate limit exceeded");
     }
 
-    // If identity doesn't contain '/', default to '/default'
-    char full_identity[MAX_IDENTITY_LENGTH + 1];
-    if (strchr(identity_str, '/') == NULL) {
-        snprintf(full_identity, sizeof(full_identity), "%s/default", identity_str);
-    } else {
-        strncpy(full_identity, identity_str, MAX_IDENTITY_LENGTH);
-    }
-
     // Query database
     identity_t identity;
     memset(&identity, 0, sizeof(identity));
 
-    int result = db_lookup_identity(db_conn, full_identity, &identity);
+    int result = db_lookup_identity(db_conn, dna, &identity);
 
     if (result == -2) {
         // Not found
         json_object *response = json_object_new_object();
         json_object_object_add(response, "success", json_object_new_boolean(false));
         json_object_object_add(response, "error", json_object_new_string("Identity not found"));
-        json_object_object_add(response, "identity", json_object_new_string(full_identity));
+        json_object_object_add(response, "dna", json_object_new_string(dna));
 
         return http_send_json_response(connection, HTTP_NOT_FOUND, response);
     }
@@ -54,16 +46,15 @@ enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, PGconn *db
     // Build JSON response
     json_object *response = json_object_new_object();
     json_object_object_add(response, "success", json_object_new_boolean(true));
-    json_object_object_add(response, "identity", json_object_new_string(identity.identity));
+    json_object_object_add(response, "dna", json_object_new_string(identity.dna));
 
     // Data object with full identity info
     json_object *data = json_object_new_object();
     json_object_object_add(data, "v", json_object_new_int(identity.schema_version));
-    json_object_object_add(data, "handle", json_object_new_string(identity.handle));
-    json_object_object_add(data, "device", json_object_new_string(identity.device));
+    json_object_object_add(data, "dna", json_object_new_string(identity.dna));
     json_object_object_add(data, "dilithium_pub", json_object_new_string(identity.dilithium_pub));
     json_object_object_add(data, "kyber_pub", json_object_new_string(identity.kyber_pub));
-    json_object_object_add(data, "inbox_key", json_object_new_string(identity.inbox_key));
+    json_object_object_add(data, "cf20pub", json_object_new_string(identity.cf20pub));
     json_object_object_add(data, "version", json_object_new_int(identity.version));
     json_object_object_add(data, "updated_at", json_object_new_int(identity.updated_at));
     json_object_object_add(data, "sig", json_object_new_string(identity.sig));
@@ -74,6 +65,6 @@ enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, PGconn *db
 
     db_free_identity(&identity);
 
-    LOG_INFO("Lookup: %s found", full_identity);
+    LOG_INFO("Lookup: %s found", dna);
     return http_send_json_response(connection, HTTP_OK, response);
 }

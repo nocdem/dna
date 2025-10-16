@@ -8,39 +8,17 @@
 #include <time.h>
 #include <stdlib.h>
 
-bool validate_handle(const char *handle) {
-    if (!handle) return false;
+bool validate_dna(const char *dna) {
+    if (!dna) return false;
 
-    size_t len = strlen(handle);
-    if (len < MIN_HANDLE_LENGTH || len > MAX_HANDLE_LENGTH) {
+    size_t len = strlen(dna);
+    if (len < MIN_DNA_LENGTH || len > MAX_DNA_LENGTH) {
         return false;
     }
 
     // Only alphanumeric and underscore
     for (size_t i = 0; i < len; i++) {
-        if (!isalnum(handle[i]) && handle[i] != '_') {
-            return false;
-        }
-    }
-
-    return true;
-}
-
-bool validate_device(const char *device) {
-    // Same rules as handle
-    return validate_handle(device);
-}
-
-bool validate_inbox_key(const char *inbox_key) {
-    if (!inbox_key) return false;
-
-    if (strlen(inbox_key) != INBOX_KEY_HEX_LENGTH) {
-        return false;
-    }
-
-    // Check all hex chars
-    for (size_t i = 0; i < INBOX_KEY_HEX_LENGTH; i++) {
-        if (!isxdigit(inbox_key[i])) {
+        if (!isalnum(dna[i]) && dna[i] != '_') {
             return false;
         }
     }
@@ -86,25 +64,14 @@ int validate_register_payload(json_object *payload, char *error_msg, size_t erro
         return -1;
     }
 
-    // Check handle
-    if (!json_object_object_get_ex(payload, "handle", &field)) {
-        snprintf(error_msg, error_len, "Missing field: handle");
+    // Check dna
+    if (!json_object_object_get_ex(payload, "dna", &field)) {
+        snprintf(error_msg, error_len, "Missing field: dna");
         return -1;
     }
-    const char *handle = json_object_get_string(field);
-    if (!validate_handle(handle)) {
-        snprintf(error_msg, error_len, "Invalid handle format");
-        return -1;
-    }
-
-    // Check device
-    if (!json_object_object_get_ex(payload, "device", &field)) {
-        snprintf(error_msg, error_len, "Missing field: device");
-        return -1;
-    }
-    const char *device = json_object_get_string(field);
-    if (!validate_device(device)) {
-        snprintf(error_msg, error_len, "Invalid device format");
+    const char *dna = json_object_get_string(field);
+    if (!validate_dna(dna)) {
+        snprintf(error_msg, error_len, "Invalid dna format");
         return -1;
     }
 
@@ -130,14 +97,20 @@ int validate_register_payload(json_object *payload, char *error_msg, size_t erro
         return -1;
     }
 
-    // Check inbox_key
-    if (!json_object_object_get_ex(payload, "inbox_key", &field)) {
-        snprintf(error_msg, error_len, "Missing field: inbox_key");
+    // Check cf20pub (Cellframe address - can be empty)
+    if (!json_object_object_get_ex(payload, "cf20pub", &field)) {
+        snprintf(error_msg, error_len, "Missing field: cf20pub");
         return -1;
     }
-    const char *inbox_key = json_object_get_string(field);
-    if (!validate_inbox_key(inbox_key)) {
-        snprintf(error_msg, error_len, "Invalid inbox_key format");
+    const char *cf20pub = json_object_get_string(field);
+    if (cf20pub == NULL) {
+        snprintf(error_msg, error_len, "cf20pub cannot be null");
+        return -1;
+    }
+    // Allow empty string for now, validate format later when we use it
+    size_t cf20_len = strlen(cf20pub);
+    if (cf20_len > CF20_ADDRESS_LENGTH) {
+        snprintf(error_msg, error_len, "cf20pub too long (max %d chars)", CF20_ADDRESS_LENGTH);
         return -1;
     }
 
