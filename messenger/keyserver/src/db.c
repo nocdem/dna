@@ -89,7 +89,7 @@ int db_insert_identity(PGconn *conn, const identity_t *identity) {
 }
 
 int db_update_identity(PGconn *conn, const identity_t *identity) {
-    const char *paramValues[6];
+    const char *paramValues[7];
 
     // Check if identity exists and get current version
     const char *check_sql =

@@ -38,10 +38,10 @@ void config_init_defaults(config_t *config) {
     config->rate_limit_list_period = 60;
 
     // Validation
-    config->handle_min_length = MIN_HANDLE_LENGTH;
-    config->handle_max_length = MAX_HANDLE_LENGTH;
-    config->device_min_length = MIN_HANDLE_LENGTH;
-    config->device_max_length = MAX_HANDLE_LENGTH;
+    config->handle_min_length = MIN_DNA_LENGTH;
+    config->handle_max_length = MAX_DNA_LENGTH;
+    config->device_min_length = MIN_DNA_LENGTH;
+    config->device_max_length = MAX_DNA_LENGTH;
     config->dilithium_pub_size = 2592;
     config->kyber_pub_size = 800;
 
