@@ -142,8 +142,12 @@ if(WIN32)
 endif()
 
 # DNA Messenger CLI (Phase 3)
-add_executable(dna_messenger messenger/main.c messenger.c)
-target_link_libraries(dna_messenger dna_lib ${PQ_LIBRARY})
+add_executable(dna_messenger
+    messenger/main.c
+    messenger/keyserver_register.c
+    messenger.c
+)
+target_link_libraries(dna_messenger dna_lib ${PQ_LIBRARY} json-c)
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
 
 # DNA Messenger GUI (Phase 5) - Optional Qt GUI

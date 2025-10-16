@@ -8,6 +8,7 @@
 #include <string.h>
 #include "../messenger.h"
 #include "../dna_config.h"
+#include "keyserver_register.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -147,13 +148,15 @@ void print_usage(const char *prog) {
     printf("  %s -r recipient -m \"message\"   # Send message\n", prog);
     printf("  %s -i                # List inbox\n", prog);
     printf("  %s -g <id>           # Get message by ID\n", prog);
-    printf("  %s -l                # List keyserver users\n\n", prog);
+    printf("  %s -l                # List keyserver users\n", prog);
+    printf("  %s -k                # Register to keyserver\n\n", prog);
     printf("Options:\n");
     printf("  -r <recipient>  Recipient identity (can be comma-separated for multiple)\n");
     printf("  -m <message>    Message to send\n");
     printf("  -i              List inbox messages\n");
     printf("  -g <id>         Get and display message by ID\n");
     printf("  -l              List all users in keyserver\n");
+    printf("  -k              Register current identity to keyserver\n");
     printf("  -h              Show this help\n\n");
 }
 
@@ -166,6 +169,7 @@ int main(int argc, char *argv[]) {
     char *message = NULL;
     bool list_inbox = false;
     bool list_keyserver = false;
+    bool register_keyserver = false;
     int get_message_id = 0;
 
     for (int i = 1; i < argc; i++) {
@@ -177,6 +181,8 @@ int main(int argc, char *argv[]) {
             list_inbox = true;
         } else if (strcmp(argv[i], "-l") == 0) {
             list_keyserver = true;
+        } else if (strcmp(argv[i], "-k") == 0) {
+            register_keyserver = true;
         } else if (strcmp(argv[i], "-g") == 0 && i + 1 < argc) {
             get_message_id = atoi(argv[++i]);
         } else if (strcmp(argv[i], "-h") == 0 || strcmp(argv[i], "--help") == 0) {
@@ -190,7 +196,7 @@ int main(int argc, char *argv[]) {
     }
 
     // CLI mode: execute command and exit
-    if (recipient || list_inbox || list_keyserver || get_message_id > 0) {
+    if (recipient || list_inbox || list_keyserver || register_keyserver || get_message_id > 0) {
         // For CLI mode, we need an identity
         char *existing_identity = get_local_identity();
         if (!existing_identity) {
@@ -233,6 +239,11 @@ int main(int argc, char *argv[]) {
         } else if (list_keyserver) {
             // List keyserver users
             messenger_list_pubkeys(ctx);
+        } else if (register_keyserver) {
+            // Register to keyserver
+            int result = register_to_keyserver(existing_identity);
+            messenger_free(ctx);
+            return result;
         } else if (get_message_id > 0) {
             // Get specific message
             messenger_read_message(ctx, get_message_id);
