@@ -32,6 +32,139 @@ void db_disconnect(PGconn *conn) {
     }
 }
 
+int db_insert_identity(PGconn *conn, const identity_t *identity) {
+    const char *paramValues[9];
+    char identity_str[MAX_IDENTITY_LENGTH + 1];
+
+    // Build identity string
+    snprintf(identity_str, sizeof(identity_str), "%s/%s",
+             identity->handle, identity->device);
+
+    // Check if identity already exists
+    const char *check_sql =
+        "SELECT 1 FROM keyserver_identities WHERE identity = $1";
+    const char *check_params[1] = {identity_str};
+
+    PGresult *res = PQexecParams(conn, check_sql, 1, NULL, check_params,
+                                 NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        LOG_ERROR("Existence check failed: %s", PQerrorMessage(conn));
+        PQclear(res);
+        return -1;
+    }
+
+    if (PQntuples(res) > 0) {
+        PQclear(res);
+        LOG_WARN("Identity already exists: %s", identity_str);
+        return -3;  // Already exists
+    }
+    PQclear(res);
+
+    // Insert new identity (version must be 1 for registration)
+    const char *sql =
+        "INSERT INTO keyserver_identities "
+        "(handle, device, identity, dilithium_pub, kyber_pub, inbox_key, "
+        " version, updated_at, sig, schema_version) "
+        "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 1)";
+
+    char version_str[32], updated_at_str[32];
+    snprintf(version_str, sizeof(version_str), "%d", identity->version);
+    snprintf(updated_at_str, sizeof(updated_at_str), "%d", identity->updated_at);
+
+    paramValues[0] = identity->handle;
+    paramValues[1] = identity->device;
+    paramValues[2] = identity_str;
+    paramValues[3] = identity->dilithium_pub;
+    paramValues[4] = identity->kyber_pub;
+    paramValues[5] = identity->inbox_key;
+    paramValues[6] = version_str;
+    paramValues[7] = updated_at_str;
+    paramValues[8] = identity->sig;
+
+    res = PQexecParams(conn, sql, 9, NULL, paramValues, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        LOG_ERROR("Insert failed: %s", PQerrorMessage(conn));
+        PQclear(res);
+        return -1;
+    }
+
+    PQclear(res);
+    LOG_INFO("Registered identity: %s (version %d)", identity_str, identity->version);
+    return 0;
+}
+
+int db_update_identity(PGconn *conn, const identity_t *identity) {
+    const char *paramValues[9];
+    char identity_str[MAX_IDENTITY_LENGTH + 1];
+
+    // Build identity string
+    snprintf(identity_str, sizeof(identity_str), "%s/%s",
+             identity->handle, identity->device);
+
+    // Check if identity exists and get current version
+    const char *check_sql =
+        "SELECT version FROM keyserver_identities WHERE identity = $1";
+    const char *check_params[1] = {identity_str};
+
+    PGresult *res = PQexecParams(conn, check_sql, 1, NULL, check_params,
+                                 NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        LOG_ERROR("Version check failed: %s", PQerrorMessage(conn));
+        PQclear(res);
+        return -1;
+    }
+
+    if (PQntuples(res) == 0) {
+        PQclear(res);
+        LOG_WARN("Identity not found for update: %s", identity_str);
+        return -4;  // Not found
+    }
+
+    int current_version = atoi(PQgetvalue(res, 0, 0));
+    PQclear(res);
+
+    // Check version monotonicity
+    if (identity->version <= current_version) {
+        LOG_WARN("Version conflict: new=%d, current=%d",
+                 identity->version, current_version);
+        return -2;  // Version conflict
+    }
+
+    // Update existing identity
+    const char *sql =
+        "UPDATE keyserver_identities SET "
+        "dilithium_pub = $1, kyber_pub = $2, inbox_key = $3, "
+        "version = $4, updated_at = $5, sig = $6, last_updated = NOW() "
+        "WHERE identity = $7";
+
+    char version_str[32], updated_at_str[32];
+    snprintf(version_str, sizeof(version_str), "%d", identity->version);
+    snprintf(updated_at_str, sizeof(updated_at_str), "%d", identity->updated_at);
+
+    paramValues[0] = identity->dilithium_pub;
+    paramValues[1] = identity->kyber_pub;
+    paramValues[2] = identity->inbox_key;
+    paramValues[3] = version_str;
+    paramValues[4] = updated_at_str;
+    paramValues[5] = identity->sig;
+    paramValues[6] = identity_str;
+
+    res = PQexecParams(conn, sql, 7, NULL, paramValues, NULL, NULL, 0);
+
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        LOG_ERROR("Update failed: %s", PQerrorMessage(conn));
+        PQclear(res);
+        return -1;
+    }
+
+    PQclear(res);
+    LOG_INFO("Updated identity: %s (version %d)", identity_str, identity->version);
+    return 0;
+}
+
 int db_insert_or_update_identity(PGconn *conn, const identity_t *identity) {
     const char *paramValues[9];
     char identity_str[MAX_IDENTITY_LENGTH + 1];

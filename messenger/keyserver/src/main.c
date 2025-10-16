@@ -21,6 +21,8 @@ enum MHD_Result api_list_handler(struct MHD_Connection *connection, PGconn *db_c
 enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, PGconn *db_conn, const char *identity);
 enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *db_conn,
                                       const char *upload_data, size_t upload_data_size);
+enum MHD_Result api_update_handler(struct MHD_Connection *connection, PGconn *db_conn,
+                                    const char *upload_data, size_t upload_data_size);
 
 // Global state
 static struct MHD_Daemon *http_daemon = NULL;
@@ -91,6 +93,10 @@ static enum MHD_Result answer_to_connection(void *cls, struct MHD_Connection *co
         // Route: POST /api/keyserver/register
         if (strcmp(url, "/api/keyserver/register") == 0) {
             ret = api_register_handler(connection, db_conn, pd->data, pd->size);
+        }
+        // Route: POST /api/keyserver/update
+        else if (strcmp(url, "/api/keyserver/update") == 0) {
+            ret = api_update_handler(connection, db_conn, pd->data, pd->size);
         } else {
             ret = http_send_error(connection, HTTP_NOT_FOUND, "Not found");
         }
@@ -209,6 +215,7 @@ int main(int argc, char *argv[]) {
     printf("====================================\n");
     printf("Endpoints:\n");
     printf("  POST /api/keyserver/register\n");
+    printf("  POST /api/keyserver/update\n");
     printf("  GET  /api/keyserver/lookup/<identity>\n");
     printf("  GET  /api/keyserver/list\n");
     printf("  GET  /api/keyserver/health\n");

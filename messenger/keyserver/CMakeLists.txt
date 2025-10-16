@@ -53,6 +53,7 @@ set(SOURCES
     src/signature.c
     src/rate_limit.c
     src/api_register.c
+    src/api_update.c
     src/api_lookup.c
     src/api_list.c
     src/api_health.c

@@ -24,7 +24,25 @@ PGconn* db_connect(const config_t *config);
 void db_disconnect(PGconn *conn);
 
 /**
- * Insert or update identity in keyserver
+ * Insert new identity (registration only)
+ *
+ * @param conn: Database connection
+ * @param identity: Identity data to insert
+ * @return 0 on success, -1 on error, -3 if already exists
+ */
+int db_insert_identity(PGconn *conn, const identity_t *identity);
+
+/**
+ * Update existing identity (update only)
+ *
+ * @param conn: Database connection
+ * @param identity: Identity data to update
+ * @return 0 on success, -1 on error, -2 on version conflict, -4 if not found
+ */
+int db_update_identity(PGconn *conn, const identity_t *identity);
+
+/**
+ * Insert or update identity in keyserver (DEPRECATED - use insert or update)
  *
  * @param conn: Database connection
  * @param identity: Identity data to insert/update

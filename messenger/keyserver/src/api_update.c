@@ -1,5 +1,5 @@
 /*
- * API Handler: POST /register
+ * API Handler: POST /update
  */
 
 #include "keyserver.h"
@@ -10,8 +10,8 @@
 #include "db.h"
 #include <string.h>
 
-enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *db_conn,
-                                      const char *upload_data, size_t upload_data_size) {
+enum MHD_Result api_update_handler(struct MHD_Connection *connection, PGconn *db_conn,
+                                     const char *upload_data, size_t upload_data_size) {
     char client_ip[46];
     char error_msg[512];
 
@@ -20,9 +20,9 @@ enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *
         return http_send_error(connection, HTTP_INTERNAL_ERROR, "Failed to get client IP");
     }
 
-    // Rate limiting
+    // Rate limiting (use same limit as register)
     if (!rate_limit_check(client_ip, RATE_LIMIT_TYPE_REGISTER)) {
-        LOG_WARN("Rate limit exceeded for register: %s", client_ip);
+        LOG_WARN("Rate limit exceeded for update: %s", client_ip);
         return http_send_error(connection, HTTP_TOO_MANY_REQUESTS, "Rate limit exceeded");
     }
 
@@ -59,11 +59,11 @@ enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *
     json_object_object_get_ex(payload, "version", &field);
     int version = json_object_get_int(field);
 
-    // For registration, version must be 1
-    if (version != 1) {
-        LOG_WARN("Invalid registration version: %d (must be 1)", version);
+    // For update, version must be > 1
+    if (version <= 1) {
+        LOG_WARN("Invalid update version: %d (must be > 1)", version);
         json_object_put(payload);
-        return http_send_error(connection, HTTP_BAD_REQUEST, "Registration version must be 1");
+        return http_send_error(connection, HTTP_BAD_REQUEST, "Update version must be > 1");
     }
 
     json_object_object_get_ex(payload, "updated_at", &field);
@@ -73,7 +73,7 @@ enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *
     const char *signature = json_object_get_string(field);
 
     // Verify signature
-    LOG_INFO("Verifying signature for %s/%s", handle, device);
+    LOG_INFO("Verifying signature for %s/%s (update)", handle, device);
     int sig_result = signature_verify(payload, signature, dilithium_pub,
                                       g_config.verify_json_path,
                                       g_config.verify_timeout);
@@ -104,18 +104,25 @@ enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *
     identity.sig = (char*)signature;
     identity.schema_version = 1;
 
-    // Insert in database (registration only)
-    int db_result = db_insert_identity(db_conn, &identity);
+    // Update in database
+    int db_result = db_update_identity(db_conn, &identity);
 
-    if (db_result == -3) {
-        // Already exists
-        snprintf(error_msg, sizeof(error_msg), "Identity already registered. Use /api/keyserver/update to update keys.");
+    if (db_result == -4) {
+        // Not found
+        snprintf(error_msg, sizeof(error_msg), "Identity not found. Use /api/keyserver/register to register first.");
+        json_object_put(payload);
+        return http_send_error(connection, HTTP_NOT_FOUND, error_msg);
+    }
+
+    if (db_result == -2) {
+        // Version conflict
+        snprintf(error_msg, sizeof(error_msg), "Version must be greater than current version");
         json_object_put(payload);
         return http_send_error(connection, HTTP_CONFLICT, error_msg);
     }
 
     if (db_result != 0) {
-        LOG_ERROR("Database insert failed");
+        LOG_ERROR("Database update failed");
         json_object_put(payload);
         return http_send_error(connection, HTTP_INTERNAL_ERROR, "Database error");
     }
@@ -128,10 +135,10 @@ enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *
     json_object_object_add(response, "success", json_object_new_boolean(true));
     json_object_object_add(response, "identity", json_object_new_string(identity_str));
     json_object_object_add(response, "version", json_object_new_int(version));
-    json_object_object_add(response, "message", json_object_new_string("Identity registered successfully"));
+    json_object_object_add(response, "message", json_object_new_string("Identity updated successfully"));
 
     json_object_put(payload);
 
-    LOG_INFO("Registered: %s (version %d)", identity_str, version);
+    LOG_INFO("Updated: %s (version %d)", identity_str, version);
     return http_send_json_response(connection, HTTP_OK, response);
 }
