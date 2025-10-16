@@ -16,11 +16,11 @@
 #include <microhttpd.h>
 
 // API handler declarations
-int api_health_handler(struct MHD_Connection *connection, PGconn *db_conn);
-int api_list_handler(struct MHD_Connection *connection, PGconn *db_conn, const char *url);
-int api_lookup_handler(struct MHD_Connection *connection, PGconn *db_conn, const char *identity);
-int api_register_handler(struct MHD_Connection *connection, PGconn *db_conn,
-                         const char *upload_data, size_t upload_data_size);
+enum MHD_Result api_health_handler(struct MHD_Connection *connection, PGconn *db_conn);
+enum MHD_Result api_list_handler(struct MHD_Connection *connection, PGconn *db_conn, const char *url);
+enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, PGconn *db_conn, const char *identity);
+enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *db_conn,
+                                      const char *upload_data, size_t upload_data_size);
 
 // Global state
 static struct MHD_Daemon *http_daemon = NULL;
@@ -51,10 +51,10 @@ struct post_data {
 };
 
 // Request handler
-static int answer_to_connection(void *cls, struct MHD_Connection *connection,
-                               const char *url, const char *method,
-                               const char *version, const char *upload_data,
-                               size_t *upload_data_size, void **con_cls) {
+static enum MHD_Result answer_to_connection(void *cls, struct MHD_Connection *connection,
+                                             const char *url, const char *method,
+                                             const char *version, const char *upload_data,
+                                             size_t *upload_data_size, void **con_cls) {
     (void)cls;
     (void)version;
 
@@ -86,7 +86,7 @@ static int answer_to_connection(void *cls, struct MHD_Connection *connection,
         }
 
         // All POST data received, process request
-        int ret;
+        enum MHD_Result ret;
 
         // Route: POST /api/keyserver/register
         if (strcmp(url, "/api/keyserver/register") == 0) {

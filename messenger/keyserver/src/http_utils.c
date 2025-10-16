@@ -7,8 +7,8 @@
 #include <string.h>
 #include <arpa/inet.h>
 
-int http_send_json_response(struct MHD_Connection *connection,
-                            int status_code, json_object *json_obj) {
+enum MHD_Result http_send_json_response(struct MHD_Connection *connection,
+                                         int status_code, json_object *json_obj) {
     const char *json_str = json_object_to_json_string_ext(json_obj,
                                                           JSON_C_TO_STRING_PLAIN);
 
@@ -21,7 +21,7 @@ int http_send_json_response(struct MHD_Connection *connection,
     MHD_add_response_header(response, "Content-Type", "application/json");
     MHD_add_response_header(response, "Access-Control-Allow-Origin", "*");
 
-    int ret = MHD_queue_response(connection, status_code, response);
+    enum MHD_Result ret = MHD_queue_response(connection, status_code, response);
 
     MHD_destroy_response(response);
     json_object_put(json_obj);
@@ -29,8 +29,8 @@ int http_send_json_response(struct MHD_Connection *connection,
     return ret;
 }
 
-int http_send_error(struct MHD_Connection *connection,
-                   int status_code, const char *error_msg) {
+enum MHD_Result http_send_error(struct MHD_Connection *connection,
+                                 int status_code, const char *error_msg) {
     json_object *response = json_object_new_object();
     json_object_object_add(response, "success", json_object_new_boolean(false));
     json_object_object_add(response, "error", json_object_new_string(error_msg));
@@ -38,7 +38,7 @@ int http_send_error(struct MHD_Connection *connection,
     return http_send_json_response(connection, status_code, response);
 }
 
-int http_send_success(struct MHD_Connection *connection, const char *message) {
+enum MHD_Result http_send_success(struct MHD_Connection *connection, const char *message) {
     json_object *response = json_object_new_object();
     json_object_object_add(response, "success", json_object_new_boolean(true));
     json_object_object_add(response, "message", json_object_new_string(message));

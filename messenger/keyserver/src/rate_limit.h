@@ -9,9 +9,9 @@
 
 // Rate limit types
 typedef enum {
-    RATE_LIMIT_REGISTER,
-    RATE_LIMIT_LOOKUP,
-    RATE_LIMIT_LIST
+    RATE_LIMIT_TYPE_REGISTER,
+    RATE_LIMIT_TYPE_LOOKUP,
+    RATE_LIMIT_TYPE_LIST
 } rate_limit_type_t;
 
 /**

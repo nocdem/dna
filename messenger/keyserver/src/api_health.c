@@ -7,7 +7,7 @@
 #include "db.h"
 #include <sys/sysinfo.h>
 
-int api_health_handler(struct MHD_Connection *connection, PGconn *db_conn) {
+enum MHD_Result api_health_handler(struct MHD_Connection *connection, PGconn *db_conn) {
     json_object *response = json_object_new_object();
 
     // Basic health status

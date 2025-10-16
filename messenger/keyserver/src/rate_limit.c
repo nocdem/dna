@@ -105,21 +105,21 @@ bool rate_limit_check(const char *ip, rate_limit_type_t type) {
     refill_tokens(bucket);
 
     switch (type) {
-        case RATE_LIMIT_REGISTER:
+        case RATE_LIMIT_TYPE_REGISTER:
             if (bucket->tokens_register > 0) {
                 bucket->tokens_register--;
                 return true;
             }
             break;
 
-        case RATE_LIMIT_LOOKUP:
+        case RATE_LIMIT_TYPE_LOOKUP:
             if (bucket->tokens_lookup > 0) {
                 bucket->tokens_lookup--;
                 return true;
             }
             break;
 
-        case RATE_LIMIT_LIST:
+        case RATE_LIMIT_TYPE_LIST:
             if (bucket->tokens_list > 0) {
                 bucket->tokens_list--;
                 return true;

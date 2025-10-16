@@ -8,8 +8,8 @@
 #include "db.h"
 #include <string.h>
 
-int api_list_handler(struct MHD_Connection *connection, PGconn *db_conn,
-                     const char *url) {
+enum MHD_Result api_list_handler(struct MHD_Connection *connection, PGconn *db_conn,
+                                  const char *url) {
     char client_ip[46];
 
     // Get client IP
@@ -18,7 +18,7 @@ int api_list_handler(struct MHD_Connection *connection, PGconn *db_conn,
     }
 
     // Rate limiting
-    if (!rate_limit_check(client_ip, RATE_LIMIT_LIST)) {
+    if (!rate_limit_check(client_ip, RATE_LIMIT_TYPE_LIST)) {
         LOG_WARN("Rate limit exceeded for list: %s", client_ip);
         return http_send_error(connection, HTTP_TOO_MANY_REQUESTS, "Rate limit exceeded");
     }

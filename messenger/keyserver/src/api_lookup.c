@@ -8,8 +8,8 @@
 #include "db.h"
 #include <string.h>
 
-int api_lookup_handler(struct MHD_Connection *connection, PGconn *db_conn,
-                       const char *identity_str) {
+enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, PGconn *db_conn,
+                                    const char *identity_str) {
     char client_ip[46];
 
     // Get client IP
@@ -18,7 +18,7 @@ int api_lookup_handler(struct MHD_Connection *connection, PGconn *db_conn,
     }
 
     // Rate limiting
-    if (!rate_limit_check(client_ip, RATE_LIMIT_LOOKUP)) {
+    if (!rate_limit_check(client_ip, RATE_LIMIT_TYPE_LOOKUP)) {
         LOG_WARN("Rate limit exceeded for lookup: %s", client_ip);
         return http_send_error(connection, HTTP_TOO_MANY_REQUESTS, "Rate limit exceeded");
     }

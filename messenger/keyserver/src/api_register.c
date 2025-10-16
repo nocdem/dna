@@ -10,8 +10,8 @@
 #include "db.h"
 #include <string.h>
 
-int api_register_handler(struct MHD_Connection *connection, PGconn *db_conn,
-                         const char *upload_data, size_t upload_data_size) {
+enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *db_conn,
+                                      const char *upload_data, size_t upload_data_size) {
     char client_ip[46];
     char error_msg[512];
 
@@ -21,7 +21,7 @@ int api_register_handler(struct MHD_Connection *connection, PGconn *db_conn,
     }
 
     // Rate limiting
-    if (!rate_limit_check(client_ip, RATE_LIMIT_REGISTER)) {
+    if (!rate_limit_check(client_ip, RATE_LIMIT_TYPE_REGISTER)) {
         LOG_WARN("Rate limit exceeded for register: %s", client_ip);
         return http_send_error(connection, HTTP_TOO_MANY_REQUESTS, "Rate limit exceeded");
     }

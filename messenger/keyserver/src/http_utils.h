@@ -16,8 +16,8 @@
  * @param json_obj: JSON object to send (will be freed)
  * @return MHD result code
  */
-int http_send_json_response(struct MHD_Connection *connection,
-                            int status_code, json_object *json_obj);
+enum MHD_Result http_send_json_response(struct MHD_Connection *connection,
+                                         int status_code, json_object *json_obj);
 
 /**
  * Send error response
@@ -27,8 +27,8 @@ int http_send_json_response(struct MHD_Connection *connection,
  * @param error_msg: Error message
  * @return MHD result code
  */
-int http_send_error(struct MHD_Connection *connection,
-                   int status_code, const char *error_msg);
+enum MHD_Result http_send_error(struct MHD_Connection *connection,
+                                 int status_code, const char *error_msg);
 
 /**
  * Send success response with message
@@ -37,7 +37,7 @@ int http_send_error(struct MHD_Connection *connection,
  * @param message: Success message
  * @return MHD result code
  */
-int http_send_success(struct MHD_Connection *connection, const char *message);
+enum MHD_Result http_send_success(struct MHD_Connection *connection, const char *message);
 
 /**
  * Get client IP address from connection
