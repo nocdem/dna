@@ -145,12 +145,14 @@ void print_usage(const char *prog) {
     printf("DNA Messenger - Post-quantum encrypted messaging\n\n");
     printf("Usage:\n");
     printf("  %s                    # Interactive mode\n", prog);
+    printf("  %s -n <identity>     # Create new identity and register to keyserver\n", prog);
     printf("  %s -r recipient -m \"message\"   # Send message\n", prog);
     printf("  %s -i                # List inbox\n", prog);
     printf("  %s -g <id>           # Get message by ID\n", prog);
     printf("  %s -l                # List keyserver users\n", prog);
     printf("  %s -k                # Register to keyserver\n\n", prog);
     printf("Options:\n");
+    printf("  -n <identity>   Create new identity (generates keys, shows seed phrase, registers to keyserver)\n");
     printf("  -r <recipient>  Recipient identity (can be comma-separated for multiple)\n");
     printf("  -m <message>    Message to send\n");
     printf("  -i              List inbox messages\n");
@@ -165,6 +167,7 @@ int main(int argc, char *argv[]) {
     char current_identity[100] = {0};
 
     // Parse command-line arguments first
+    char *new_identity = NULL;
     char *recipient = NULL;
     char *message = NULL;
     bool list_inbox = false;
@@ -173,7 +176,9 @@ int main(int argc, char *argv[]) {
     int get_message_id = 0;
 
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
+        if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+            new_identity = argv[++i];
+        } else if (strcmp(argv[i], "-r") == 0 && i + 1 < argc) {
             recipient = argv[++i];
         } else if (strcmp(argv[i], "-m") == 0 && i + 1 < argc) {
             message = argv[++i];
@@ -193,6 +198,31 @@ int main(int argc, char *argv[]) {
             print_usage(argv[0]);
             return 1;
         }
+    }
+
+    // Handle new identity creation first (doesn't require existing identity)
+    if (new_identity) {
+        printf("\n=== Creating New Identity: %s ===\n\n", new_identity);
+
+        // Initialize temporary context for keygen
+        messenger_context_t *temp_ctx = messenger_init("system");
+        if (!temp_ctx) {
+            printf("Error: Failed to initialize messenger\n");
+            return 1;
+        }
+
+        // Generate keys (this will show the seed phrase to the user)
+        if (messenger_generate_keys(temp_ctx, new_identity) != 0) {
+            printf("\n✗ Failed to generate keys\n");
+            messenger_free(temp_ctx);
+            return 1;
+        }
+
+        // Keys are automatically uploaded to keyserver by messenger_generate_keys()
+        printf("✓ Identity '%s' created and registered to keyserver\n\n", new_identity);
+
+        messenger_free(temp_ctx);
+        return 0;
     }
 
     // CLI mode: execute command and exit
