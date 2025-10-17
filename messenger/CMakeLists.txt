@@ -67,6 +67,30 @@ if(OPENSSL_FOUND)
     message(STATUS "OpenSSL libraries: ${OPENSSL_LIBRARIES}")
 endif()
 
+# json-c for JSON parsing (keyserver API)
+find_package(json-c CONFIG QUIET)
+if(json-c_FOUND)
+    message(STATUS "json-c found via CMake config")
+    set(JSONC_LIBRARIES json-c::json-c)
+else()
+    # Fallback for systems without CMake config (e.g., older Linux)
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(JSONC QUIET json-c)
+    endif()
+
+    if(NOT JSONC_FOUND)
+        find_library(JSONC_LIBRARIES NAMES json-c jsonc)
+        find_path(JSONC_INCLUDE_DIRS json-c/json.h)
+    endif()
+
+    if(JSONC_LIBRARIES)
+        message(STATUS "json-c found: ${JSONC_LIBRARIES}")
+    else()
+        message(WARNING "json-c not found. Install: vcpkg install json-c (Windows) or apt install libjson-c-dev (Linux)")
+    endif()
+endif()
+
 # PostgreSQL for keyserver and message storage (Phase 3+4)
 find_library(PQ_LIBRARY pq)
 find_path(PQ_INCLUDE_DIR libpq-fe.h PATHS /usr/include/postgresql)
@@ -147,7 +171,7 @@ add_executable(dna_messenger
     messenger/keyserver_register.c
     messenger.c
 )
-target_link_libraries(dna_messenger dna_lib ${PQ_LIBRARY} json-c)
+target_link_libraries(dna_messenger dna_lib ${PQ_LIBRARY} ${JSONC_LIBRARIES})
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
 
 # DNA Messenger GUI (Phase 5) - Optional Qt GUI
