@@ -76,7 +76,7 @@ Release\dna_messenger.exe
 - 📋 CF20 Wallet for cpunk network payments
 - 📋 Mobile applications (Flutter)
 - 📋 Forward secrecy (ephemeral session keys)
-- 📋 Voice/video calls
+- 📋 Post-quantum voice/video calls
 
 ## Roadmap
 
@@ -145,7 +145,7 @@ Release\dna_messenger.exe
 
 ### 📋 Phase 8: Advanced Features (Planned)
 - CF20 Wallet integration (Cellframe cpunk network)
-- Voice/video calls (WebRTC)
+- Post-quantum voice/video calls (custom signaling + SRTP)
 - Stickers and rich media
 - Channels (broadcast mode)
 - Tor integration

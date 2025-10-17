@@ -420,11 +420,22 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ## Phase 10+: Future Enhancements 📋 PLANNED
 
-### Voice/Video Calls
-- [ ] WebRTC integration
-- [ ] TURN server infrastructure
-- [ ] Call encryption
-- [ ] Screen sharing
+### Voice/Video Calls (Post-Quantum)
+- [ ] Kyber512-based session key exchange via DNA messaging
+- [ ] Dilithium3 signatures for call authentication
+- [ ] Custom SRTP with PQ-derived keys (AES-256-GCM)
+- [ ] libnice NAT traversal (ICE/STUN/TURN - reuse from Phase 9)
+- [ ] libopus audio codec integration
+- [ ] libvpx video codec (VP8) integration
+- [ ] PortAudio for microphone/speaker I/O
+- [ ] Short Authentication String (SAS) verification
+- [ ] Screen sharing (H.264 codec)
+- [ ] Call quality monitoring and statistics
+- [ ] Group voice/video calls (mesh topology)
+
+**Design Document:** `/futuredesign/VOICE-VIDEO-DESIGN.md`
+
+**Key Advantage:** Full post-quantum security (bypasses WebRTC's quantum-vulnerable DTLS handshake)
 
 ### Advanced Features
 - [ ] Stickers and GIFs
