@@ -26,9 +26,12 @@ static char* export_pubkey(const char *identity, const char *key_type) {
 
     snprintf(key_path, sizeof(key_path), "%s/.dna/%s-%s.pqkey", home, identity, key_type);
 
-    // Use export_pubkey utility (relative to project root)
+    // Use export_pubkey utility - try multiple paths
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "./utils/export_pubkey \"%s\" 2>/dev/null", key_path);
+    // Try: 1) ../utils/export_pubkey (from build dir), 2) ./utils/export_pubkey (from project root), 3) utils/export_pubkey
+    snprintf(cmd, sizeof(cmd),
+             "(../utils/export_pubkey \"%s\" 2>/dev/null || ./utils/export_pubkey \"%s\" 2>/dev/null || utils/export_pubkey \"%s\" 2>/dev/null)",
+             key_path, key_path, key_path);
 
     FILE *fp = popen(cmd, "r");
     if (!fp) return NULL;
@@ -62,7 +65,10 @@ static char* export_pubkey(const char *identity, const char *key_type) {
  */
 static char* sign_json(const char *identity, const char *json_str) {
     char cmd[40000];  // Large buffer for long JSON
-    snprintf(cmd, sizeof(cmd), "./utils/sign_json '%s' '%s' 2>/dev/null", identity, json_str);
+    // Try multiple paths for sign_json utility
+    snprintf(cmd, sizeof(cmd),
+             "(../utils/sign_json '%s' '%s' 2>/dev/null || ./utils/sign_json '%s' '%s' 2>/dev/null || utils/sign_json '%s' '%s' 2>/dev/null)",
+             identity, json_str, identity, json_str, identity, json_str);
 
     FILE *fp = popen(cmd, "r");
     if (!fp) return NULL;
