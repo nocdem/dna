@@ -32,7 +32,47 @@ When we release stable binaries, they will be available here:
 
 Currently, you must build from source.
 
-### Linux (Build from Source)
+### Automated Installation Scripts (Recommended)
+
+**For Linux (Easy - One Command):**
+```bash
+# Download and run the install script
+curl -sSL https://raw.githubusercontent.com/nocdem/dna-messenger/main/install.sh | bash
+
+# Or if already cloned:
+cd dna-messenger
+./install.sh
+```
+
+The `install.sh` script will:
+- Auto-detect your Linux distribution (Ubuntu/Debian, Fedora, Arch)
+- Install all required dependencies
+- Clone or update the repository
+- Build from scratch
+- Show you where the binaries are located
+
+**For Windows (Requires Prerequisites):**
+
+Prerequisites (install these first):
+- Git for Windows
+- CMake
+- vcpkg (package manager)
+- Visual Studio 2019+ with C++ tools
+
+```cmd
+REM Clone repository to C:\dna-messenger first
+cd C:\dna-messenger
+install_windows.bat
+```
+
+The `install_windows.bat` script will:
+- Check for required tools (git, cmake, vcpkg)
+- Install dependencies via vcpkg (OpenSSL, PostgreSQL, Qt5, etc.)
+- Pull latest code
+- Build from scratch
+- ⏱️ **First run may take 30-60 minutes** for dependency installation
+
+### Linux (Manual Build from Source)
 
 ```bash
 # Install dependencies
@@ -52,10 +92,11 @@ make
 ./dna_messenger
 ```
 
-### Windows (Build from Source)
+### Windows (Manual Build from Source)
 
 ⚠️ **Windows Warning:** First-time setup may take **up to 1 hour** to install dependencies.
 Building on Windows is currently difficult and not recommended for casual users.
+**Use the automated `install_windows.bat` script above instead.**
 
 ```cmd
 REM Install dependencies first (Qt5, PostgreSQL, OpenSSL, CMake, Visual Studio)
