@@ -19,7 +19,20 @@ Secure messaging using post-quantum cryptography (Kyber512 + Dilithium3) that re
 
 ## Quick Start
 
-### Linux
+⚠️ **Important Notes:**
+- We are **NOT releasing pre-built binaries** during alpha development (building ~20 times/day)
+- Build instructions below may be slightly outdated - we iterate rapidly
+- **Windows builds are complex** and may take significant time to set up
+
+### Pre-Built Installers (When Available)
+
+When we release stable binaries, they will be available here:
+- **Linux:** https://github.com/nocdem/dna-messenger/releases (AppImage/deb)
+- **Windows:** https://github.com/nocdem/dna-messenger/releases (installer.exe)
+
+Currently, you must build from source.
+
+### Linux (Build from Source)
 
 ```bash
 # Install dependencies
@@ -39,9 +52,15 @@ make
 ./dna_messenger
 ```
 
-### Windows
+### Windows (Build from Source)
+
+⚠️ **Windows Warning:** First-time setup may take **up to 1 hour** to install dependencies.
+Building on Windows is currently difficult and not recommended for casual users.
 
 ```cmd
+REM Install dependencies first (Qt5, PostgreSQL, OpenSSL, CMake, Visual Studio)
+REM This can take 30-60 minutes on first setup
+
 git clone https://github.com/nocdem/dna-messenger.git
 cd dna-messenger
 mkdir build
@@ -55,6 +74,8 @@ gui\Release\dna_messenger_gui.exe
 REM Or run CLI
 Release\dna_messenger.exe
 ```
+
+**Tip:** Wait for official Windows installer releases if you're not comfortable with build tools.
 
 ## Features
 
