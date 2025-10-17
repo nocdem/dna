@@ -103,10 +103,11 @@ Storage Nodes (distributed, replicated, encrypted)
 **Design Document:** `DHT-STORAGE-DESIGN.md`
 
 ### 3. Local Cache Layer
-- **Technology:** SQLite + SQLCipher (encrypted)
+- **Technology:** SQLite + DNA PQ crypto (Kyber512 + AES-256-GCM)
 - **Purpose:** Fast queries, offline access, search/filter
 - **Synchronization:** Background sync with DHT network
 - **Schema:** Same as current (messages, conversations, contacts, groups)
+- **Encryption:** Uses DNA's existing post-quantum crypto libraries
 
 **Design Document:** `SYNC-PROTOCOL-DESIGN.md`
 
@@ -175,8 +176,8 @@ Storage Nodes (distributed, replicated, encrypted)
 | **P2P Networking** | libp2p (C++), libdatachannel (C) | libp2p (most complete) |
 | **DHT** | OpenDHT (C++), BitTorrent DHT (C), libp2p Kad-DHT | OpenDHT (proven for messaging) |
 | **NAT Traversal** | libnice (C), pjnath (C), libjingle (C++) | libnice (GStreamer, stable) |
-| **Local Storage** | SQLite + SQLCipher | SQLite (existing, familiar) |
-| **Crypto** | Existing (Dilithium3, Kyber512, AES-256-GCM) | Keep current implementation |
+| **Local Storage** | SQLite + DNA PQ crypto | SQLite (existing, familiar) |
+| **Crypto** | Existing (Kyber512, Dilithium3, AES-256-GCM) | Keep current PQ implementation |
 
 ### Bootstrap Infrastructure
 

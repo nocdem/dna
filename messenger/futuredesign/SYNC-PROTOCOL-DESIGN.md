@@ -84,7 +84,7 @@ Alice sends message from Desktop
 
 **Privacy:**
 - Conversation patterns hidden from DHT (less metadata leakage)
-- Encrypted with SQLCipher (device password)
+- Encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM AEAD)
 
 ### Schema
 

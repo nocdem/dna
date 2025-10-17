@@ -369,7 +369,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [ ] Message retrieval and deletion protocol
 
 #### Phase 9.3: Local Cache & Sync (4 weeks)
-- [ ] SQLite + SQLCipher encrypted local cache
+- [ ] SQLite encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM)
 - [ ] Background sync protocol (local ↔ DHT)
 - [ ] Multi-device message synchronization
 - [ ] Offline mode with automatic sync on reconnect
@@ -396,8 +396,8 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 | **P2P Networking** | libp2p (C++) | Peer connections, multiplexing |
 | **DHT** | OpenDHT or Kad-DHT | Distributed storage & discovery |
 | **NAT Traversal** | libnice (C) | ICE/STUN/TURN hole punching |
-| **Local Cache** | SQLite + SQLCipher | Encrypted offline storage |
-| **Crypto** | Dilithium3 + Kyber512 | Post-quantum (no changes) |
+| **Local Cache** | SQLite + DNA PQ crypto | Encrypted offline storage |
+| **Crypto** | Kyber512 + Dilithium3 + AES-256-GCM | Post-quantum (existing) |
 
 ### Deliverables
 - Fully decentralized serverless messenger

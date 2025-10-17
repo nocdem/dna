@@ -158,7 +158,7 @@ Transform into fully decentralized serverless messenger:
 - Store-and-forward offline message delivery
 - **libnice** NAT traversal (ICE/STUN/TURN)
 - Multi-device sync via DHT
-- SQLite encrypted local cache
+- SQLite encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM)
 - Zero-knowledge storage (nodes cannot read messages)
 
 **See `/futuredesign/` folder for complete architecture specifications**
