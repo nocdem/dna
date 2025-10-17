@@ -26,6 +26,17 @@ extern "C" {
 // MESSENGER CONTEXT
 // ============================================================================
 
+// Public key cache entry
+typedef struct {
+    char *identity;
+    uint8_t *signing_pubkey;
+    size_t signing_pubkey_len;
+    uint8_t *encryption_pubkey;
+    size_t encryption_pubkey_len;
+} pubkey_cache_entry_t;
+
+#define PUBKEY_CACHE_SIZE 100
+
 /**
  * Messenger Context
  * Manages PostgreSQL connection and DNA API context
@@ -34,6 +45,10 @@ typedef struct {
     char *identity;              // User's identity name (e.g., "alice")
     PGconn *pg_conn;             // PostgreSQL connection
     dna_context_t *dna_ctx;      // DNA API context
+
+    // Public key cache (API fetch caching)
+    pubkey_cache_entry_t cache[PUBKEY_CACHE_SIZE];
+    int cache_count;
 } messenger_context_t;
 
 /**

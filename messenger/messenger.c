@@ -88,6 +88,10 @@ messenger_context_t* messenger_init(const char *identity) {
         return NULL;
     }
 
+    // Initialize pubkey cache
+    ctx->cache_count = 0;
+    memset(ctx->cache, 0, sizeof(ctx->cache));
+
     printf("✓ Messenger initialized for '%s'\n", identity);
     printf("✓ Connected to PostgreSQL: dna_messenger\n");
 
@@ -97,6 +101,13 @@ messenger_context_t* messenger_init(const char *identity) {
 void messenger_free(messenger_context_t *ctx) {
     if (!ctx) {
         return;
+    }
+
+    // Free pubkey cache
+    for (int i = 0; i < ctx->cache_count; i++) {
+        free(ctx->cache[i].identity);
+        free(ctx->cache[i].signing_pubkey);
+        free(ctx->cache[i].encryption_pubkey);
     }
 
     if (ctx->dna_ctx) {
@@ -792,7 +803,29 @@ int messenger_load_pubkey(
         return -1;
     }
 
-    // Fetch from API: https://cpunk.io/api/keyserver/lookup/<identity>
+    // Check cache first
+    for (int i = 0; i < ctx->cache_count; i++) {
+        if (strcmp(ctx->cache[i].identity, identity) == 0) {
+            // Cache hit - duplicate and return
+            *signing_pubkey_out = malloc(ctx->cache[i].signing_pubkey_len);
+            *encryption_pubkey_out = malloc(ctx->cache[i].encryption_pubkey_len);
+
+            if (!*signing_pubkey_out || !*encryption_pubkey_out) {
+                free(*signing_pubkey_out);
+                free(*encryption_pubkey_out);
+                return -1;
+            }
+
+            memcpy(*signing_pubkey_out, ctx->cache[i].signing_pubkey, ctx->cache[i].signing_pubkey_len);
+            memcpy(*encryption_pubkey_out, ctx->cache[i].encryption_pubkey, ctx->cache[i].encryption_pubkey_len);
+            *signing_pubkey_len_out = ctx->cache[i].signing_pubkey_len;
+            *encryption_pubkey_len_out = ctx->cache[i].encryption_pubkey_len;
+
+            return 0;
+        }
+    }
+
+    // Cache miss - fetch from API: https://cpunk.io/api/keyserver/lookup/<identity>
     char url[512];
     snprintf(url, sizeof(url), "https://cpunk.io/api/keyserver/lookup/%s", identity);
 
@@ -884,6 +917,27 @@ int messenger_load_pubkey(
 
     printf("✓ Fetched public key for '%s' from API (dilithium: %zu bytes, kyber: %zu bytes)\n",
            identity, dilithium_len, kyber_len);
+
+    // Add to cache (if space available)
+    if (ctx->cache_count < PUBKEY_CACHE_SIZE) {
+        pubkey_cache_entry_t *entry = &ctx->cache[ctx->cache_count];
+        entry->identity = strdup(identity);
+        entry->signing_pubkey = malloc(dilithium_len);
+        entry->encryption_pubkey = malloc(kyber_len);
+
+        if (entry->identity && entry->signing_pubkey && entry->encryption_pubkey) {
+            memcpy(entry->signing_pubkey, dilithium_decoded, dilithium_len);
+            memcpy(entry->encryption_pubkey, kyber_decoded, kyber_len);
+            entry->signing_pubkey_len = dilithium_len;
+            entry->encryption_pubkey_len = kyber_len;
+            ctx->cache_count++;
+        } else {
+            // Cleanup on allocation failure
+            free(entry->identity);
+            free(entry->signing_pubkey);
+            free(entry->encryption_pubkey);
+        }
+    }
 
     return 0;
 }
