@@ -150,15 +150,18 @@ Release\dna_messenger.exe
 - Channels (broadcast mode)
 - Tor integration
 
-### 📋 Phase 9: Distributed Storage Layer (Future Plans)
-For information on distributed P2P architecture with Hypercore Protocol, offline message storage, and decentralized keyserver:
-- See **Future Plans** section in [ROADMAP.md](./ROADMAP.md)
-- Hyperswarm P2P networking with DHT
-- Distributed keyserver using Hyperbee
-- Hypercore append-only message logs for offline messages
-- Real-time message replication
-- NAT traversal (works behind firewalls)
-- Offline-first with automatic sync
+### 📋 Phase 9: Distributed P2P Architecture (Future Plans)
+Transform into fully decentralized serverless messenger:
+- **libp2p** (C++) for peer-to-peer networking
+- **OpenDHT** or Kad-DHT for distributed storage
+- Distributed DHT-based keyserver (no central server)
+- Store-and-forward offline message delivery
+- **libnice** NAT traversal (ICE/STUN/TURN)
+- Multi-device sync via DHT
+- SQLite encrypted local cache
+- Zero-knowledge storage (nodes cannot read messages)
+
+**See `/futuredesign/` folder for complete architecture specifications**
 
 **For detailed roadmap, see [ROADMAP.md](./ROADMAP.md)**
 
@@ -174,8 +177,8 @@ For information on distributed P2P architecture with Hypercore Protocol, offline
 - Messages encrypted on your device before sending
 - Only recipient can decrypt (end-to-end encryption)
 - Post-quantum algorithms (Kyber512 + Dilithium3)
-- Append-only logs are cryptographically signed and immutable
-- Transport layer encrypted with Noise protocol (Hypercore native)
+- Cryptographically signed messages (tamper-proof)
+- Future: P2P transport with libp2p (encrypted multiplexing)
 
 ## Cryptography
 

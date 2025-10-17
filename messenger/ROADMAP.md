@@ -336,49 +336,85 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 9: Distributed Storage Layer 📋 FUTURE PLANS
+## Phase 9: Distributed P2P Architecture 📋 FUTURE PLANS
 
-**Timeline:** TBD (long-term vision)
-**Status:** Research phase
+**Timeline:** ~6 months (long-term vision)
+**Status:** Research & Design phase
 **Prerequisites:** Phase 5-7 complete
+**Design Docs:** See `/futuredesign/` folder for detailed specifications
 
 ### Objectives
-- Fully peer-to-peer architecture
-- Distributed keyserver
-- Offline message storage
+- Fully peer-to-peer serverless architecture
+- Distributed DHT-based keyserver
+- Store-and-forward offline message delivery
+- Zero-knowledge storage (storage nodes cannot read messages)
+- Multi-device synchronization via DHT
 - No centralized dependencies
 
 ### Tasks
 
-#### Hypercore Protocol Integration
-- [ ] Hyperswarm P2P networking with DHT
-- [ ] Distributed keyserver using Hyperbee
-- [ ] Hypercore append-only message logs
-- [ ] Real-time message replication
-- [ ] NAT traversal (works behind firewalls)
-- [ ] Offline-first with automatic sync
-- [ ] Node.js bridge daemon (IPC layer)
+#### Phase 9.1: P2P Transport Layer (6-8 weeks)
+- [ ] Integrate libp2p (C++) or libdatachannel (C)
+- [ ] Implement Kademlia DHT for peer discovery
+- [ ] NAT traversal using libnice (ICE/STUN/TURN)
+- [ ] Direct peer-to-peer messaging
+- [ ] Bootstrap node infrastructure (3-5 public nodes)
+- [ ] Connection management and reconnection
 
-#### Transport Layer
-- [ ] P2P message routing
-- [ ] Message sync protocol
-- [ ] Connection management
-- [ ] Reconnection handling
-- [ ] Offline message queue
+#### Phase 9.2: Distributed Storage Layer (6-8 weeks)
+- [ ] Integrate OpenDHT for distributed message storage
+- [ ] Encrypted blob storage in DHT (k=5 replication)
+- [ ] Store-and-forward protocol for offline users
+- [ ] Automatic garbage collection (30-day expiry)
+- [ ] Message retrieval and deletion protocol
 
-#### Discovery & Routing
-- [ ] DHT for peer discovery
-- [ ] User addressing (pubkey-based)
-- [ ] Message delivery confirmation
-- [ ] NAT traversal (STUN/TURN)
+#### Phase 9.3: Local Cache & Sync (4 weeks)
+- [ ] SQLite + SQLCipher encrypted local cache
+- [ ] Background sync protocol (local ↔ DHT)
+- [ ] Multi-device message synchronization
+- [ ] Offline mode with automatic sync on reconnect
+- [ ] Incremental sync for large histories
+
+#### Phase 9.4: Distributed DHT Keyserver (4 weeks)
+- [ ] Store public keys in DHT (replicated)
+- [ ] Replace centralized HTTP keyserver
+- [ ] Self-signed key verification (TOFU model)
+- [ ] Key rotation and update protocol
+- [ ] Optional: Blockchain anchoring for tamper-proofing
+
+#### Phase 9.5: Integration & Testing (4 weeks)
+- [ ] End-to-end testing with 5-10 peers
+- [ ] Network resilience testing (peer churn)
+- [ ] Performance optimization
+- [ ] Security audit
+- [ ] Documentation and migration guide
+
+### Technology Stack
+
+| Component | Technology | Purpose |
+|-----------|-----------|---------|
+| **P2P Networking** | libp2p (C++) | Peer connections, multiplexing |
+| **DHT** | OpenDHT or Kad-DHT | Distributed storage & discovery |
+| **NAT Traversal** | libnice (C) | ICE/STUN/TURN hole punching |
+| **Local Cache** | SQLite + SQLCipher | Encrypted offline storage |
+| **Crypto** | Dilithium3 + Kyber512 | Post-quantum (no changes) |
 
 ### Deliverables
-- Fully decentralized messenger
-- Distributed keyserver (no central authority)
-- Offline message storage and sync
+- Fully decentralized serverless messenger
+- Distributed DHT keyserver (no central authority)
+- Store-and-forward offline message delivery
+- Multi-device synchronization via DHT
 - P2P network protocol specification
+- Migration tools (PostgreSQL → DHT)
 
-**Note:** This phase represents long-term architectural goals. Implementation details subject to change based on technological developments and community feedback.
+**Design Documents:**
+- `/futuredesign/ARCHITECTURE-OVERVIEW.md` - Complete system design
+- `/futuredesign/P2P-TRANSPORT-DESIGN.md` - libp2p integration
+- `/futuredesign/DHT-STORAGE-DESIGN.md` - Message storage protocol
+- `/futuredesign/DHT-KEYSERVER-DESIGN.md` - Distributed public keys
+- `/futuredesign/SYNC-PROTOCOL-DESIGN.md` - Multi-device sync
+
+**Note:** This represents a fundamental architectural shift from client-server to peer-to-peer. Implementation details are actively being researched. See futuredesign/ folder for complete specifications.
 
 ---
 
@@ -499,7 +535,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - **Phase 6:** Mobile Applications
 - **Phase 7:** Advanced Security Features
 - **Phase 8:** CF20 Wallet Integration
-- **Phase 9:** Distributed Storage Layer (P2P, Hypercore Protocol)
+- **Phase 9:** Distributed P2P Architecture (libp2p + OpenDHT)
 - **Phase 10+:** Future Enhancements
 
 ---
