@@ -60,8 +60,11 @@ int main(int argc, char *argv[]) {
     char key_path[512];
     const char *home = getenv("HOME");
     if (!home) {
-        fprintf(stderr, "Error: HOME not set\n");
-        return 1;
+        home = getenv("USERPROFILE");  // Windows fallback
+        if (!home) {
+            fprintf(stderr, "Error: HOME or USERPROFILE not set\n");
+            return 1;
+        }
     }
 
     snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium.pqkey", home, identity);

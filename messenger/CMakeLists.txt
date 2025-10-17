@@ -104,6 +104,9 @@ message(STATUS "PostgreSQL include: ${PQ_INCLUDE_DIR}")
 add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
 add_subdirectory(crypto/dilithium)  # Dilithium3 signatures
 
+# Utility programs (export_pubkey, sign_json, verify_json)
+add_subdirectory(utils)
+
 # Common source files (shared between CLI and library)
 set(COMMON_SOURCES
     keygen.c
