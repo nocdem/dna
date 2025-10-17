@@ -947,26 +947,79 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
         return -1;
     }
 
-    const char *query = "SELECT identity, created_at FROM keyserver ORDER BY identity";
-    PGresult *res = PQexec(ctx->pg_conn, query);
+    // Fetch from cpunk.io API
+    const char *url = "https://cpunk.io/api/keyserver/list";
+    char cmd[1024];
+#ifdef _WIN32
+    snprintf(cmd, sizeof(cmd), "curl -s \"%s\"", url);
+#else
+    snprintf(cmd, sizeof(cmd), "curl -s '%s'", url);
+#endif
 
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "List pubkeys failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        fprintf(stderr, "Error: Failed to fetch identity list from keyserver\n");
         return -1;
     }
 
-    int rows = PQntuples(res);
-    printf("\n=== Keyserver (%d identities) ===\n\n", rows);
+    char response[102400]; // 100KB buffer for large lists
+    size_t response_len = fread(response, 1, sizeof(response) - 1, fp);
+    response[response_len] = '\0';
+    pclose(fp);
 
-    for (int i = 0; i < rows; i++) {
-        const char *identity = PQgetvalue(res, i, 0);
-        const char *created_at = PQgetvalue(res, i, 1);
-        printf("  %s (added: %s)\n", identity, created_at);
+    // Trim whitespace
+    while (response_len > 0 &&
+           (response[response_len-1] == '\n' ||
+            response[response_len-1] == '\r' ||
+            response[response_len-1] == ' ' ||
+            response[response_len-1] == '\t')) {
+        response[--response_len] = '\0';
+    }
+
+    // Parse JSON response
+    struct json_object *root = json_tokener_parse(response);
+    if (!root) {
+        fprintf(stderr, "Error: Failed to parse JSON response\n");
+        return -1;
+    }
+
+    // Check success field
+    struct json_object *success_obj = json_object_object_get(root, "success");
+    if (!success_obj || !json_object_get_boolean(success_obj)) {
+        fprintf(stderr, "Error: API returned failure\n");
+        json_object_put(root);
+        return -1;
+    }
+
+    // Get total count
+    struct json_object *total_obj = json_object_object_get(root, "total");
+    int total = total_obj ? json_object_get_int(total_obj) : 0;
+
+    printf("\n=== Keyserver (%d identities) ===\n\n", total);
+
+    // Get identities array
+    struct json_object *identities_obj = json_object_object_get(root, "identities");
+    if (!identities_obj || !json_object_is_type(identities_obj, json_type_array)) {
+        json_object_put(root);
+        return 0;
+    }
+
+    int count = json_object_array_length(identities_obj);
+    for (int i = 0; i < count; i++) {
+        struct json_object *identity_obj = json_object_array_get_idx(identities_obj, i);
+        if (!identity_obj) continue;
+
+        struct json_object *dna_obj = json_object_object_get(identity_obj, "dna");
+        struct json_object *registered_obj = json_object_object_get(identity_obj, "registered_at");
+
+        const char *identity = dna_obj ? json_object_get_string(dna_obj) : "unknown";
+        const char *registered_at = registered_obj ? json_object_get_string(registered_obj) : "unknown";
+
+        printf("  %s (added: %s)\n", identity, registered_at);
     }
 
     printf("\n");
-    PQclear(res);
+    json_object_put(root);
     return 0;
 }
 
@@ -978,21 +1031,65 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
         return -1;
     }
 
-    const char *query = "SELECT identity FROM keyserver ORDER BY identity";
-    PGresult *res = PQexec(ctx->pg_conn, query);
+    // Fetch from cpunk.io API
+    const char *url = "https://cpunk.io/api/keyserver/list";
+    char cmd[1024];
+#ifdef _WIN32
+    snprintf(cmd, sizeof(cmd), "curl -s \"%s\"", url);
+#else
+    snprintf(cmd, sizeof(cmd), "curl -s '%s'", url);
+#endif
 
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Get contact list failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        fprintf(stderr, "Error: Failed to fetch identity list from keyserver\n");
         return -1;
     }
 
-    int rows = PQntuples(res);
+    char response[102400]; // 100KB buffer for large lists
+    size_t response_len = fread(response, 1, sizeof(response) - 1, fp);
+    response[response_len] = '\0';
+    pclose(fp);
+
+    // Trim whitespace
+    while (response_len > 0 &&
+           (response[response_len-1] == '\n' ||
+            response[response_len-1] == '\r' ||
+            response[response_len-1] == ' ' ||
+            response[response_len-1] == '\t')) {
+        response[--response_len] = '\0';
+    }
+
+    // Parse JSON response
+    struct json_object *root = json_tokener_parse(response);
+    if (!root) {
+        fprintf(stderr, "Error: Failed to parse JSON response\n");
+        return -1;
+    }
+
+    // Check success field
+    struct json_object *success_obj = json_object_object_get(root, "success");
+    if (!success_obj || !json_object_get_boolean(success_obj)) {
+        fprintf(stderr, "Error: API returned failure\n");
+        json_object_put(root);
+        return -1;
+    }
+
+    // Get identities array
+    struct json_object *identities_obj = json_object_object_get(root, "identities");
+    if (!identities_obj || !json_object_is_type(identities_obj, json_type_array)) {
+        *identities_out = NULL;
+        *count_out = 0;
+        json_object_put(root);
+        return 0;
+    }
+
+    int rows = json_object_array_length(identities_obj);
     *count_out = rows;
 
     if (rows == 0) {
         *identities_out = NULL;
-        PQclear(res);
+        json_object_put(root);
         return 0;
     }
 
@@ -1000,13 +1097,21 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
     char **identities = (char**)malloc(sizeof(char*) * rows);
     if (!identities) {
         fprintf(stderr, "Memory allocation failed\n");
-        PQclear(res);
+        json_object_put(root);
         return -1;
     }
 
     // Copy each identity string
     for (int i = 0; i < rows; i++) {
-        const char *identity = PQgetvalue(res, i, 0);
+        struct json_object *identity_obj = json_object_array_get_idx(identities_obj, i);
+        if (!identity_obj) {
+            identities[i] = strdup("unknown");
+            continue;
+        }
+
+        struct json_object *dna_obj = json_object_object_get(identity_obj, "dna");
+        const char *identity = dna_obj ? json_object_get_string(dna_obj) : "unknown";
+
         identities[i] = strdup(identity);
         if (!identities[i]) {
             // Clean up on failure
@@ -1014,13 +1119,13 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
                 free(identities[j]);
             }
             free(identities);
-            PQclear(res);
+            json_object_put(root);
             return -1;
         }
     }
 
     *identities_out = identities;
-    PQclear(res);
+    json_object_put(root);
     return 0;
 }
 
