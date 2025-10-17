@@ -72,9 +72,7 @@ Release\dna_messenger.exe
 - ✅ Desktop notifications
 
 **Coming Soon:**
-- 🚧 Hypercore Protocol P2P networking (Phase 5)
-- 🚧 Distributed keyserver with Hyperbee (Phase 5)
-- 🚧 Web-based messenger (Phase 5.5)
+- 🚧 Web-based messenger (Phase 5 - in progress)
 - 📋 CF20 Wallet for cpunk network payments
 - 📋 Mobile applications (Flutter)
 - 📋 Forward secrecy (ephemeral session keys)
@@ -120,16 +118,7 @@ Release\dna_messenger.exe
 - **Group messaging with full UI**
 - **CF20 Wallet integration (planned)**
 
-### 🚧 Phase 5: Network Layer - Hypercore Protocol (Planned)
-- [ ] Hyperswarm P2P networking with DHT
-- [ ] Distributed keyserver using Hyperbee
-- [ ] Hypercore append-only message logs
-- [ ] Real-time message replication
-- [ ] NAT traversal (works behind firewalls)
-- [ ] Offline-first with automatic sync
-- [ ] Node.js bridge daemon (IPC layer)
-
-### 🚧 Phase 5.5: Web-Based Messenger (In Progress - branch: feature/web-messenger)
+### 🚧 Phase 5: Web-Based Messenger (In Progress - branch: feature/web-messenger)
 - [x] WebAssembly crypto module (Emscripten compilation)
 - [x] DNA API compiled to WASM (dna_wasm.js/wasm)
 - [x] JavaScript wrapper functions
@@ -154,32 +143,32 @@ Release\dna_messenger.exe
 - Background sync
 - Biometric authentication
 
-### 📋 Phase 8+: Future Enhancements (Planned)
+### 📋 Phase 8: Advanced Features (Planned)
 - CF20 Wallet integration (Cellframe cpunk network)
 - Voice/video calls (WebRTC)
 - Stickers and rich media
 - Channels (broadcast mode)
-- Decentralized architecture
 - Tor integration
+
+### 📋 Phase 9: Distributed Storage Layer (Future Plans)
+For information on distributed P2P architecture with Hypercore Protocol, offline message storage, and decentralized keyserver:
+- See **Future Plans** section in [ROADMAP.md](./ROADMAP.md)
+- Hyperswarm P2P networking with DHT
+- Distributed keyserver using Hyperbee
+- Hypercore append-only message logs for offline messages
+- Real-time message replication
+- NAT traversal (works behind firewalls)
+- Offline-first with automatic sync
 
 **For detailed roadmap, see [ROADMAP.md](./ROADMAP.md)**
 
 ## Architecture
 
 **Current (Phase 4):**
-- Client application (GUI or CLI)
+- Client application (GUI, CLI, or Web)
 - PostgreSQL message storage (ai.cpunk.io:5432)
-- Centralized keyserver for public key distribution
+- Centralized keyserver API for public key distribution
 - Your private keys stay on your device (`~/.dna/`)
-
-**Future (Phase 5 - Hypercore Protocol):**
-- Fully peer-to-peer (no centralized servers)
-- Hyperswarm for P2P networking and NAT traversal
-- Distributed keyserver using Hyperbee
-- Hypercore append-only logs for message storage
-- Each user maintains their own Hyperbee (OUTBOX)
-- Users replicate contacts' Hyperbees (INBOX)
-- Node.js bridge daemon for Hypercore Protocol integration
 
 **Security:**
 - Messages encrypted on your device before sending
