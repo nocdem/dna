@@ -797,7 +797,11 @@ int messenger_load_pubkey(
     snprintf(url, sizeof(url), "https://cpunk.io/api/keyserver/lookup/%s", identity);
 
     char cmd[1024];
+#ifdef _WIN32
+    snprintf(cmd, sizeof(cmd), "curl -s \"%s\"", url);
+#else
     snprintf(cmd, sizeof(cmd), "curl -s '%s'", url);
+#endif
 
     FILE *fp = popen(cmd, "r");
     if (!fp) {
@@ -811,10 +815,20 @@ int messenger_load_pubkey(
     response[response_len] = '\0';
     pclose(fp);
 
+    // Trim whitespace and newlines (Windows CRLF issue)
+    while (response_len > 0 &&
+           (response[response_len-1] == '\n' ||
+            response[response_len-1] == '\r' ||
+            response[response_len-1] == ' ' ||
+            response[response_len-1] == '\t')) {
+        response[--response_len] = '\0';
+    }
+
     // Parse JSON response using json-c
     struct json_object *root = json_tokener_parse(response);
     if (!root) {
         fprintf(stderr, "Error: Failed to parse JSON response for '%s'\n", identity);
+        fprintf(stderr, "Raw response (%zu bytes): '%s'\n", response_len, response);
         return -1;
     }
 
