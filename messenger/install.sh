@@ -38,18 +38,18 @@ if command -v apt-get &> /dev/null; then
     # Debian/Ubuntu
     echo "Detected Debian/Ubuntu system"
     sudo apt-get update
-    sudo apt-get install -y git cmake gcc g++ libssl-dev libpq-dev qtbase5-dev qtbase5-dev-tools qtmultimedia5-dev
+    sudo apt-get install -y git cmake gcc g++ libssl-dev libpq-dev libjson-c-dev qtbase5-dev qtbase5-dev-tools qtmultimedia5-dev
 elif command -v dnf &> /dev/null; then
     # Fedora/RHEL
     echo "Detected Fedora/RHEL system"
-    sudo dnf install -y git cmake gcc openssl-devel libpq-devel
+    sudo dnf install -y git cmake gcc openssl-devel libpq-devel json-c-devel
 elif command -v pacman &> /dev/null; then
     # Arch Linux
     echo "Detected Arch Linux system"
-    sudo pacman -S --noconfirm git cmake gcc openssl postgresql-libs
+    sudo pacman -S --noconfirm git cmake gcc openssl postgresql-libs json-c
 else
     echo "⚠️  Could not detect package manager"
-    echo "Please install manually: git cmake gcc openssl libpq"
+    echo "Please install manually: git cmake gcc openssl libpq json-c"
     echo ""
     read -p "Continue anyway? (y/n) " -n 1 -r
     echo ""
