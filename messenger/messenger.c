@@ -12,11 +12,10 @@
 #include <errno.h>
 #ifdef _WIN32
 #include <windows.h>
-#include <json.h>  // Windows vcpkg uses json.h instead of json-c/json.h
 #else
 #include <sys/time.h>
-#include <json-c/json.h>
 #endif
+#include <json-c/json.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include "messenger.h"

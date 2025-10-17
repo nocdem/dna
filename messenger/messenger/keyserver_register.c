@@ -9,14 +9,12 @@
 #include <time.h>
 #ifdef _WIN32
 #include <io.h>
-#include <json.h>  // Windows vcpkg uses json.h
 #define popen _popen
 #define pclose _pclose
-#define mkstemp(t) _mktemp_s(t, strlen(t) + 1)
 #else
 #include <unistd.h>
-#include <json-c/json.h>
 #endif
+#include <json-c/json.h>
 
 #define KEYSERVER_URL "https://cpunk.io/api/keyserver/register"
 
