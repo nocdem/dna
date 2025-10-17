@@ -44,6 +44,7 @@ static char* export_pubkey(const char *identity, const char *key_type) {
              key_path, key_path, key_path);
 #endif
 
+    printf("DEBUG: Running command: %s\n", cmd);
     FILE *fp = popen(cmd, "r");
     if (!fp) return NULL;
 
@@ -86,6 +87,7 @@ static char* sign_json(const char *identity, const char *json_str) {
              identity, json_str, identity, json_str, identity, json_str);
 #endif
 
+    printf("DEBUG: Running command: %s\n", cmd);
     FILE *fp = popen(cmd, "r");
     if (!fp) return NULL;
 
