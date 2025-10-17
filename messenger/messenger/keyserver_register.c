@@ -148,6 +148,15 @@ int register_to_keyserver(const char *identity) {
         JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE);
 
     // Save to temp file for curl
+#ifdef _WIN32
+    char temp_file[512];
+    if (tmpnam_s(temp_file, sizeof(temp_file)) != 0) {
+        fprintf(stderr, "Error: Failed to create temp filename\n");
+        json_object_put(payload);
+        return -1;
+    }
+    FILE *fp = fopen(temp_file, "w");
+#else
     char temp_file[] = "/tmp/dna_register_XXXXXX";
     int fd = mkstemp(temp_file);
     if (fd == -1) {
@@ -155,11 +164,12 @@ int register_to_keyserver(const char *identity) {
         json_object_put(payload);
         return -1;
     }
-
     FILE *fp = fdopen(fd, "w");
+#endif
     if (!fp) {
+#ifndef _WIN32
         close(fd);
-        unlink(temp_file);
+#endif
         fprintf(stderr, "Error: Failed to open temp file\n");
         json_object_put(payload);
         return -1;
