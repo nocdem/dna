@@ -84,8 +84,17 @@ MainWindow::MainWindow(QWidget *parent)
     // Remove native window frame for custom title bar
     setWindowFlags(Qt::FramelessWindowHint);
 
-    // Auto-detect local identity
-    currentIdentity = getLocalIdentity();
+    // Check if user has saved identity preference in QSettings
+    QSettings settings("DNA Messenger", "GUI");
+    QString savedIdentity = settings.value("currentIdentity").toString();
+
+    if (!savedIdentity.isEmpty()) {
+        // Use saved identity preference
+        currentIdentity = savedIdentity;
+    } else {
+        // Auto-detect local identity from filesystem
+        currentIdentity = getLocalIdentity();
+    }
 
     if (currentIdentity.isEmpty()) {
         // No local identity found, prompt for manual entry
@@ -100,6 +109,9 @@ MainWindow::MainWindow(QWidget *parent)
             QApplication::quit();
             return;
         }
+
+        // Save manually entered identity to settings
+        settings.setValue("currentIdentity", currentIdentity);
     }
 
     // Initialize messenger context
@@ -157,8 +169,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(statusPollTimer, &QTimer::timeout, this, &MainWindow::checkForStatusUpdates);
     statusPollTimer->start(10000);
 
-    // Load saved preferences and save current identity
-    QSettings settings("DNA Messenger", "GUI");
+    // Save current identity (reuse settings from earlier)
     settings.setValue("currentIdentity", currentIdentity);  // Save logged-in user
     QString savedTheme = settings.value("theme", "io").toString();  // Default to "io" theme
     double savedFontScale = settings.value("fontScale", 3.0).toDouble();  // Default to 3x (Large)
