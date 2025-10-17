@@ -34,10 +34,15 @@ static char* export_pubkey(const char *identity, const char *key_type) {
 
     // Use export_pubkey utility - try multiple paths
     char cmd[1024];
-    // Try: 1) ../utils/export_pubkey (from build dir), 2) ./utils/export_pubkey (from project root), 3) utils/export_pubkey
+#ifdef _WIN32
+    // Windows: try paths one by one (no shell || operator)
+    snprintf(cmd, sizeof(cmd), "..\\utils\\export_pubkey.exe \"%s\" 2>nul", key_path);
+#else
+    // Linux: use shell || to try multiple paths
     snprintf(cmd, sizeof(cmd),
              "(../utils/export_pubkey \"%s\" 2>/dev/null || ./utils/export_pubkey \"%s\" 2>/dev/null || utils/export_pubkey \"%s\" 2>/dev/null)",
              key_path, key_path, key_path);
+#endif
 
     FILE *fp = popen(cmd, "r");
     if (!fp) return NULL;
@@ -71,10 +76,15 @@ static char* export_pubkey(const char *identity, const char *key_type) {
  */
 static char* sign_json(const char *identity, const char *json_str) {
     char cmd[40000];  // Large buffer for long JSON
-    // Try multiple paths for sign_json utility
+#ifdef _WIN32
+    // Windows: use cmd.exe compatible syntax
+    snprintf(cmd, sizeof(cmd), "..\\utils\\sign_json.exe \"%s\" \"%s\" 2>nul", identity, json_str);
+#else
+    // Linux: use shell || to try multiple paths
     snprintf(cmd, sizeof(cmd),
              "(../utils/sign_json '%s' '%s' 2>/dev/null || ./utils/sign_json '%s' '%s' 2>/dev/null || utils/sign_json '%s' '%s' 2>/dev/null)",
              identity, json_str, identity, json_str, identity, json_str);
+#endif
 
     FILE *fp = popen(cmd, "r");
     if (!fp) return NULL;
