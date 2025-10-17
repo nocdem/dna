@@ -1,8 +1,8 @@
 # DNA Messenger - Development Roadmap
 
-**Version:** 0.1.105-alpha
-**Last Updated:** 2025-10-15
-**Project Status:** Phase 4 (Network Layer) - Phase 5 Complete
+**Version:** 0.1.110-alpha
+**Last Updated:** 2025-10-17
+**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4 Complete
 
 ---
 
@@ -122,51 +122,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 4: Network Layer 🚧 IN PROGRESS
-
-**Timeline:** 3-4 weeks
-**Status:** Not started
-**Prerequisites:** Phase 3 complete
-
-### Objectives
-- Network transport implementation
-- Message routing
-- Offline message queue
-- P2P discovery (optional)
-
-### Tasks
-
-#### Transport Layer
-- [ ] WebSocket client/server
-- [ ] Message serialization (Protocol Buffers / JSON)
-- [ ] Connection management
-- [ ] Reconnection handling
-
-#### Message Routing
-- [ ] User addressing scheme (username@server or pubkey hash)
-- [ ] Message delivery confirmation
-- [ ] Offline message storage
-- [ ] Message sync on reconnect
-
-#### P2P Discovery (Optional)
-- [ ] mDNS local discovery
-- [ ] DHT for peer discovery
-- [ ] NAT traversal (STUN/TURN)
-
-#### Server Implementation
-- [ ] Message relay server (optional, for initial testing)
-- [ ] User registration
-- [ ] Message queueing for offline users
-
-### Deliverables
-- Network-enabled CLI client
-- Message relay server (reference implementation)
-- Network protocol specification
-- Deployment documentation
-
----
-
-## Phase 5: Desktop Application ✅ COMPLETE
+## Phase 4: Desktop Application ✅ COMPLETE
 
 **Timeline:** 4-6 weeks
 **Status:** Complete
@@ -200,6 +156,9 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [x] Message decryption (sent and received)
 - [x] Auto-detect local identity from ~/.dna/
 - [x] Notification sound effects
+- [x] Public key caching (100-entry cache)
+- [x] Inline keyserver registration (no external utilities)
+- [x] Windows curl JSON parsing fixes
 
 #### Group Messaging
 - [x] Create groups with member selection
@@ -228,7 +187,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 5.5: Web-Based Messenger 🚧 IN PROGRESS
+## Phase 5: Web-Based Messenger 🚧 IN PROGRESS
 
 **Timeline:** 3-4 weeks
 **Status:** Active development (branch: `feature/web-messenger`)
@@ -359,7 +318,71 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 8+: Future Enhancements 📋 PLANNED
+## Phase 8: Advanced Features 📋 PLANNED
+
+**Timeline:** 4-6 weeks
+**Status:** Not started
+**Prerequisites:** Phase 5 complete
+
+### CF20 Wallet Integration (Cellframe cpunk Network)
+- [ ] Read local Cellframe wallet files
+- [ ] Connect via public RPC to cpunk network
+- [ ] Display CF20 token balances
+- [ ] Send CF20 tokens directly in messenger
+- [ ] Receive CF20 tokens with QR codes
+- [ ] Transaction history and tracking
+- [ ] Wallet address management
+- [ ] Payment notifications and confirmations
+
+---
+
+## Phase 9: Distributed Storage Layer 📋 FUTURE PLANS
+
+**Timeline:** TBD (long-term vision)
+**Status:** Research phase
+**Prerequisites:** Phase 5-7 complete
+
+### Objectives
+- Fully peer-to-peer architecture
+- Distributed keyserver
+- Offline message storage
+- No centralized dependencies
+
+### Tasks
+
+#### Hypercore Protocol Integration
+- [ ] Hyperswarm P2P networking with DHT
+- [ ] Distributed keyserver using Hyperbee
+- [ ] Hypercore append-only message logs
+- [ ] Real-time message replication
+- [ ] NAT traversal (works behind firewalls)
+- [ ] Offline-first with automatic sync
+- [ ] Node.js bridge daemon (IPC layer)
+
+#### Transport Layer
+- [ ] P2P message routing
+- [ ] Message sync protocol
+- [ ] Connection management
+- [ ] Reconnection handling
+- [ ] Offline message queue
+
+#### Discovery & Routing
+- [ ] DHT for peer discovery
+- [ ] User addressing (pubkey-based)
+- [ ] Message delivery confirmation
+- [ ] NAT traversal (STUN/TURN)
+
+### Deliverables
+- Fully decentralized messenger
+- Distributed keyserver (no central authority)
+- Offline message storage and sync
+- P2P network protocol specification
+
+**Note:** This phase represents long-term architectural goals. Implementation details subject to change based on technological developments and community feedback.
+
+---
+
+## Phase 10+: Future Enhancements 📋 PLANNED
 
 ### Voice/Video Calls
 - [ ] WebRTC integration
@@ -375,18 +398,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [ ] Rich text formatting
 - [ ] File transfer
 
-### CF20 Wallet Integration (Cellframe cpunk Network)
-- [ ] Read local Cellframe wallet files
-- [ ] Connect via public RPC to cpunk network
-- [ ] Display CF20 token balances
-- [ ] Send CF20 tokens directly in messenger
-- [ ] Receive CF20 tokens with QR codes
-- [ ] Transaction history and tracking
-- [ ] Wallet address management
-- [ ] Payment notifications and confirmations
-
 ### Infrastructure
-- [ ] Decentralized architecture (Matrix-style federation)
 - [ ] Tor integration (metadata protection)
 - [ ] Bridge to other platforms (Signal, WhatsApp)
 
@@ -412,13 +424,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - ✅ Messages persist across sessions
 - ✅ Contact list works
 
-### Phase 4 (Network) 🚧
-- ⏳ Messages delivered over network
-- ⏳ Offline messages queued and delivered
-- ⏳ Connection resilience tested
-- ⏳ Multi-client support
-
-### Phase 5 (Desktop) ✅
+### Phase 4 (Desktop) ✅
 - ✅ GUI application working on Linux and Windows
 - ✅ Contacts and groups displayed
 - ✅ Message send/receive functional
@@ -448,14 +454,14 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 | 0.1.0 | Phase 1 | ✅ Complete | Fork preparation |
 | 0.2.0 | Phase 2 | ✅ Complete | Library API |
 | 0.3.0 | Phase 3 | ✅ Complete | CLI messenger |
-| 0.4.0 | Phase 4 | 📋 Planned | Network layer |
-| 0.5.0 | Phase 5.5 | 🚧 In Progress | Web messenger (WebAssembly) |
-| 1.0.0 | Phase 5 | ✅ Complete | Desktop app (first stable release candidate) |
+| 0.4.0 | Phase 4 | ✅ Complete | Desktop app |
+| 0.5.0 | Phase 5 | 🚧 In Progress | Web messenger (WebAssembly) |
+| 1.0.0 | Phase 6-7 | 📋 Planned | Mobile + Advanced Security (first stable release) |
 | 1.1.0 | Phase 6 | 📋 Planned | Mobile apps |
 | 1.2.0 | Phase 7 | 📋 Planned | Advanced security |
 | 1.3.0 | Phase 8 | 📋 Planned | Future enhancements |
 
-**Current Version:** 0.1.105-alpha (103 commits since fork)
+**Current Version:** 0.1.110-alpha (auto-incremented with each commit)
 
 ---
 
@@ -484,16 +490,17 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - **Phase 1:** Fork Preparation
 - **Phase 2:** Library API Design
 - **Phase 3:** CLI Messenger Client
-- **Phase 5:** Desktop Application (with groups!)
+- **Phase 4:** Desktop Application (with groups!)
 
 ### 🚧 In Progress
-- **Phase 4:** Network Layer (planned next)
-- **Phase 5.5:** Web-Based Messenger (active on `feature/web-messenger` branch)
+- **Phase 5:** Web-Based Messenger (active on `feature/web-messenger` branch)
 
 ### 📋 Planned
 - **Phase 6:** Mobile Applications
 - **Phase 7:** Advanced Security Features
-- **Phase 8+:** Future Enhancements
+- **Phase 8:** CF20 Wallet Integration
+- **Phase 9:** Distributed Storage Layer (P2P, Hypercore Protocol)
+- **Phase 10+:** Future Enhancements
 
 ---
 
@@ -501,16 +508,19 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 DNA Messenger is in active development. Contributions welcome!
 
-**Current Phase:** Network Layer (Phase 4)
+**Current Phase:** Web-Based Messenger (Phase 5)
 **How to Contribute:**
 - Check `CLAUDE.md` for development guidelines
 - Pick tasks from current phase
-- Submit pull requests to `develop` branch
+- Submit pull requests to `main` branch
 - Follow existing code style
 
 ---
 
 **Project Start:** 2025-10-14
-**Current Version:** 0.1.105-alpha
-**Next Milestone:** Network Layer (Phase 4)
-**Recent Achievement:** Full group messaging feature complete! 🎉
+**Current Version:** 0.1.110-alpha
+**Next Milestone:** Web Messenger (Phase 5)
+**Recent Achievements:**
+- ✅ Full group messaging feature complete!
+- ✅ Public key caching (100x API call reduction)
+- ✅ Inline keyserver registration (no external utilities)
