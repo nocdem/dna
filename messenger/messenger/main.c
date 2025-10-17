@@ -218,10 +218,17 @@ int main(int argc, char *argv[]) {
             return 1;
         }
 
-        // Keys are automatically uploaded to keyserver by messenger_generate_keys()
-        printf("✓ Identity '%s' created and registered to keyserver\n\n", new_identity);
-
         messenger_free(temp_ctx);
+
+        // Register to cpunk.io keyserver API
+        if (register_to_keyserver(new_identity) != 0) {
+            printf("\n✗ Failed to register to cpunk.io keyserver\n");
+            printf("Keys were generated locally, but not uploaded to keyserver.\n");
+            printf("You can retry with: ./dna_messenger -k\n\n");
+            return 1;
+        }
+
+        printf("✓ Identity '%s' created and registered to keyserver\n\n", new_identity);
         return 0;
     }
 
