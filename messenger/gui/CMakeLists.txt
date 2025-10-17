@@ -28,6 +28,7 @@ target_link_libraries(dna_messenger_gui
     Qt5::Multimedia
     dna_lib
     ${PQ_LIBRARY}
+    json-c
 )
 
 # Include directories

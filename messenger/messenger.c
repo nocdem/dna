@@ -15,6 +15,9 @@
 #else
 #include <sys/time.h>
 #endif
+#include <json-c/json.h>
+#include <openssl/bio.h>
+#include <openssl/evp.h>
 #include "messenger.h"
 #include "dna_config.h"
 #include "qgp_platform.h"
@@ -747,6 +750,34 @@ int messenger_store_pubkey(
     return 0;
 }
 
+/**
+ * Base64 decode helper
+ */
+static size_t base64_decode(const char *input, uint8_t **output) {
+    BIO *bio, *b64;
+    size_t input_len = strlen(input);
+    size_t decode_len = (input_len * 3) / 4;
+
+    *output = malloc(decode_len);
+    if (!*output) return 0;
+
+    bio = BIO_new_mem_buf(input, input_len);
+    b64 = BIO_new(BIO_f_base64());
+    bio = BIO_push(b64, bio);
+    BIO_set_flags(bio, BIO_FLAGS_BASE64_NO_NL);
+
+    int decoded_size = BIO_read(bio, *output, decode_len);
+    BIO_free_all(bio);
+
+    if (decoded_size < 0) {
+        free(*output);
+        *output = NULL;
+        return 0;
+    }
+
+    return decoded_size;
+}
+
 int messenger_load_pubkey(
     messenger_context_t *ctx,
     const char *identity,
@@ -759,46 +790,85 @@ int messenger_load_pubkey(
         return -1;
     }
 
-    const char *paramValues[1] = {identity};
-    const char *query =
-        "SELECT signing_pubkey, signing_pubkey_len, encryption_pubkey, encryption_pubkey_len "
-        "FROM keyserver WHERE identity = $1";
+    // Fetch from API: https://cpunk.io/api/keyserver/lookup/<identity>
+    char url[512];
+    snprintf(url, sizeof(url), "https://cpunk.io/api/keyserver/lookup/%s", identity);
 
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 1, NULL, paramValues, NULL, NULL, 1); // Binary result
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "curl -s '%s'", url);
 
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Load pubkey failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    FILE *fp = popen(cmd, "r");
+    if (!fp) {
+        fprintf(stderr, "Error: Failed to fetch public key from API\n");
         return -1;
     }
 
-    if (PQntuples(res) == 0) {
-        fprintf(stderr, "Public key not found for '%s'\n", identity);
-        PQclear(res);
+    // Read response (up to 10KB)
+    char response[10240];
+    size_t response_len = fread(response, 1, sizeof(response) - 1, fp);
+    response[response_len] = '\0';
+    pclose(fp);
+
+    // Parse JSON response using json-c
+    struct json_object *root = json_tokener_parse(response);
+    if (!root) {
+        fprintf(stderr, "Error: Failed to parse JSON response for '%s'\n", identity);
         return -1;
     }
 
-    // Extract binary data
-    int sign_len = PQgetlength(res, 0, 0);
-    int enc_len = PQgetlength(res, 0, 2);
-
-    *signing_pubkey_out = malloc(sign_len);
-    *encryption_pubkey_out = malloc(enc_len);
-
-    if (!*signing_pubkey_out || !*encryption_pubkey_out) {
-        free(*signing_pubkey_out);
-        free(*encryption_pubkey_out);
-        PQclear(res);
+    // Check success field
+    struct json_object *success_obj = json_object_object_get(root, "success");
+    if (!success_obj || !json_object_get_boolean(success_obj)) {
+        fprintf(stderr, "Error: API returned failure for identity '%s'\n", identity);
+        json_object_put(root);
         return -1;
     }
 
-    memcpy(*signing_pubkey_out, PQgetvalue(res, 0, 0), sign_len);
-    memcpy(*encryption_pubkey_out, PQgetvalue(res, 0, 2), enc_len);
+    // Get data object
+    struct json_object *data_obj = json_object_object_get(root, "data");
+    if (!data_obj) {
+        fprintf(stderr, "Error: No 'data' field in API response\n");
+        json_object_put(root);
+        return -1;
+    }
 
-    *signing_pubkey_len_out = sign_len;
-    *encryption_pubkey_len_out = enc_len;
+    // Extract base64-encoded public keys
+    struct json_object *dilithium_obj = json_object_object_get(data_obj, "dilithium_pub");
+    struct json_object *kyber_obj = json_object_object_get(data_obj, "kyber_pub");
 
-    PQclear(res);
+    if (!dilithium_obj || !kyber_obj) {
+        fprintf(stderr, "Error: Missing public keys in API response\n");
+        json_object_put(root);
+        return -1;
+    }
+
+    const char *dilithium_b64 = json_object_get_string(dilithium_obj);
+    const char *kyber_b64 = json_object_get_string(kyber_obj);
+
+    // Decode base64
+    uint8_t *dilithium_decoded = NULL;
+    uint8_t *kyber_decoded = NULL;
+
+    size_t dilithium_len = base64_decode(dilithium_b64, &dilithium_decoded);
+    size_t kyber_len = base64_decode(kyber_b64, &kyber_decoded);
+
+    json_object_put(root);
+
+    if (dilithium_len == 0 || kyber_len == 0) {
+        fprintf(stderr, "Error: Base64 decode failed\n");
+        free(dilithium_decoded);
+        free(kyber_decoded);
+        return -1;
+    }
+
+    *signing_pubkey_out = dilithium_decoded;
+    *signing_pubkey_len_out = dilithium_len;
+    *encryption_pubkey_out = kyber_decoded;
+    *encryption_pubkey_len_out = kyber_len;
+
+    printf("✓ Fetched public key for '%s' from API (dilithium: %zu bytes, kyber: %zu bytes)\n",
+           identity, dilithium_len, kyber_len);
+
     return 0;
 }
 
