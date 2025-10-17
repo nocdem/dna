@@ -15,8 +15,49 @@
 #include <unistd.h>
 #endif
 #include <json-c/json.h>
+#include "qgp_types.h"
+#include "qgp_dilithium.h"
 
 #define KEYSERVER_URL "https://cpunk.io/api/keyserver/register"
+
+// Base64 encoding table
+static const char base64_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+/**
+ * Base64 encode binary data
+ * Returns malloc'd string that must be freed by caller
+ */
+static char* base64_encode(const uint8_t *data, size_t len) {
+    size_t out_len = 4 * ((len + 2) / 3);
+    char *out = malloc(out_len + 1);
+    if (!out) return NULL;
+
+    size_t i, j;
+    for (i = 0, j = 0; i < len;) {
+        uint32_t octet_a = i < len ? data[i++] : 0;
+        uint32_t octet_b = i < len ? data[i++] : 0;
+        uint32_t octet_c = i < len ? data[i++] : 0;
+        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
+
+        out[j++] = base64_chars[(triple >> 18) & 0x3F];
+        out[j++] = base64_chars[(triple >> 12) & 0x3F];
+        out[j++] = base64_chars[(triple >> 6) & 0x3F];
+        out[j++] = base64_chars[triple & 0x3F];
+    }
+
+    // Add padding
+    size_t mod = len % 3;
+    if (mod == 1) {
+        out[out_len - 2] = '=';
+        out[out_len - 1] = '=';
+    } else if (mod == 2) {
+        out[out_len - 1] = '=';
+    }
+
+    out[out_len] = '\0';
+    return out;
+}
 
 /**
  * Export public key from pqkey file as base64
@@ -32,76 +73,80 @@ static char* export_pubkey(const char *identity, const char *key_type) {
 
     snprintf(key_path, sizeof(key_path), "%s/.dna/%s-%s.pqkey", home, identity, key_type);
 
-    // Use export_pubkey utility - try multiple paths
-    char cmd[1024];
-#ifdef _WIN32
-    // Windows: try paths one by one (no shell || operator)
-    snprintf(cmd, sizeof(cmd), "..\\utils\\export_pubkey.exe \"%s\" 2>nul", key_path);
-#else
-    // Linux: use shell || to try multiple paths
-    snprintf(cmd, sizeof(cmd),
-             "(../utils/export_pubkey \"%s\" 2>/dev/null || ./utils/export_pubkey \"%s\" 2>/dev/null || utils/export_pubkey \"%s\" 2>/dev/null)",
-             key_path, key_path, key_path);
-#endif
-
-    printf("DEBUG: Running command: %s\n", cmd);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return NULL;
-
-    char *pubkey = malloc(10000);
-    if (!pubkey) {
-        pclose(fp);
+    // Load key directly
+    qgp_key_t *key = NULL;
+    if (qgp_key_load(key_path, &key) != 0 || !key) {
+        fprintf(stderr, "Error: Failed to load key: %s\n", key_path);
         return NULL;
     }
 
-    if (!fgets(pubkey, 10000, fp)) {
-        pclose(fp);
-        free(pubkey);
+    if (!key->public_key || key->public_key_size == 0) {
+        fprintf(stderr, "Error: No public key in file\n");
+        qgp_key_free(key);
         return NULL;
     }
 
-    // Remove trailing newline
-    pubkey[strcspn(pubkey, "\n")] = 0;
-    pclose(fp);
+    // Base64 encode public key
+    char *pubkey_b64 = base64_encode(key->public_key, key->public_key_size);
+    qgp_key_free(key);
 
-    if (strlen(pubkey) == 0) {
-        free(pubkey);
+    if (!pubkey_b64) {
+        fprintf(stderr, "Error: Base64 encoding failed\n");
         return NULL;
     }
 
-    return pubkey;
+    return pubkey_b64;
 }
 
 /**
  * Sign JSON string with Dilithium private key
+ * Returns malloc'd base64-encoded signature string that must be freed by caller
  */
 static char* sign_json(const char *identity, const char *json_str) {
-    char cmd[40000];  // Large buffer for long JSON
-#ifdef _WIN32
-    // Windows: use cmd.exe compatible syntax
-    snprintf(cmd, sizeof(cmd), "..\\utils\\sign_json.exe \"%s\" \"%s\" 2>nul", identity, json_str);
-#else
-    // Linux: use shell || to try multiple paths
-    snprintf(cmd, sizeof(cmd),
-             "(../utils/sign_json '%s' '%s' 2>/dev/null || ./utils/sign_json '%s' '%s' 2>/dev/null || utils/sign_json '%s' '%s' 2>/dev/null)",
-             identity, json_str, identity, json_str, identity, json_str);
-#endif
+    char key_path[512];
+    const char *home = getenv("HOME");
+    if (!home) {
+        home = getenv("USERPROFILE");  // Windows fallback
+        if (!home) return NULL;
+    }
 
-    printf("DEBUG: Running command: %s\n", cmd);
-    FILE *fp = popen(cmd, "r");
-    if (!fp) return NULL;
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium.pqkey", home, identity);
 
-    static char signature[10000];
-    if (!fgets(signature, sizeof(signature), fp)) {
-        pclose(fp);
+    // Load Dilithium private key
+    qgp_key_t *key = NULL;
+    if (qgp_key_load(key_path, &key) != 0 || !key) {
+        fprintf(stderr, "Error: Failed to load key: %s\n", key_path);
         return NULL;
     }
 
-    // Remove trailing newline
-    signature[strcspn(signature, "\n")] = 0;
-    pclose(fp);
+    if (key->type != QGP_KEY_TYPE_DILITHIUM3 || !key->private_key) {
+        fprintf(stderr, "Error: Not a Dilithium private key\n");
+        qgp_key_free(key);
+        return NULL;
+    }
 
-    return strlen(signature) > 0 ? signature : NULL;
+    // Sign the JSON string
+    uint8_t signature[QGP_DILITHIUM3_BYTES];
+    size_t sig_len = QGP_DILITHIUM3_BYTES;
+
+    if (qgp_dilithium3_signature(signature, &sig_len,
+                                  (const uint8_t*)json_str, strlen(json_str),
+                                  key->private_key) != 0) {
+        fprintf(stderr, "Error: Signing failed\n");
+        qgp_key_free(key);
+        return NULL;
+    }
+
+    qgp_key_free(key);
+
+    // Base64 encode signature
+    char *sig_b64 = base64_encode(signature, sig_len);
+    if (!sig_b64) {
+        fprintf(stderr, "Error: Base64 encoding failed\n");
+        return NULL;
+    }
+
+    return sig_b64;
 }
 
 /**
@@ -152,6 +197,9 @@ int register_to_keyserver(const char *identity) {
 
     // Add signature to payload
     json_object_object_add(payload, "sig", json_object_new_string(signature));
+
+    // Free signature (json-c made a copy)
+    free(signature);
 
     // Get final JSON with signature
     const char *final_json = json_object_to_json_string_ext(payload,
