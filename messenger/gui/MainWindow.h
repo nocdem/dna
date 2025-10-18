@@ -37,6 +37,7 @@ private slots:
     void onContactSelected(QListWidgetItem *item);
     void onSendMessage();
     void onRefreshMessages();
+    void onAttachImage();  // NEW: Attach image to message
     void onThemeIO();
     void onThemeClub();
     void onFontScaleSmall();
@@ -70,6 +71,8 @@ private:
     void applyTheme(const QString &themeName);
     void applyFontScale(double scale);
     int scaledIconSize(int baseSize) const;  // Helper for icon scaling
+    QString processMessageForDisplay(const QString &messageText);  // NEW: Process images in message
+    QString imageToBase64(const QString &imagePath);  // NEW: Convert image to base64
 
     // Contact/Group item type
     enum ContactType {
@@ -100,6 +103,7 @@ private:
     QPushButton *createGroupButton;
     QPushButton *groupSettingsButton;
     QPushButton *userMenuButton;
+    QPushButton *attachImageButton;  // NEW: Attach image button
     QLabel *statusLabel;
     QLabel *recipientsLabel;
 

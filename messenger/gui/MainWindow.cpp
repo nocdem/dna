@@ -22,6 +22,11 @@
 #include <QSettings>
 #include <QFontDatabase>
 #include <QMouseEvent>
+#include <QFileDialog>
+#include <QBuffer>
+#include <QImageReader>
+#include <QImageWriter>
+#include <QRegularExpression>
 
 // Platform-specific includes for identity detection
 #ifdef _WIN32
@@ -650,6 +655,35 @@ void MainWindow::setupUI() {
     connect(messageInput, &QLineEdit::returnPressed, this, &MainWindow::onSendMessage);
     inputLayout->addWidget(messageInput);
 
+    // Attach Image button
+    attachImageButton = new QPushButton("Image");
+    attachImageButton->setIcon(QIcon(":/icons/add.svg"));  // Using add icon as paperclip
+    attachImageButton->setIconSize(QSize(scaledIconSize(18), scaledIconSize(18)));
+    attachImageButton->setToolTip("Attach image");
+    attachImageButton->setStyleSheet(
+        "QPushButton {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #00A8CC, stop:1 #00D9FF);"
+        "   color: white;"
+        "   border: 2px solid #00A8CC;"
+        "   border-radius: 15px;"
+        "   padding: 15px 25px;"
+        "   font-weight: bold;"
+        "   font-family: 'Orbitron'; font-size: 13px;"
+        "}"
+        "QPushButton:hover {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #00D9FF, stop:1 #33E6FF);"
+        "   border: 2px solid #00D9FF;"
+        "}"
+        "QPushButton:pressed {"
+        "   background: #008CA8;"
+        "   border: 2px solid #006B82;"
+        "}"
+    );
+    connect(attachImageButton, &QPushButton::clicked, this, &MainWindow::onAttachImage);
+    inputLayout->addWidget(attachImageButton);
+
     sendButton = new QPushButton("Send");
     sendButton->setIcon(QIcon(":/icons/send.svg"));
     sendButton->setIconSize(QSize(scaledIconSize(18), scaledIconSize(18)));
@@ -899,7 +933,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     } else {
                         // cpunk.io: cyan gradient (default)
                         sentBubble = QString(
@@ -911,7 +945,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     }
                     messageDisplay->append(sentBubble);
                 } else {
@@ -928,7 +962,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     } else {
                         // cpunk.io: darker teal (default)
                         receivedBubble = QString(
@@ -940,7 +974,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     }
                     messageDisplay->append(receivedBubble);
                 }
@@ -1042,7 +1076,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     } else {
                         sentBubble = QString(
                             "<div style='text-align: right; margin: 8px 0;'>"
@@ -1053,7 +1087,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     }
                     messageDisplay->append(sentBubble);
                 } else {
@@ -1069,7 +1103,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     } else {
                         receivedBubble = QString(
                             "<div style='text-align: left; margin: 8px 0;'>"
@@ -1080,7 +1114,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     }
                     messageDisplay->append(receivedBubble);
                 }
@@ -2674,4 +2708,118 @@ void MainWindow::onWallet() {
     );
 
     msgBox.exec();
+}
+
+// ============================================================================
+// IMAGE SUPPORT FUNCTIONS
+// ============================================================================
+
+void MainWindow::onAttachImage() {
+    // Open file dialog to select image
+    QString fileName = QFileDialog::getOpenFileName(
+        this,
+        "Select Image",
+        QDir::homePath(),
+        "Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp);;All Files (*)"
+    );
+
+    if (fileName.isEmpty()) {
+        return;  // User cancelled
+    }
+
+    // Check file size (5MB limit before base64)
+    QFileInfo fileInfo(fileName);
+    qint64 fileSize = fileInfo.size();
+    const qint64 MAX_SIZE = 5 * 1024 * 1024;  // 5MB
+
+    if (fileSize > MAX_SIZE) {
+        QMessageBox::warning(this, "Image Too Large",
+            QString("Image is too large (%1 MB).\n"
+                    "Maximum size is 5 MB.\n\n"
+                    "Consider resizing the image.")
+                .arg(fileSize / 1024.0 / 1024.0, 0, 'f', 2));
+        return;
+    }
+
+    // Convert image to base64
+    QString base64 = imageToBase64(fileName);
+    if (base64.isEmpty()) {
+        QMessageBox::critical(this, "Error", "Failed to load image.");
+        return;
+    }
+
+    // Append to message input
+    QString currentText = messageInput->text();
+    if (!currentText.isEmpty() && !currentText.endsWith('\n')) {
+        currentText += "\n";
+    }
+    currentText += "[IMG:" + base64 + "]";
+    messageInput->setText(currentText);
+
+    statusLabel->setText(QString("Image attached (%1 KB)")
+        .arg(fileSize / 1024.0, 0, 'f', 1));
+}
+
+QString MainWindow::imageToBase64(const QString &imagePath) {
+    // Load image
+    QImage image(imagePath);
+    if (image.isNull()) {
+        return QString();
+    }
+
+    // Resize if too large (max 1920x1080)
+    const int MAX_WIDTH = 1920;
+    const int MAX_HEIGHT = 1080;
+
+    if (image.width() > MAX_WIDTH || image.height() > MAX_HEIGHT) {
+        image = image.scaled(MAX_WIDTH, MAX_HEIGHT, 
+                            Qt::KeepAspectRatio, 
+                            Qt::SmoothTransformation);
+    }
+
+    // Convert to PNG format (for lossless quality)
+    QByteArray byteArray;
+    QBuffer buffer(&byteArray);
+    buffer.open(QIODevice::WriteOnly);
+
+    // Determine format from file extension
+    QString format = "PNG";
+    QString suffix = QFileInfo(imagePath).suffix().toUpper();
+    if (suffix == "JPG" || suffix == "JPEG") {
+        format = "JPEG";
+    } else if (suffix == "GIF") {
+        format = "GIF";
+    } else if (suffix == "WEBP") {
+        format = "WEBP";
+    }
+
+    image.save(&buffer, format.toUtf8().constData(), 85);  // 85% quality for JPEG
+
+    // Convert to base64 with data URI
+    QString base64 = "data:image/" + format.toLower() + ";base64," + 
+                     byteArray.toBase64();
+
+    return base64;
+}
+
+QString MainWindow::processMessageForDisplay(const QString &messageText) {
+    QString processed = messageText;
+
+    // Find all [IMG:data:image/...] markers and replace with HTML img tags
+    QRegularExpression imgRegex(R"(\[IMG:(data:image/[^]]+)\])");
+    QRegularExpressionMatchIterator it = imgRegex.globalMatch(processed);
+
+    while (it.hasNext()) {
+        QRegularExpressionMatch match = it.next();
+        QString fullMatch = match.captured(0);  // [IMG:data:...]
+        QString dataUri = match.captured(1);     // data:image/...
+
+        // Replace with HTML img tag (max width for display)
+        QString imgTag = QString("<br><img src='%1' style='max-width: 400px; max-height: 300px; border-radius: 10px;'><br>")
+                            .arg(dataUri);
+
+        processed.replace(fullMatch, imgTag);
+    }
+
+    return processed;
 }
