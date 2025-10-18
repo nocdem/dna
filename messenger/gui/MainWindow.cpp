@@ -79,7 +79,7 @@ QString MainWindow::getLocalIdentity() {
 }
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0), currentGroupId(-1), currentContactType(TYPE_CONTACT), fontScale(3.0) {
+    : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0), currentGroupId(-1), currentContactType(TYPE_CONTACT), fontScale(1.5) {  // Changed default from 3.0 to 1.5
 
     // Remove native window frame for custom title bar
     setWindowFlags(Qt::FramelessWindowHint);
@@ -172,16 +172,16 @@ MainWindow::MainWindow(QWidget *parent)
     // Save current identity (reuse settings from earlier)
     settings.setValue("currentIdentity", currentIdentity);  // Save logged-in user
     QString savedTheme = settings.value("theme", "io").toString();  // Default to "io" theme
-    double savedFontScale = settings.value("fontScale", 3.0).toDouble();  // Default to 3x (Large)
+    double savedFontScale = settings.value("fontScale", 1.5).toDouble();  // Default to 1.5x (Medium)
 
     applyTheme(savedTheme);
     applyFontScale(savedFontScale);
 
-    // Scale window to 80% of screen size
+    // Scale window to 60% of screen size (reduced from 80%)
     QScreen *screen = QGuiApplication::primaryScreen();
     QRect screenGeometry = screen->availableGeometry();
-    int width = screenGeometry.width() * 0.8;
-    int height = screenGeometry.height() * 0.8;
+    int width = screenGeometry.width() * 0.6;
+    int height = screenGeometry.height() * 0.6;
     resize(width, height);
 
     // Center window on screen
@@ -335,34 +335,34 @@ void MainWindow::setupUI() {
     QMenuBar *menuBar = new QMenuBar();
 
     // Settings menu
-    QMenu *settingsMenu = menuBar->addMenu(QString::fromUtf8("⚙️ Settings"));
+    QMenu *settingsMenu = menuBar->addMenu(QString::fromUtf8("Settings"));
 
     // Theme submenu
-    QMenu *themeMenu = settingsMenu->addMenu(QString::fromUtf8("🎨 Theme"));
-    QAction *themeIOAction = themeMenu->addAction(QString::fromUtf8("🌊 cpunk.io (Cyan)"));
-    QAction *themeClubAction = themeMenu->addAction(QString::fromUtf8("🔥 cpunk.club (Orange)"));
+    QMenu *themeMenu = settingsMenu->addMenu(QString::fromUtf8("Theme"));
+    QAction *themeIOAction = themeMenu->addAction(QString::fromUtf8("cpunk.io (Cyan)"));
+    QAction *themeClubAction = themeMenu->addAction(QString::fromUtf8("cpunk.club (Orange)"));
     connect(themeIOAction, &QAction::triggered, this, &MainWindow::onThemeIO);
     connect(themeClubAction, &QAction::triggered, this, &MainWindow::onThemeClub);
 
     // Font Scale submenu
-    QMenu *fontScaleMenu = settingsMenu->addMenu(QString::fromUtf8("📏 Font Scale"));
-    QAction *fontSmallAction = fontScaleMenu->addAction(QString::fromUtf8("🔤 Small (1x)"));
-    QAction *fontMediumAction = fontScaleMenu->addAction(QString::fromUtf8("🔡 Medium (2x)"));
-    QAction *fontLargeAction = fontScaleMenu->addAction(QString::fromUtf8("🔠 Large (3x)"));
-    QAction *fontExtraLargeAction = fontScaleMenu->addAction(QString::fromUtf8("🅰️ Extra Large (4x)"));
+    QMenu *fontScaleMenu = settingsMenu->addMenu(QString::fromUtf8("Font Scale"));
+    QAction *fontSmallAction = fontScaleMenu->addAction(QString::fromUtf8("Small (1x)"));
+    QAction *fontMediumAction = fontScaleMenu->addAction(QString::fromUtf8("Medium (2x)"));
+    QAction *fontLargeAction = fontScaleMenu->addAction(QString::fromUtf8("Large (3x)"));
+    QAction *fontExtraLargeAction = fontScaleMenu->addAction(QString::fromUtf8("Extra Large (4x)"));
     connect(fontSmallAction, &QAction::triggered, this, &MainWindow::onFontScaleSmall);
     connect(fontMediumAction, &QAction::triggered, this, &MainWindow::onFontScaleMedium);
     connect(fontLargeAction, &QAction::triggered, this, &MainWindow::onFontScaleLarge);
     connect(fontExtraLargeAction, &QAction::triggered, this, &MainWindow::onFontScaleExtraLarge);
 
     // Wallet menu
-    QMenu *walletMenu = menuBar->addMenu(QString::fromUtf8("💰 Wallet"));
-    QAction *walletAction = walletMenu->addAction(QString::fromUtf8("💳 Open Wallet"));
+    QMenu *walletMenu = menuBar->addMenu(QString::fromUtf8("Wallet"));
+    QAction *walletAction = walletMenu->addAction(QString::fromUtf8("Open Wallet"));
     connect(walletAction, &QAction::triggered, this, &MainWindow::onWallet);
 
     // Help menu
-    QMenu *helpMenu = menuBar->addMenu(QString::fromUtf8("💝 Help"));
-    QAction *updateAction = helpMenu->addAction(QString::fromUtf8("✨ Check for Updates"));
+    QMenu *helpMenu = menuBar->addMenu(QString::fromUtf8("Help"));
+    QAction *updateAction = helpMenu->addAction(QString::fromUtf8("Check for Updates"));
     connect(updateAction, &QAction::triggered, this, &MainWindow::onCheckForUpdates);
 
     // Central widget with vertical layout for title bar + content
@@ -396,7 +396,7 @@ void MainWindow::setupUI() {
     );
     QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
 
-    QLabel *contactsLabel = new QLabel(QString::fromUtf8("👥 Contacts"));
+    QLabel *contactsLabel = new QLabel(QString::fromUtf8("Contacts"));
     contactsLabel->setStyleSheet(
         "font-weight: bold; "
         "font-family: 'Orbitron'; font-size: 72px; "
@@ -561,7 +561,7 @@ void MainWindow::setupUI() {
     );
     QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
 
-    QLabel *chatLabel = new QLabel(QString::fromUtf8("💬 Conversation"));
+    QLabel *chatLabel = new QLabel(QString::fromUtf8("Conversation"));
     chatLabel->setStyleSheet(
         "font-weight: bold; "
         "font-family: 'Orbitron'; font-size: 72px; "
@@ -586,7 +586,7 @@ void MainWindow::setupUI() {
     rightLayout->addWidget(messageDisplay);
 
     // Recipients label
-    recipientsLabel = new QLabel(QString::fromUtf8("📨 To: ..."));
+    recipientsLabel = new QLabel(QString::fromUtf8("To: ..."));
     recipientsLabel->setStyleSheet(
         "QLabel {"
         "   background: rgba(0, 217, 255, 0.1);"
@@ -634,7 +634,7 @@ void MainWindow::setupUI() {
     // Message input area
     QHBoxLayout *inputLayout = new QHBoxLayout;
     messageInput = new QLineEdit;
-    messageInput->setPlaceholderText(QString::fromUtf8("✏️ Type a message..."));
+    messageInput->setPlaceholderText(QString::fromUtf8("Type a message..."));
     messageInput->setStyleSheet(
         "QLineEdit {"
         "   background: #0D3438;"
@@ -703,7 +703,7 @@ void MainWindow::setupUI() {
     mainVerticalLayout->addWidget(contentWidget, 1);
 
     // Status bar
-    statusLabel = new QLabel(QString::fromUtf8("✨ Ready"));
+    statusLabel = new QLabel(QString::fromUtf8("Ready"));
     statusBar()->addWidget(statusLabel);
 }
 
@@ -720,7 +720,7 @@ void MainWindow::loadContacts() {
     if (messenger_get_contact_list(ctx, &identities, &contactCount) == 0) {
         for (int i = 0; i < contactCount; i++) {
             QString identity = QString::fromUtf8(identities[i]);
-            QString displayText = QString::fromUtf8("👤 ") + identity;
+            QString displayText = QString::fromUtf8("") + identity;
             contactList->addItem(displayText);
 
             // Store contact metadata
@@ -743,7 +743,7 @@ void MainWindow::loadContacts() {
     if (messenger_get_groups(ctx, &groups, &groupCount) == 0) {
         for (int i = 0; i < groupCount; i++) {
             QString groupName = QString::fromUtf8(groups[i].name);
-            QString displayText = QString::fromUtf8("👥 ") + groupName;
+            QString displayText = QString::fromUtf8("") + groupName;
             contactList->addItem(displayText);
 
             // Store group metadata
@@ -759,10 +759,10 @@ void MainWindow::loadContacts() {
     }
 
     if (totalItems > 0) {
-        statusLabel->setText(QString::fromUtf8("✨ %1 contact(s) and %2 group(s) loaded")
+        statusLabel->setText(QString::fromUtf8("%1 contact(s) and %2 group(s) loaded")
                              .arg(contactCount).arg(groupCount));
     } else {
-        statusLabel->setText(QString::fromUtf8("❌ No contacts or groups found"));
+        statusLabel->setText(QString::fromUtf8("No contacts or groups found"));
     }
 }
 
@@ -791,7 +791,7 @@ void MainWindow::onContactSelected(QListWidgetItem *item) {
         groupSettingsButton->setVisible(false);
 
         // Update recipients label
-        recipientsLabel->setText(QString::fromUtf8("📨 To: ") + currentContact);
+        recipientsLabel->setText(QString::fromUtf8("To: ") + currentContact);
 
         // Mark all messages from this contact as read
         messenger_mark_conversation_read(ctx, currentContact.toUtf8().constData());
@@ -806,7 +806,7 @@ void MainWindow::onContactSelected(QListWidgetItem *item) {
         groupSettingsButton->setVisible(true);
 
         // Update recipients label
-        recipientsLabel->setText(QString::fromUtf8("📨 To: Group - ") + contactItem.name);
+        recipientsLabel->setText(QString::fromUtf8("To: Group - ") + contactItem.name);
 
         loadGroupConversation(currentGroupId);
     }
@@ -830,7 +830,7 @@ void MainWindow::loadConversation(const QString &contact) {
         "padding: 15px; border-radius: 15px; margin-bottom: 15px; border: 2px solid #00D9FF;'>"
         "<span style='font-family: 'Orbitron'; font-size: %1px; font-weight: bold; color: #00D9FF;'>%2 Conversation with %3 %4</span>"
         "</div>"
-    ).arg(headerFontSize + 18).arg(QString::fromUtf8("💬"), contact, QString::fromUtf8("✨")));
+    ).arg(headerFontSize + 18).arg(QString::fromUtf8(""), contact));
 
     // Load messages from database
     message_info_t *messages = NULL;
@@ -901,7 +901,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     } else {
                         // cpunk.io: cyan gradient (default)
                         sentBubble = QString(
@@ -913,7 +913,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     }
                     messageDisplay->append(sentBubble);
                 } else {
@@ -930,7 +930,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     } else {
                         // cpunk.io: darker teal (default)
                         receivedBubble = QString(
@@ -942,7 +942,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     }
                     messageDisplay->append(receivedBubble);
                 }
@@ -950,14 +950,14 @@ void MainWindow::loadConversation(const QString &contact) {
         }
 
         messenger_free_messages(messages, count);
-        statusLabel->setText(QString::fromUtf8("✨ Loaded %1 messages with %2").arg(count).arg(contact));
+        statusLabel->setText(QString::fromUtf8("Loaded %1 messages with %2").arg(count).arg(contact));
     } else {
         messageDisplay->append(QString(
             "<div style='text-align: center; color: #FF6B35; padding: 20px; font-family: 'Orbitron'; font-size: %1px; font-weight: bold;'>"
             "%2"
             "</div>"
-        ).arg(messageFontSize).arg(QString::fromUtf8("❌ Failed to load conversation")));
-        statusLabel->setText(QString::fromUtf8("❌ Error loading conversation"));
+        ).arg(messageFontSize).arg(QString::fromUtf8("Failed to load conversation")));
+        statusLabel->setText(QString::fromUtf8("Error loading conversation"));
     }
 }
 
@@ -982,7 +982,7 @@ void MainWindow::loadGroupConversation(int groupId) {
             "padding: 15px; border-radius: 15px; margin-bottom: 15px; border: 2px solid #00D9FF;'>"
             "<span style='font-family: 'Orbitron'; font-size: %1px; font-weight: bold; color: #00D9FF;'>%2 Group: %3 %4</span>"
             "</div>"
-        ).arg(headerFontSize + 18).arg(QString::fromUtf8("👥"), QString::fromUtf8(groupInfo.name), QString::fromUtf8("✨")));
+        ).arg(headerFontSize + 18).arg(QString::fromUtf8(""), QString::fromUtf8(groupInfo.name)));
 
         // Free group info strings
         free(groupInfo.name);
@@ -995,7 +995,7 @@ void MainWindow::loadGroupConversation(int groupId) {
             "padding: 15px; border-radius: 15px; margin-bottom: 15px; border: 2px solid #00D9FF;'>"
             "<span style='font-family: 'Orbitron'; font-size: %1px; font-weight: bold; color: #00D9FF;'>%2 Group Conversation %3</span>"
             "</div>"
-        ).arg(headerFontSize + 18).arg(QString::fromUtf8("👥"), QString::fromUtf8("✨")));
+        ).arg(headerFontSize + 18).arg(QString::fromUtf8("")));
     }
 
     // Load messages from database
@@ -1044,7 +1044,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     } else {
                         sentBubble = QString(
                             "<div style='text-align: right; margin: 8px 0;'>"
@@ -1055,7 +1055,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     }
                     messageDisplay->append(sentBubble);
                 } else {
@@ -1071,7 +1071,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     } else {
                         receivedBubble = QString(
                             "<div style='text-align: left; margin: 8px 0;'>"
@@ -1082,7 +1082,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
                     }
                     messageDisplay->append(receivedBubble);
                 }
@@ -1090,14 +1090,14 @@ void MainWindow::loadGroupConversation(int groupId) {
         }
 
         messenger_free_messages(messages, count);
-        statusLabel->setText(QString::fromUtf8("✨ Loaded %1 group messages").arg(count));
+        statusLabel->setText(QString::fromUtf8("Loaded %1 group messages").arg(count));
     } else {
         messageDisplay->append(QString(
             "<div style='text-align: center; color: #FF6B35; padding: 20px; font-family: 'Orbitron'; font-size: %1px; font-weight: bold;'>"
             "%2"
             "</div>"
-        ).arg(messageFontSize).arg(QString::fromUtf8("❌ Failed to load group conversation")));
-        statusLabel->setText(QString::fromUtf8("❌ Error loading group conversation"));
+        ).arg(messageFontSize).arg(QString::fromUtf8("Failed to load group conversation")));
+        statusLabel->setText(QString::fromUtf8("Error loading group conversation"));
     }
 }
 
@@ -1164,7 +1164,7 @@ void MainWindow::onSendMessage() {
                 "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                 "</div>"
                 "</div>"
-            ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp, statusCheckmark).arg(messageFontSize).arg(message.toHtmlEscaped());
+            ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timestamp, statusCheckmark).arg(messageFontSize).arg(message.toHtmlEscaped());
         } else {
             // cpunk.io: cyan gradient (default)
             sentBubble = QString(
@@ -1176,15 +1176,15 @@ void MainWindow::onSendMessage() {
                 "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                 "</div>"
                 "</div>"
-            ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp, statusCheckmark).arg(messageFontSize).arg(message.toHtmlEscaped());
+            ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timestamp, statusCheckmark).arg(messageFontSize).arg(message.toHtmlEscaped());
         }
         messageDisplay->append(sentBubble);
         messageInput->clear();
-        statusLabel->setText(QString::fromUtf8("✨ Message sent"));
+        statusLabel->setText(QString::fromUtf8("Message sent"));
     } else {
-        QMessageBox::critical(this, QString::fromUtf8("❌ Send Failed"),
+        QMessageBox::critical(this, QString::fromUtf8("Send Failed"),
                               QString::fromUtf8("Failed to send message. Check console for details."));
-        statusLabel->setText(QString::fromUtf8("❌ Message send failed"));
+        statusLabel->setText(QString::fromUtf8("Message send failed"));
     }
 }
 
@@ -1194,7 +1194,7 @@ void MainWindow::onRefreshMessages() {
     } else if (currentContactType == TYPE_GROUP && currentGroupId >= 0) {
         loadGroupConversation(currentGroupId);
     }
-    statusLabel->setText(QString::fromUtf8("✨ Messages refreshed"));
+    statusLabel->setText(QString::fromUtf8("Messages refreshed"));
 }
 
 void MainWindow::checkForNewMessages() {
@@ -1246,7 +1246,7 @@ void MainWindow::checkForNewMessages() {
             notificationSound->play();
 
             // Show desktop notification
-            QString notificationTitle = QString::fromUtf8("💌 New Message");
+            QString notificationTitle = QString::fromUtf8("New Message");
             QString notificationBody = QString("From: %1\n%2")
                 .arg(sender)
                 .arg(timestamp);
@@ -1470,7 +1470,7 @@ void MainWindow::onCheckForUpdates() {
             if (repoRoot.isEmpty()) {
                 printf("ERROR: Could not find repository root\n");
                 printf("==========================================\n\n");
-                QMessageBox::critical(this, QString::fromUtf8("❌ Update Failed"),
+                QMessageBox::critical(this, QString::fromUtf8("Update Failed"),
                                      QString::fromUtf8("Could not find repository root.\n\n"
                                      "Searched from: %1\n\n"
                                      "Make sure you are running from a git repository.").arg(exePath));
@@ -1483,7 +1483,7 @@ void MainWindow::onCheckForUpdates() {
             if (!QFileInfo::exists(updateScript)) {
                 printf("ERROR: Update script not found at: %s\n", updateScript.toUtf8().constData());
                 printf("==========================================\n\n");
-                QMessageBox::critical(this, QString::fromUtf8("❌ Update Failed"),
+                QMessageBox::critical(this, QString::fromUtf8("Update Failed"),
                                      QString::fromUtf8("Update script not found:\n%1\n\n"
                                      "Please update manually using:\n"
                                      "git pull && cmake --build build --config Release").arg(updateScript));
@@ -1739,7 +1739,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "}"
         ).arg(listFontSize));
 
-        statusLabel->setText(QString::fromUtf8("🌊 Theme: cpunk.io (Cyan)"));
+        statusLabel->setText(QString::fromUtf8("Theme: cpunk.io (Cyan)"));
 
     } else if (themeName == "club") {
         // cpunk.club theme - dark brown with orange accents
@@ -1919,7 +1919,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "}"
         ).arg(listFontSize));
 
-        statusLabel->setText(QString::fromUtf8("🔥 Theme: cpunk.club (Orange)"));
+        statusLabel->setText(QString::fromUtf8("Theme: cpunk.club (Orange)"));
     }
     
     // Reload conversation to apply new message bubble colors
@@ -1972,7 +1972,7 @@ void MainWindow::applyFontScale(double scale) {
     else if (scale == 4.0) scaleText = "Extra Large (4x)";
     else scaleText = QString::number(scale) + "x";
     
-    statusLabel->setText(QString::fromUtf8("📏 Font Scale: %1").arg(scaleText));
+    statusLabel->setText(QString::fromUtf8("Font Scale: %1").arg(scaleText));
 }
 
 int MainWindow::scaledIconSize(int baseSize) const {
@@ -1988,7 +1988,7 @@ void MainWindow::onAddRecipients() {
 
     // Create dialog for multi-selection
     QDialog dialog(this);
-    dialog.setWindowTitle(QString::fromUtf8("➕ Add Recipients"));
+    dialog.setWindowTitle(QString::fromUtf8("Add Recipients"));
     dialog.setModal(true);
 
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
@@ -2009,7 +2009,7 @@ void MainWindow::onAddRecipients() {
             QString contact = QString::fromUtf8(identities[i]);
             // Don't include current contact or sender
             if (contact != currentContact && contact != currentIdentity) {
-                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("👤 ") + contact);
+                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("") + contact);
                 listWidget->addItem(item);
 
                 // Pre-select if already in additionalRecipients
@@ -2045,7 +2045,7 @@ void MainWindow::onAddRecipients() {
             if (item->isSelected()) {
                 // Strip emoji prefix "👤 "
                 QString contact = item->text();
-                if (contact.startsWith(QString::fromUtf8("👤 "))) {
+                if (contact.startsWith(QString::fromUtf8(""))) {
                     contact = contact.mid(3);
                 }
                 additionalRecipients.append(contact);
@@ -2053,13 +2053,13 @@ void MainWindow::onAddRecipients() {
         }
 
         // Update recipients label
-        QString recipientsText = QString::fromUtf8("📨 To: ") + currentContact;
+        QString recipientsText = QString::fromUtf8("To: ") + currentContact;
         if (!additionalRecipients.isEmpty()) {
             recipientsText += ", " + additionalRecipients.join(", ");
         }
         recipientsLabel->setText(recipientsText);
 
-        statusLabel->setText(QString::fromUtf8("✨ %1 additional recipient(s) added").arg(additionalRecipients.count()));
+        statusLabel->setText(QString::fromUtf8("%1 additional recipient(s) added").arg(additionalRecipients.count()));
     }
 }
 
@@ -2095,7 +2095,7 @@ void MainWindow::onCloseWindow() {
 void MainWindow::onCreateGroup() {
     // Create dialog
     QDialog dialog(this);
-    dialog.setWindowTitle(QString::fromUtf8("➕ Create New Group"));
+    dialog.setWindowTitle(QString::fromUtf8("Create New Group"));
     dialog.setMinimumSize(600, 500);
 
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
@@ -2115,7 +2115,7 @@ void MainWindow::onCreateGroup() {
     layout->addWidget(descEdit);
 
     // Member selection
-    QLabel *memberLabel = new QLabel(QString::fromUtf8("👥 Select Members:"));
+    QLabel *memberLabel = new QLabel(QString::fromUtf8("Select Members:"));
     layout->addWidget(memberLabel);
 
     QListWidget *memberList = new QListWidget();
@@ -2128,7 +2128,7 @@ void MainWindow::onCreateGroup() {
         for (int i = 0; i < contactCount; i++) {
             QString identity = QString::fromUtf8(identities[i]);
             if (identity != currentIdentity) {  // Exclude self
-                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("👤 ") + identity);
+                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("") + identity);
                 memberList->addItem(item);
             }
             free(identities[i]);
@@ -2173,7 +2173,7 @@ void MainWindow::onCreateGroup() {
             if (item->isSelected()) {
                 // Strip emoji prefix
                 QString member = item->text();
-                if (member.startsWith(QString::fromUtf8("👤 "))) {
+                if (member.startsWith(QString::fromUtf8(""))) {
                     member = member.mid(3);
                 }
                 selectedMembers.append(member);
@@ -2212,7 +2212,7 @@ void MainWindow::onCreateGroup() {
 
         if (result == 0) {
             QMessageBox::information(this, "Success",
-                QString::fromUtf8("✨ Group '%1' created successfully!").arg(groupName));
+                QString("Group \"%1\" created successfully!").arg(groupName));
             loadContacts();  // Refresh contact list
         } else {
             QMessageBox::critical(this, "Error", "Failed to create group");
@@ -2235,14 +2235,14 @@ void MainWindow::onGroupSettings() {
 
     // Create dialog
     QDialog dialog(this);
-    dialog.setWindowTitle(QString::fromUtf8("⚙️ Group Settings"));
+    dialog.setWindowTitle(QString::fromUtf8("Group Settings"));
     dialog.setMinimumSize(500, 400);
 
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
 
     // Display read-only info
     QLabel *infoLabel = new QLabel(
-        QString::fromUtf8("👥 Group ID: %1\n"
+        QString::fromUtf8("Group ID: %1\n"
                          "👤 Creator: %2\n"
                          "📅 Created: %3\n"
                          "👥 Members: %4")
@@ -2426,7 +2426,7 @@ void MainWindow::onManageGroupMembers() {
 
     // Create dialog
     QDialog dialog(this);
-    dialog.setWindowTitle(QString::fromUtf8("👥 Manage Group Members"));
+    dialog.setWindowTitle(QString::fromUtf8("Manage Group Members"));
     dialog.setMinimumSize(600, 500);
 
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
@@ -2451,7 +2451,7 @@ void MainWindow::onManageGroupMembers() {
     // Populate current members
     for (int i = 0; i < memberCount; i++) {
         QString member = QString::fromUtf8(members[i]);
-        QString displayText = QString::fromUtf8("👤 ") + member;
+        QString displayText = QString::fromUtf8("") + member;
 
         // Mark creator with special icon
         if (member == QString::fromUtf8(groupInfo.creator)) {
@@ -2481,7 +2481,7 @@ void MainWindow::onManageGroupMembers() {
             if (item->isSelected()) {
                 QString memberText = item->text();
                 // Strip emoji and extract member name
-                if (memberText.startsWith(QString::fromUtf8("👤 "))) {
+                if (memberText.startsWith(QString::fromUtf8(""))) {
                     memberText = memberText.mid(3);
                     // Remove " 👑 (Creator)" suffix if present
                     int crownPos = memberText.indexOf(QString::fromUtf8(" 👑"));
@@ -2516,7 +2516,7 @@ void MainWindow::onManageGroupMembers() {
 
             if (removed > 0) {
                 QMessageBox::information(this, "Success",
-                    QString::fromUtf8("✨ Removed %1 member(s)").arg(removed));
+                    QString::fromUtf8("Removed %1 member(s)").arg(removed));
 
                 // Refresh the members list
                 currentMembersList->clear();
@@ -2525,7 +2525,7 @@ void MainWindow::onManageGroupMembers() {
                 if (messenger_get_group_members(ctx, currentGroupId, &updatedMembers, &updatedCount) == 0) {
                     for (int i = 0; i < updatedCount; i++) {
                         QString member = QString::fromUtf8(updatedMembers[i]);
-                        QString displayText = QString::fromUtf8("👤 ") + member;
+                        QString displayText = QString::fromUtf8("") + member;
 
                         if (member == QString::fromUtf8(groupInfo.creator)) {
                             displayText += QString::fromUtf8(" 👑 (Creator)");
@@ -2556,7 +2556,7 @@ void MainWindow::onManageGroupMembers() {
     layout->addWidget(separator);
 
     // Add new members section
-    QLabel *addLabel = new QLabel(QString::fromUtf8("➕ Add New Members:"));
+    QLabel *addLabel = new QLabel(QString::fromUtf8("Add New Members:"));
     layout->addWidget(addLabel);
 
     QListWidget *availableContactsList = new QListWidget();
@@ -2576,7 +2576,7 @@ void MainWindow::onManageGroupMembers() {
         for (int i = 0; i < contactCount; i++) {
             QString contact = QString::fromUtf8(allContacts[i]);
             if (!currentMembers.contains(contact)) {
-                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("👤 ") + contact);
+                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("") + contact);
                 availableContactsList->addItem(item);
             }
             free(allContacts[i]);
@@ -2596,7 +2596,7 @@ void MainWindow::onManageGroupMembers() {
             if (item->isSelected()) {
                 QString contactText = item->text();
                 // Strip emoji prefix
-                if (contactText.startsWith(QString::fromUtf8("👤 "))) {
+                if (contactText.startsWith(QString::fromUtf8(""))) {
                     contactText = contactText.mid(3);
                     toAdd.append(contactText);
                 }
@@ -2618,7 +2618,7 @@ void MainWindow::onManageGroupMembers() {
 
         if (added > 0) {
             QMessageBox::information(this, "Success",
-                QString::fromUtf8("✨ Added %1 member(s)").arg(added));
+                QString::fromUtf8("Added %1 member(s)").arg(added));
 
             // Refresh both lists
             currentMembersList->clear();
@@ -2633,7 +2633,7 @@ void MainWindow::onManageGroupMembers() {
                     QString member = QString::fromUtf8(updatedMembers[i]);
                     updatedMemberSet.insert(member);
 
-                    QString displayText = QString::fromUtf8("👤 ") + member;
+                    QString displayText = QString::fromUtf8("") + member;
                     if (member == QString::fromUtf8(groupInfo.creator)) {
                         displayText += QString::fromUtf8(" 👑 (Creator)");
                     }
@@ -2656,7 +2656,7 @@ void MainWindow::onManageGroupMembers() {
                     for (int i = 0; i < contactCount; i++) {
                         QString contact = QString::fromUtf8(allContacts[i]);
                         if (!updatedMemberSet.contains(contact)) {
-                            availableContactsList->addItem(QString::fromUtf8("👤 ") + contact);
+                            availableContactsList->addItem(QString::fromUtf8("") + contact);
                         }
                         free(allContacts[i]);
                     }
@@ -2718,7 +2718,7 @@ void MainWindow::onUserMenuClicked() {
         "}"
     );
 
-    QAction *logoutAction = menu.addAction(QString::fromUtf8("🚪 Logout"));
+    QAction *logoutAction = menu.addAction(QString::fromUtf8("Logout"));
     QAction *manageIdentitiesAction = menu.addAction(QString::fromUtf8("🔑 Manage Identities"));
 
     connect(logoutAction, &QAction::triggered, this, &MainWindow::onLogout);
@@ -2861,7 +2861,7 @@ void MainWindow::onManageIdentities() {
 
 void MainWindow::onWallet() {
     QMessageBox msgBox(this);
-    msgBox.setWindowTitle(QString::fromUtf8("💰 CF20 Wallet"));
+    msgBox.setWindowTitle(QString::fromUtf8("CF20 Wallet"));
     msgBox.setIcon(QMessageBox::Information);
     msgBox.setText(QString::fromUtf8("🚧 CF20 Wallet - Coming Soon!\n\n"
                                      "Integrated Cellframe CF20 token wallet for cpunk network.\n\n"
