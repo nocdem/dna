@@ -70,6 +70,7 @@ private:
     QString getLocalIdentity();
     void applyTheme(const QString &themeName);
     void applyFontScale(double scale);
+    int scaledIconSize(int baseSize) const;  // Helper for icon scaling
 
     // Contact/Group item type
     enum ContactType {
