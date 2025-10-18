@@ -32,6 +32,7 @@ NC='\033[0m' # No Color
 PROJECT_NAME="dna-messenger"
 BUILD_DIR="build-release"
 DIST_DIR="dist"
+PROJECT_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
 # Version
 VERSION=$(git rev-list --count HEAD 2>/dev/null || echo "0")
@@ -59,6 +60,7 @@ check_dependency() {
 # Clean old builds
 clean_builds() {
     echo -e "${YELLOW}Cleaning old builds...${NC}"
+    cd "${PROJECT_ROOT}"
     rm -rf "$BUILD_DIR" "$DIST_DIR"
     mkdir -p "$DIST_DIR"
     echo -e "${GREEN}✓${NC} Clean complete"
@@ -71,11 +73,11 @@ build_linux_x64() {
     echo -e "${BLUE} Building: Linux x86_64${NC}"
     echo -e "${BLUE}=========================================${NC}"
     
-    BUILD_PATH="${BUILD_DIR}/linux-x64"
+    BUILD_PATH="${PROJECT_ROOT}/${BUILD_DIR}/linux-x64"
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
     
-    cmake ../.. \
+    cmake "${PROJECT_ROOT}" \
         -DCMAKE_BUILD_TYPE=Release \
         -DCMAKE_C_FLAGS="-O3 -march=x86-64 -mtune=generic" \
         -DCMAKE_CXX_FLAGS="-O3 -march=x86-64 -mtune=generic" \
@@ -84,17 +86,17 @@ build_linux_x64() {
     make -j$(nproc)
     
     # Package
-    mkdir -p "../../${DIST_DIR}/linux-x64"
-    cp dna_messenger "../../${DIST_DIR}/linux-x64/"
+    mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64"
+    cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
     if [ -f gui/dna_messenger_gui ]; then
-        cp gui/dna_messenger_gui "../../${DIST_DIR}/linux-x64/"
+        cp gui/dna_messenger_gui "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
     fi
     
     # Create tarball
-    cd "../../${DIST_DIR}"
+    cd "${PROJECT_ROOT}/${DIST_DIR}"
     tar -czf "${PROJECT_NAME}-${FULL_VERSION}-linux-x64.tar.gz" linux-x64/
     
-    cd ../..
+    cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Linux x86_64 build complete${NC}"
     echo ""
 }
@@ -112,7 +114,7 @@ build_linux_arm64() {
         return 1
     fi
     
-    BUILD_PATH="${BUILD_DIR}/linux-arm64"
+    BUILD_PATH="${PROJECT_ROOT}/${BUILD_DIR}/linux-arm64"
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
     
@@ -130,7 +132,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 EOF
     
-    cmake ../.. \
+    cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-arm64.cmake \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_GUI=OFF
@@ -138,14 +140,14 @@ EOF
     make -j$(nproc)
     
     # Package
-    mkdir -p "../../${DIST_DIR}/linux-arm64"
-    cp dna_messenger "../../${DIST_DIR}/linux-arm64/"
+    mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64"
+    cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
     
     # Create tarball
-    cd "../../${DIST_DIR}"
+    cd "${PROJECT_ROOT}/${DIST_DIR}"
     tar -czf "${PROJECT_NAME}-${FULL_VERSION}-linux-arm64.tar.gz" linux-arm64/
     
-    cd ../..
+    cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Linux ARM64 build complete${NC}"
     echo ""
 }
@@ -163,7 +165,7 @@ build_windows_x64() {
         return 1
     fi
     
-    BUILD_PATH="${BUILD_DIR}/windows-x64"
+    BUILD_PATH="${PROJECT_ROOT}/${BUILD_DIR}/windows-x64"
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
     
@@ -186,7 +188,7 @@ set(WIN32 TRUE)
 set(MINGW TRUE)
 EOF
     
-    cmake ../.. \
+    cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-mingw64.cmake \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_GUI=OFF
@@ -194,19 +196,19 @@ EOF
     make -j$(nproc)
     
     # Package
-    mkdir -p "../../${DIST_DIR}/windows-x64"
-    cp dna_messenger.exe "../../${DIST_DIR}/windows-x64/" 2>/dev/null || cp dna_messenger "../../${DIST_DIR}/windows-x64/dna_messenger.exe"
+    mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64"
+    cp dna_messenger.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/" 2>/dev/null || cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/dna_messenger.exe"
     
     # Copy MinGW DLLs if needed
     if [ -f /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll ]; then
-        cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll "../../${DIST_DIR}/windows-x64/"
+        cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
     fi
     
     # Create zip
-    cd "../../${DIST_DIR}"
+    cd "${PROJECT_ROOT}/${DIST_DIR}"
     zip -r "${PROJECT_NAME}-${FULL_VERSION}-windows-x64.zip" windows-x64/
     
-    cd ../..
+    cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Windows x86_64 build complete${NC}"
     echo ""
 }
@@ -232,7 +234,7 @@ build_macos_x64() {
     
     export PATH="$OSXCROSS_TARGET_DIR/bin:$PATH"
     
-    BUILD_PATH="${BUILD_DIR}/macos-x64"
+    BUILD_PATH="${PROJECT_ROOT}/${BUILD_DIR}/macos-x64"
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
     
@@ -252,7 +254,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_OSX_ARCHITECTURES x86_64)
 EOF
     
-    cmake ../.. \
+    cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-macos.cmake \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_GUI=OFF
@@ -260,14 +262,14 @@ EOF
     make -j$(nproc)
     
     # Package
-    mkdir -p "../../${DIST_DIR}/macos-x64"
-    cp dna_messenger "../../${DIST_DIR}/macos-x64/"
+    mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/macos-x64"
+    cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/macos-x64/"
     
     # Create tarball
-    cd "../../${DIST_DIR}"
+    cd "${PROJECT_ROOT}/${DIST_DIR}"
     tar -czf "${PROJECT_NAME}-${FULL_VERSION}-macos-x64.tar.gz" macos-x64/
     
-    cd ../..
+    cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ macOS x86_64 build complete${NC}"
     echo ""
 }
@@ -293,7 +295,7 @@ build_macos_arm64() {
     
     export PATH="$OSXCROSS_TARGET_DIR/bin:$PATH"
     
-    BUILD_PATH="${BUILD_DIR}/macos-arm64"
+    BUILD_PATH="${PROJECT_ROOT}/${BUILD_DIR}/macos-arm64"
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
     
@@ -313,7 +315,7 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(CMAKE_OSX_ARCHITECTURES arm64)
 EOF
     
-    cmake ../.. \
+    cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-macos-arm64.cmake \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_GUI=OFF
@@ -321,14 +323,14 @@ EOF
     make -j$(nproc)
     
     # Package
-    mkdir -p "../../${DIST_DIR}/macos-arm64"
-    cp dna_messenger "../../${DIST_DIR}/macos-arm64/"
+    mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/macos-arm64"
+    cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/macos-arm64/"
     
     # Create tarball
-    cd "../../${DIST_DIR}"
+    cd "${PROJECT_ROOT}/${DIST_DIR}"
     tar -czf "${PROJECT_NAME}-${FULL_VERSION}-macos-arm64.tar.gz" macos-arm64/
     
-    cd ../..
+    cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ macOS ARM64 build complete${NC}"
     echo ""
 }
