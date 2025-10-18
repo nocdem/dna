@@ -87,7 +87,13 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0), currentGroupId(-1), currentContactType(TYPE_CONTACT), fontScale(1.5) {  // Changed default from 3.0 to 1.5
 
     // Remove native window frame for custom title bar
-    setWindowFlags(Qt::FramelessWindowHint);
+    // Use native window frame instead of custom frameless window
+    // setWindowFlags(Qt::FramelessWindowHint);  // REMOVED: Using native title bar now
+    
+    setWindowTitle(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(currentIdentity));
+    
+    // Initialize fullscreen state
+    isFullscreen = false;
 
     // Check if user has saved identity preference in QSettings
     QSettings settings("DNA Messenger", "GUI");
@@ -205,88 +211,6 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
-    // Create custom title bar
-    titleBar = new QWidget(this);
-    titleBar->setFixedHeight(60);
-    titleBar->setStyleSheet(
-        "QWidget {"
-        "   background: #0D3438;"
-        "   border-bottom: 2px solid #00D9FF;"
-        "}"
-    );
-
-    QHBoxLayout *titleLayout = new QHBoxLayout(titleBar);
-    titleLayout->setContentsMargins(20, 0, 0, 0);
-    titleLayout->setSpacing(10);
-
-    // Title label (version + username)
-    titleLabel = new QLabel(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(currentIdentity), titleBar);
-    titleLabel->setStyleSheet(
-        "font-family: 'Orbitron';"
-        "font-size: 12px;"
-        "font-weight: bold;"
-        "color: #00D9FF;"
-        "background: transparent;"
-        "border: none;"
-    );
-    titleLayout->addWidget(titleLabel);
-
-    titleLayout->addStretch();
-
-    // Minimize button
-    minimizeButton = new QPushButton(titleBar);
-    minimizeButton->setIcon(QIcon(":/icons/minimize.svg"));
-    minimizeButton->setIconSize(QSize(scaledIconSize(24), scaledIconSize(24)));
-    minimizeButton->setToolTip("Minimize");
-    int buttonSize = static_cast<int>(50 * fontScale);
-    minimizeButton->setFixedSize(buttonSize, buttonSize);
-    minimizeButton->setStyleSheet(
-        "QPushButton {"
-        "   background: rgba(0, 217, 255, 0.2);"
-        "   color: #00D9FF;"
-        "   border: 2px solid #00D9FF;"
-        "   border-radius: 10px;"
-        "   font-family: 'Orbitron';"
-        "   font-size: 8px;"
-        "   font-weight: bold;"
-        "}"
-        "QPushButton:hover {"
-        "   background: rgba(0, 217, 255, 0.3);"
-        "}"
-        "QPushButton:pressed {"
-        "   background: rgba(0, 217, 255, 0.4);"
-        "}"
-    );
-    connect(minimizeButton, &QPushButton::clicked, this, &MainWindow::onMinimizeWindow);
-    titleLayout->addWidget(minimizeButton);
-
-    // Close button
-    closeButton = new QPushButton(titleBar);
-    closeButton->setIcon(QIcon(":/icons/close.svg"));
-    closeButton->setIconSize(QSize(scaledIconSize(24), scaledIconSize(24)));
-    closeButton->setToolTip("Close");
-    closeButton->setFixedSize(buttonSize, buttonSize);
-    closeButton->setStyleSheet(
-        "QPushButton {"
-        "   background: rgba(255, 107, 53, 0.3);"
-        "   color: #FF6B35;"
-        "   border: 2px solid #FF6B35;"
-        "   border-radius: 10px;"
-        "   font-family: 'Orbitron';"
-        "   font-size: 8px;"
-        "   font-weight: bold;"
-        "}"
-        "QPushButton:hover {"
-        "   background: rgba(255, 107, 53, 0.5);"
-        "}"
-        "QPushButton:pressed {"
-        "   background: rgba(255, 107, 53, 0.7);"
-        "}"
-    );
-    connect(closeButton, &QPushButton::clicked, this, &MainWindow::onCloseWindow);
-    titleLayout->addWidget(closeButton);
-
-    titleBar->setLayout(titleLayout);
 
     // Set cpunk.io theme - dark teal with cyan accents
     setStyleSheet(
@@ -365,10 +289,17 @@ void MainWindow::setupUI() {
     QAction *walletAction = walletMenu->addAction(QString::fromUtf8("Open Wallet"));
     connect(walletAction, &QAction::triggered, this, &MainWindow::onWallet);
 
+    // View menu (NEW)
+    QMenu *viewMenu = menuBar->addMenu(QString::fromUtf8("View"));
+    QAction *fullscreenAction = viewMenu->addAction(QString::fromUtf8("Fullscreen (F11)"));
+    fullscreenAction->setCheckable(true);
+    fullscreenAction->setShortcut(QKeySequence(Qt::Key_F11));
+    connect(fullscreenAction, &QAction::triggered, this, &MainWindow::onToggleFullscreen);
+
     // Help menu (removed Check for Updates - will be implemented as binary updater in future)
     // QMenu *helpMenu = menuBar->addMenu(QString::fromUtf8("Help"));
 
-    // Central widget with vertical layout for title bar + content
+    // Central widget with vertical layout
     QWidget *centralWidget = new QWidget(this);
     setCentralWidget(centralWidget);
 
@@ -376,11 +307,8 @@ void MainWindow::setupUI() {
     mainVerticalLayout->setContentsMargins(0, 0, 0, 0);
     mainVerticalLayout->setSpacing(0);
 
-    // Add title bar at the top
-    mainVerticalLayout->addWidget(titleBar);
-
-    // Add menu bar below title bar
-    mainVerticalLayout->addWidget(menuBar);
+    // Note: titleBar removed - using native OS title bar
+    // Note: menuBar managed by QMainWindow (setMenuBar in constructor)
 
     // Content widget for the splitter
     QWidget *contentWidget = new QWidget;
@@ -1759,8 +1687,6 @@ void MainWindow::applyFontScale(double scale) {
     settings.setValue("fontScale", scale);
     
     // Update all icon sizes
-    if (minimizeButton) minimizeButton->setIconSize(QSize(scaledIconSize(24), scaledIconSize(24)));
-    if (closeButton) closeButton->setIconSize(QSize(scaledIconSize(24), scaledIconSize(24)));
     if (userMenuButton) userMenuButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
     if (refreshButton) refreshButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
     if (createGroupButton) createGroupButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
@@ -1870,26 +1796,46 @@ void MainWindow::onAddRecipients() {
     }
 }
 
-// Window dragging
-void MainWindow::mousePressEvent(QMouseEvent *event) {
-    if (event->button() == Qt::LeftButton) {
-        // Map click position to titleBar's coordinate system
-        QPoint titleBarPos = titleBar->mapFromGlobal(event->globalPos());
-        if (titleBar->rect().contains(titleBarPos)) {
-            dragPosition = event->globalPos() - frameGeometry().topLeft();
-            event->accept();
+// Fullscreen support (F11 key or ESC to exit)
+bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
+    if (event->type() == QEvent::KeyPress) {
+        QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Escape && isFullscreen) {
+            onToggleFullscreen();
+            return true;
         }
     }
+    return QMainWindow::eventFilter(obj, event);
 }
 
-void MainWindow::mouseMoveEvent(QMouseEvent *event) {
-    if (event->buttons() & Qt::LeftButton && !dragPosition.isNull()) {
-        move(event->globalPos() - dragPosition);
+void MainWindow::keyPressEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_F11) {
+        onToggleFullscreen();
         event->accept();
+    } else {
+        QMainWindow::keyPressEvent(event);
     }
 }
 
-// Window control buttons
+void MainWindow::onToggleFullscreen() {
+    if (isFullscreen) {
+        // Exit fullscreen
+        showNormal();
+        if (!normalGeometry.isNull()) {
+            setGeometry(normalGeometry);
+        }
+        isFullscreen = false;
+        statusLabel->setText("Exited fullscreen");
+    } else {
+        // Enter fullscreen
+        normalGeometry = geometry();
+        showFullScreen();
+        isFullscreen = true;
+        statusLabel->setText("Fullscreen (Press F11 or ESC to exit)");
+    }
+}
+
+// Window control buttons (kept for compatibility, but may not be used with native title bar)
 void MainWindow::onMinimizeWindow() {
     showMinimized();
 }
