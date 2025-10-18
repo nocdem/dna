@@ -260,8 +260,9 @@ void MainWindow::setupUI() {
         "}"
     );
 
-    // Create menu bar (not using setMenuBar to keep it below title bar)
-    QMenuBar *menuBar = new QMenuBar();
+    // Create menu bar and set it as the main window menu bar
+    QMenuBar *menuBar = new QMenuBar(this);
+    setMenuBar(menuBar);  // This makes it a native menu bar
 
     // Settings menu
     QMenu *settingsMenu = menuBar->addMenu(QString::fromUtf8("Settings"));
