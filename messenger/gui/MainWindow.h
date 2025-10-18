@@ -37,7 +37,6 @@ private slots:
     void onContactSelected(QListWidgetItem *item);
     void onSendMessage();
     void onRefreshMessages();
-    void onCheckForUpdates();
     void onThemeIO();
     void onThemeClub();
     void onFontScaleSmall();
