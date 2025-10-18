@@ -229,7 +229,10 @@ void MainWindow::setupUI() {
     titleLayout->addStretch();
 
     // Minimize button
-    minimizeButton = new QPushButton(QString::fromUtf8("➖"), titleBar);
+    minimizeButton = new QPushButton(titleBar);
+    minimizeButton->setIcon(QIcon(":/icons/minimize.svg"));
+    minimizeButton->setIconSize(QSize(24, 24));
+    minimizeButton->setToolTip("Minimize");
     minimizeButton->setFixedSize(50, 50);
     minimizeButton->setStyleSheet(
         "QPushButton {"
@@ -252,7 +255,10 @@ void MainWindow::setupUI() {
     titleLayout->addWidget(minimizeButton);
 
     // Close button
-    closeButton = new QPushButton(QString::fromUtf8("✖"), titleBar);
+    closeButton = new QPushButton(titleBar);
+    closeButton->setIcon(QIcon(":/icons/close.svg"));
+    closeButton->setIconSize(QSize(24, 24));
+    closeButton->setToolTip("Close");
     closeButton->setFixedSize(50, 50);
     closeButton->setStyleSheet(
         "QPushButton {"
@@ -399,7 +405,10 @@ void MainWindow::setupUI() {
     );
 
     // User menu button at very top
-    userMenuButton = new QPushButton(QString::fromUtf8("👤 ") + currentIdentity);
+    userMenuButton = new QPushButton(currentIdentity);
+    userMenuButton->setIcon(QIcon(":/icons/user.svg"));
+    userMenuButton->setIconSize(QSize(20, 20));
+    userMenuButton->setToolTip("User Menu");
     userMenuButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(0, 217, 255, 0.15);"
@@ -457,7 +466,10 @@ void MainWindow::setupUI() {
     connect(contactList, &QListWidget::itemClicked, this, &MainWindow::onContactSelected);
     leftLayout->addWidget(contactList);
 
-    refreshButton = new QPushButton(QString::fromUtf8("🔄 Refresh"));
+    refreshButton = new QPushButton("Refresh");
+    refreshButton->setIcon(QIcon(":/icons/refresh.svg"));
+    refreshButton->setIconSize(QSize(20, 20));
+    refreshButton->setToolTip("Refresh messages");
     refreshButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(0, 217, 255, 0.2);"
@@ -481,7 +493,10 @@ void MainWindow::setupUI() {
     leftLayout->addWidget(refreshButton);
 
     // Create Group button
-    createGroupButton = new QPushButton(QString::fromUtf8("➕ Create Group"));
+    createGroupButton = new QPushButton("Create Group");
+    createGroupButton->setIcon(QIcon(":/icons/group.svg"));
+    createGroupButton->setIconSize(QSize(20, 20));
+    createGroupButton->setToolTip("Create a new group");
     createGroupButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(0, 217, 255, 0.2);"
@@ -505,7 +520,10 @@ void MainWindow::setupUI() {
     leftLayout->addWidget(createGroupButton);
 
     // Group Settings button (initially hidden, shown when group selected)
-    groupSettingsButton = new QPushButton(QString::fromUtf8("⚙️ Group Settings"));
+    groupSettingsButton = new QPushButton("Group Settings");
+    groupSettingsButton->setIcon(QIcon(":/icons/settings.svg"));
+    groupSettingsButton->setIconSize(QSize(20, 20));
+    groupSettingsButton->setToolTip("Manage group settings");
     groupSettingsButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(255, 140, 66, 0.2);"
@@ -584,7 +602,10 @@ void MainWindow::setupUI() {
     QHBoxLayout *recipientsButtonLayout = new QHBoxLayout;
     recipientsButtonLayout->addStretch();
 
-    addRecipientsButton = new QPushButton(QString::fromUtf8("➕ Add Recipients"));
+    addRecipientsButton = new QPushButton("Add Recipients");
+    addRecipientsButton->setIcon(QIcon(":/icons/add.svg"));
+    addRecipientsButton->setIconSize(QSize(18, 18));
+    addRecipientsButton->setToolTip("Add recipients to your message");
     addRecipientsButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(0, 217, 255, 0.2);"
@@ -630,7 +651,10 @@ void MainWindow::setupUI() {
     connect(messageInput, &QLineEdit::returnPressed, this, &MainWindow::onSendMessage);
     inputLayout->addWidget(messageInput);
 
-    sendButton = new QPushButton(QString::fromUtf8("💌 Send"));
+    sendButton = new QPushButton("Send");
+    sendButton->setIcon(QIcon(":/icons/send.svg"));
+    sendButton->setIconSize(QSize(18, 18));
+    sendButton->setToolTip("Send message");
     sendButton->setStyleSheet(
         "QPushButton {"
         "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
@@ -1987,8 +2011,8 @@ void MainWindow::onAddRecipients() {
 
     // Buttons
     QHBoxLayout *buttonLayout = new QHBoxLayout;
-    QPushButton *okButton = new QPushButton(QString::fromUtf8("✅ OK"));
-    QPushButton *cancelButton = new QPushButton(QString::fromUtf8("❌ Cancel"));
+    QPushButton *okButton = new QPushButton("OK"); okButton->setIcon(QIcon(":/icons/check.svg")); okButton->setIconSize(QSize(18, 18)); okButton;
+    QPushButton *cancelButton = new QPushButton("Cancel"); cancelButton->setIcon(QIcon(":/icons/close.svg")); cancelButton->setIconSize(QSize(18, 18)); cancelButton;
 
     connect(okButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -2106,8 +2130,8 @@ void MainWindow::onCreateGroup() {
 
     // Buttons
     QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *okButton = new QPushButton(QString::fromUtf8("✅ Create"));
-    QPushButton *cancelButton = new QPushButton(QString::fromUtf8("❌ Cancel"));
+    QPushButton *okButton = new QPushButton("Create"); okButton->setIcon(QIcon(":/icons/check.svg")); okButton->setIconSize(QSize(18, 18)); okButton;
+    QPushButton *cancelButton = new QPushButton("Cancel"); cancelButton->setIcon(QIcon(":/icons/close.svg")); cancelButton->setIconSize(QSize(18, 18)); cancelButton;
 
     connect(okButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -2234,7 +2258,7 @@ void MainWindow::onGroupSettings() {
     // Action buttons
     QHBoxLayout *actionLayout = new QHBoxLayout();
 
-    QPushButton *manageMembersButton = new QPushButton(QString::fromUtf8("👥 Manage Members"));
+    QPushButton *manageMembersButton = new QPushButton("Manage Members"); manageMembersButton->setIcon(QIcon(":/icons/group.svg")); manageMembersButton->setIconSize(QSize(18, 18)); manageMembersButton;
     connect(manageMembersButton, &QPushButton::clicked, [this, &dialog]() {
         dialog.accept();  // Close settings dialog
         onManageGroupMembers();  // Open members dialog
@@ -2244,7 +2268,7 @@ void MainWindow::onGroupSettings() {
     // Delete button (only for creator)
     bool isCreator = (QString::fromUtf8(groupInfo.creator) == currentIdentity);
     if (isCreator) {
-        QPushButton *deleteButton = new QPushButton(QString::fromUtf8("🗑️ Delete Group"));
+        QPushButton *deleteButton = new QPushButton("Delete Group"); deleteButton->setIcon(QIcon(":/icons/delete.svg")); deleteButton->setIconSize(QSize(18, 18)); deleteButton;
         deleteButton->setStyleSheet("background: rgba(255, 0, 0, 0.2); color: red;");
         connect(deleteButton, &QPushButton::clicked, [this, &dialog, &groupInfo]() {
             QMessageBox::StandardButton reply = QMessageBox::question(
@@ -2272,7 +2296,7 @@ void MainWindow::onGroupSettings() {
         actionLayout->addWidget(deleteButton);
     } else {
         // Leave group button (for non-creators)
-        QPushButton *leaveButton = new QPushButton(QString::fromUtf8("🚪 Leave Group"));
+        QPushButton *leaveButton = new QPushButton("Leave Group"); leaveButton->setIcon(QIcon(":/icons/exit.svg")); leaveButton->setIconSize(QSize(18, 18)); leaveButton;
         leaveButton->setStyleSheet("background: rgba(255, 140, 0, 0.2); color: orange;");
         connect(leaveButton, &QPushButton::clicked, [this, &dialog, &groupInfo]() {
             QMessageBox::StandardButton reply = QMessageBox::question(
@@ -2303,8 +2327,8 @@ void MainWindow::onGroupSettings() {
 
     // Save/Cancel buttons
     QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *saveButton = new QPushButton(QString::fromUtf8("💾 Save"));
-    QPushButton *cancelButton = new QPushButton(QString::fromUtf8("❌ Cancel"));
+    QPushButton *saveButton = new QPushButton("Save"); saveButton->setIcon(QIcon(":/icons/save.svg")); saveButton->setIconSize(QSize(18, 18)); saveButton;
+    QPushButton *cancelButton = new QPushButton("Cancel"); cancelButton->setIcon(QIcon(":/icons/close.svg")); cancelButton->setIconSize(QSize(18, 18)); cancelButton;
 
     connect(saveButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -2433,7 +2457,7 @@ void MainWindow::onManageGroupMembers() {
     layout->addWidget(currentMembersList);
 
     // Remove members button
-    QPushButton *removeButton = new QPushButton(QString::fromUtf8("➖ Remove Selected Members"));
+    QPushButton *removeButton = new QPushButton("Remove Selected Members"); removeButton->setIcon(QIcon(":/icons/delete.svg")); removeButton->setIconSize(QSize(18, 18)); removeButton;
     removeButton->setStyleSheet("background: rgba(255, 0, 0, 0.2); color: red;");
     connect(removeButton, &QPushButton::clicked, [this, currentMembersList, &groupInfo]() {
         QStringList toRemove;
@@ -2548,7 +2572,7 @@ void MainWindow::onManageGroupMembers() {
     layout->addWidget(availableContactsList);
 
     // Add members button
-    QPushButton *addButton = new QPushButton(QString::fromUtf8("➕ Add Selected Members"));
+    QPushButton *addButton = new QPushButton("Add Selected Members"); addButton->setIcon(QIcon(":/icons/add.svg")); addButton->setIconSize(QSize(18, 18)); addButton;
     addButton->setStyleSheet("background: rgba(0, 217, 255, 0.2); color: #00D9FF;");
     connect(addButton, &QPushButton::clicked, [this, availableContactsList, currentMembersList, &groupInfo]() {
         QStringList toAdd;
@@ -2632,7 +2656,7 @@ void MainWindow::onManageGroupMembers() {
 
     // Close button
     QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *closeButton = new QPushButton(QString::fromUtf8("✅ Done"));
+    QPushButton *closeButton = new QPushButton("Done"); closeButton->setIcon(QIcon(":/icons/check.svg")); closeButton->setIconSize(QSize(18, 18)); closeButton;
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     buttonLayout->addWidget(closeButton);
     layout->addLayout(buttonLayout);
@@ -2759,7 +2783,7 @@ void MainWindow::onManageIdentities() {
     // Action buttons
     QHBoxLayout *buttonLayout = new QHBoxLayout();
 
-    QPushButton *switchButton = new QPushButton(QString::fromUtf8("🔄 Switch Identity"));
+    QPushButton *switchButton = new QPushButton("Switch Identity"); switchButton->setIcon(QIcon(":/icons/switch.svg")); switchButton->setIconSize(QSize(18, 18)); switchButton;
     connect(switchButton, &QPushButton::clicked, [this, identityList, &dialog]() {
         QListWidgetItem *selectedItem = identityList->currentItem();
         if (!selectedItem) {
@@ -2802,7 +2826,7 @@ void MainWindow::onManageIdentities() {
     });
     buttonLayout->addWidget(switchButton);
 
-    QPushButton *closeButton = new QPushButton(QString::fromUtf8("❌ Close"));
+    QPushButton *closeButton = new QPushButton("Close"); closeButton->setIcon(QIcon(":/icons/close.svg")); closeButton->setIconSize(QSize(18, 18)); closeButton;
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     buttonLayout->addWidget(closeButton);
 
