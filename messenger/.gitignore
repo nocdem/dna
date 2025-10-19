@@ -62,8 +62,9 @@ Thumbs.db
 # Internal development docs (not for public repo)
 CLAUDE.md
 PROJECT_STATUS.md
-dev.md
 docs/
+
+# Note: dev.md is now tracked to maintain development history across team
 
 # Planning docs (completed, not needed in repo)
 *_PLAN.md
