@@ -272,10 +272,9 @@ Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 - **GitHub:** https://github.com/nocdem/dna-messenger
 - **Parent Project:** https://github.com/nocdem/qgp
 - **Server:** ai.cpunk.io:5432
-- **Roadmap:** [ROADMAP.md](./ROADMAP.md)
-- **Development Guide:** [CLAUDE.md](./CLAUDE.md)
 - **cpunk.io:** https://cpunk.io
 - **cpunk.club:** https://cpunk.club
+- **Telegram:** https://web.telegram.org/k/#@chippunk_official
 
 ### About cpunk
 
