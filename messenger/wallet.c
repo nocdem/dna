@@ -112,15 +112,19 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
         wallet->sig_type = WALLET_SIG_UNKNOWN;
     }
 
-    wallet->status = WALLET_STATUS_UNPROTECTED;
     wallet->deprecated = false;
 
-    // Read wallet file header to determine variable offset
+    // Read wallet file header to check if protected
     // Cellframe wallet file structure:
-    // - Fixed header: 23 bytes (signature + version + type + padding + wallet_len)
-    // - Wallet name: variable length (specified by wallet_len field at offset 0x15-0x16)
+    // - Fixed header: 23 bytes
+    //   - signature (8 bytes)
+    //   - version (4 bytes) <- offset 0x08
+    //   - type (1 byte)
+    //   - padding (8 bytes)
+    //   - wallet_len (2 bytes) <- offset 0x15
+    // - Wallet name: variable length
     // - Cert header: 8 bytes
-    // - Cert data: contains serialized public key at offset 0x59 (89 bytes) into cert data
+    // - Cert data: contains serialized public key (or encrypted if version 2)
 
     if (file_size < 23) {
         fprintf(stderr, "[DEBUG] File too small to contain wallet header: %ld bytes\n", file_size);
@@ -128,6 +132,25 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
         *wallet_out = wallet;
         return 0;
     }
+
+    // Read version from file header (uint32_t at offset 0x08)
+    uint32_t wallet_version;
+    memcpy(&wallet_version, file_data + 0x08, 4);
+
+    // Check if wallet is protected (version 2)
+    // Version 1: Unprotected (plain certificate data)
+    // Version 2: Protected (encrypted certificate data with GOST89)
+    if (wallet_version == 2) {
+        wallet->status = WALLET_STATUS_PROTECTED;
+        wallet->address[0] = '\0';  // Cannot generate address without password
+        fprintf(stderr, "[DEBUG] Wallet %s is PROTECTED (version 2), password required for address\n",
+                wallet->name);
+        free(file_data);
+        *wallet_out = wallet;
+        return 0;
+    }
+
+    wallet->status = WALLET_STATUS_UNPROTECTED;
 
     // Read wallet_len from file header (uint16_t at offset 0x15, little-endian)
     uint16_t wallet_len;
@@ -137,8 +160,8 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
     // Fixed header (23) + wallet_len + cert header (8) + offset into cert data (0x59)
     size_t serialized_offset = 23 + wallet_len + 8 + 0x59;
 
-    fprintf(stderr, "[DEBUG] Wallet: %s, file_size=%ld, wallet_len=%u, calculated_offset=0x%zx\n",
-            wallet->name, file_size, wallet_len, serialized_offset);
+    fprintf(stderr, "[DEBUG] Wallet: %s, version=%u, file_size=%ld, wallet_len=%u, calculated_offset=0x%zx\n",
+            wallet->name, wallet_version, file_size, wallet_len, serialized_offset);
 
     if (file_size > (long)(serialized_offset + 8)) {
         // Read length field (first 8 bytes of serialized data)
