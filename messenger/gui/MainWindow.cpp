@@ -22,6 +22,11 @@
 #include <QSettings>
 #include <QFontDatabase>
 #include <QMouseEvent>
+#include <QFileDialog>
+#include <QBuffer>
+#include <QImageReader>
+#include <QImageWriter>
+#include <QRegularExpression>
 
 // Platform-specific includes for identity detection
 #ifdef _WIN32
@@ -79,10 +84,16 @@ QString MainWindow::getLocalIdentity() {
 }
 
 MainWindow::MainWindow(QWidget *parent)
-    : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0), currentGroupId(-1), currentContactType(TYPE_CONTACT), fontScale(3.0) {
+    : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0), currentGroupId(-1), currentContactType(TYPE_CONTACT), fontScale(1.5) {  // Changed default from 3.0 to 1.5
 
     // Remove native window frame for custom title bar
-    setWindowFlags(Qt::FramelessWindowHint);
+    // Use native window frame instead of custom frameless window
+    // setWindowFlags(Qt::FramelessWindowHint);  // REMOVED: Using native title bar now
+    
+    setWindowTitle(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(currentIdentity));
+    
+    // Initialize fullscreen state
+    isFullscreen = false;
 
     // Check if user has saved identity preference in QSettings
     QSettings settings("DNA Messenger", "GUI");
@@ -172,16 +183,16 @@ MainWindow::MainWindow(QWidget *parent)
     // Save current identity (reuse settings from earlier)
     settings.setValue("currentIdentity", currentIdentity);  // Save logged-in user
     QString savedTheme = settings.value("theme", "io").toString();  // Default to "io" theme
-    double savedFontScale = settings.value("fontScale", 3.0).toDouble();  // Default to 3x (Large)
+    double savedFontScale = settings.value("fontScale", 1.5).toDouble();  // Default to 1.5x (Medium)
 
     applyTheme(savedTheme);
     applyFontScale(savedFontScale);
 
-    // Scale window to 80% of screen size
+    // Scale window to 60% of screen size (reduced from 80%)
     QScreen *screen = QGuiApplication::primaryScreen();
     QRect screenGeometry = screen->availableGeometry();
-    int width = screenGeometry.width() * 0.8;
-    int height = screenGeometry.height() * 0.8;
+    int width = screenGeometry.width() * 0.6;
+    int height = screenGeometry.height() * 0.6;
     resize(width, height);
 
     // Center window on screen
@@ -200,81 +211,6 @@ MainWindow::~MainWindow() {
 }
 
 void MainWindow::setupUI() {
-    // Create custom title bar
-    titleBar = new QWidget(this);
-    titleBar->setFixedHeight(60);
-    titleBar->setStyleSheet(
-        "QWidget {"
-        "   background: #0D3438;"
-        "   border-bottom: 2px solid #00D9FF;"
-        "}"
-    );
-
-    QHBoxLayout *titleLayout = new QHBoxLayout(titleBar);
-    titleLayout->setContentsMargins(20, 0, 0, 0);
-    titleLayout->setSpacing(10);
-
-    // Title label (version + username)
-    titleLabel = new QLabel(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(currentIdentity), titleBar);
-    titleLabel->setStyleSheet(
-        "font-family: 'Orbitron';"
-        "font-size: 48px;"
-        "font-weight: bold;"
-        "color: #00D9FF;"
-        "background: transparent;"
-        "border: none;"
-    );
-    titleLayout->addWidget(titleLabel);
-
-    titleLayout->addStretch();
-
-    // Minimize button
-    minimizeButton = new QPushButton(QString::fromUtf8("➖"), titleBar);
-    minimizeButton->setFixedSize(50, 50);
-    minimizeButton->setStyleSheet(
-        "QPushButton {"
-        "   background: rgba(0, 217, 255, 0.2);"
-        "   color: #00D9FF;"
-        "   border: 2px solid #00D9FF;"
-        "   border-radius: 10px;"
-        "   font-family: 'Orbitron';"
-        "   font-size: 24px;"
-        "   font-weight: bold;"
-        "}"
-        "QPushButton:hover {"
-        "   background: rgba(0, 217, 255, 0.3);"
-        "}"
-        "QPushButton:pressed {"
-        "   background: rgba(0, 217, 255, 0.4);"
-        "}"
-    );
-    connect(minimizeButton, &QPushButton::clicked, this, &MainWindow::onMinimizeWindow);
-    titleLayout->addWidget(minimizeButton);
-
-    // Close button
-    closeButton = new QPushButton(QString::fromUtf8("✖"), titleBar);
-    closeButton->setFixedSize(50, 50);
-    closeButton->setStyleSheet(
-        "QPushButton {"
-        "   background: rgba(255, 107, 53, 0.3);"
-        "   color: #FF6B35;"
-        "   border: 2px solid #FF6B35;"
-        "   border-radius: 10px;"
-        "   font-family: 'Orbitron';"
-        "   font-size: 24px;"
-        "   font-weight: bold;"
-        "}"
-        "QPushButton:hover {"
-        "   background: rgba(255, 107, 53, 0.5);"
-        "}"
-        "QPushButton:pressed {"
-        "   background: rgba(255, 107, 53, 0.7);"
-        "}"
-    );
-    connect(closeButton, &QPushButton::clicked, this, &MainWindow::onCloseWindow);
-    titleLayout->addWidget(closeButton);
-
-    titleBar->setLayout(titleLayout);
 
     // Set cpunk.io theme - dark teal with cyan accents
     setStyleSheet(
@@ -287,7 +223,7 @@ void MainWindow::setupUI() {
         "   color: #00D9FF;"
         "   padding: 8px;"
         "   font-weight: bold;"
-        "   font-family: 'Orbitron'; font-size: 48px;"
+        "   font-family: 'Orbitron'; font-size: 12px;"
         "   border-bottom: 2px solid #00D9FF;"
         "}"
         "QMenuBar::item {"
@@ -303,7 +239,7 @@ void MainWindow::setupUI() {
         "   border: 2px solid #00D9FF;"
         "   border-radius: 10px;"
         "   padding: 8px;"
-        "   font-family: 'Orbitron'; font-size: 48px;"
+        "   font-family: 'Orbitron'; font-size: 12px;"
         "   color: #00D9FF;"
         "}"
         "QMenu::item {"
@@ -318,47 +254,53 @@ void MainWindow::setupUI() {
         "   background: #0D3438;"
         "   color: #00D9FF;"
         "   font-weight: bold;"
-        "   font-family: 'Orbitron'; font-size: 48px;"
+        "   font-family: 'Orbitron'; font-size: 12px;"
         "   padding: 8px;"
         "   border-top: 2px solid #00D9FF;"
         "}"
     );
 
-    // Create menu bar (not using setMenuBar to keep it below title bar)
-    QMenuBar *menuBar = new QMenuBar();
+    // Create menu bar and set it as the main window menu bar
+    QMenuBar *menuBar = new QMenuBar(this);
+    setMenuBar(menuBar);  // This makes it a native menu bar
 
     // Settings menu
-    QMenu *settingsMenu = menuBar->addMenu(QString::fromUtf8("⚙️ Settings"));
+    QMenu *settingsMenu = menuBar->addMenu(QString::fromUtf8("Settings"));
 
     // Theme submenu
-    QMenu *themeMenu = settingsMenu->addMenu(QString::fromUtf8("🎨 Theme"));
-    QAction *themeIOAction = themeMenu->addAction(QString::fromUtf8("🌊 cpunk.io (Cyan)"));
-    QAction *themeClubAction = themeMenu->addAction(QString::fromUtf8("🔥 cpunk.club (Orange)"));
+    QMenu *themeMenu = settingsMenu->addMenu(QString::fromUtf8("Theme"));
+    QAction *themeIOAction = themeMenu->addAction(QString::fromUtf8("cpunk.io (Cyan)"));
+    QAction *themeClubAction = themeMenu->addAction(QString::fromUtf8("cpunk.club (Orange)"));
     connect(themeIOAction, &QAction::triggered, this, &MainWindow::onThemeIO);
     connect(themeClubAction, &QAction::triggered, this, &MainWindow::onThemeClub);
 
     // Font Scale submenu
-    QMenu *fontScaleMenu = settingsMenu->addMenu(QString::fromUtf8("📏 Font Scale"));
-    QAction *fontSmallAction = fontScaleMenu->addAction(QString::fromUtf8("🔤 Small (1x)"));
-    QAction *fontMediumAction = fontScaleMenu->addAction(QString::fromUtf8("🔡 Medium (2x)"));
-    QAction *fontLargeAction = fontScaleMenu->addAction(QString::fromUtf8("🔠 Large (3x)"));
-    QAction *fontExtraLargeAction = fontScaleMenu->addAction(QString::fromUtf8("🅰️ Extra Large (4x)"));
+    QMenu *fontScaleMenu = settingsMenu->addMenu(QString::fromUtf8("Font Scale"));
+    QAction *fontSmallAction = fontScaleMenu->addAction(QString::fromUtf8("Small (1x)"));
+    QAction *fontMediumAction = fontScaleMenu->addAction(QString::fromUtf8("Medium (2x)"));
+    QAction *fontLargeAction = fontScaleMenu->addAction(QString::fromUtf8("Large (3x)"));
+    QAction *fontExtraLargeAction = fontScaleMenu->addAction(QString::fromUtf8("Extra Large (4x)"));
     connect(fontSmallAction, &QAction::triggered, this, &MainWindow::onFontScaleSmall);
     connect(fontMediumAction, &QAction::triggered, this, &MainWindow::onFontScaleMedium);
     connect(fontLargeAction, &QAction::triggered, this, &MainWindow::onFontScaleLarge);
     connect(fontExtraLargeAction, &QAction::triggered, this, &MainWindow::onFontScaleExtraLarge);
 
     // Wallet menu
-    QMenu *walletMenu = menuBar->addMenu(QString::fromUtf8("💰 Wallet"));
-    QAction *walletAction = walletMenu->addAction(QString::fromUtf8("💳 Open Wallet"));
+    QMenu *walletMenu = menuBar->addMenu(QString::fromUtf8("Wallet"));
+    QAction *walletAction = walletMenu->addAction(QString::fromUtf8("Open Wallet"));
     connect(walletAction, &QAction::triggered, this, &MainWindow::onWallet);
 
-    // Help menu
-    QMenu *helpMenu = menuBar->addMenu(QString::fromUtf8("💝 Help"));
-    QAction *updateAction = helpMenu->addAction(QString::fromUtf8("✨ Check for Updates"));
-    connect(updateAction, &QAction::triggered, this, &MainWindow::onCheckForUpdates);
+    // View menu (NEW)
+    QMenu *viewMenu = menuBar->addMenu(QString::fromUtf8("View"));
+    QAction *fullscreenAction = viewMenu->addAction(QString::fromUtf8("Fullscreen (F11)"));
+    fullscreenAction->setCheckable(true);
+    fullscreenAction->setShortcut(QKeySequence(Qt::Key_F11));
+    connect(fullscreenAction, &QAction::triggered, this, &MainWindow::onToggleFullscreen);
 
-    // Central widget with vertical layout for title bar + content
+    // Help menu (removed Check for Updates - will be implemented as binary updater in future)
+    // QMenu *helpMenu = menuBar->addMenu(QString::fromUtf8("Help"));
+
+    // Central widget with vertical layout
     QWidget *centralWidget = new QWidget(this);
     setCentralWidget(centralWidget);
 
@@ -366,11 +308,8 @@ void MainWindow::setupUI() {
     mainVerticalLayout->setContentsMargins(0, 0, 0, 0);
     mainVerticalLayout->setSpacing(0);
 
-    // Add title bar at the top
-    mainVerticalLayout->addWidget(titleBar);
-
-    // Add menu bar below title bar
-    mainVerticalLayout->addWidget(menuBar);
+    // Note: titleBar removed - using native OS title bar
+    // Note: menuBar managed by QMainWindow (setMenuBar in constructor)
 
     // Content widget for the splitter
     QWidget *contentWidget = new QWidget;
@@ -389,17 +328,20 @@ void MainWindow::setupUI() {
     );
     QVBoxLayout *leftLayout = new QVBoxLayout(leftPanel);
 
-    QLabel *contactsLabel = new QLabel(QString::fromUtf8("👥 Contacts"));
+    QLabel *contactsLabel = new QLabel(QString::fromUtf8("Contacts"));
     contactsLabel->setStyleSheet(
         "font-weight: bold; "
-        "font-family: 'Orbitron'; font-size: 72px; "
+        "font-family: 'Orbitron'; font-size: 16px; "
         "color: #00D9FF; "
         "background: transparent; "
         "padding: 10px;"
     );
 
     // User menu button at very top
-    userMenuButton = new QPushButton(QString::fromUtf8("👤 ") + currentIdentity);
+    userMenuButton = new QPushButton(currentIdentity);
+    userMenuButton->setIcon(QIcon(":/icons/user.svg"));
+    userMenuButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
+    userMenuButton->setToolTip("User Menu");
     userMenuButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(0, 217, 255, 0.15);"
@@ -408,7 +350,7 @@ void MainWindow::setupUI() {
         "   border-radius: 15px;"
         "   padding: 15px;"
         "   font-weight: bold;"
-        "   font-family: 'Orbitron'; font-size: 48px;"
+        "   font-family: 'Orbitron'; font-size: 12px;"
         "   text-align: left;"
         "}"
         "QPushButton:hover {"
@@ -432,7 +374,7 @@ void MainWindow::setupUI() {
         "   border: 2px solid #00D9FF;"
         "   border-radius: 10px;"
         "   padding: 8px;"
-        "   font-family: 'Orbitron'; font-size: 54px;"
+        "   font-family: 'Orbitron'; font-size: 13px;"
         "   color: #00D9FF;"
         "}"
         "QListWidget::item {"
@@ -457,7 +399,10 @@ void MainWindow::setupUI() {
     connect(contactList, &QListWidget::itemClicked, this, &MainWindow::onContactSelected);
     leftLayout->addWidget(contactList);
 
-    refreshButton = new QPushButton(QString::fromUtf8("🔄 Refresh"));
+    refreshButton = new QPushButton("Refresh");
+    refreshButton->setIcon(QIcon(":/icons/refresh.svg"));
+    refreshButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
+    refreshButton->setToolTip("Refresh messages");
     refreshButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(0, 217, 255, 0.2);"
@@ -466,7 +411,7 @@ void MainWindow::setupUI() {
         "   border-radius: 15px;"
         "   padding: 15px;"
         "   font-weight: bold;"
-        "   font-family: 'Orbitron'; font-size: 54px;"
+        "   font-family: 'Orbitron'; font-size: 13px;"
         "}"
         "QPushButton:hover {"
         "   background: rgba(0, 217, 255, 0.3);"
@@ -481,7 +426,10 @@ void MainWindow::setupUI() {
     leftLayout->addWidget(refreshButton);
 
     // Create Group button
-    createGroupButton = new QPushButton(QString::fromUtf8("➕ Create Group"));
+    createGroupButton = new QPushButton("Create Group");
+    createGroupButton->setIcon(QIcon(":/icons/group.svg"));
+    createGroupButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
+    createGroupButton->setToolTip("Create a new group");
     createGroupButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(0, 217, 255, 0.2);"
@@ -490,7 +438,7 @@ void MainWindow::setupUI() {
         "   border-radius: 15px;"
         "   padding: 15px;"
         "   font-weight: bold;"
-        "   font-family: 'Orbitron'; font-size: 48px;"
+        "   font-family: 'Orbitron'; font-size: 12px;"
         "}"
         "QPushButton:hover {"
         "   background: rgba(0, 217, 255, 0.3);"
@@ -505,7 +453,10 @@ void MainWindow::setupUI() {
     leftLayout->addWidget(createGroupButton);
 
     // Group Settings button (initially hidden, shown when group selected)
-    groupSettingsButton = new QPushButton(QString::fromUtf8("⚙️ Group Settings"));
+    groupSettingsButton = new QPushButton("Group Settings");
+    groupSettingsButton->setIcon(QIcon(":/icons/settings.svg"));
+    groupSettingsButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
+    groupSettingsButton->setToolTip("Manage group settings");
     groupSettingsButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(255, 140, 66, 0.2);"
@@ -514,7 +465,7 @@ void MainWindow::setupUI() {
         "   border-radius: 15px;"
         "   padding: 15px;"
         "   font-weight: bold;"
-        "   font-family: 'Orbitron'; font-size: 48px;"
+        "   font-family: 'Orbitron'; font-size: 12px;"
         "}"
         "QPushButton:hover {"
         "   background: rgba(255, 140, 66, 0.3);"
@@ -542,10 +493,10 @@ void MainWindow::setupUI() {
     );
     QVBoxLayout *rightLayout = new QVBoxLayout(rightPanel);
 
-    QLabel *chatLabel = new QLabel(QString::fromUtf8("💬 Conversation"));
+    QLabel *chatLabel = new QLabel(QString::fromUtf8("Conversation"));
     chatLabel->setStyleSheet(
         "font-weight: bold; "
-        "font-family: 'Orbitron'; font-size: 72px; "
+        "font-family: 'Orbitron'; font-size: 16px; "
         "color: #00D9FF; "
         "background: transparent; "
         "padding: 10px;"
@@ -560,14 +511,14 @@ void MainWindow::setupUI() {
         "   border: 2px solid #00D9FF;"
         "   border-radius: 10px;"
         "   padding: 15px;"
-        "   font-family: 'Orbitron'; font-size: 48px;"
+        "   font-family: 'Orbitron'; font-size: 12px;"
         "   color: #00D9FF;"
         "}"
     );
     rightLayout->addWidget(messageDisplay);
 
     // Recipients label
-    recipientsLabel = new QLabel(QString::fromUtf8("📨 To: ..."));
+    recipientsLabel = new QLabel(QString::fromUtf8("To: ..."));
     recipientsLabel->setStyleSheet(
         "QLabel {"
         "   background: rgba(0, 217, 255, 0.1);"
@@ -575,7 +526,7 @@ void MainWindow::setupUI() {
         "   border: 2px solid rgba(0, 217, 255, 0.3);"
         "   border-radius: 10px;"
         "   padding: 10px 15px;"
-        "   font-family: 'Orbitron'; font-size: 42px;"
+        "   font-family: 'Orbitron'; font-size: 11px;"
         "}"
     );
     rightLayout->addWidget(recipientsLabel);
@@ -584,7 +535,10 @@ void MainWindow::setupUI() {
     QHBoxLayout *recipientsButtonLayout = new QHBoxLayout;
     recipientsButtonLayout->addStretch();
 
-    addRecipientsButton = new QPushButton(QString::fromUtf8("➕ Add Recipients"));
+    addRecipientsButton = new QPushButton("Add Recipients");
+    addRecipientsButton->setIcon(QIcon(":/icons/add.svg"));
+    addRecipientsButton->setIconSize(QSize(scaledIconSize(18), scaledIconSize(18)));
+    addRecipientsButton->setToolTip("Add recipients to your message");
     addRecipientsButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(0, 217, 255, 0.2);"
@@ -593,7 +547,7 @@ void MainWindow::setupUI() {
         "   border-radius: 12px;"
         "   padding: 10px 20px;"
         "   font-weight: bold;"
-        "   font-family: 'Orbitron'; font-size: 42px;"
+        "   font-family: 'Orbitron'; font-size: 11px;"
         "}"
         "QPushButton:hover {"
         "   background: rgba(0, 217, 255, 0.3);"
@@ -612,14 +566,14 @@ void MainWindow::setupUI() {
     // Message input area
     QHBoxLayout *inputLayout = new QHBoxLayout;
     messageInput = new QLineEdit;
-    messageInput->setPlaceholderText(QString::fromUtf8("✏️ Type a message..."));
+    messageInput->setPlaceholderText(QString::fromUtf8("Type a message..."));
     messageInput->setStyleSheet(
         "QLineEdit {"
         "   background: #0D3438;"
         "   border: 2px solid #00D9FF;"
         "   border-radius: 15px;"
         "   padding: 15px 20px;"
-        "   font-family: 'Orbitron'; font-size: 54px;"
+        "   font-family: 'Orbitron'; font-size: 13px;"
         "   color: #00D9FF;"
         "}"
         "QLineEdit:focus {"
@@ -630,7 +584,39 @@ void MainWindow::setupUI() {
     connect(messageInput, &QLineEdit::returnPressed, this, &MainWindow::onSendMessage);
     inputLayout->addWidget(messageInput);
 
-    sendButton = new QPushButton(QString::fromUtf8("💌 Send"));
+    // Attach Image button
+    attachImageButton = new QPushButton("Image");
+    attachImageButton->setIcon(QIcon(":/icons/add.svg"));  // Using add icon as paperclip
+    attachImageButton->setIconSize(QSize(scaledIconSize(18), scaledIconSize(18)));
+    attachImageButton->setToolTip("Attach image");
+    attachImageButton->setStyleSheet(
+        "QPushButton {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #00A8CC, stop:1 #00D9FF);"
+        "   color: white;"
+        "   border: 2px solid #00A8CC;"
+        "   border-radius: 15px;"
+        "   padding: 15px 25px;"
+        "   font-weight: bold;"
+        "   font-family: 'Orbitron'; font-size: 13px;"
+        "}"
+        "QPushButton:hover {"
+        "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
+        "       stop:0 #00D9FF, stop:1 #33E6FF);"
+        "   border: 2px solid #00D9FF;"
+        "}"
+        "QPushButton:pressed {"
+        "   background: #008CA8;"
+        "   border: 2px solid #006B82;"
+        "}"
+    );
+    connect(attachImageButton, &QPushButton::clicked, this, &MainWindow::onAttachImage);
+    inputLayout->addWidget(attachImageButton);
+
+    sendButton = new QPushButton("Send");
+    sendButton->setIcon(QIcon(":/icons/send.svg"));
+    sendButton->setIconSize(QSize(scaledIconSize(18), scaledIconSize(18)));
+    sendButton->setToolTip("Send message");
     sendButton->setStyleSheet(
         "QPushButton {"
         "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
@@ -640,7 +626,7 @@ void MainWindow::setupUI() {
         "   border-radius: 15px;"
         "   padding: 15px 30px;"
         "   font-weight: bold;"
-        "   font-family: 'Orbitron'; font-size: 54px;"
+        "   font-family: 'Orbitron'; font-size: 13px;"
         "}"
         "QPushButton:hover {"
         "   background: qlineargradient(x1:0, y1:0, x2:1, y2:0, "
@@ -678,7 +664,7 @@ void MainWindow::setupUI() {
     mainVerticalLayout->addWidget(contentWidget, 1);
 
     // Status bar
-    statusLabel = new QLabel(QString::fromUtf8("✨ Ready"));
+    statusLabel = new QLabel(QString::fromUtf8("Ready"));
     statusBar()->addWidget(statusLabel);
 }
 
@@ -695,7 +681,7 @@ void MainWindow::loadContacts() {
     if (messenger_get_contact_list(ctx, &identities, &contactCount) == 0) {
         for (int i = 0; i < contactCount; i++) {
             QString identity = QString::fromUtf8(identities[i]);
-            QString displayText = QString::fromUtf8("👤 ") + identity;
+            QString displayText = QString::fromUtf8("") + identity;
             contactList->addItem(displayText);
 
             // Store contact metadata
@@ -718,7 +704,7 @@ void MainWindow::loadContacts() {
     if (messenger_get_groups(ctx, &groups, &groupCount) == 0) {
         for (int i = 0; i < groupCount; i++) {
             QString groupName = QString::fromUtf8(groups[i].name);
-            QString displayText = QString::fromUtf8("👥 ") + groupName;
+            QString displayText = QString::fromUtf8("") + groupName;
             contactList->addItem(displayText);
 
             // Store group metadata
@@ -734,10 +720,10 @@ void MainWindow::loadContacts() {
     }
 
     if (totalItems > 0) {
-        statusLabel->setText(QString::fromUtf8("✨ %1 contact(s) and %2 group(s) loaded")
+        statusLabel->setText(QString::fromUtf8("%1 contact(s) and %2 group(s) loaded")
                              .arg(contactCount).arg(groupCount));
     } else {
-        statusLabel->setText(QString::fromUtf8("❌ No contacts or groups found"));
+        statusLabel->setText(QString::fromUtf8("No contacts or groups found"));
     }
 }
 
@@ -766,7 +752,7 @@ void MainWindow::onContactSelected(QListWidgetItem *item) {
         groupSettingsButton->setVisible(false);
 
         // Update recipients label
-        recipientsLabel->setText(QString::fromUtf8("📨 To: ") + currentContact);
+        recipientsLabel->setText(QString::fromUtf8("To: ") + currentContact);
 
         // Mark all messages from this contact as read
         messenger_mark_conversation_read(ctx, currentContact.toUtf8().constData());
@@ -781,7 +767,7 @@ void MainWindow::onContactSelected(QListWidgetItem *item) {
         groupSettingsButton->setVisible(true);
 
         // Update recipients label
-        recipientsLabel->setText(QString::fromUtf8("📨 To: Group - ") + contactItem.name);
+        recipientsLabel->setText(QString::fromUtf8("To: Group - ") + contactItem.name);
 
         loadGroupConversation(currentGroupId);
     }
@@ -805,7 +791,7 @@ void MainWindow::loadConversation(const QString &contact) {
         "padding: 15px; border-radius: 15px; margin-bottom: 15px; border: 2px solid #00D9FF;'>"
         "<span style='font-family: 'Orbitron'; font-size: %1px; font-weight: bold; color: #00D9FF;'>%2 Conversation with %3 %4</span>"
         "</div>"
-    ).arg(headerFontSize + 18).arg(QString::fromUtf8("💬"), contact, QString::fromUtf8("✨")));
+    ).arg(headerFontSize + 18).arg(QString::fromUtf8(""), contact));
 
     // Load messages from database
     message_info_t *messages = NULL;
@@ -876,7 +862,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     } else {
                         // cpunk.io: cyan gradient (default)
                         sentBubble = QString(
@@ -888,7 +874,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     }
                     messageDisplay->append(sentBubble);
                 } else {
@@ -905,7 +891,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     } else {
                         // cpunk.io: darker teal (default)
                         receivedBubble = QString(
@@ -917,7 +903,7 @@ void MainWindow::loadConversation(const QString &contact) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     }
                     messageDisplay->append(receivedBubble);
                 }
@@ -925,14 +911,14 @@ void MainWindow::loadConversation(const QString &contact) {
         }
 
         messenger_free_messages(messages, count);
-        statusLabel->setText(QString::fromUtf8("✨ Loaded %1 messages with %2").arg(count).arg(contact));
+        statusLabel->setText(QString::fromUtf8("Loaded %1 messages with %2").arg(count).arg(contact));
     } else {
         messageDisplay->append(QString(
             "<div style='text-align: center; color: #FF6B35; padding: 20px; font-family: 'Orbitron'; font-size: %1px; font-weight: bold;'>"
             "%2"
             "</div>"
-        ).arg(messageFontSize).arg(QString::fromUtf8("❌ Failed to load conversation")));
-        statusLabel->setText(QString::fromUtf8("❌ Error loading conversation"));
+        ).arg(messageFontSize).arg(QString::fromUtf8("Failed to load conversation")));
+        statusLabel->setText(QString::fromUtf8("Error loading conversation"));
     }
 }
 
@@ -957,7 +943,7 @@ void MainWindow::loadGroupConversation(int groupId) {
             "padding: 15px; border-radius: 15px; margin-bottom: 15px; border: 2px solid #00D9FF;'>"
             "<span style='font-family: 'Orbitron'; font-size: %1px; font-weight: bold; color: #00D9FF;'>%2 Group: %3 %4</span>"
             "</div>"
-        ).arg(headerFontSize + 18).arg(QString::fromUtf8("👥"), QString::fromUtf8(groupInfo.name), QString::fromUtf8("✨")));
+        ).arg(headerFontSize + 18).arg(QString::fromUtf8(""), QString::fromUtf8(groupInfo.name)));
 
         // Free group info strings
         free(groupInfo.name);
@@ -970,7 +956,7 @@ void MainWindow::loadGroupConversation(int groupId) {
             "padding: 15px; border-radius: 15px; margin-bottom: 15px; border: 2px solid #00D9FF;'>"
             "<span style='font-family: 'Orbitron'; font-size: %1px; font-weight: bold; color: #00D9FF;'>%2 Group Conversation %3</span>"
             "</div>"
-        ).arg(headerFontSize + 18).arg(QString::fromUtf8("👥"), QString::fromUtf8("✨")));
+        ).arg(headerFontSize + 18).arg(QString::fromUtf8("")));
     }
 
     // Load messages from database
@@ -1019,7 +1005,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     } else {
                         sentBubble = QString(
                             "<div style='text-align: right; margin: 8px 0;'>"
@@ -1030,7 +1016,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timeOnly, statusCheckmark).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     }
                     messageDisplay->append(sentBubble);
                 } else {
@@ -1046,7 +1032,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     } else {
                         receivedBubble = QString(
                             "<div style='text-align: left; margin: 8px 0;'>"
@@ -1057,7 +1043,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                             "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                             "</div>"
                             "</div>"
-                        ).arg(metaFontSize).arg(QString::fromUtf8("👤"), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(messageText.toHtmlEscaped());
+                        ).arg(metaFontSize).arg(QString::fromUtf8(""), sender, QString::fromUtf8("•"), timeOnly).arg(messageFontSize).arg(processMessageForDisplay(messageText));
                     }
                     messageDisplay->append(receivedBubble);
                 }
@@ -1065,14 +1051,14 @@ void MainWindow::loadGroupConversation(int groupId) {
         }
 
         messenger_free_messages(messages, count);
-        statusLabel->setText(QString::fromUtf8("✨ Loaded %1 group messages").arg(count));
+        statusLabel->setText(QString::fromUtf8("Loaded %1 group messages").arg(count));
     } else {
         messageDisplay->append(QString(
             "<div style='text-align: center; color: #FF6B35; padding: 20px; font-family: 'Orbitron'; font-size: %1px; font-weight: bold;'>"
             "%2"
             "</div>"
-        ).arg(messageFontSize).arg(QString::fromUtf8("❌ Failed to load group conversation")));
-        statusLabel->setText(QString::fromUtf8("❌ Error loading group conversation"));
+        ).arg(messageFontSize).arg(QString::fromUtf8("Failed to load group conversation")));
+        statusLabel->setText(QString::fromUtf8("Error loading group conversation"));
     }
 }
 
@@ -1139,7 +1125,7 @@ void MainWindow::onSendMessage() {
                 "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                 "</div>"
                 "</div>"
-            ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp, statusCheckmark).arg(messageFontSize).arg(message.toHtmlEscaped());
+            ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timestamp, statusCheckmark).arg(messageFontSize).arg(message.toHtmlEscaped());
         } else {
             // cpunk.io: cyan gradient (default)
             sentBubble = QString(
@@ -1151,15 +1137,15 @@ void MainWindow::onSendMessage() {
                 "<div style='font-family: 'Orbitron'; font-size: %6px; line-height: 1.4;'>%7</div>"
                 "</div>"
                 "</div>"
-            ).arg(metaFontSize).arg(QString::fromUtf8("💌"), QString::fromUtf8("•"), timestamp, statusCheckmark).arg(messageFontSize).arg(message.toHtmlEscaped());
+            ).arg(metaFontSize).arg(QString::fromUtf8("Me"), QString::fromUtf8("•"), timestamp, statusCheckmark).arg(messageFontSize).arg(message.toHtmlEscaped());
         }
         messageDisplay->append(sentBubble);
         messageInput->clear();
-        statusLabel->setText(QString::fromUtf8("✨ Message sent"));
+        statusLabel->setText(QString::fromUtf8("Message sent"));
     } else {
-        QMessageBox::critical(this, QString::fromUtf8("❌ Send Failed"),
+        QMessageBox::critical(this, QString::fromUtf8("Send Failed"),
                               QString::fromUtf8("Failed to send message. Check console for details."));
-        statusLabel->setText(QString::fromUtf8("❌ Message send failed"));
+        statusLabel->setText(QString::fromUtf8("Message send failed"));
     }
 }
 
@@ -1169,7 +1155,7 @@ void MainWindow::onRefreshMessages() {
     } else if (currentContactType == TYPE_GROUP && currentGroupId >= 0) {
         loadGroupConversation(currentGroupId);
     }
-    statusLabel->setText(QString::fromUtf8("✨ Messages refreshed"));
+    statusLabel->setText(QString::fromUtf8("Messages refreshed"));
 }
 
 void MainWindow::checkForNewMessages() {
@@ -1221,7 +1207,7 @@ void MainWindow::checkForNewMessages() {
             notificationSound->play();
 
             // Show desktop notification
-            QString notificationTitle = QString::fromUtf8("💌 New Message");
+            QString notificationTitle = QString::fromUtf8("New Message");
             QString notificationBody = QString("From: %1\n%2")
                 .arg(sender)
                 .arg(timestamp);
@@ -1284,231 +1270,6 @@ void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {
         show();
         raise();
         activateWindow();
-    }
-}
-
-void MainWindow::onCheckForUpdates() {
-    QString currentVersion = QString(PQSIGNUM_VERSION);
-
-    printf("\n========== DEBUG: Update Check ==========\n");
-    printf("Current version: %s (commit %s, built %s)\n",
-           PQSIGNUM_VERSION, BUILD_HASH, BUILD_TS);
-
-    QMessageBox::information(this, "Check for Updates",
-                             QString("Current version: %1\n\nChecking latest version on GitHub...").arg(currentVersion));
-
-    // Step 1: Fetch MAJOR.MINOR from README
-    QProcess readmeProcess;
-    QString majorMinor = "unknown";
-
-#ifdef _WIN32
-    QString readmeCommand = "try { "
-                           "$readme = Invoke-RestMethod -Uri 'https://raw.githubusercontent.com/nocdem/dna-messenger/main/README.md' "
-                           "-Headers @{'User-Agent'='DNA-Messenger'} -ErrorAction Stop; "
-                           "if ($readme -match '- \\*\\*Major:\\*\\*\\s+(\\d+)') { $major = $matches[1] }; "
-                           "if ($readme -match '- \\*\\*Minor:\\*\\*\\s+(\\d+)') { $minor = $matches[1] }; "
-                           "Write-Output \"$major.$minor\" "
-                           "} catch { Write-Output 'unknown' }";
-    printf("Step 1: Fetching MAJOR.MINOR from README...\n");
-    readmeProcess.start("powershell", QStringList() << "-Command" << readmeCommand);
-#else
-    QString readmeCommand = "curl -s -H 'User-Agent: DNA-Messenger' "
-                           "'https://raw.githubusercontent.com/nocdem/dna-messenger/main/README.md' 2>/dev/null | "
-                           "awk '/- \\*\\*Major:\\*\\*/ {major=$3} /- \\*\\*Minor:\\*\\*/ {minor=$3} END {print major\".\"minor}' || echo 'unknown'";
-    printf("Step 1: Fetching MAJOR.MINOR from README...\n");
-    readmeProcess.start("sh", QStringList() << "-c" << readmeCommand);
-#endif
-
-    if (readmeProcess.waitForFinished(10000)) {
-        majorMinor = QString::fromUtf8(readmeProcess.readAllStandardOutput()).trimmed();
-        printf("  Result: %s\n", majorMinor.toUtf8().constData());
-    } else {
-        printf("  Timed out!\n");
-    }
-
-    if (majorMinor == "unknown" || majorMinor.isEmpty() || !majorMinor.contains('.')) {
-        printf("ERROR: Failed to fetch MAJOR.MINOR from README\n");
-        printf("=========================================\n\n");
-        QMessageBox::warning(this, "Update Check Failed",
-                             "Could not fetch version info from GitHub README.");
-        return;
-    }
-
-    // Step 2: Fetch PATCH (commit count) from GitHub
-    QProcess commitProcess;
-    QString patch = "unknown";
-
-#ifdef _WIN32
-    QString commitCommand = "try { "
-                           "$commits = Invoke-RestMethod -Uri 'https://api.github.com/repos/nocdem/dna-messenger/commits?per_page=100' "
-                           "-Headers @{'User-Agent'='DNA-Messenger'} -ErrorAction Stop; "
-                           "Write-Output $commits.Count "
-                           "} catch { Write-Output 'unknown' }";
-    printf("Step 2: Fetching PATCH (commit count) from GitHub API...\n");
-    commitProcess.start("powershell", QStringList() << "-Command" << commitCommand);
-#else
-    QString commitCommand = "curl -s -H 'User-Agent: DNA-Messenger' "
-                           "'https://api.github.com/repos/nocdem/dna-messenger/commits?per_page=100' 2>/dev/null | "
-                           "grep -c '\"sha\"' || echo 'unknown'";
-    printf("Step 2: Fetching PATCH (commit count) from GitHub API...\n");
-    commitProcess.start("sh", QStringList() << "-c" << commitCommand);
-#endif
-
-    if (commitProcess.waitForFinished(10000)) {
-        patch = QString::fromUtf8(commitProcess.readAllStandardOutput()).trimmed();
-        printf("  Result: %s\n", patch.toUtf8().constData());
-    } else {
-        printf("  Timed out!\n");
-    }
-
-    if (patch == "unknown" || patch.isEmpty()) {
-        printf("ERROR: Failed to fetch commit count\n");
-        printf("=========================================\n\n");
-        QMessageBox::warning(this, "Update Check Failed",
-                             "Could not fetch commit count from GitHub.");
-        return;
-    }
-
-    // Step 3: Combine into full version
-    QString latestVersion = majorMinor + "." + patch;
-    printf("Step 3: Combined latest version: %s\n", latestVersion.toUtf8().constData());
-
-    // Compare versions (semantic versioning: major.minor.patch)
-    QStringList currentParts = currentVersion.split('.');
-    QStringList latestParts = latestVersion.split('.');
-
-    int currentMajor = 0, currentMinor = 0, currentPatch = 0;
-    int latestMajor = 0, latestMinor = 0, latestPatch = 0;
-
-    if (currentParts.size() >= 3) {
-        currentMajor = currentParts[0].toInt();
-        currentMinor = currentParts[1].toInt();
-        currentPatch = currentParts[2].toInt();
-    }
-
-    if (latestParts.size() >= 3) {
-        latestMajor = latestParts[0].toInt();
-        latestMinor = latestParts[1].toInt();
-        latestPatch = latestParts[2].toInt();
-    }
-
-    printf("Version comparison:\n");
-    printf("  Current: %d.%d.%d (%s)\n", currentMajor, currentMinor, currentPatch,
-           currentVersion.toUtf8().constData());
-    printf("  Latest:  %d.%d.%d (%s)\n", latestMajor, latestMinor, latestPatch,
-           latestVersion.toUtf8().constData());
-
-    // Compare: major first, then minor, then patch
-    bool updateAvailable = false;
-    if (latestMajor > currentMajor) {
-        updateAvailable = true;
-    } else if (latestMajor == currentMajor && latestMinor > currentMinor) {
-        updateAvailable = true;
-    } else if (latestMajor == currentMajor && latestMinor == currentMinor && latestPatch > currentPatch) {
-        updateAvailable = true;
-    }
-
-    if (updateAvailable) {
-        printf("Result: UPDATE AVAILABLE\n");
-        printf("=========================================\n\n");
-        // Update available
-        QMessageBox::StandardButton reply = QMessageBox::question(this, "Update Available",
-                                            QString("New version available!\n\n"
-                                                    "Current version: %1\n"
-                                                    "Latest version:  %2\n\n"
-                                                    "Do you want to update now?").arg(currentVersion, latestVersion),
-                                            QMessageBox::Yes | QMessageBox::No);
-
-        if (reply == QMessageBox::Yes) {
-#ifdef _WIN32
-            // Windows: Launch updater script from the repository root
-            // Find the repository root by looking for .git directory
-            QString exePath = QCoreApplication::applicationDirPath();
-            QDir dir(exePath);
-
-            printf("\n========== DEBUG: Windows Update ==========\n");
-            printf("Executable path: %s\n", exePath.toUtf8().constData());
-            printf("Looking for .git directory...\n");
-
-            // Navigate up to find repository root (where .git exists)
-            QString repoRoot;
-            while (dir.cdUp()) {
-                QString currentPath = dir.absolutePath();
-                printf("  Checking: %s\n", currentPath.toUtf8().constData());
-                if (dir.exists(".git")) {
-                    repoRoot = currentPath;
-                    printf("  Found .git at: %s\n", repoRoot.toUtf8().constData());
-                    break;
-                }
-            }
-
-            if (repoRoot.isEmpty()) {
-                printf("ERROR: Could not find repository root\n");
-                printf("==========================================\n\n");
-                QMessageBox::critical(this, QString::fromUtf8("❌ Update Failed"),
-                                     QString::fromUtf8("Could not find repository root.\n\n"
-                                     "Searched from: %1\n\n"
-                                     "Make sure you are running from a git repository.").arg(exePath));
-                return;
-            }
-
-            QString updateScript = repoRoot + "\\update_windows.bat";
-            printf("Update script path: %s\n", updateScript.toUtf8().constData());
-
-            if (!QFileInfo::exists(updateScript)) {
-                printf("ERROR: Update script not found at: %s\n", updateScript.toUtf8().constData());
-                printf("==========================================\n\n");
-                QMessageBox::critical(this, QString::fromUtf8("❌ Update Failed"),
-                                     QString::fromUtf8("Update script not found:\n%1\n\n"
-                                     "Please update manually using:\n"
-                                     "git pull && cmake --build build --config Release").arg(updateScript));
-                return;
-            }
-
-            printf("Launching update script...\n");
-
-            // Build command
-            QString nativeUpdateScript = QDir::toNativeSeparators(updateScript);
-            QString nativeRepoRoot = QDir::toNativeSeparators(repoRoot);
-
-            printf("Native script path: %s\n", nativeUpdateScript.toUtf8().constData());
-            printf("Native repo root: %s\n", nativeRepoRoot.toUtf8().constData());
-            printf("==========================================\n\n");
-
-            // Launch updater script in new window - use cmd /k to keep window open
-            // The script will change to the correct directory itself
-            QProcess::startDetached("cmd", QStringList() << "/k" << nativeUpdateScript);
-
-            // Quit immediately so updater can replace the executable
-            QApplication::quit();
-#else
-            // Linux: Update in place
-            QProcess updateProcess;
-            updateProcess.start("sh", QStringList()
-                              << "-c"
-                              << "REPO=$(git rev-parse --show-toplevel 2>/dev/null); "
-                                 "if [ -n \"$REPO\" ]; then "
-                                 "cd \"$REPO\" && git pull origin main && "
-                                 "cd build && cmake .. && make -j$(nproc); "
-                                 "else echo 'Not a git repository'; fi");
-
-            if (updateProcess.waitForFinished(60000)) {  // 60 second timeout
-                QMessageBox::information(this, "Update Complete",
-                                         "Update complete!\n\n"
-                                         "Please restart DNA Messenger to use the new version.");
-                QApplication::quit();
-            } else {
-                QMessageBox::critical(this, "Update Failed",
-                                      "Update failed!\n"
-                                      "Make sure you're running from the git repository.");
-            }
-#endif
-        }
-    } else {
-        printf("Result: UP TO DATE\n");
-        printf("=========================================\n\n");
-        QMessageBox::information(this, "Up to Date",
-                                 QString("You are running the latest version: %1").arg(currentVersion));
     }
 }
 
@@ -1714,7 +1475,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "}"
         ).arg(listFontSize));
 
-        statusLabel->setText(QString::fromUtf8("🌊 Theme: cpunk.io (Cyan)"));
+        statusLabel->setText(QString::fromUtf8("Theme: cpunk.io (Cyan)"));
 
     } else if (themeName == "club") {
         // cpunk.club theme - dark brown with orange accents
@@ -1894,7 +1655,7 @@ void MainWindow::applyTheme(const QString &themeName) {
             "}"
         ).arg(listFontSize));
 
-        statusLabel->setText(QString::fromUtf8("🔥 Theme: cpunk.club (Orange)"));
+        statusLabel->setText(QString::fromUtf8("Theme: cpunk.club (Orange)"));
     }
     
     // Reload conversation to apply new message bubble colors
@@ -1926,6 +1687,14 @@ void MainWindow::applyFontScale(double scale) {
     QSettings settings("DNA Messenger", "GUI");
     settings.setValue("fontScale", scale);
     
+    // Update all icon sizes
+    if (userMenuButton) userMenuButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
+    if (refreshButton) refreshButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
+    if (createGroupButton) createGroupButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
+    if (groupSettingsButton) groupSettingsButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
+    if (addRecipientsButton) addRecipientsButton->setIconSize(QSize(scaledIconSize(18), scaledIconSize(18)));
+    if (sendButton) sendButton->setIconSize(QSize(scaledIconSize(18), scaledIconSize(18)));
+    
     // Re-apply the current theme with new font sizes
     applyTheme(currentTheme);
     
@@ -1937,7 +1706,11 @@ void MainWindow::applyFontScale(double scale) {
     else if (scale == 4.0) scaleText = "Extra Large (4x)";
     else scaleText = QString::number(scale) + "x";
     
-    statusLabel->setText(QString::fromUtf8("📏 Font Scale: %1").arg(scaleText));
+    statusLabel->setText(QString::fromUtf8("Font Scale: %1").arg(scaleText));
+}
+
+int MainWindow::scaledIconSize(int baseSize) const {
+    return static_cast<int>(baseSize * fontScale);
 }
 
 void MainWindow::onAddRecipients() {
@@ -1949,7 +1722,7 @@ void MainWindow::onAddRecipients() {
 
     // Create dialog for multi-selection
     QDialog dialog(this);
-    dialog.setWindowTitle(QString::fromUtf8("➕ Add Recipients"));
+    dialog.setWindowTitle(QString::fromUtf8("Add Recipients"));
     dialog.setModal(true);
 
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
@@ -1970,7 +1743,7 @@ void MainWindow::onAddRecipients() {
             QString contact = QString::fromUtf8(identities[i]);
             // Don't include current contact or sender
             if (contact != currentContact && contact != currentIdentity) {
-                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("👤 ") + contact);
+                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("") + contact);
                 listWidget->addItem(item);
 
                 // Pre-select if already in additionalRecipients
@@ -1987,8 +1760,8 @@ void MainWindow::onAddRecipients() {
 
     // Buttons
     QHBoxLayout *buttonLayout = new QHBoxLayout;
-    QPushButton *okButton = new QPushButton(QString::fromUtf8("✅ OK"));
-    QPushButton *cancelButton = new QPushButton(QString::fromUtf8("❌ Cancel"));
+    QPushButton *okButton = new QPushButton("OK"); okButton->setIcon(QIcon(":/icons/check.svg")); okButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); okButton;
+    QPushButton *cancelButton = new QPushButton("Cancel"); cancelButton->setIcon(QIcon(":/icons/close.svg")); cancelButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); cancelButton;
 
     connect(okButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -2006,7 +1779,7 @@ void MainWindow::onAddRecipients() {
             if (item->isSelected()) {
                 // Strip emoji prefix "👤 "
                 QString contact = item->text();
-                if (contact.startsWith(QString::fromUtf8("👤 "))) {
+                if (contact.startsWith(QString::fromUtf8(""))) {
                     contact = contact.mid(3);
                 }
                 additionalRecipients.append(contact);
@@ -2014,36 +1787,56 @@ void MainWindow::onAddRecipients() {
         }
 
         // Update recipients label
-        QString recipientsText = QString::fromUtf8("📨 To: ") + currentContact;
+        QString recipientsText = QString::fromUtf8("To: ") + currentContact;
         if (!additionalRecipients.isEmpty()) {
             recipientsText += ", " + additionalRecipients.join(", ");
         }
         recipientsLabel->setText(recipientsText);
 
-        statusLabel->setText(QString::fromUtf8("✨ %1 additional recipient(s) added").arg(additionalRecipients.count()));
+        statusLabel->setText(QString::fromUtf8("%1 additional recipient(s) added").arg(additionalRecipients.count()));
     }
 }
 
-// Window dragging
-void MainWindow::mousePressEvent(QMouseEvent *event) {
-    if (event->button() == Qt::LeftButton) {
-        // Map click position to titleBar's coordinate system
-        QPoint titleBarPos = titleBar->mapFromGlobal(event->globalPos());
-        if (titleBar->rect().contains(titleBarPos)) {
-            dragPosition = event->globalPos() - frameGeometry().topLeft();
-            event->accept();
+// Fullscreen support (F11 key or ESC to exit)
+bool MainWindow::eventFilter(QObject *obj, QEvent *event) {
+    if (event->type() == QEvent::KeyPress) {
+        QKeyEvent *keyEvent = static_cast<QKeyEvent*>(event);
+        if (keyEvent->key() == Qt::Key_Escape && isFullscreen) {
+            onToggleFullscreen();
+            return true;
         }
     }
+    return QMainWindow::eventFilter(obj, event);
 }
 
-void MainWindow::mouseMoveEvent(QMouseEvent *event) {
-    if (event->buttons() & Qt::LeftButton && !dragPosition.isNull()) {
-        move(event->globalPos() - dragPosition);
+void MainWindow::keyPressEvent(QKeyEvent *event) {
+    if (event->key() == Qt::Key_F11) {
+        onToggleFullscreen();
         event->accept();
+    } else {
+        QMainWindow::keyPressEvent(event);
     }
 }
 
-// Window control buttons
+void MainWindow::onToggleFullscreen() {
+    if (isFullscreen) {
+        // Exit fullscreen
+        showNormal();
+        if (!normalGeometry.isNull()) {
+            setGeometry(normalGeometry);
+        }
+        isFullscreen = false;
+        statusLabel->setText("Exited fullscreen");
+    } else {
+        // Enter fullscreen
+        normalGeometry = geometry();
+        showFullScreen();
+        isFullscreen = true;
+        statusLabel->setText("Fullscreen (Press F11 or ESC to exit)");
+    }
+}
+
+// Window control buttons (kept for compatibility, but may not be used with native title bar)
 void MainWindow::onMinimizeWindow() {
     showMinimized();
 }
@@ -2056,7 +1849,7 @@ void MainWindow::onCloseWindow() {
 void MainWindow::onCreateGroup() {
     // Create dialog
     QDialog dialog(this);
-    dialog.setWindowTitle(QString::fromUtf8("➕ Create New Group"));
+    dialog.setWindowTitle(QString::fromUtf8("Create New Group"));
     dialog.setMinimumSize(600, 500);
 
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
@@ -2076,7 +1869,7 @@ void MainWindow::onCreateGroup() {
     layout->addWidget(descEdit);
 
     // Member selection
-    QLabel *memberLabel = new QLabel(QString::fromUtf8("👥 Select Members:"));
+    QLabel *memberLabel = new QLabel(QString::fromUtf8("Select Members:"));
     layout->addWidget(memberLabel);
 
     QListWidget *memberList = new QListWidget();
@@ -2089,7 +1882,7 @@ void MainWindow::onCreateGroup() {
         for (int i = 0; i < contactCount; i++) {
             QString identity = QString::fromUtf8(identities[i]);
             if (identity != currentIdentity) {  // Exclude self
-                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("👤 ") + identity);
+                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("") + identity);
                 memberList->addItem(item);
             }
             free(identities[i]);
@@ -2106,8 +1899,8 @@ void MainWindow::onCreateGroup() {
 
     // Buttons
     QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *okButton = new QPushButton(QString::fromUtf8("✅ Create"));
-    QPushButton *cancelButton = new QPushButton(QString::fromUtf8("❌ Cancel"));
+    QPushButton *okButton = new QPushButton("Create"); okButton->setIcon(QIcon(":/icons/check.svg")); okButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); okButton;
+    QPushButton *cancelButton = new QPushButton("Cancel"); cancelButton->setIcon(QIcon(":/icons/close.svg")); cancelButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); cancelButton;
 
     connect(okButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -2134,7 +1927,7 @@ void MainWindow::onCreateGroup() {
             if (item->isSelected()) {
                 // Strip emoji prefix
                 QString member = item->text();
-                if (member.startsWith(QString::fromUtf8("👤 "))) {
+                if (member.startsWith(QString::fromUtf8(""))) {
                     member = member.mid(3);
                 }
                 selectedMembers.append(member);
@@ -2173,7 +1966,7 @@ void MainWindow::onCreateGroup() {
 
         if (result == 0) {
             QMessageBox::information(this, "Success",
-                QString::fromUtf8("✨ Group '%1' created successfully!").arg(groupName));
+                QString("Group \"%1\" created successfully!").arg(groupName));
             loadContacts();  // Refresh contact list
         } else {
             QMessageBox::critical(this, "Error", "Failed to create group");
@@ -2196,14 +1989,14 @@ void MainWindow::onGroupSettings() {
 
     // Create dialog
     QDialog dialog(this);
-    dialog.setWindowTitle(QString::fromUtf8("⚙️ Group Settings"));
+    dialog.setWindowTitle(QString::fromUtf8("Group Settings"));
     dialog.setMinimumSize(500, 400);
 
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
 
     // Display read-only info
     QLabel *infoLabel = new QLabel(
-        QString::fromUtf8("👥 Group ID: %1\n"
+        QString::fromUtf8("Group ID: %1\n"
                          "👤 Creator: %2\n"
                          "📅 Created: %3\n"
                          "👥 Members: %4")
@@ -2234,7 +2027,7 @@ void MainWindow::onGroupSettings() {
     // Action buttons
     QHBoxLayout *actionLayout = new QHBoxLayout();
 
-    QPushButton *manageMembersButton = new QPushButton(QString::fromUtf8("👥 Manage Members"));
+    QPushButton *manageMembersButton = new QPushButton("Manage Members"); manageMembersButton->setIcon(QIcon(":/icons/group.svg")); manageMembersButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); manageMembersButton;
     connect(manageMembersButton, &QPushButton::clicked, [this, &dialog]() {
         dialog.accept();  // Close settings dialog
         onManageGroupMembers();  // Open members dialog
@@ -2244,7 +2037,7 @@ void MainWindow::onGroupSettings() {
     // Delete button (only for creator)
     bool isCreator = (QString::fromUtf8(groupInfo.creator) == currentIdentity);
     if (isCreator) {
-        QPushButton *deleteButton = new QPushButton(QString::fromUtf8("🗑️ Delete Group"));
+        QPushButton *deleteButton = new QPushButton("Delete Group"); deleteButton->setIcon(QIcon(":/icons/delete.svg")); deleteButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); deleteButton;
         deleteButton->setStyleSheet("background: rgba(255, 0, 0, 0.2); color: red;");
         connect(deleteButton, &QPushButton::clicked, [this, &dialog, &groupInfo]() {
             QMessageBox::StandardButton reply = QMessageBox::question(
@@ -2272,7 +2065,7 @@ void MainWindow::onGroupSettings() {
         actionLayout->addWidget(deleteButton);
     } else {
         // Leave group button (for non-creators)
-        QPushButton *leaveButton = new QPushButton(QString::fromUtf8("🚪 Leave Group"));
+        QPushButton *leaveButton = new QPushButton("Leave Group"); leaveButton->setIcon(QIcon(":/icons/exit.svg")); leaveButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); leaveButton;
         leaveButton->setStyleSheet("background: rgba(255, 140, 0, 0.2); color: orange;");
         connect(leaveButton, &QPushButton::clicked, [this, &dialog, &groupInfo]() {
             QMessageBox::StandardButton reply = QMessageBox::question(
@@ -2303,8 +2096,8 @@ void MainWindow::onGroupSettings() {
 
     // Save/Cancel buttons
     QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *saveButton = new QPushButton(QString::fromUtf8("💾 Save"));
-    QPushButton *cancelButton = new QPushButton(QString::fromUtf8("❌ Cancel"));
+    QPushButton *saveButton = new QPushButton("Save"); saveButton->setIcon(QIcon(":/icons/save.svg")); saveButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); saveButton;
+    QPushButton *cancelButton = new QPushButton("Cancel"); cancelButton->setIcon(QIcon(":/icons/close.svg")); cancelButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); cancelButton;
 
     connect(saveButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     connect(cancelButton, &QPushButton::clicked, &dialog, &QDialog::reject);
@@ -2387,7 +2180,7 @@ void MainWindow::onManageGroupMembers() {
 
     // Create dialog
     QDialog dialog(this);
-    dialog.setWindowTitle(QString::fromUtf8("👥 Manage Group Members"));
+    dialog.setWindowTitle(QString::fromUtf8("Manage Group Members"));
     dialog.setMinimumSize(600, 500);
 
     QVBoxLayout *layout = new QVBoxLayout(&dialog);
@@ -2412,7 +2205,7 @@ void MainWindow::onManageGroupMembers() {
     // Populate current members
     for (int i = 0; i < memberCount; i++) {
         QString member = QString::fromUtf8(members[i]);
-        QString displayText = QString::fromUtf8("👤 ") + member;
+        QString displayText = QString::fromUtf8("") + member;
 
         // Mark creator with special icon
         if (member == QString::fromUtf8(groupInfo.creator)) {
@@ -2433,7 +2226,7 @@ void MainWindow::onManageGroupMembers() {
     layout->addWidget(currentMembersList);
 
     // Remove members button
-    QPushButton *removeButton = new QPushButton(QString::fromUtf8("➖ Remove Selected Members"));
+    QPushButton *removeButton = new QPushButton("Remove Selected Members"); removeButton->setIcon(QIcon(":/icons/delete.svg")); removeButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); removeButton;
     removeButton->setStyleSheet("background: rgba(255, 0, 0, 0.2); color: red;");
     connect(removeButton, &QPushButton::clicked, [this, currentMembersList, &groupInfo]() {
         QStringList toRemove;
@@ -2442,7 +2235,7 @@ void MainWindow::onManageGroupMembers() {
             if (item->isSelected()) {
                 QString memberText = item->text();
                 // Strip emoji and extract member name
-                if (memberText.startsWith(QString::fromUtf8("👤 "))) {
+                if (memberText.startsWith(QString::fromUtf8(""))) {
                     memberText = memberText.mid(3);
                     // Remove " 👑 (Creator)" suffix if present
                     int crownPos = memberText.indexOf(QString::fromUtf8(" 👑"));
@@ -2477,7 +2270,7 @@ void MainWindow::onManageGroupMembers() {
 
             if (removed > 0) {
                 QMessageBox::information(this, "Success",
-                    QString::fromUtf8("✨ Removed %1 member(s)").arg(removed));
+                    QString::fromUtf8("Removed %1 member(s)").arg(removed));
 
                 // Refresh the members list
                 currentMembersList->clear();
@@ -2486,7 +2279,7 @@ void MainWindow::onManageGroupMembers() {
                 if (messenger_get_group_members(ctx, currentGroupId, &updatedMembers, &updatedCount) == 0) {
                     for (int i = 0; i < updatedCount; i++) {
                         QString member = QString::fromUtf8(updatedMembers[i]);
-                        QString displayText = QString::fromUtf8("👤 ") + member;
+                        QString displayText = QString::fromUtf8("") + member;
 
                         if (member == QString::fromUtf8(groupInfo.creator)) {
                             displayText += QString::fromUtf8(" 👑 (Creator)");
@@ -2517,7 +2310,7 @@ void MainWindow::onManageGroupMembers() {
     layout->addWidget(separator);
 
     // Add new members section
-    QLabel *addLabel = new QLabel(QString::fromUtf8("➕ Add New Members:"));
+    QLabel *addLabel = new QLabel(QString::fromUtf8("Add New Members:"));
     layout->addWidget(addLabel);
 
     QListWidget *availableContactsList = new QListWidget();
@@ -2537,7 +2330,7 @@ void MainWindow::onManageGroupMembers() {
         for (int i = 0; i < contactCount; i++) {
             QString contact = QString::fromUtf8(allContacts[i]);
             if (!currentMembers.contains(contact)) {
-                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("👤 ") + contact);
+                QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("") + contact);
                 availableContactsList->addItem(item);
             }
             free(allContacts[i]);
@@ -2548,7 +2341,7 @@ void MainWindow::onManageGroupMembers() {
     layout->addWidget(availableContactsList);
 
     // Add members button
-    QPushButton *addButton = new QPushButton(QString::fromUtf8("➕ Add Selected Members"));
+    QPushButton *addButton = new QPushButton("Add Selected Members"); addButton->setIcon(QIcon(":/icons/add.svg")); addButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); addButton;
     addButton->setStyleSheet("background: rgba(0, 217, 255, 0.2); color: #00D9FF;");
     connect(addButton, &QPushButton::clicked, [this, availableContactsList, currentMembersList, &groupInfo]() {
         QStringList toAdd;
@@ -2557,7 +2350,7 @@ void MainWindow::onManageGroupMembers() {
             if (item->isSelected()) {
                 QString contactText = item->text();
                 // Strip emoji prefix
-                if (contactText.startsWith(QString::fromUtf8("👤 "))) {
+                if (contactText.startsWith(QString::fromUtf8(""))) {
                     contactText = contactText.mid(3);
                     toAdd.append(contactText);
                 }
@@ -2579,7 +2372,7 @@ void MainWindow::onManageGroupMembers() {
 
         if (added > 0) {
             QMessageBox::information(this, "Success",
-                QString::fromUtf8("✨ Added %1 member(s)").arg(added));
+                QString::fromUtf8("Added %1 member(s)").arg(added));
 
             // Refresh both lists
             currentMembersList->clear();
@@ -2594,7 +2387,7 @@ void MainWindow::onManageGroupMembers() {
                     QString member = QString::fromUtf8(updatedMembers[i]);
                     updatedMemberSet.insert(member);
 
-                    QString displayText = QString::fromUtf8("👤 ") + member;
+                    QString displayText = QString::fromUtf8("") + member;
                     if (member == QString::fromUtf8(groupInfo.creator)) {
                         displayText += QString::fromUtf8(" 👑 (Creator)");
                     }
@@ -2617,7 +2410,7 @@ void MainWindow::onManageGroupMembers() {
                     for (int i = 0; i < contactCount; i++) {
                         QString contact = QString::fromUtf8(allContacts[i]);
                         if (!updatedMemberSet.contains(contact)) {
-                            availableContactsList->addItem(QString::fromUtf8("👤 ") + contact);
+                            availableContactsList->addItem(QString::fromUtf8("") + contact);
                         }
                         free(allContacts[i]);
                     }
@@ -2632,7 +2425,7 @@ void MainWindow::onManageGroupMembers() {
 
     // Close button
     QHBoxLayout *buttonLayout = new QHBoxLayout();
-    QPushButton *closeButton = new QPushButton(QString::fromUtf8("✅ Done"));
+    QPushButton *closeButton = new QPushButton("Done"); closeButton->setIcon(QIcon(":/icons/check.svg")); closeButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); closeButton;
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     buttonLayout->addWidget(closeButton);
     layout->addLayout(buttonLayout);
@@ -2665,7 +2458,7 @@ void MainWindow::onUserMenuClicked() {
         "   border-radius: 10px;"
         "   padding: 10px;"
         "   font-family: 'Orbitron';"
-        "   font-size: 36px;"
+        "   font-size: 12px;"
         "   color: #00D9FF;"
         "}"
         "QMenu::item {"
@@ -2679,7 +2472,7 @@ void MainWindow::onUserMenuClicked() {
         "}"
     );
 
-    QAction *logoutAction = menu.addAction(QString::fromUtf8("🚪 Logout"));
+    QAction *logoutAction = menu.addAction(QString::fromUtf8("Logout"));
     QAction *manageIdentitiesAction = menu.addAction(QString::fromUtf8("🔑 Manage Identities"));
 
     connect(logoutAction, &QAction::triggered, this, &MainWindow::onLogout);
@@ -2759,7 +2552,7 @@ void MainWindow::onManageIdentities() {
     // Action buttons
     QHBoxLayout *buttonLayout = new QHBoxLayout();
 
-    QPushButton *switchButton = new QPushButton(QString::fromUtf8("🔄 Switch Identity"));
+    QPushButton *switchButton = new QPushButton("Switch Identity"); switchButton->setIcon(QIcon(":/icons/switch.svg")); switchButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); switchButton;
     connect(switchButton, &QPushButton::clicked, [this, identityList, &dialog]() {
         QListWidgetItem *selectedItem = identityList->currentItem();
         if (!selectedItem) {
@@ -2802,7 +2595,7 @@ void MainWindow::onManageIdentities() {
     });
     buttonLayout->addWidget(switchButton);
 
-    QPushButton *closeButton = new QPushButton(QString::fromUtf8("❌ Close"));
+    QPushButton *closeButton = new QPushButton("Close"); closeButton->setIcon(QIcon(":/icons/close.svg")); closeButton->setIconSize(QSize(static_cast<int>(18 * fontScale), static_cast<int>(18 * fontScale))); closeButton;
     connect(closeButton, &QPushButton::clicked, &dialog, &QDialog::accept);
     buttonLayout->addWidget(closeButton);
 
@@ -2822,7 +2615,7 @@ void MainWindow::onManageIdentities() {
 
 void MainWindow::onWallet() {
     QMessageBox msgBox(this);
-    msgBox.setWindowTitle(QString::fromUtf8("💰 CF20 Wallet"));
+    msgBox.setWindowTitle(QString::fromUtf8("CF20 Wallet"));
     msgBox.setIcon(QMessageBox::Information);
     msgBox.setText(QString::fromUtf8("🚧 CF20 Wallet - Coming Soon!\n\n"
                                      "Integrated Cellframe CF20 token wallet for cpunk network.\n\n"
@@ -2862,4 +2655,118 @@ void MainWindow::onWallet() {
     );
 
     msgBox.exec();
+}
+
+// ============================================================================
+// IMAGE SUPPORT FUNCTIONS
+// ============================================================================
+
+void MainWindow::onAttachImage() {
+    // Open file dialog to select image
+    QString fileName = QFileDialog::getOpenFileName(
+        this,
+        "Select Image",
+        QDir::homePath(),
+        "Images (*.png *.jpg *.jpeg *.gif *.webp *.bmp);;All Files (*)"
+    );
+
+    if (fileName.isEmpty()) {
+        return;  // User cancelled
+    }
+
+    // Check file size (5MB limit before base64)
+    QFileInfo fileInfo(fileName);
+    qint64 fileSize = fileInfo.size();
+    const qint64 MAX_SIZE = 5 * 1024 * 1024;  // 5MB
+
+    if (fileSize > MAX_SIZE) {
+        QMessageBox::warning(this, "Image Too Large",
+            QString("Image is too large (%1 MB).\n"
+                    "Maximum size is 5 MB.\n\n"
+                    "Consider resizing the image.")
+                .arg(fileSize / 1024.0 / 1024.0, 0, 'f', 2));
+        return;
+    }
+
+    // Convert image to base64
+    QString base64 = imageToBase64(fileName);
+    if (base64.isEmpty()) {
+        QMessageBox::critical(this, "Error", "Failed to load image.");
+        return;
+    }
+
+    // Append to message input
+    QString currentText = messageInput->text();
+    if (!currentText.isEmpty() && !currentText.endsWith('\n')) {
+        currentText += "\n";
+    }
+    currentText += "[IMG:" + base64 + "]";
+    messageInput->setText(currentText);
+
+    statusLabel->setText(QString("Image attached (%1 KB)")
+        .arg(fileSize / 1024.0, 0, 'f', 1));
+}
+
+QString MainWindow::imageToBase64(const QString &imagePath) {
+    // Load image
+    QImage image(imagePath);
+    if (image.isNull()) {
+        return QString();
+    }
+
+    // Resize if too large (max 1920x1080)
+    const int MAX_WIDTH = 1920;
+    const int MAX_HEIGHT = 1080;
+
+    if (image.width() > MAX_WIDTH || image.height() > MAX_HEIGHT) {
+        image = image.scaled(MAX_WIDTH, MAX_HEIGHT, 
+                            Qt::KeepAspectRatio, 
+                            Qt::SmoothTransformation);
+    }
+
+    // Convert to PNG format (for lossless quality)
+    QByteArray byteArray;
+    QBuffer buffer(&byteArray);
+    buffer.open(QIODevice::WriteOnly);
+
+    // Determine format from file extension
+    QString format = "PNG";
+    QString suffix = QFileInfo(imagePath).suffix().toUpper();
+    if (suffix == "JPG" || suffix == "JPEG") {
+        format = "JPEG";
+    } else if (suffix == "GIF") {
+        format = "GIF";
+    } else if (suffix == "WEBP") {
+        format = "WEBP";
+    }
+
+    image.save(&buffer, format.toUtf8().constData(), 85);  // 85% quality for JPEG
+
+    // Convert to base64 with data URI
+    QString base64 = "data:image/" + format.toLower() + ";base64," + 
+                     byteArray.toBase64();
+
+    return base64;
+}
+
+QString MainWindow::processMessageForDisplay(const QString &messageText) {
+    QString processed = messageText;
+
+    // Find all [IMG:data:image/...] markers and replace with HTML img tags
+    QRegularExpression imgRegex(R"(\[IMG:(data:image/[^]]+)\])");
+    QRegularExpressionMatchIterator it = imgRegex.globalMatch(processed);
+
+    while (it.hasNext()) {
+        QRegularExpressionMatch match = it.next();
+        QString fullMatch = match.captured(0);  // [IMG:data:...]
+        QString dataUri = match.captured(1);     // data:image/...
+
+        // Replace with HTML img tag (max width for display)
+        QString imgTag = QString("<br><img src='%1' style='max-width: 400px; max-height: 300px; border-radius: 10px;'><br>")
+                            .arg(dataUri);
+
+        processed.replace(fullMatch, imgTag);
+    }
+
+    return processed;
 }

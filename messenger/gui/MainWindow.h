@@ -37,7 +37,8 @@ private slots:
     void onContactSelected(QListWidgetItem *item);
     void onSendMessage();
     void onRefreshMessages();
-    void onCheckForUpdates();
+    void onAttachImage();  // Attach image to message
+    void onToggleFullscreen();  // NEW: Toggle fullscreen mode
     void onThemeIO();
     void onThemeClub();
     void onFontScaleSmall();
@@ -59,8 +60,8 @@ private slots:
     void onWallet();
 
 protected:
-    void mousePressEvent(QMouseEvent *event) override;
-    void mouseMoveEvent(QMouseEvent *event) override;
+    bool eventFilter(QObject *obj, QEvent *event) override;  // For fullscreen ESC key
+    void keyPressEvent(QKeyEvent *event) override;  // For F11 fullscreen toggle
 
 private:
     void setupUI();
@@ -70,6 +71,9 @@ private:
     QString getLocalIdentity();
     void applyTheme(const QString &themeName);
     void applyFontScale(double scale);
+    int scaledIconSize(int baseSize) const;  // Helper for icon scaling
+    QString processMessageForDisplay(const QString &messageText);  // NEW: Process images in message
+    QString imageToBase64(const QString &imagePath);  // NEW: Convert image to base64
 
     // Contact/Group item type
     enum ContactType {
@@ -100,17 +104,17 @@ private:
     QPushButton *createGroupButton;
     QPushButton *groupSettingsButton;
     QPushButton *userMenuButton;
+    QPushButton *attachImageButton;  // Attach image button
     QLabel *statusLabel;
     QLabel *recipientsLabel;
 
-    // Custom title bar components
-    QWidget *titleBar;
-    QLabel *titleLabel;
-    QPushButton *minimizeButton;
-    QPushButton *closeButton;
+    // System tray
+    QSystemTrayIcon *trayIcon;
+    QMenu *trayMenu;
 
-    // Window dragging
-    QPoint dragPosition;
+    // Fullscreen state
+    bool isFullscreen;
+    QRect normalGeometry;  // Store window geometry before fullscreen
 
     // Theme management
     QString currentTheme;
@@ -122,8 +126,6 @@ private:
     QTimer *pollTimer;
     QTimer *statusPollTimer;
     int lastCheckedMessageId;
-    QSystemTrayIcon *trayIcon;
-    QMenu *trayMenu;
     QSoundEffect *notificationSound;
 
     // Multi-recipient support
