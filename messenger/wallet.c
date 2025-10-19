@@ -1,7 +1,7 @@
 /*
  * wallet.c - Cellframe Wallet Reader for DNA Messenger
  *
- * Reads Cellframe wallet files (.dwallet format) from standard locations.
+ * Reads Cellframe wallet files (.dwallet format) for CF20 token operations.
  */
 
 #include "wallet.h"
@@ -24,17 +24,11 @@
 // UTILITY FUNCTIONS
 // ============================================================================
 
-/**
- * Check if file exists
- */
 static bool file_exists(const char *path) {
     struct stat st;
     return (stat(path, &st) == 0);
 }
 
-/**
- * Get file size
- */
 static long get_file_size(const char *path) {
     struct stat st;
     if (stat(path, &st) != 0) {
@@ -47,43 +41,32 @@ static long get_file_size(const char *path) {
 // WALLET READING
 // ============================================================================
 
-/**
- * Read Cellframe wallet from full path
- */
 int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out) {
     if (!path || !wallet_out) {
-        fprintf(stderr, "wallet_read_cellframe_path: Invalid arguments\n");
         return -1;
     }
 
     if (!file_exists(path)) {
-        fprintf(stderr, "wallet_read_cellframe_path: File not found: %s\n", path);
         return -1;
     }
 
-    // Get file size
     long file_size = get_file_size(path);
     if (file_size < 0) {
-        fprintf(stderr, "wallet_read_cellframe_path: Cannot get file size: %s\n", path);
         return -1;
     }
 
-    // Read entire file
     FILE *fp = fopen(path, "rb");
     if (!fp) {
-        fprintf(stderr, "wallet_read_cellframe_path: Cannot open file: %s\n", path);
         return -1;
     }
 
     uint8_t *file_data = malloc(file_size);
     if (!file_data) {
-        fprintf(stderr, "wallet_read_cellframe_path: Memory allocation failed\n");
         fclose(fp);
         return -1;
     }
 
     if (fread(file_data, 1, file_size, fp) != (size_t)file_size) {
-        fprintf(stderr, "wallet_read_cellframe_path: Failed to read file\n");
         free(file_data);
         fclose(fp);
         return -1;
@@ -91,18 +74,16 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
 
     fclose(fp);
 
-    // Allocate wallet structure
     cellframe_wallet_t *wallet = calloc(1, sizeof(cellframe_wallet_t));
     if (!wallet) {
-        fprintf(stderr, "wallet_read_cellframe_path: Memory allocation failed\n");
         free(file_data);
         return -1;
     }
 
-    // Extract filename from path
+    // Extract filename
     const char *filename = strrchr(path, '/');
     if (!filename) {
-        filename = strrchr(path, '\\');  // Windows
+        filename = strrchr(path, '\\');
     }
     filename = filename ? filename + 1 : path;
 
@@ -113,34 +94,6 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
     char *ext = strstr(wallet->name, ".dwallet");
     if (ext) {
         *ext = '\0';
-    }
-
-    // Parse wallet file format
-    // From hexdump analysis:
-    // - Offset 0x0E-0x1C: Wallet name (null-terminated)
-    // - After that: Key material
-
-    // Try to extract wallet name from file data
-    if (file_size > 0x1C) {
-        // Look for wallet name string in file
-        size_t offset = 0x0E;
-        if (offset + strlen(wallet->name) < (size_t)file_size) {
-            char file_name[WALLET_NAME_MAX];
-            size_t i;
-            for (i = 0; i < WALLET_NAME_MAX - 1 && offset + i < (size_t)file_size; i++) {
-                uint8_t c = file_data[offset + i];
-                if (c == 0 || c < 32 || c > 126) {
-                    break;
-                }
-                file_name[i] = c;
-            }
-            file_name[i] = '\0';
-
-            if (i > 0 && strstr(file_name, wallet->name) != NULL) {
-                // Found wallet name in file
-                strncpy(wallet->name, file_name, WALLET_NAME_MAX - 1);
-            }
-        }
     }
 
     // Determine signature type from filename
@@ -156,14 +109,12 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
         wallet->sig_type = WALLET_SIG_UNKNOWN;
     }
 
-    // Default to unprotected (we can enhance this later)
     wallet->status = WALLET_STATUS_UNPROTECTED;
     wallet->deprecated = false;
 
-    // Store raw key data (entire file for now - we can parse this better later)
-    // The key material starts after the header (around offset 0x90 from hexdump)
+    // Store key data
     size_t key_data_offset = 0x90;
-    if (file_size > key_data_offset) {
+    if (file_size > (long)key_data_offset) {
         wallet->public_key_size = file_size - key_data_offset;
         wallet->public_key = malloc(wallet->public_key_size);
         if (wallet->public_key) {
@@ -176,12 +127,8 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
     return 0;
 }
 
-/**
- * Read a specific Cellframe wallet file from standard directory
- */
 int wallet_read_cellframe(const char *filename, cellframe_wallet_t **wallet_out) {
     if (!filename || !wallet_out) {
-        fprintf(stderr, "wallet_read_cellframe: Invalid arguments\n");
         return -1;
     }
 
@@ -191,39 +138,28 @@ int wallet_read_cellframe(const char *filename, cellframe_wallet_t **wallet_out)
     return wallet_read_cellframe_path(path, wallet_out);
 }
 
-/**
- * List all Cellframe wallets in standard directory
- */
 int wallet_list_cellframe(wallet_list_t **list_out) {
     if (!list_out) {
-        fprintf(stderr, "wallet_list_cellframe: Invalid arguments\n");
         return -1;
     }
 
-    // Check if wallet directory exists
     if (!file_exists(CELLFRAME_WALLET_PATH)) {
-        fprintf(stderr, "wallet_list_cellframe: Wallet directory not found: %s\n", CELLFRAME_WALLET_PATH);
         return -1;
     }
 
-    // Allocate list structure
     wallet_list_t *list = calloc(1, sizeof(wallet_list_t));
     if (!list) {
-        fprintf(stderr, "wallet_list_cellframe: Memory allocation failed\n");
         return -1;
     }
 
-    // Count .dwallet files
     size_t capacity = 10;
     list->wallets = calloc(capacity, sizeof(cellframe_wallet_t));
     if (!list->wallets) {
-        fprintf(stderr, "wallet_list_cellframe: Memory allocation failed\n");
         free(list);
         return -1;
     }
 
 #ifdef _WIN32
-    // Windows: Use FindFirstFile/FindNextFile
     WIN32_FIND_DATA find_data;
     char search_path[1024];
     snprintf(search_path, sizeof(search_path), "%s\\*.dwallet", CELLFRAME_WALLET_PATH);
@@ -232,13 +168,12 @@ int wallet_list_cellframe(wallet_list_t **list_out) {
     if (hFind == INVALID_HANDLE_VALUE) {
         free(list->wallets);
         free(list);
-        *list_out = list;  // Return empty list
+        *list_out = list;
         return 0;
     }
 
     do {
         if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
-            // Read wallet file
             cellframe_wallet_t *wallet = NULL;
             if (wallet_read_cellframe(find_data.cFileName, &wallet) == 0 && wallet) {
                 if (list->count >= capacity) {
@@ -254,31 +189,28 @@ int wallet_list_cellframe(wallet_list_t **list_out) {
 
                 memcpy(&list->wallets[list->count], wallet, sizeof(cellframe_wallet_t));
                 list->count++;
-                free(wallet);  // Free structure but not contents (copied above)
+                free(wallet);
             }
         }
     } while (FindNextFile(hFind, &find_data));
 
     FindClose(hFind);
 #else
-    // Linux/Unix: Use opendir/readdir
     DIR *dir = opendir(CELLFRAME_WALLET_PATH);
     if (!dir) {
         free(list->wallets);
         free(list);
-        *list_out = list;  // Return empty list
+        *list_out = list;
         return 0;
     }
 
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        // Check if file ends with .dwallet
         size_t name_len = strlen(entry->d_name);
         if (name_len < 8 || strcmp(entry->d_name + name_len - 8, ".dwallet") != 0) {
             continue;
         }
 
-        // Read wallet file
         cellframe_wallet_t *wallet = NULL;
         if (wallet_read_cellframe(entry->d_name, &wallet) == 0 && wallet) {
             if (list->count >= capacity) {
@@ -294,7 +226,7 @@ int wallet_list_cellframe(wallet_list_t **list_out) {
 
             memcpy(&list->wallets[list->count], wallet, sizeof(cellframe_wallet_t));
             list->count++;
-            free(wallet);  // Free structure but not contents (copied above)
+            free(wallet);
         }
     }
 
@@ -306,17 +238,55 @@ int wallet_list_cellframe(wallet_list_t **list_out) {
 }
 
 /**
- * Get wallet address for specific network
+ * Get wallet address using cellframe-node-cli
  */
 int wallet_get_address(const cellframe_wallet_t *wallet, const char *network_name, char *address_out) {
     if (!wallet || !network_name || !address_out) {
-        fprintf(stderr, "wallet_get_address: Invalid arguments\n");
         return -1;
     }
 
-    // TODO: Implement address derivation for different networks
-    // For now, just return placeholder
-    snprintf(address_out, WALLET_ADDRESS_MAX, "%s:%s", network_name, wallet->name);
+    char command[1024];
+    snprintf(command, sizeof(command),
+             "cellframe-node-cli wallet info -w %s -net %s 2>/dev/null | grep 'addr:' | head -1",
+             wallet->name, network_name);
+
+    FILE *fp = popen(command, "r");
+    if (!fp) {
+        return -1;
+    }
+
+    char buffer[2048];
+    if (fgets(buffer, sizeof(buffer), fp) == NULL) {
+        pclose(fp);
+        return -1;
+    }
+
+    pclose(fp);
+
+    // Parse output: "addr: <address>"
+    char *addr_start = strstr(buffer, "addr:");
+    if (!addr_start) {
+        return -1;
+    }
+
+    addr_start += 5;
+    while (*addr_start && (*addr_start == ' ' || *addr_start == '\t')) {
+        addr_start++;
+    }
+
+    char *addr_end = addr_start;
+    while (*addr_end && *addr_end != '\n' && *addr_end != '\r' && *addr_end != ' ' && *addr_end != '\t') {
+        addr_end++;
+    }
+
+    size_t addr_len = addr_end - addr_start;
+    if (addr_len == 0 || addr_len >= WALLET_ADDRESS_MAX) {
+        return -1;
+    }
+
+    strncpy(address_out, addr_start, addr_len);
+    address_out[addr_len] = '\0';
+
     return 0;
 }
 
@@ -324,22 +294,17 @@ int wallet_get_address(const cellframe_wallet_t *wallet, const char *network_nam
 // CLEANUP FUNCTIONS
 // ============================================================================
 
-/**
- * Free a single wallet structure
- */
 void wallet_free(cellframe_wallet_t *wallet) {
     if (!wallet) {
         return;
     }
 
     if (wallet->public_key) {
-        // Securely wipe key material
         memset(wallet->public_key, 0, wallet->public_key_size);
         free(wallet->public_key);
     }
 
     if (wallet->private_key) {
-        // Securely wipe key material
         memset(wallet->private_key, 0, wallet->private_key_size);
         free(wallet->private_key);
     }
@@ -347,9 +312,6 @@ void wallet_free(cellframe_wallet_t *wallet) {
     free(wallet);
 }
 
-/**
- * Free wallet list
- */
 void wallet_list_free(wallet_list_t *list) {
     if (!list) {
         return;
@@ -372,9 +334,6 @@ void wallet_list_free(wallet_list_t *list) {
     free(list);
 }
 
-/**
- * Get signature type name as string
- */
 const char* wallet_sig_type_name(wallet_sig_type_t sig_type) {
     switch (sig_type) {
         case WALLET_SIG_DILITHIUM:
