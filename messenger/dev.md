@@ -524,3 +524,97 @@ origin  git@github.com:nocdem/dna-messenger.git
 
 ---
 
+
+### 2025-10-19 UTC - Phase 8: Cellframe Wallet Reader Implementation
+**User**: nocdem
+**Agent**: Claude Code
+**Developer**: nocdem
+**Branch**: feature/wallet
+**Project**: DNA Messenger - CF20 Wallet Integration
+
+#### Summary
+Implemented Cellframe wallet file reader as first step of Phase 8 (CF20 Wallet Integration).
+Can now read local Cellframe wallet files from standard paths on Linux and Windows.
+
+#### Files Created
+
+**wallet.h**:
+- Public API for Cellframe wallet reading
+- Cross-platform wallet paths (Linux: `/opt/cellframe-node/var/lib/wallet`, Windows: `C:\Users\Public\Documents\cellframe-node\var\lib\wallet`)
+- Wallet data structures (`cellframe_wallet_t`, `wallet_list_t`)
+- Signature type enum (Dilithium, Picnic, Bliss, Tesla)
+- Wallet status enum (protected/unprotected/deprecated)
+
+**wallet.c**:
+- `wallet_list_cellframe()` - List all `.dwallet` files
+- `wallet_read_cellframe()` - Read wallet by filename
+- `wallet_read_cellframe_path()` - Read wallet from full path
+- `wallet_get_address()` - Get network address (placeholder)
+- `wallet_free()`, `wallet_list_free()` - Memory management
+- Cross-platform directory reading (Windows FindFirstFile, Linux opendir/readdir)
+- Binary file parsing for `.dwallet` format
+
+**wallet_test.c**:
+- Test program for wallet reading functionality
+- Lists all wallets in standard directory
+- Reads specific wallet file
+- Displays wallet information
+
+#### Files Modified
+
+**CMakeLists.txt**:
+- Added `wallet_test` executable target
+- Links wallet.c and wallet_test.c
+
+#### Technical Implementation
+
+**Wallet File Format (.dwallet)**:
+Based on hexdump analysis and QGP history research:
+```
+Offset 0x00-0x0D: Header/magic bytes
+Offset 0x0E-0x1C: Wallet name (null-terminated string)
+Offset 0x90+:     Cryptographic key material (Dilithium keys)
+```
+
+**Research Process**:
+1. Examined Cellframe wallet file with hexdump
+2. Used `cellframe-node-cli wallet list` to understand format
+3. Checked QGP history for original Cellframe SDK integration code
+4. Found `privkey.c` in old commits showing `dap_enc_key_t` usage
+5. Implemented SDK-independent binary parser
+
+**Test Results**:
+```
+Found 1 wallet(s):
+  Filename:   test_dilithium.dwallet
+  Name:       test_dilithium
+  Sig Type:   sig_dil
+  Status:     unprotected
+  Pub Key:    3998 bytes
+```
+
+#### Next Steps (Phase 8)
+
+1. **Network Address Derivation**:
+   - Implement proper address derivation for Cellframe networks
+   - Support Backbone, KelVPN, cpunk networks
+   - Use Cellframe address format
+
+2. **RPC Integration**:
+   - Connect to cpunk network via public RPC
+   - Query CF20 token balances
+   - Transaction broadcasting
+
+3. **GUI Integration**:
+   - Add "Wallet" tab to Qt GUI
+   - Display wallet list
+   - Show balances
+   - Send/receive CF20 tokens
+
+4. **Transaction Support**:
+   - Create CF20 transfer transactions
+   - Sign with wallet keys
+   - Transaction history tracking
+
+---
+

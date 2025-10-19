@@ -15,6 +15,10 @@ set(GUI_SOURCES
     main.cpp
     MainWindow.cpp
     MainWindow.h
+    WalletDialog.cpp
+    WalletDialog.h
+    ../wallet.c
+    ../cellframe_rpc.c
     resources.qrc
 )
 
@@ -29,6 +33,7 @@ target_link_libraries(dna_messenger_gui
     dna_lib
     ${PQ_LIBRARY}
     ${JSONC_LIBRARIES}
+    ${CURL_LIBRARIES}
 )
 
 # Include directories
