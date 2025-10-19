@@ -858,3 +858,134 @@ Added proper cleanup in base58.c:
 3. Test RPC balance refresh on Windows
 
 ---
+
+### 2025-10-19 UTC - Phase 8: Correct Cellframe Address Generation
+**User**: nocdem
+**Agent**: Claude Code
+**Developer**: nocdem
+**Branch**: main
+**Project**: DNA Messenger - CF20 Wallet Integration
+
+#### Summary
+Fixed Cellframe address generation to match SDK implementation exactly.
+Addresses now generate correctly and match cellframe-node-cli output.
+
+#### Problem Solved
+Wallet addresses were incorrect due to three issues:
+1. **Wrong offset**: Reading serialized key from wrong location in wallet file
+2. **Re-serialization**: Adding extra serialization layer instead of using existing data
+3. **Structure alignment**: Missing packed attribute causing compiler padding
+
+#### Root Cause Analysis
+
+**Issue 1: Wallet File Structure**
+- Serialized public key ALREADY exists in wallet file at offset **0x86**
+- Format: [8-byte length] + [4-byte kind] + [N bytes public key data]
+- Was incorrectly reading from offset 0x90, missing length field
+- Must read LENGTH from first 8 bytes and hash exactly that many bytes
+
+**Issue 2: Double Serialization**
+- SDK stores serialized key in wallet file
+- We were re-serializing it (adding another length header)
+- Should hash the data AS-IS from wallet file
+
+**Issue 3: Structure Packing**
+- Cellframe address structure needs `__attribute__((packed))` / `#pragma pack(1)`
+- Without packing, compiler adds padding before uint16_t fields
+- Resulted in 78-byte structure instead of 77 bytes
+- Addresses didn't match due to different byte layout
+
+#### Files Modified
+
+**wallet.c**:
+- Changed offset from 0x90 to **0x86** (where serialized key starts)
+- Read length field (first 8 bytes of serialized data)
+- Copy exactly `length` bytes (not entire rest of file)
+- Pass serialized data AS-IS to address generation
+
+**cellframe_addr.c**:
+- Removed double serialization (was adding 8-byte length header again)
+- Fixed structure to match SDK `dap_chain_addr_t`:
+  - addr_ver: 1 byte
+  - net_id: 8 bytes (as byte array, not uint64_t for endianness)
+  - sig_type: 2 bytes (uint16_t little-endian = 0x0102 stored as `02 01`)
+  - padding: 2 bytes (explicit manual padding)
+  - pkey_hash: 32 bytes
+  - checksum: 32 bytes
+  - **Total: 77 bytes** (with `__attribute__((packed))`)
+- Added packed attribute for cross-platform:
+  - GCC/Clang: `__attribute__((packed))`
+  - MSVC: `#pragma pack(push,1)` / `#pragma pack(pop)`
+
+#### Technical Details
+
+**Correct Wallet File Layout**:
+```
+Offset 0x86-0x8D: Length field (8 bytes, little-endian uint64_t)
+                  Example: 0x04ac = 1196 bytes
+Offset 0x8E-0x91: Kind field (4 bytes, little-endian uint32_t)
+                  Example: 0x01 = MODE_1 (Dilithium3)
+Offset 0x92+:     Public key data (N bytes)
+```
+
+**Correct Address Generation Algorithm**:
+1. Read 8-byte length from wallet file offset 0x86
+2. Read exactly `length` bytes starting from 0x86
+3. Hash with SHA3-256 (Cellframe's `dap_hash_fast`)
+4. Build address structure (77 bytes packed)
+5. Calculate checksum (SHA3-256 of first 43 bytes)
+6. Base58 encode entire 77-byte structure
+
+**Address Structure (Packed)**:
+```c
+struct {
+    uint8_t addr_ver;    // 0x01
+    uint8_t net_id[8];   // 0x0404202200000000 (Backbone)
+    uint16_t sig_type;   // 0x0102 (Dilithium) -> stored as 02 01
+    uint16_t padding;    // 0x0000
+    uint8_t hash[32];    // SHA3-256 of serialized pubkey
+    uint8_t checksum[32]; // SHA3-256 of above 43 bytes
+} __attribute__((packed));  // MUST be packed!
+```
+
+#### Test Results
+
+**Before fix**:
+```
+Generated: 2GcbANwFmgox6RcqG3UvhFYe7MSayTUCzsXJMqDfX3AcJx4Sbf8X8cMgtbNHdQwy6Wm3hKggPgLfKse4nUGB8UdKbJRVyZVqtwCkAy
+Expected:  Rj7J7MiX2bWy8sNyXq6qmyAxj9DGa9mLFw6nQ6TcwAwRAVceYKEu71t6tstNJHBiPwvFuqvZWn6di5V4SSw6wGvikUSWCCnyH8NDvzPk
+Result: ✗ MISMATCH
+```
+
+**After fix**:
+```
+Generated: Rj7J7MiX2bWy8sNyXq6qmyAxj9DGa9mLFw6nQ6TcwAwRAVceYKEu71t6tstNJHBiPwvFuqvZWn6di5V4SSw6wGvikUSWCCnyH8NDvzPk
+Expected:  Rj7J7MiX2bWy8sNyXq6qmyAxj9DGa9mLFw6nQ6TcwAwRAVceYKEu71t6tstNJHBiPwvFuqvZWn6di5V4SSw6wGvikUSWCCnyH8NDvzPk
+Result: ✅ PERFECT MATCH
+```
+
+**Verification**:
+```bash
+$ ./build/wallet_test
+Wallet 1:
+  Name: test_dilithium
+  Backbone: Rj7J7MiX2bWy8sNyXq6qmyAxj9DGa9mLFw6nQ6TcwAwRAVceYKEu71t6tstNJHBiPwvFuqvZWn6di5V4SSw6wGvikUSWCCnyH8NDvzPk
+
+$ cellframe-node-cli wallet info -w test_dilithium -net Backbone
+            addr: Rj7J7MiX2bWy8sNyXq6qmyAxj9DGa9mLFw6nQ6TcwAwRAVceYKEu71t6tstNJHBiPwvFuqvZWn6di5V4SSw6wGvikUSWCCnyH8NDvzPk
+```
+
+#### Cross-Platform Compatibility
+
+- ✅ **Linux**: `__attribute__((packed))` for GCC/Clang
+- ✅ **Windows**: `#pragma pack(1)` for MSVC
+- ✅ **Endianness**: Little-endian uint16_t/uint64_t correctly handled
+- ✅ **Alignment**: No compiler-inserted padding
+
+#### Next Steps
+
+1. Test on Windows to verify addresses match
+2. Test RPC balance queries with generated addresses
+3. Implement Send CF20 Tokens feature
+
+---

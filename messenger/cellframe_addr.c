@@ -11,14 +11,17 @@
 #include <string.h>
 #include <openssl/evp.h>
 
-// Cellframe address structure (before base58 encoding)
+// Cellframe address structure (matches dap_chain_addr_t from SDK)
+// NOTE: Must be packed to avoid automatic alignment padding!
+// There are 2 manual padding bytes after sig_type.
 #ifdef _MSC_VER
 #pragma pack(push, 1)
 #endif
 typedef struct {
     uint8_t addr_ver;        // Address version (always 1)
-    uint64_t net_id;         // Network ID
-    uint16_t sig_type;       // Signature type
+    uint8_t net_id[8];       // Network ID (8 bytes)
+    uint16_t sig_type;       // Signature type (little-endian)
+    uint16_t padding;        // Manual padding (2 bytes)
     uint8_t pkey_hash[32];   // SHA3-256 hash of public key
     uint8_t checksum[32];    // SHA3-256 checksum
 }
@@ -60,11 +63,18 @@ static int sha3_256(const uint8_t *data, size_t data_len, uint8_t *hash_out) {
 }
 
 /**
- * Generate Cellframe address from public key
+ * Generate Cellframe address from serialized public key
+ *
+ * NOTE: pubkey should point to ALREADY SERIALIZED public key data
+ * Cellframe serialization format:
+ * [8 bytes: total length] + [4 bytes: kind] + [N bytes: public key data]
+ *
+ * The wallet file stores this serialized format starting at offset 0x86.
+ * We hash this data AS-IS, using the length specified in the first 8 bytes.
  */
 int cellframe_addr_from_pubkey(const uint8_t *pubkey, size_t pubkey_size,
                                  uint64_t net_id, char *address_out) {
-    if (!pubkey || pubkey_size == 0 || !address_out) {
+    if (!pubkey || pubkey_size < 12 || !address_out) {
         fprintf(stderr, "cellframe_addr_from_pubkey: Invalid arguments\n");
         return -1;
     }
@@ -74,10 +84,17 @@ int cellframe_addr_from_pubkey(const uint8_t *pubkey, size_t pubkey_size,
     memset(&addr, 0, sizeof(addr));
 
     addr.addr_ver = 1;  // Current version
-    addr.net_id = net_id;
+
+    // Network ID as byte array (little-endian uint64_t)
+    memcpy(addr.net_id, &net_id, 8);
+
+    // Signature type (little-endian uint16_t)
     addr.sig_type = CELLFRAME_SIG_DILITHIUM;
 
-    // Hash public key with SHA3-256
+    // Padding (explicit)
+    addr.padding = 0;
+
+    // Hash the serialized public key with SHA3-256 (already in correct format)
     if (sha3_256(pubkey, pubkey_size, addr.pkey_hash) != 0) {
         fprintf(stderr, "cellframe_addr_from_pubkey: Failed to hash public key\n");
         return -1;

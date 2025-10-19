@@ -115,19 +115,27 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
     wallet->status = WALLET_STATUS_UNPROTECTED;
     wallet->deprecated = false;
 
-    // Store key data
-    size_t key_data_offset = 0x90;
-    if (file_size > (long)key_data_offset) {
-        wallet->public_key_size = file_size - key_data_offset;
-        wallet->public_key = malloc(wallet->public_key_size);
-        if (wallet->public_key) {
-            memcpy(wallet->public_key, file_data + key_data_offset, wallet->public_key_size);
+    // Store serialized public key
+    // Serialized key starts at offset 0x86: [8-byte length] + [4-byte kind] + [N bytes data]
+    size_t serialized_offset = 0x86;
+    if (file_size > (long)(serialized_offset + 8)) {
+        // Read length field (first 8 bytes of serialized data)
+        uint64_t serialized_len;
+        memcpy(&serialized_len, file_data + serialized_offset, 8);
 
-            // Generate Cellframe address from public key
-            if (cellframe_addr_from_pubkey(wallet->public_key, wallet->public_key_size,
-                                          CELLFRAME_NET_BACKBONE, wallet->address) != 0) {
-                // Address generation failed, set empty
-                wallet->address[0] = '\0';
+        // Validate length
+        if (serialized_len > 0 && serialized_len <= (file_size - serialized_offset)) {
+            wallet->public_key_size = serialized_len;
+            wallet->public_key = malloc(wallet->public_key_size);
+            if (wallet->public_key) {
+                memcpy(wallet->public_key, file_data + serialized_offset, wallet->public_key_size);
+
+                // Generate Cellframe address from serialized public key
+                if (cellframe_addr_from_pubkey(wallet->public_key, wallet->public_key_size,
+                                              CELLFRAME_NET_BACKBONE, wallet->address) != 0) {
+                    // Address generation failed, set empty
+                    wallet->address[0] = '\0';
+                }
             }
         }
     }
