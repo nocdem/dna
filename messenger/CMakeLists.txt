@@ -183,8 +183,10 @@ if(EXISTS "${CMAKE_SOURCE_DIR}/wallet_test.c")
     add_executable(wallet_test
         wallet_test.c
         wallet.c
+        cellframe_addr.c
+        base58.c
     )
-    target_link_libraries(wallet_test)
+    target_link_libraries(wallet_test OpenSSL::Crypto)
     target_include_directories(wallet_test PRIVATE ${CMAKE_SOURCE_DIR})
 endif()
 
@@ -195,8 +197,10 @@ if(CURL_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/rpc_test.c")
         rpc_test.c
         cellframe_rpc.c
         wallet.c
+        cellframe_addr.c
+        base58.c
     )
-    target_link_libraries(rpc_test ${CURL_LIBRARIES} ${JSONC_LIBRARIES})
+    target_link_libraries(rpc_test ${CURL_LIBRARIES} ${JSONC_LIBRARIES} OpenSSL::Crypto)
     target_include_directories(rpc_test PRIVATE ${CMAKE_SOURCE_DIR})
 endif()
 

@@ -618,3 +618,125 @@ Found 1 wallet(s):
 
 ---
 
+
+### 2025-10-19 UTC - Phase 8: Native Address Generation (Windows Fix)
+**User**: nocdem
+**Agent**: Claude Code
+**Developer**: nocdem
+**Branch**: feature/wallet
+**Project**: DNA Messenger - CF20 Wallet Integration
+
+#### Summary
+Fixed wallet address generation by implementing native address derivation from public keys.
+Removed dependency on cellframe-node-cli which was causing "Error" on Windows.
+Addresses are now generated cross-platform using SHA3-256 and Base58 encoding.
+
+#### Problem Identified
+User reported: "on windows i see the wallet names. but for wallet adr i see errors. debug"
+- Root cause: `wallet_get_address()` was calling `cellframe-node-cli` binary
+- CLI binary doesn't exist on Windows installations
+- Function returned -1 error, GUI displayed "Error" in address column
+- User questioned: "ok what cellfarme node cli ? why are we udingn it"
+
+#### Solution Implemented
+Integrated existing `cellframe_addr.c` code to generate addresses from wallet public keys:
+1. SHA3-256 hash of public key
+2. Build Cellframe address structure (network ID + signature type + hash + checksum)
+3. Base58 encode the result
+4. Store in `wallet->address` when reading wallet file
+
+#### Files Modified
+
+**wallet.c**:
+- Added `#include "cellframe_addr.h"`
+- Modified `wallet_read_cellframe_path()`:
+  - After reading public key from .dwallet file (offset 0x90)
+  - Call `cellframe_addr_from_pubkey()` to generate Backbone network address
+  - Store result in `wallet->address` field
+- Simplified `wallet_get_address()`:
+  - Removed cellframe-node-cli code (popen/pclose calls)
+  - Now just returns pre-generated address from wallet structure
+  - Works identically on Windows and Linux
+
+**gui/WalletDialog.cpp**:
+- Modified `loadWallets()`:
+  - Now calls `wallet_get_address()` when loading wallets
+  - Displays actual Cellframe addresses immediately (no more "Click Refresh..." placeholder)
+  - Changed balance placeholders to "Click Refresh..." (balances still require RPC query)
+- Modified `onRefreshBalances()`:
+  - Updated skip condition: `if (address.startsWith("Error") || address.startsWith("Click"))`
+  - Now works with real addresses displayed in address column
+
+**gui/CMakeLists.txt**:
+- Added `../cellframe_addr.c` to GUI_SOURCES
+- Added `../base58.c` to GUI_SOURCES
+- Both files needed for address generation
+
+**CMakeLists.txt**:
+- Updated `wallet_test` target:
+  - Added `cellframe_addr.c` and `base58.c` to sources
+  - Added `OpenSSL::Crypto` to link libraries (for SHA3-256)
+- Updated `rpc_test` target:
+  - Added `cellframe_addr.c` and `base58.c` to sources
+  - Added `OpenSSL::Crypto` to link libraries
+
+#### Technical Details
+
+**Address Generation Algorithm** (from cellframe_addr.c):
+```c
+1. Hash public key with SHA3-256 (OpenSSL EVP_sha3_256)
+2. Build address structure:
+   - addr_ver = 1 (version byte)
+   - net_id = 0x0404202200000000 (CELLFRAME_NET_BACKBONE)
+   - sig_type = 0x0102 (CELLFRAME_SIG_DILITHIUM)
+   - pkey_hash[32] = SHA3-256(public_key)
+   - checksum[32] = SHA3-256(above fields)
+3. Base58 encode entire structure (75 bytes)
+4. Result: Cellframe-compatible address string
+```
+
+**Example Generated Address**:
+```
+Wallet: test_dilithium
+Public Key: 3998 bytes (Dilithium3)
+Address: 2GcbANwFmgox6RcqG3UvhFYe7MSayTUCzsXJMqDfX3AcJx4Sbf8X8cMgtbNHdQwy6Wm3hKggPgLfKse4nUGB8UdKbJRVyZVqtwCkAy
+Network: Backbone
+```
+
+#### Test Results
+
+**wallet_test output**:
+```
+Found 1 wallet(s):
+
+Wallet 1:
+  Filename:   test_dilithium.dwallet
+  Name:       test_dilithium
+  Sig Type:   sig_dil
+  Pub Key:    3998 bytes
+  Backbone:   2GcbANwFmgox6RcqG3UvhFYe7MSayTUCzsXJMqDfX3AcJx4Sbf8X8cMgtbNHdQwy6Wm3hKggPgLfKse4nUGB8UdKbJRVyZVqtwCkAy
+```
+
+**Build status**: ✅ All targets built successfully
+- dna_lib
+- dna_messenger
+- dna_messenger_gui
+- wallet_test
+- rpc_test
+
+#### Benefits
+
+1. **Cross-platform**: Works on both Windows and Linux without CLI dependency
+2. **Faster**: No subprocess spawning, instant address generation
+3. **Reliable**: Deterministic address from public key
+4. **SDK-independent**: Uses only OpenSSL + custom Base58 implementation
+5. **Security**: Same algorithm as Cellframe itself (verified from SDK source)
+
+#### Next Steps
+
+1. Test GUI on Windows with actual Cellframe wallets
+2. Verify generated addresses match cellframe-node-cli output on Linux
+3. Test RPC balance queries with generated addresses
+4. Implement Send CF20 Tokens feature
+
+---

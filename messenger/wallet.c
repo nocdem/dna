@@ -5,6 +5,7 @@
  */
 
 #include "wallet.h"
+#include "cellframe_addr.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -121,6 +122,13 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
         wallet->public_key = malloc(wallet->public_key_size);
         if (wallet->public_key) {
             memcpy(wallet->public_key, file_data + key_data_offset, wallet->public_key_size);
+
+            // Generate Cellframe address from public key
+            if (cellframe_addr_from_pubkey(wallet->public_key, wallet->public_key_size,
+                                          CELLFRAME_NET_BACKBONE, wallet->address) != 0) {
+                // Address generation failed, set empty
+                wallet->address[0] = '\0';
+            }
         }
     }
 
@@ -240,63 +248,22 @@ int wallet_list_cellframe(wallet_list_t **list_out) {
 }
 
 /**
- * Get wallet address using cellframe-node-cli
+ * Get wallet address (returns the address generated from public key)
  */
 int wallet_get_address(const cellframe_wallet_t *wallet, const char *network_name, char *address_out) {
     if (!wallet || !network_name || !address_out) {
         return -1;
     }
 
-#ifdef _WIN32
-    // On Windows, cellframe-node-cli might not be available or in PATH
-    // The GUI will use RPC to get balances instead
-    // Just return error to skip CLI address lookup
-    return -1;
-#else
-    char command[1024];
-    snprintf(command, sizeof(command),
-             "cellframe-node-cli wallet info -w %s -net %s 2>/dev/null | grep 'addr:' | head -1",
-             wallet->name, network_name);
-
-    FILE *fp = popen(command, "r");
-    if (!fp) {
-        return -1;
+    // Address was already generated when wallet was read
+    if (wallet->address[0] == '\0') {
+        return -1;  // No address available
     }
 
-    char buffer[2048];
-    if (fgets(buffer, sizeof(buffer), fp) == NULL) {
-        pclose(fp);
-        return -1;
-    }
-
-    pclose(fp);
-
-    // Parse output: "addr: <address>"
-    char *addr_start = strstr(buffer, "addr:");
-    if (!addr_start) {
-        return -1;
-    }
-
-    addr_start += 5;
-    while (*addr_start && (*addr_start == ' ' || *addr_start == '\t')) {
-        addr_start++;
-    }
-
-    char *addr_end = addr_start;
-    while (*addr_end && *addr_end != '\n' && *addr_end != '\r' && *addr_end != ' ' && *addr_end != '\t') {
-        addr_end++;
-    }
-
-    size_t addr_len = addr_end - addr_start;
-    if (addr_len == 0 || addr_len >= WALLET_ADDRESS_MAX) {
-        return -1;
-    }
-
-    strncpy(address_out, addr_start, addr_len);
-    address_out[addr_len] = '\0';
+    strncpy(address_out, wallet->address, WALLET_ADDRESS_MAX - 1);
+    address_out[WALLET_ADDRESS_MAX - 1] = '\0';
 
     return 0;
-#endif
 }
 
 // ============================================================================

@@ -155,20 +155,18 @@ void WalletDialog::loadWallets() {
         QTableWidgetItem *nameItem = new QTableWidgetItem(QString::fromUtf8(wallet->name));
         walletTable->setItem(i, 0, nameItem);
 
-        // Get address
+        // Get address from wallet (generated from public key)
         char address[WALLET_ADDRESS_MAX];
         if (wallet_get_address(wallet, "Backbone", address) == 0) {
-            QTableWidgetItem *addrItem = new QTableWidgetItem(QString::fromUtf8(address));
-            addrItem->setToolTip(QString::fromUtf8("Click to copy address"));
-            walletTable->setItem(i, 1, addrItem);
+            walletTable->setItem(i, 1, new QTableWidgetItem(QString::fromUtf8(address)));
         } else {
-            walletTable->setItem(i, 1, new QTableWidgetItem(QString::fromUtf8("Error")));
+            walletTable->setItem(i, 1, new QTableWidgetItem(QString::fromUtf8("Error generating address")));
         }
 
-        // Placeholders for balances
-        walletTable->setItem(i, 2, new QTableWidgetItem(QString::fromUtf8("...")));
-        walletTable->setItem(i, 3, new QTableWidgetItem(QString::fromUtf8("...")));
-        walletTable->setItem(i, 4, new QTableWidgetItem(QString::fromUtf8("...")));
+        // Placeholders for balances - will be loaded when user clicks Refresh
+        walletTable->setItem(i, 2, new QTableWidgetItem(QString::fromUtf8("Click Refresh...")));
+        walletTable->setItem(i, 3, new QTableWidgetItem(QString::fromUtf8("Click Refresh...")));
+        walletTable->setItem(i, 4, new QTableWidgetItem(QString::fromUtf8("Click Refresh...")));
     }
 }
 
@@ -185,7 +183,7 @@ void WalletDialog::onRefreshBalances() {
         if (!addrItem) continue;
 
         QString address = addrItem->text();
-        if (address == "Error") continue;
+        if (address.startsWith("Error") || address.startsWith("Click")) continue;
 
         // Query balance via RPC
         cellframe_rpc_response_t *response = nullptr;

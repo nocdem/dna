@@ -22,6 +22,8 @@ set(GUI_SOURCES
     WalletDialog.h
     ../wallet.c
     ../cellframe_rpc.c
+    ../cellframe_addr.c
+    ../base58.c
     resources.qrc
 )
 
