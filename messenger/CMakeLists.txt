@@ -178,6 +178,14 @@ add_executable(dna_messenger
 target_link_libraries(dna_messenger dna_lib ${PQ_LIBRARY} ${JSONC_LIBRARIES})
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
 
+# Wallet Test (Phase 8 - CF20 Wallet Integration)
+add_executable(wallet_test
+    wallet_test.c
+    wallet.c
+)
+target_link_libraries(wallet_test)
+target_include_directories(wallet_test PRIVATE ${CMAKE_SOURCE_DIR})
+
 # DNA Messenger GUI (Phase 5) - Optional Qt GUI
 option(BUILD_GUI "Build Qt GUI application" ON)
 if(BUILD_GUI)
