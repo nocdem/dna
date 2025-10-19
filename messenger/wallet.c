@@ -15,6 +15,8 @@
 #include <windows.h>
 #include <direct.h>
 #define stat _stat
+#define popen _popen
+#define pclose _pclose
 #else
 #include <dirent.h>
 #include <unistd.h>
@@ -245,6 +247,12 @@ int wallet_get_address(const cellframe_wallet_t *wallet, const char *network_nam
         return -1;
     }
 
+#ifdef _WIN32
+    // On Windows, cellframe-node-cli might not be available or in PATH
+    // The GUI will use RPC to get balances instead
+    // Just return error to skip CLI address lookup
+    return -1;
+#else
     char command[1024];
     snprintf(command, sizeof(command),
              "cellframe-node-cli wallet info -w %s -net %s 2>/dev/null | grep 'addr:' | head -1",
@@ -288,6 +296,7 @@ int wallet_get_address(const cellframe_wallet_t *wallet, const char *network_nam
     address_out[addr_len] = '\0';
 
     return 0;
+#endif
 }
 
 // ============================================================================
