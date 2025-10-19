@@ -5,6 +5,9 @@ cmake_minimum_required(VERSION 3.10)
 # Find Qt5
 find_package(Qt5 REQUIRED COMPONENTS Core Widgets Multimedia)
 
+# Find CURL (required for Cellframe RPC in wallet)
+find_package(CURL REQUIRED)
+
 # Enable automatic MOC (Meta-Object Compiler)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
