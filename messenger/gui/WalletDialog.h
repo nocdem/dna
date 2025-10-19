@@ -22,7 +22,7 @@ class WalletDialog : public QDialog {
     Q_OBJECT
 
 public:
-    explicit WalletDialog(QWidget *parent = nullptr);
+    explicit WalletDialog(QWidget *parent = nullptr, const QString &specificWallet = QString());
     ~WalletDialog();
 
 private slots:
@@ -46,6 +46,7 @@ private:
 
     // Wallet data
     wallet_list_t *wallets;
+    QString specificWallet;  // If not empty, show only this wallet
 };
 
 #endif // WALLETDIALOG_H

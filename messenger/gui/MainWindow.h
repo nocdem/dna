@@ -58,6 +58,8 @@ private slots:
     void onLogout();
     void onManageIdentities();
     void onWallet();
+    void onWalletSelected(const QString &walletName);  // NEW: Open specific wallet
+    void refreshWalletMenu();  // NEW: Populate wallet submenu
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;  // For fullscreen ESC key
@@ -111,6 +113,9 @@ private:
     // System tray
     QSystemTrayIcon *trayIcon;
     QMenu *trayMenu;
+
+    // Wallet menu
+    QMenu *walletMenu;
 
     // Fullscreen state
     bool isFullscreen;

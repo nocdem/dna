@@ -10,8 +10,8 @@
 #include <QApplication>
 #include <json-c/json.h>
 
-WalletDialog::WalletDialog(QWidget *parent)
-    : QDialog(parent), wallets(nullptr) {
+WalletDialog::WalletDialog(QWidget *parent, const QString &specificWallet)
+    : QDialog(parent), wallets(nullptr), specificWallet(specificWallet) {
     setupUI();
     loadWallets();
 }
@@ -23,7 +23,12 @@ WalletDialog::~WalletDialog() {
 }
 
 void WalletDialog::setupUI() {
-    setWindowTitle(QString::fromUtf8("💰 CF20 Wallet"));
+    // Set window title based on whether showing specific wallet or all
+    if (specificWallet.isEmpty()) {
+        setWindowTitle(QString::fromUtf8("💰 CF20 Wallet - All Wallets"));
+    } else {
+        setWindowTitle(QString::fromUtf8("💰 CF20 Wallet - %1").arg(specificWallet));
+    }
     setMinimumSize(900, 600);
 
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
@@ -144,34 +149,70 @@ void WalletDialog::loadWallets() {
         return;
     }
 
-    statusLabel->setText(QString::fromUtf8("Found %1 wallet(s). Click 'Refresh Balances' to load token balances.").arg(wallets->count));
+    // If specific wallet requested, filter to show only that wallet
+    size_t displayCount = 0;
+    int specificWalletIndex = -1;
 
-    walletTable->setRowCount(wallets->count);
+    if (!specificWallet.isEmpty()) {
+        // Find the specific wallet
+        for (size_t i = 0; i < wallets->count; i++) {
+            if (QString::fromUtf8(wallets->wallets[i].name) == specificWallet) {
+                specificWalletIndex = i;
+                displayCount = 1;
+                break;
+            }
+        }
 
+        if (specificWalletIndex == -1) {
+            statusLabel->setText(QString::fromUtf8("❌ Wallet '%1' not found").arg(specificWallet));
+            QMessageBox::warning(this, "Wallet Not Found",
+                               QString::fromUtf8("Wallet '%1' was not found in %2")
+                                   .arg(specificWallet)
+                                   .arg(CELLFRAME_WALLET_PATH));
+            return;
+        }
+
+        statusLabel->setText(QString::fromUtf8("Wallet: %1. Click 'Refresh Balances' to load token balances.").arg(specificWallet));
+    } else {
+        displayCount = wallets->count;
+        statusLabel->setText(QString::fromUtf8("Found %1 wallet(s). Click 'Refresh Balances' to load token balances.").arg(wallets->count));
+    }
+
+    walletTable->setRowCount(displayCount);
+
+    // Display wallets (either all or just the specific one)
+    size_t displayRow = 0;
     for (size_t i = 0; i < wallets->count; i++) {
+        // Skip if showing specific wallet and this isn't it
+        if (!specificWallet.isEmpty() && (int)i != specificWalletIndex) {
+            continue;
+        }
+
         cellframe_wallet_t *wallet = &wallets->wallets[i];
 
         // Wallet name
         QTableWidgetItem *nameItem = new QTableWidgetItem(QString::fromUtf8(wallet->name));
-        walletTable->setItem(i, 0, nameItem);
+        walletTable->setItem(displayRow, 0, nameItem);
 
         // Get address from wallet (generated from public key)
         // Protected wallets (version 2) require password and cannot generate addresses
         if (wallet->status == WALLET_STATUS_PROTECTED) {
-            walletTable->setItem(i, 1, new QTableWidgetItem(QString::fromUtf8("🔒 Protected - Password Required")));
+            walletTable->setItem(displayRow, 1, new QTableWidgetItem(QString::fromUtf8("🔒 Protected - Password Required")));
         } else {
             char address[WALLET_ADDRESS_MAX];
             if (wallet_get_address(wallet, "Backbone", address) == 0) {
-                walletTable->setItem(i, 1, new QTableWidgetItem(QString::fromUtf8(address)));
+                walletTable->setItem(displayRow, 1, new QTableWidgetItem(QString::fromUtf8(address)));
             } else {
-                walletTable->setItem(i, 1, new QTableWidgetItem(QString::fromUtf8("Error generating address")));
+                walletTable->setItem(displayRow, 1, new QTableWidgetItem(QString::fromUtf8("Error generating address")));
             }
         }
 
         // Placeholders for balances - will be loaded when user clicks Refresh
-        walletTable->setItem(i, 2, new QTableWidgetItem(QString::fromUtf8("Click Refresh...")));
-        walletTable->setItem(i, 3, new QTableWidgetItem(QString::fromUtf8("Click Refresh...")));
-        walletTable->setItem(i, 4, new QTableWidgetItem(QString::fromUtf8("Click Refresh...")));
+        walletTable->setItem(displayRow, 2, new QTableWidgetItem(QString::fromUtf8("Click Refresh...")));
+        walletTable->setItem(displayRow, 3, new QTableWidgetItem(QString::fromUtf8("Click Refresh...")));
+        walletTable->setItem(displayRow, 4, new QTableWidgetItem(QString::fromUtf8("Click Refresh...")));
+
+        displayRow++;
     }
 }
 

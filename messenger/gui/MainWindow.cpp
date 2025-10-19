@@ -5,6 +5,11 @@
 
 #include "MainWindow.h"
 #include "WalletDialog.h"
+
+extern "C" {
+    #include "../wallet.h"
+}
+
 #include <QApplication>
 #include <QCoreApplication>
 #include <QGuiApplication>
@@ -286,10 +291,9 @@ void MainWindow::setupUI() {
     connect(fontLargeAction, &QAction::triggered, this, &MainWindow::onFontScaleLarge);
     connect(fontExtraLargeAction, &QAction::triggered, this, &MainWindow::onFontScaleExtraLarge);
 
-    // Wallet menu
-    QMenu *walletMenu = menuBar->addMenu(QString::fromUtf8("Wallet"));
-    QAction *walletAction = walletMenu->addAction(QString::fromUtf8("Open Wallet"));
-    connect(walletAction, &QAction::triggered, this, &MainWindow::onWallet);
+    // Wallet menu (dynamically populated with wallet names)
+    walletMenu = menuBar->addMenu(QString::fromUtf8("💰 Wallet"));
+    refreshWalletMenu();  // Populate with wallet names
 
     // View menu (NEW)
     QMenu *viewMenu = menuBar->addMenu(QString::fromUtf8("View"));
@@ -2615,8 +2619,54 @@ void MainWindow::onManageIdentities() {
 }
 
 void MainWindow::onWallet() {
-    // Open the CF20 Wallet Dialog
+    // Open the CF20 Wallet Dialog showing all wallets
     WalletDialog walletDialog(this);
+    walletDialog.exec();
+}
+
+void MainWindow::refreshWalletMenu() {
+    // Clear existing menu items
+    walletMenu->clear();
+
+    // Load wallets from Cellframe wallet directory
+    wallet_list_t *wallets = nullptr;
+    if (wallet_list_cellframe(&wallets) == 0 && wallets && wallets->count > 0) {
+        // Add each wallet as a menu item
+        for (size_t i = 0; i < wallets->count; i++) {
+            QString walletName = QString::fromUtf8(wallets->wallets[i].name);
+
+            // Add status indicator
+            QString displayName = walletName;
+            if (wallets->wallets[i].status == WALLET_STATUS_PROTECTED) {
+                displayName = QString::fromUtf8("🔒 ") + walletName;
+            }
+
+            QAction *walletAction = walletMenu->addAction(displayName);
+            connect(walletAction, &QAction::triggered, this, [this, walletName]() {
+                onWalletSelected(walletName);
+            });
+        }
+
+        wallet_list_free(wallets);
+
+        // Add separator
+        walletMenu->addSeparator();
+    }
+
+    // Add "View All Wallets" option
+    QAction *viewAllAction = walletMenu->addAction(QString::fromUtf8("📋 View All Wallets"));
+    connect(viewAllAction, &QAction::triggered, this, &MainWindow::onWallet);
+
+    // If no wallets found, show message
+    if (!wallets || wallets->count == 0) {
+        QAction *noWalletsAction = walletMenu->addAction(QString::fromUtf8("No wallets found"));
+        noWalletsAction->setEnabled(false);
+    }
+}
+
+void MainWindow::onWalletSelected(const QString &walletName) {
+    // Open dialog for specific wallet
+    WalletDialog walletDialog(this, walletName);
     walletDialog.exec();
 }
 
