@@ -123,6 +123,9 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
         uint64_t serialized_len;
         memcpy(&serialized_len, file_data + serialized_offset, 8);
 
+        fprintf(stderr, "[DEBUG] Wallet: %s, file_size=%ld, offset=0x%zx, serialized_len=%lu\n",
+                wallet->name, file_size, serialized_offset, serialized_len);
+
         // Validate length
         if (serialized_len > 0 && serialized_len <= (file_size - serialized_offset)) {
             wallet->public_key_size = serialized_len;
@@ -130,14 +133,27 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
             if (wallet->public_key) {
                 memcpy(wallet->public_key, file_data + serialized_offset, wallet->public_key_size);
 
+                fprintf(stderr, "[DEBUG] Calling cellframe_addr_from_pubkey with size=%zu\n", wallet->public_key_size);
+
                 // Generate Cellframe address from serialized public key
                 if (cellframe_addr_from_pubkey(wallet->public_key, wallet->public_key_size,
                                               CELLFRAME_NET_BACKBONE, wallet->address) != 0) {
                     // Address generation failed, set empty
+                    fprintf(stderr, "[DEBUG] Address generation FAILED for wallet: %s\n", wallet->name);
                     wallet->address[0] = '\0';
+                } else {
+                    fprintf(stderr, "[DEBUG] Address generated successfully: %.50s...\n", wallet->address);
                 }
+            } else {
+                fprintf(stderr, "[DEBUG] malloc failed for public_key\n");
             }
+        } else {
+            fprintf(stderr, "[DEBUG] Invalid serialized_len: %lu (file_size=%ld, offset=%zu)\n",
+                    serialized_len, file_size, serialized_offset);
         }
+    } else {
+        fprintf(stderr, "[DEBUG] File too small: %ld bytes (need at least %zu)\n",
+                file_size, serialized_offset + 8);
     }
 
     free(file_data);
