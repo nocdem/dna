@@ -115,16 +115,37 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
     wallet->status = WALLET_STATUS_UNPROTECTED;
     wallet->deprecated = false;
 
-    // Store serialized public key
-    // Serialized key starts at offset 0x86: [8-byte length] + [4-byte kind] + [N bytes data]
-    size_t serialized_offset = 0x86;
+    // Read wallet file header to determine variable offset
+    // Cellframe wallet file structure:
+    // - Fixed header: 23 bytes (signature + version + type + padding + wallet_len)
+    // - Wallet name: variable length (specified by wallet_len field at offset 0x15-0x16)
+    // - Cert header: 8 bytes
+    // - Cert data: contains serialized public key at offset 0x59 (89 bytes) into cert data
+
+    if (file_size < 23) {
+        fprintf(stderr, "[DEBUG] File too small to contain wallet header: %ld bytes\n", file_size);
+        free(file_data);
+        *wallet_out = wallet;
+        return 0;
+    }
+
+    // Read wallet_len from file header (uint16_t at offset 0x15, little-endian)
+    uint16_t wallet_len;
+    memcpy(&wallet_len, file_data + 0x15, 2);
+
+    // Calculate offset to serialized public key:
+    // Fixed header (23) + wallet_len + cert header (8) + offset into cert data (0x59)
+    size_t serialized_offset = 23 + wallet_len + 8 + 0x59;
+
+    fprintf(stderr, "[DEBUG] Wallet: %s, file_size=%ld, wallet_len=%u, calculated_offset=0x%zx\n",
+            wallet->name, file_size, wallet_len, serialized_offset);
+
     if (file_size > (long)(serialized_offset + 8)) {
         // Read length field (first 8 bytes of serialized data)
         uint64_t serialized_len;
         memcpy(&serialized_len, file_data + serialized_offset, 8);
 
-        fprintf(stderr, "[DEBUG] Wallet: %s, file_size=%ld, offset=0x%zx, serialized_len=%lu\n",
-                wallet->name, file_size, serialized_offset, serialized_len);
+        fprintf(stderr, "[DEBUG] serialized_len=%lu\n", serialized_len);
 
         // Validate length
         if (serialized_len > 0 && serialized_len <= (file_size - serialized_offset)) {
@@ -132,8 +153,6 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
             wallet->public_key = malloc(wallet->public_key_size);
             if (wallet->public_key) {
                 memcpy(wallet->public_key, file_data + serialized_offset, wallet->public_key_size);
-
-                fprintf(stderr, "[DEBUG] Calling cellframe_addr_from_pubkey with size=%zu\n", wallet->public_key_size);
 
                 // Generate Cellframe address from serialized public key
                 if (cellframe_addr_from_pubkey(wallet->public_key, wallet->public_key_size,
