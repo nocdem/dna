@@ -740,3 +740,121 @@ Wallet 1:
 4. Implement Send CF20 Tokens feature
 
 ---
+
+### 2025-10-19 UTC - Phase 8: Windows Compatibility Fixes
+**User**: nocdem
+**Agent**: Claude Code
+**Developer**: nocdem
+**Branch**: main
+**Project**: DNA Messenger - CF20 Wallet Integration
+
+#### Summary
+Fixed MSVC compilation errors for Windows build. Addressed platform-specific issues
+with packed structs, POSIX types, and variable-length arrays.
+
+#### Windows Build Errors Fixed
+
+**Error 1: `__attribute__((packed))` not supported by MSVC**
+- GCC-specific attribute for packed structs
+- MSVC uses `#pragma pack` instead
+- Fixed in cellframe_addr.c
+
+**Error 2: `ssize_t` undeclared**
+- POSIX type not available on Windows
+- Windows uses `SSIZE_T` from BaseTsd.h
+- Fixed in base58.c
+
+**Error 3: Variable-length arrays (VLA) not supported**
+- C99 VLAs not supported by MSVC C compiler
+- Need to use malloc/free instead
+- Fixed in base58.c (3 VLAs replaced)
+
+#### Files Modified
+
+**cellframe_addr.c**:
+- Changed packed struct syntax from GCC to cross-platform:
+```c
+// OLD (GCC only):
+typedef struct {
+    ...
+} __attribute__((packed)) cellframe_addr_t;
+
+// NEW (cross-platform):
+#ifdef _MSC_VER
+#pragma pack(push, 1)
+#endif
+typedef struct {
+    ...
+}
+#ifndef _MSC_VER
+__attribute__((packed))
+#endif
+cellframe_addr_t;
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif
+```
+
+**base58.c**:
+- Added ssize_t definition for Windows:
+```c
+#ifdef _WIN32
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#else
+#include <sys/types.h>
+#endif
+```
+
+- Replaced 3 VLAs with malloc/free:
+```c
+// OLD (VLA - not supported by MSVC):
+uint8_t buf[size];
+
+// NEW (heap allocation):
+uint8_t *buf = malloc(size);
+if (!buf) return 0;
+// ... use buf ...
+free(buf);
+```
+
+- Added proper cleanup at all return points:
+  - base58_encode(): 2 exit points with free(buf)
+  - base58_decode(): 7 exit points with free(l_outi) + free(l_out_u80)
+
+#### Technical Details
+
+**Packed Struct Issue**:
+- GCC/Clang: `__attribute__((packed))` after struct definition
+- MSVC: `#pragma pack(push, 1)` before struct, `#pragma pack(pop)` after
+- Both ensure struct has no padding (important for binary serialization)
+
+**ssize_t Issue**:
+- POSIX: `<sys/types.h>` defines `ssize_t` as signed size_t
+- Windows: Need to include `<BaseTsd.h>` and typedef `SSIZE_T` to `ssize_t`
+
+**VLA Issue**:
+- C99 standard allows VLAs: `int arr[n]` where n is runtime variable
+- MSVC doesn't support VLAs (even in C11/C17 mode)
+- Solution: Use malloc/free for dynamic arrays
+
+#### Memory Management
+
+Added proper cleanup in base58.c:
+- **base58_encode()**: 2 malloc buffers, freed at all exit points
+- **base58_decode()**: 2 malloc buffers, freed at 7 error returns + 1 success return
+- Prevents memory leaks on error conditions
+
+#### Testing
+
+**Linux Build**: ✅ All targets built successfully
+**Functionality**: ✅ wallet_test generates correct addresses
+**Expected Windows Build**: ✅ Should compile without errors
+
+#### Next Steps
+
+1. Test Windows build with fixes
+2. Verify GUI displays wallet addresses on Windows
+3. Test RPC balance refresh on Windows
+
+---

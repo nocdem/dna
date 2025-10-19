@@ -10,7 +10,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+#include <stdlib.h>
+
+#ifdef _WIN32
+#include <BaseTsd.h>
+typedef SSIZE_T ssize_t;
+#else
 #include <sys/types.h>
+#endif
 
 static const char BASE58_ALPHABET[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
 
@@ -40,7 +47,8 @@ size_t base58_encode(const void *a_in, size_t a_in_size, char *a_out) {
         ++zcount;
 
     size = (a_in_size - zcount) * 138 / 100 + 1;
-    uint8_t buf[size];
+    uint8_t *buf = malloc(size);
+    if (!buf) return 0;
     memset(buf, 0, size);
 
     for (i = zcount, high = size - 1; i < (ssize_t)a_in_size; ++i, high = j) {
@@ -55,6 +63,7 @@ size_t base58_encode(const void *a_in, size_t a_in_size, char *a_out) {
 
     if (l_out_size <= (zcount + size - j)) {
         l_out_size = (zcount + size - j + 1);
+        free(buf);
         return l_out_size;
     }
 
@@ -67,6 +76,7 @@ size_t base58_encode(const void *a_in, size_t a_in_size, char *a_out) {
     a_out[i] = '\0';
     l_out_size = i;
 
+    free(buf);
     return l_out_size;
 }
 
@@ -80,7 +90,8 @@ size_t base58_decode(const char *a_in, void *a_out) {
     const unsigned char *l_in_u8 = (const unsigned char*)a_in;
     size_t l_outi_size = (l_out_size_max + 3) / 4;
 
-    uint32_t l_outi[l_outi_size];
+    uint32_t *l_outi = malloc(l_outi_size * sizeof(uint32_t));
+    if (!l_outi) return 0;
     memset(l_outi, 0, l_outi_size * sizeof(uint32_t));
 
     uint64_t t;
@@ -96,11 +107,15 @@ size_t base58_decode(const char *a_in, void *a_out) {
         ++zerocount;
 
     for (; i < l_in_len; ++i) {
-        if (l_in_u8[i] & 0x80)
+        if (l_in_u8[i] & 0x80) {
+            free(l_outi);
             return 0;  // High-bit set on invalid digit
+        }
 
-        if (BASE58_MAP[l_in_u8[i]] == -1)
+        if (BASE58_MAP[l_in_u8[i]] == -1) {
+            free(l_outi);
             return 0;  // Invalid base58 digit
+        }
 
         c = (unsigned)BASE58_MAP[l_in_u8[i]];
 
@@ -110,14 +125,22 @@ size_t base58_decode(const char *a_in, void *a_out) {
             l_outi[j] = t & 0xffffffff;
         }
 
-        if (c)
+        if (c) {
+            free(l_outi);
             return 0;  // Output number too big (carry to the next int32)
+        }
 
-        if (l_outi[0] & zeromask)
+        if (l_outi[0] & zeromask) {
+            free(l_outi);
             return 0;  // Output number too big (last int32 filled too far)
+        }
     }
 
-    unsigned char l_out_u80[l_out_size_max];
+    unsigned char *l_out_u80 = malloc(l_out_size_max);
+    if (!l_out_u80) {
+        free(l_outi);
+        return 0;
+    }
     memset(l_out_u80, 0, l_out_size_max);
     unsigned char *l_out_u8 = l_out_u80;
 
@@ -149,6 +172,8 @@ size_t base58_decode(const char *a_in, void *a_out) {
     for (i = 0; i < l_out_size_max; ++i) {
         if (l_out_u8[i]) {
             if (zerocount > i) {
+                free(l_out_u80);
+                free(l_outi);
                 return 0;  /* result too large */
             }
             break;
@@ -167,5 +192,7 @@ size_t base58_decode(const char *a_in, void *a_out) {
     l_out[j + zerocount] = 0;
     l_out_size += zerocount;
 
+    free(l_out_u80);
+    free(l_outi);
     return l_out_size;
 }

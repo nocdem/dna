@@ -12,13 +12,23 @@
 #include <openssl/evp.h>
 
 // Cellframe address structure (before base58 encoding)
+#ifdef _MSC_VER
+#pragma pack(push, 1)
+#endif
 typedef struct {
     uint8_t addr_ver;        // Address version (always 1)
     uint64_t net_id;         // Network ID
     uint16_t sig_type;       // Signature type
     uint8_t pkey_hash[32];   // SHA3-256 hash of public key
     uint8_t checksum[32];    // SHA3-256 checksum
-} __attribute__((packed)) cellframe_addr_t;
+}
+#ifndef _MSC_VER
+__attribute__((packed))
+#endif
+cellframe_addr_t;
+#ifdef _MSC_VER
+#pragma pack(pop)
+#endif
 
 /**
  * Calculate SHA3-256 hash using OpenSSL
