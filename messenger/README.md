@@ -269,7 +269,8 @@ Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 
 ## Links
 
-- **GitHub:** https://github.com/nocdem/dna-messenger
+- **GitLab (Primary):** https://gitlab.cpunk.io/cpunk/dna-messenger
+- **GitHub (Backup):** https://github.com/nocdem/dna-messenger
 - **Parent Project:** https://github.com/nocdem/qgp
 - **Server:** ai.cpunk.io:5432
 - **cpunk.io:** https://cpunk.io

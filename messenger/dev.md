@@ -444,3 +444,83 @@ main
 
 ---
 
+
+### 2025-10-19 UTC - GitLab Primary Repository Setup
+**User**: nocdem
+**Agent**: Claude Code
+**Developer**: nocdem
+**Branch**: main
+**Project**: DNA Messenger
+
+#### Summary
+Configured dual-remote repository structure with GitLab as PRIMARY and GitHub as BACKUP.
+
+#### Repository Structure Change
+
+**PRIMARY Repository (GitLab):**
+- URL: `ssh://git@gitlab.cpunk.io:10000/cpunk/dna-messenger.git`
+- Web: https://gitlab.cpunk.io/cpunk/dna-messenger
+- Organization: `cpunk` group
+- Remote name: `gitlab`
+- Custom SSH port: 10000
+- **Purpose:** Main team collaboration platform
+
+**SECONDARY Repository (GitHub):**
+- URL: `git@github.com:nocdem/dna-messenger.git`
+- Web: https://github.com/nocdem/dna-messenger
+- Remote name: `origin`
+- **Purpose:** Personal backup and public visibility only
+
+#### Files Modified
+
+**CLAUDE.md**:
+- Added "REPOSITORY STRUCTURE" section with dual-remote configuration
+- Updated "COLLABORATION NOTES" - GitLab is primary, GitHub is backup
+- Updated "REFERENCES" - GitLab listed first
+- Updated all push/fetch examples to prioritize GitLab
+- Clarified team workflow: ALWAYS push to GitLab first
+- Merge Requests on GitLab (primary), Pull Requests on GitHub (public contributors only)
+- Last Updated date changed to 2025-10-19
+
+**README.md**:
+- Updated "Links" section
+- GitLab listed first as "GitLab (Primary)"
+- GitHub listed second as "GitHub (Backup)"
+
+**dev.md**:
+- This entry documenting the repository structure change
+
+#### Git Configuration
+
+**Remotes added:**
+```bash
+gitlab  ssh://git@gitlab.cpunk.io:10000/cpunk/dna-messenger.git
+origin  git@github.com:nocdem/dna-messenger.git
+```
+
+**All branches pushed to GitLab:**
+- main
+- feature/mobile
+- feature/wallet
+- feature/voip
+- feature/web-messenger
+
+#### Team Workflow
+
+**Push order:**
+1. Push to GitLab first (primary)
+2. Push to GitHub second (backup)
+
+**Collaboration:**
+- Use GitLab for Merge Requests (team)
+- Use GitHub for public contributions only
+
+#### Rationale
+
+1. **Team Collaboration:** GitLab provides better organization/group features
+2. **cpunk Infrastructure:** GitLab hosted on cpunk.io infrastructure
+3. **Redundancy:** GitHub serves as public backup
+4. **Flexibility:** Two platforms for different workflows
+
+---
+
