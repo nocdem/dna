@@ -1,6 +1,25 @@
 cmake_minimum_required(VERSION 3.10)
 project(dna C CXX)  # Support both C and C++ for Qt GUI
 
+# Static linking configuration for Windows
+if(WIN32)
+    # Force static runtime library on Windows
+    if(MSVC)
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+        # Use /MT or /MTd for static runtime
+        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /MT")
+        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /MTd")
+        set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /MT")
+        set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} /MTd")
+    elseif(MINGW)
+        # Static linking for MinGW
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++")
+    endif()
+    
+    # Prefer static libraries on Windows
+    set(CMAKE_FIND_LIBRARY_SUFFIXES .lib .a)
+endif()
+
 # Version (DNA Messenger starts fresh)
 set(VERSION_MAJOR 0)
 set(VERSION_MINOR 1)
@@ -68,6 +87,16 @@ if(OPENSSL_FOUND)
 endif()
 
 # json-c for JSON parsing (keyserver API)
+# Support for static linking on Windows
+if(WIN32)
+    # On Windows, prefer static libraries
+    set(CMAKE_FIND_LIBRARY_SUFFIXES .lib .a)
+    if(VCPKG_TARGET_TRIPLET MATCHES "static")
+        message(STATUS "Using static vcpkg triplet: ${VCPKG_TARGET_TRIPLET}")
+        set(JSONC_USE_STATIC ON)
+    endif()
+endif()
+
 find_package(json-c CONFIG QUIET)
 if(json-c_FOUND)
     message(STATUS "json-c found via CMake config")
@@ -80,25 +109,46 @@ else()
     endif()
 
     if(NOT JSONC_FOUND)
-        find_library(JSONC_LIBRARIES NAMES json-c jsonc)
-        find_path(JSONC_INCLUDE_DIRS json-c/json.h)
+        find_library(JSONC_LIBRARIES NAMES json-c jsonc libjson-c)
+        find_path(JSONC_INCLUDE_DIRS json-c/json.h PATH_SUFFIXES include)
     endif()
 
     if(JSONC_LIBRARIES)
         message(STATUS "json-c found: ${JSONC_LIBRARIES}")
+        if(JSONC_INCLUDE_DIRS)
+            message(STATUS "json-c include: ${JSONC_INCLUDE_DIRS}")
+        endif()
     else()
-        message(WARNING "json-c not found. Install: vcpkg install json-c (Windows) or apt install libjson-c-dev (Linux)")
+        message(FATAL_ERROR "json-c not found. Install: vcpkg install json-c:x64-windows-static (Windows) or apt install libjson-c-dev (Linux)")
     endif()
 endif()
 
 # PostgreSQL for keyserver and message storage (Phase 3+4)
-find_library(PQ_LIBRARY pq)
-find_path(PQ_INCLUDE_DIR libpq-fe.h PATHS /usr/include/postgresql)
+find_library(PQ_LIBRARY NAMES pq libpq)
+find_path(PQ_INCLUDE_DIR libpq-fe.h PATHS /usr/include/postgresql PATH_SUFFIXES postgresql pgsql)
 if(NOT PQ_LIBRARY OR NOT PQ_INCLUDE_DIR)
-    message(FATAL_ERROR "PostgreSQL libpq not found. Install libpq-dev")
+    message(FATAL_ERROR "PostgreSQL libpq not found. Install: vcpkg install libpq:x64-windows-static (Windows) or apt install libpq-dev (Linux)")
 endif()
 message(STATUS "PostgreSQL libpq found: ${PQ_LIBRARY}")
 message(STATUS "PostgreSQL include: ${PQ_INCLUDE_DIR}")
+
+# PostgreSQL internal libraries (required for static linking on Windows)
+if(WIN32)
+    find_library(PGCOMMON_LIBRARY NAMES pgcommon libpgcommon PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(PGPORT_LIBRARY NAMES pgport libpgport PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+
+    if(PGCOMMON_LIBRARY)
+        message(STATUS "PostgreSQL pgcommon found: ${PGCOMMON_LIBRARY}")
+    else()
+        message(WARNING "PostgreSQL pgcommon not found - may cause linking errors")
+    endif()
+
+    if(PGPORT_LIBRARY)
+        message(STATUS "PostgreSQL pgport found: ${PGPORT_LIBRARY}")
+    else()
+        message(WARNING "PostgreSQL pgport not found - may cause linking errors")
+    endif()
+endif()
 
 # SDK Independence: Vendored cryptographic implementations
 add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
@@ -150,8 +200,28 @@ target_link_libraries(dna_lib
     kyber512
     dilithium
     ${PQ_LIBRARY}
+    ${JSONC_LIBRARIES}
     ${PLATFORM_LIBS}
 )
+
+# On Windows with static linking, link PostgreSQL internal libs and Windows system libs
+if(WIN32)
+    # PostgreSQL internal libraries for static linking
+    if(PGCOMMON_LIBRARY)
+        target_link_libraries(dna_lib ${PGCOMMON_LIBRARY})
+    endif()
+    if(PGPORT_LIBRARY)
+        target_link_libraries(dna_lib ${PGPORT_LIBRARY})
+    endif()
+
+    # Windows system libraries (required by OpenSSL and PostgreSQL)
+    target_link_libraries(dna_lib
+        ws2_32      # Windows Sockets
+        crypt32     # Cryptography
+        secur32     # Security functions (SSPI)
+        wldap32     # LDAP support (PostgreSQL)
+    )
+endif()
 
 if(NOT WIN32)
     target_link_libraries(dna_lib m pthread)
@@ -162,6 +232,11 @@ target_include_directories(dna_lib PUBLIC
     ${OPENSSL_INCLUDE_DIR}
     ${PQ_INCLUDE_DIR}
 )
+
+# Add json-c include directories if found
+if(JSONC_INCLUDE_DIRS)
+    target_include_directories(dna_lib PUBLIC ${JSONC_INCLUDE_DIRS})
+endif()
 
 if(WIN32)
     target_include_directories(dna_lib PUBLIC
@@ -175,7 +250,19 @@ add_executable(dna_messenger
     messenger/keyserver_register.c
     messenger.c
 )
-target_link_libraries(dna_messenger dna_lib ${PQ_LIBRARY} ${JSONC_LIBRARIES})
+target_link_libraries(dna_messenger
+    dna_lib
+    ${PQ_LIBRARY}
+    ${JSONC_LIBRARIES}
+    OpenSSL::SSL
+    OpenSSL::Crypto
+)
+
+# On Windows, add zlib and system libraries
+if(WIN32)
+    target_link_libraries(dna_messenger z)
+endif()
+
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
 
 # Wallet Test (Phase 8 - CF20 Wallet Integration) - Optional

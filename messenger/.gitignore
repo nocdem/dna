@@ -36,9 +36,14 @@ pqsignum/
 
 # Build artifacts
 build/
+build-release/
+dist/
 *.a
 *.o
 *.so
+
+# Cross-compilation toolchains
+mxe/
 
 # Keys and sensitive data
 *.key

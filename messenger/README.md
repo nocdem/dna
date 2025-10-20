@@ -51,26 +51,25 @@ The `install.sh` script will:
 - Build from scratch
 - Show you where the binaries are located
 
-**For Windows (Requires Prerequisites):**
+**For Windows (Cross-Compilation from Linux):**
 
-Prerequisites (install these first):
-- Git for Windows
-- CMake
-- vcpkg (package manager)
-- Visual Studio 2019+ with C++ tools
+Windows builds are now created via cross-compilation using MXE (M cross environment).
 
-```cmd
-REM Clone repository to C:\dna-messenger first
-cd C:\dna-messenger
-install_windows.bat
+Prerequisites (Linux system):
+- MXE cross-compilation environment
+
+```bash
+# Install or clone MXE (one time setup - takes 1-2 hours)
+git clone https://github.com/mxe/mxe.git ~/.cache/mxe
+# Or install to /opt/buildtools/mxe
+
+# Build for Windows
+./build-cross-compile.sh windows-x64
+
+# Binaries will be in dist/windows-x64/
 ```
 
-The `install_windows.bat` script will:
-- Check for required tools (git, cmake, vcpkg)
-- Install dependencies via vcpkg (OpenSSL, PostgreSQL, Qt5, etc.)
-- Pull latest code
-- Build from scratch
-- ⏱️ **First run may take 30-60 minutes** for dependency installation
+⏱️ **First run may take 1-2 hours** for MXE dependency compilation
 
 ### Linux (Manual Build from Source)
 
@@ -92,31 +91,44 @@ make
 ./dna_messenger
 ```
 
-### Windows (Manual Build from Source)
+### Windows (Cross-Compilation from Linux)
 
-⚠️ **Windows Warning:** First-time setup may take **up to 1 hour** to install dependencies.
-Building on Windows is currently difficult and not recommended for casual users.
-**Use the automated `install_windows.bat` script above instead.**
+⚠️ **Windows builds are now cross-compiled from Linux using MXE.**
+Native Windows builds with vcpkg are no longer supported.
 
-```cmd
-REM Install dependencies first (Qt5, PostgreSQL, OpenSSL, CMake, Visual Studio)
-REM This can take 30-60 minutes on first setup
+**Prerequisites:**
+- Linux build environment (native or WSL2)
+- MXE (M cross environment) installed
 
+**Build Steps:**
+```bash
+# Clone repository
 git clone https://github.com/nocdem/dna-messenger.git
 cd dna-messenger
-mkdir build
-cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release
-cmake --build . --config Release
 
-REM Run GUI
-gui\Release\dna_messenger_gui.exe
+# Set MXE directory (if not in default location)
+export MXE_DIR=/path/to/mxe  # e.g., /opt/buildtools/mxe or ~/.cache/mxe
 
-REM Or run CLI
-Release\dna_messenger.exe
+# Build for Windows
+./build-cross-compile.sh windows-x64
+
+# Output:
+# - dist/dna-messenger-VERSION-windows-x64.zip
+# - build-release/windows-x64/dna_messenger.exe (CLI)
+# - build-release/windows-x64/gui/dna_messenger_gui.exe (GUI)
 ```
 
-**Tip:** Wait for official Windows installer releases if you're not comfortable with build tools.
+**MXE Setup (First Time Only):**
+```bash
+# Clone MXE
+git clone https://github.com/mxe/mxe.git ~/.cache/mxe
+cd ~/.cache/mxe
+
+# Build dependencies (takes 1-2 hours on first run)
+make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openssl json-c -j$(nproc)
+```
+
+**Tip:** Wait for official Windows installer releases if you're not comfortable with cross-compilation.
 
 ## Features
 
