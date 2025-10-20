@@ -53,6 +53,34 @@ The wallet/RPC functionality (`cellframe_rpc.c`, `cellframe_addr.c`, `wallet.c`,
 - [ ] Make wallet an optional build component
 - [ ] Remove curl from core library dependencies
 
+**Architectural Principle:**
+
+The DNA Messenger core library should be **lean and mean** - focused exclusively on secure messaging functionality, similar to how Telegram's core does one thing well. The library should provide:
+
+✅ **Core Messaging (Required):**
+- End-to-end encryption (Kyber512 + Dilithium3)
+- Message send/receive
+- Multi-recipient encryption
+- Contact management
+- Message storage interface
+- Group messaging
+
+❌ **Not Core (Should be Optional):**
+- Wallet functionality
+- Blockchain RPC calls
+- Payment processing
+- Token management
+- Any external service integrations
+
+**Philosophy:** Keep the core library minimal and focused. Additional features (wallet, payments, etc.) should be **optional modules** that applications can choose to include. This ensures:
+- Minimal dependencies for core functionality
+- Easy to audit and maintain
+- Portable across platforms
+- Fast and lightweight
+- Clear separation of concerns
+
+Think of it like building blocks: The core is the foundation (messaging only), and everything else is an optional add-on that sits on top.
+
 ---
 
 ## 2025-10-14 - Phase 3: CLI Messenger Implementation
