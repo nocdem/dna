@@ -1,5 +1,60 @@
 # DNA Messenger Development Log
 
+## 2025-10-20 - Technical Debt: Wallet/RPC Refactoring Needed
+
+### Issue: Wallet Functionality in Core Library
+
+**Status:** ⚠️ Technical debt identified - needs refactoring
+
+**Problem:**
+The wallet/RPC functionality (`cellframe_rpc.c`, `cellframe_addr.c`, `wallet.c`, `base58.c`) is currently integrated into the core DNA Messenger library and GUI. This creates several issues:
+
+1. **Dependency bloat:** Core library now requires libcurl for HTTP calls
+2. **Architecture violation:** Wallet features are not core messaging functionality
+3. **Portability issues:** Cellframe-specific code mixed with protocol-agnostic code
+4. **Build complexity:** All builds now require curl, even if wallet features aren't needed
+
+**Current Implementation:**
+- `cellframe_rpc.c` uses libcurl for HTTP RPC calls to Cellframe blockchain
+- Used by both CLI and GUI (shared C library)
+- Added to `gui/CMakeLists.txt` as required dependency
+- Forces all platforms (Linux, Windows MXE) to include curl
+
+**Proposed Solution:**
+
+1. **Move wallet to separate module:**
+   - Create `wallet/` directory with wallet-specific code
+   - Make wallet an optional component (`-DBUILD_WALLET=ON`)
+   - Keep core library focused on messaging
+
+2. **Refactor networking:**
+   - **For GUI:** Use Qt networking (QNetworkAccessManager) instead of curl
+   - **For CLI:** Either keep curl for CLI wallet features, or make wallet GUI-only
+   - Remove curl dependency from core library
+
+3. **Architecture:**
+   ```
+   dna-messenger/
+   ├── core/           # Core messaging (no wallet, no curl)
+   ├── gui/            # Qt GUI (uses Qt networking for wallet)
+   ├── cli/            # CLI interface
+   └── wallet/         # Optional wallet module
+   ```
+
+**Temporary Fix:**
+- Added curl to all build configurations (commit 2edc3b7)
+- CI now installs libcurl4-openssl-dev (Linux) and mxe curl (Windows)
+- Keeps builds working until proper refactoring is done
+
+**Action Items:**
+- [ ] Discuss architecture with team
+- [ ] Plan wallet module separation
+- [ ] Refactor RPC calls to use Qt networking in GUI
+- [ ] Make wallet an optional build component
+- [ ] Remove curl from core library dependencies
+
+---
+
 ## 2025-10-14 - Phase 3: CLI Messenger Implementation
 
 ### Message Decryption Feature Complete
