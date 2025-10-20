@@ -38,8 +38,26 @@ target_link_libraries(dna_messenger_gui
     dna_lib
     ${PQ_LIBRARY}
     ${JSONC_LIBRARIES}
-    ${CURL_LIBRARIES}
 )
+
+# Link CURL and its dependencies for static linking
+if(WIN32)
+    # For Windows static builds, use CURL::libcurl target if available
+    if(TARGET CURL::libcurl)
+        target_link_libraries(dna_messenger_gui CURL::libcurl)
+    else()
+        target_link_libraries(dna_messenger_gui ${CURL_LIBRARIES})
+    endif()
+
+    # Static CURL requires OpenSSL and zlib
+    target_link_libraries(dna_messenger_gui
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        z  # zlib
+    )
+else()
+    target_link_libraries(dna_messenger_gui ${CURL_LIBRARIES})
+endif()
 
 # Add PostgreSQL internal libraries and Windows system libraries for static linking
 if(WIN32)
@@ -55,12 +73,13 @@ if(WIN32)
         target_link_libraries(dna_messenger_gui ${PGPORT_LIBRARY})
     endif()
 
-    # Windows system libraries required by PostgreSQL
+    # Windows system libraries required by PostgreSQL and CURL (static linking)
     target_link_libraries(dna_messenger_gui
         secur32      # Security functions (SSPI, credentials)
         ws2_32       # Windows Sockets 2
         crypt32      # Cryptography functions
-        wldap32      # LDAP support
+        wldap32      # LDAP support (PostgreSQL + CURL)
+        normaliz     # Internationalization (CURL)
     )
 endif()
 
