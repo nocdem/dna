@@ -26,7 +26,7 @@ build:linux-x64:
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq cmake gcc g++ make git
-    - apt-get install -y -qq libssl-dev libpq-dev libjson-c-dev
+    - apt-get install -y -qq libssl-dev libpq-dev libjson-c-dev libcurl4-openssl-dev
     - apt-get install -y -qq qtbase5-dev qtmultimedia5-dev
   script:
     - mkdir -p build
@@ -67,7 +67,7 @@ build:linux-arm64:
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq cmake gcc g++ make git
-    - apt-get install -y -qq libssl-dev libpq-dev libjson-c-dev
+    - apt-get install -y -qq libssl-dev libpq-dev libjson-c-dev libcurl4-openssl-dev
     - apt-get install -y -qq qtbase5-dev qtmultimedia5-dev
   script:
     - mkdir -p build
@@ -120,6 +120,7 @@ build:windows-x64-mingw:
     - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-qtmultimedia
     - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-postgresql
     - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-json-c
+    - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-curl
 
     # Set up MXE environment
     - export PATH=/usr/lib/mxe/usr/bin:$PATH

@@ -75,7 +75,7 @@ git clone https://github.com/mxe/mxe.git ~/.cache/mxe
 
 ```bash
 # Install dependencies
-sudo apt install cmake gcc libssl-dev libpq-dev qtbase5-dev qtmultimedia5-dev
+sudo apt install cmake gcc libssl-dev libpq-dev libcurl4-openssl-dev qtbase5-dev qtmultimedia5-dev
 
 # Build
 git clone https://github.com/nocdem/dna-messenger.git
@@ -125,7 +125,7 @@ git clone https://github.com/mxe/mxe.git ~/.cache/mxe
 cd ~/.cache/mxe
 
 # Build dependencies (takes 1-2 hours on first run)
-make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openssl json-c -j$(nproc)
+make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openssl json-c curl -j$(nproc)
 ```
 
 **Tip:** Wait for official Windows installer releases if you're not comfortable with cross-compilation.
