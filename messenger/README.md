@@ -20,17 +20,21 @@ Secure messaging using post-quantum cryptography (Kyber512 + Dilithium3) that re
 ## Quick Start
 
 ⚠️ **Important Notes:**
-- We are **NOT releasing pre-built binaries** during alpha development (building ~20 times/day)
-- Build instructions below may be slightly outdated - we iterate rapidly
-- **Windows builds are complex** and may take significant time to set up
+- Pre-built binaries available via GitLab CI/CD artifacts (see below)
+- Build instructions may be slightly outdated - we iterate rapidly
+- **Windows builds are complex** and may take significant time to set up for local development
 
-### Pre-Built Installers (When Available)
+### Pre-Built Binaries
 
-When we release stable binaries, they will be available here:
-- **Linux:** https://github.com/nocdem/dna-messenger/releases (AppImage/deb)
-- **Windows:** https://github.com/nocdem/dna-messenger/releases (installer.exe)
+Binaries from the latest builds are available on GitLab CI/CD artifacts:
+- **Download:** https://gitlab.cpunk.io/cpunk/dna-messenger/-/artifacts
 
-Currently, you must build from source.
+Available platforms:
+- **Linux x86_64:** CLI and GUI binaries
+- **Linux ARM64:** CLI and GUI binaries
+- **Windows x64:** CLI and GUI executables (statically linked)
+
+Note: Builds are generated on every push to main branch.
 
 ### Automated Installation Scripts (Recommended)
 
