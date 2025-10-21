@@ -86,6 +86,12 @@ if(OPENSSL_FOUND)
     message(STATUS "OpenSSL libraries: ${OPENSSL_LIBRARIES}")
 endif()
 
+# CURL for RPC client (Cellframe API)
+find_package(CURL REQUIRED)
+if(CURL_FOUND)
+    message(STATUS "CURL found: ${CURL_VERSION_STRING}")
+endif()
+
 # json-c for JSON parsing (keyserver API)
 # Support for static linking on Windows
 if(WIN32)
@@ -149,6 +155,7 @@ endif()
 # SDK Independence: Vendored cryptographic implementations
 add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
 add_subdirectory(crypto/dilithium)  # Dilithium3 signatures
+add_subdirectory(crypto/cellframe_dilithium)  # Cellframe-compatible Dilithium (for CF20 wallet)
 
 # Utility programs (export_pubkey, sign_json, verify_json) - DISABLED
 # These are no longer needed as keyserver_register.c uses inline functions
@@ -261,32 +268,6 @@ endif()
 
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
 
-# Wallet Test (Phase 8 - CF20 Wallet Integration) - Optional
-if(EXISTS "${CMAKE_SOURCE_DIR}/wallet_test.c")
-    add_executable(wallet_test
-        wallet_test.c
-        wallet.c
-        cellframe_addr.c
-        base58.c
-    )
-    target_link_libraries(wallet_test OpenSSL::Crypto)
-    target_include_directories(wallet_test PRIVATE ${CMAKE_SOURCE_DIR})
-endif()
-
-# RPC Test (Phase 8 - Cellframe RPC Client) - Optional
-find_package(CURL QUIET)
-if(CURL_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/rpc_test.c")
-    add_executable(rpc_test
-        rpc_test.c
-        cellframe_rpc.c
-        wallet.c
-        cellframe_addr.c
-        base58.c
-    )
-    target_link_libraries(rpc_test ${CURL_LIBRARIES} ${JSONC_LIBRARIES} OpenSSL::Crypto)
-    target_include_directories(rpc_test PRIVATE ${CMAKE_SOURCE_DIR})
-endif()
-
 # DNA Messenger GUI (Phase 5) - Optional Qt GUI
 option(BUILD_GUI "Build Qt GUI application" ON)
 if(BUILD_GUI)
@@ -298,6 +279,17 @@ if(BUILD_GUI)
     else()
         message(STATUS "Qt5 not found. Skipping GUI build.")
         message(STATUS "Install Qt5: sudo apt-get install qtbase5-dev (Linux) or build with MXE for Windows cross-compilation")
+    endif()
+endif()
+
+# cpunk-wallet-gui (Phase 8) - Optional Standalone CF20 Wallet GUI
+option(BUILD_WALLET_GUI "Build standalone wallet GUI" ON)
+if(BUILD_WALLET_GUI)
+    if(Qt5_FOUND)
+        message(STATUS "Building cpunk-wallet-gui application")
+        add_subdirectory(wallet-gui)
+    else()
+        message(STATUS "Qt5 not found. Skipping cpunk-wallet-gui build.")
     endif()
 endif()
 
@@ -327,3 +319,34 @@ else()
     # Linux/Unix: Install to /usr/local/bin
     install(TARGETS dna_messenger DESTINATION bin)
 endif()
+
+# Cellframe minimal library (transaction building and signing)
+add_library(cellframe_minimal STATIC
+    cellframe_tx_builder_minimal.c
+    cellframe_sign_minimal.c
+    cellframe_json_minimal.c
+    base58.c
+)
+target_link_libraries(cellframe_minimal
+    cellframe_dilithium
+    ${OPENSSL_LIBRARIES}
+    m
+)
+
+# DNA-Send CLI Tool
+add_executable(dna-send
+    dna-send.c
+    wallet.c
+    cellframe_addr.c
+    cellframe_rpc.c
+    base58.c
+)
+target_link_libraries(dna-send
+    cellframe_minimal
+    cellframe_dilithium
+    ${OPENSSL_LIBRARIES}
+    ${CURL_LIBRARIES}
+    ${JSONC_LIBRARIES}
+    m
+)
+target_include_directories(dna-send PRIVATE ${CMAKE_SOURCE_DIR})

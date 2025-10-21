@@ -11,27 +11,8 @@
 #include <string.h>
 #include <openssl/evp.h>
 
-// Cellframe address structure (matches dap_chain_addr_t from SDK)
-// NOTE: Must be packed to avoid automatic alignment padding!
-// There are 2 manual padding bytes after sig_type.
-#ifdef _MSC_VER
-#pragma pack(push, 1)
-#endif
-typedef struct {
-    uint8_t addr_ver;        // Address version (always 1)
-    uint8_t net_id[8];       // Network ID (8 bytes)
-    uint16_t sig_type;       // Signature type (little-endian)
-    uint16_t padding;        // Manual padding (2 bytes)
-    uint8_t pkey_hash[32];   // SHA3-256 hash of public key
-    uint8_t checksum[32];    // SHA3-256 checksum
-}
-#ifndef _MSC_VER
-__attribute__((packed))
-#endif
-cellframe_addr_t;
-#ifdef _MSC_VER
-#pragma pack(pop)
-#endif
+// Use cellframe_addr_t from cellframe_tx.h (49 bytes total)
+#include "cellframe_tx.h"
 
 /**
  * Calculate SHA3-256 hash using OpenSSL
@@ -79,29 +60,29 @@ int cellframe_addr_from_pubkey(const uint8_t *pubkey, size_t pubkey_size,
         return -1;
     }
 
-    // Build address structure
+    // Build address structure (77 bytes total - wire format with padding)
     cellframe_addr_t addr;
     memset(&addr, 0, sizeof(addr));
 
-    addr.addr_ver = 1;  // Current version
+    addr.addr_ver = 1;  // 1 for current version
 
-    // Network ID as byte array (little-endian uint64_t)
-    memcpy(addr.net_id, &net_id, 8);
+    // Network ID (little-endian uint64_t)
+    addr.net_id = net_id;
 
-    // Signature type (little-endian uint16_t)
+    // Signature type (0x0102 for Dilithium)
     addr.sig_type = CELLFRAME_SIG_DILITHIUM;
 
-    // Padding (explicit)
+    // Padding (matches wire format)
     addr.padding = 0;
 
-    // Hash the serialized public key with SHA3-256 (already in correct format)
-    if (sha3_256(pubkey, pubkey_size, addr.pkey_hash) != 0) {
+    // Hash the serialized public key with SHA3-256
+    if (sha3_256(pubkey, pubkey_size, addr.hash) != 0) {
         fprintf(stderr, "cellframe_addr_from_pubkey: Failed to hash public key\n");
         return -1;
     }
 
     // Calculate checksum (SHA3-256 of everything except checksum field)
-    size_t data_size = sizeof(addr) - sizeof(addr.checksum);
+    size_t data_size = sizeof(addr) - sizeof(addr.checksum);  // 45 bytes (77 - 32)
     if (sha3_256((uint8_t*)&addr, data_size, addr.checksum) != 0) {
         fprintf(stderr, "cellframe_addr_from_pubkey: Failed to calculate checksum\n");
         return -1;
@@ -180,4 +161,40 @@ int cellframe_addr_for_identity(const char *identity, uint64_t net_id, char *add
     free(pubkey);
 
     return ret;
+}
+
+/**
+ * Convert binary Cellframe address to base58 string
+ */
+int cellframe_addr_to_str(const void *addr, char *str_out, size_t str_max) {
+    if (!addr || !str_out || str_max < CELLFRAME_ADDR_STR_MAX) {
+        return -1;
+    }
+
+    // Base58 encode the binary address (49 bytes - matches Cellframe SDK)
+    size_t encoded_len = base58_encode(addr, sizeof(cellframe_addr_t), str_out);
+    if (encoded_len == 0 || encoded_len >= str_max) {
+        return -1;
+    }
+
+    return 0;
+}
+
+/**
+ * Parse base58 string to binary Cellframe address
+ */
+int cellframe_addr_from_str(const char *str, void *addr_out) {
+    if (!str || !addr_out) {
+        return -1;
+    }
+
+    // Decode base58 string to binary (should be 49 bytes - matches Cellframe SDK)
+    size_t decoded_len = base58_decode(str, (uint8_t *)addr_out);
+    if (decoded_len != sizeof(cellframe_addr_t)) {
+        fprintf(stderr, "cellframe_addr_from_str: Invalid address length: %zu (expected %zu)\n",
+                decoded_len, sizeof(cellframe_addr_t));
+        return -1;
+    }
+
+    return 0;
 }

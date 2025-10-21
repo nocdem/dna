@@ -989,3 +989,160 @@ $ cellframe-node-cli wallet info -w test_dilithium -net Backbone
 3. Implement Send CF20 Tokens feature
 
 ---
+
+### 2025-10-21 02:20 UTC - Fix Dilithium signature verification (blockchain accepts transactions)
+**User**: nocdem
+**Agent**: Claude
+**Developer**: nocdem
+**Branch**: feature/wallet
+**Project**: DNA Messenger
+
+#### Problem
+- dna-send tool was creating signatures that differed from cellframe-tool-sign
+- Transactions were being rejected by blockchain with "Sign verification failed"
+- Both tools were deterministic, but produced different signatures for identical input
+
+#### Root Cause
+- Our Dilithium implementation was using old/different fips202.c (SHAKE256/Keccak)
+- SDK uses updated version from `dap-sdk/crypto/src/sha3/fips202.c`
+- This caused different hash values in signature generation
+
+#### Solution
+1. Copied entire SDK Dilithium implementation to `crypto/cellframe_dilithium/`:
+   - dilithium_sign.c/h
+   - dilithium_params.c/h
+   - dilithium_poly.c/h
+   - dilithium_polyvec.c/h
+   - dilithium_packing.c/h
+   - dilithium_rounding_reduce.c/h
+   - **fips202.c/h (from SDK sha3/ directory - KEY FIX)**
+
+2. Fixed debug fprintf statements that were breaking compilation
+
+#### Files Modified
+- crypto/cellframe_dilithium/*.c/h - Replaced with SDK versions
+- cellframe_sign_minimal.c - Cleaned up debug output
+- wallet.c - Cleaned up debug output
+
+#### Testing
+✅ Unsigned binaries now match cellframe-tool-sign exactly (SHA256 identical)
+✅ Signatures now match cellframe-tool-sign byte-for-byte
+✅ **3 test transactions successfully accepted by blockchain:**
+   - TX1: 0xEEAC3C206142452687DC85FA45B7E35ED9AABAE9ED181EB883C7F576308E7AB5
+   - TX2: 0x35C4DE99DC1E86E5A14D27570273D6B1694C0034BDA330D740FC59AABC58ED60
+   - TX3: 0x18BAE5782777EBDEC801449545929901DC061E0DA28A7930966EC3599CB3937D
+
+#### Other Changes
+- Removed debug fprintf output for cleaner user experience
+- All compilation warnings resolved
+
+---
+
+### 2025-10-21 02:35 UTC - CMakeLists.txt cleanup (remove test executables)
+**User**: nocdem
+**Agent**: Claude
+**Developer**: nocdem
+**Branch**: feature/wallet
+**Project**: DNA Messenger
+
+#### Changes Made
+- Removed test executables from CMakeLists.txt:
+  - test_with_cftool
+  - test_fixed_timestamp
+  - test_tx_builder_minimal
+  - cellframe_minimal_test
+  - wallet_test
+  - rpc_test
+
+- Added CURL package requirement:
+  - Added `find_package(CURL REQUIRED)` at line 70-74
+  - Required for dna-send RPC functionality (cellframe_rpc.c)
+
+- Added new utility functions to cellframe_addr.c/h:
+  - cellframe_addr_to_str() - Convert binary address to base58 string
+  - cellframe_addr_from_str() - Parse base58 string to binary address
+  - Updated CELLFRAME_ADDR_SIZE from 73 to 77 bytes (wire format)
+
+- Added new RPC functions to cellframe_rpc.c/h:
+  - cellframe_rpc_get_utxo() - Query UTXOs for address
+  - cellframe_rpc_submit_tx() - Submit signed transaction to blockchain
+
+#### Files Modified
+- CMakeLists.txt - Removed test targets, added CURL requirement
+- cellframe_addr.c - Added str conversion functions, use cellframe_tx.h definition
+- cellframe_addr.h - Added function declarations, updated size constant
+- cellframe_rpc.c - Added UTXO and transaction submission functions
+- cellframe_rpc.h - Added function declarations
+
+#### Testing
+✅ Clean build successful (all targets compile)
+✅ dna-send binary working (102K)
+✅ dna_messenger binary working (324K)
+✅ dna_messenger_gui binary working (731K)
+
+#### Rationale
+Test executables were development artifacts and no longer needed after fixing signature verification. Main functionality is in dna-send tool which now successfully submits transactions to blockchain.
+
+---
+
+### 2025-10-21 18:25 UTC - Phase 8: Create cpunk-wallet-gui (4th executable)
+**User**: nocdem
+**Agent**: Claude
+**Developer**: nocdem
+**Branch**: feature/wallet
+**Project**: DNA Messenger
+
+#### New Executable Created
+- **cpunk-wallet-gui** (143K) - Standalone CF20 wallet GUI with cpunk branding
+- Total executables now: 4 (dna_messenger, dna-send, dna_messenger_gui, cpunk-wallet-gui)
+
+#### Files Created
+**wallet-gui/** (new directory):
+- cpunk_themes.h - Theme definitions (cpunk.io cyan, cpunk.club orange)
+- WalletMainWindow.h/cpp - Main window with tab interface (645 lines)
+- main_wallet.cpp - Entry point
+- CMakeLists.txt - Build configuration
+
+#### Files Modified
+- CMakeLists.txt - Added wallet-gui subdirectory build option
+
+#### Features Implemented
+✅ **Core Functionality**:
+- Wallet management (list all .dwallet files from Cellframe)
+- Balance queries via RPC (CPUNK, CELL, KEL tokens)
+- Receive tokens (display address, copy to clipboard)
+- Theme switcher (cpunk.io cyan / cpunk.club orange)
+- Network selector (Backbone, SubZero, KelVPN)
+
+✅ **UI Components**:
+- Tab-based interface: Wallets, Send, Transactions, Settings
+- Menu bar: File, Wallet, Tools, Help
+- Status bar with network status and balance
+- Professional cpunk.io/cpunk.club branding
+- Qt5 modern UI with custom stylesheets
+
+🚧 **Pending** (Placeholders for future):
+- Send Tokens dialog (needs dna-send logic integration)
+- Transaction History widget
+- Advanced settings dialog
+
+#### Technical Details
+- Qt5 framework (same as dna_messenger_gui)
+- Reuses existing backend: wallet.c, cellframe_rpc.c, cellframe_addr.c
+- JSON parsing with json-c for RPC responses
+- Theme system with inline stylesheet generation
+- Standalone binary (no messenger dependencies)
+
+#### Build Verification
+```bash
+# All 4 executables built successfully:
+1. dna_messenger      (324K) - CLI messenger
+2. dna-send          (102K) - Token send tool
+3. dna_messenger_gui (731K) - Messenger GUI
+4. cpunk-wallet-gui  (143K) - Wallet GUI ✨ NEW!
+```
+
+#### Purpose
+Provides dedicated CF20 wallet interface for cpunk ecosystem, separate from messaging functionality. Users can manage Cellframe tokens (CPUNK, CELL, KEL) with professional branded UI.
+
+---

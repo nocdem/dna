@@ -127,7 +127,7 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
     // - Cert data: contains serialized public key (or encrypted if version 2)
 
     if (file_size < 23) {
-        fprintf(stderr, "[DEBUG] File too small to contain wallet header: %ld bytes\n", file_size);
+//         fprintf(stderr, "[DEBUG] File too small to contain wallet header: %ld bytes\n", file_size);
         free(file_data);
         *wallet_out = wallet;
         return 0;
@@ -143,8 +143,8 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
     if (wallet_version == 2) {
         wallet->status = WALLET_STATUS_PROTECTED;
         wallet->address[0] = '\0';  // Cannot generate address without password
-        fprintf(stderr, "[DEBUG] Wallet %s is PROTECTED (version 2), password required for address\n",
-                wallet->name);
+        // fprintf(stderr, "[DEBUG] Wallet %s is PROTECTED (version 2), password required for address\n",
+        //         wallet->name);
         free(file_data);
         *wallet_out = wallet;
         return 0;
@@ -160,15 +160,15 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
     // Fixed header (23) + wallet_len + cert header (8) + offset into cert data (0x59)
     size_t serialized_offset = 23 + wallet_len + 8 + 0x59;
 
-    fprintf(stderr, "[DEBUG] Wallet: %s, version=%u, file_size=%ld, wallet_len=%u, calculated_offset=0x%zx\n",
-            wallet->name, wallet_version, file_size, wallet_len, serialized_offset);
+    // fprintf(stderr, "[DEBUG] Wallet: %s, version=%u, file_size=%ld, wallet_len=%u, calculated_offset=0x%zx\n",
+    //         wallet->name, wallet_version, file_size, wallet_len, serialized_offset);
 
     if (file_size > (long)(serialized_offset + 8)) {
         // Read length field (first 8 bytes of serialized data)
         uint64_t serialized_len;
         memcpy(&serialized_len, file_data + serialized_offset, 8);
 
-        fprintf(stderr, "[DEBUG] serialized_len=%lu\n", serialized_len);
+//         fprintf(stderr, "[DEBUG] serialized_len=%lu\n", serialized_len);
 
         // Validate length
         if (serialized_len > 0 && serialized_len <= (file_size - serialized_offset)) {
@@ -181,21 +181,54 @@ int wallet_read_cellframe_path(const char *path, cellframe_wallet_t **wallet_out
                 if (cellframe_addr_from_pubkey(wallet->public_key, wallet->public_key_size,
                                               CELLFRAME_NET_BACKBONE, wallet->address) != 0) {
                     // Address generation failed, set empty
-                    fprintf(stderr, "[DEBUG] Address generation FAILED for wallet: %s\n", wallet->name);
+//                     fprintf(stderr, "[DEBUG] Address generation FAILED for wallet: %s\n", wallet->name);
                     wallet->address[0] = '\0';
                 } else {
-                    fprintf(stderr, "[DEBUG] Address generated successfully: %.50s...\n", wallet->address);
+//                     fprintf(stderr, "[DEBUG] Address generated successfully: %.50s...\n", wallet->address);
                 }
+
+                // Extract private key (follows immediately after public key)
+                size_t privkey_offset = serialized_offset + serialized_len;
+                if (file_size > (long)(privkey_offset + 8)) {
+                    uint64_t privkey_serialized_len;
+                    memcpy(&privkey_serialized_len, file_data + privkey_offset, 8);
+
+                    // fprintf(stderr, "[DEBUG] Private key serialized_len=%lu at offset=0x%zx\n",
+                    //         privkey_serialized_len, privkey_offset);
+
+                    // Validate private key length
+                    if (privkey_serialized_len > 0 &&
+                        privkey_serialized_len <= (file_size - privkey_offset)) {
+                        wallet->private_key_size = privkey_serialized_len;
+                        wallet->private_key = malloc(wallet->private_key_size);
+                        if (wallet->private_key) {
+                            memcpy(wallet->private_key, file_data + privkey_offset,
+                                   wallet->private_key_size);
+                            // fprintf(stderr, "[DEBUG] Private key extracted: %zu bytes (with header)\n",
+                            //         wallet->private_key_size);
+                        } else {
+//                             fprintf(stderr, "[DEBUG] malloc failed for private_key\n");
+                            wallet->private_key_size = 0;
+                        }
+                    } else {
+                        // fprintf(stderr, "[DEBUG] Invalid private key length: %lu\n",
+                        //         privkey_serialized_len);
+                    }
+                } else {
+                    // fprintf(stderr, "[DEBUG] File too small for private key: %ld bytes (need >= %zu)\n",
+                    //         file_size, privkey_offset + 8);
+                }
+
             } else {
-                fprintf(stderr, "[DEBUG] malloc failed for public_key\n");
+//                 fprintf(stderr, "[DEBUG] malloc failed for public_key\n");
             }
         } else {
-            fprintf(stderr, "[DEBUG] Invalid serialized_len: %lu (file_size=%ld, offset=%zu)\n",
-                    serialized_len, file_size, serialized_offset);
+            // fprintf(stderr, "[DEBUG] Invalid serialized_len: %lu (file_size=%ld, offset=%zu)\n",
+            //         serialized_len, file_size, serialized_offset);
         }
     } else {
-        fprintf(stderr, "[DEBUG] File too small: %ld bytes (need at least %zu)\n",
-                file_size, serialized_offset + 8);
+        // fprintf(stderr, "[DEBUG] File too small: %ld bytes (need at least %zu)\n",
+        //         file_size, serialized_offset + 8);
     }
 
     free(file_data);
