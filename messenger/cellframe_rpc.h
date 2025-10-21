@@ -79,6 +79,28 @@ int cellframe_rpc_get_block(const char *net, uint64_t block_num, cellframe_rpc_r
 int cellframe_rpc_get_balance(const char *net, const char *address, const char *token, cellframe_rpc_response_t **response_out);
 
 /**
+ * Get UTXOs for address
+ *
+ * @param net - Network name (e.g., "Backbone")
+ * @param address - Wallet address
+ * @param token - Token name (e.g., "CELL")
+ * @param response_out - Response structure
+ * @return 0 on success, -1 on error
+ */
+int cellframe_rpc_get_utxo(const char *net, const char *address, const char *token, cellframe_rpc_response_t **response_out);
+
+/**
+ * Submit signed transaction
+ *
+ * @param net - Network name (e.g., "Backbone")
+ * @param chain - Chain name (e.g., "main")
+ * @param tx_json - Signed transaction JSON string
+ * @param response_out - Response structure
+ * @return 0 on success, -1 on error
+ */
+int cellframe_rpc_submit_tx(const char *net, const char *chain, const char *tx_json, cellframe_rpc_response_t **response_out);
+
+/**
  * Free RPC response
  */
 void cellframe_rpc_response_free(cellframe_rpc_response_t *response);

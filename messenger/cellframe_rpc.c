@@ -214,6 +214,136 @@ int cellframe_rpc_get_balance(const char *net, const char *address, const char *
 }
 
 /**
+ * Get UTXOs for address
+ * Uses Cellframe RPC "wallet" method with "outputs" subcommand
+ */
+int cellframe_rpc_get_utxo(const char *net, const char *address, const char *token, cellframe_rpc_response_t **response_out) {
+    if (!net || !address || !token || !response_out) {
+        return -1;
+    }
+
+    // Build params string: "wallet;outputs;-addr;...;-token;...;-net;..."
+    char params_str[1024];
+    snprintf(params_str, sizeof(params_str),
+             "wallet;outputs;-addr;%s;-token;%s;-net;%s",
+             address, token, net);
+
+    // Create params array with single string
+    json_object *params_array = json_object_new_array();
+    json_object_array_add(params_array, json_object_new_string(params_str));
+
+    // Create request with params instead of arguments
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        json_object_put(params_array);
+        return -1;
+    }
+
+    // Build JSON request manually (different format from cellframe_rpc_call)
+    json_object *jreq = json_object_new_object();
+    json_object_object_add(jreq, "method", json_object_new_string("wallet"));
+    json_object_object_add(jreq, "params", params_array);
+    json_object_object_add(jreq, "id", json_object_new_string("1"));
+    json_object_object_add(jreq, "version", json_object_new_string("2"));
+
+    const char *json_str = json_object_to_json_string(jreq);
+
+    // Setup response buffer
+    struct response_buffer resp_buf = {0};
+
+    // Setup curl
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, CELLFRAME_RPC_ENDPOINT);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
+
+    // Perform request
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    json_object_put(jreq);
+
+    if (res != CURLE_OK) {
+        if (resp_buf.data) {
+            free(resp_buf.data);
+        }
+        return -1;
+    }
+
+    // Parse response
+    json_object *jresp = json_tokener_parse(resp_buf.data);
+    free(resp_buf.data);
+
+    if (!jresp) {
+        return -1;
+    }
+
+    // Extract response fields
+    cellframe_rpc_response_t *response = calloc(1, sizeof(cellframe_rpc_response_t));
+    if (!response) {
+        json_object_put(jresp);
+        return -1;
+    }
+
+    json_object *jtype = NULL;
+    json_object *jresult = NULL;
+    json_object *jid = NULL;
+    json_object *jversion = NULL;
+
+    if (json_object_object_get_ex(jresp, "type", &jtype)) {
+        response->type = json_object_get_int(jtype);
+    }
+
+    if (json_object_object_get_ex(jresp, "result", &jresult)) {
+        response->result = json_object_get(jresult);
+    }
+
+    if (json_object_object_get_ex(jresp, "id", &jid)) {
+        response->id = json_object_get_int(jid);
+    }
+
+    if (json_object_object_get_ex(jresp, "version", &jversion)) {
+        response->version = json_object_get_int(jversion);
+    }
+
+    json_object_put(jresp);
+
+    *response_out = response;
+    return 0;
+}
+
+/**
+ * Submit signed transaction
+ */
+int cellframe_rpc_submit_tx(const char *net, const char *chain, const char *tx_json, cellframe_rpc_response_t **response_out) {
+    if (!net || !chain || !tx_json || !response_out) {
+        return -1;
+    }
+
+    json_object *args = json_object_new_object();
+    json_object_object_add(args, "net", json_object_new_string(net));
+    json_object_object_add(args, "chain", json_object_new_string(chain));
+    json_object_object_add(args, "tx_obj", json_object_new_string(tx_json));
+
+    cellframe_rpc_request_t req = {
+        .method = "tx_create_json",
+        .subcommand = "",
+        .arguments = args,
+        .id = 1
+    };
+
+    int ret = cellframe_rpc_call(&req, response_out);
+    json_object_put(args);
+
+    return ret;
+}
+
+/**
  * Free RPC response
  */
 void cellframe_rpc_response_free(cellframe_rpc_response_t *response) {
