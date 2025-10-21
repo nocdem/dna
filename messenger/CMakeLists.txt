@@ -103,6 +103,7 @@ message(STATUS "PostgreSQL include: ${PQ_INCLUDE_DIR}")
 # SDK Independence: Vendored cryptographic implementations
 add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
 add_subdirectory(crypto/dilithium)  # Dilithium3 signatures
+add_subdirectory(crypto/cellframe_dilithium)  # Cellframe-compatible Dilithium (for CF20 wallet)
 
 # Utility programs (export_pubkey, sign_json, verify_json) - DISABLED
 # These are no longer needed as keyserver_register.c uses inline functions
@@ -248,3 +249,77 @@ else()
     # Linux/Unix: Install to /usr/local/bin
     install(TARGETS dna_messenger DESTINATION bin)
 endif()
+
+# Test with cellframe-tool-sign workaround
+add_executable(test_with_cftool
+    test_with_cftool.c
+    cellframe_tx.c
+    cellframe_rpc.c
+    wallet.c
+    cellframe_addr.c
+    base58.c
+)
+target_link_libraries(test_with_cftool
+    dilithium
+    ${OPENSSL_LIBRARIES}
+    ${CURL_LIBRARIES}
+    ${POSTGRESQL_LIBRARIES}
+    m
+)
+
+# Test with fixed timestamp (hash comparison)
+add_executable(test_fixed_timestamp
+    test_fixed_timestamp.c
+    cellframe_tx.c
+    cellframe_tx_to_json.c
+    cellframe_rpc.c
+    wallet.c
+    cellframe_addr.c
+    base58.c
+)
+target_link_libraries(test_fixed_timestamp
+    dilithium
+    cellframe_dilithium
+    ${OPENSSL_LIBRARIES}
+    ${CURL_LIBRARIES}
+    ${JSONC_LIBRARIES}
+    m
+)
+
+# Cellframe minimal implementation (fresh rewrite)
+add_executable(cellframe_minimal_test cellframe_minimal_test.c)
+
+add_executable(test_tx_builder_minimal
+    test_tx_builder_minimal.c
+    cellframe_tx_builder_minimal.c
+)
+
+add_library(cellframe_minimal STATIC
+    cellframe_tx_builder_minimal.c
+    cellframe_sign_minimal.c
+    cellframe_json_minimal.c
+    base58.c
+)
+target_link_libraries(cellframe_minimal
+    cellframe_dilithium
+    ${OPENSSL_LIBRARIES}
+    m
+)
+
+# DNA-Send CLI Tool
+add_executable(dna-send
+    dna-send.c
+    wallet.c
+    cellframe_addr.c
+    cellframe_rpc.c
+    base58.c
+)
+target_link_libraries(dna-send
+    cellframe_minimal
+    cellframe_dilithium
+    ${OPENSSL_LIBRARIES}
+    ${CURL_LIBRARIES}
+    ${JSONC_LIBRARIES}
+    m
+)
+target_include_directories(dna-send PRIVATE ${CMAKE_SOURCE_DIR})

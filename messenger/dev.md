@@ -989,3 +989,51 @@ $ cellframe-node-cli wallet info -w test_dilithium -net Backbone
 3. Implement Send CF20 Tokens feature
 
 ---
+
+### 2025-10-21 02:20 UTC - Fix Dilithium signature verification (blockchain accepts transactions)
+**User**: nocdem
+**Agent**: Claude
+**Developer**: nocdem
+**Branch**: feature/wallet
+**Project**: DNA Messenger
+
+#### Problem
+- dna-send tool was creating signatures that differed from cellframe-tool-sign
+- Transactions were being rejected by blockchain with "Sign verification failed"
+- Both tools were deterministic, but produced different signatures for identical input
+
+#### Root Cause
+- Our Dilithium implementation was using old/different fips202.c (SHAKE256/Keccak)
+- SDK uses updated version from `dap-sdk/crypto/src/sha3/fips202.c`
+- This caused different hash values in signature generation
+
+#### Solution
+1. Copied entire SDK Dilithium implementation to `crypto/cellframe_dilithium/`:
+   - dilithium_sign.c/h
+   - dilithium_params.c/h
+   - dilithium_poly.c/h
+   - dilithium_polyvec.c/h
+   - dilithium_packing.c/h
+   - dilithium_rounding_reduce.c/h
+   - **fips202.c/h (from SDK sha3/ directory - KEY FIX)**
+
+2. Fixed debug fprintf statements that were breaking compilation
+
+#### Files Modified
+- crypto/cellframe_dilithium/*.c/h - Replaced with SDK versions
+- cellframe_sign_minimal.c - Cleaned up debug output
+- wallet.c - Cleaned up debug output
+
+#### Testing
+✅ Unsigned binaries now match cellframe-tool-sign exactly (SHA256 identical)
+✅ Signatures now match cellframe-tool-sign byte-for-byte
+✅ **3 test transactions successfully accepted by blockchain:**
+   - TX1: 0xEEAC3C206142452687DC85FA45B7E35ED9AABAE9ED181EB883C7F576308E7AB5
+   - TX2: 0x35C4DE99DC1E86E5A14D27570273D6B1694C0034BDA330D740FC59AABC58ED60
+   - TX3: 0x18BAE5782777EBDEC801449545929901DC061E0DA28A7930966EC3599CB3937D
+
+#### Other Changes
+- Removed debug fprintf output for cleaner user experience
+- All compilation warnings resolved
+
+---
