@@ -1037,3 +1037,50 @@ $ cellframe-node-cli wallet info -w test_dilithium -net Backbone
 - All compilation warnings resolved
 
 ---
+
+### 2025-10-21 02:35 UTC - CMakeLists.txt cleanup (remove test executables)
+**User**: nocdem
+**Agent**: Claude
+**Developer**: nocdem
+**Branch**: feature/wallet
+**Project**: DNA Messenger
+
+#### Changes Made
+- Removed test executables from CMakeLists.txt:
+  - test_with_cftool
+  - test_fixed_timestamp
+  - test_tx_builder_minimal
+  - cellframe_minimal_test
+  - wallet_test
+  - rpc_test
+
+- Added CURL package requirement:
+  - Added `find_package(CURL REQUIRED)` at line 70-74
+  - Required for dna-send RPC functionality (cellframe_rpc.c)
+
+- Added new utility functions to cellframe_addr.c/h:
+  - cellframe_addr_to_str() - Convert binary address to base58 string
+  - cellframe_addr_from_str() - Parse base58 string to binary address
+  - Updated CELLFRAME_ADDR_SIZE from 73 to 77 bytes (wire format)
+
+- Added new RPC functions to cellframe_rpc.c/h:
+  - cellframe_rpc_get_utxo() - Query UTXOs for address
+  - cellframe_rpc_submit_tx() - Submit signed transaction to blockchain
+
+#### Files Modified
+- CMakeLists.txt - Removed test targets, added CURL requirement
+- cellframe_addr.c - Added str conversion functions, use cellframe_tx.h definition
+- cellframe_addr.h - Added function declarations, updated size constant
+- cellframe_rpc.c - Added UTXO and transaction submission functions
+- cellframe_rpc.h - Added function declarations
+
+#### Testing
+✅ Clean build successful (all targets compile)
+✅ dna-send binary working (102K)
+✅ dna_messenger binary working (324K)
+✅ dna_messenger_gui binary working (731K)
+
+#### Rationale
+Test executables were development artifacts and no longer needed after fixing signature verification. Main functionality is in dna-send tool which now successfully submits transactions to blockchain.
+
+---
