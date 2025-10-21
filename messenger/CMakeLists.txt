@@ -203,6 +203,17 @@ if(BUILD_GUI)
     endif()
 endif()
 
+# cpunk-wallet-gui (Phase 8) - Optional Standalone CF20 Wallet GUI
+option(BUILD_WALLET_GUI "Build standalone wallet GUI" ON)
+if(BUILD_WALLET_GUI)
+    if(Qt5_FOUND)
+        message(STATUS "Building cpunk-wallet-gui application")
+        add_subdirectory(wallet-gui)
+    else()
+        message(STATUS "Qt5 not found. Skipping cpunk-wallet-gui build.")
+    endif()
+endif()
+
 # Build type configuration
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
     if(MSVC)

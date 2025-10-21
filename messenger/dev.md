@@ -1084,3 +1084,65 @@ $ cellframe-node-cli wallet info -w test_dilithium -net Backbone
 Test executables were development artifacts and no longer needed after fixing signature verification. Main functionality is in dna-send tool which now successfully submits transactions to blockchain.
 
 ---
+
+### 2025-10-21 18:25 UTC - Phase 8: Create cpunk-wallet-gui (4th executable)
+**User**: nocdem
+**Agent**: Claude
+**Developer**: nocdem
+**Branch**: feature/wallet
+**Project**: DNA Messenger
+
+#### New Executable Created
+- **cpunk-wallet-gui** (143K) - Standalone CF20 wallet GUI with cpunk branding
+- Total executables now: 4 (dna_messenger, dna-send, dna_messenger_gui, cpunk-wallet-gui)
+
+#### Files Created
+**wallet-gui/** (new directory):
+- cpunk_themes.h - Theme definitions (cpunk.io cyan, cpunk.club orange)
+- WalletMainWindow.h/cpp - Main window with tab interface (645 lines)
+- main_wallet.cpp - Entry point
+- CMakeLists.txt - Build configuration
+
+#### Files Modified
+- CMakeLists.txt - Added wallet-gui subdirectory build option
+
+#### Features Implemented
+✅ **Core Functionality**:
+- Wallet management (list all .dwallet files from Cellframe)
+- Balance queries via RPC (CPUNK, CELL, KEL tokens)
+- Receive tokens (display address, copy to clipboard)
+- Theme switcher (cpunk.io cyan / cpunk.club orange)
+- Network selector (Backbone, SubZero, KelVPN)
+
+✅ **UI Components**:
+- Tab-based interface: Wallets, Send, Transactions, Settings
+- Menu bar: File, Wallet, Tools, Help
+- Status bar with network status and balance
+- Professional cpunk.io/cpunk.club branding
+- Qt5 modern UI with custom stylesheets
+
+🚧 **Pending** (Placeholders for future):
+- Send Tokens dialog (needs dna-send logic integration)
+- Transaction History widget
+- Advanced settings dialog
+
+#### Technical Details
+- Qt5 framework (same as dna_messenger_gui)
+- Reuses existing backend: wallet.c, cellframe_rpc.c, cellframe_addr.c
+- JSON parsing with json-c for RPC responses
+- Theme system with inline stylesheet generation
+- Standalone binary (no messenger dependencies)
+
+#### Build Verification
+```bash
+# All 4 executables built successfully:
+1. dna_messenger      (324K) - CLI messenger
+2. dna-send          (102K) - Token send tool
+3. dna_messenger_gui (731K) - Messenger GUI
+4. cpunk-wallet-gui  (143K) - Wallet GUI ✨ NEW!
+```
+
+#### Purpose
+Provides dedicated CF20 wallet interface for cpunk ecosystem, separate from messaging functionality. Users can manage Cellframe tokens (CPUNK, CELL, KEL) with professional branded UI.
+
+---
