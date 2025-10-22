@@ -449,7 +449,7 @@ int main(int argc, char **argv) {
     // Add TSD item (optional) - BEFORE the fee
     int has_tsd = 0;
     if (args.tsd_data && strlen(args.tsd_data) > 0) {
-        size_t tsd_len = strlen(args.tsd_data) + 1;  // Include null terminator
+        size_t tsd_len = strlen(args.tsd_data);  // NO null terminator (matches cellframe-tool-sign)
         if (cellframe_tx_add_tsd(builder, TSD_TYPE_CUSTOM_STRING,
                                  (const uint8_t*)args.tsd_data, tsd_len) != 0) {
             fprintf(stderr, "[ERROR] Failed to add TSD item\n");

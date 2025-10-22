@@ -191,19 +191,34 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
             cellframe_tx_tsd_t *tsd_item = (cellframe_tx_tsd_t*)item;
             cellframe_tsd_t *tsd = (cellframe_tsd_t*)tsd_item->tsd;
 
-            // Base64-encode the data
-            char *data_b64 = NULL;
-            if (cellframe_base64_encode(tsd->data, tsd->size, &data_b64) < 0) {
-                fprintf(stderr, "[JSON] Failed to encode TSD data to Base64\n");
-                free(json);
-                return -1;
+            // Write raw string (cellframe-tool-sign expects plain text, not base64)
+            // Source: dap_chain_net_tx.c:1281 uses dap_strlen() directly on data string
+            json_len += sprintf(json + json_len,
+                "    {\"type\":\"data\", \"type_tsd\":%u, \"data\":\"", tsd->type);
+
+            // Copy data with JSON escaping
+            for (uint32_t i = 0; i < tsd->size; i++) {
+                char c = tsd->data[i];
+                if (c == '"' || c == '\\') {
+                    json[json_len++] = '\\';  // Escape quotes and backslashes
+                    json[json_len++] = c;
+                } else if (c == '\n') {
+                    json[json_len++] = '\\';
+                    json[json_len++] = 'n';
+                } else if (c == '\r') {
+                    json[json_len++] = '\\';
+                    json[json_len++] = 'r';
+                } else if (c == '\t') {
+                    json[json_len++] = '\\';
+                    json[json_len++] = 't';
+                } else if (c == '\0') {
+                    break;  // Stop at null terminator for strings
+                } else {
+                    json[json_len++] = c;
+                }
             }
 
-            json_len += sprintf(json + json_len,
-                "    {\"type\":\"data\", \"type_tsd\":%u, \"data\":\"%s\", \"size\":%u}",
-                tsd->type, data_b64, tsd->size);
-
-            free(data_b64);
+            json_len += sprintf(json + json_len, "\", \"size\":%u}", tsd->size);
 
             offset += sizeof(cellframe_tx_tsd_t) + tsd_item->size;
 
