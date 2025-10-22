@@ -583,9 +583,9 @@ void SendTokensDialog::buildAndSendTransaction() {
     printf("[DEBUG] Transaction size: %zu bytes\n", tx_size);
 
     // Verify tx_items_size is 0 (critical for signature verification)
-    // Structure: uint16_t version (0-1), uint64_t timestamp (2-9), uint32_t tx_items_size (10-13)
-    if (tx_size >= 14) {
-        uint32_t tx_items_size_in_data = *(uint32_t*)(tx_data + 10);
+    // cellframe_tx_header_t: uint64_t ts_created (0-7), uint32_t tx_items_size (8-11)
+    if (tx_size >= 12) {
+        uint32_t tx_items_size_in_data = *(uint32_t*)(tx_data + 8);  // Offset 8, not 10!
         printf("[DEBUG] tx_items_size in signing data: %u (MUST be 0)\n", tx_items_size_in_data);
         if (tx_items_size_in_data != 0) {
             printf("[ERROR] tx_items_size is NOT zero! This will cause signature verification to fail!\n");
