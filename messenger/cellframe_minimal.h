@@ -367,13 +367,14 @@ static inline uint128_t GET_128_FROM_64(uint64_t n) {
  * Bytes 16-23: value (lo.lo)
  * Bytes 24-31: all zeros (lo.hi)
  *
- * NOTE: Direct initialization (not using uint128_0 constant) for C++ compatibility
+ * NOTE: Uses _hi/_lo named members for C++ compatibility (avoids designated initializers)
  */
 static inline uint256_t GET_256_FROM_64(uint64_t n) {
     uint256_t result;
-    result.hi.lo = 0;
-    result.hi.hi = 0;
-    result.lo = GET_128_FROM_64(n);
+    result._hi.a = 0;
+    result._hi.b = 0;
+    result._lo.a = n;  // Value goes in bytes 16-23
+    result._lo.b = 0;
     return result;
 }
 
