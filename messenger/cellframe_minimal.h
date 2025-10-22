@@ -39,6 +39,7 @@ extern "C" {
 #define TX_ITEM_TYPE_OUT_EXT    0x11  // Has token field
 #define TX_ITEM_TYPE_OUT_STD    0x13  // Has token + version + ts_unlock
 #define TX_ITEM_TYPE_OUT_COND   0x61  // Conditional output (fees)
+#define TX_ITEM_TYPE_TSD        0x80  // Type-Specific Data (custom data)
 #define TX_ITEM_TYPE_SIG        0x30  // Signature
 
 // OUT_COND subtypes
@@ -244,6 +245,47 @@ typedef struct {
 } __attribute__((packed)) cellframe_tx_out_cond_t;
 
 _Static_assert(sizeof(cellframe_tx_out_cond_t) == 340, "cellframe_tx_out_cond_t must be 340 bytes");
+
+// ============================================================================
+// TSD (TYPE-SPECIFIC DATA) STRUCTURES
+// ============================================================================
+
+/**
+ * TSD (Type-Specific Data) - Custom data in transactions
+ * SDK: dap_tsd_t (dap-sdk/core/include/dap_tsd.h)
+ *
+ * Base TSD structure (inner content)
+ * Size: 6 bytes + data_size
+ */
+typedef struct {
+    uint16_t type;      // TSD type (e.g., 0xf003 for custom string)
+    uint32_t size;      // Data size in bytes
+    uint8_t data[];     // Variable-length data
+} __attribute__((packed)) cellframe_tsd_t;
+
+_Static_assert(sizeof(cellframe_tsd_t) == 6, "cellframe_tsd_t header must be 6 bytes");
+
+/**
+ * TSD transaction item (outer wrapper)
+ * SDK: dap_chain_tx_tsd_t (cellframe-sdk/modules/common/include/dap_chain_datum_tx_tsd.h)
+ *
+ * Size: 16 bytes + tsd_content_size
+ *
+ * Full item size = sizeof(cellframe_tx_tsd_t) + size
+ *                = 16 + (6 + data_size)
+ */
+typedef struct {
+    uint8_t type;       // TX_ITEM_TYPE_TSD (0x80)
+    uint64_t size __attribute__((aligned(8)));  // Size of tsd[] content (6 + data_size)
+    uint8_t tsd[];      // Contains cellframe_tsd_t + data
+} __attribute__((packed)) cellframe_tx_tsd_t;
+
+_Static_assert(sizeof(cellframe_tx_tsd_t) == 16, "cellframe_tx_tsd_t header must be 16 bytes");
+
+// TSD type constants
+// NOTE: 0xf003 is for OUT_COND embedded TSD, not standalone items!
+// Using 0x01 for generic text/comment (like voting questions)
+#define TSD_TYPE_CUSTOM_STRING 0x0001  // Custom string/comment data
 
 // ============================================================================
 // SIGNATURE STRUCTURES

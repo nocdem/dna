@@ -52,6 +52,7 @@ typedef struct {
     const char *chain;
     const char *token;
     const char *rpc_url;
+    const char *tsd_data;     // Optional TSD data
     uint64_t timestamp;  // Override timestamp (0 = use current time)
     int verbose;
 } dna_send_args_t;
@@ -66,6 +67,7 @@ static struct option long_options[] = {
     {"token",     required_argument, 0, 't'},
     {"rpc",       required_argument, 0, 'u'},
     {"timestamp", required_argument, 0, 'T'},
+    {"tsd",       required_argument, 0, 'd'},
     {"verbose",   no_argument,       0, 'v'},
     {"help",      no_argument,       0, 'h'},
     {0, 0, 0, 0}
@@ -84,6 +86,7 @@ static void print_usage(const char *prog_name) {
     printf("  -c, --chain <name>        Chain name (default: main)\n");
     printf("  -t, --token <ticker>      Token ticker (default: CELL)\n");
     printf("  -u, --rpc <url>           RPC endpoint (default: %s)\n", DEFAULT_RPC_URL);
+    printf("  -d, --tsd <text>          Optional: Custom TSD data to include\n");
     printf("  -v, --verbose             Verbose output\n");
     printf("  -h, --help                Show this help\n\n");
     printf("Examples:\n");
@@ -103,7 +106,7 @@ static int parse_args(int argc, char **argv, dna_send_args_t *args) {
     args->rpc_url = DEFAULT_RPC_URL;
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "w:r:a:f:n:c:t:u:T:vh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "w:r:a:f:n:c:t:u:T:d:vh", long_options, NULL)) != -1) {
         switch (opt) {
             case 'w': args->wallet_file = optarg; break;
             case 'r': args->recipient = optarg; break;
@@ -114,6 +117,7 @@ static int parse_args(int argc, char **argv, dna_send_args_t *args) {
             case 't': args->token = optarg; break;
             case 'u': args->rpc_url = optarg; break;
             case 'T': args->timestamp = (uint64_t)strtoull(optarg, NULL, 10); break;
+            case 'd': args->tsd_data = optarg; break;
             case 'v': args->verbose = 1; break;
             case 'h':
                 print_usage(argv[0]);
@@ -442,6 +446,21 @@ int main(int argc, char **argv) {
         has_change = 1;
     }
 
+    // Add TSD item (optional) - BEFORE the fee
+    int has_tsd = 0;
+    if (args.tsd_data && strlen(args.tsd_data) > 0) {
+        size_t tsd_len = strlen(args.tsd_data) + 1;  // Include null terminator
+        if (cellframe_tx_add_tsd(builder, TSD_TYPE_CUSTOM_STRING,
+                                 (const uint8_t*)args.tsd_data, tsd_len) != 0) {
+            fprintf(stderr, "[ERROR] Failed to add TSD item\n");
+            free(selected_utxos);
+            cellframe_tx_builder_free(builder);
+            wallet_free(wallet);
+            return 1;
+        }
+        has_tsd = 1;
+    }
+
     // Add OUT_COND item (validator fee)
     if (cellframe_tx_add_fee(builder, fee) != 0) {
         fprintf(stderr, "[ERROR] Failed to add validator FEE item\n");
@@ -451,15 +470,19 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    printf("      Transaction items: %d IN + %d OUT + 1 FEE\n",
-           num_selected_utxos, 2 + has_change);
+    printf("      Transaction items: %d IN + %d OUT + 1 FEE%s\n",
+           num_selected_utxos, 2 + has_change, has_tsd ? " + 1 TSD" : "");
     printf("        - %d input%s\n", num_selected_utxos, num_selected_utxos > 1 ? "s" : "");
     printf("        - 1 recipient output\n");
     printf("        - 1 network fee output\n");
     if (has_change) {
         printf("        - 1 change output\n");
     }
-    printf("        - 1 validator fee\n\n");
+    printf("        - 1 validator fee\n");
+    if (has_tsd) {
+        printf("        - 1 TSD item (%zu bytes)\n", strlen(args.tsd_data) + 1);
+    }
+    printf("\n");
 
     // Free selected UTXOs (no longer needed)
     free(selected_utxos);

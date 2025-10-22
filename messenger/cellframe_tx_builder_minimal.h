@@ -74,6 +74,21 @@ int cellframe_tx_add_out(cellframe_tx_builder_t *builder,
 int cellframe_tx_add_fee(cellframe_tx_builder_t *builder, uint256_t value);
 
 /**
+ * Add TSD (Type-Specific Data) item to transaction
+ *
+ * Adds custom data to the transaction. TSD items can contain arbitrary data
+ * with a type identifier.
+ *
+ * @param builder Builder context
+ * @param tsd_type TSD type identifier (e.g., TSD_TYPE_CUSTOM_STRING = 0xf003)
+ * @param data Data to include (will be copied)
+ * @param data_size Size of data in bytes
+ * @return 0 on success, -1 on error
+ */
+int cellframe_tx_add_tsd(cellframe_tx_builder_t *builder, uint16_t tsd_type,
+                         const uint8_t *data, size_t data_size);
+
+/**
  * Get transaction binary data for signing
  *
  * CRITICAL: Returns a COPY with tx_items_size = 0 (SDK requirement)

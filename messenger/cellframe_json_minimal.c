@@ -186,6 +186,27 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
 
             offset += sizeof(cellframe_tx_out_cond_t);
 
+        } else if (type == TX_ITEM_TYPE_TSD) {
+            // TSD item: parse header + inner TSD
+            cellframe_tx_tsd_t *tsd_item = (cellframe_tx_tsd_t*)item;
+            cellframe_tsd_t *tsd = (cellframe_tsd_t*)tsd_item->tsd;
+
+            // Base64-encode the data
+            char *data_b64 = NULL;
+            if (cellframe_base64_encode(tsd->data, tsd->size, &data_b64) < 0) {
+                fprintf(stderr, "[JSON] Failed to encode TSD data to Base64\n");
+                free(json);
+                return -1;
+            }
+
+            json_len += sprintf(json + json_len,
+                "    {\"type\":\"data\", \"type_tsd\":%u, \"data\":\"%s\", \"size\":%u}",
+                tsd->type, data_b64, tsd->size);
+
+            free(data_b64);
+
+            offset += sizeof(cellframe_tx_tsd_t) + tsd_item->size;
+
         } else if (type == TX_ITEM_TYPE_SIG) {
             // SIG item: header (6) + dap_sign_t
             cellframe_tx_sig_header_t *sig_header = (cellframe_tx_sig_header_t*)item;

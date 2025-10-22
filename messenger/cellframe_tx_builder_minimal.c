@@ -211,6 +211,44 @@ int cellframe_tx_add_fee(cellframe_tx_builder_t *builder, uint256_t value) {
     return append_data(builder, &item, sizeof(item));
 }
 
+int cellframe_tx_add_tsd(cellframe_tx_builder_t *builder, uint16_t tsd_type,
+                         const uint8_t *data, size_t data_size) {
+    if (!builder || !data || data_size == 0) {
+        return -1;
+    }
+
+    // Calculate sizes
+    // Inner TSD: 6 bytes (type + size) + data
+    size_t tsd_content_size = sizeof(cellframe_tsd_t) + data_size;
+
+    // Full item: 16 bytes (tx item header) + tsd content
+    size_t item_size = sizeof(cellframe_tx_tsd_t) + tsd_content_size;
+
+    // Allocate TSD item
+    uint8_t *tsd_item = malloc(item_size);
+    if (!tsd_item) {
+        return -1;
+    }
+    memset(tsd_item, 0, item_size);
+
+    // Build transaction item header
+    cellframe_tx_tsd_t *tx_tsd = (cellframe_tx_tsd_t*)tsd_item;
+    tx_tsd->type = TX_ITEM_TYPE_TSD;
+    tx_tsd->size = tsd_content_size;
+
+    // Build inner TSD structure
+    cellframe_tsd_t *tsd = (cellframe_tsd_t*)tx_tsd->tsd;
+    tsd->type = tsd_type;
+    tsd->size = (uint32_t)data_size;
+    memcpy(tsd->data, data, data_size);
+
+    // Append to transaction
+    int result = append_data(builder, tsd_item, item_size);
+    free(tsd_item);
+
+    return result;
+}
+
 const uint8_t* cellframe_tx_get_signing_data(cellframe_tx_builder_t *builder, size_t *size_out) {
     if (!builder || !size_out || builder->size < sizeof(cellframe_tx_header_t)) {
         return NULL;
