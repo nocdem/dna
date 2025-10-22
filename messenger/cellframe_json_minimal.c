@@ -93,7 +93,7 @@ void cellframe_uint256_to_str(const uint256_t *value, char *str_out) {
 
     // For amounts < 2^64, value is in lo.lo (bytes 16-23)
     // SDK: uint256_t.lo.lo contains the datoshi amount
-    sprintf(str_out, "%lu", value->lo.lo);
+    sprintf(str_out, "%llu", (unsigned long long)value->lo.lo);
 }
 
 // ============================================================================

@@ -55,9 +55,9 @@ private:
     QLabel *balanceLabel;
     QLineEdit *recipientEdit;
     QLabel *addressValidationLabel;
-    QDoubleSpinBox *amountSpinBox;
+    QLineEdit *amountEdit;  // Changed from QDoubleSpinBox to avoid precision loss
     QPushButton *maxAmountButton;
-    QDoubleSpinBox *feeSpinBox;
+    QLineEdit *feeEdit;  // Changed from QDoubleSpinBox to avoid precision loss
     QLineEdit *networkFeeAddressEdit;
     QCheckBox *tsdCheckBox;
     QLineEdit *tsdDataEdit;

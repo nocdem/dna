@@ -354,8 +354,19 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
         }
 
         // Parse integer and fractional parts
-        uint64_t int_value = strtoull(int_part, NULL, 10);
-        uint64_t frac_value = strtoull(frac_part, NULL, 10);
+        // WORKAROUND: Manual parsing to avoid strtoull() bugs in cross-compiled environments
+        // Use 10ULL to force 64-bit arithmetic (critical for Windows cross-compile!)
+        uint64_t int_value = 0;
+        for (const char *p = int_part; *p; p++) {
+            if (*p < '0' || *p > '9') break;
+            int_value = int_value * 10ULL + (uint64_t)(*p - '0');
+        }
+
+        uint64_t frac_value = 0;
+        for (const char *p = frac_part; *p; p++) {
+            if (*p < '0' || *p > '9') break;
+            frac_value = frac_value * 10ULL + (uint64_t)(*p - '0');
+        }
 
         // Calculate total datoshi: (int_value * 10^18) + frac_value
         // Check for overflow
@@ -366,16 +377,18 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
 
         datoshi = (int_value * 1000000000000000000ULL) + frac_value;
 
-        printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> int:%lu frac:%lu -> datoshi: %lu (0x%lx)\n",
-               value_str, int_value, frac_value, datoshi, datoshi);
+        printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> int:%llu frac:%llu -> datoshi: %llu (0x%llx)\n",
+               value_str, (unsigned long long)int_value, (unsigned long long)frac_value, (unsigned long long)datoshi, (unsigned long long)datoshi);
     } else {
         // Parse as integer datoshi string
-        datoshi = strtoull(value_str, NULL, 10);
-        if (datoshi == 0 && errno == EINVAL) {
-            return -1;
+        // Manual parsing to avoid strtoull() 32-bit truncation on Windows
+        datoshi = 0;
+        for (const char *p = value_str; *p; p++) {
+            if (*p < '0' || *p > '9') break;
+            datoshi = datoshi * 10ULL + (uint64_t)(*p - '0');
         }
-        printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> datoshi: %lu (0x%lx)\n",
-               value_str, datoshi, datoshi);
+        printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> datoshi: %llu (0x%llx)\n",
+               value_str, (unsigned long long)datoshi, (unsigned long long)datoshi);
     }
 
     // Construct uint256_t using SDK method
@@ -383,11 +396,11 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
     *value_out = GET_256_FROM_64(datoshi);
 
     printf("[DEBUG cellframe_uint256_from_str] After GET_256_FROM_64:\n");
-    printf("  _hi.a = %lu (0x%lx)\n", value_out->_hi.a, value_out->_hi.a);
-    printf("  _hi.b = %lu (0x%lx)\n", value_out->_hi.b, value_out->_hi.b);
-    printf("  _lo.a = %lu (0x%lx)\n", value_out->_lo.a, value_out->_lo.a);
-    printf("  _lo.b = %lu (0x%lx)\n", value_out->_lo.b, value_out->_lo.b);
-    printf("  lo.lo = %lu (0x%lx)\n", value_out->lo.lo, value_out->lo.lo);
+    printf("  _hi.a = %llu (0x%llx)\n", (unsigned long long)value_out->_hi.a, (unsigned long long)value_out->_hi.a);
+    printf("  _hi.b = %llu (0x%llx)\n", (unsigned long long)value_out->_hi.b, (unsigned long long)value_out->_hi.b);
+    printf("  _lo.a = %llu (0x%llx)\n", (unsigned long long)value_out->_lo.a, (unsigned long long)value_out->_lo.a);
+    printf("  _lo.b = %llu (0x%llx)\n", (unsigned long long)value_out->_lo.b, (unsigned long long)value_out->_lo.b);
+    printf("  lo.lo = %llu (0x%llx)\n", (unsigned long long)value_out->lo.lo, (unsigned long long)value_out->lo.lo);
 
     return 0;
 }

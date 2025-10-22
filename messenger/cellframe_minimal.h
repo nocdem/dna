@@ -371,10 +371,10 @@ static inline uint128_t GET_128_FROM_64(uint64_t n) {
  */
 static inline uint256_t GET_256_FROM_64(uint64_t n) {
     uint256_t result;
-    result._hi.a = 0;
-    result._hi.b = 0;
-    result._lo.a = n;  // Value goes in bytes 16-23
-    result._lo.b = 0;
+    result.hi.lo = 0;  // bytes 0-7
+    result.hi.hi = 0;  // bytes 8-15
+    result.lo.lo = n;  // bytes 16-23 (VALUE GOES HERE)
+    result.lo.hi = 0;  // bytes 24-31
     return result;
 }
 
