@@ -348,16 +348,13 @@ STATIC_ASSERT(sizeof(dap_sign_t) == 14, "dap_sign_t header must be 14 bytes");
 // ============================================================================
 
 /**
- * Zero uint128_t constant
- */
-static const uint128_t uint128_0 = {{ .lo = 0, .hi = 0 }};
-
-/**
  * Construct uint128_t from uint64_t
  * SDK: GET_128_FROM_64 (dap_math_ops.h:117)
  */
 static inline uint128_t GET_128_FROM_64(uint64_t n) {
-    uint128_t result = {{ .lo = n, .hi = 0 }};
+    uint128_t result;
+    result.lo = n;
+    result.hi = 0;
     return result;
 }
 
@@ -369,10 +366,13 @@ static inline uint128_t GET_128_FROM_64(uint64_t n) {
  * Bytes  0-15: all zeros (hi)
  * Bytes 16-23: value (lo.lo)
  * Bytes 24-31: all zeros (lo.hi)
+ *
+ * NOTE: Direct initialization (not using uint128_0 constant) for C++ compatibility
  */
 static inline uint256_t GET_256_FROM_64(uint64_t n) {
     uint256_t result;
-    result.hi = uint128_0;
+    result.hi.lo = 0;
+    result.hi.hi = 0;
     result.lo = GET_128_FROM_64(n);
     return result;
 }
