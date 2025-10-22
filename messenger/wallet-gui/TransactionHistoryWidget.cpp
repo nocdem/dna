@@ -19,9 +19,7 @@ TransactionHistoryWidget::TransactionHistoryWidget(wallet_list_t *wallets, QWidg
 
     setupUI();
 
-    if (wallets && wallets->count > 0) {
-        onWalletChanged(0);
-    }
+    // Don't auto-load transactions on startup - wait for user action
 }
 
 TransactionHistoryWidget::~TransactionHistoryWidget() {
@@ -92,7 +90,16 @@ void TransactionHistoryWidget::setupUI() {
 }
 
 void TransactionHistoryWidget::onWalletChanged(int index) {
-    selectedWalletIndex = index;
+    // Index 0 is "-- Select Wallet --" placeholder
+    if (index == 0) {
+        selectedWalletIndex = -1;
+        transactionTable->setRowCount(0);
+        statusLabel->setText(QString::fromUtf8("Select a wallet to view transactions"));
+        return;
+    }
+
+    // Actual wallet indices start at 1 (subtract 1 for array index)
+    selectedWalletIndex = index - 1;
     refreshHistory();
 }
 
@@ -312,13 +319,17 @@ void TransactionHistoryWidget::updateWalletList(wallet_list_t *newWallets) {
     selectedWalletIndex = -1;
 
     if (wallets && wallets->count > 0) {
+        // Add placeholder item
+        walletComboBox->addItem(QString::fromUtf8("-- Select Wallet --"));
+
         for (size_t i = 0; i < wallets->count; i++) {
             QString walletName = QString::fromUtf8(wallets->wallets[i].name);
             walletComboBox->addItem(QString::fromUtf8("💼 %1").arg(walletName));
         }
 
-        // Select first wallet (will trigger onWalletChanged via signal)
-        walletComboBox->setCurrentIndex(0);
+        // Don't auto-load transactions - wait for user to select
+        transactionTable->setRowCount(0);
+        statusLabel->setText(QString::fromUtf8("Select a wallet to view transactions"));
     } else {
         transactionTable->setRowCount(0);
         statusLabel->setText(QString::fromUtf8("No wallets found"));

@@ -299,6 +299,9 @@ void WalletMainWindow::loadWallets() {
     if (sendDialog) {
         sendDialog->updateWalletList(wallets);
     }
+
+    // Auto-load balances on startup
+    updateBalances();
 }
 
 void WalletMainWindow::updateBalances() {
