@@ -268,6 +268,23 @@ endif()
 
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
 
+# Cellframe minimal library (transaction building and signing)
+# MUST be defined BEFORE GUI subdirectories that depend on it
+add_library(cellframe_minimal STATIC
+    cellframe_tx_builder_minimal.c
+    cellframe_sign_minimal.c
+    cellframe_json_minimal.c
+    base58.c
+)
+target_link_libraries(cellframe_minimal
+    cellframe_dilithium
+    ${OPENSSL_LIBRARIES}
+)
+# Math library only on non-Windows
+if(NOT WIN32)
+    target_link_libraries(cellframe_minimal m)
+endif()
+
 # DNA Messenger GUI (Phase 5) - Optional Qt GUI
 option(BUILD_GUI "Build Qt GUI application" ON)
 if(BUILD_GUI)
@@ -320,19 +337,6 @@ else()
     install(TARGETS dna_messenger DESTINATION bin)
 endif()
 
-# Cellframe minimal library (transaction building and signing)
-add_library(cellframe_minimal STATIC
-    cellframe_tx_builder_minimal.c
-    cellframe_sign_minimal.c
-    cellframe_json_minimal.c
-    base58.c
-)
-target_link_libraries(cellframe_minimal
-    cellframe_dilithium
-    ${OPENSSL_LIBRARIES}
-    m
-)
-
 # DNA-Send CLI Tool
 add_executable(dna-send
     dna-send.c
@@ -347,6 +351,9 @@ target_link_libraries(dna-send
     ${OPENSSL_LIBRARIES}
     ${CURL_LIBRARIES}
     ${JSONC_LIBRARIES}
-    m
 )
+# Math library only on non-Windows
+if(NOT WIN32)
+    target_link_libraries(dna-send m)
+endif()
 target_include_directories(dna-send PRIVATE ${CMAKE_SOURCE_DIR})
