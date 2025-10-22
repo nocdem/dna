@@ -5,14 +5,12 @@
  */
 
 #include "cellframe_addr.h"
+#include "cellframe_minimal.h"  // For cellframe_addr_t (77 bytes)
 #include "base58.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <openssl/evp.h>
-
-// Use cellframe_addr_t from cellframe_tx.h (49 bytes total)
-#include "cellframe_tx.h"
 
 /**
  * Calculate SHA3-256 hash using OpenSSL
@@ -67,23 +65,20 @@ int cellframe_addr_from_pubkey(const uint8_t *pubkey, size_t pubkey_size,
     addr.addr_ver = 1;  // 1 for current version
 
     // Network ID (little-endian uint64_t)
-    addr.net_id = net_id;
+    addr.net_id.uint64 = net_id;
 
     // Signature type (0x0102 for Dilithium)
-    addr.sig_type = CELLFRAME_SIG_DILITHIUM;
-
-    // Padding (matches wire format)
-    addr.padding = 0;
+    addr.sig_type.type = CELLFRAME_SIG_DILITHIUM;
 
     // Hash the serialized public key with SHA3-256
-    if (sha3_256(pubkey, pubkey_size, addr.hash) != 0) {
+    if (sha3_256(pubkey, pubkey_size, addr.data.hash) != 0) {
         fprintf(stderr, "cellframe_addr_from_pubkey: Failed to hash public key\n");
         return -1;
     }
 
     // Calculate checksum (SHA3-256 of everything except checksum field)
     size_t data_size = sizeof(addr) - sizeof(addr.checksum);  // 45 bytes (77 - 32)
-    if (sha3_256((uint8_t*)&addr, data_size, addr.checksum) != 0) {
+    if (sha3_256((uint8_t*)&addr, data_size, addr.checksum.raw) != 0) {
         fprintf(stderr, "cellframe_addr_from_pubkey: Failed to calculate checksum\n");
         return -1;
     }
