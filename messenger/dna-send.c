@@ -25,6 +25,20 @@
 #define DEFAULT_CHAIN "main"
 #define DEFAULT_TOKEN "CELL"
 
+// Network fee constants
+#define NETWORK_FEE_COLLECTOR "Rj7J7MiX2bWy8sNyX38bB86KTFUnSn7sdKDsTFa2RJyQTDWFaebrj6BucT7Wa5CSq77zwRAwevbiKy1sv1RBGTonM83D3xPDwoyGasZ7"
+#define NETWORK_FEE_DATOSHI 2000000000000000ULL  // 0.002 CELL
+
+// ============================================================================
+// UTXO STRUCTURE
+// ============================================================================
+
+typedef struct {
+    cellframe_hash_t hash;
+    uint32_t idx;
+    uint256_t value;
+} utxo_t;
+
 // ============================================================================
 // COMMAND-LINE ARGUMENTS
 // ============================================================================
@@ -40,7 +54,6 @@ typedef struct {
     const char *rpc_url;
     uint64_t timestamp;  // Override timestamp (0 = use current time)
     int verbose;
-    int submit;  // Actually submit to RPC (default: dry-run)
 } dna_send_args_t;
 
 static struct option long_options[] = {
@@ -54,7 +67,6 @@ static struct option long_options[] = {
     {"rpc",       required_argument, 0, 'u'},
     {"timestamp", required_argument, 0, 'T'},
     {"verbose",   no_argument,       0, 'v'},
-    {"submit",    no_argument,       0, 's'},
     {"help",      no_argument,       0, 'h'},
     {0, 0, 0, 0}
 };
@@ -72,7 +84,6 @@ static void print_usage(const char *prog_name) {
     printf("  -c, --chain <name>        Chain name (default: main)\n");
     printf("  -t, --token <ticker>      Token ticker (default: CELL)\n");
     printf("  -u, --rpc <url>           RPC endpoint (default: %s)\n", DEFAULT_RPC_URL);
-    printf("  -s, --submit              Actually submit transaction (default: dry-run)\n");
     printf("  -v, --verbose             Verbose output\n");
     printf("  -h, --help                Show this help\n\n");
     printf("Examples:\n");
@@ -92,7 +103,7 @@ static int parse_args(int argc, char **argv, dna_send_args_t *args) {
     args->rpc_url = DEFAULT_RPC_URL;
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "w:r:a:f:n:c:t:u:T:vsh", long_options, NULL)) != -1) {
+    while ((opt = getopt_long(argc, argv, "w:r:a:f:n:c:t:u:T:vh", long_options, NULL)) != -1) {
         switch (opt) {
             case 'w': args->wallet_file = optarg; break;
             case 'r': args->recipient = optarg; break;
@@ -104,7 +115,6 @@ static int parse_args(int argc, char **argv, dna_send_args_t *args) {
             case 'u': args->rpc_url = optarg; break;
             case 'T': args->timestamp = (uint64_t)strtoull(optarg, NULL, 10); break;
             case 'v': args->verbose = 1; break;
-            case 's': args->submit = 1; break;
             case 'h':
                 print_usage(argv[0]);
                 exit(0);
@@ -161,103 +171,169 @@ int main(int argc, char **argv) {
     printf("      Pubkey: %zu bytes\n", wallet->public_key_size);
     printf("      Privkey: %zu bytes\n\n", wallet->private_key_size);
 
-    // Step 2: Query UTXOs
-    printf("[2/6] Querying UTXOs...\n");
+    // Step 2: Parse transaction parameters
+    printf("[2/7] Parsing transaction parameters...\n");
 
-    cellframe_hash_t utxo_hash;
-    uint32_t utxo_idx = 0;
+    // Parse amounts
+    uint256_t amount, fee;
+    if (cellframe_uint256_from_str(args.amount, &amount) != 0) {
+        fprintf(stderr, "[ERROR] Failed to parse amount: %s\n", args.amount);
+        wallet_free(wallet);
+        return 1;
+    }
+    if (cellframe_uint256_from_str(args.fee, &fee) != 0) {
+        fprintf(stderr, "[ERROR] Failed to parse fee: %s\n", args.fee);
+        wallet_free(wallet);
+        return 1;
+    }
 
-    if (args.submit) {
-        // Query real UTXOs from RPC
-        cellframe_rpc_response_t *utxo_resp = NULL;
-        if (cellframe_rpc_get_utxo(args.network, wallet->address, args.token, &utxo_resp) == 0 && utxo_resp) {
-            if (utxo_resp->result) {
-                if (args.verbose) {
-                    const char *result_str = json_object_to_json_string_ext(utxo_resp->result, JSON_C_TO_STRING_PRETTY);
-                    printf("      UTXO Response:\n%s\n", result_str);
-                }
+    if (args.verbose) {
+        printf("      Amount: %lu datoshi\n", amount.lo.lo);
+        printf("      Fee:    %lu datoshi\n", fee.lo.lo);
+    }
+    printf("\n");
 
-                // Parse UTXO response: result[0][0]["outs"][0]
-                if (json_object_is_type(utxo_resp->result, json_type_array) &&
-                    json_object_array_length(utxo_resp->result) > 0) {
+    // Step 3: Query and select UTXOs
+    printf("[3/7] Querying UTXOs...\n");
 
-                    json_object *first_array = json_object_array_get_idx(utxo_resp->result, 0);
-                    if (first_array && json_object_is_type(first_array, json_type_array) &&
-                        json_object_array_length(first_array) > 0) {
+    utxo_t *selected_utxos = NULL;
+    int num_selected_utxos = 0;
+    uint64_t total_input_u64 = 0;
 
-                        json_object *first_item = json_object_array_get_idx(first_array, 0);
-                        json_object *outs_obj = NULL;
+    // Calculate required (simplified for now - assuming amounts fit in uint64)
+    uint64_t required_u64 = amount.lo.lo + NETWORK_FEE_DATOSHI + fee.lo.lo;
 
-                        if (first_item && json_object_object_get_ex(first_item, "outs", &outs_obj) &&
-                            json_object_is_type(outs_obj, json_type_array) &&
-                            json_object_array_length(outs_obj) > 0) {
+    // Query UTXOs from RPC
+    cellframe_rpc_response_t *utxo_resp = NULL;
+    if (cellframe_rpc_get_utxo(args.network, wallet->address, args.token, &utxo_resp) == 0 && utxo_resp) {
+        if (utxo_resp->result) {
+            if (args.verbose) {
+                const char *result_str = json_object_to_json_string_ext(utxo_resp->result, JSON_C_TO_STRING_PRETTY);
+                printf("      UTXO Response:\n%s\n", result_str);
+            }
 
-                            json_object *first_utxo = json_object_array_get_idx(outs_obj, 0);
-                            json_object *jhash = NULL;
-                            json_object *jidx = NULL;
+            // Parse UTXO response: result[0][0]["outs"][]
+            if (json_object_is_type(utxo_resp->result, json_type_array) &&
+                json_object_array_length(utxo_resp->result) > 0) {
 
-                            if (first_utxo &&
-                                json_object_object_get_ex(first_utxo, "prev_hash", &jhash) &&
-                                json_object_object_get_ex(first_utxo, "out_prev_idx", &jidx)) {
+                json_object *first_array = json_object_array_get_idx(utxo_resp->result, 0);
+                if (first_array && json_object_is_type(first_array, json_type_array) &&
+                    json_object_array_length(first_array) > 0) {
 
-                                const char *hash_str = json_object_get_string(jhash);
-                                utxo_idx = json_object_get_int(jidx);
+                    json_object *first_item = json_object_array_get_idx(first_array, 0);
+                    json_object *outs_obj = NULL;
 
-                                // Parse hash from hex string
-                                if (hash_str && strlen(hash_str) >= 66 && hash_str[0] == '0' && hash_str[1] == 'x') {
-                                    for (int i = 0; i < 32; i++) {
-                                        sscanf(hash_str + 2 + (i * 2), "%2hhx", &utxo_hash.raw[i]);
-                                    }
-                                    printf("      Found UTXO: %.16s... idx=%u\n", hash_str, utxo_idx);
-                                } else {
-                                    fprintf(stderr, "[ERROR] Invalid UTXO hash format\n");
-                                    cellframe_rpc_response_free(utxo_resp);
-                                    wallet_free(wallet);
-                                    return 1;
-                                }
-                            } else {
-                                fprintf(stderr, "[ERROR] UTXO missing prev_hash or out_prev_idx\n");
-                                cellframe_rpc_response_free(utxo_resp);
-                                wallet_free(wallet);
-                                return 1;
-                            }
-                        } else {
+                    if (first_item && json_object_object_get_ex(first_item, "outs", &outs_obj) &&
+                        json_object_is_type(outs_obj, json_type_array)) {
+
+                        int num_utxos = json_object_array_length(outs_obj);
+                        if (num_utxos == 0) {
                             fprintf(stderr, "[ERROR] No UTXOs available for this address\n");
                             cellframe_rpc_response_free(utxo_resp);
                             wallet_free(wallet);
                             return 1;
                         }
+
+                        printf("      Found %d UTXO%s\n", num_utxos, num_utxos > 1 ? "s" : "");
+
+                        // Parse all UTXOs
+                        utxo_t *all_utxos = malloc(sizeof(utxo_t) * num_utxos);
+                        int valid_utxos = 0;
+
+                        for (int i = 0; i < num_utxos; i++) {
+                            json_object *utxo_obj = json_object_array_get_idx(outs_obj, i);
+                            json_object *jhash = NULL, *jidx = NULL, *jvalue = NULL;
+
+                            if (utxo_obj &&
+                                json_object_object_get_ex(utxo_obj, "prev_hash", &jhash) &&
+                                json_object_object_get_ex(utxo_obj, "out_prev_idx", &jidx) &&
+                                json_object_object_get_ex(utxo_obj, "value_datoshi", &jvalue)) {
+
+                                const char *hash_str = json_object_get_string(jhash);
+                                const char *value_str = json_object_get_string(jvalue);
+
+                                // Parse hash
+                                if (hash_str && strlen(hash_str) >= 66 && hash_str[0] == '0' && hash_str[1] == 'x') {
+                                    for (int j = 0; j < 32; j++) {
+                                        sscanf(hash_str + 2 + (j * 2), "%2hhx", &all_utxos[valid_utxos].hash.raw[j]);
+                                    }
+                                    all_utxos[valid_utxos].idx = json_object_get_int(jidx);
+                                    cellframe_uint256_from_str(value_str, &all_utxos[valid_utxos].value);
+                                    valid_utxos++;
+                                }
+                            }
+                        }
+
+                        if (valid_utxos == 0) {
+                            fprintf(stderr, "[ERROR] No valid UTXOs found\n");
+                            free(all_utxos);
+                            cellframe_rpc_response_free(utxo_resp);
+                            wallet_free(wallet);
+                            return 1;
+                        }
+
+                        // Select UTXOs (greedy selection)
+                        selected_utxos = malloc(sizeof(utxo_t) * valid_utxos);
+                        for (int i = 0; i < valid_utxos; i++) {
+                            selected_utxos[num_selected_utxos++] = all_utxos[i];
+                            total_input_u64 += all_utxos[i].value.lo.lo;
+
+                            if (total_input_u64 >= required_u64) {
+                                break;  // Have enough
+                            }
+                        }
+
+                        free(all_utxos);
+
+                        // Check if we have enough
+                        if (total_input_u64 < required_u64) {
+                            fprintf(stderr, "[ERROR] Insufficient funds\n");
+                            fprintf(stderr, "        Available: %lu datoshi (%d UTXO%s)\n",
+                                    total_input_u64, num_selected_utxos, num_selected_utxos > 1 ? "s" : "");
+                            fprintf(stderr, "        Required:  %lu datoshi\n", required_u64);
+                            free(selected_utxos);
+                            cellframe_rpc_response_free(utxo_resp);
+                            wallet_free(wallet);
+                            return 1;
+                        }
+
+                        printf("      Selected %d UTXO%s (total: %lu datoshi)\n", num_selected_utxos,
+                               num_selected_utxos > 1 ? "s" : "", total_input_u64);
+                        for (int i = 0; i < num_selected_utxos; i++) {
+                            char hash_hex[67];
+                            cellframe_hash_to_hex(&selected_utxos[i].hash, hash_hex);
+                            printf("        UTXO %d: %.16s... idx=%u\n", i+1, hash_hex, selected_utxos[i].idx);
+                        }
+
                     } else {
-                        fprintf(stderr, "[ERROR] Invalid UTXO response structure\n");
+                        fprintf(stderr, "[ERROR] No UTXOs found in response\n");
                         cellframe_rpc_response_free(utxo_resp);
                         wallet_free(wallet);
                         return 1;
                     }
                 } else {
-                    fprintf(stderr, "[ERROR] Invalid UTXO response\n");
+                    fprintf(stderr, "[ERROR] Invalid UTXO response structure\n");
                     cellframe_rpc_response_free(utxo_resp);
                     wallet_free(wallet);
                     return 1;
                 }
+            } else {
+                fprintf(stderr, "[ERROR] Invalid UTXO response format\n");
+                cellframe_rpc_response_free(utxo_resp);
+                wallet_free(wallet);
+                return 1;
             }
-            cellframe_rpc_response_free(utxo_resp);
-        } else {
-            fprintf(stderr, "[ERROR] Failed to query UTXOs from RPC\n");
-            wallet_free(wallet);
-            return 1;
         }
+        cellframe_rpc_response_free(utxo_resp);
     } else {
-        // Dry-run mode: Use dummy UTXO
-        printf("      [DRY-RUN MODE] Using dummy UTXO for testing\n");
-        memset(&utxo_hash, 0xAA, sizeof(cellframe_hash_t));
-        utxo_idx = 0;
-        printf("      Dummy UTXO: 0xAAAAAAAA... idx=%u\n", utxo_idx);
-        printf("      (Use --submit to query real UTXOs)\n");
+        fprintf(stderr, "[ERROR] Failed to query UTXOs from RPC\n");
+        wallet_free(wallet);
+        return 1;
     }
     printf("\n");
 
-    // Step 3: Build transaction
-    printf("[3/6] Building transaction...\n");
+    // Step 4: Build transaction
+    printf("[4/7] Building transaction...\n");
     cellframe_tx_builder_t *builder = cellframe_tx_builder_new();
     if (!builder) {
         fprintf(stderr, "[ERROR] Failed to create transaction builder\n");
@@ -278,59 +354,118 @@ int main(int argc, char **argv) {
     if (decoded_size != sizeof(cellframe_addr_t)) {
         fprintf(stderr, "[ERROR] Failed to decode recipient address (got %zu bytes, expected %zu)\n",
                 decoded_size, sizeof(cellframe_addr_t));
+        free(selected_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
 
-    // Parse amounts
-    uint256_t amount, fee;
-    if (cellframe_uint256_from_str(args.amount, &amount) != 0) {
-        fprintf(stderr, "[ERROR] Failed to parse amount: %s\n", args.amount);
+    // Parse network collector address from Base58
+    cellframe_addr_t network_collector_addr;
+    decoded_size = base58_decode(NETWORK_FEE_COLLECTOR, &network_collector_addr);
+    if (decoded_size != sizeof(cellframe_addr_t)) {
+        fprintf(stderr, "[ERROR] Failed to decode network collector address\n");
+        free(selected_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
-    if (cellframe_uint256_from_str(args.fee, &fee) != 0) {
-        fprintf(stderr, "[ERROR] Failed to parse fee: %s\n", args.fee);
+
+    // Parse sender address (for change output)
+    cellframe_addr_t sender_addr;
+    decoded_size = base58_decode(wallet->address, &sender_addr);
+    if (decoded_size != sizeof(cellframe_addr_t)) {
+        fprintf(stderr, "[ERROR] Failed to decode sender address\n");
+        free(selected_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
+
+    // Calculate network fee
+    uint256_t network_fee = {0};
+    network_fee.lo.lo = NETWORK_FEE_DATOSHI;
+
+    // Calculate change (simplified - using uint64)
+    uint64_t change_u64 = total_input_u64 - amount.lo.lo - NETWORK_FEE_DATOSHI - fee.lo.lo;
+    uint256_t change = {0};
+    change.lo.lo = change_u64;
 
     if (args.verbose) {
-        printf("      Amount: %lu datoshi\n", amount.lo.lo);
-        printf("      Fee:    %lu datoshi\n", fee.lo.lo);
+        printf("      Transaction breakdown:\n");
+        printf("        Total input:     %lu datoshi\n", total_input_u64);
+        printf("        - Recipient:     %lu datoshi\n", amount.lo.lo);
+        printf("        - Network fee:   %lu datoshi\n", NETWORK_FEE_DATOSHI);
+        printf("        - Validator fee: %lu datoshi\n", fee.lo.lo);
+        printf("        = Change:        %lu datoshi\n", change_u64);
     }
 
-    // Add IN item (using UTXO from step 2)
-    if (cellframe_tx_add_in(builder, &utxo_hash, utxo_idx) != 0) {
-        fprintf(stderr, "[ERROR] Failed to add IN item\n");
-        cellframe_tx_builder_free(builder);
-        wallet_free(wallet);
-        return 1;
+    // Add all IN items
+    for (int i = 0; i < num_selected_utxos; i++) {
+        if (cellframe_tx_add_in(builder, &selected_utxos[i].hash, selected_utxos[i].idx) != 0) {
+            fprintf(stderr, "[ERROR] Failed to add IN item %d\n", i);
+            free(selected_utxos);
+            cellframe_tx_builder_free(builder);
+            wallet_free(wallet);
+            return 1;
+        }
     }
 
     // Add OUT item (recipient)
     if (cellframe_tx_add_out(builder, &recipient_addr, amount) != 0) {
-        fprintf(stderr, "[ERROR] Failed to add OUT item\n");
+        fprintf(stderr, "[ERROR] Failed to add recipient OUT item\n");
+        free(selected_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
 
-    // Add FEE item
+    // Add OUT item (network fee collector)
+    if (cellframe_tx_add_out(builder, &network_collector_addr, network_fee) != 0) {
+        fprintf(stderr, "[ERROR] Failed to add network fee OUT item\n");
+        free(selected_utxos);
+        cellframe_tx_builder_free(builder);
+        wallet_free(wallet);
+        return 1;
+    }
+
+    // Add OUT item (change) - only if change > 0
+    int has_change = 0;
+    if (change.hi.hi != 0 || change.hi.lo != 0 || change.lo.hi != 0 || change.lo.lo != 0) {
+        if (cellframe_tx_add_out(builder, &sender_addr, change) != 0) {
+            fprintf(stderr, "[ERROR] Failed to add change OUT item\n");
+            free(selected_utxos);
+            cellframe_tx_builder_free(builder);
+            wallet_free(wallet);
+            return 1;
+        }
+        has_change = 1;
+    }
+
+    // Add OUT_COND item (validator fee)
     if (cellframe_tx_add_fee(builder, fee) != 0) {
-        fprintf(stderr, "[ERROR] Failed to add FEE item\n");
+        fprintf(stderr, "[ERROR] Failed to add validator FEE item\n");
+        free(selected_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
 
-    printf("      Transaction items: 1 IN + 1 OUT + 1 FEE\n\n");
+    printf("      Transaction items: %d IN + %d OUT + 1 FEE\n",
+           num_selected_utxos, 2 + has_change);
+    printf("        - %d input%s\n", num_selected_utxos, num_selected_utxos > 1 ? "s" : "");
+    printf("        - 1 recipient output\n");
+    printf("        - 1 network fee output\n");
+    if (has_change) {
+        printf("        - 1 change output\n");
+    }
+    printf("        - 1 validator fee\n\n");
 
-    // Step 3.5: Export unsigned transaction JSON (for testing with cellframe-tool-sign)
-    printf("[3.5/6] Exporting unsigned transaction...\n");
+    // Free selected UTXOs (no longer needed)
+    free(selected_utxos);
+
+    // Step 4.5: Export unsigned transaction JSON (for testing with cellframe-tool-sign)
+    printf("[4.5/7] Exporting unsigned transaction...\n");
 
     // Get unsigned transaction data (use get_data, NOT get_signing_data!)
     // We need the REAL tx_items_size for JSON export
@@ -371,8 +506,8 @@ int main(int argc, char **argv) {
     free(unsigned_json);
     printf("\n");
 
-    // Step 4: Sign transaction
-    printf("[4/6] Signing transaction...\n");
+    // Step 5: Sign transaction
+    printf("[5/7] Signing transaction...\n");
 
     // DEBUG: Save ORIGINAL unsigned binary (with actual tx_items_size)
     size_t orig_size;
@@ -438,8 +573,8 @@ int main(int argc, char **argv) {
     free(dap_sign);
     printf("      Signature added\n\n");
 
-    // Step 5: Convert to JSON
-    printf("[5/6] Converting to JSON...\n");
+    // Step 6: Convert to JSON
+    printf("[6/7] Converting to JSON...\n");
 
     // Get complete signed transaction
     const uint8_t *signed_tx = cellframe_tx_get_data(builder, &tx_size);
@@ -474,46 +609,35 @@ int main(int argc, char **argv) {
     printf("%s\n", json);
     printf("================================\n\n");
 
-    // Step 6: Submit to RPC
-    printf("[6/6] Submitting to RPC...\n");
+    // Step 7: Submit to RPC
+    printf("[7/7] Submitting to RPC...\n");
 
-    if (args.submit) {
-        // Actually submit to RPC
-        cellframe_rpc_response_t *submit_resp = NULL;
-        if (cellframe_rpc_submit_tx(args.network, args.chain, json, &submit_resp) == 0 && submit_resp) {
-            printf("      Transaction submitted successfully!\n\n");
+    cellframe_rpc_response_t *submit_resp = NULL;
+    if (cellframe_rpc_submit_tx(args.network, args.chain, json, &submit_resp) == 0 && submit_resp) {
+        printf("      Transaction submitted successfully!\n\n");
 
-            if (submit_resp->result) {
-                const char *result_str = json_object_to_json_string_ext(submit_resp->result, JSON_C_TO_STRING_PRETTY);
-                printf("=== RPC RESPONSE ===\n");
-                printf("%s\n", result_str);
-                printf("====================\n\n");
+        if (submit_resp->result) {
+            const char *result_str = json_object_to_json_string_ext(submit_resp->result, JSON_C_TO_STRING_PRETTY);
+            printf("=== RPC RESPONSE ===\n");
+            printf("%s\n", result_str);
+            printf("====================\n\n");
 
-                // Try to extract transaction hash from response
-                json_object *jhash = NULL;
-                if (json_object_object_get_ex(submit_resp->result, "hash", &jhash)) {
-                    const char *tx_hash = json_object_get_string(jhash);
-                    printf("Transaction Hash: %s\n", tx_hash);
-                    printf("View on explorer: https://explorer.cellframe.net/tx/%s\n", tx_hash);
-                }
+            // Try to extract transaction hash from response
+            json_object *jhash = NULL;
+            if (json_object_object_get_ex(submit_resp->result, "hash", &jhash)) {
+                const char *tx_hash = json_object_get_string(jhash);
+                printf("Transaction Hash: %s\n", tx_hash);
+                printf("View on explorer: https://explorer.cellframe.net/tx/%s\n", tx_hash);
             }
-
-            cellframe_rpc_response_free(submit_resp);
-        } else {
-            fprintf(stderr, "[ERROR] Failed to submit transaction to RPC\n");
-            free(json);
-            cellframe_tx_builder_free(builder);
-            wallet_free(wallet);
-            return 1;
         }
+
+        cellframe_rpc_response_free(submit_resp);
     } else {
-        // Dry-run mode
-        printf("      [DRY-RUN MODE] Skipping RPC submission\n");
-        printf("      (Use --submit to actually submit to blockchain)\n\n");
-        printf("      Manual submission:\n");
-        printf("      POST %s\n", args.rpc_url);
-        printf("      {\"method\":\"tx_create_json\", \"arguments\":{\"net\":\"%s\", \"chain\":\"%s\", \"tx_obj\":\"<json>\"}}\n\n",
-               args.network, args.chain);
+        fprintf(stderr, "[ERROR] Failed to submit transaction to RPC\n");
+        free(json);
+        cellframe_tx_builder_free(builder);
+        wallet_free(wallet);
+        return 1;
     }
 
     free(json);
@@ -522,17 +646,10 @@ int main(int argc, char **argv) {
     cellframe_tx_builder_free(builder);
     wallet_free(wallet);
 
-    if (args.submit) {
-        printf("=== TRANSACTION SUBMITTED SUCCESSFULLY ===\n");
-        printf("\n");
-        printf("Your transaction has been broadcast to the Cellframe network!\n");
-        printf("Check the blockchain explorer to confirm.\n");
-    } else {
-        printf("=== TRANSACTION SIGNED SUCCESSFULLY (DRY-RUN) ===\n");
-        printf("\n");
-        printf("Transaction signed but not submitted (dry-run mode).\n");
-        printf("Use --submit flag to actually broadcast to the network.\n");
-    }
+    printf("=== TRANSACTION SUBMITTED SUCCESSFULLY ===\n");
+    printf("\n");
+    printf("Your transaction has been broadcast to the Cellframe network!\n");
+    printf("Check the blockchain explorer to confirm.\n");
 
     return 0;
 }
