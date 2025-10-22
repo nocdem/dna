@@ -31,6 +31,8 @@ public:
     explicit SendTokensDialog(wallet_list_t *wallets, QWidget *parent = nullptr);
     ~SendTokensDialog();
 
+    void updateWalletList(wallet_list_t *wallets);
+
 private slots:
     void onWalletChanged(int index);
     void onSendClicked();

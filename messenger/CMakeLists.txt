@@ -345,15 +345,59 @@ add_executable(dna-send
     cellframe_rpc.c
     base58.c
 )
+
+# For static CURL on Windows, define CURL_STATICLIB
+if(WIN32)
+    target_compile_definitions(dna-send PRIVATE CURL_STATICLIB)
+endif()
+
 target_link_libraries(dna-send
     cellframe_minimal
     cellframe_dilithium
-    ${OPENSSL_LIBRARIES}
-    ${CURL_LIBRARIES}
     ${JSONC_LIBRARIES}
 )
-# Math library only on non-Windows
-if(NOT WIN32)
-    target_link_libraries(dna-send m)
+
+# Link CURL and OpenSSL (order matters for static linking)
+if(WIN32)
+    # For Windows static builds, CURL needs OpenSSL before and after
+    if(TARGET CURL::libcurl)
+        target_link_libraries(dna-send CURL::libcurl)
+    else()
+        target_link_libraries(dna-send ${CURL_LIBRARIES})
+    endif()
+
+    # Static CURL requires OpenSSL and zlib
+    target_link_libraries(dna-send
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        z  # zlib
+    )
+
+    # CURL dependencies (static linking requires all)
+    target_link_libraries(dna-send
+        nghttp2     # HTTP/2 support
+        ssh2        # SSH/SFTP support
+        psl         # Public Suffix List
+        idn2        # Internationalized Domain Names
+        unistring   # Unicode string library (required by psl and idn2)
+        iconv       # Character encoding conversion (required by unistring)
+        zstd        # ZSTD compression
+        brotlidec   # Brotli decompression
+        brotlicommon # Brotli common functions
+    )
+
+    # Windows system libraries (required by OpenSSL and CURL)
+    target_link_libraries(dna-send
+        bcrypt      # Windows Cryptography API
+        ws2_32      # Windows Sockets
+        crypt32     # Cryptography
+        secur32     # Security functions (SSPI)
+        wldap32     # LDAP support
+        normaliz    # Internationalization (CURL)
+    )
+else()
+    # Linux: simple CURL and OpenSSL linking
+    target_link_libraries(dna-send ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} m)
 endif()
+
 target_include_directories(dna-send PRIVATE ${CMAKE_SOURCE_DIR})

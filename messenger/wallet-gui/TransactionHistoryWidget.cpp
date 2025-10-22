@@ -129,8 +129,8 @@ void TransactionHistoryWidget::loadTransactionHistory(const char *address) {
     // Query transaction history via RPC
     json_object *args = json_object_new_object();
     json_object_object_add(args, "net", json_object_new_string("Backbone"));
-    json_object_object_add(args, "-addr", json_object_new_string(address));
-    json_object_object_add(args, "-chain", json_object_new_string("main"));
+    json_object_object_add(args, "addr", json_object_new_string(address));
+    json_object_object_add(args, "chain", json_object_new_string("main"));
 
     cellframe_rpc_request_t req = {
         .method = "tx_history",
@@ -150,66 +150,106 @@ void TransactionHistoryWidget::loadTransactionHistory(const char *address) {
     }
 
     // Parse transactions
+    // Response format: [ [query_params..., tx1, tx2, ...], summary_obj ]
     if (json_object_is_type(response->result, json_type_array)) {
-        int tx_count = json_object_array_length(response->result);
+        int result_len = json_object_array_length(response->result);
 
-        if (tx_count == 0) {
-            statusLabel->setText(QString::fromUtf8("No transactions found"));
-        } else {
-            for (int i = 0; i < tx_count; i++) {
-                json_object *tx_obj = json_object_array_get_idx(response->result, i);
-                parseAndDisplayTransaction(tx_obj);
+        if (result_len > 0) {
+            json_object *tx_array = json_object_array_get_idx(response->result, 0);
+
+            if (json_object_is_type(tx_array, json_type_array)) {
+                int array_len = json_object_array_length(tx_array);
+                printf("[DEBUG] Found %d items in transaction array\n", array_len);
+
+                // Skip first 2 items (query parameters: address, limit)
+                // Actual transactions start at index 2
+                int tx_count = 0;
+                for (int i = 2; i < array_len; i++) {
+                    json_object *tx_obj = json_object_array_get_idx(tx_array, i);
+
+                    // Check if this is a transaction object (has "status" field)
+                    json_object *status_obj = nullptr;
+                    if (json_object_object_get_ex(tx_obj, "status", &status_obj)) {
+                        parseAndDisplayTransaction(tx_obj);
+                        tx_count++;
+                    }
+                }
+
+                if (tx_count == 0) {
+                    statusLabel->setText(QString::fromUtf8("No transactions found"));
+                } else {
+                    statusLabel->setText(QString::fromUtf8("✓ Loaded %1 transactions").arg(tx_count));
+                }
+            } else {
+                statusLabel->setText(QString::fromUtf8("❌ Invalid response format"));
             }
-            statusLabel->setText(QString::fromUtf8("✓ Loaded %1 transactions").arg(tx_count));
+        } else {
+            statusLabel->setText(QString::fromUtf8("No transactions found"));
         }
+    } else {
+        statusLabel->setText(QString::fromUtf8("❌ Invalid response format"));
     }
 
     cellframe_rpc_response_free(response);
 }
 
 void TransactionHistoryWidget::parseAndDisplayTransaction(json_object *tx_obj) {
-    if (!tx_obj) return;
+    if (!tx_obj) {
+        return;
+    }
 
     // Extract transaction fields
-    json_object *hash_obj, *status_obj, *action_obj, *timestamp_obj, *items_obj;
+    json_object *hash_obj, *status_obj, *timestamp_obj, *data_obj;
 
-    const char *hash = nullptr, *status = nullptr, *action = nullptr, *timestamp = nullptr;
+    const char *hash = nullptr, *status = nullptr, *timestamp = nullptr;
 
-    if (json_object_object_get_ex(tx_obj, "hash", &hash_obj)) {
-        hash = json_object_get_string(hash_obj);
-    }
-    if (json_object_object_get_ex(tx_obj, "status", &status_obj)) {
-        status = json_object_get_string(status_obj);
-    }
-    if (json_object_object_get_ex(tx_obj, "action", &action_obj)) {
-        action = json_object_get_string(action_obj);
-    }
-    if (json_object_object_get_ex(tx_obj, "tx created", &timestamp_obj)) {
-        timestamp = json_object_get_string(timestamp_obj);
-    }
+    json_object_object_get_ex(tx_obj, "hash", &hash_obj);
+    json_object_object_get_ex(tx_obj, "status", &status_obj);
+    json_object_object_get_ex(tx_obj, "tx_created", &timestamp_obj);
+    json_object_object_get_ex(tx_obj, "data", &data_obj);
 
-    // Determine transaction type and amount
+    if (hash_obj) hash = json_object_get_string(hash_obj);
+    if (status_obj) status = json_object_get_string(status_obj);
+    if (timestamp_obj) timestamp = json_object_get_string(timestamp_obj);
+
+    // Parse transaction data array
     QString txType = "UNKNOWN";
     QString amount = "---";
     QString fromTo = "---";
 
-    if (json_object_object_get_ex(tx_obj, "ITEMS", &items_obj)) {
-        if (json_object_is_type(items_obj, json_type_array)) {
-            int item_count = json_object_array_length(items_obj);
+    if (data_obj && json_object_is_type(data_obj, json_type_array)) {
+        int data_count = json_object_array_length(data_obj);
 
-            for (int j = 0; j < item_count; j++) {
-                json_object *item = json_object_array_get_idx(items_obj, j);
-                json_object *item_type_obj, *coins_obj, *address_obj;
+        if (data_count > 0) {
+            json_object *first_data = json_object_array_get_idx(data_obj, 0);
+            json_object *tx_type_obj, *token_obj, *coins_obj, *addr_obj;
 
-                if (json_object_object_get_ex(item, "item type", &item_type_obj)) {
-                    const char *item_type = json_object_get_string(item_type_obj);
+            if (json_object_object_get_ex(first_data, "tx_type", &tx_type_obj)) {
+                const char *tx_type_str = json_object_get_string(tx_type_obj);
 
-                    if (strstr(item_type, "OUT") && json_object_object_get_ex(item, "Coins", &coins_obj)) {
-                        amount = QString::fromUtf8("%1 CELL").arg(json_object_get_string(coins_obj));
-
-                        if (json_object_object_get_ex(item, "Address", &address_obj)) {
-                            fromTo = formatAddress(QString::fromUtf8(json_object_get_string(address_obj)));
+                if (strcmp(tx_type_str, "recv") == 0) {
+                    txType = "📥 RECEIVE";
+                    if (json_object_object_get_ex(first_data, "recv_coins", &coins_obj)) {
+                        if (json_object_object_get_ex(first_data, "token", &token_obj)) {
+                            amount = QString::fromUtf8("+%1 %2")
+                                .arg(json_object_get_string(coins_obj))
+                                .arg(json_object_get_string(token_obj));
                         }
+                    }
+                    if (json_object_object_get_ex(first_data, "source_address", &addr_obj)) {
+                        fromTo = QString::fromUtf8("From: %1").arg(formatAddress(QString::fromUtf8(json_object_get_string(addr_obj))));
+                    }
+                } else if (strcmp(tx_type_str, "send") == 0) {
+                    txType = "📤 SEND";
+                    if (json_object_object_get_ex(first_data, "send_coins", &coins_obj)) {
+                        if (json_object_object_get_ex(first_data, "token", &token_obj)) {
+                            amount = QString::fromUtf8("-%1 %2")
+                                .arg(json_object_get_string(coins_obj))
+                                .arg(json_object_get_string(token_obj));
+                        }
+                    }
+                    if (json_object_object_get_ex(first_data, "destination_address", &addr_obj)) {
+                        fromTo = QString::fromUtf8("To: %1").arg(formatAddress(QString::fromUtf8(json_object_get_string(addr_obj))));
                     }
                 }
             }
@@ -262,4 +302,25 @@ void TransactionHistoryWidget::onTransactionClicked(int row, int column) {
     // Open blockchain explorer
     QString url = QString("https://scan.cellframe.net/datum-details/%1?net=Backbone").arg(hash);
     QDesktopServices::openUrl(QUrl(url));
+}
+
+void TransactionHistoryWidget::updateWalletList(wallet_list_t *newWallets) {
+    wallets = newWallets;
+
+    // Clear and repopulate wallet combo box
+    walletComboBox->clear();
+    selectedWalletIndex = -1;
+
+    if (wallets && wallets->count > 0) {
+        for (size_t i = 0; i < wallets->count; i++) {
+            QString walletName = QString::fromUtf8(wallets->wallets[i].name);
+            walletComboBox->addItem(QString::fromUtf8("💼 %1").arg(walletName));
+        }
+
+        // Select first wallet (will trigger onWalletChanged via signal)
+        walletComboBox->setCurrentIndex(0);
+    } else {
+        transactionTable->setRowCount(0);
+        statusLabel->setText(QString::fromUtf8("No wallets found"));
+    }
 }

@@ -26,6 +26,7 @@ public:
     ~TransactionHistoryWidget();
 
     void refreshHistory();
+    void updateWalletList(wallet_list_t *wallets);
 
 private slots:
     void onWalletChanged(int index);

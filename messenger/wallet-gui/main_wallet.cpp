@@ -16,6 +16,10 @@ int main(int argc, char *argv[]) {
     app.setOrganizationName("cpunk");
     app.setOrganizationDomain("cpunk.io");
 
+    // Force Fusion style to enable custom themes on all platforms
+    // (Windows native style prevents stylesheet customization)
+    app.setStyle("Fusion");
+
     WalletMainWindow window;
     window.show();
 

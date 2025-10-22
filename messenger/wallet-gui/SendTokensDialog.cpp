@@ -333,3 +333,24 @@ void SendTokensDialog::buildAndSendTransaction() {
 void SendTokensDialog::onCancelClicked() {
     reject();
 }
+
+void SendTokensDialog::updateWalletList(wallet_list_t *newWallets) {
+    wallets = newWallets;
+
+    // Clear and repopulate wallet combo box
+    walletComboBox->clear();
+    selectedWalletIndex = -1;
+    availableBalance = 0.0;
+
+    if (wallets && wallets->count > 0) {
+        for (size_t i = 0; i < wallets->count; i++) {
+            QString walletName = QString::fromUtf8(wallets->wallets[i].name);
+            walletComboBox->addItem(QString::fromUtf8("💼 %1").arg(walletName));
+        }
+
+        // Select first wallet (will trigger onWalletChanged via signal)
+        walletComboBox->setCurrentIndex(0);
+    } else {
+        balanceLabel->setText(QString::fromUtf8("No wallets found"));
+    }
+}

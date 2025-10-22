@@ -291,6 +291,14 @@ void WalletMainWindow::loadWallets() {
 
     walletsStatusLabel->setText(QString::fromUtf8("✅ Loaded %1 wallet(s)").arg(wallets->count));
     updateStatusBar();
+
+    // Update wallet list in other tabs
+    if (transactionHistory) {
+        transactionHistory->updateWalletList(wallets);
+    }
+    if (sendDialog) {
+        sendDialog->updateWalletList(wallets);
+    }
 }
 
 void WalletMainWindow::updateBalances() {
@@ -303,26 +311,37 @@ void WalletMainWindow::updateBalances() {
     for (size_t i = 0; i < wallets->count; i++) {
         cellframe_wallet_t *w = &wallets->wallets[i];
 
+        printf("[DEBUG] Checking wallet %s - status: %d, address: %s\n", w->name, w->status, w->address);
+
         if (w->status == WALLET_STATUS_PROTECTED || w->address[0] == '\0') {
+            printf("[DEBUG] Skipping wallet %s (protected or no address)\n", w->name);
             continue;
         }
 
         // Query balance via RPC
         cellframe_rpc_response_t *response = nullptr;
+        printf("[DEBUG] Querying balance for wallet %s, address: %s\n", w->name, w->address);
         if (cellframe_rpc_get_balance("Backbone", w->address, "CPUNK", &response) == 0 && response) {
             if (response->result) {
                 json_object *jresult = response->result;
+                printf("[DEBUG] Balance response for %s: %s\n", w->name,
+                       json_object_to_json_string_ext(jresult, JSON_C_TO_STRING_PRETTY));
 
                 if (json_object_is_type(jresult, json_type_array)) {
                     int len = json_object_array_length(jresult);
+                    printf("[DEBUG] Result array length: %d\n", len);
                     if (len > 0) {
                         json_object *first = json_object_array_get_idx(jresult, 0);
+                        printf("[DEBUG] First element type: %d (array=%d)\n",
+                               json_object_get_type(first), json_type_array);
                         if (json_object_is_type(first, json_type_array) && json_object_array_length(first) > 0) {
                             json_object *wallet_obj = json_object_array_get_idx(first, 0);
+                            printf("[DEBUG] Got wallet object\n");
                             json_object *tokens_obj = nullptr;
 
                             if (json_object_object_get_ex(wallet_obj, "tokens", &tokens_obj)) {
                                 int token_count = json_object_array_length(tokens_obj);
+                                printf("[DEBUG] Found %d tokens\n", token_count);
 
                                 for (int t = 0; t < token_count; t++) {
                                     json_object *token = json_object_array_get_idx(tokens_obj, t);
@@ -336,6 +355,10 @@ void WalletMainWindow::updateBalances() {
                                             QString ticker = QString::fromUtf8(json_object_get_string(ticker_obj));
                                             QString coins = QString::fromUtf8(json_object_get_string(coins_obj));
 
+                                            printf("[DEBUG] Setting %s balance: %s (row %zu)\n",
+                                                   ticker.toUtf8().constData(),
+                                                   coins.toUtf8().constData(), i);
+
                                             if (ticker == "CPUNK") {
                                                 walletTable->setItem(i, 2, new QTableWidgetItem(formatBalance(coins)));
                                             } else if (ticker == "CELL") {
@@ -346,6 +369,8 @@ void WalletMainWindow::updateBalances() {
                                         }
                                     }
                                 }
+                            } else {
+                                printf("[DEBUG] No tokens field found in wallet object\n");
                             }
                         }
                     }
@@ -353,6 +378,8 @@ void WalletMainWindow::updateBalances() {
             }
 
             cellframe_rpc_response_free(response);
+        } else {
+            printf("[DEBUG] Failed to get balance for wallet %s\n", w->name);
         }
     }
 
@@ -364,12 +391,11 @@ QString WalletMainWindow::formatBalance(const QString &coins) {
         return QString::fromUtf8("0.00");
     }
 
-    // Convert datoshi to tokens (1 token = 10^18 datoshi)
+    // RPC returns "coins" already in token format, just format to 2 decimals
     bool ok;
     double value = coins.toDouble(&ok);
     if (!ok) return coins;
 
-    value /= 1e18;
     return QString::number(value, 'f', 2);
 }
 
@@ -386,7 +412,9 @@ void WalletMainWindow::updateStatusBar() {
 
 void WalletMainWindow::applyTheme(CpunkTheme theme) {
     currentTheme = theme;
-    setStyleSheet(getCpunkStyleSheet(theme));
+
+    // Set stylesheet on QApplication for global effect (required on Windows)
+    qobject_cast<QApplication*>(QApplication::instance())->setStyleSheet(getCpunkStyleSheet(theme));
 }
 
 // ============================================================================

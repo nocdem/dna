@@ -30,19 +30,26 @@ set(GUI_SOURCES
 # Create GUI executable
 add_executable(dna_messenger_gui ${GUI_SOURCES})
 
+# For static CURL on Windows, define CURL_STATICLIB
+if(WIN32)
+    target_compile_definitions(dna_messenger_gui PRIVATE CURL_STATICLIB)
+endif()
+
 # Link Qt libraries
 target_link_libraries(dna_messenger_gui
     Qt5::Core
     Qt5::Widgets
     Qt5::Multimedia
     dna_lib
+    cellframe_minimal
+    cellframe_dilithium
     ${PQ_LIBRARY}
     ${JSONC_LIBRARIES}
 )
 
-# Link CURL and its dependencies for static linking
+# Link CURL and OpenSSL (order matters for static linking)
 if(WIN32)
-    # For Windows static builds, use CURL::libcurl target if available
+    # For Windows static builds, CURL needs OpenSSL dependencies
     if(TARGET CURL::libcurl)
         target_link_libraries(dna_messenger_gui CURL::libcurl)
     else()
@@ -55,8 +62,22 @@ if(WIN32)
         OpenSSL::Crypto
         z  # zlib
     )
+
+    # CURL dependencies (static linking requires all)
+    target_link_libraries(dna_messenger_gui
+        nghttp2     # HTTP/2 support
+        ssh2        # SSH/SFTP support
+        psl         # Public Suffix List
+        idn2        # Internationalized Domain Names
+        unistring   # Unicode string library (required by psl and idn2)
+        iconv       # Character encoding conversion (required by unistring)
+        zstd        # ZSTD compression
+        brotlidec   # Brotli decompression
+        brotlicommon # Brotli common functions
+    )
 else()
-    target_link_libraries(dna_messenger_gui ${CURL_LIBRARIES})
+    # Linux: simple CURL and OpenSSL linking
+    target_link_libraries(dna_messenger_gui ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} m)
 endif()
 
 # Add PostgreSQL internal libraries and Windows system libraries for static linking
@@ -73,8 +94,9 @@ if(WIN32)
         target_link_libraries(dna_messenger_gui ${PGPORT_LIBRARY})
     endif()
 
-    # Windows system libraries required by PostgreSQL and CURL (static linking)
+    # Windows system libraries required by PostgreSQL, CURL, and OpenSSL (static linking)
     target_link_libraries(dna_messenger_gui
+        bcrypt       # Windows Cryptography API
         secur32      # Security functions (SSPI, credentials)
         ws2_32       # Windows Sockets 2
         crypt32      # Cryptography functions
