@@ -3,6 +3,8 @@
  */
 
 #include "WalletMainWindow.h"
+#include "SendTokensDialog.h"
+#include "TransactionHistoryWidget.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -161,10 +163,9 @@ void WalletMainWindow::createSendTab() {
     titleLabel->setStyleSheet("font-size: 18px; font-weight: bold; margin: 10px;");
     layout->addWidget(titleLabel);
 
-    // Placeholder for SendTokensDialog integration
-    QLabel *placeholderLabel = new QLabel(QString::fromUtf8("Send tokens interface will appear here"), sendTab);
-    placeholderLabel->setAlignment(Qt::AlignCenter);
-    layout->addWidget(placeholderLabel);
+    // Create SendTokensDialog
+    sendDialog = new SendTokensDialog(wallets, sendTab);
+    layout->addWidget(sendDialog);
 
     layout->addStretch();
 
@@ -179,12 +180,9 @@ void WalletMainWindow::createTransactionsTab() {
     titleLabel->setStyleSheet("font-size: 18px; font-weight: bold; margin: 10px;");
     layout->addWidget(titleLabel);
 
-    // Placeholder for TransactionHistoryWidget
-    QLabel *placeholderLabel = new QLabel(QString::fromUtf8("Transaction history will appear here"), transactionsTab);
-    placeholderLabel->setAlignment(Qt::AlignCenter);
-    layout->addWidget(placeholderLabel);
-
-    layout->addStretch();
+    // Create TransactionHistoryWidget
+    transactionHistory = new TransactionHistoryWidget(wallets, transactionsTab);
+    layout->addWidget(transactionHistory);
 
     tabWidget->addTab(transactionsTab, QString::fromUtf8("📊 Transactions"));
 }
@@ -408,9 +406,8 @@ void WalletMainWindow::onRefreshBalances() {
 }
 
 void WalletMainWindow::onSendTokens() {
-    QMessageBox::information(this, "Send Tokens",
-                           QString::fromUtf8("🚧 Send CF20 Tokens - Coming Soon!\n\n"
-                                            "This feature will integrate the dna-send logic."));
+    // Switch to send tab
+    tabWidget->setCurrentWidget(sendTab);
 }
 
 void WalletMainWindow::onReceiveTokens() {

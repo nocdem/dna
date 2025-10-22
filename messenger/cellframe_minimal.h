@@ -18,6 +18,15 @@
 extern "C" {
 #endif
 
+// Static assert compatibility for C/C++
+#ifndef __cplusplus
+    // C mode
+    #define STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#else
+    // C++ mode
+    #define STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#endif
+
 // ============================================================================
 // FUNDAMENTAL CONSTANTS
 // ============================================================================
@@ -146,7 +155,7 @@ typedef struct {
 } __attribute__((packed)) cellframe_addr_t;
 
 // Size verification at compile time
-_Static_assert(sizeof(cellframe_addr_t) == 77, "cellframe_addr_t must be 77 bytes");
+STATIC_ASSERT(sizeof(cellframe_addr_t) == 77, "cellframe_addr_t must be 77 bytes");
 
 // ============================================================================
 // TRANSACTION HEADER
@@ -166,7 +175,7 @@ typedef struct {
     uint32_t tx_items_size;  // Total size of all items (0 when signing!)
 } __attribute__((packed)) cellframe_tx_header_t;
 
-_Static_assert(sizeof(cellframe_tx_header_t) == 12, "cellframe_tx_header_t must be 12 bytes");
+STATIC_ASSERT(sizeof(cellframe_tx_header_t) == 12, "cellframe_tx_header_t must be 12 bytes");
 
 // ============================================================================
 // TRANSACTION ITEMS
@@ -184,7 +193,7 @@ typedef struct {
     uint32_t tx_out_prev_idx __attribute__((aligned(4)));  // Previous output index (4-byte aligned)
 } __attribute__((packed)) cellframe_tx_in_t;
 
-_Static_assert(sizeof(cellframe_tx_in_t) == 40, "cellframe_tx_in_t must be 40 bytes (1+32+3padding+4)");
+STATIC_ASSERT(sizeof(cellframe_tx_in_t) == 40, "cellframe_tx_in_t must be 40 bytes (1+32+3padding+4)");
 
 /**
  * OUT item - Current format (type 0x12)
@@ -203,7 +212,7 @@ typedef struct {
     cellframe_addr_t addr;   // Recipient address (77 bytes)
 } __attribute__((packed)) cellframe_tx_out_t;
 
-_Static_assert(sizeof(cellframe_tx_out_t) == 110, "cellframe_tx_out_t must be 110 bytes");
+STATIC_ASSERT(sizeof(cellframe_tx_out_t) == 110, "cellframe_tx_out_t must be 110 bytes");
 
 /**
  * OUT_EXT item - Has token field (type 0x11)
@@ -222,7 +231,7 @@ typedef struct {
     char token[CELLFRAME_TICKER_SIZE_MAX]; // Token ticker
 } __attribute__((packed)) cellframe_tx_out_ext_t;
 
-_Static_assert(sizeof(cellframe_tx_out_ext_t) == 120, "cellframe_tx_out_ext_t must be 120 bytes");
+STATIC_ASSERT(sizeof(cellframe_tx_out_ext_t) == 120, "cellframe_tx_out_ext_t must be 120 bytes");
 
 /**
  * OUT_COND item - Conditional output (type 0x61)
@@ -244,7 +253,7 @@ typedef struct {
     uint32_t tsd_size;      // TSD data size (0 for fee)
 } __attribute__((packed)) cellframe_tx_out_cond_t;
 
-_Static_assert(sizeof(cellframe_tx_out_cond_t) == 340, "cellframe_tx_out_cond_t must be 340 bytes");
+STATIC_ASSERT(sizeof(cellframe_tx_out_cond_t) == 340, "cellframe_tx_out_cond_t must be 340 bytes");
 
 // ============================================================================
 // TSD (TYPE-SPECIFIC DATA) STRUCTURES
@@ -263,7 +272,7 @@ typedef struct {
     uint8_t data[];     // Variable-length data
 } __attribute__((packed)) cellframe_tsd_t;
 
-_Static_assert(sizeof(cellframe_tsd_t) == 6, "cellframe_tsd_t header must be 6 bytes");
+STATIC_ASSERT(sizeof(cellframe_tsd_t) == 6, "cellframe_tsd_t header must be 6 bytes");
 
 /**
  * TSD transaction item (outer wrapper)
@@ -280,7 +289,7 @@ typedef struct {
     uint8_t tsd[];      // Contains cellframe_tsd_t + data
 } __attribute__((packed)) cellframe_tx_tsd_t;
 
-_Static_assert(sizeof(cellframe_tx_tsd_t) == 16, "cellframe_tx_tsd_t header must be 16 bytes");
+STATIC_ASSERT(sizeof(cellframe_tx_tsd_t) == 16, "cellframe_tx_tsd_t header must be 16 bytes");
 
 // TSD type constants
 // NOTE: 0xf003 is for OUT_COND embedded TSD, not standalone items!
@@ -305,7 +314,7 @@ typedef struct {
     uint32_t sig_size;  // Size of following dap_sign_t structure
 } __attribute__((packed)) cellframe_tx_sig_header_t;
 
-_Static_assert(sizeof(cellframe_tx_sig_header_t) == 6, "cellframe_tx_sig_header_t must be 6 bytes");
+STATIC_ASSERT(sizeof(cellframe_tx_sig_header_t) == 6, "cellframe_tx_sig_header_t must be 6 bytes");
 
 /**
  * dap_sign_t structure (Dilithium)
@@ -332,7 +341,7 @@ typedef struct {
     uint8_t pkey_n_sign[];      // [public_key][signature]
 } __attribute__((packed)) dap_sign_t;
 
-_Static_assert(sizeof(dap_sign_t) == 14, "dap_sign_t header must be 14 bytes");
+STATIC_ASSERT(sizeof(dap_sign_t) == 14, "dap_sign_t header must be 14 bytes");
 
 // ============================================================================
 // HELPER CONSTANTS AND FUNCTIONS

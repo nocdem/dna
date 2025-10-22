@@ -18,6 +18,10 @@ set(WALLET_GUI_SOURCES
     main_wallet.cpp
     WalletMainWindow.cpp
     WalletMainWindow.h
+    SendTokensDialog.cpp
+    SendTokensDialog.h
+    TransactionHistoryWidget.cpp
+    TransactionHistoryWidget.h
     cpunk_themes.h
     ../wallet.c
     ../cellframe_rpc.c
