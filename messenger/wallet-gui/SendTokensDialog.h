@@ -1,5 +1,5 @@
 /*
- * SendTokensDialog.h - Send CF20 Tokens Dialog
+ * SendTokensDialog.h - Send CF20 Tokens Widget
  *
  * Part of cpunk wallet - integrates transaction builder backend
  */
@@ -7,7 +7,7 @@
 #ifndef SENDTOKENSDIALOG_H
 #define SENDTOKENSDIALOG_H
 
-#include <QDialog>
+#include <QWidget>
 #include <QLineEdit>
 #include <QDoubleSpinBox>
 #include <QTextEdit>
@@ -22,9 +22,13 @@ extern "C" {
     #include "../cellframe_sign_minimal.h"
     #include "../cellframe_rpc.h"
     #include "../cellframe_addr.h"
+    #include "../cellframe_json_minimal.h"
+    #include "../cellframe_minimal.h"
+    #include "../base58.h"
+    #include <time.h>
 }
 
-class SendTokensDialog : public QDialog {
+class SendTokensDialog : public QWidget {
     Q_OBJECT
 
 public:
@@ -36,16 +40,15 @@ public:
 private slots:
     void onWalletChanged(int index);
     void onSendClicked();
-    void onCancelClicked();
     void onMaxAmountClicked();
     void onValidateAddress();
     void onTsdToggled(bool enabled);
 
 private:
     void setupUI();
-    void updateAvailableBalance();
+    void updateBalanceFromWalletList();  // Use balance from wallet list (no RPC)
     bool validateInputs();
-    void buildAndSendTransaction();
+    void buildAndSendTransaction();  // Queries UTXOs and builds transaction
 
     // UI Components
     QComboBox *walletComboBox;
@@ -60,7 +63,6 @@ private:
     QLineEdit *tsdDataEdit;
     QLabel *statusLabel;
     QPushButton *sendButton;
-    QPushButton *cancelButton;
 
     // Data
     wallet_list_t *wallets;
