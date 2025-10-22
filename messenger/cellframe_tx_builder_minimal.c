@@ -326,26 +326,69 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
     uint64_t datoshi;
 
     // Handle decimal strings (e.g., "0.01")
-    if (strchr(value_str, '.') != NULL) {
-        // Parse as decimal CELL amount
-        double cell_amount = atof(value_str);
-        if (cell_amount < 0) {
+    const char *dot = strchr(value_str, '.');
+    if (dot != NULL) {
+        // Parse decimal CELL amount WITHOUT floating point to avoid precision loss
+        // 1 CELL = 10^18 datoshi
+
+        // Extract integer part
+        char int_part[32] = {0};
+        size_t int_len = dot - value_str;
+        if (int_len >= sizeof(int_part)) {
+            return -1;
+        }
+        strncpy(int_part, value_str, int_len);
+
+        // Extract fractional part (max 18 digits for datoshi precision)
+        char frac_part[32] = {0};
+        const char *frac_start = dot + 1;
+        size_t frac_len = strlen(frac_start);
+        if (frac_len > 18) {
+            frac_len = 18;  // Truncate to 18 decimal places
+        }
+        strncpy(frac_part, frac_start, frac_len);
+
+        // Pad fractional part to 18 digits with zeros
+        while (strlen(frac_part) < 18) {
+            strcat(frac_part, "0");
+        }
+
+        // Parse integer and fractional parts
+        uint64_t int_value = strtoull(int_part, NULL, 10);
+        uint64_t frac_value = strtoull(frac_part, NULL, 10);
+
+        // Calculate total datoshi: (int_value * 10^18) + frac_value
+        // Check for overflow
+        if (int_value > 18) {  // Max ~18 CELL fits in uint64_t
+            fprintf(stderr, "[ERROR] Amount too large: %s CELL (max ~18 CELL)\n", value_str);
             return -1;
         }
 
-        // Convert to datoshi (1 CELL = 10^18 datoshi)
-        datoshi = (uint64_t)(cell_amount * 1e18);
+        datoshi = (int_value * 1000000000000000000ULL) + frac_value;
+
+        printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> int:%lu frac:%lu -> datoshi: %lu (0x%lx)\n",
+               value_str, int_value, frac_value, datoshi, datoshi);
     } else {
-        // Parse as integer datoshi
+        // Parse as integer datoshi string
         datoshi = strtoull(value_str, NULL, 10);
         if (datoshi == 0 && errno == EINVAL) {
             return -1;
         }
+        printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> datoshi: %lu (0x%lx)\n",
+               value_str, datoshi, datoshi);
     }
 
     // Construct uint256_t using SDK method
     // Binary layout: bytes 0-15 = 0, bytes 16-23 = datoshi, bytes 24-31 = 0
     *value_out = GET_256_FROM_64(datoshi);
+
+    printf("[DEBUG cellframe_uint256_from_str] After GET_256_FROM_64:\n");
+    printf("  _hi.a = %lu (0x%lx)\n", value_out->_hi.a, value_out->_hi.a);
+    printf("  _hi.b = %lu (0x%lx)\n", value_out->_hi.b, value_out->_hi.b);
+    printf("  _lo.a = %lu (0x%lx)\n", value_out->_lo.a, value_out->_lo.a);
+    printf("  _lo.b = %lu (0x%lx)\n", value_out->_lo.b, value_out->_lo.b);
+    printf("  lo.lo = %lu (0x%lx)\n", value_out->lo.lo, value_out->lo.lo);
+
     return 0;
 }
 
