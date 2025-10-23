@@ -12,6 +12,7 @@
 #include <QLabel>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
+#include "SendTokensDialog.h"
 
 extern "C" {
     #include "../wallet.h"

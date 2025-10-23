@@ -8,6 +8,7 @@
 #include <QMessageBox>
 #include <QClipboard>
 #include <QApplication>
+#include <QTimer>
 #include <json-c/json.h>
 
 WalletDialog::WalletDialog(QWidget *parent, const QString &specificWallet)
@@ -291,9 +292,29 @@ void WalletDialog::onRefreshBalances() {
 }
 
 void WalletDialog::onSendTokens() {
-    QMessageBox::information(this, "Send Tokens",
-                           QString::fromUtf8("🚧 Send CF20 Tokens - Coming Soon!\n\n"
-                                            "This feature will allow you to send CF20 tokens directly from DNA Messenger."));
+    if (!wallets || wallets->count == 0) {
+        QMessageBox::warning(this, "No Wallets", "No wallets available to send from.");
+        return;
+    }
+
+    printf("[DEBUG] WalletDialog::onSendTokens() - wallets pointer: %p, count: %zu\n", (void*)wallets, wallets->count);
+
+    // Create and show the SendTokensDialog (1-1 same as wallet GUI)
+    // IMPORTANT: Pass 'this' as parent so dialog stays with WalletDialog
+    SendTokensDialog *sendDialog = new SendTokensDialog(wallets, this);
+    sendDialog->setWindowTitle(QString::fromUtf8("💸 Send CF20 Tokens"));
+    sendDialog->setMinimumWidth(650);
+    sendDialog->setMinimumHeight(550);
+    sendDialog->resize(700, 600);
+    sendDialog->setAttribute(Qt::WA_DeleteOnClose);  // Auto-delete when closed
+
+    // Make it a dialog window that stays on top of parent
+    sendDialog->setWindowFlags(Qt::Dialog | Qt::WindowCloseButtonHint);
+    sendDialog->setWindowModality(Qt::WindowModal);  // Modal to parent only
+
+    sendDialog->show();
+    sendDialog->raise();  // Bring to front
+    sendDialog->activateWindow();  // Give it focus
 }
 
 void WalletDialog::onReceiveTokens() {

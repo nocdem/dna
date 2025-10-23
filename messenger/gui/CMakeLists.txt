@@ -20,6 +20,8 @@ set(GUI_SOURCES
     MainWindow.h
     WalletDialog.cpp
     WalletDialog.h
+    SendTokensDialog.cpp
+    SendTokensDialog.h
     ../wallet.c
     ../cellframe_rpc.c
     ../cellframe_addr.c
