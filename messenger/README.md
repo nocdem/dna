@@ -148,10 +148,10 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ Dynamic font scaling (1x - 4x)
 - ✅ Message delivery and read receipts
 - ✅ Desktop notifications
+- ✅ cpunk Wallet integration (view balances, send/receive CPUNK/CELL/KEL tokens)
 
 **Coming Soon:**
 - 🚧 Web-based messenger (Phase 5 - in progress)
-- 📋 CF20 Wallet for cpunk network payments
 - 📋 Mobile applications (Flutter)
 - 📋 Forward secrecy (ephemeral session keys)
 - 📋 Post-quantum voice/video calls
@@ -194,7 +194,13 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - Theme system (2 themes)
 - Font scaling (1x-4x)
 - **Group messaging with full UI**
-- **CF20 Wallet integration (planned)**
+- **cpunk Wallet integration (COMPLETE)**
+  - View CPUNK, CELL, and KEL token balances
+  - Send tokens with transaction builder
+  - Receive tokens with QR codes and wallet addresses
+  - Transaction history with color-coded status
+  - Theme-aware wallet UI
+  - Direct integration with Cellframe node RPC
 
 ### 🚧 Phase 5: Web-Based Messenger (In Progress - branch: feature/web-messenger)
 - [x] WebAssembly crypto module (Emscripten compilation)
@@ -221,14 +227,36 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - Background sync
 - Biometric authentication
 
-### 📋 Phase 8: Advanced Features (Planned)
-- CF20 Wallet integration (Cellframe cpunk network)
-- Post-quantum voice/video calls (custom signaling + SRTP)
+### ✅ Phase 8: cpunk Wallet Integration (Complete)
+- ✅ cpunk Wallet integration for Cellframe Backbone network
+  - View CPUNK, CELL, and KEL token balances from Cellframe wallets
+  - Send tokens via Cellframe RPC (tx_create, tx_sign, tx_send)
+  - Receive tokens with QR code generation
+  - Full transaction history with status tracking
+  - Color-coded transaction display (green incoming, red outgoing)
+  - Theme support across all wallet dialogs
+  - Direct integration with local Cellframe node via RPC
+
+### 📋 Phase 9: Advanced Features (Planned)
 - Stickers and rich media
 - Channels (broadcast mode)
 - Tor integration
 
-### 📋 Phase 9: Distributed P2P Architecture (Future Plans)
+### 📋 Phase 10: Post-Quantum Voice/Video Calls (Planned)
+**Full quantum-safe voice and video calls** with custom architecture:
+- **Key Exchange:** Kyber512 via DNA messaging (bypasses WebRTC's quantum-vulnerable DTLS)
+- **Signatures:** Dilithium3 for call authentication
+- **Media:** SRTP with AES-256-GCM (PQ-derived keys)
+- **NAT Traversal:** libnice (ICE/STUN/TURN) reused from Phase 9.1
+- **Audio:** Opus codec with PortAudio I/O
+- **Video:** VP8/H.264 with camera capture (V4L2/DirectShow)
+- **Security:** Forward secrecy, SAS verification, full E2E encryption
+- **Timeline:** ~20 weeks (5 months)
+- **Design Doc:** `/futuredesign/VOICE-VIDEO-DESIGN.md`
+
+**Key Innovation:** Uses DNA's existing Kyber/Dilithium for signaling + standard SRTP = quantum-safe calls today (no waiting for WebRTC standards)
+
+### 📋 Phase 11: Distributed P2P Architecture (Future Plans)
 Transform into fully decentralized serverless messenger:
 - **libp2p** (C++) for peer-to-peer networking
 - **OpenDHT** or Kad-DHT for distributed storage
@@ -295,7 +323,7 @@ Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 
 ### About cpunk
 
-cpunk is the **world's first meme coin** on the Cellframe Network. CF20 wallet integration (Phase 8+) will enable payment operations directly within DNA Messenger, allowing users to send/receive cpunk tokens for services, tips, and peer-to-peer transactions on the cpunk network.
+cpunk is the **world's first meme coin** on the Cellframe Network. DNA Messenger now includes a full cpunk wallet integration (Phase 8 complete), enabling payment operations directly within the app. Users can view balances, send/receive CPUNK, CELL, and KEL tokens for services, tips, and peer-to-peer transactions on the Cellframe Backbone network.
 
 ---
 

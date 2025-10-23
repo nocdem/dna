@@ -1,8 +1,8 @@
 # DNA Messenger - Development Roadmap
 
-**Version:** 0.1.110-alpha
-**Last Updated:** 2025-10-17
-**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4 Complete
+**Version:** 0.1.120+
+**Last Updated:** 2025-10-23
+**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4 & 8 Complete
 
 ---
 
@@ -318,21 +318,32 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 8: Advanced Features 📋 PLANNED
+## Phase 8: cpunk Wallet Integration ✅ COMPLETE
 
-**Timeline:** 4-6 weeks
-**Status:** Not started
-**Prerequisites:** Phase 5 complete
+**Timeline:** 2 weeks
+**Status:** Complete
+**Completed:** 2025-10-23
 
-### CF20 Wallet Integration (Cellframe cpunk Network)
-- [ ] Read local Cellframe wallet files
-- [ ] Connect via public RPC to cpunk network
-- [ ] Display CF20 token balances
-- [ ] Send CF20 tokens directly in messenger
-- [ ] Receive CF20 tokens with QR codes
-- [ ] Transaction history and tracking
-- [ ] Wallet address management
-- [ ] Payment notifications and confirmations
+### cpunk Wallet Integration (Cellframe Backbone Network)
+- [x] Read local Cellframe wallet files (.dwallet format)
+- [x] Connect via RPC to Cellframe node
+- [x] Display CPUNK, CELL, and KEL token balances
+- [x] Send tokens directly in messenger via transaction builder
+- [x] Receive tokens with QR code generation
+- [x] Full transaction history with status tracking
+- [x] Color-coded transaction display (green incoming, red outgoing)
+- [x] Wallet address management with easy copy-to-clipboard
+- [x] Transaction status notifications (ACCEPTED/DECLINED in red)
+- [x] Theme support across all wallet dialogs
+- [x] Integrated into GUI with dedicated wallet button
+
+### Deliverables
+- ✅ WalletDialog - View balances and recent transactions
+- ✅ SendTokensDialog - Send tokens with transaction builder
+- ✅ ReceiveDialog - Display addresses with QR codes
+- ✅ TransactionHistoryDialog - Full transaction history
+- ✅ ThemeManager - Global theme support
+- ✅ Cellframe RPC integration for balance and transaction queries
 
 ---
 
@@ -418,24 +429,136 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 10+: Future Enhancements 📋 PLANNED
+## Phase 10: Post-Quantum Voice/Video Calls 📋 PLANNED
 
-### Voice/Video Calls (Post-Quantum)
-- [ ] Kyber512-based session key exchange via DNA messaging
-- [ ] Dilithium3 signatures for call authentication
-- [ ] Custom SRTP with PQ-derived keys (AES-256-GCM)
-- [ ] libnice NAT traversal (ICE/STUN/TURN - reuse from Phase 9)
-- [ ] libopus audio codec integration
-- [ ] libvpx video codec (VP8) integration
-- [ ] PortAudio for microphone/speaker I/O
-- [ ] Short Authentication String (SAS) verification
-- [ ] Screen sharing (H.264 codec)
-- [ ] Call quality monitoring and statistics
-- [ ] Group voice/video calls (mesh topology)
-
+**Timeline:** ~20 weeks (5 months)
+**Status:** Research & Planning
+**Prerequisites:** Phase 9.1 (P2P Transport Layer)
 **Design Document:** `/futuredesign/VOICE-VIDEO-DESIGN.md`
 
-**Key Advantage:** Full post-quantum security (bypasses WebRTC's quantum-vulnerable DTLS handshake)
+### Overview
+
+DNA Messenger will support **fully quantum-safe voice and video calls** using a custom architecture that bypasses WebRTC's quantum-vulnerable DTLS handshake. Instead of relying on ECDHE/ECDSA (which quantum computers can break), we use DNA's existing Kyber512 and Dilithium3 for session key establishment, then stream media over SRTP with post-quantum derived keys.
+
+**Key Innovation:** Quantum-safe key exchange via DNA messaging + standard SRTP media transport = Post-quantum voice/video calls
+
+### Architecture
+
+```
+┌──────────────────────────────────────────────┐
+│  Phase 1: Signaling (DNA Encrypted Channel)  │
+│  - Kyber512 key exchange                     │
+│  - Dilithium3 signatures                     │
+│  - ICE candidate exchange                    │
+│  - Call setup/accept/reject/hangup           │
+└──────────────┬───────────────────────────────┘
+               │ (Derives SRTP Master Key)
+               ▼
+┌──────────────────────────────────────────────┐
+│  Phase 2: NAT Traversal (libnice)            │
+│  - ICE/STUN/TURN                             │
+│  - UDP hole punching                         │
+│  - Direct P2P connection                     │
+└──────────────┬───────────────────────────────┘
+               │
+               ▼
+┌──────────────────────────────────────────────┐
+│  Phase 3: Media Transport (SRTP)             │
+│  - AES-256-GCM encryption (PQ-derived keys)  │
+│  - Opus audio codec                          │
+│  - VP8/H.264 video codec                     │
+│  - RTP streaming                             │
+└──────────────────────────────────────────────┘
+```
+
+### Why Not Standard WebRTC?
+
+Standard WebRTC uses DTLS with ECDHE/ECDSA for key exchange, which is **quantum-vulnerable**. While the media encryption (AES-GCM) is quantum-safe, a quantum computer can break the handshake, recover session keys, and decrypt the media stream.
+
+DNA's solution: Use Kyber512 via DNA messaging for key exchange, completely bypassing the quantum-vulnerable DTLS layer.
+
+### Implementation Phases
+
+#### Phase 10.1: Signaling (4 weeks)
+- [ ] Implement call invite/accept/reject messages
+- [ ] Integrate Kyber512 key exchange (already have library)
+- [ ] Add Dilithium3 signatures for call messages
+- [ ] HKDF key derivation for SRTP keys
+- [ ] Store call sessions in PostgreSQL
+- [ ] Unit tests for signaling protocol
+
+#### Phase 10.2: NAT Traversal (4 weeks)
+- [ ] Integrate libnice (reuse from Phase 9.1)
+- [ ] Implement ICE candidate gathering
+- [ ] Add STUN server support (Google, Cloudflare)
+- [ ] Test UDP hole punching across NATs
+- [ ] P2P UDP connection establishment
+
+#### Phase 10.3: Audio Calls (4 weeks)
+- [ ] Integrate libopus (audio codec)
+- [ ] Add PortAudio (microphone/speaker I/O)
+- [ ] Implement SRTP encryption (libsrtp2 with AES-256-GCM)
+- [ ] RTP packetization/depacketization
+- [ ] Audio call UI (desktop app)
+- [ ] Mute/unmute controls
+
+#### Phase 10.4: Video Calls (4 weeks)
+- [ ] Integrate libvpx (VP8 codec) or libx264 (H.264)
+- [ ] Add camera capture (V4L2 Linux / DirectShow Windows)
+- [ ] Video rendering (Qt widget integration)
+- [ ] Audio/video synchronization
+- [ ] Video preview and remote video display
+- [ ] Camera enable/disable controls
+
+#### Phase 10.5: Polish & Testing (4 weeks)
+- [ ] Call quality tuning (adaptive bitrate, resolution)
+- [ ] Network adaptation (jitter buffer, FEC)
+- [ ] Short Authentication String (SAS) verification UI
+- [ ] Call statistics and monitoring
+- [ ] End-to-end testing (Linux, Windows, macOS)
+- [ ] Performance benchmarks (latency, packet loss)
+
+### Security Features
+
+**Quantum-Resistant:**
+- ✅ Key exchange: Kyber512 (NIST FIPS 203 / ML-KEM)
+- ✅ Signatures: Dilithium3 (NIST FIPS 204 / ML-DSA)
+- ✅ Encryption: AES-256-GCM (quantum-safe symmetric)
+
+**Additional Security:**
+- ✅ Forward secrecy (ephemeral keys per call)
+- ✅ Man-in-the-middle protection (Dilithium3 signatures)
+- ✅ Short Authentication String (SAS) verification
+- ✅ Replay attack protection (SRTP sequence numbers)
+
+### Technology Stack
+
+| Component | Library | Purpose |
+|-----------|---------|---------|
+| PQ Crypto | Kyber512 (vendored) | Key encapsulation |
+| PQ Crypto | Dilithium3 (vendored) | Digital signatures |
+| NAT Traversal | libnice | ICE/STUN/TURN |
+| SRTP | libsrtp2 | Secure RTP encryption |
+| Audio Codec | libopus | Opus encoding/decoding |
+| Video Codec | libvpx or libx264 | VP8 or H.264 |
+| Audio I/O | PortAudio | Microphone/speaker |
+| Video I/O | V4L2 / DirectShow | Camera capture |
+
+### Future Enhancements
+
+- [ ] Group calls (mesh topology, up to 8 participants)
+- [ ] Screen sharing (H.264 high-profile codec)
+- [ ] Call recording (local only, preserves E2E)
+- [ ] Selective Forwarding Unit (SFU) for 100+ participants
+- [ ] Key rotation for long calls (>1 hour)
+
+### Deliverables
+
+- Full voice/video call system with post-quantum security
+- Desktop app integration (Qt GUI)
+- Mobile app integration (Flutter)
+- User documentation and call UI guide
+- Performance benchmarks
 
 ### Advanced Features
 - [ ] Stickers and GIFs
@@ -501,14 +624,15 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 | 0.1.0 | Phase 1 | ✅ Complete | Fork preparation |
 | 0.2.0 | Phase 2 | ✅ Complete | Library API |
 | 0.3.0 | Phase 3 | ✅ Complete | CLI messenger |
-| 0.4.0 | Phase 4 | ✅ Complete | Desktop app |
+| 0.4.0 | Phase 4 | ✅ Complete | Desktop app with groups |
 | 0.5.0 | Phase 5 | 🚧 In Progress | Web messenger (WebAssembly) |
+| 0.8.0 | Phase 8 | ✅ Complete | cpunk Wallet integration |
 | 1.0.0 | Phase 6-7 | 📋 Planned | Mobile + Advanced Security (first stable release) |
 | 1.1.0 | Phase 6 | 📋 Planned | Mobile apps |
 | 1.2.0 | Phase 7 | 📋 Planned | Advanced security |
-| 1.3.0 | Phase 8 | 📋 Planned | Future enhancements |
+| 2.0.0 | Phase 9 | 📋 Planned | P2P architecture |
 
-**Current Version:** 0.1.110-alpha (auto-incremented with each commit)
+**Current Version:** 0.1.120+ (auto-incremented with each commit)
 
 ---
 
@@ -538,6 +662,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - **Phase 2:** Library API Design
 - **Phase 3:** CLI Messenger Client
 - **Phase 4:** Desktop Application (with groups!)
+- **Phase 8:** cpunk Wallet Integration (Cellframe Backbone)
 
 ### 🚧 In Progress
 - **Phase 5:** Web-Based Messenger (active on `feature/web-messenger` branch)
@@ -545,9 +670,8 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 ### 📋 Planned
 - **Phase 6:** Mobile Applications
 - **Phase 7:** Advanced Security Features
-- **Phase 8:** CF20 Wallet Integration
 - **Phase 9:** Distributed P2P Architecture (libp2p + OpenDHT)
-- **Phase 10+:** Future Enhancements
+- **Phase 10+:** Future Enhancements (voice/video calls, advanced features)
 
 ---
 
@@ -565,9 +689,14 @@ DNA Messenger is in active development. Contributions welcome!
 ---
 
 **Project Start:** 2025-10-14
-**Current Version:** 0.1.110-alpha
+**Current Version:** 0.1.120+
 **Next Milestone:** Web Messenger (Phase 5)
 **Recent Achievements:**
+- ✅ cpunk Wallet integration complete! (Phase 8)
+  - View CPUNK, CELL, KEL balances
+  - Send/receive tokens with QR codes
+  - Full transaction history with color-coded status
+  - Theme-aware wallet UI
 - ✅ Full group messaging feature complete!
 - ✅ Public key caching (100x API call reduction)
 - ✅ Inline keyserver registration (no external utilities)
