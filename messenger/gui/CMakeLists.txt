@@ -22,6 +22,12 @@ set(GUI_SOURCES
     WalletDialog.h
     SendTokensDialog.cpp
     SendTokensDialog.h
+    ReceiveDialog.cpp
+    ReceiveDialog.h
+    TransactionHistoryDialog.cpp
+    TransactionHistoryDialog.h
+    ThemeManager.cpp
+    ThemeManager.h
     ../wallet.c
     ../cellframe_rpc.c
     ../cellframe_addr.c

@@ -5,6 +5,8 @@
 
 #include "MainWindow.h"
 #include "WalletDialog.h"
+#include "SendTokensDialog.h"
+#include "ThemeManager.h"
 
 extern "C" {
     #include "../wallet.h"
@@ -1279,10 +1281,12 @@ void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {
 }
 
 void MainWindow::onThemeIO() {
+    ThemeManager::instance()->setTheme(THEME_CPUNK_IO);
     applyTheme("io");
 }
 
 void MainWindow::onThemeClub() {
+    ThemeManager::instance()->setTheme(THEME_CPUNK_CLUB);
     applyTheme("club");
 }
 
@@ -2648,14 +2652,7 @@ void MainWindow::refreshWalletMenu() {
         }
 
         wallet_list_free(wallets);
-
-        // Add separator
-        walletMenu->addSeparator();
     }
-
-    // Add "View All Wallets" option
-    QAction *viewAllAction = walletMenu->addAction(QString::fromUtf8("📋 View All Wallets"));
-    connect(viewAllAction, &QAction::triggered, this, &MainWindow::onWallet);
 
     // If no wallets found, show message
     if (!wallets || wallets->count == 0) {
@@ -2665,9 +2662,12 @@ void MainWindow::refreshWalletMenu() {
 }
 
 void MainWindow::onWalletSelected(const QString &walletName) {
-    // Open dialog for specific wallet
-    WalletDialog walletDialog(this, walletName);
-    walletDialog.exec();
+    // Open detached WalletDialog with the specified wallet
+    WalletDialog *walletDialog = new WalletDialog(this, walletName);
+    walletDialog->setAttribute(Qt::WA_DeleteOnClose);
+    walletDialog->show();
+    walletDialog->raise();
+    walletDialog->activateWindow();
 }
 
 // ============================================================================
@@ -2783,3 +2783,4 @@ QString MainWindow::processMessageForDisplay(const QString &messageText) {
 
     return processed;
 }
+

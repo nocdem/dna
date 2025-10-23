@@ -300,7 +300,8 @@ if(BUILD_GUI)
 endif()
 
 # cpunk-wallet-gui (Phase 8) - Optional Standalone CF20 Wallet GUI
-option(BUILD_WALLET_GUI "Build standalone wallet GUI" ON)
+# Disabled: wallet functionality now integrated into messenger GUI
+option(BUILD_WALLET_GUI "Build standalone wallet GUI" OFF)
 if(BUILD_WALLET_GUI)
     if(Qt5_FOUND)
         message(STATUS "Building cpunk-wallet-gui application")
@@ -338,66 +339,70 @@ else()
 endif()
 
 # DNA-Send CLI Tool
-add_executable(dna-send
-    dna-send.c
-    wallet.c
-    cellframe_addr.c
-    cellframe_rpc.c
-    base58.c
-)
+# Disabled: send functionality now integrated into messenger GUI
+option(BUILD_DNA_SEND "Build dna-send CLI tool" OFF)
+if(BUILD_DNA_SEND)
+    add_executable(dna-send
+        dna-send.c
+        wallet.c
+        cellframe_addr.c
+        cellframe_rpc.c
+        base58.c
+    )
 
-# For static CURL on Windows, define CURL_STATICLIB
-if(WIN32)
-    target_compile_definitions(dna-send PRIVATE CURL_STATICLIB)
-endif()
-
-target_link_libraries(dna-send
-    cellframe_minimal
-    cellframe_dilithium
-    ${JSONC_LIBRARIES}
-)
-
-# Link CURL and OpenSSL (order matters for static linking)
-if(WIN32)
-    # For Windows static builds, CURL needs OpenSSL before and after
-    if(TARGET CURL::libcurl)
-        target_link_libraries(dna-send CURL::libcurl)
-    else()
-        target_link_libraries(dna-send ${CURL_LIBRARIES})
+    # For static CURL on Windows, define CURL_STATICLIB
+    if(WIN32)
+        target_compile_definitions(dna-send PRIVATE CURL_STATICLIB)
     endif()
 
-    # Static CURL requires OpenSSL and zlib
     target_link_libraries(dna-send
-        OpenSSL::SSL
-        OpenSSL::Crypto
-        z  # zlib
+        cellframe_minimal
+        cellframe_dilithium
+        ${JSONC_LIBRARIES}
     )
 
-    # CURL dependencies (static linking requires all)
-    target_link_libraries(dna-send
-        nghttp2     # HTTP/2 support
-        ssh2        # SSH/SFTP support
-        psl         # Public Suffix List
-        idn2        # Internationalized Domain Names
-        unistring   # Unicode string library (required by psl and idn2)
-        iconv       # Character encoding conversion (required by unistring)
-        zstd        # ZSTD compression
-        brotlidec   # Brotli decompression
-        brotlicommon # Brotli common functions
-    )
+    # Link CURL and OpenSSL (order matters for static linking)
+    if(WIN32)
+        # For Windows static builds, CURL needs OpenSSL before and after
+        if(TARGET CURL::libcurl)
+            target_link_libraries(dna-send CURL::libcurl)
+        else()
+            target_link_libraries(dna-send ${CURL_LIBRARIES})
+        endif()
 
-    # Windows system libraries (required by OpenSSL and CURL)
-    target_link_libraries(dna-send
-        bcrypt      # Windows Cryptography API
-        ws2_32      # Windows Sockets
-        crypt32     # Cryptography
-        secur32     # Security functions (SSPI)
-        wldap32     # LDAP support
-        normaliz    # Internationalization (CURL)
-    )
-else()
-    # Linux: simple CURL and OpenSSL linking
-    target_link_libraries(dna-send ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} m)
+        # Static CURL requires OpenSSL and zlib
+        target_link_libraries(dna-send
+            OpenSSL::SSL
+            OpenSSL::Crypto
+            z  # zlib
+        )
+
+        # CURL dependencies (static linking requires all)
+        target_link_libraries(dna-send
+            nghttp2     # HTTP/2 support
+            ssh2        # SSH/SFTP support
+            psl         # Public Suffix List
+            idn2        # Internationalized Domain Names
+            unistring   # Unicode string library (required by psl and idn2)
+            iconv       # Character encoding conversion (required by unistring)
+            zstd        # ZSTD compression
+            brotlidec   # Brotli decompression
+            brotlicommon # Brotli common functions
+        )
+
+        # Windows system libraries (required by OpenSSL and CURL)
+        target_link_libraries(dna-send
+            bcrypt      # Windows Cryptography API
+            ws2_32      # Windows Sockets
+            crypt32     # Cryptography
+            secur32     # Security functions (SSPI)
+            wldap32     # LDAP support
+            normaliz    # Internationalization (CURL)
+        )
+    else()
+        # Linux: simple CURL and OpenSSL linking
+        target_link_libraries(dna-send ${CURL_LIBRARIES} ${OPENSSL_LIBRARIES} m)
+    endif()
+
+    target_include_directories(dna-send PRIVATE ${CMAKE_SOURCE_DIR})
 endif()
-
-target_include_directories(dna-send PRIVATE ${CMAKE_SOURCE_DIR})

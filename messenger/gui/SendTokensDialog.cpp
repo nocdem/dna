@@ -28,58 +28,50 @@ typedef struct {
     uint256_t value;
 } utxo_t;
 
-SendTokensDialog::SendTokensDialog(wallet_list_t *wallets, QWidget *parent)
+SendTokensDialog::SendTokensDialog(const cellframe_wallet_t *wallet, QWidget *parent)
     : QWidget(parent),
-      wallets(nullptr),
-      owns_wallets(false),
-      selectedWalletIndex(-1),
-      availableBalance(0.0) {
+      availableBalance(0.0),
+      currentTheme(THEME_CPUNK_IO) {
 
-    printf("[DEBUG] SendTokensDialog constructor called\n");
+    if (wallet) {
+        memcpy(&m_wallet, wallet, sizeof(cellframe_wallet_t));
+    } else {
+        memset(&m_wallet, 0, sizeof(cellframe_wallet_t));
+    }
 
-    // Apply cpunk.io theme (cyan)
-    setStyleSheet(getCpunkStyleSheet(THEME_CPUNK_IO));
+    // Get current theme from ThemeManager
+    currentTheme = ThemeManager::instance()->currentTheme();
+
+    // Apply theme
+    applyTheme(currentTheme);
+
+    // Connect to theme changes
+    connect(ThemeManager::instance(), &ThemeManager::themeChanged,
+            this, &SendTokensDialog::onThemeChanged);
 
     setupUI();
-
-    // Load our own copy of wallets to avoid dangling pointer issues
-    if (wallet_list_cellframe(&this->wallets) == 0 && this->wallets && this->wallets->count > 0) {
-        owns_wallets = true;
-        printf("[DEBUG] SendTokensDialog loaded %zu wallets\n", this->wallets->count);
-
-        // Populate wallet dropdown
-        walletComboBox->clear();
-        for (size_t i = 0; i < this->wallets->count; i++) {
-            QString walletName = QString::fromUtf8(this->wallets->wallets[i].name);
-            walletComboBox->addItem(QString::fromUtf8("💼 %1").arg(walletName));
-        }
-
-        selectedWalletIndex = 0;
-        updateBalanceFromWalletList();
-    } else {
-        printf("[ERROR] SendTokensDialog failed to load wallets\n");
-    }
+    updateBalance();
 }
 
 SendTokensDialog::~SendTokensDialog() {
-    // Free wallets if we own them
-    if (owns_wallets && wallets) {
-        wallet_list_free(wallets);
-        wallets = nullptr;
-    }
 }
 
 void SendTokensDialog::setupUI() {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
+    mainLayout->setContentsMargins(20, 20, 20, 20);
+    mainLayout->setSpacing(15);
 
     // Form layout for inputs
     QFormLayout *formLayout = new QFormLayout();
 
-    // Wallet selector (will be populated after loading wallets)
-    walletComboBox = new QComboBox(this);
-    connect(walletComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &SendTokensDialog::onWalletChanged);
-    formLayout->addRow(QString::fromUtf8("From Wallet:"), walletComboBox);
+    // Wallet name label (read-only, already in this wallet)
+    walletNameLabel = new QLabel(QString::fromUtf8("💼 %1").arg(m_wallet.name), this);
+    QFont walletFont;
+    walletFont.setPointSize(14);
+    walletFont.setBold(true);
+    walletNameLabel->setFont(walletFont);
+    walletNameLabel->setStyleSheet("color: #00D9FF; padding: 10px;");
+    formLayout->addRow(QString::fromUtf8("From Wallet:"), walletNameLabel);
 
     // Balance label
     balanceLabel = new QLabel(QString::fromUtf8("Balance: 0.0 CELL"), this);
@@ -175,22 +167,19 @@ void SendTokensDialog::setupUI() {
     printf("[DEBUG] SendTokensDialog::setupUI() completed\n");
 }
 
-void SendTokensDialog::onWalletChanged(int index) {
-    selectedWalletIndex = index;
-    // Just update balance display from wallet list - don't query UTXOs yet
-    updateBalanceFromWalletList();
-}
-
-void SendTokensDialog::updateBalanceFromWalletList() {
-    if (!wallets || selectedWalletIndex < 0 || (size_t)selectedWalletIndex >= wallets->count) {
-        balanceLabel->setText(QString::fromUtf8("Balance: ---"));
-        availableBalance = 0.0;
-        return;
-    }
-
+void SendTokensDialog::updateBalance() {
     // Don't query balance on load - will be checked when Send is clicked
     balanceLabel->setText(QString::fromUtf8("Balance: Click Send to verify"));
     availableBalance = 0.0;
+}
+
+void SendTokensDialog::applyTheme(CpunkTheme theme) {
+    currentTheme = theme;
+    setStyleSheet(getCpunkStyleSheet(theme));
+}
+
+void SendTokensDialog::onThemeChanged(CpunkTheme theme) {
+    applyTheme(theme);
 }
 
 void SendTokensDialog::onMaxAmountClicked() {
@@ -237,9 +226,9 @@ void SendTokensDialog::onTsdToggled(bool enabled) {
 }
 
 bool SendTokensDialog::validateInputs() {
-    // Check wallet selection
-    if (selectedWalletIndex < 0) {
-        QMessageBox::warning(this, "No Wallet", "Please select a wallet.");
+    // Check wallet is loaded
+    if (m_wallet.name[0] == '\0') {
+        QMessageBox::warning(this, "No Wallet", "No wallet loaded.");
         return false;
     }
 
@@ -325,25 +314,8 @@ void SendTokensDialog::buildAndSendTransaction() {
     statusLabel->setText(QString::fromUtf8("🔄 Checking wallet..."));
     QApplication::processEvents();
 
-    // Debug: Check if wallets pointer is valid
-    printf("[DEBUG] wallets pointer: %p\n", (void*)wallets);
-    if (!wallets) {
-        printf("[ERROR] wallets pointer is NULL!\n");
-        QMessageBox::critical(this, "Error", "Wallet list is not available!");
-        return;
-    }
-
-    printf("[DEBUG] wallets->count: %zu\n", wallets->count);
-    printf("[DEBUG] selectedWalletIndex: %d\n", selectedWalletIndex);
-
-    if (selectedWalletIndex < 0 || (size_t)selectedWalletIndex >= wallets->count) {
-        printf("[ERROR] Invalid wallet index: %d (count: %zu)\n", selectedWalletIndex, wallets->count);
-        QMessageBox::critical(this, "Error", "Invalid wallet selection!");
-        return;
-    }
-
     // Get wallet
-    cellframe_wallet_t *wallet = &wallets->wallets[selectedWalletIndex];
+    cellframe_wallet_t *wallet = &m_wallet;
     printf("[DEBUG] wallet pointer: %p\n", (void*)wallet);
 
     printf("[DEBUG] Wallet name: %s\n", wallet->name);
@@ -827,25 +799,4 @@ void SendTokensDialog::buildAndSendTransaction() {
     cellframe_tx_builder_free(builder);
 
     printf("[DEBUG] ========== Transaction Flow Complete ==========\n");
-}
-
-void SendTokensDialog::updateWalletList(wallet_list_t *newWallets) {
-    wallets = newWallets;
-
-    // Clear and repopulate wallet combo box
-    walletComboBox->clear();
-    selectedWalletIndex = -1;
-    availableBalance = 0.0;
-
-    if (wallets && wallets->count > 0) {
-        for (size_t i = 0; i < wallets->count; i++) {
-            QString walletName = QString::fromUtf8(wallets->wallets[i].name);
-            walletComboBox->addItem(QString::fromUtf8("💼 %1").arg(walletName));
-        }
-
-        // Select first wallet (will trigger onWalletChanged via signal)
-        walletComboBox->setCurrentIndex(0);
-    } else {
-        balanceLabel->setText(QString::fromUtf8("No wallets found"));
-    }
 }

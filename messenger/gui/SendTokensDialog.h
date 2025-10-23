@@ -15,7 +15,7 @@
 #include <QComboBox>
 #include <QPushButton>
 #include <QCheckBox>
-#include "cpunk_themes.h"
+#include "ThemeManager.h"
 
 extern "C" {
     #include "../wallet.h"
@@ -33,26 +33,25 @@ class SendTokensDialog : public QWidget {
     Q_OBJECT
 
 public:
-    explicit SendTokensDialog(wallet_list_t *wallets, QWidget *parent = nullptr);
+    explicit SendTokensDialog(const cellframe_wallet_t *wallet, QWidget *parent = nullptr);
     ~SendTokensDialog();
 
-    void updateWalletList(wallet_list_t *wallets);
-
 private slots:
-    void onWalletChanged(int index);
     void onSendClicked();
     void onMaxAmountClicked();
     void onValidateAddress();
     void onTsdToggled(bool enabled);
+    void onThemeChanged(CpunkTheme theme);
 
 private:
     void setupUI();
-    void updateBalanceFromWalletList();  // Use balance from wallet list (no RPC)
+    void updateBalance();
+    void applyTheme(CpunkTheme theme);
     bool validateInputs();
     void buildAndSendTransaction();  // Queries UTXOs and builds transaction
 
     // UI Components
-    QComboBox *walletComboBox;
+    QLabel *walletNameLabel;
     QLabel *balanceLabel;
     QLineEdit *recipientEdit;
     QLabel *addressValidationLabel;
@@ -66,10 +65,9 @@ private:
     QPushButton *sendButton;
 
     // Data
-    wallet_list_t *wallets;
-    bool owns_wallets;  // True if we need to free wallets in destructor
-    int selectedWalletIndex;
+    cellframe_wallet_t m_wallet;
     double availableBalance;
+    CpunkTheme currentTheme;
 };
 
 #endif // SENDTOKENSDIALOG_H
