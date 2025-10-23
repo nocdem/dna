@@ -242,21 +242,29 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - Channels (broadcast mode)
 - Tor integration
 
-### 📋 Phase 10: Post-Quantum Voice/Video Calls (Planned)
-**Full quantum-safe voice and video calls** with custom architecture:
-- **Key Exchange:** Kyber512 via DNA messaging (bypasses WebRTC's quantum-vulnerable DTLS)
-- **Signatures:** Dilithium3 for call authentication
-- **Media:** SRTP with AES-256-GCM (PQ-derived keys)
-- **NAT Traversal:** libnice (ICE/STUN/TURN) reused from Phase 9.1
-- **Audio:** Opus codec with PortAudio I/O
-- **Video:** VP8/H.264 with camera capture (V4L2/DirectShow)
-- **Security:** Forward secrecy, SAS verification, full E2E encryption
-- **Timeline:** ~20 weeks (5 months)
-- **Design Doc:** `/futuredesign/VOICE-VIDEO-DESIGN.md`
+### 📋 Phase 10: DNA Board - Censorship-Resistant Social Media (Planned)
+**True free speech platform** built on cpunk validator network:
+- **No Censorship:** Content cannot be removed (no deletion endpoint)
+- **PoH Required:** Only verified humans (PoH ≥70) can post (prevents bot spam)
+- **Open Replies:** Anyone can comment (no PoH for replies, enables free discussion)
+- **Community Voting:** Thumbs up/down to surface quality content (FREE)
+- **Burn Economics:** All fees permanently burned (1 CPUNK/post, 0.5 CPUNK/reply)
+- **Self-Healing:** 3-validator replication with auto-recovery
+- **Validator Rewards:** DAO pool distribution (100M Year 1, halvening)
+- **Timeline:** 12 weeks
+- **Design Doc:** `/DNA_BOARD_PHASE10_PLAN.md`
 
-**Key Innovation:** Uses DNA's existing Kyber/Dilithium for signaling + standard SRTP = quantum-safe calls today (no waiting for WebRTC standards)
+**Key Innovation:** Combines censorship resistance (no deletion) with quality control (PoH verification) while maintaining free speech (open replies)
 
-### 📋 Phase 11: Distributed P2P Architecture (Future Plans)
+### 📋 Phase 11: Post-Quantum Voice/Video Calls (Planned)
+**Full quantum-safe voice and video calls:**
+- Kyber512 via DNA messaging (bypasses WebRTC's quantum-vulnerable DTLS)
+- libsrtp2 + AES-256-GCM media encryption
+- libopus audio, libvpx/libx264 video
+- Timeline: ~20 weeks
+- Design: `/futuredesign/VOICE-VIDEO-DESIGN.md`
+
+### 📋 Phase 12: Distributed P2P Architecture (Future Plans)
 Transform into fully decentralized serverless messenger:
 - **libp2p** (C++) for peer-to-peer networking
 - **OpenDHT** or Kad-DHT for distributed storage

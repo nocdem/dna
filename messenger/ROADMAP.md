@@ -429,7 +429,159 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 10: Post-Quantum Voice/Video Calls 📋 PLANNED
+## Phase 10: DNA Board - Censorship-Resistant Social Media 📋 PLANNED
+
+**Timeline:** 12 weeks
+**Status:** Planning (Post-Phases 7-9)
+**Prerequisites:** Distributed validator storage, DNA-Keyserver merge, Offline messaging system
+**Design Document:** `/DNA_BOARD_PHASE10_PLAN.md`
+
+### Overview
+
+DNA Board is a **censorship-resistant social media platform** built on cpunk validator network. Content cannot be removed once posted, creating a true free speech platform with built-in spam protection.
+
+**Core Principles:**
+1. **NO CENSORSHIP** - Content cannot be removed (no deletion endpoint)
+2. **PoH Required to Post** - Only human-verified users (PoH ≥70) can create posts
+3. **Open Responses** - Anyone can reply/comment (no PoH requirement for replies)
+4. **Community Voting** - Thumbs up/down to surface quality content
+5. **Burn Economics** - All storage fees permanently burned (deflationary)
+6. **Validator Rewards** - DAO pool distribution (no payment from users)
+
+### Architecture
+
+```
+Self-Healing Validator Network (3-Replica)
+┌─────────────────────────────────────────────┐
+│  Post → Primary Validator                   │
+│    ↓                                         │
+│  Replicate to 2 more (lowest storage)       │
+│    ↓                                         │
+│  3 Validators store content                 │
+│    ↓                                         │
+│  Heartbeat monitoring (30s intervals)       │
+│    ↓                                         │
+│  If validator offline → Auto-heal           │
+│    ↓                                         │
+│  Re-replicate to new validator              │
+│    ↓                                         │
+│  Back to 3 replicas (maintained)            │
+└─────────────────────────────────────────────┘
+```
+
+### Content & Economics
+
+| Type | Burn Fee | PoH Required | Max Size | Replication |
+|------|----------|--------------|----------|-------------|
+| Text Post | 1 CPUNK | Yes (≥70) | 5,000 chars | 3 validators |
+| Image | 2 CPUNK | Yes (with post) | 5 MB | 3 validators |
+| Video | 5 CPUNK | Yes (with post) | 50 MB | 3 validators |
+| Reply | 0.5 CPUNK | **No** | 2,000 chars | 3 validators |
+| Vote | **FREE** | No | N/A | Aggregated |
+
+**All fees BURNED** → Deflationary pressure (estimated 16M CPUNK/year burned)
+
+### Proof of Humanity (PoH) System
+
+**Who Can Post:** Only verified humans with `humanity_score >= 70`
+
+**Verification Tiers:**
+- **Auto-Verified** (75-89): Behavioral algorithm (most users)
+- **Staked-Verified** (90-94): Auto + 100 CPUNK stake
+- **DAO-Vouched** (95-99): 3 human vouches + DAO review
+- **Celebrity** (100): Public figure + DAO verification
+
+**Bot Detection:** Single-destination sends, mechanical timing, no staking
+**Human Patterns:** Multiple services, irregular timing, social verification, staking
+
+### Who Can Respond
+
+**ANYONE can reply** to existing posts:
+- No PoH requirement for replies
+- Still requires 0.5 CPUNK burn (prevents pure spam)
+- Enables free discussion and debate
+- Bot responses downvoted by community
+
+**Balance:** Spam prevention at post level + free speech at reply level
+
+### Implementation Phases
+
+#### Weeks 1-2: Validator Backend Infrastructure
+- [ ] Implement PoH scoring algorithm
+- [ ] Create post/reply data structures (PostgreSQL)
+- [ ] Build `/dna_board/post` endpoint with PoH check
+- [ ] Build `/dna_board/reply` endpoint (no PoH check)
+- [ ] Add burn transaction verification
+
+#### Weeks 3-4: Gossip Protocol & Replication
+- [ ] Implement heartbeat monitoring (30s intervals)
+- [ ] Build gossip protocol for content replication
+- [ ] Create 3-validator replication logic
+- [ ] Implement auto-healing (detect offline, re-replicate)
+- [ ] Build graceful exit protocol
+
+#### Weeks 5-6: Voting System
+- [ ] Create vote storage and aggregation
+- [ ] Build `/dna_board/vote` endpoint
+- [ ] Implement one-vote-per-wallet enforcement
+- [ ] Add vote signature verification
+- [ ] Build feed ranking algorithm
+
+#### Weeks 7-8: Client GUI (Qt)
+- [ ] Create DNABoardTab main widget
+- [ ] Build ComposeDialog with PoH verification
+- [ ] Implement PostWidget with voting UI
+- [ ] Create ThreadView for nested replies
+- [ ] Build DNABoardAPI client
+
+#### Weeks 9-10: Media & Integration
+- [ ] Add image/video upload to validators
+- [ ] Integrate wallet for burn transactions
+- [ ] Implement client-side blocking/muting
+- [ ] Add feed filters (sort, humanity min)
+- [ ] Build user profile view
+
+#### Weeks 11-12: Testing & Launch
+- [ ] Deploy to testnet validators
+- [ ] Community beta testing (100+ users)
+- [ ] Security audit (signatures, burn verification)
+- [ ] Performance optimization
+- [ ] DAO vote on Year 1 pool (100M CPUNK)
+- [ ] Mainnet launch
+
+### Key Features
+
+**Censorship Resistance:**
+- ✅ No deletion endpoint (content permanent)
+- ✅ 3-validator replication across jurisdictions
+- ✅ No central authority or single point of control
+- ✅ Client-side blocking only (no server-side)
+- ✅ Gossip protocol ensures propagation
+
+**Quality Control:**
+- ✅ PoH requirement prevents bot spam
+- ✅ Community voting surfaces quality content
+- ✅ Ranking algorithm (votes × humanity × time × engagement)
+- ✅ Multiple feed views (Ranked, Recent, Top, Controversial)
+
+**Economic Model:**
+- ✅ All fees burned (deflationary)
+- ✅ Validator rewards from DAO pool (100M Year 1, halvening)
+- ✅ Stake + storage formula for validator rewards
+- ✅ No payment from users to validators
+
+### Deliverables
+
+- Fully censorship-resistant social media platform
+- 3-validator self-healing replication
+- PoH verification system (behavioral + staking)
+- Qt GUI integration (DNABoardTab)
+- Burn economics (CPUNK deflationary pressure)
+- DAO-governed validator rewards
+
+---
+
+## Phase 11: Post-Quantum Voice/Video Calls 📋 PLANNED
 
 **Timeline:** ~20 weeks (5 months)
 **Status:** Research & Planning
@@ -438,127 +590,62 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ### Overview
 
-DNA Messenger will support **fully quantum-safe voice and video calls** using a custom architecture that bypasses WebRTC's quantum-vulnerable DTLS handshake. Instead of relying on ECDHE/ECDSA (which quantum computers can break), we use DNA's existing Kyber512 and Dilithium3 for session key establishment, then stream media over SRTP with post-quantum derived keys.
+Fully **quantum-safe voice and video calls** using custom architecture that bypasses WebRTC's quantum-vulnerable DTLS handshake.
 
-**Key Innovation:** Quantum-safe key exchange via DNA messaging + standard SRTP media transport = Post-quantum voice/video calls
+**Key Innovation:** Kyber512 key exchange via DNA messaging + standard SRTP media = Post-quantum calls today
 
 ### Architecture
 
 ```
-┌──────────────────────────────────────────────┐
-│  Phase 1: Signaling (DNA Encrypted Channel)  │
-│  - Kyber512 key exchange                     │
-│  - Dilithium3 signatures                     │
-│  - ICE candidate exchange                    │
-│  - Call setup/accept/reject/hangup           │
-└──────────────┬───────────────────────────────┘
-               │ (Derives SRTP Master Key)
-               ▼
-┌──────────────────────────────────────────────┐
-│  Phase 2: NAT Traversal (libnice)            │
-│  - ICE/STUN/TURN                             │
-│  - UDP hole punching                         │
-│  - Direct P2P connection                     │
-└──────────────┬───────────────────────────────┘
-               │
-               ▼
-┌──────────────────────────────────────────────┐
-│  Phase 3: Media Transport (SRTP)             │
-│  - AES-256-GCM encryption (PQ-derived keys)  │
-│  - Opus audio codec                          │
-│  - VP8/H.264 video codec                     │
-│  - RTP streaming                             │
-└──────────────────────────────────────────────┘
+Signaling (DNA Messaging) → NAT Traversal (libnice) → Media (SRTP + AES-256-GCM)
+    ↓                           ↓                         ↓
+Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 ```
 
-### Why Not Standard WebRTC?
+### Key Features
 
-Standard WebRTC uses DTLS with ECDHE/ECDSA for key exchange, which is **quantum-vulnerable**. While the media encryption (AES-GCM) is quantum-safe, a quantum computer can break the handshake, recover session keys, and decrypt the media stream.
+**Quantum-Resistant Security:**
+- Kyber512 (NIST FIPS 203) for key exchange
+- Dilithium3 (NIST FIPS 204) for signatures
+- AES-256-GCM for media encryption
+- Forward secrecy (ephemeral keys per call)
+- SAS verification for MITM protection
 
-DNA's solution: Use Kyber512 via DNA messaging for key exchange, completely bypassing the quantum-vulnerable DTLS layer.
+**Technology Stack:**
+- **libnice** - ICE/STUN/TURN (NAT traversal)
+- **libsrtp2** - Secure RTP with AES-256-GCM
+- **libopus** - Audio codec (48kHz stereo)
+- **libvpx/libx264** - Video codec (VP8 or H.264)
+- **PortAudio** - Microphone/speaker I/O
+- **V4L2/DirectShow** - Camera capture
 
-### Implementation Phases
+### Why This is Better
 
-#### Phase 10.1: Signaling (4 weeks)
-- [ ] Implement call invite/accept/reject messages
-- [ ] Integrate Kyber512 key exchange (already have library)
-- [ ] Add Dilithium3 signatures for call messages
-- [ ] HKDF key derivation for SRTP keys
-- [ ] Store call sessions in PostgreSQL
-- [ ] Unit tests for signaling protocol
+1. **Full Quantum Resistance** - No quantum-vulnerable components
+2. **Uses Existing Crypto** - Same Kyber/Dilithium as messaging
+3. **Independent of Standards** - Don't wait for WebRTC PQ support (3-5 years away)
+4. **Better Privacy** - Signaling through DNA's E2E encrypted channel
+5. **Forward Secrecy** - Ephemeral keys per call
+6. **Available Today** - Can deploy immediately (desktop/mobile)
 
-#### Phase 10.2: NAT Traversal (4 weeks)
-- [ ] Integrate libnice (reuse from Phase 9.1)
-- [ ] Implement ICE candidate gathering
-- [ ] Add STUN server support (Google, Cloudflare)
-- [ ] Test UDP hole punching across NATs
-- [ ] P2P UDP connection establishment
+### Implementation Sub-Phases
 
-#### Phase 10.3: Audio Calls (4 weeks)
-- [ ] Integrate libopus (audio codec)
-- [ ] Add PortAudio (microphone/speaker I/O)
-- [ ] Implement SRTP encryption (libsrtp2 with AES-256-GCM)
-- [ ] RTP packetization/depacketization
-- [ ] Audio call UI (desktop app)
-- [ ] Mute/unmute controls
-
-#### Phase 10.4: Video Calls (4 weeks)
-- [ ] Integrate libvpx (VP8 codec) or libx264 (H.264)
-- [ ] Add camera capture (V4L2 Linux / DirectShow Windows)
-- [ ] Video rendering (Qt widget integration)
-- [ ] Audio/video synchronization
-- [ ] Video preview and remote video display
-- [ ] Camera enable/disable controls
-
-#### Phase 10.5: Polish & Testing (4 weeks)
-- [ ] Call quality tuning (adaptive bitrate, resolution)
-- [ ] Network adaptation (jitter buffer, FEC)
-- [ ] Short Authentication String (SAS) verification UI
-- [ ] Call statistics and monitoring
-- [ ] End-to-end testing (Linux, Windows, macOS)
-- [ ] Performance benchmarks (latency, packet loss)
-
-### Security Features
-
-**Quantum-Resistant:**
-- ✅ Key exchange: Kyber512 (NIST FIPS 203 / ML-KEM)
-- ✅ Signatures: Dilithium3 (NIST FIPS 204 / ML-DSA)
-- ✅ Encryption: AES-256-GCM (quantum-safe symmetric)
-
-**Additional Security:**
-- ✅ Forward secrecy (ephemeral keys per call)
-- ✅ Man-in-the-middle protection (Dilithium3 signatures)
-- ✅ Short Authentication String (SAS) verification
-- ✅ Replay attack protection (SRTP sequence numbers)
-
-### Technology Stack
-
-| Component | Library | Purpose |
-|-----------|---------|---------|
-| PQ Crypto | Kyber512 (vendored) | Key encapsulation |
-| PQ Crypto | Dilithium3 (vendored) | Digital signatures |
-| NAT Traversal | libnice | ICE/STUN/TURN |
-| SRTP | libsrtp2 | Secure RTP encryption |
-| Audio Codec | libopus | Opus encoding/decoding |
-| Video Codec | libvpx or libx264 | VP8 or H.264 |
-| Audio I/O | PortAudio | Microphone/speaker |
-| Video I/O | V4L2 / DirectShow | Camera capture |
+- **Weeks 1-4:** Signaling via DNA messaging
+- **Weeks 5-8:** NAT traversal (libnice integration)
+- **Weeks 9-12:** Audio calls (Opus + PortAudio + SRTP)
+- **Weeks 13-16:** Video calls (VP8/H.264 + camera)
+- **Weeks 17-20:** Polish & testing
 
 ### Future Enhancements
 
-- [ ] Group calls (mesh topology, up to 8 participants)
-- [ ] Screen sharing (H.264 high-profile codec)
-- [ ] Call recording (local only, preserves E2E)
-- [ ] Selective Forwarding Unit (SFU) for 100+ participants
-- [ ] Key rotation for long calls (>1 hour)
+- Group calls (mesh topology, 8 participants)
+- Screen sharing (H.264 high-profile)
+- Call recording (local only, preserves E2E)
+- SFU for large conferences (100+ participants)
 
-### Deliverables
+---
 
-- Full voice/video call system with post-quantum security
-- Desktop app integration (Qt GUI)
-- Mobile app integration (Flutter)
-- User documentation and call UI guide
-- Performance benchmarks
+## Phase 12+: Future Enhancements 📋 PLANNED
 
 ### Advanced Features
 - [ ] Stickers and GIFs

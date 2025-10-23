@@ -170,102 +170,110 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 
 ---
 
-## Phase 10: Post-Quantum Voice/Video Calls (PLANNED)
+## Phase 10: DNA Board - Censorship-Resistant Social Media (PLANNED)
 
-**Status:** 📋 Research & Planning
-**Timeline:** ~20 weeks (5 months)
-**Prerequisites:** Phase 9.1 (P2P Transport Layer)
+**Status:** 📋 Planning (Post-Phases 7-9)
+**Timeline:** 12 weeks
+**Prerequisites:** Distributed validator storage, DNA-Keyserver merge, Offline messaging
 
 ### Overview
 
-DNA Messenger will feature **fully quantum-safe voice and video calls** using a revolutionary approach that bypasses WebRTC's quantum-vulnerable DTLS handshake:
+DNA Board is a **censorship-resistant social media platform** built on cpunk validator network:
 
-**The Problem:**
-- Standard WebRTC uses ECDHE/ECDSA for key exchange (quantum-vulnerable)
-- Quantum computers can break the handshake and decrypt media
-- IETF post-quantum DTLS standards are 3-5 years away
-
-**DNA's Solution:**
-- Use Kyber512 for key exchange via DNA's encrypted messaging
-- Use Dilithium3 for call authentication
-- Stream media over SRTP with PQ-derived keys
-- No quantum-vulnerable components
+**Core Principles:**
+1. **NO CENSORSHIP** - Content cannot be removed (no deletion endpoint)
+2. **PoH Required to Post** - Only verified humans (PoH ≥70) can create posts
+3. **Open Responses** - Anyone can reply (no PoH for replies)
+4. **Community Voting** - Thumbs up/down (FREE) to surface quality
+5. **Burn Economics** - All fees burned (deflationary)
+6. **Validator Rewards** - DAO pool distribution
 
 ### Architecture
 
 ```
-Signaling (DNA Encrypted Channel)
-  ↓
-  Kyber512 key exchange
-  Dilithium3 signatures
-  ↓
-NAT Traversal (libnice)
-  ↓
-  ICE/STUN/TURN
-  UDP hole punching
-  ↓
-Media Transport (SRTP)
-  ↓
-  AES-256-GCM (PQ-derived keys)
-  Opus audio / VP8 video
+Self-Healing Validator Network (3-Replica)
+┌─────────────────────────────────────┐
+│  Post → Primary Validator           │
+│  ↓ Replicate to 2 more (lowest GB)  │
+│  ↓ 3 Validators store content       │
+│  ↓ Heartbeat monitoring (30s)       │
+│  ↓ Auto-heal if validator offline   │
+│  ↓ Back to 3 replicas               │
+└─────────────────────────────────────┘
 ```
+
+### Content & Economics
+
+| Type | Burn Fee | PoH Required | Max Size |
+|------|----------|--------------|----------|
+| Post | 1 CPUNK | Yes (≥70) | 5,000 chars |
+| Image | 2 CPUNK | Yes | 5 MB |
+| Video | 5 CPUNK | Yes | 50 MB |
+| Reply | 0.5 CPUNK | **No** | 2,000 chars |
+| Vote | **FREE** | No | N/A |
+
+**Estimated burn:** 16M CPUNK/year (deflationary pressure)
+
+### Proof of Humanity (PoH)
+
+**Who Can Post:** humanity_score ≥ 70
+
+**Verification Tiers:**
+- Auto-Verified (75-89): Behavioral algorithm
+- Staked-Verified (90-94): Auto + 100 CPUNK stake
+- DAO-Vouched (95-99): 3 human vouches + DAO
+- Celebrity (100): Public figure + DAO
+
+**Bot Detection:** Single-destination sends, mechanical timing
+**Human Patterns:** Multiple services, irregular timing, staking
+
+### Implementation (12 Weeks)
+
+- **Weeks 1-2:** Validator backend + PoH scoring
+- **Weeks 3-4:** Gossip protocol + 3-replica replication
+- **Weeks 5-6:** Voting system + feed ranking
+- **Weeks 7-8:** Qt GUI (DNABoardTab, ComposeDialog, PostWidget)
+- **Weeks 9-10:** Media upload + wallet integration
+- **Weeks 11-12:** Testing + mainnet launch
 
 ### Key Features
 
-**Quantum-Resistant Security:**
-- Kyber512 (NIST FIPS 203 / ML-KEM) for key exchange
-- Dilithium3 (NIST FIPS 204 / ML-DSA) for signatures
-- AES-256-GCM for media encryption
-- Forward secrecy (ephemeral keys per call)
-- Short Authentication String (SAS) verification
+**Censorship Resistance:**
+- No deletion endpoint (content permanent)
+- 3-validator replication across jurisdictions
+- No central authority
+- Gossip protocol ensures propagation
 
-**Media Capabilities:**
-- Audio: Opus codec (48kHz, stereo)
-- Video: VP8 or H.264 codec
-- Adaptive bitrate and resolution
-- Network resilience (jitter buffer, FEC)
+**Quality Control:**
+- PoH prevents bot spam
+- Community voting surfaces quality
+- Ranking algorithm (votes × humanity × time)
 
-**Platform Support:**
-- Linux: ALSA/PulseAudio + V4L2
-- Windows: DirectSound/WASAPI + DirectShow
-- macOS: CoreAudio + AVFoundation
-
-### Implementation Phases
-
-1. **Signaling (4 weeks)** - Call invite/accept/reject via DNA messaging
-2. **NAT Traversal (4 weeks)** - libnice integration (reuse from Phase 9.1)
-3. **Audio Calls (4 weeks)** - libopus + PortAudio + SRTP
-4. **Video Calls (4 weeks)** - libvpx/libx264 + camera capture
-5. **Polish & Testing (4 weeks)** - Quality tuning, benchmarks, docs
-
-### Technology Stack
-
-- **libnice** - ICE/STUN/TURN (NAT traversal)
-- **libsrtp2** - Secure RTP with AES-256-GCM
-- **libopus** - Audio codec
-- **libvpx** or **libx264** - Video codec
-- **PortAudio** - Microphone/speaker I/O
-- **V4L2** (Linux) / **DirectShow** (Windows) - Camera capture
-
-### Why This is Better
-
-1. **Full Quantum Resistance** - No quantum-vulnerable components
-2. **Uses Existing Crypto** - Same Kyber/Dilithium as messaging
-3. **Independent of Standards** - Don't wait for WebRTC PQ support
-4. **Better Privacy** - Signaling through DNA's E2E encrypted channel
-5. **Forward Secrecy** - Ephemeral keys per call
-6. **Available Today** - Can deploy immediately (desktop/mobile)
-
-### Future Enhancements
-
-- Group calls (mesh topology, up to 8 participants)
-- Screen sharing (H.264 high-profile)
-- Call recording (local only, preserves E2E)
-- SFU for large conferences (100+ participants)
+**Economic Model:**
+- All fees burned (deflationary)
+- Validators funded by DAO pool (100M Year 1, halvening)
 
 ### Design Document
 
-Full technical specification: `/futuredesign/VOICE-VIDEO-DESIGN.md`
+Full specification: `/DNA_BOARD_PHASE10_PLAN.md`
+
+---
+
+## Phase 11: Post-Quantum Voice/Video Calls (PLANNED)
+
+**Status:** 📋 Research & Planning
+**Timeline:** ~20 weeks (5 months)
+**Prerequisites:** Phase 9.1 (P2P Transport Layer)
+**Design Doc:** `/futuredesign/VOICE-VIDEO-DESIGN.md`
+
+### Overview
+
+Fully quantum-safe voice/video calls using Kyber512 via DNA messaging + SRTP (bypasses WebRTC's quantum-vulnerable DTLS).
+
+**Technology:** libnice, libsrtp2, libopus, libvpx/libx264, PortAudio
+**Security:** Kyber512 key exchange, Dilithium3 signatures, forward secrecy, SAS verification
+
+See design doc for complete technical specification
 
 ---
 
