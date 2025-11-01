@@ -20,3 +20,8 @@ target_include_directories(test_dht_basic PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 add_executable(test_dht_3nodes test_dht_3nodes.c)
 target_link_libraries(test_dht_3nodes dht_lib)
 target_include_directories(test_dht_3nodes PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+
+# Persistent bootstrap node
+add_executable(persistent_bootstrap persistent_bootstrap.c)
+target_link_libraries(persistent_bootstrap dht_lib)
+target_include_directories(persistent_bootstrap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
