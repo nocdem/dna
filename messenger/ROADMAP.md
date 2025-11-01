@@ -347,10 +347,10 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 9: Distributed P2P Architecture 📋 FUTURE PLANS
+## Phase 9: Distributed P2P Architecture 🚧 IN PROGRESS
 
 **Timeline:** ~6 months (long-term vision)
-**Status:** Research & Design phase
+**Status:** Phase 9.1 COMPLETE - P2P Transport & DHT operational
 **Prerequisites:** Phase 5-7 complete
 **Design Docs:** See `/futuredesign/` folder for detailed specifications
 
@@ -364,13 +364,18 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ### Tasks
 
-#### Phase 9.1: P2P Transport Layer (6-8 weeks)
-- [ ] Integrate libp2p (C++) or libdatachannel (C)
-- [ ] Implement Kademlia DHT for peer discovery
-- [ ] NAT traversal using libnice (ICE/STUN/TURN)
-- [ ] Direct peer-to-peer messaging
-- [ ] Bootstrap node infrastructure (3-5 public nodes)
-- [ ] Connection management and reconnection
+#### Phase 9.1: P2P Transport Layer ✅ COMPLETE
+- [x] ~~Integrate libp2p~~ **Used OpenDHT instead (C++ library for DHT)**
+- [x] Implement DHT for peer discovery (OpenDHT 3.5.5)
+- [x] P2P transport layer with TCP + DHT (`p2p_transport.c`)
+- [x] Direct peer-to-peer messaging capability
+- [x] Bootstrap node infrastructure (3 public VPS nodes):
+  - US-1: dna-bootstrap-us-1 @ 154.38.182.161:4000
+  - EU-1: dna-bootstrap-eu-1 @ 164.68.105.227:4000
+  - EU-2: dna-bootstrap-eu-2 @ 164.68.116.180:4000
+- [x] Auto-start systemd services on all bootstrap nodes
+- [x] Connection management and DHT presence registration
+- [ ] NAT traversal using libnice (ICE/STUN/TURN) - **Deferred to Phase 9.2**
 
 #### Phase 9.2: Distributed Storage Layer (6-8 weeks)
 - [ ] Integrate OpenDHT for distributed message storage
