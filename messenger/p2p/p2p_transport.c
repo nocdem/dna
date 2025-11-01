@@ -8,6 +8,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <ifaddrs.h>
 #include <openssl/sha.h>
 #include <errno.h>
 
@@ -72,8 +73,40 @@ struct p2p_transport {
  * For now, returns "0.0.0.0" as placeholder
  */
 static int get_external_ip(char *ip_out, size_t len) {
-    // Placeholder - in production, use STUN or HTTP API
-    snprintf(ip_out, len, "0.0.0.0");
+    // Get primary network interface IP (not loopback)
+    struct ifaddrs *ifaddr, *ifa;
+    int found = 0;
+
+    if (getifaddrs(&ifaddr) == -1) {
+        snprintf(ip_out, len, "0.0.0.0");
+        return -1;
+    }
+
+    // Look for first non-loopback IPv4 address
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL)
+            continue;
+
+        if (ifa->ifa_addr->sa_family == AF_INET) {  // IPv4
+            struct sockaddr_in *addr = (struct sockaddr_in *)ifa->ifa_addr;
+            const char *ip = inet_ntoa(addr->sin_addr);
+
+            // Skip loopback (127.0.0.1)
+            if (strncmp(ip, "127.", 4) != 0) {
+                snprintf(ip_out, len, "%s", ip);
+                found = 1;
+                break;
+            }
+        }
+    }
+
+    freeifaddrs(ifaddr);
+
+    if (!found) {
+        snprintf(ip_out, len, "0.0.0.0");
+        return -1;
+    }
+
     return 0;
 }
 
