@@ -6,7 +6,9 @@
  * - Public keys: PostgreSQL keyserver table (shared, network-ready)
  * - Messages: PostgreSQL messages table (shared, network-ready)
  *
- * Network transport will be added in Phase 4
+ * Phase 9.1b: Hybrid P2P Transport
+ * - P2P direct messaging when both peers online (via DHT + TCP)
+ * - PostgreSQL fallback for offline message delivery
  */
 
 #ifndef MESSENGER_H
@@ -17,6 +19,7 @@
 #include <stdbool.h>
 #include <libpq-fe.h>
 #include "dna_api.h"
+#include "p2p/p2p_transport.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -45,6 +48,10 @@ typedef struct {
     char *identity;              // User's identity name (e.g., "alice")
     PGconn *pg_conn;             // PostgreSQL connection
     dna_context_t *dna_ctx;      // DNA API context
+
+    // P2P Transport (Phase 9.1b: Hybrid P2P messaging)
+    p2p_transport_t *p2p_transport;  // P2P transport layer (NULL if disabled)
+    bool p2p_enabled;                 // Enable/disable P2P messaging
 
     // Public key cache (API fetch caching)
     pubkey_cache_entry_t cache[PUBKEY_CACHE_SIZE];

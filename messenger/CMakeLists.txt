@@ -157,6 +157,10 @@ add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
 add_subdirectory(crypto/dilithium)  # Dilithium3 signatures
 add_subdirectory(crypto/cellframe_dilithium)  # Cellframe-compatible Dilithium (for CF20 wallet)
 
+# Phase 9.1: DHT and P2P Transport Layer
+add_subdirectory(dht)               # OpenDHT integration
+add_subdirectory(p2p)               # P2P transport layer
+
 # Utility programs (export_pubkey, sign_json, verify_json) - DISABLED
 # These are no longer needed as keyserver_register.c uses inline functions
 # add_subdirectory(utils)
@@ -195,6 +199,7 @@ set(COMMON_SOURCES
 add_library(dna_lib STATIC
     dna_api.c
     messenger.c
+    messenger_p2p.c  # Phase 9.1b: P2P integration layer
     ${COMMON_SOURCES}
 )
 
@@ -202,6 +207,7 @@ target_link_libraries(dna_lib
     OpenSSL::Crypto
     kyber512
     dilithium
+    p2p_transport  # Phase 9.1b: P2P transport layer
     ${PQ_LIBRARY}
     ${JSONC_LIBRARIES}
     ${PLATFORM_LIBS}
@@ -232,6 +238,8 @@ endif()
 
 target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/p2p  # Phase 9.1b: P2P transport headers
+    ${CMAKE_SOURCE_DIR}/dht  # Phase 9.1: DHT headers
     ${OPENSSL_INCLUDE_DIR}
     ${PQ_INCLUDE_DIR}
 )
