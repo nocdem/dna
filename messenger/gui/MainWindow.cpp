@@ -142,6 +142,14 @@ MainWindow::MainWindow(QWidget *parent)
         return;
     }
 
+    // Phase 9.1b: Initialize P2P transport
+    printf("[P2P] Initializing P2P transport for %s...\n", currentIdentity.toUtf8().constData());
+    if (messenger_p2p_init(ctx) == 0) {
+        printf("[P2P] ✓ P2P transport initialized successfully\n");
+    } else {
+        printf("[P2P] ✗ P2P transport initialization failed (will use PostgreSQL only)\n");
+    }
+
     // Load futuristic font from resources
     int fontId = QFontDatabase::addApplicationFont(":/fonts/Orbitron.ttf");
     if (fontId != -1) {
@@ -188,6 +196,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(statusPollTimer, &QTimer::timeout, this, &MainWindow::checkForStatusUpdates);
     statusPollTimer->start(10000);
 
+    // Phase 9.1b: Initialize P2P presence refresh timer (5 minutes)
+    p2pPresenceTimer = new QTimer(this);
+    connect(p2pPresenceTimer, &QTimer::timeout, this, &MainWindow::onRefreshP2PPresence);
+    p2pPresenceTimer->start(300000);  // 5 minutes = 300,000ms
+
     // Save current identity (reuse settings from earlier)
     settings.setValue("currentIdentity", currentIdentity);  // Save logged-in user
     QString savedTheme = settings.value("theme", "io").toString();  // Default to "io" theme
@@ -214,6 +227,11 @@ MainWindow::MainWindow(QWidget *parent)
 
 MainWindow::~MainWindow() {
     if (ctx) {
+        // Phase 9.1b: Shutdown P2P transport before freeing messenger
+        if (ctx->p2p_enabled) {
+            printf("[P2P] Shutting down P2P transport...\n");
+            messenger_p2p_shutdown(ctx);
+        }
         messenger_free(ctx);
     }
 }
@@ -673,6 +691,12 @@ void MainWindow::setupUI() {
     // Status bar
     statusLabel = new QLabel(QString::fromUtf8("Ready"));
     statusBar()->addWidget(statusLabel);
+
+    // Phase 9.1b: P2P status indicator
+    p2pStatusLabel = new QLabel(ctx->p2p_enabled ?
+        QString::fromUtf8("🔵 P2P: Online") :
+        QString::fromUtf8("🔴 P2P: Disabled"));
+    statusBar()->addPermanentWidget(p2pStatusLabel);
 }
 
 void MainWindow::loadContacts() {
@@ -2784,3 +2808,33 @@ QString MainWindow::processMessageForDisplay(const QString &messageText) {
     return processed;
 }
 
+
+// ============================================================================
+// Phase 9.1b: P2P Integration Slots
+// ============================================================================
+
+void MainWindow::onRefreshP2PPresence() {
+    if (!ctx || !ctx->p2p_enabled) {
+        return;
+    }
+
+    // Refresh presence in DHT (re-announce our identity)
+    if (messenger_p2p_refresh_presence(ctx) == 0) {
+        printf("[P2P] Presence refreshed in DHT\n");
+    } else {
+        printf("[P2P] Failed to refresh presence\n");
+    }
+}
+
+void MainWindow::onCheckPeerStatus() {
+    if (!ctx || !ctx->p2p_enabled || currentContact.isEmpty()) {
+        return;
+    }
+
+    // Check if current contact is online via P2P
+    bool online = messenger_p2p_peer_online(ctx, currentContact.toUtf8().constData());
+
+    if (online) {
+        printf("[P2P] %s is ONLINE (P2P available)\n", currentContact.toUtf8().constData());
+    }
+}
