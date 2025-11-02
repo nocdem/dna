@@ -276,18 +276,24 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - Timeline: ~20 weeks
 - Design: `/futuredesign/VOICE-VIDEO-DESIGN.md`
 
-### 📋 Phase 12: Distributed P2P Architecture (Future Plans)
-Transform into fully decentralized serverless messenger:
-- **libp2p** (C++) for peer-to-peer networking
-- **OpenDHT** or Kad-DHT for distributed storage
-- Distributed DHT-based keyserver (no central server)
-- Store-and-forward offline message delivery
-- **libnice** NAT traversal (ICE/STUN/TURN)
-- Multi-device sync via DHT
-- SQLite encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM)
-- Zero-knowledge storage (nodes cannot read messages)
+### 📋 Phase 12+: Future Enhancements (Planned)
+**Advanced Features:**
+- Stickers and GIFs
+- Rich text formatting
+- File transfer
+- Bots and automation
+- Channels (broadcast mode)
+- Stories/Status updates
 
-**See `/futuredesign/` folder for complete architecture specifications**
+**Infrastructure:**
+- Tor integration (metadata protection)
+- Bridge to other platforms (Signal, WhatsApp)
+
+**Enterprise:**
+- Organization management
+- Compliance tools
+- Audit logging
+- SSO integration
 
 **For detailed roadmap, see [ROADMAP.md](./ROADMAP.md)**
 
