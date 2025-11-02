@@ -62,7 +62,7 @@ void SeedPhraseWidget::setupUI()
     gridLayout->setContentsMargins(15, 15, 15, 15);
 
     // Create 24 word labels - USE PALETTE, NOT STYLESHEET
-    QFont monoFont("Courier New", 16);
+    QFont monoFont("Courier New", 12);
     monoFont.setBold(true);
 
     for (int i = 0; i < 24; i++) {
@@ -73,7 +73,7 @@ void SeedPhraseWidget::setupUI()
         numLabels[i] = new QLabel(QString::number(i + 1) + ".", gridFrame);
         numLabels[i]->setFont(monoFont);
         numLabels[i]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        numLabels[i]->setMinimumWidth(40);
+        numLabels[i]->setAutoFillBackground(false);
         QPalette numPal = numLabels[i]->palette();
         numPal.setColor(QPalette::WindowText, QColor(204, 204, 204));
         numLabels[i]->setPalette(numPal);
@@ -83,13 +83,16 @@ void SeedPhraseWidget::setupUI()
         wordLabels[i] = new QLabel("________", gridFrame);
         wordLabels[i]->setFont(monoFont);
         wordLabels[i]->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        wordLabels[i]->setMinimumWidth(120);
+        wordLabels[i]->setAutoFillBackground(false);
         wordLabels[i]->setTextInteractionFlags(Qt::TextSelectableByMouse);
         QPalette wordPal = wordLabels[i]->palette();
         wordPal.setColor(QPalette::WindowText, QColor(255, 255, 255));
         wordLabels[i]->setPalette(wordPal);
         gridLayout->addWidget(wordLabels[i], row, col + 1);
     }
+
+    // Make grid frame expand to show all content
+    gridFrame->setMinimumSize(600, 400);
 
     mainLayout->addWidget(gridFrame);
 
