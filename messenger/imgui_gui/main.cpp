@@ -112,9 +112,11 @@ private:
         ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x * 0.9f : 500, is_mobile ? io.DisplaySize.y * 0.9f : 500));
         
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.5f, 0.5f)); // Center title
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 12)); // Title bar height
         ImGui::Begin("DNA Messenger - Select Identity", nullptr, 
             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
-        ImGui::PopStyleVar();
+        ImGui::PopStyleVar(3);
         
         // Add padding at top
         ImGui::Spacing();
