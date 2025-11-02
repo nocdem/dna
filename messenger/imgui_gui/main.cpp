@@ -40,7 +40,7 @@ struct Contact {
 // Helper function for buttons with dark text
 inline bool ButtonDark(const char* label, const ImVec2& size = ImVec2(0, 0)) {
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));
-    bool result = ButtonDark(label, size);
+    bool result = ImGui::Button(label, size);
     ImGui::PopStyleColor();
     return result;
 }
