@@ -644,9 +644,9 @@ int p2p_lookup_peer(
     // Copy public key
     memcpy(peer_info->public_key, peer_pubkey, 1952);
 
-    // Check if peer is online (last seen < 5 minutes)
+    // Check if peer is online (last seen < 10 minutes)
     time_t now = time(NULL);
-    peer_info->is_online = (now - (time_t)peer_info->last_seen) < 300;
+    peer_info->is_online = (now - (time_t)peer_info->last_seen) < 600;
 
     free(value);
 
