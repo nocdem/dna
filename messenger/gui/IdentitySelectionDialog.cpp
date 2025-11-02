@@ -6,6 +6,7 @@
 #include <QFileInfo>
 #include <QFile>
 #include <QStandardPaths>
+#include <QDebug>
 
 IdentitySelectionDialog::IdentitySelectionDialog(QWidget *parent)
     : QDialog(parent)
