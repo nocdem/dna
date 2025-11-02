@@ -31,6 +31,10 @@ int main(int argc, char **argv) {
     strncpy(config.identity, "bootstrap-node", sizeof(config.identity) - 1);
     config.bootstrap_count = 0;  // First node - no bootstrap
 
+    // Enable disk persistence for bootstrap nodes (hybrid approach)
+    strncpy(config.persistence_path, "/var/lib/dna-dht/bootstrap.state",
+            sizeof(config.persistence_path) - 1);
+
     printf("[1/3] Creating DHT context...\n");
     global_ctx = dht_context_new(&config);
     if (!global_ctx) {

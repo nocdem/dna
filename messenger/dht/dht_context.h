@@ -29,6 +29,7 @@ typedef struct {
     char identity[256];               // Node identity (username or "bootstrap1")
     char bootstrap_nodes[5][256];     // Up to 5 bootstrap nodes (IP:port)
     size_t bootstrap_count;           // Number of bootstrap nodes
+    char persistence_path[512];       // Disk persistence path (empty = memory-only)
 } dht_config_t;
 
 /**

@@ -152,6 +152,16 @@ if(WIN32)
     endif()
 endif()
 
+# SQLite3 for local message backup (Phase 9.3)
+find_package(SQLite3 REQUIRED)
+if(SQLite3_FOUND)
+    message(STATUS "SQLite3 found: ${SQLite3_VERSION}")
+    message(STATUS "SQLite3 library: ${SQLite3_LIBRARIES}")
+    message(STATUS "SQLite3 include: ${SQLite3_INCLUDE_DIRS}")
+else()
+    message(FATAL_ERROR "SQLite3 not found. Install: apt install libsqlite3-dev (Linux)")
+endif()
+
 # SDK Independence: Vendored cryptographic implementations
 add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
 add_subdirectory(crypto/dilithium)  # Dilithium3 signatures
@@ -193,6 +203,8 @@ set(COMMON_SOURCES
     qgp_utils_standalone.c
     # Cross-platform abstraction layer
     ${PLATFORM_SOURCES}
+    # Phase 9.3: Local message backup (SQLite)
+    message_backup.c
 )
 
 # DNA Messenger Library (libdna)
@@ -253,6 +265,11 @@ if(JSONC_INCLUDE_DIRS)
     target_include_directories(dna_lib PUBLIC ${JSONC_INCLUDE_DIRS})
 endif()
 
+# Add SQLite3 include directories
+if(SQLite3_INCLUDE_DIRS)
+    target_include_directories(dna_lib PUBLIC ${SQLite3_INCLUDE_DIRS})
+endif()
+
 if(WIN32)
     target_include_directories(dna_lib PUBLIC
         ${CMAKE_SOURCE_DIR}/win32
@@ -271,6 +288,7 @@ target_link_libraries(dna_messenger
     ${JSONC_LIBRARIES}
     OpenSSL::SSL
     OpenSSL::Crypto
+    SQLite::SQLite3
 )
 
 # On Windows, add zlib and C++ standard library
