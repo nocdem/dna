@@ -333,9 +333,13 @@ if(WIN32)
     find_library(UNISTRING_LIBRARY NAMES unistring libunistring PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
     find_library(ZSTD_LIBRARY NAMES zstd libzstd PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
     find_library(IDN2_LIBRARY NAMES idn2 libidn2 PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(ICONV_LIBRARY NAMES iconv libiconv PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(BROTLIENC_LIBRARY NAMES brotlienc libbrotlienc PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(BROTLIDEC_LIBRARY NAMES brotlidec libbrotlidec PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(BROTLICOMMON_LIBRARY NAMES brotlicommon libbrotlicommon PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
 
     # Link all dependencies (order matters for static linking)
-    # IMPORTANT: nettle must come before hogweed (hogweed depends on nettle)
+    # IMPORTANT: Dependencies must be linked BEFORE the libraries that use them
     target_link_libraries(dna_messenger
         z stdc++
         ${FMT_LIBRARY}
@@ -345,9 +349,13 @@ if(WIN32)
         ${HOGWEED_LIBRARY}
         ${NETTLE_LIBRARY}
         ${GMP_LIBRARY}
-        ${UNISTRING_LIBRARY}
+        ${BROTLIENC_LIBRARY}
+        ${BROTLIDEC_LIBRARY}
+        ${BROTLICOMMON_LIBRARY}
         ${ZSTD_LIBRARY}
         ${IDN2_LIBRARY}
+        ${UNISTRING_LIBRARY}
+        ${ICONV_LIBRARY}
         ${ARGON2_LIBRARY}
         # Windows system libraries (gnutls, OpenSSL, PostgreSQL dependencies)
         ${GNUTLS_LIBRARY}    # Link gnutls again for circular dependencies
