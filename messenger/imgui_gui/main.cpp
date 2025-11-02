@@ -184,8 +184,6 @@ private:
             ImGui::OpenPopup("Create New Identity");
         }
         ImGui::PopStyleColor();
-            ImGui::OpenPopup("Create New Identity");
-        }
         
         // Create identity popup
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
