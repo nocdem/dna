@@ -201,6 +201,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(p2pPresenceTimer, &QTimer::timeout, this, &MainWindow::onRefreshP2PPresence);
     p2pPresenceTimer->start(300000);  // 5 minutes = 300,000ms
 
+    // Phase 9.2: Initialize DHT offline message check timer (2 minutes)
+    offlineMessageTimer = new QTimer(this);
+    connect(offlineMessageTimer, &QTimer::timeout, this, &MainWindow::onCheckOfflineMessages);
+    offlineMessageTimer->start(120000);  // 2 minutes = 120,000ms
+
     // Save current identity (reuse settings from earlier)
     settings.setValue("currentIdentity", currentIdentity);  // Save logged-in user
     QString savedTheme = settings.value("theme", "io").toString();  // Default to "io" theme
@@ -2836,5 +2841,22 @@ void MainWindow::onCheckPeerStatus() {
 
     if (online) {
         printf("[P2P] %s is ONLINE (P2P available)\n", currentContact.toUtf8().constData());
+    }
+}
+
+void MainWindow::onCheckOfflineMessages() {
+    if (!ctx || !ctx->p2p_enabled) {
+        return;
+    }
+
+    // Check DHT for offline messages (Phase 9.2)
+    size_t messages_received = 0;
+    int result = messenger_p2p_check_offline_messages(ctx, &messages_received);
+
+    if (result == 0 && messages_received > 0) {
+        printf("[P2P] Retrieved %zu offline messages from DHT\n", messages_received);
+
+        // Refresh message list to show newly delivered messages
+        checkForNewMessages();
     }
 }

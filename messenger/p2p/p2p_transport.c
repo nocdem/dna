@@ -1,5 +1,6 @@
 #include "p2p_transport.h"
 #include "dht_context.h"
+#include "dht_offline_queue.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -779,19 +780,120 @@ int p2p_check_offline_messages(
         return -1;
     }
 
-    printf("[P2P] TODO: Implement p2p_check_offline_messages\n");
-
-    // TODO:
-    // 1. Query DHT for offline messages: hash(my_pubkey) -> message_queue
-    // 2. Decrypt and verify each message
-    // 3. Deliver via callback
-    // 4. Delete from DHT
-
-    if (messages_received) {
-        *messages_received = 0;
+    if (!ctx->config.enable_offline_queue) {
+        printf("[P2P] Offline queue disabled, skipping check\n");
+        if (messages_received) *messages_received = 0;
+        return 0;
     }
 
+    printf("[P2P] Checking DHT for offline messages...\n");
+
+    // 1. Retrieve queued messages from DHT
+    // Key: SHA256(my_identity + ":offline_queue")
+    dht_offline_message_t *messages = NULL;
+    size_t count = 0;
+
+    int result = dht_retrieve_queued_messages(
+        ctx->dht,
+        ctx->config.identity,
+        &messages,
+        &count
+    );
+
+    if (result != 0) {
+        fprintf(stderr, "[P2P] Failed to retrieve offline messages from DHT\n");
+        if (messages_received) *messages_received = 0;
+        return -1;
+    }
+
+    if (count == 0) {
+        printf("[P2P] No offline messages in DHT\n");
+        if (messages_received) *messages_received = 0;
+        return 0;
+    }
+
+    printf("[P2P] Found %zu offline messages in DHT\n", count);
+
+    // 2. Deliver each message via callback
+    size_t delivered_count = 0;
+    for (size_t i = 0; i < count; i++) {
+        dht_offline_message_t *msg = &messages[i];
+
+        printf("[P2P] Delivering offline message %zu/%zu from %s (%zu bytes)\n",
+               i + 1, count, msg->sender, msg->ciphertext_len);
+
+        // Deliver to application layer (messenger_p2p.c)
+        // Note: Sender pubkey is unknown for offline messages (would need reverse lookup)
+        // Callback will try to identify sender from message content
+        if (ctx->message_callback) {
+            ctx->message_callback(
+                NULL,  // peer_pubkey (unknown for offline messages)
+                msg->ciphertext,
+                msg->ciphertext_len,
+                ctx->callback_user_data
+            );
+            delivered_count++;
+        } else {
+            printf("[P2P] Warning: No message callback registered, skipping message\n");
+        }
+    }
+
+    printf("[P2P] ✓ Delivered %zu/%zu offline messages\n", delivered_count, count);
+
+    // 3. Clear queue in DHT
+    if (delivered_count > 0) {
+        printf("[P2P] Clearing offline message queue in DHT\n");
+        int clear_result = dht_clear_queue(ctx->dht, ctx->config.identity);
+        if (clear_result != 0) {
+            fprintf(stderr, "[P2P] Warning: Failed to clear offline queue (messages may be delivered again)\n");
+        } else {
+            printf("[P2P] ✓ Offline queue cleared\n");
+        }
+    }
+
+    if (messages_received) {
+        *messages_received = delivered_count;
+    }
+
+    dht_offline_messages_free(messages, count);
     return 0;
+}
+
+int p2p_queue_offline_message(
+    p2p_transport_t *ctx,
+    const char *sender,
+    const char *recipient,
+    const uint8_t *message,
+    size_t message_len)
+{
+    if (!ctx || !sender || !recipient || !message || message_len == 0) {
+        fprintf(stderr, "[P2P] Invalid parameters for queuing offline message\n");
+        return -1;
+    }
+
+    if (!ctx->config.enable_offline_queue) {
+        printf("[P2P] Offline queue disabled\n");
+        return -1;
+    }
+
+    printf("[P2P] Queueing offline message for %s (%zu bytes)\n", recipient, message_len);
+
+    int result = dht_queue_message(
+        ctx->dht,
+        sender,
+        recipient,
+        message,
+        message_len,
+        ctx->config.offline_ttl_seconds
+    );
+
+    if (result == 0) {
+        printf("[P2P] ✓ Message queued successfully\n");
+    } else {
+        fprintf(stderr, "[P2P] Failed to queue message in DHT\n");
+    }
+
+    return result;
 }
 
 // ============================================================================

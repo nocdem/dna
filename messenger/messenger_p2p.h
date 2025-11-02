@@ -172,6 +172,28 @@ int messenger_p2p_list_online_peers(
  */
 int messenger_p2p_refresh_presence(messenger_context_t *ctx);
 
+// ============================================================================
+// OFFLINE MESSAGE QUEUE (Phase 9.2)
+// ============================================================================
+
+/**
+ * Check for offline messages in DHT
+ *
+ * Retrieves messages that were queued in DHT while recipient was offline.
+ * Messages are automatically delivered to PostgreSQL via the message callback.
+ * Queue is cleared after retrieval.
+ *
+ * This should be called periodically (e.g., every 2 minutes) by GUI timer.
+ *
+ * @param ctx: Messenger context
+ * @param messages_received: Output - number of messages retrieved (optional)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_p2p_check_offline_messages(
+    messenger_context_t *ctx,
+    size_t *messages_received
+);
+
 #ifdef __cplusplus
 }
 #endif

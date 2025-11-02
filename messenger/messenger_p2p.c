@@ -7,6 +7,7 @@
 #include "messenger_p2p.h"
 #include "messenger.h"
 #include "p2p/p2p_transport.h"
+#include "dht/dht_offline_queue.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -458,10 +459,32 @@ int messenger_send_p2p(
     if (result == 0) {
         printf("[P2P] ✓ Message sent to %s via P2P\n", recipient);
         return 0;
-    } else {
-        printf("[P2P] P2P send failed for %s, using PostgreSQL fallback\n", recipient);
-        return -1;  // Signal to use PostgreSQL fallback
     }
+
+    // P2P send failed - try DHT offline queue (Phase 9.2)
+    printf("[P2P] P2P send failed for %s\n", recipient);
+
+    // Try to queue in DHT
+    if (ctx->p2p_transport) {
+        int queue_result = p2p_queue_offline_message(
+            ctx->p2p_transport,
+            ctx->identity,      // sender
+            recipient,          // recipient
+            encrypted_message,
+            encrypted_len
+        );
+
+        if (queue_result == 0) {
+            printf("[P2P] ✓ Message queued in DHT for %s\n", recipient);
+            return 0;  // Success via DHT queue
+        } else {
+            fprintf(stderr, "[P2P] Failed to queue in DHT, using PostgreSQL fallback\n");
+        }
+    }
+
+    // Fall back to PostgreSQL
+    printf("[P2P] Using PostgreSQL fallback for %s\n", recipient);
+    return -1;  // Signal to use PostgreSQL fallback
 }
 
 int messenger_broadcast_p2p(
@@ -649,4 +672,39 @@ int messenger_p2p_refresh_presence(messenger_context_t *ctx)
 
     printf("[P2P] Presence refreshed successfully\n");
     return 0;
+}
+
+// ============================================================================
+// OFFLINE MESSAGE QUEUE (Phase 9.2)
+// ============================================================================
+
+int messenger_p2p_check_offline_messages(
+    messenger_context_t *ctx,
+    size_t *messages_received)
+{
+    if (!ctx || !ctx->p2p_enabled || !ctx->p2p_transport) {
+        if (messages_received) *messages_received = 0;
+        return -1;
+    }
+
+    printf("[P2P] Checking for offline messages in DHT...\n");
+
+    size_t count = 0;
+    int result = p2p_check_offline_messages(ctx->p2p_transport, &count);
+
+    if (result == 0 && count > 0) {
+        printf("[P2P] ✓ Retrieved %zu offline messages from DHT\n", count);
+        // Messages are automatically delivered via p2p_message_received_internal()
+        // which stores them in PostgreSQL for GUI retrieval
+    } else if (result == 0 && count == 0) {
+        printf("[P2P] No offline messages in DHT\n");
+    } else {
+        fprintf(stderr, "[P2P] Failed to check offline messages\n");
+    }
+
+    if (messages_received) {
+        *messages_received = count;
+    }
+
+    return result;
 }

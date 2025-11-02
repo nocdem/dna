@@ -63,6 +63,7 @@ private slots:
     void refreshWalletMenu();  // Populate wallet submenu
     void onRefreshP2PPresence();  // Phase 9.1b: Refresh P2P presence in DHT
     void onCheckPeerStatus();  // Phase 9.1b: Update peer online status
+    void onCheckOfflineMessages();  // Phase 9.2: Check DHT for offline messages
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;  // For fullscreen ESC key
@@ -139,6 +140,7 @@ private:
     // P2P Transport (Phase 9.1b)
     QLabel *p2pStatusLabel;  // P2P connection status indicator
     QTimer *p2pPresenceTimer;  // Refresh P2P presence every 5 minutes
+    QTimer *offlineMessageTimer;  // Check DHT offline queue every 2 minutes (Phase 9.2)
 
     // Multi-recipient support
     QStringList additionalRecipients;

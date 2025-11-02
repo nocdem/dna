@@ -211,6 +211,27 @@ int p2p_check_offline_messages(
     size_t *messages_received
 );
 
+/**
+ * Queue message in DHT for offline recipient (Phase 9.2)
+ *
+ * Stores encrypted message in DHT for later retrieval.
+ * Message expires after TTL (default 7 days).
+ *
+ * @param ctx P2P transport context
+ * @param sender Sender identity string
+ * @param recipient Recipient identity string
+ * @param message Encrypted message data
+ * @param message_len Length of message
+ * @return 0 on success, -1 on failure
+ */
+int p2p_queue_offline_message(
+    p2p_transport_t *ctx,
+    const char *sender,
+    const char *recipient,
+    const uint8_t *message,
+    size_t message_len
+);
+
 // ============================================================================
 // Connection Management
 // ============================================================================
