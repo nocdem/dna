@@ -336,8 +336,8 @@ int messenger_p2p_init(messenger_context_t *ctx)
     p2p_config_t config = {
         .listen_port = 4001,
         .dht_port = 4000,
-        .enable_offline_queue = false,  // We use PostgreSQL for offline messages
-        .offline_ttl_seconds = 0,
+        .enable_offline_queue = true,   // Phase 9.2: DHT offline message queue
+        .offline_ttl_seconds = 604800,  // 7 days (Phase 9.2)
         .bootstrap_count = BOOTSTRAP_COUNT
     };
 
