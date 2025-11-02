@@ -157,6 +157,14 @@ void SeedPhraseWidget::onCopyToClipboard()
     emit seedPhraseCopied();
 }
 
+void SeedPhraseWidget::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    printf("[DEBUG SEED] ===== showEvent() CALLED - Widget NOW VISIBLE! =====\n");
+    // Re-apply theme now that parent is visible
+    applyTheme();
+}
+
 void SeedPhraseWidget::applyTheme()
 {
     printf("[DEBUG SEED] ===== applyTheme() CALLED =====\n");
