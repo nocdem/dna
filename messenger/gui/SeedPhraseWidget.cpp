@@ -117,7 +117,12 @@ void SeedPhraseWidget::updateDisplay()
     for (int i = 0; i < 24; i++) {
         if (i < words.size()) {
             wordLabels[i]->setText(words[i]);
-            printf("[DEBUG SEED] wordLabels[%d] = '%s'\n", i, words[i].toUtf8().constData());
+            wordLabels[i]->setVisible(true);
+            wordLabels[i]->show();
+            printf("[DEBUG SEED] wordLabels[%d] = '%s', visible=%d, size=%dx%d\n",
+                   i, words[i].toUtf8().constData(),
+                   wordLabels[i]->isVisible(),
+                   wordLabels[i]->width(), wordLabels[i]->height());
         } else {
             wordLabels[i]->setText("________");
         }
@@ -171,13 +176,13 @@ void SeedPhraseWidget::applyTheme()
     // Update number labels - larger and brighter
     for (int i = 0; i < 24; i++) {
         if (numLabels[i]) {
-            numLabels[i]->setStyleSheet(QString("QLabel { color: #CCCCCC; background: transparent; font-size: 14pt; font-weight: bold; }"));
+            numLabels[i]->setStyleSheet(QString("color: #CCCCCC; font-size: 14pt; font-weight: bold;"));
         }
     }
 
     // Update word labels - BRIGHT WHITE for maximum visibility
     for (int i = 0; i < 24; i++) {
-        wordLabels[i]->setStyleSheet(QString("QLabel { color: #FFFFFF; background: transparent; font-size: 14pt; font-weight: bold; }"));
+        wordLabels[i]->setStyleSheet(QString("color: #FFFFFF; font-size: 14pt; font-weight: bold;"));
     }
 
     // Update copy button
