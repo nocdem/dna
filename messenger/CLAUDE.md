@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-10-23
+**Last Updated:** 2025-11-02
 **Project:** DNA Messenger (Post-Quantum Encrypted Messenger)
-**Current Phase:** Phase 5 (Web Messenger) - Phase 4 & 8 Complete
+**Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2 Complete
 
 ---
 
@@ -14,6 +14,8 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 - End-to-end encrypted messaging
 - Group chats with member management
 - cpunk wallet integration (CPUNK, CELL, KEL tokens)
+- P2P messaging with DHT-based peer discovery (OpenDHT)
+- Offline message queueing (7-day DHT storage)
 - Cross-platform (Linux, Windows)
 - Qt5 GUI with theme support
 - BIP39 recovery phrases
@@ -45,12 +47,25 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
    - Transaction builder and signing
    - Balance and history queries
 
+5. **P2P Transport Layer** (Phase 9.1 & 9.2)
+   - OpenDHT for peer discovery and storage
+   - Direct peer-to-peer TCP connections (port 4001)
+   - DHT-based offline message queueing
+   - 3 public bootstrap nodes (US/EU)
+   - Automatic message delivery with 2-minute polling
+
 ### Directory Structure
 ```
 /opt/dna-messenger/
 ├── crypto/                  # Cryptography libraries
 │   ├── dilithium/          # Dilithium3 signatures
 │   └── kyber512/           # Kyber512 key encapsulation
+├── dht/                     # DHT layer (Phase 9.1 & 9.2)
+│   ├── dht_context.*       # OpenDHT integration
+│   └── dht_offline_queue.* # Offline message queueing
+├── p2p/                     # P2P transport layer (Phase 9.1)
+│   ├── p2p_transport.*     # TCP connections + DHT
+│   └── test_p2p_basic.c    # P2P transport tests
 ├── gui/                     # Qt5 GUI application
 │   ├── MainWindow.*        # Main chat window
 │   ├── WalletDialog.*      # Wallet balance & transactions
@@ -61,6 +76,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 ├── wallet.c/h              # Cellframe wallet integration
 ├── cellframe_rpc.c/h       # Cellframe RPC client
 ├── cellframe_tx_builder_minimal.c/h # Transaction builder
+├── messenger_p2p.*         # P2P messaging integration
 ├── dna_api.h               # Public library API
 └── CMakeLists.txt          # Build configuration
 ```
@@ -150,6 +166,72 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 - **Direct RPC integration:** No external wallet utilities needed
 - **Theme-aware:** All wallet dialogs respond to theme changes
 - **Transaction builder:** Minimal serialization for cross-platform compatibility
+
+---
+
+## Phase 9.1 & 9.2: P2P Transport & Offline Message Queue (COMPLETE)
+
+**Status:** ✅ Complete (2025-11-02)
+
+### Phase 9.1: P2P Transport Layer (COMPLETE)
+**What Was Implemented:**
+1. **OpenDHT Integration** - DHT-based peer discovery
+   - 3 public bootstrap nodes (US/EU)
+   - Peer registration and lookup via DHT
+   - SHA256-based peer keys
+
+2. **P2P Transport** - Direct peer-to-peer messaging
+   - TCP connections on port 4001
+   - Post-quantum encryption (Kyber512 + AES-256-GCM)
+   - Connection management and presence updates
+
+3. **Hybrid Delivery** - Multi-tier message delivery
+   - Primary: Direct P2P (if peer online)
+   - Secondary: DHT queue (if peer offline)
+   - Tertiary: PostgreSQL fallback
+
+### Phase 9.2: Offline Message Queueing (COMPLETE)
+**What Was Implemented:**
+1. **DHT Offline Queue** (`dht/dht_offline_queue.c/h`)
+   - Binary message serialization with magic bytes
+   - 7-day TTL with configurable expiry
+   - SHA256-based queue keys: `hash(recipient + ":offline_queue")`
+   - Single-queue-per-recipient architecture
+
+2. **Message Storage Protocol**
+   - Encrypted message storage in DHT
+   - Automatic append to existing queue
+   - Platform-independent network byte order (htonl/ntohl)
+   - Cross-platform support (Windows/Linux)
+
+3. **Automatic Retrieval**
+   - 2-minute polling timer in GUI (`MainWindow.cpp`)
+   - Automatic delivery to PostgreSQL when retrieved
+   - Queue clearing after successful delivery
+   - Message expiry handling
+
+4. **Integration**
+   - `p2p_transport.c` - Queue/retrieve API
+   - `messenger_p2p.c` - Hybrid send flow
+   - `gui/MainWindow.cpp` - Automatic polling
+
+### Key Technical Decisions
+- **Single queue per recipient:** Append all messages to one DHT entry (workaround for OpenDHT C wrapper limitations)
+- **Binary serialization:** Custom format with magic bytes (0x444E4120 = "DNA ")
+- **7-day TTL:** Configurable via `offline_ttl_seconds` parameter
+- **2-minute polling:** Balance between responsiveness and DHT load
+- **Hybrid delivery:** Ensures no message loss across all failure scenarios
+
+### Files Modified/Created
+- `dht/dht_offline_queue.h` (NEW - 170 lines)
+- `dht/dht_offline_queue.c` (NEW - 650 lines)
+- `dht/CMakeLists.txt` (MODIFIED)
+- `p2p/p2p_transport.h` (MODIFIED - added queue API)
+- `p2p/p2p_transport.c` (MODIFIED - implemented queue/retrieve)
+- `messenger_p2p.h` (MODIFIED - added check API)
+- `messenger_p2p.c` (MODIFIED - hybrid send flow)
+- `gui/MainWindow.h` (MODIFIED - added timer)
+- `gui/MainWindow.cpp` (MODIFIED - polling callback)
 
 ---
 

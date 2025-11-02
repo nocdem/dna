@@ -149,6 +149,8 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ Message delivery and read receipts
 - ✅ Desktop notifications
 - ✅ cpunk Wallet integration (view balances, send/receive CPUNK/CELL/KEL tokens)
+- ✅ P2P messaging with DHT-based peer discovery (OpenDHT)
+- ✅ Offline message queueing (messages stored in DHT for 7 days)
 
 **Coming Soon:**
 - 🚧 Web-based messenger (Phase 5 - in progress)
@@ -237,10 +239,20 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
   - Theme support across all wallet dialogs
   - Direct integration with local Cellframe node via RPC
 
-### 📋 Phase 9: Advanced Features (Planned)
-- Stickers and rich media
-- Channels (broadcast mode)
-- Tor integration
+### 🚧 Phase 9: Distributed P2P Architecture (In Progress)
+- ✅ **Phase 9.1:** P2P Transport Layer (COMPLETE)
+  - OpenDHT integration for peer discovery
+  - Direct peer-to-peer messaging via TCP
+  - 3 public bootstrap nodes (US/EU)
+
+- ✅ **Phase 9.2:** Offline Message Queueing (COMPLETE)
+  - DHT-based message storage for offline recipients
+  - 7-day message TTL with automatic retrieval
+  - Binary serialization with SHA256 keys
+  - 2-minute automatic polling in GUI
+
+- 📋 **Phase 9.3:** Group P2P messaging (planned)
+- 📋 **Phase 9.4:** Distributed DHT keyserver (planned)
 
 ### 📋 Phase 10: DNA Board - Censorship-Resistant Social Media (Planned)
 **True free speech platform** built on cpunk validator network:
