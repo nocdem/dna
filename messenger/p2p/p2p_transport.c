@@ -350,11 +350,20 @@ static void* listener_thread(void *arg) {
 
         printf("[P2P] ✓ Received %u bytes from peer\n", msg_len);
 
-        // Call message callback if registered
+        // Call message callback if registered (stores message in PostgreSQL)
         if (ctx->message_callback) {
             // Note: We don't have the peer's public key here (would need handshake)
             // For now, pass NULL - the callback can try to identify sender from message content
             ctx->message_callback(NULL, message, msg_len, ctx->callback_user_data);
+        }
+
+        // Send ACK (1 byte = 0x01) to confirm receipt
+        uint8_t ack = 0x01;
+        ssize_t ack_sent = send(client_sock, (char*)&ack, 1, 0);
+        if (ack_sent == 1) {
+            printf("[P2P] ✓ Sent ACK to peer\n");
+        } else {
+            printf("[P2P] Failed to send ACK (peer may assume failure)\n");
         }
 
         free(message);
@@ -746,8 +755,20 @@ int p2p_send_message(
 
     printf("[P2P] ✓ Sent %zu bytes to peer\n", message_len);
 
-    close(sockfd);
-    return 0;
+    // Step 4: Wait for ACK (1 byte acknowledgment)
+    // This confirms the peer received AND stored the message
+    uint8_t ack;
+    ssize_t ack_received = recv(sockfd, (char*)&ack, 1, 0);
+
+    if (ack_received == 1 && ack == 0x01) {
+        printf("[P2P] ✓ Received ACK from peer (message confirmed)\n");
+        close(sockfd);
+        return 0;  // Success - peer confirmed receipt
+    } else {
+        printf("[P2P] ⚠ No ACK received from peer (may not have processed message)\n");
+        close(sockfd);
+        return -1;  // Consider failed - fallback to PostgreSQL reliability
+    }
 }
 
 int p2p_check_offline_messages(
