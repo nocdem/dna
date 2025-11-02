@@ -92,8 +92,8 @@ void SeedPhraseWidget::setupUI()
         gridLayout->addWidget(wordLabels[i], row, col + 1);
     }
 
-    // Make grid frame smaller to fit in dialog - 7pt font needs less space
-    gridFrame->setMinimumHeight(300);
+    // Make grid frame smaller to fit in narrower dialog - 7pt font needs less space
+    gridFrame->setMinimumSize(420, 300);
     gridFrame->setMaximumHeight(300);
     gridFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
