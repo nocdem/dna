@@ -114,8 +114,8 @@ void IdentitySelectionDialog::loadIdentities()
     // Extract identity names
     for (const QFileInfo &fileInfo : files) {
         QString filename = fileInfo.fileName();
-        // Remove "-dilithium.pqkey" suffix
-        QString identity = filename.left(filename.length() - 17);
+        // Remove "-dilithium.pqkey" suffix (16 characters)
+        QString identity = filename.left(filename.length() - 16);
         identityList->addItem(identity);
     }
 
