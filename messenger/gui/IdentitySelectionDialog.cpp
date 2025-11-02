@@ -4,6 +4,7 @@
 #include "ThemeManager.h"
 #include "cpunk_themes.h"
 #include <QFileInfo>
+#include <QFile>
 #include <QStandardPaths>
 
 IdentitySelectionDialog::IdentitySelectionDialog(QWidget *parent)
@@ -111,12 +112,41 @@ void IdentitySelectionDialog::loadIdentities()
         return;
     }
 
-    // Extract identity names
+    // Extract identity names and verify both key files exist
+    QStringList validIdentities;
+    QStringList incompleteIdentities;
+
     for (const QFileInfo &fileInfo : files) {
         QString filename = fileInfo.fileName();
         // Remove "-dilithium.pqkey" suffix (16 characters)
         QString identity = filename.left(filename.length() - 16);
-        identityList->addItem(identity);
+
+        // Verify both key files exist
+        QString dilithiumKey = dnaDir + "/" + identity + "-dilithium.pqkey";
+        QString kyberKey = dnaDir + "/" + identity + "-kyber512.pqkey";
+
+        if (QFile::exists(dilithiumKey) && QFile::exists(kyberKey)) {
+            validIdentities << identity;
+            identityList->addItem(identity);
+        } else {
+            incompleteIdentities << identity;
+            qWarning() << "[Identity] Incomplete identity found:" << identity
+                      << "(missing" << (QFile::exists(kyberKey) ? "dilithium" : "kyber512") << "key)";
+        }
+    }
+
+    // Show warning if incomplete identities found
+    if (!incompleteIdentities.isEmpty()) {
+        QString warning = QString("Warning: %1 incomplete identit%2 found: %3\n")
+            .arg(incompleteIdentities.count())
+            .arg(incompleteIdentities.count() == 1 ? "y" : "ies")
+            .arg(incompleteIdentities.join(", "));
+        qWarning() << warning;
+    }
+
+    if (validIdentities.isEmpty()) {
+        infoLabel->setText("No complete identities found. Create a new identity to get started.");
+        return;
     }
 
     if (identityList->count() > 0) {
