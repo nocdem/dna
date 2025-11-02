@@ -845,14 +845,85 @@ int main(int argc, char** argv) {
 
     ImGui::StyleColorsDark();
     
-    // Custom theme colors (cpunk.io cyan)
+    // DNA Messenger color scheme
     ImGuiStyle& style = ImGui::GetStyle();
-    style.Colors[ImGuiCol_WindowBg] = ImVec4(0.1f, 0.1f, 0.1f, 1.0f);
-    style.Colors[ImGuiCol_Button] = ImVec4(0.0f, 0.8f, 0.8f, 0.4f);
-    style.Colors[ImGuiCol_ButtonHovered] = ImVec4(0.0f, 1.0f, 1.0f, 0.6f);
-    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0.0f, 0.8f, 0.8f, 1.0f);
+    
+    // Colors
+    ImVec4 bg_main = ImVec4(0x15/255.0f, 0x17/255.0f, 0x19/255.0f, 1.0f);  // #151719
+    ImVec4 bg_popup = ImVec4(0x0f/255.0f, 0x11/255.0f, 0x13/255.0f, 1.0f); // Darker for popups
+    ImVec4 text_primary = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 1.0f); // #00FFCC (cyan)
+    ImVec4 text_secondary = ImVec4(0x80/255.0f, 0xff/255.0f, 0xe6/255.0f, 1.0f); // Lighter cyan
+    ImVec4 accent = ImVec4(0x00/255.0f, 0xcc/255.0f, 0xa3/255.0f, 1.0f); // Darker cyan for buttons
+    ImVec4 accent_hover = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 1.0f); // Bright cyan on hover
+    
+    // Main colors
+    style.Colors[ImGuiCol_WindowBg] = bg_main;
+    style.Colors[ImGuiCol_ChildBg] = bg_main;
+    style.Colors[ImGuiCol_PopupBg] = bg_popup;
+    style.Colors[ImGuiCol_Border] = ImVec4(0.2f, 0.2f, 0.2f, 0.5f);
+    
+    // Text
+    style.Colors[ImGuiCol_Text] = text_primary;
+    style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
+    style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 0.3f);
+    
+    // Buttons
+    style.Colors[ImGuiCol_Button] = accent;
+    style.Colors[ImGuiCol_ButtonHovered] = accent_hover;
+    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0x00/255.0f, 0xdd/255.0f, 0xaa/255.0f, 1.0f);
+    
+    // Headers (selectables, etc)
+    style.Colors[ImGuiCol_Header] = ImVec4(0x00/255.0f, 0xcc/255.0f, 0xa3/255.0f, 0.3f);
+    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 0.4f);
+    style.Colors[ImGuiCol_HeaderActive] = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 0.5f);
+    
+    // Frames (inputs, etc)
+    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.1f, 0.1f, 0.1f, 0.9f);
+    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.2f, 0.2f, 0.2f, 0.9f);
+    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.15f, 0.15f, 0.15f, 0.9f);
+    
+    // Titles
+    style.Colors[ImGuiCol_TitleBg] = bg_popup;
+    style.Colors[ImGuiCol_TitleBgActive] = bg_popup;
+    style.Colors[ImGuiCol_TitleBgCollapsed] = bg_popup;
+    
+    // Scrollbar
+    style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(0.05f, 0.05f, 0.05f, 0.9f);
+    style.Colors[ImGuiCol_ScrollbarGrab] = accent;
+    style.Colors[ImGuiCol_ScrollbarGrabHovered] = accent_hover;
+    style.Colors[ImGuiCol_ScrollbarGrabActive] = accent_hover;
+    
+    // Checkboxes
+    style.Colors[ImGuiCol_CheckMark] = text_primary;
+    
+    // Sliders
+    style.Colors[ImGuiCol_SliderGrab] = accent;
+    style.Colors[ImGuiCol_SliderGrabActive] = accent_hover;
+    
+    // Separators
+    style.Colors[ImGuiCol_Separator] = ImVec4(0.3f, 0.3f, 0.3f, 0.5f);
+    style.Colors[ImGuiCol_SeparatorHovered] = accent_hover;
+    style.Colors[ImGuiCol_SeparatorActive] = accent_hover;
+    
+    // Resize grip
+    style.Colors[ImGuiCol_ResizeGrip] = accent;
+    style.Colors[ImGuiCol_ResizeGripHovered] = accent_hover;
+    style.Colors[ImGuiCol_ResizeGripActive] = accent_hover;
+    
+    // Tabs
+    style.Colors[ImGuiCol_Tab] = accent;
+    style.Colors[ImGuiCol_TabHovered] = accent_hover;
+    style.Colors[ImGuiCol_TabActive] = accent_hover;
+    style.Colors[ImGuiCol_TabUnfocused] = ImVec4(0.1f, 0.1f, 0.1f, 0.9f);
+    style.Colors[ImGuiCol_TabUnfocusedActive] = accent;
+    
+    // Rounding
     style.FrameRounding = 4.0f;
     style.WindowRounding = 8.0f;
+    style.ChildRounding = 4.0f;
+    style.GrabRounding = 4.0f;
+    style.TabRounding = 4.0f;
+    style.ScrollbarRounding = 4.0f;
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
@@ -872,7 +943,7 @@ int main(int argc, char** argv) {
         int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
         glViewport(0, 0, display_w, display_h);
-        glClearColor(0.1f, 0.1f, 0.1f, 1.0f);
+        glClearColor(0x15/255.0f, 0x17/255.0f, 0x19/255.0f, 1.0f); // #151719
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
 
