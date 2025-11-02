@@ -10,6 +10,9 @@ SeedPhraseWidget::SeedPhraseWidget(QWidget *parent)
     , gridLayout(nullptr)
     , copyButton(nullptr)
 {
+    printf("[DEBUG SEED] Constructor: parent=%p, parent visible=%d\n",
+           parent, parent ? parent->isVisible() : -1);
+
     setupUI();
 
     // Connect to theme manager
@@ -17,6 +20,8 @@ SeedPhraseWidget::SeedPhraseWidget(QWidget *parent)
             this, &SeedPhraseWidget::applyTheme);
 
     applyTheme();
+
+    printf("[DEBUG SEED] Constructor done: this visible=%d\n", this->isVisible());
 }
 
 void SeedPhraseWidget::setupUI()
@@ -154,6 +159,8 @@ void SeedPhraseWidget::onCopyToClipboard()
 
 void SeedPhraseWidget::applyTheme()
 {
+    printf("[DEBUG SEED] ===== applyTheme() CALLED =====\n");
+
     CpunkTheme theme = ThemeManager::instance()->currentTheme();
     QString bgColor = (theme == THEME_CPUNK_IO) ? "#1a1a2e" : "#2c1810";
     QString textColor = (theme == THEME_CPUNK_IO) ? "#ffffff" : "#fff5e6";
@@ -163,6 +170,7 @@ void SeedPhraseWidget::applyTheme()
     if (warningLabel) {
         warningLabel->setStyleSheet(QString("color: #FFAA00; font-weight: bold; font-size: 14pt; padding: 10px;"));
         warningLabel->setVisible(true);
+        printf("[DEBUG SEED] warningLabel visible set to: %d\n", warningLabel->isVisible());
     }
     if (securityWarning) {
         securityWarning->setStyleSheet(QString("color: #FFAA00; font-size: 11pt; padding: 10px;"));
@@ -182,6 +190,7 @@ void SeedPhraseWidget::applyTheme()
         if (numLabels[i]) {
             numLabels[i]->setStyleSheet(QString("color: #CCCCCC; font-size: 14pt; font-weight: bold;"));
             numLabels[i]->setVisible(true);
+            printf("[DEBUG SEED] numLabels[%d] setVisible(true) -> isVisible=%d\n", i, numLabels[i]->isVisible());
         }
     }
 
@@ -189,7 +198,10 @@ void SeedPhraseWidget::applyTheme()
     for (int i = 0; i < 24; i++) {
         wordLabels[i]->setStyleSheet(QString("color: #FFFFFF; font-size: 14pt; font-weight: bold;"));
         wordLabels[i]->setVisible(true);
+        printf("[DEBUG SEED] wordLabels[%d] setVisible(true) -> isVisible=%d\n", i, wordLabels[i]->isVisible());
     }
+
+    printf("[DEBUG SEED] ===== applyTheme() DONE =====\n");
 
     // Update copy button
     if (copyButton) {

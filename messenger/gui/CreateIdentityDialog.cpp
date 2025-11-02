@@ -115,7 +115,7 @@ void CreateIdentityDialog::createPage2_SeedPhrase()
     // Title
     titleLabel2 = new QLabel("Your Recovery Seed Phrase", page2);
     titleLabel2->setAlignment(Qt::AlignCenter);
-    titleLabel2->setStyleSheet("font-size: 18pt; font-weight: bold;");
+    // Color and font will be set by applyTheme()
     layout->addWidget(titleLabel2);
 
     // Seed phrase widget
