@@ -7,8 +7,16 @@
 #include "IconsFontAwesome6.h"
 #include <GLFW/glfw3.h>
 #include <stdio.h>
+#include <string.h>
 #include <string>
 #include <vector>
+
+#ifndef _WIN32
+#include <dirent.h>
+#include <sys/types.h>
+#else
+#include <windows.h>
+#endif
 
 extern "C" {
 #include "../dna_api.h"
@@ -35,10 +43,20 @@ public:
         current_view = VIEW_CONTACTS;
         selected_contact = -1;
         show_wallet = false;
+        show_identity_selection = true;
+        identity_loaded = false;
+        selected_identity_idx = -1;
+        memset(new_identity_name, 0, sizeof(new_identity_name));
     }
 
     void render() {
         ImGuiIO& io = ImGui::GetIO();
+        
+        // Show identity selection on first run
+        if (show_identity_selection) {
+            renderIdentitySelection();
+            return;
+        }
         
         // Detect screen size for responsive layout
         bool is_mobile = io.DisplaySize.x < 600.0f;
@@ -73,10 +91,176 @@ private:
     View current_view;
     int selected_contact;
     bool show_wallet;
+    bool show_identity_selection;
+    bool identity_loaded;
+    int selected_identity_idx;
     
     std::vector<Contact> contacts;
     std::vector<Message> messages;
+    std::vector<std::string> identities;
+    std::string current_identity;
     char message_input[1024] = "";
+    char new_identity_name[128];
+    
+    void renderIdentitySelection() {
+        ImGuiIO& io = ImGui::GetIO();
+        bool is_mobile = io.DisplaySize.x < 600.0f;
+        
+        // Center the dialog
+        ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+        ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x * 0.9f : 500, is_mobile ? io.DisplaySize.y * 0.9f : 500));
+        
+        ImGui::Begin("DNA Messenger - Select Identity", nullptr, 
+            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
+        
+        // Title
+        ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
+        ImGui::Text("Welcome to DNA Messenger");
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        
+        // Info text
+        ImGui::TextWrapped("Select an existing identity or create a new one:");
+        ImGui::Spacing();
+        
+        // Load identities on first render
+        if (identities.empty()) {
+            scanIdentities();
+        }
+        
+        // Identity list
+        ImGui::BeginChild("IdentityList", ImVec2(0, -120), true);
+        
+        if (identities.empty()) {
+            ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No identities found.");
+            ImGui::TextWrapped("Create a new identity to get started.");
+        } else {
+            for (size_t i = 0; i < identities.size(); i++) {
+                ImGui::PushID(i);
+                bool selected = (selected_identity_idx == (int)i);
+                
+                if (ImGui::Selectable(identities[i].c_str(), selected, 0, ImVec2(-1, is_mobile ? 50 : 35))) {
+                    selected_identity_idx = i;
+                }
+                
+                ImGui::PopID();
+            }
+        }
+        
+        ImGui::EndChild();
+        
+        ImGui::Spacing();
+        
+        // Buttons
+        float btn_height = is_mobile ? 50.0f : 40.0f;
+        
+        // Select button (only if identity selected)
+        ImGui::BeginDisabled(selected_identity_idx < 0);
+        if (ImGui::Button(ICON_FA_USER " Select Identity", ImVec2(-1, btn_height))) {
+            if (selected_identity_idx >= 0 && selected_identity_idx < (int)identities.size()) {
+                current_identity = identities[selected_identity_idx];
+                loadIdentity(current_identity);
+            }
+        }
+        ImGui::EndDisabled();
+        
+        // Create new button
+        if (ImGui::Button(ICON_FA_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
+            ImGui::OpenPopup("CreateIdentity");
+        }
+        
+        // Create identity popup
+        if (ImGui::BeginPopupModal("CreateIdentity", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::Text("Enter identity name:");
+            ImGui::Spacing();
+            
+            ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name));
+            ImGui::Spacing();
+            
+            if (ImGui::Button("Create", ImVec2(120, 0))) {
+                if (strlen(new_identity_name) > 0) {
+                    createIdentity(new_identity_name);
+                    ImGui::CloseCurrentPopup();
+                }
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+                ImGui::CloseCurrentPopup();
+            }
+            
+            ImGui::EndPopup();
+        }
+        
+        ImGui::End();
+    }
+    
+    void scanIdentities() {
+        identities.clear();
+        
+        // Scan ~/.dna for *-dilithium.pqkey files
+        const char* home = getenv("HOME");
+        if (!home) return;
+        
+        std::string dna_dir = std::string(home) + "/.dna";
+        
+#ifdef _WIN32
+        std::string search_path = dna_dir + "\\*-dilithium.pqkey";
+        WIN32_FIND_DATAA find_data;
+        HANDLE handle = FindFirstFileA(search_path.c_str(), &find_data);
+        
+        if (handle != INVALID_HANDLE_VALUE) {
+            do {
+                std::string filename = find_data.cFileName;
+                // Remove "-dilithium.pqkey" suffix (17 chars)
+                std::string identity = filename.substr(0, filename.length() - 17);
+                identities.push_back(identity);
+            } while (FindNextFileA(handle, &find_data));
+            FindClose(handle);
+        }
+#else
+        DIR* dir = opendir(dna_dir.c_str());
+        if (dir) {
+            struct dirent* entry;
+            while ((entry = readdir(dir)) != nullptr) {
+                std::string filename = entry->d_name;
+                if (filename.length() > 17 && 
+                    filename.substr(filename.length() - 17) == "-dilithium.pqkey") {
+                    std::string identity = filename.substr(0, filename.length() - 17);
+                    identities.push_back(identity);
+                }
+            }
+            closedir(dir);
+        }
+#endif
+    }
+    
+    void createIdentity(const char* name) {
+        // TODO: Call DNA API to create identity
+        printf("Creating identity: %s\n", name);
+        
+        // For now, just add to list and load it
+        identities.push_back(name);
+        current_identity = name;
+        loadIdentity(current_identity);
+        
+        // Reset input
+        memset(new_identity_name, 0, sizeof(new_identity_name));
+    }
+    
+    void loadIdentity(const std::string& identity) {
+        printf("Loading identity: %s\n", identity.c_str());
+        
+        // TODO: Call DNA API to load keys
+        
+        identity_loaded = true;
+        show_identity_selection = false;
+        
+        // Show success message
+        printf("Identity loaded successfully!\n");
+    }
     
     void renderMobileLayout() {
         ImGuiIO& io = ImGui::GetIO();
