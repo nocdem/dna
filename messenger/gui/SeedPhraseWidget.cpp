@@ -117,15 +117,20 @@ void SeedPhraseWidget::updateDisplay()
     for (int i = 0; i < 24; i++) {
         if (i < words.size()) {
             wordLabels[i]->setText(words[i]);
-            wordLabels[i]->setVisible(true);
-            wordLabels[i]->show();
-            printf("[DEBUG SEED] wordLabels[%d] = '%s', visible=%d, size=%dx%d\n",
-                   i, words[i].toUtf8().constData(),
-                   wordLabels[i]->isVisible(),
-                   wordLabels[i]->width(), wordLabels[i]->height());
         } else {
             wordLabels[i]->setText("________");
         }
+    }
+
+    // Re-apply theme to ensure visibility and styling
+    applyTheme();
+
+    // Debug check visibility after applyTheme
+    for (int i = 0; i < 24; i++) {
+        printf("[DEBUG SEED] wordLabels[%d] = '%s', visible=%d, size=%dx%d\n",
+               i, wordLabels[i]->text().toUtf8().constData(),
+               wordLabels[i]->isVisible(),
+               wordLabels[i]->width(), wordLabels[i]->height());
     }
 }
 
@@ -152,37 +157,38 @@ void SeedPhraseWidget::applyTheme()
     CpunkTheme theme = ThemeManager::instance()->currentTheme();
     QString bgColor = (theme == THEME_CPUNK_IO) ? "#1a1a2e" : "#2c1810";
     QString textColor = (theme == THEME_CPUNK_IO) ? "#ffffff" : "#fff5e6";
-    QString mutedColor = (theme == THEME_CPUNK_IO) ? "#a0a0b0" : "#d4a574";
-    QString warningColor = (theme == THEME_CPUNK_IO) ? "#ff6b9d" : "#ff4444";
     QString primaryColor = (theme == THEME_CPUNK_IO) ? "#00d9ff" : "#ff8c42";
 
-    // Update warning labels
+    // Update warning labels - BRIGHT YELLOW/ORANGE for visibility
     if (warningLabel) {
-        warningLabel->setStyleSheet(QString("color: %1; font-weight: bold; font-size: 12pt; padding: 10px;")
-                                   .arg(warningColor));
+        warningLabel->setStyleSheet(QString("color: #FFAA00; font-weight: bold; font-size: 14pt; padding: 10px;"));
+        warningLabel->setVisible(true);
     }
     if (securityWarning) {
-        securityWarning->setStyleSheet(QString("color: %1; font-size: 10pt; padding: 10px;")
-                                      .arg(warningColor));
+        securityWarning->setStyleSheet(QString("color: #FFAA00; font-size: 11pt; padding: 10px;"));
+        securityWarning->setVisible(true);
     }
 
-    // Update grid frame style
+    // Update grid frame style - NO QLabel selector that might hide children
     QFrame *gridFrame = findChild<QFrame*>();
     if (gridFrame) {
-        gridFrame->setStyleSheet(QString("QFrame { background-color: %1; border: 2px solid %2; border-radius: 5px; }")
+        gridFrame->setStyleSheet(QString("background-color: %1; border: 2px solid %2; border-radius: 5px;")
                                 .arg(bgColor).arg(primaryColor));
+        gridFrame->setVisible(true);
     }
 
-    // Update number labels - larger and brighter
+    // Update number labels - BRIGHT and explicitly visible
     for (int i = 0; i < 24; i++) {
         if (numLabels[i]) {
             numLabels[i]->setStyleSheet(QString("color: #CCCCCC; font-size: 14pt; font-weight: bold;"));
+            numLabels[i]->setVisible(true);
         }
     }
 
-    // Update word labels - BRIGHT WHITE for maximum visibility
+    // Update word labels - MAXIMUM BRIGHTNESS and explicitly visible
     for (int i = 0; i < 24; i++) {
         wordLabels[i]->setStyleSheet(QString("color: #FFFFFF; font-size: 14pt; font-weight: bold;"));
+        wordLabels[i]->setVisible(true);
     }
 
     // Update copy button
