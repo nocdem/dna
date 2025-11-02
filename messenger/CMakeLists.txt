@@ -331,19 +331,28 @@ if(WIN32)
     find_library(HOGWEED_LIBRARY NAMES hogweed libhogweed PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
     find_library(GMP_LIBRARY NAMES gmp libgmp PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
     find_library(UNISTRING_LIBRARY NAMES unistring libunistring PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(ZSTD_LIBRARY NAMES zstd libzstd PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(IDN2_LIBRARY NAMES idn2 libidn2 PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
 
     # Link all dependencies (order matters for static linking)
+    # IMPORTANT: nettle must come before hogweed (hogweed depends on nettle)
     target_link_libraries(dna_messenger
         z stdc++
         ${FMT_LIBRARY}
         ${JSONCPP_LIBRARY}
         ${GNUTLS_LIBRARY}
         ${TASN1_LIBRARY}
-        ${NETTLE_LIBRARY}
         ${HOGWEED_LIBRARY}
+        ${NETTLE_LIBRARY}
         ${GMP_LIBRARY}
         ${UNISTRING_LIBRARY}
+        ${ZSTD_LIBRARY}
+        ${IDN2_LIBRARY}
         ${ARGON2_LIBRARY}
+        # Windows system libraries (gnutls, OpenSSL, PostgreSQL dependencies)
+        crypt32      # Windows certificate store
+        ws2_32       # Windows Sockets
+        iphlpapi     # IP Helper API (inet_ntop)
     )
 endif()
 
