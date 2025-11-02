@@ -307,10 +307,61 @@ static void* listener_thread(void *arg) {
                inet_ntoa(client_addr.sin_addr),
                ntohs(client_addr.sin_port));
 
-        // TODO: Handshake to exchange public keys
-        // TODO: Create connection structure and receive thread
-        // For now, just close the connection
+        // Receive incoming message
+        // Format: [4-byte length][message data]
+        uint32_t msg_len_network;
+        ssize_t received = recv(client_sock, (char*)&msg_len_network, sizeof(msg_len_network), 0);
+
+        if (received != sizeof(msg_len_network)) {
+            printf("[P2P] Failed to receive message length header\n");
+            close(client_sock);
+            continue;
+        }
+
+        uint32_t msg_len = ntohl(msg_len_network);
+
+        // Sanity check: max 10MB message
+        if (msg_len == 0 || msg_len > 10 * 1024 * 1024) {
+            printf("[P2P] Invalid message length: %u bytes\n", msg_len);
+            close(client_sock);
+            continue;
+        }
+
+        // Allocate buffer and receive message
+        uint8_t *message = (uint8_t*)malloc(msg_len);
+        if (!message) {
+            printf("[P2P] Failed to allocate %u bytes for message\n", msg_len);
+            close(client_sock);
+            continue;
+        }
+
+        size_t total_received = 0;
+        while (total_received < msg_len) {
+            received = recv(client_sock, (char*)message + total_received,
+                          msg_len - total_received, 0);
+            if (received <= 0) {
+                printf("[P2P] Connection closed while receiving message\n");
+                free(message);
+                close(client_sock);
+                goto next_connection;
+            }
+            total_received += received;
+        }
+
+        printf("[P2P] ✓ Received %u bytes from peer\n", msg_len);
+
+        // Call message callback if registered
+        if (ctx->message_callback) {
+            // Note: We don't have the peer's public key here (would need handshake)
+            // For now, pass NULL - the callback can try to identify sender from message content
+            ctx->message_callback(NULL, message, msg_len, ctx->callback_user_data);
+        }
+
+        free(message);
         close(client_sock);
+
+next_connection:
+        continue;
     }
 
     return NULL;
@@ -616,21 +667,87 @@ int p2p_send_message(
     const uint8_t *message,
     size_t message_len)
 {
-    if (!ctx || !peer_pubkey || !message) {
+    if (!ctx || !peer_pubkey || !message || message_len == 0) {
+        fprintf(stderr, "[P2P] Invalid parameters\n");
         return -1;
     }
 
-    printf("[P2P] TODO: Implement p2p_send_message\n");
+    // Step 1: Look up peer in DHT
+    peer_info_t peer_info;
+    if (p2p_lookup_peer(ctx, peer_pubkey, &peer_info) != 0) {
+        printf("[P2P] Peer not found in DHT - may be offline\n");
+        return -1;  // Peer not online, use PostgreSQL fallback
+    }
 
-    // TODO:
-    // 1. Look up peer in DHT
-    // 2. Establish TCP connection if not connected
-    // 3. Encrypt message (Kyber512 + AES-256-GCM)
-    // 4. Sign with Dilithium3
-    // 5. Send over TCP
-    // 6. If offline, queue in DHT
+    if (!peer_info.is_online) {
+        printf("[P2P] Peer last seen too long ago - may be offline\n");
+        return -1;  // Peer appears offline, use PostgreSQL fallback
+    }
 
-    return -1;
+    printf("[P2P] Connecting to peer at %s:%d...\n", peer_info.ip, peer_info.port);
+
+    // Step 2: Establish TCP connection
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd < 0) {
+        fprintf(stderr, "[P2P] Failed to create socket: %s\n", strerror(errno));
+        return -1;
+    }
+
+    // Set connection timeout (3 seconds)
+    struct timeval timeout;
+    timeout.tv_sec = 3;
+    timeout.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+    setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+
+    struct sockaddr_in peer_addr;
+    memset(&peer_addr, 0, sizeof(peer_addr));
+    peer_addr.sin_family = AF_INET;
+    peer_addr.sin_port = htons(peer_info.port);
+
+    if (inet_pton(AF_INET, peer_info.ip, &peer_addr.sin_addr) <= 0) {
+        fprintf(stderr, "[P2P] Invalid peer IP address: %s\n", peer_info.ip);
+        close(sockfd);
+        return -1;
+    }
+
+    if (connect(sockfd, (struct sockaddr*)&peer_addr, sizeof(peer_addr)) < 0) {
+        fprintf(stderr, "[P2P] Failed to connect to %s:%d: %s\n",
+                peer_info.ip, peer_info.port, strerror(errno));
+        close(sockfd);
+        return -1;
+    }
+
+    printf("[P2P] ✓ Connected to peer at %s:%d\n", peer_info.ip, peer_info.port);
+
+    // Step 3: Send message
+    // Format: [4-byte length][message data]
+    uint32_t msg_len_network = htonl((uint32_t)message_len);
+
+    // Send length header
+    ssize_t sent = send(sockfd, (char*)&msg_len_network, sizeof(msg_len_network), 0);
+    if (sent != sizeof(msg_len_network)) {
+        fprintf(stderr, "[P2P] Failed to send message length header\n");
+        close(sockfd);
+        return -1;
+    }
+
+    // Send message data
+    size_t total_sent = 0;
+    while (total_sent < message_len) {
+        sent = send(sockfd, (char*)message + total_sent, message_len - total_sent, 0);
+        if (sent <= 0) {
+            fprintf(stderr, "[P2P] Failed to send message data: %s\n", strerror(errno));
+            close(sockfd);
+            return -1;
+        }
+        total_sent += sent;
+    }
+
+    printf("[P2P] ✓ Sent %zu bytes to peer\n", message_len);
+
+    close(sockfd);
+    return 0;
 }
 
 int p2p_check_offline_messages(

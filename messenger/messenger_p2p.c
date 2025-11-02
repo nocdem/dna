@@ -509,14 +509,19 @@ static void p2p_message_received_internal(
         return;
     }
 
-    // Lookup identity for this pubkey
-    char *sender_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 1952);
-    if (!sender_identity) {
-        fprintf(stderr, "[P2P] Received message from unknown peer (pubkey not in keyserver)\n");
-        return;
+    // Lookup identity for this pubkey (may be NULL if no handshake yet)
+    char *sender_identity = NULL;
+    if (peer_pubkey) {
+        sender_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 1952);
     }
 
-    printf("[P2P] ✓ Received P2P message from %s (%zu bytes)\n", sender_identity, message_len);
+    if (sender_identity) {
+        printf("[P2P] ✓ Received P2P message from %s (%zu bytes)\n", sender_identity, message_len);
+    } else {
+        printf("[P2P] ✓ Received P2P message from unknown peer (%zu bytes)\n", message_len);
+        // We'll try to identify sender from the decrypted message content later
+        sender_identity = strdup("unknown");
+    }
 
     // Store in PostgreSQL so messenger_list_messages() can retrieve it
     // The message is already encrypted at this point
