@@ -70,12 +70,11 @@ void RestoreIdentityDialog::createPage1_IdentityName()
     layout->setContentsMargins(40, 40, 40, 40);
     layout->setSpacing(20);
 
-    QLabel *titleLabel = new QLabel("Restore Your Identity", page1);
-    titleLabel->setAlignment(Qt::AlignCenter);
-    titleLabel->setStyleSheet("font-size: 18pt; font-weight: bold;");
-    layout->addWidget(titleLabel);
+    titleLabel1 = new QLabel("Restore Your Identity", page1);
+    titleLabel1->setAlignment(Qt::AlignCenter);
+    layout->addWidget(titleLabel1);
 
-    QLabel *instructionsLabel = new QLabel(
+    instructionsLabel = new QLabel(
         "Enter the identity name you used when creating this identity.\n\n"
         "This should be the same name you used originally.", page1);
     instructionsLabel->setWordWrap(true);
@@ -84,8 +83,8 @@ void RestoreIdentityDialog::createPage1_IdentityName()
 
     layout->addSpacing(20);
 
-    QLabel *inputLabel = new QLabel("Identity Name:", page1);
-    layout->addWidget(inputLabel);
+    inputLabel1 = new QLabel("Identity Name:", page1);
+    layout->addWidget(inputLabel1);
 
     identityNameInput = new QLineEdit(page1);
     identityNameInput->setPlaceholderText("e.g., alice");
@@ -116,10 +115,9 @@ void RestoreIdentityDialog::createPage2_SeedPhrase()
     layout->setContentsMargins(30, 30, 30, 30);
     layout->setSpacing(15);
 
-    QLabel *titleLabel = new QLabel("Enter Your 24-Word Seed Phrase", page2);
-    titleLabel->setAlignment(Qt::AlignCenter);
-    titleLabel->setStyleSheet("font-size: 18pt; font-weight: bold;");
-    layout->addWidget(titleLabel);
+    titleLabel2 = new QLabel("Enter Your 24-Word Seed Phrase", page2);
+    titleLabel2->setAlignment(Qt::AlignCenter);
+    layout->addWidget(titleLabel2);
 
     // Paste button
     pasteButton = new QPushButton("📋 Paste from Clipboard", page2);
@@ -190,10 +188,9 @@ void RestoreIdentityDialog::createPage3_Progress()
     layout->setContentsMargins(40, 40, 40, 40);
     layout->setSpacing(20);
 
-    QLabel *titleLabel = new QLabel("Restoring Your Identity...", page3);
-    titleLabel->setAlignment(Qt::AlignCenter);
-    titleLabel->setStyleSheet("font-size: 18pt; font-weight: bold;");
-    layout->addWidget(titleLabel);
+    titleLabel3 = new QLabel("Restoring Your Identity...", page3);
+    titleLabel3->setAlignment(Qt::AlignCenter);
+    layout->addWidget(titleLabel3);
 
     layout->addSpacing(50);
 
@@ -221,17 +218,15 @@ void RestoreIdentityDialog::createPage4_Success()
     layout->setContentsMargins(40, 40, 40, 40);
     layout->setSpacing(20);
 
-    QLabel *titleLabel = new QLabel("✓ Identity Restored Successfully!", page4);
-    titleLabel->setAlignment(Qt::AlignCenter);
-    titleLabel->setStyleSheet("font-size: 20pt; font-weight: bold; color: #00cc00;");
-    layout->addWidget(titleLabel);
+    titleLabel4 = new QLabel("✓ Identity Restored Successfully!", page4);
+    titleLabel4->setAlignment(Qt::AlignCenter);
+    layout->addWidget(titleLabel4);
 
     layout->addSpacing(30);
 
     successLabel = new QLabel(page4);
     successLabel->setWordWrap(true);
     successLabel->setAlignment(Qt::AlignCenter);
-    successLabel->setStyleSheet("font-size: 14pt;");
     layout->addWidget(successLabel);
 
     layout->addStretch();
@@ -431,27 +426,51 @@ void RestoreIdentityDialog::applyTheme()
     QString textColor = (theme == THEME_CPUNK_IO) ? "#ffffff" : "#fff5e6";
     QString mutedColor = (theme == THEME_CPUNK_IO) ? "#a0a0b0" : "#d4a574";
     QString errorColor = (theme == THEME_CPUNK_IO) ? "#ff6b9d" : "#ff5252";
+    QString successColor = (theme == THEME_CPUNK_IO) ? "#00ffaa" : "#00cc66";
     QString primaryColor = (theme == THEME_CPUNK_IO) ? "#00d9ff" : "#ff8c42";
     QString hoverColor = (theme == THEME_CPUNK_IO) ? "#00b8d4" : "#ff7028";
 
     setStyleSheet(QString("QDialog { background-color: %1; color: %2; }").arg(bgColor).arg(textColor));
 
-    // Apply theme to error labels
+    // Page 1: Identity Name
+    if (titleLabel1) {
+        titleLabel1->setStyleSheet(QString("font-size: 18pt; font-weight: bold; color: %1;").arg(primaryColor));
+    }
+    if (instructionsLabel) {
+        instructionsLabel->setStyleSheet(QString("color: %1;").arg(textColor));
+    }
+    if (inputLabel1) {
+        inputLabel1->setStyleSheet(QString("color: %1;").arg(textColor));
+    }
     if (errorLabel1) {
         errorLabel1->setStyleSheet(QString("color: %1; font-weight: bold;").arg(errorColor));
     }
 
+    // Page 2: Seed Phrase
+    if (titleLabel2) {
+        titleLabel2->setStyleSheet(QString("font-size: 18pt; font-weight: bold; color: %1;").arg(primaryColor));
+    }
+    if (passphraseLabel) {
+        passphraseLabel->setStyleSheet(QString("color: %1; font-size: 10pt;").arg(mutedColor));
+    }
     if (errorLabel2) {
         errorLabel2->setStyleSheet(QString("color: %1; font-weight: bold;").arg(errorColor));
     }
 
-    // Apply theme to info labels
-    if (passphraseLabel) {
-        passphraseLabel->setStyleSheet(QString("color: %1; font-size: 10pt;").arg(mutedColor));
+    // Page 3: Progress
+    if (titleLabel3) {
+        titleLabel3->setStyleSheet(QString("font-size: 18pt; font-weight: bold; color: %1;").arg(primaryColor));
     }
-
     if (statusLabel) {
         statusLabel->setStyleSheet(QString("font-size: 12pt; color: %1;").arg(mutedColor));
+    }
+
+    // Page 4: Success
+    if (titleLabel4) {
+        titleLabel4->setStyleSheet(QString("font-size: 20pt; font-weight: bold; color: %1;").arg(successColor));
+    }
+    if (successLabel) {
+        successLabel->setStyleSheet(QString("font-size: 14pt; color: %1;").arg(textColor));
     }
 
     QString buttonStyle = QString(

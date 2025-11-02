@@ -45,12 +45,16 @@ private:
 
     // Page 1: Identity Name
     QWidget *page1;
+    QLabel *titleLabel1;
+    QLabel *instructionsLabel;
+    QLabel *inputLabel1;
     QLineEdit *identityNameInput;
     QPushButton *nextButton1;
     QLabel *errorLabel1;
 
     // Page 2: Seed Phrase
     QWidget *page2;
+    QLabel *titleLabel2;
     QLineEdit *wordInputs[24];
     QLineEdit *passphraseInput;
     QLabel *passphraseLabel;
@@ -63,11 +67,13 @@ private:
 
     // Page 3: Progress
     QWidget *page3;
+    QLabel *titleLabel3;
     QProgressBar *progressBar;
     QLabel *statusLabel;
 
     // Page 4: Success
     QWidget *page4;
+    QLabel *titleLabel4;
     QLabel *successLabel;
     QPushButton *finishButton;
 
