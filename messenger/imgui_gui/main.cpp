@@ -168,16 +168,22 @@ private:
         
         // Select button (only if identity selected)
         ImGui::BeginDisabled(selected_identity_idx < 0);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f)); // Dark text on button
         if (ImGui::Button(ICON_FA_USER " Select Identity", ImVec2(-1, btn_height))) {
             if (selected_identity_idx >= 0 && selected_identity_idx < (int)identities.size()) {
                 current_identity = identities[selected_identity_idx];
                 loadIdentity(current_identity);
             }
         }
+        ImGui::PopStyleColor();
         ImGui::EndDisabled();
         
         // Create new button
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));
         if (ImGui::Button(ICON_FA_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
+            ImGui::OpenPopup("Create New Identity");
+        }
+        ImGui::PopStyleColor();
             ImGui::OpenPopup("Create New Identity");
         }
         
@@ -206,6 +212,7 @@ private:
             
             if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
             
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f)); // Dark text
             if (ImGui::Button("Create", ImVec2(button_width, 40))) {
                 if (strlen(new_identity_name) > 0) {
                     createIdentity(new_identity_name);
@@ -216,6 +223,7 @@ private:
             if (ImGui::Button("Cancel", ImVec2(button_width, 40))) {
                 ImGui::CloseCurrentPopup();
             }
+            ImGui::PopStyleColor();
             
             ImGui::EndPopup();
         } else {
@@ -901,9 +909,7 @@ int main(int argc, char** argv) {
     style.Colors[ImGuiCol_Button] = accent;
     style.Colors[ImGuiCol_ButtonHovered] = accent_hover;
     style.Colors[ImGuiCol_ButtonActive] = ImVec4(0x00/255.0f, 0xdd/255.0f, 0xaa/255.0f, 1.0f);
-    style.Colors[ImGuiCol_ButtonText] = text_button; // Dark text on buttons
-    style.Colors[ImGuiCol_ButtonTextHovered] = text_button;
-    style.Colors[ImGuiCol_ButtonTextActive] = text_button;
+    // Note: Button text color is controlled by ImGuiCol_Text, we'll override per-button as needed
     
     // Headers (selectables, etc)
     style.Colors[ImGuiCol_Header] = ImVec4(0x00/255.0f, 0xcc/255.0f, 0xa3/255.0f, 0.3f);
