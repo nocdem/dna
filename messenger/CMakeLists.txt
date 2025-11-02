@@ -291,7 +291,7 @@ target_link_libraries(dna_messenger
     SQLite::SQLite3
 )
 
-# On Windows, add zlib, C++ standard library, and OpenDHT dependencies (libfmt, jsoncpp)
+# On Windows, add zlib, C++ standard library, and OpenDHT dependencies (libfmt, jsoncpp, gnutls, argon2)
 if(WIN32)
     # Find libfmt (required by OpenDHT)
     find_library(FMT_LIBRARY NAMES fmt libfmt PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
@@ -309,8 +309,24 @@ if(WIN32)
         message(WARNING "jsoncpp not found - may cause linking errors with OpenDHT")
     endif()
 
+    # Find gnutls (required by OpenDHT for TLS/crypto)
+    find_library(GNUTLS_LIBRARY NAMES gnutls libgnutls PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    if(GNUTLS_LIBRARY)
+        message(STATUS "gnutls found: ${GNUTLS_LIBRARY}")
+    else()
+        message(WARNING "gnutls not found - may cause linking errors with OpenDHT")
+    endif()
+
+    # Find argon2 (required by OpenDHT for password hashing)
+    find_library(ARGON2_LIBRARY NAMES argon2 libargon2 PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    if(ARGON2_LIBRARY)
+        message(STATUS "argon2 found: ${ARGON2_LIBRARY}")
+    else()
+        message(WARNING "argon2 not found - may cause linking errors with OpenDHT")
+    endif()
+
     # Link all dependencies
-    target_link_libraries(dna_messenger z stdc++ ${FMT_LIBRARY} ${JSONCPP_LIBRARY})
+    target_link_libraries(dna_messenger z stdc++ ${FMT_LIBRARY} ${JSONCPP_LIBRARY} ${GNUTLS_LIBRARY} ${ARGON2_LIBRARY})
 endif()
 
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
