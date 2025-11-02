@@ -418,3 +418,6 @@ if(BUILD_DNA_SEND)
 
     target_include_directories(dna-send PRIVATE ${CMAKE_SOURCE_DIR})
 endif()
+
+# ImGui GUI (Phase 11: Modern GUI)
+add_subdirectory(imgui_gui)
