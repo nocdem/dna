@@ -91,8 +91,8 @@ void SeedPhraseWidget::setupUI()
         gridLayout->addWidget(wordLabels[i], row, col + 1);
     }
 
-    // Make grid frame expand to show all content
-    gridFrame->setMinimumSize(600, 350);
+    // Make grid frame expand to show all content - MUST fit 12 rows
+    gridFrame->setMinimumSize(600, 450);
 
     mainLayout->addWidget(gridFrame);
     mainLayout->addSpacing(10); // Add space before copy button
@@ -105,13 +105,10 @@ void SeedPhraseWidget::setupUI()
     mainLayout->addWidget(copyButton);
     mainLayout->addSpacing(10); // Add space before security warning
 
-    // Security warnings - BRIGHT ORANGE via palette
-    securityWarning = new QLabel("⚠ SECURITY WARNINGS:\n"
-                            "• Never share this seed phrase with anyone\n"
-                            "• Never store it digitally (no photos, no cloud storage)\n"
-                            "• Store it in a secure physical location\n"
-                            "• Anyone with this seed phrase can access your identity", this);
+    // Security warnings - BRIGHT ORANGE via palette, COMPACT
+    securityWarning = new QLabel("⚠ Never share • No digital storage • Secure physical location only", this);
     securityWarning->setWordWrap(true);
+    securityWarning->setAlignment(Qt::AlignCenter);
     QPalette secPal = securityWarning->palette();
     secPal.setColor(QPalette::WindowText, QColor(255, 170, 0));
     securityWarning->setPalette(secPal);
