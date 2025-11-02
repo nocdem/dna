@@ -3,6 +3,7 @@
 #include "cpunk_themes.h"
 #include <QFont>
 #include <QFrame>
+#include <QPalette>
 #include <cstdio>
 
 SeedPhraseWidget::SeedPhraseWidget(QWidget *parent)
@@ -206,6 +207,26 @@ void SeedPhraseWidget::applyTheme()
     for (int i = 0; i < 24; i++) {
         wordLabels[i]->setStyleSheet(QString("color: #FFFFFF; font-size: 14pt; font-weight: bold;"));
         wordLabels[i]->setVisible(true);
+        if (i == 0) {
+            // Debug first label only
+            QPalette pal = wordLabels[i]->palette();
+            QFont font = wordLabels[i]->font();
+            printf("[DEBUG SEED] wordLabels[0] DETAILED:\n");
+            printf("  text='%s'\n", wordLabels[0]->text().toUtf8().constData());
+            printf("  stylesheet='%s'\n", wordLabels[0]->styleSheet().toUtf8().constData());
+            printf("  font.family='%s', size=%d, weight=%d\n",
+                   font.family().toUtf8().constData(), font.pointSize(), font.weight());
+            printf("  palette text color=rgba(%d,%d,%d,%d)\n",
+                   pal.color(QPalette::WindowText).red(),
+                   pal.color(QPalette::WindowText).green(),
+                   pal.color(QPalette::WindowText).blue(),
+                   pal.color(QPalette::WindowText).alpha());
+            printf("  palette bg color=rgba(%d,%d,%d,%d)\n",
+                   pal.color(QPalette::Window).red(),
+                   pal.color(QPalette::Window).green(),
+                   pal.color(QPalette::Window).blue(),
+                   pal.color(QPalette::Window).alpha());
+        }
         printf("[DEBUG SEED] wordLabels[%d] setVisible(true) -> isVisible=%d\n", i, wordLabels[i]->isVisible());
     }
 
