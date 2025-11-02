@@ -31,44 +31,63 @@ void SeedPhraseWidget::setupUI()
     mainLayout->setContentsMargins(20, 20, 20, 20);
     mainLayout->setSpacing(15);
 
-    // Warning label
-    warningLabel = new QLabel(this);
-    warningLabel->setText("⚠ WRITE DOWN THESE 24 WORDS IN ORDER\n"
-                          "This is the ONLY way to recover your identity if your device is lost!");
+    // Warning label - BRIGHT ORANGE, NO STYLESHEET
+    warningLabel = new QLabel("⚠ WRITE DOWN THESE 24 WORDS IN ORDER\n"
+                          "This is the ONLY way to recover your identity if your device is lost!", this);
     warningLabel->setAlignment(Qt::AlignCenter);
     warningLabel->setWordWrap(true);
+    QPalette warnPal = warningLabel->palette();
+    warnPal.setColor(QPalette::WindowText, QColor(255, 170, 0)); // Bright orange
+    warningLabel->setPalette(warnPal);
+    QFont warnFont = warningLabel->font();
+    warnFont.setPointSize(14);
+    warnFont.setBold(true);
+    warningLabel->setFont(warnFont);
     mainLayout->addWidget(warningLabel);
 
-    // Grid frame for seed words
+    // Grid frame for seed words - SIMPLE, NO FANCY STYLING
     QFrame *gridFrame = new QFrame(this);
     gridFrame->setFrameShape(QFrame::Box);
     gridFrame->setLineWidth(2);
+
+    // Set gridFrame palette DIRECTLY
+    QPalette framePal = gridFrame->palette();
+    framePal.setColor(QPalette::Window, QColor(26, 26, 46)); // Dark background
+    framePal.setColor(QPalette::Base, QColor(26, 26, 46));
+    gridFrame->setPalette(framePal);
+    gridFrame->setAutoFillBackground(true);
 
     gridLayout = new QGridLayout(gridFrame);
     gridLayout->setSpacing(10);
     gridLayout->setContentsMargins(15, 15, 15, 15);
 
-    // Create 24 word labels in 2 columns (12 rows each)
-    QFont monoFont("Courier New", 14);
+    // Create 24 word labels - USE PALETTE, NOT STYLESHEET
+    QFont monoFont("Courier New", 16);
     monoFont.setBold(true);
 
     for (int i = 0; i < 24; i++) {
         int row = i % 12;
-        int col = (i / 12) * 2;  // 0 or 2 (two columns with spacing)
+        int col = (i / 12) * 2;
 
-        // Number label
+        // Number label - LIGHT GRAY via palette
         numLabels[i] = new QLabel(QString::number(i + 1) + ".", gridFrame);
         numLabels[i]->setFont(monoFont);
         numLabels[i]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        numLabels[i]->setMinimumWidth(30);
+        numLabels[i]->setMinimumWidth(40);
+        QPalette numPal = numLabels[i]->palette();
+        numPal.setColor(QPalette::WindowText, QColor(204, 204, 204));
+        numLabels[i]->setPalette(numPal);
         gridLayout->addWidget(numLabels[i], row, col);
 
-        // Word label
+        // Word label - BRIGHT WHITE via palette
         wordLabels[i] = new QLabel("________", gridFrame);
         wordLabels[i]->setFont(monoFont);
         wordLabels[i]->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        wordLabels[i]->setMinimumWidth(100);
+        wordLabels[i]->setMinimumWidth(120);
         wordLabels[i]->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        QPalette wordPal = wordLabels[i]->palette();
+        wordPal.setColor(QPalette::WindowText, QColor(255, 255, 255));
+        wordLabels[i]->setPalette(wordPal);
         gridLayout->addWidget(wordLabels[i], row, col + 1);
     }
 
@@ -81,14 +100,19 @@ void SeedPhraseWidget::setupUI()
     connect(copyButton, &QPushButton::clicked, this, &SeedPhraseWidget::onCopyToClipboard);
     mainLayout->addWidget(copyButton);
 
-    // Additional warnings
-    securityWarning = new QLabel(this);
-    securityWarning->setText("⚠ SECURITY WARNINGS:\n"
+    // Security warnings - BRIGHT ORANGE via palette
+    securityWarning = new QLabel("⚠ SECURITY WARNINGS:\n"
                             "• Never share this seed phrase with anyone\n"
                             "• Never store it digitally (no photos, no cloud storage)\n"
                             "• Store it in a secure physical location\n"
-                            "• Anyone with this seed phrase can access your identity");
+                            "• Anyone with this seed phrase can access your identity", this);
     securityWarning->setWordWrap(true);
+    QPalette secPal = securityWarning->palette();
+    secPal.setColor(QPalette::WindowText, QColor(255, 170, 0));
+    securityWarning->setPalette(secPal);
+    QFont secFont = securityWarning->font();
+    secFont.setPointSize(11);
+    securityWarning->setFont(secFont);
     mainLayout->addWidget(securityWarning);
 
     mainLayout->addStretch();
@@ -168,84 +192,20 @@ void SeedPhraseWidget::showEvent(QShowEvent *event)
 
 void SeedPhraseWidget::applyTheme()
 {
-    printf("[DEBUG SEED] ===== applyTheme() CALLED =====\n");
+    printf("[DEBUG SEED] ===== applyTheme() CALLED - forcing update() =====\n");
+    // Force a repaint
+    update();
 
-    CpunkTheme theme = ThemeManager::instance()->currentTheme();
-    QString bgColor = (theme == THEME_CPUNK_IO) ? "#1a1a2e" : "#2c1810";
-    QString textColor = (theme == THEME_CPUNK_IO) ? "#ffffff" : "#fff5e6";
-    QString primaryColor = (theme == THEME_CPUNK_IO) ? "#00d9ff" : "#ff8c42";
-
-    // Update warning labels - BRIGHT YELLOW/ORANGE for visibility
-    if (warningLabel) {
-        warningLabel->setStyleSheet(QString("color: #FFAA00; font-weight: bold; font-size: 14pt; padding: 10px;"));
-        warningLabel->setVisible(true);
-        printf("[DEBUG SEED] warningLabel visible set to: %d\n", warningLabel->isVisible());
-    }
-    if (securityWarning) {
-        securityWarning->setStyleSheet(QString("color: #FFAA00; font-size: 11pt; padding: 10px;"));
-        securityWarning->setVisible(true);
-    }
-
-    // Update grid frame style - NO QLabel selector that might hide children
-    QFrame *gridFrame = findChild<QFrame*>();
-    if (gridFrame) {
-        gridFrame->setStyleSheet(QString("background-color: %1; border: 2px solid %2; border-radius: 5px;")
-                                .arg(bgColor).arg(primaryColor));
-        gridFrame->setVisible(true);
-    }
-
-    // Update number labels - BRIGHT and explicitly visible
-    for (int i = 0; i < 24; i++) {
-        if (numLabels[i]) {
-            numLabels[i]->setStyleSheet(QString("color: #CCCCCC; background: transparent; font-size: 14pt; font-weight: bold;"));
-            numLabels[i]->setVisible(true);
-            printf("[DEBUG SEED] numLabels[%d] setVisible(true) -> isVisible=%d\n", i, numLabels[i]->isVisible());
-        }
-    }
-
-    // Update word labels - MAXIMUM BRIGHTNESS and explicitly visible with TRANSPARENT BACKGROUND
-    for (int i = 0; i < 24; i++) {
-        wordLabels[i]->setStyleSheet(QString("color: #FFFFFF; background: transparent; font-size: 14pt; font-weight: bold;"));
-        wordLabels[i]->setVisible(true);
-        if (i == 0) {
-            // Debug first label only
-            QPalette pal = wordLabels[i]->palette();
-            QFont font = wordLabels[i]->font();
-            printf("[DEBUG SEED] wordLabels[0] DETAILED:\n");
-            printf("  text='%s'\n", wordLabels[0]->text().toUtf8().constData());
-            printf("  stylesheet='%s'\n", wordLabels[0]->styleSheet().toUtf8().constData());
-            printf("  font.family='%s', size=%d, weight=%d\n",
-                   font.family().toUtf8().constData(), font.pointSize(), font.weight());
-            printf("  palette text color=rgba(%d,%d,%d,%d)\n",
-                   pal.color(QPalette::WindowText).red(),
-                   pal.color(QPalette::WindowText).green(),
-                   pal.color(QPalette::WindowText).blue(),
-                   pal.color(QPalette::WindowText).alpha());
-            printf("  palette bg color=rgba(%d,%d,%d,%d)\n",
-                   pal.color(QPalette::Window).red(),
-                   pal.color(QPalette::Window).green(),
-                   pal.color(QPalette::Window).blue(),
-                   pal.color(QPalette::Window).alpha());
-        }
-        printf("[DEBUG SEED] wordLabels[%d] setVisible(true) -> isVisible=%d\n", i, wordLabels[i]->isVisible());
-    }
-
-    printf("[DEBUG SEED] ===== applyTheme() DONE =====\n");
-
-    // Update copy button
-    if (copyButton) {
-        copyButton->setStyleSheet(QString(
-            "QPushButton {"
-            "  background-color: %1;"
-            "  color: %2;"
-            "  border: none;"
-            "  border-radius: 5px;"
-            "  font-weight: bold;"
-            "  font-size: 12pt;"
-            "}"
-            "QPushButton:hover {"
-            "  background-color: %3;"
-            "}"
-        ).arg(primaryColor).arg(bgColor).arg(primaryColor + "cc"));
+    // Debug first word label
+    if (wordLabels[0]) {
+        QPalette pal = wordLabels[0]->palette();
+        printf("[DEBUG SEED] wordLabels[0]: text='%s', visible=%d\n",
+               wordLabels[0]->text().toUtf8().constData(),
+               wordLabels[0]->isVisible());
+        printf("  palette WindowText=rgba(%d,%d,%d,%d)\n",
+               pal.color(QPalette::WindowText).red(),
+               pal.color(QPalette::WindowText).green(),
+               pal.color(QPalette::WindowText).blue(),
+               pal.color(QPalette::WindowText).alpha());
     }
 }
