@@ -22,7 +22,7 @@ CreateIdentityDialog::CreateIdentityDialog(QWidget *parent)
     , page5(nullptr)
 {
     setWindowTitle("Create New Identity");
-    setMinimumSize(750, 750);
+    setMinimumSize(750, 700);
     setModal(true);
 
     setupUI();

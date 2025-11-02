@@ -59,7 +59,7 @@ void SeedPhraseWidget::setupUI()
     gridFrame->setAutoFillBackground(true);
 
     gridLayout = new QGridLayout(gridFrame);
-    gridLayout->setSpacing(12);
+    gridLayout->setSpacing(8);
     gridLayout->setContentsMargins(15, 15, 15, 15);
 
     // Create 24 word labels - USE PALETTE, NOT STYLESHEET
@@ -92,9 +92,9 @@ void SeedPhraseWidget::setupUI()
         gridLayout->addWidget(wordLabels[i], row, col + 1);
     }
 
-    // Make grid frame TALL ENOUGH to fit all 12 rows without cramming
-    gridFrame->setMinimumHeight(480);
-    gridFrame->setMaximumHeight(480);
+    // Make grid frame TALL ENOUGH - must fit all 12 rows + margins + spacing
+    gridFrame->setMinimumHeight(380);
+    gridFrame->setMaximumHeight(380);
     gridFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
     mainLayout->addWidget(gridFrame, 0, Qt::AlignTop);
