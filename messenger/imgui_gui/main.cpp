@@ -198,14 +198,22 @@ private:
             ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name));
             ImGui::Spacing();
             
-            if (ImGui::Button("Create", ImVec2(120, 40))) {
+            // Center buttons
+            float button_width = 120.0f;
+            float spacing = 10.0f;
+            float total_width = button_width * 2 + spacing;
+            float offset = (ImGui::GetContentRegionAvail().x - total_width) * 0.5f;
+            
+            if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+            
+            if (ImGui::Button("Create", ImVec2(button_width, 40))) {
                 if (strlen(new_identity_name) > 0) {
                     createIdentity(new_identity_name);
                     ImGui::CloseCurrentPopup();
                 }
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(120, 40))) {
+            if (ImGui::Button("Cancel", ImVec2(button_width, 40))) {
                 ImGui::CloseCurrentPopup();
             }
             
@@ -874,6 +882,7 @@ int main(int argc, char** argv) {
     ImVec4 bg_popup = ImVec4(0x0f/255.0f, 0x11/255.0f, 0x13/255.0f, 1.0f); // Darker for popups
     ImVec4 text_primary = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 1.0f); // #00FFCC (cyan)
     ImVec4 text_secondary = ImVec4(0x80/255.0f, 0xff/255.0f, 0xe6/255.0f, 1.0f); // Lighter cyan
+    ImVec4 text_button = ImVec4(0.05f, 0.05f, 0.05f, 1.0f); // Dark text for buttons
     ImVec4 accent = ImVec4(0x00/255.0f, 0xcc/255.0f, 0xa3/255.0f, 1.0f); // Darker cyan for buttons
     ImVec4 accent_hover = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 1.0f); // Bright cyan on hover
     
@@ -888,10 +897,13 @@ int main(int argc, char** argv) {
     style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
     style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 0.3f);
     
-    // Buttons
+    // Buttons - dark text for contrast on cyan background
     style.Colors[ImGuiCol_Button] = accent;
     style.Colors[ImGuiCol_ButtonHovered] = accent_hover;
     style.Colors[ImGuiCol_ButtonActive] = ImVec4(0x00/255.0f, 0xdd/255.0f, 0xaa/255.0f, 1.0f);
+    style.Colors[ImGuiCol_ButtonText] = text_button; // Dark text on buttons
+    style.Colors[ImGuiCol_ButtonTextHovered] = text_button;
+    style.Colors[ImGuiCol_ButtonTextActive] = text_button;
     
     // Headers (selectables, etc)
     style.Colors[ImGuiCol_Header] = ImVec4(0x00/255.0f, 0xcc/255.0f, 0xa3/255.0f, 0.3f);
