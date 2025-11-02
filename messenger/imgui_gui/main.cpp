@@ -657,7 +657,7 @@ int main(int argc, char** argv) {
     static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
     io.Fonts->AddFontFromFileTTF("imgui_gui/misc/fonts/fa-solid-900.ttf", 16.0f, &config, icon_ranges);
     
-    io.Fonts->Build();
+    // Don't call Build() - backend will do it automatically
 
     ImGui::StyleColorsDark();
     
