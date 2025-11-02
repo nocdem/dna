@@ -91,47 +91,24 @@ QString MainWindow::getLocalIdentity() {
 #endif
 }
 
-MainWindow::MainWindow(QWidget *parent)
+MainWindow::MainWindow(const QString &identity, QWidget *parent)
     : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0), currentGroupId(-1), currentContactType(TYPE_CONTACT), fontScale(1.5) {  // Changed default from 3.0 to 1.5
 
     // Remove native window frame for custom title bar
     // Use native window frame instead of custom frameless window
     // setWindowFlags(Qt::FramelessWindowHint);  // REMOVED: Using native title bar now
-    
+
+    // Use identity provided by IdentitySelectionDialog
+    currentIdentity = identity;
+
     setWindowTitle(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(currentIdentity));
-    
+
     // Initialize fullscreen state
     isFullscreen = false;
 
-    // Check if user has saved identity preference in QSettings
+    // Save selected identity to settings for future reference
     QSettings settings("DNA Messenger", "GUI");
-    QString savedIdentity = settings.value("currentIdentity").toString();
-
-    if (!savedIdentity.isEmpty()) {
-        // Use saved identity preference
-        currentIdentity = savedIdentity;
-    } else {
-        // Auto-detect local identity from filesystem
-        currentIdentity = getLocalIdentity();
-    }
-
-    if (currentIdentity.isEmpty()) {
-        // No local identity found, prompt for manual entry
-        bool ok;
-        currentIdentity = QInputDialog::getText(this, "DNA Messenger Login",
-                                                 "No local identity found.\nEnter your identity:",
-                                                 QLineEdit::Normal,
-                                                 "", &ok);
-
-        if (!ok || currentIdentity.isEmpty()) {
-            QMessageBox::critical(this, "Error", "Identity required to start messenger");
-            QApplication::quit();
-            return;
-        }
-
-        // Save manually entered identity to settings
-        settings.setValue("currentIdentity", currentIdentity);
-    }
+    settings.setValue("currentIdentity", currentIdentity);
 
     // Initialize messenger context
     ctx = messenger_init(currentIdentity.toUtf8().constData());

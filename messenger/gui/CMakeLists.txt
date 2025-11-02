@@ -18,6 +18,14 @@ set(GUI_SOURCES
     main.cpp
     MainWindow.cpp
     MainWindow.h
+    IdentitySelectionDialog.cpp
+    IdentitySelectionDialog.h
+    CreateIdentityDialog.cpp
+    CreateIdentityDialog.h
+    RestoreIdentityDialog.cpp
+    RestoreIdentityDialog.h
+    SeedPhraseWidget.cpp
+    SeedPhraseWidget.h
     WalletDialog.cpp
     WalletDialog.h
     SendTokensDialog.cpp
@@ -32,6 +40,11 @@ set(GUI_SOURCES
     ../cellframe_rpc.c
     ../cellframe_addr.c
     ../base58.c
+    ../bip39.c
+    ../bip39_pbkdf2.c
+    ../seed_derivation.c
+    ../keygen.c
+    ../messenger/keyserver_register.c
     resources.qrc
 )
 
