@@ -114,10 +114,15 @@ private:
         ImGui::Begin("DNA Messenger - Select Identity", nullptr, 
             ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
         
+        // Add padding at top
+        ImGui::Spacing();
+        ImGui::Spacing();
+        
         // Title
         ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
         ImGui::Text("Welcome to DNA Messenger");
         ImGui::SetWindowFontScale(1.0f);
+        ImGui::Spacing();
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
