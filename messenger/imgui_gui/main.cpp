@@ -4,6 +4,7 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include "IconsFontAwesome6.h"
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <string>
@@ -142,7 +143,7 @@ private:
         if (current_view == VIEW_CONTACTS) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.6f));
         }
-        if (ImGui::Button("💬\nChats", ImVec2(btn_width, 60))) {
+        if (ImGui::Button(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60))) {
             current_view = VIEW_CONTACTS;
         }
         if (current_view == VIEW_CONTACTS) {
@@ -155,7 +156,7 @@ private:
         if (current_view == VIEW_WALLET) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.6f));
         }
-        if (ImGui::Button("💰\nWallet", ImVec2(btn_width, 60))) {
+        if (ImGui::Button(ICON_FA_WALLET "\nWallet", ImVec2(btn_width, 60))) {
             current_view = VIEW_WALLET;
             selected_contact = -1;
         }
@@ -169,7 +170,7 @@ private:
         if (current_view == VIEW_SETTINGS) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.6f));
         }
-        if (ImGui::Button("⚙️\nSettings", ImVec2(btn_width, 60))) {
+        if (ImGui::Button(ICON_FA_GEAR "\nSettings", ImVec2(btn_width, 60))) {
             current_view = VIEW_SETTINGS;
             selected_contact = -1;
         }
@@ -180,7 +181,7 @@ private:
         ImGui::SameLine();
         
         // Profile button (placeholder)
-        if (ImGui::Button("👤\nProfile", ImVec2(btn_width, 60))) {
+        if (ImGui::Button(ICON_FA_USER "\nProfile", ImVec2(btn_width, 60))) {
             // TODO: Profile view
         }
         
@@ -199,7 +200,7 @@ private:
         ImGui::SetWindowFontScale(1.0f);
         
         ImGui::SameLine(io.DisplaySize.x - 60);
-        if (ImGui::Button("➕", ImVec2(50, 40))) {
+        if (ImGui::Button(ICON_FA_PLUS, ImVec2(50, 40))) {
             // TODO: Add contact dialog
         }
         
@@ -271,13 +272,13 @@ private:
         ImGui::Separator();
         
         // Navigation buttons
-        if (ImGui::Button("💬 Chat", ImVec2(-1, 40))) {
+        if (ImGui::Button(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40))) {
             current_view = VIEW_CONTACTS;
         }
-        if (ImGui::Button("💰 Wallet", ImVec2(-1, 40))) {
+        if (ImGui::Button(ICON_FA_WALLET " Wallet", ImVec2(-1, 40))) {
             current_view = VIEW_WALLET;
         }
-        if (ImGui::Button("⚙️ Settings", ImVec2(-1, 40))) {
+        if (ImGui::Button(ICON_FA_GEAR " Settings", ImVec2(-1, 40))) {
             current_view = VIEW_SETTINGS;
         }
         
@@ -306,7 +307,7 @@ private:
         
         // Add contact button at bottom
         ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 40);
-        if (ImGui::Button("➕ Add Contact", ImVec2(-1, 30))) {
+        if (ImGui::Button(ICON_FA_PLUS " Add Contact", ImVec2(-1, 30))) {
             // TODO: Open add contact dialog
         }
         
@@ -336,7 +337,7 @@ private:
         
         if (is_mobile) {
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
-            if (ImGui::Button("← Back", ImVec2(80, 40))) {
+            if (ImGui::Button(ICON_FA_ARROW_LEFT " Back", ImVec2(100, 40))) {
                 current_view = VIEW_CONTACTS;
                 selected_contact = -1;
             }
@@ -460,7 +461,7 @@ private:
         
         // Header
         ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
-        ImGui::Text("💰 cpunk Wallet");
+        ImGui::Text(ICON_FA_WALLET " cpunk Wallet");
         ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         ImGui::Separator();
@@ -503,34 +504,34 @@ private:
         
         if (is_mobile) {
             // Mobile: Stacked full-width buttons
-            if (ImGui::Button("📤 Send Tokens", ImVec2(-1, btn_height))) {
+            if (ImGui::Button(ICON_FA_PAPER_PLANE " Send Tokens", ImVec2(-1, btn_height))) {
                 // TODO: Open send dialog
             }
             ImGui::Spacing();
             
-            if (ImGui::Button("📥 Receive", ImVec2(-1, btn_height))) {
+            if (ImGui::Button(ICON_FA_DOWNLOAD " Receive", ImVec2(-1, btn_height))) {
                 // TODO: Show receive address
             }
             ImGui::Spacing();
             
-            if (ImGui::Button("📜 Transaction History", ImVec2(-1, btn_height))) {
+            if (ImGui::Button(ICON_FA_RECEIPT " Transaction History", ImVec2(-1, btn_height))) {
                 // TODO: Show transaction history
             }
         } else {
             // Desktop: Side-by-side buttons
             float btn_width = (io.DisplaySize.x - 80.0f) / 3.0f;
             
-            if (ImGui::Button("📤 Send", ImVec2(btn_width, btn_height))) {
+            if (ImGui::Button(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, btn_height))) {
                 // TODO: Open send dialog
             }
             ImGui::SameLine();
             
-            if (ImGui::Button("📥 Receive", ImVec2(btn_width, btn_height))) {
+            if (ImGui::Button(ICON_FA_DOWNLOAD " Receive", ImVec2(btn_width, btn_height))) {
                 // TODO: Show receive address
             }
             ImGui::SameLine();
             
-            if (ImGui::Button("📜 History", ImVec2(btn_width, btn_height))) {
+            if (ImGui::Button(ICON_FA_RECEIPT " History", ImVec2(btn_width, btn_height))) {
                 // TODO: Show transaction history
             }
         }
@@ -548,7 +549,7 @@ private:
         
         // Header
         ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
-        ImGui::Text("⚙️ Settings");
+        ImGui::Text(ICON_FA_GEAR " Settings");
         ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         ImGui::Separator();
@@ -640,6 +641,23 @@ int main(int argc, char** argv) {
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
+
+    // Load fonts
+    ImFontConfig config;
+    config.MergeMode = false;
+    config.GlyphMinAdvanceX = 13.0f;
+    
+    // Default font (larger for better readability)
+    io.Fonts->AddFontFromFileTTF("imgui_gui/misc/fonts/Roboto-Medium.ttf", 18.0f);
+    
+    // Merge Font Awesome icons
+    config.MergeMode = true;
+    config.GlyphMinAdvanceX = 18.0f;
+    config.GlyphOffset = ImVec2(0, 2);
+    static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
+    io.Fonts->AddFontFromFileTTF("imgui_gui/misc/fonts/fa-solid-900.ttf", 16.0f, &config, icon_ranges);
+    
+    io.Fonts->Build();
 
     ImGui::StyleColorsDark();
     
