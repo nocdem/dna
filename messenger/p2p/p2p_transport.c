@@ -3,14 +3,41 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <ifaddrs.h>
 #include <openssl/sha.h>
 #include <errno.h>
+
+// Platform-specific includes
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #include <windows.h>
+    #include <iphlpapi.h>
+    #pragma comment(lib, "ws2_32.lib")
+    #pragma comment(lib, "iphlpapi.lib")
+
+    #define close closesocket
+    typedef int socklen_t;
+    #define sleep(x) Sleep((x)*1000)
+
+    // Windows threading (use CRITICAL_SECTION instead of mutex)
+    typedef HANDLE pthread_t;
+    typedef CRITICAL_SECTION pthread_mutex_t;
+    typedef void* (*pthread_func_t)(void*);
+
+    #define pthread_create(thread, attr, func, arg) (*(thread) = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)(func), (arg), 0, NULL), 0)
+    #define pthread_join(thread, retval) (WaitForSingleObject((thread), INFINITE), 0)
+    #define pthread_mutex_init(mutex, attr) (InitializeCriticalSection(mutex), 0)
+    #define pthread_mutex_lock(mutex) (EnterCriticalSection(mutex), 0)
+    #define pthread_mutex_unlock(mutex) (LeaveCriticalSection(mutex), 0)
+    #define pthread_mutex_destroy(mutex) (DeleteCriticalSection(mutex), 0)
+#else
+    #include <unistd.h>
+    #include <pthread.h>
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <ifaddrs.h>
+#endif
 
 /**
  * P2P Connection Structure
@@ -73,7 +100,63 @@ struct p2p_transport {
  * For now, returns "0.0.0.0" as placeholder
  */
 static int get_external_ip(char *ip_out, size_t len) {
-    // Get primary network interface IP (not loopback)
+#ifdef _WIN32
+    // Windows implementation using GetAdaptersAddresses
+    IP_ADAPTER_ADDRESSES *addresses = NULL;
+    IP_ADAPTER_ADDRESSES *adapter = NULL;
+    ULONG size = 0;
+    ULONG result;
+    int found = 0;
+
+    // Get required buffer size
+    result = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, NULL, addresses, &size);
+    if (result != ERROR_BUFFER_OVERFLOW) {
+        snprintf(ip_out, len, "0.0.0.0");
+        return -1;
+    }
+
+    addresses = (IP_ADAPTER_ADDRESSES *)malloc(size);
+    if (!addresses) {
+        snprintf(ip_out, len, "0.0.0.0");
+        return -1;
+    }
+
+    result = GetAdaptersAddresses(AF_INET, GAA_FLAG_INCLUDE_PREFIX, NULL, addresses, &size);
+    if (result != NO_ERROR) {
+        free(addresses);
+        snprintf(ip_out, len, "0.0.0.0");
+        return -1;
+    }
+
+    // Look for first non-loopback IPv4 address
+    for (adapter = addresses; adapter != NULL; adapter = adapter->Next) {
+        if (adapter->IfType == IF_TYPE_SOFTWARE_LOOPBACK)
+            continue;
+
+        IP_ADAPTER_UNICAST_ADDRESS *unicast = adapter->FirstUnicastAddress;
+        if (unicast && unicast->Address.lpSockaddr->sa_family == AF_INET) {
+            struct sockaddr_in *addr = (struct sockaddr_in *)unicast->Address.lpSockaddr;
+            const char *ip = inet_ntoa(addr->sin_addr);
+
+            // Skip loopback (127.0.0.1)
+            if (strncmp(ip, "127.", 4) != 0) {
+                snprintf(ip_out, len, "%s", ip);
+                found = 1;
+                break;
+            }
+        }
+    }
+
+    free(addresses);
+
+    if (!found) {
+        snprintf(ip_out, len, "0.0.0.0");
+        return -1;
+    }
+
+    return 0;
+#else
+    // Linux implementation using getifaddrs
     struct ifaddrs *ifaddr, *ifa;
     int found = 0;
 
@@ -108,6 +191,7 @@ static int get_external_ip(char *ip_out, size_t len) {
     }
 
     return 0;
+#endif
 }
 
 /**
@@ -320,7 +404,11 @@ int p2p_transport_start(p2p_transport_t *ctx) {
 
     // Set socket options
     int opt = 1;
+#ifdef _WIN32
+    setsockopt(ctx->listen_sockfd, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt));
+#else
     setsockopt(ctx->listen_sockfd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#endif
 
     // Bind to port
     struct sockaddr_in server_addr = {0};

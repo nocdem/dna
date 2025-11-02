@@ -12,6 +12,13 @@
 #include <string.h>
 #include <libpq-fe.h>
 
+// Platform-specific headers for home directory detection
+#ifndef _WIN32
+#include <unistd.h>
+#include <pwd.h>
+#include <sys/types.h>
+#endif
+
 // Bootstrap nodes (hardcoded from Phase 9.1 deployment)
 static const char *BOOTSTRAP_NODES[] = {
     "154.38.182.161:4000",    // dna-bootstrap-us-1
@@ -69,9 +76,40 @@ static int load_my_privkey(
     size_t *privkey_len_out
 )
 {
+    // Get home directory (platform-specific)
+    const char *home = NULL;
+
+#ifdef _WIN32
+    // Windows: Try USERPROFILE first, then HOMEDRIVE+HOMEPATH
+    home = getenv("USERPROFILE");
+    if (!home) {
+        static char win_home[512];
+        const char *homedrive = getenv("HOMEDRIVE");
+        const char *homepath = getenv("HOMEPATH");
+        if (homedrive && homepath) {
+            snprintf(win_home, sizeof(win_home), "%s%s", homedrive, homepath);
+            home = win_home;
+        }
+    }
+#else
+    // Linux/POSIX: Try HOME first, then getpwuid() fallback
+    home = getenv("HOME");
+    if (!home) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) {
+            home = pw->pw_dir;
+        }
+    }
+#endif
+
+    if (!home) {
+        fprintf(stderr, "[P2P] Cannot determine home directory\n");
+        return -1;
+    }
+
     char key_path[512];
     snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium.pqkey",
-             getenv("HOME"), ctx->identity);
+             home, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {
@@ -111,9 +149,40 @@ static int load_my_kyber_key(
     size_t *kyber_key_len_out
 )
 {
+    // Get home directory (platform-specific)
+    const char *home = NULL;
+
+#ifdef _WIN32
+    // Windows: Try USERPROFILE first, then HOMEDRIVE+HOMEPATH
+    home = getenv("USERPROFILE");
+    if (!home) {
+        static char win_home[512];
+        const char *homedrive = getenv("HOMEDRIVE");
+        const char *homepath = getenv("HOMEPATH");
+        if (homedrive && homepath) {
+            snprintf(win_home, sizeof(win_home), "%s%s", homedrive, homepath);
+            home = win_home;
+        }
+    }
+#else
+    // Linux/POSIX: Try HOME first, then getpwuid() fallback
+    home = getenv("HOME");
+    if (!home) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) {
+            home = pw->pw_dir;
+        }
+    }
+#endif
+
+    if (!home) {
+        fprintf(stderr, "[P2P] Cannot determine home directory\n");
+        return -1;
+    }
+
     char key_path[512];
     snprintf(key_path, sizeof(key_path), "%s/.dna/%s-kyber512.pqkey",
-             getenv("HOME"), ctx->identity);
+             home, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {

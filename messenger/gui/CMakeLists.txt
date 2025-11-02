@@ -111,6 +111,17 @@ if(WIN32)
         wldap32      # LDAP support (PostgreSQL + CURL)
         normaliz     # Internationalization (CURL)
     )
+
+    # Phase 9.1: P2P/DHT support - explicit linkage needed for Windows static builds
+    # Use linker groups and whole-archive to handle circular dependencies and force gnutls stubs
+    target_link_libraries(dna_messenger_gui
+        -Wl,--start-group
+        p2p_transport  # P2P transport layer (depends on DHT)
+        -Wl,--whole-archive
+        dht_lib        # DHT library with gnutls stubs (force all symbols including stubs)
+        -Wl,--no-whole-archive
+        -Wl,--end-group
+    )
 endif()
 
 # Include directories

@@ -222,6 +222,11 @@ build_windows_x64() {
         echo -e "${GREEN}✓${NC} MXE build already complete, skipping build step"
     fi
 
+    # Build OpenDHT and msgpack for Windows
+    echo -e "${BLUE}Building P2P dependencies (OpenDHT, msgpack)...${NC}"
+    export MXE_DIR
+    "${PROJECT_ROOT}/build-opendht-windows.sh"
+
     # Set up environment
     # Add both the general bin dir and the target-specific bin dir to PATH
     # The target bin dir contains the actual binutils (as, ld, etc.)
