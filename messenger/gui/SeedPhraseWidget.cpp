@@ -40,7 +40,7 @@ void SeedPhraseWidget::setupUI()
     warnPal.setColor(QPalette::WindowText, QColor(255, 170, 0)); // Bright orange
     warningLabel->setPalette(warnPal);
     QFont warnFont = warningLabel->font();
-    warnFont.setPointSize(14);
+    warnFont.setPointSize(12);
     warnFont.setBold(true);
     warningLabel->setFont(warnFont);
     mainLayout->addWidget(warningLabel);
@@ -62,7 +62,7 @@ void SeedPhraseWidget::setupUI()
     gridLayout->setContentsMargins(15, 15, 15, 15);
 
     // Create 24 word labels - USE PALETTE, NOT STYLESHEET
-    QFont monoFont("Courier New", 12);
+    QFont monoFont("Courier New", 10);
     monoFont.setBold(true);
 
     for (int i = 0; i < 24; i++) {
@@ -92,9 +92,10 @@ void SeedPhraseWidget::setupUI()
     }
 
     // Make grid frame expand to show all content
-    gridFrame->setMinimumSize(600, 400);
+    gridFrame->setMinimumSize(600, 350);
 
     mainLayout->addWidget(gridFrame);
+    mainLayout->addSpacing(10); // Add space before copy button
 
     // Copy button
     copyButton = new QPushButton("📋 Copy to Clipboard", this);
@@ -102,6 +103,7 @@ void SeedPhraseWidget::setupUI()
     copyButton->setCursor(Qt::PointingHandCursor);
     connect(copyButton, &QPushButton::clicked, this, &SeedPhraseWidget::onCopyToClipboard);
     mainLayout->addWidget(copyButton);
+    mainLayout->addSpacing(10); // Add space before security warning
 
     // Security warnings - BRIGHT ORANGE via palette
     securityWarning = new QLabel("⚠ SECURITY WARNINGS:\n"
@@ -114,7 +116,7 @@ void SeedPhraseWidget::setupUI()
     secPal.setColor(QPalette::WindowText, QColor(255, 170, 0));
     securityWarning->setPalette(secPal);
     QFont secFont = securityWarning->font();
-    secFont.setPointSize(11);
+    secFont.setPointSize(9);
     securityWarning->setFont(secFont);
     mainLayout->addWidget(securityWarning);
 
