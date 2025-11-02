@@ -740,7 +740,10 @@ private:
             }
         } else {
             // Desktop: Side-by-side buttons
-            float btn_width = (io.DisplaySize.x - 80.0f) / 3.0f;
+            ImGuiStyle& style = ImGui::GetStyle();
+            float available_width = ImGui::GetContentRegionAvail().x;
+            float spacing = style.ItemSpacing.x;
+            float btn_width = (available_width - spacing * 2) / 3.0f;
             
             if (ButtonDark(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, btn_height))) {
                 // TODO: Open send dialog
