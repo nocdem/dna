@@ -5,16 +5,12 @@
 #include <QFrame>
 #include <QPalette>
 #include <QSizePolicy>
-#include <cstdio>
 
 SeedPhraseWidget::SeedPhraseWidget(QWidget *parent)
     : QWidget(parent)
     , gridLayout(nullptr)
     , copyButton(nullptr)
 {
-    printf("[DEBUG SEED] Constructor: parent=%p, parent visible=%d\n",
-           parent, parent ? parent->isVisible() : -1);
-
     setupUI();
 
     // Connect to theme manager
@@ -22,8 +18,6 @@ SeedPhraseWidget::SeedPhraseWidget(QWidget *parent)
             this, &SeedPhraseWidget::applyTheme);
 
     applyTheme();
-
-    printf("[DEBUG SEED] Constructor done: this visible=%d\n", this->isVisible());
 }
 
 void SeedPhraseWidget::setupUI()
@@ -93,7 +87,7 @@ void SeedPhraseWidget::setupUI()
     }
 
     // Make grid frame smaller to fit in narrower dialog - 7pt font needs less space
-    gridFrame->setMinimumSize(420, 300);
+    gridFrame->setMinimumSize(315, 300);
     gridFrame->setMaximumHeight(300);
     gridFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
@@ -123,8 +117,6 @@ void SeedPhraseWidget::setupUI()
 void SeedPhraseWidget::setSeedPhrase(const QString &phrase)
 {
     seedPhrase = phrase;
-    printf("[DEBUG SEED] setSeedPhrase called with: '%s' (length: %d)\n",
-           phrase.toUtf8().constData(), phrase.length());
     updateDisplay();
 }
 
@@ -143,8 +135,6 @@ void SeedPhraseWidget::setShowCopyButton(bool show)
 void SeedPhraseWidget::updateDisplay()
 {
     QStringList words = seedPhrase.split(' ', Qt::SkipEmptyParts);
-    printf("[DEBUG SEED] updateDisplay: seedPhrase='%s', word count=%d\n",
-           seedPhrase.toUtf8().constData(), words.size());
 
     for (int i = 0; i < 24; i++) {
         if (i < words.size()) {
@@ -156,14 +146,6 @@ void SeedPhraseWidget::updateDisplay()
 
     // Re-apply theme to ensure visibility and styling
     applyTheme();
-
-    // Debug check visibility after applyTheme
-    for (int i = 0; i < 24; i++) {
-        printf("[DEBUG SEED] wordLabels[%d] = '%s', visible=%d, size=%dx%d\n",
-               i, wordLabels[i]->text().toUtf8().constData(),
-               wordLabels[i]->isVisible(),
-               wordLabels[i]->width(), wordLabels[i]->height());
-    }
 }
 
 void SeedPhraseWidget::onCopyToClipboard()
@@ -187,27 +169,12 @@ void SeedPhraseWidget::onCopyToClipboard()
 void SeedPhraseWidget::showEvent(QShowEvent *event)
 {
     QWidget::showEvent(event);
-    printf("[DEBUG SEED] ===== showEvent() CALLED - Widget NOW VISIBLE! =====\n");
     // Re-apply theme now that parent is visible
     applyTheme();
 }
 
 void SeedPhraseWidget::applyTheme()
 {
-    printf("[DEBUG SEED] ===== applyTheme() CALLED - forcing update() =====\n");
     // Force a repaint
     update();
-
-    // Debug first word label
-    if (wordLabels[0]) {
-        QPalette pal = wordLabels[0]->palette();
-        printf("[DEBUG SEED] wordLabels[0]: text='%s', visible=%d\n",
-               wordLabels[0]->text().toUtf8().constData(),
-               wordLabels[0]->isVisible());
-        printf("  palette WindowText=rgba(%d,%d,%d,%d)\n",
-               pal.color(QPalette::WindowText).red(),
-               pal.color(QPalette::WindowText).green(),
-               pal.color(QPalette::WindowText).blue(),
-               pal.color(QPalette::WindowText).alpha());
-    }
 }
