@@ -3,6 +3,7 @@
 #include "cpunk_themes.h"
 #include <QFont>
 #include <QFrame>
+#include <cstdio>
 
 SeedPhraseWidget::SeedPhraseWidget(QWidget *parent)
     : QWidget(parent)
@@ -42,7 +43,7 @@ void SeedPhraseWidget::setupUI()
     gridLayout->setContentsMargins(15, 15, 15, 15);
 
     // Create 24 word labels in 2 columns (12 rows each)
-    QFont monoFont("Courier New", 11);
+    QFont monoFont("Courier New", 14);
     monoFont.setBold(true);
 
     for (int i = 0; i < 24; i++) {
@@ -90,6 +91,8 @@ void SeedPhraseWidget::setupUI()
 void SeedPhraseWidget::setSeedPhrase(const QString &phrase)
 {
     seedPhrase = phrase;
+    printf("[DEBUG SEED] setSeedPhrase called with: '%s' (length: %d)\n",
+           phrase.toUtf8().constData(), phrase.length());
     updateDisplay();
 }
 
@@ -108,10 +111,13 @@ void SeedPhraseWidget::setShowCopyButton(bool show)
 void SeedPhraseWidget::updateDisplay()
 {
     QStringList words = seedPhrase.split(' ', Qt::SkipEmptyParts);
+    printf("[DEBUG SEED] updateDisplay: seedPhrase='%s', word count=%d\n",
+           seedPhrase.toUtf8().constData(), words.size());
 
     for (int i = 0; i < 24; i++) {
         if (i < words.size()) {
             wordLabels[i]->setText(words[i]);
+            printf("[DEBUG SEED] wordLabels[%d] = '%s'\n", i, words[i].toUtf8().constData());
         } else {
             wordLabels[i]->setText("________");
         }
@@ -162,18 +168,16 @@ void SeedPhraseWidget::applyTheme()
                                 .arg(bgColor).arg(primaryColor));
     }
 
-    // Update number labels
+    // Update number labels - larger and brighter
     for (int i = 0; i < 24; i++) {
         if (numLabels[i]) {
-            numLabels[i]->setStyleSheet(QString("QLabel { color: %1; background: transparent; }")
-                                       .arg(mutedColor));
+            numLabels[i]->setStyleSheet(QString("QLabel { color: #CCCCCC; background: transparent; font-size: 14pt; font-weight: bold; }"));
         }
     }
 
-    // Update word labels
+    // Update word labels - BRIGHT WHITE for maximum visibility
     for (int i = 0; i < 24; i++) {
-        wordLabels[i]->setStyleSheet(QString("QLabel { color: %1; background: transparent; }")
-                                    .arg(textColor));
+        wordLabels[i]->setStyleSheet(QString("QLabel { color: #FFFFFF; background: transparent; font-size: 14pt; font-weight: bold; }"));
     }
 
     // Update copy button
