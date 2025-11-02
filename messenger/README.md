@@ -31,8 +31,8 @@ Binaries from the latest builds are available on GitLab CI/CD artifacts:
 - **Download:** https://gitlab.cpunk.io/cpunk/dna-messenger/-/artifacts
 
 Available platforms:
-- **Linux x86_64:** GUI binary (dna_messenger_gui)
-- **Linux ARM64:** GUI binary (dna_messenger_gui)
+- **Linux x86_64:** GUI binary (dna_messenger_gui), DHT bootstrap server (persistent_bootstrap)
+- **Linux ARM64:** GUI binary (dna_messenger_gui), DHT bootstrap server (persistent_bootstrap)
 - **Windows x64:** GUI executable (dna_messenger_gui.exe, statically linked)
 
 Note: Builds are generated on every push to main branch.
@@ -91,6 +91,9 @@ make
 
 # Run GUI
 ./gui/dna_messenger_gui
+
+# Optional: Run DHT bootstrap server (for running your own bootstrap node)
+./dht/persistent_bootstrap
 ```
 
 ### Windows (Cross-Compilation from Linux)
@@ -243,6 +246,7 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
   - OpenDHT integration for peer discovery
   - Direct peer-to-peer messaging via TCP
   - 3 public bootstrap nodes (US/EU)
+  - `persistent_bootstrap` binary (Linux only) for running your own DHT bootstrap node
 
 - ✅ **Phase 9.2:** Offline Message Queueing (COMPLETE)
   - DHT-based message storage for offline recipients
