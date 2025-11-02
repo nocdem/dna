@@ -4,6 +4,7 @@
 #include <QFont>
 #include <QFrame>
 #include <QPalette>
+#include <QSizePolicy>
 #include <cstdio>
 
 SeedPhraseWidget::SeedPhraseWidget(QWidget *parent)
@@ -29,7 +30,7 @@ void SeedPhraseWidget::setupUI()
 {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(20, 20, 20, 20);
-    mainLayout->setSpacing(15);
+    mainLayout->setSpacing(10);
 
     // Warning label - BRIGHT ORANGE, NO STYLESHEET
     warningLabel = new QLabel("⚠ WRITE DOWN THESE 24 WORDS IN ORDER\n"
@@ -58,11 +59,11 @@ void SeedPhraseWidget::setupUI()
     gridFrame->setAutoFillBackground(true);
 
     gridLayout = new QGridLayout(gridFrame);
-    gridLayout->setSpacing(10);
+    gridLayout->setSpacing(8);
     gridLayout->setContentsMargins(15, 15, 15, 15);
 
     // Create 24 word labels - USE PALETTE, NOT STYLESHEET
-    QFont monoFont("Courier New", 10);
+    QFont monoFont("Courier New", 8);
     monoFont.setBold(true);
 
     for (int i = 0; i < 24; i++) {
@@ -91,33 +92,31 @@ void SeedPhraseWidget::setupUI()
         gridLayout->addWidget(wordLabels[i], row, col + 1);
     }
 
-    // Make grid frame expand to show all content - MUST fit 12 rows
-    gridFrame->setMinimumSize(600, 450);
+    // Make grid frame expand to show all content - MUST fit 12 rows (8pt font = smaller)
+    gridFrame->setMinimumHeight(320);
+    gridFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    mainLayout->addWidget(gridFrame);
+    mainLayout->addWidget(gridFrame, 0, Qt::AlignTop);
     mainLayout->addSpacing(10); // Add space before copy button
 
-    // Copy button
+    // Copy button - COMPACT
     copyButton = new QPushButton("📋 Copy to Clipboard", this);
-    copyButton->setMinimumHeight(40);
+    copyButton->setMinimumHeight(35);
     copyButton->setCursor(Qt::PointingHandCursor);
     connect(copyButton, &QPushButton::clicked, this, &SeedPhraseWidget::onCopyToClipboard);
     mainLayout->addWidget(copyButton);
-    mainLayout->addSpacing(10); // Add space before security warning
+    mainLayout->addSpacing(5); // Small space before security warning
 
-    // Security warnings - BRIGHT ORANGE via palette, COMPACT
-    securityWarning = new QLabel("⚠ Never share • No digital storage • Secure physical location only", this);
-    securityWarning->setWordWrap(true);
+    // Security warnings - BRIGHT ORANGE via palette, VERY COMPACT
+    securityWarning = new QLabel("⚠ Never share • Secure offline storage only", this);
     securityWarning->setAlignment(Qt::AlignCenter);
     QPalette secPal = securityWarning->palette();
     secPal.setColor(QPalette::WindowText, QColor(255, 170, 0));
     securityWarning->setPalette(secPal);
     QFont secFont = securityWarning->font();
-    secFont.setPointSize(9);
+    secFont.setPointSize(8);
     securityWarning->setFont(secFont);
     mainLayout->addWidget(securityWarning);
-
-    mainLayout->addStretch();
 }
 
 void SeedPhraseWidget::setSeedPhrase(const QString &phrase)
