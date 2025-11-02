@@ -68,7 +68,13 @@ static int get_db_path(const char *identity, char *path_out, size_t path_len) {
 
     struct stat st = {0};
     if (stat(dna_dir, &st) == -1) {
+#ifdef _WIN32
+        // Windows mkdir() only takes 1 argument
+        if (mkdir(dna_dir) != 0) {
+#else
+        // POSIX mkdir() takes mode as second argument
         if (mkdir(dna_dir, 0700) != 0) {
+#endif
             fprintf(stderr, "[Backup] Failed to create %s: %s\n", dna_dir, strerror(errno));
             return -1;
         }
