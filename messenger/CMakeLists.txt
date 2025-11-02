@@ -207,11 +207,11 @@ target_link_libraries(dna_lib
     OpenSSL::Crypto
     kyber512
     dilithium
-    p2p_transport  # Phase 9.1b: P2P transport layer
-    dht_lib        # Phase 9.1: DHT library (required by P2P transport) - must come AFTER p2p_transport
-    p2p_transport  # Link p2p_transport again to resolve circular deps with dht_lib
-    dht_lib        # Link dht_lib again for static linking order
-    stdc++         # C++ standard library (required by dht_lib)
+    dht_lib        # Phase 9.1: DHT library (MUST come BEFORE p2p_transport for Windows stub symbols)
+    p2p_transport  # Phase 9.1b: P2P transport layer (links OpenDHT, needs dht_lib stubs first)
+    dht_lib        # Link dht_lib again to resolve circular deps with p2p_transport
+    p2p_transport  # Link p2p_transport again for static linking order
+    stdc++         # C++ standard library (required by dht_lib and OpenDHT)
     ${PQ_LIBRARY}
     ${JSONC_LIBRARIES}
     ${PLATFORM_LIBS}
@@ -273,9 +273,9 @@ target_link_libraries(dna_messenger
     OpenSSL::Crypto
 )
 
-# On Windows, add zlib and system libraries
+# On Windows, add zlib and C++ standard library
 if(WIN32)
-    target_link_libraries(dna_messenger z)
+    target_link_libraries(dna_messenger z stdc++)
 endif()
 
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})

@@ -9,6 +9,7 @@ if(WIN32)
     set(OPENDHT_LIBRARIES "${MXE_PREFIX}/lib/libopendht.a")
 
     # OpenDHT dependencies for Windows (order matters for static linking!)
+    # Dependencies must come AFTER the libraries that use them
     set(OPENDHT_DEPS
         "${MXE_PREFIX}/lib/libjsoncpp.a"
         "${MXE_PREFIX}/lib/libfmt.a"
@@ -17,10 +18,13 @@ if(WIN32)
         "${MXE_PREFIX}/lib/libhogweed.a"
         "${MXE_PREFIX}/lib/libnettle.a"
         "${MXE_PREFIX}/lib/libtasn1.a"       # ASN.1 parsing (gnutls dependency)
-        "${MXE_PREFIX}/lib/libunistring.a"   # Unicode strings (gnutls dependency)
-        "${MXE_PREFIX}/lib/libidn2.a"        # IDN support (gnutls dependency)
+        "${MXE_PREFIX}/lib/libidn2.a"        # IDN support (needs libunistring)
+        "${MXE_PREFIX}/lib/libunistring.a"   # Unicode strings (needs libiconv)
+        "${MXE_PREFIX}/lib/libiconv.a"       # Character encoding (must be AFTER libunistring)
+        "${MXE_PREFIX}/lib/libzstd.a"        # ZSTD compression (gnutls dependency)
+        "${MXE_PREFIX}/lib/libbrotlidec.a"   # Brotli decompression (gnutls dependency)
         "${MXE_PREFIX}/lib/libbrotlienc.a"   # Brotli compression (gnutls dependency)
-        "${MXE_PREFIX}/lib/libbrotlicommon.a" # Brotli common (gnutls dependency)
+        "${MXE_PREFIX}/lib/libbrotlicommon.a" # Brotli common (must be AFTER enc/dec)
         "${MXE_PREFIX}/lib/libgmp.a"
         ws2_32 crypt32 bcrypt ncrypt        # Windows system libraries
     )
