@@ -29,8 +29,8 @@ SeedPhraseWidget::SeedPhraseWidget(QWidget *parent)
 void SeedPhraseWidget::setupUI()
 {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(20, 20, 20, 20);
-    mainLayout->setSpacing(10);
+    mainLayout->setContentsMargins(15, 10, 15, 10);
+    mainLayout->setSpacing(8);
 
     // Warning label - BRIGHT ORANGE, NO STYLESHEET
     warningLabel = new QLabel("⚠ WRITE DOWN THESE 24 WORDS IN ORDER\n"
@@ -41,7 +41,7 @@ void SeedPhraseWidget::setupUI()
     warnPal.setColor(QPalette::WindowText, QColor(255, 170, 0)); // Bright orange
     warningLabel->setPalette(warnPal);
     QFont warnFont = warningLabel->font();
-    warnFont.setPointSize(12);
+    warnFont.setPointSize(10);
     warnFont.setBold(true);
     warningLabel->setFont(warnFont);
     mainLayout->addWidget(warningLabel);
@@ -59,11 +59,11 @@ void SeedPhraseWidget::setupUI()
     gridFrame->setAutoFillBackground(true);
 
     gridLayout = new QGridLayout(gridFrame);
-    gridLayout->setSpacing(8);
-    gridLayout->setContentsMargins(15, 15, 15, 15);
+    gridLayout->setSpacing(6);
+    gridLayout->setContentsMargins(10, 10, 10, 10);
 
     // Create 24 word labels - USE PALETTE, NOT STYLESHEET
-    QFont monoFont("Courier New", 8);
+    QFont monoFont("Courier New", 7);
     monoFont.setBold(true);
 
     for (int i = 0; i < 24; i++) {
@@ -92,9 +92,9 @@ void SeedPhraseWidget::setupUI()
         gridLayout->addWidget(wordLabels[i], row, col + 1);
     }
 
-    // Make grid frame TALL ENOUGH - must fit all 12 rows + margins + spacing
-    gridFrame->setMinimumHeight(380);
-    gridFrame->setMaximumHeight(380);
+    // Make grid frame smaller to fit in dialog - 7pt font needs less space
+    gridFrame->setMinimumHeight(300);
+    gridFrame->setMaximumHeight(300);
     gridFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
     mainLayout->addWidget(gridFrame, 0, Qt::AlignTop);
@@ -102,7 +102,7 @@ void SeedPhraseWidget::setupUI()
 
     // Copy button - COMPACT
     copyButton = new QPushButton("📋 Copy to Clipboard", this);
-    copyButton->setMinimumHeight(35);
+    copyButton->setMinimumHeight(30);
     copyButton->setCursor(Qt::PointingHandCursor);
     connect(copyButton, &QPushButton::clicked, this, &SeedPhraseWidget::onCopyToClipboard);
     mainLayout->addWidget(copyButton);
@@ -115,7 +115,7 @@ void SeedPhraseWidget::setupUI()
     secPal.setColor(QPalette::WindowText, QColor(255, 170, 0));
     securityWarning->setPalette(secPal);
     QFont secFont = securityWarning->font();
-    secFont.setPointSize(8);
+    secFont.setPointSize(7);
     securityWarning->setFont(secFont);
     mainLayout->addWidget(securityWarning);
 }
