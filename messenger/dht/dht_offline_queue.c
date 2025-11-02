@@ -4,7 +4,13 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <time.h>
-#include <arpa/inet.h>  // For htonl/ntohl (network byte order)
+
+// Platform-specific network byte order functions
+#ifdef _WIN32
+    #include <winsock2.h>  // For htonl/ntohl on Windows
+#else
+    #include <arpa/inet.h>  // For htonl/ntohl on Linux
+#endif
 
 /**
  * SHA256 hash helper (same as p2p_transport.c)
