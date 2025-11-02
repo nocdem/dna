@@ -350,6 +350,9 @@ if(WIN32)
         ${IDN2_LIBRARY}
         ${ARGON2_LIBRARY}
         # Windows system libraries (gnutls, OpenSSL, PostgreSQL dependencies)
+        ${GNUTLS_LIBRARY}    # Link gnutls again for circular dependencies
+        bcrypt       # Windows BCrypt API (random number generation)
+        ncrypt       # Windows NCrypt API (CNG key storage)
         crypt32      # Windows certificate store
         ws2_32       # Windows Sockets
         iphlpapi     # IP Helper API (inet_ntop)
