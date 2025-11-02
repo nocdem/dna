@@ -525,19 +525,24 @@ static void p2p_message_received_internal(
 
     // Store in PostgreSQL so messenger_list_messages() can retrieve it
     // The message is already encrypted at this point
-    const char *params[3] = {
+    // Use schema: (sender, recipient, ciphertext, ciphertext_len, message_group_id)
+    char len_str[32];
+    snprintf(len_str, sizeof(len_str), "%zu", message_len);
+
+    const char *params[4] = {
         sender_identity,
         ctx->identity,
-        (const char*)message  // This should be the encrypted message blob
+        (const char*)message,  // This should be the encrypted message blob
+        len_str
     };
-    int param_lengths[3] = { 0, 0, (int)message_len };
-    int param_formats[3] = { 0, 0, 1 };  // Binary format for encrypted message
+    int param_lengths[4] = { 0, 0, (int)message_len, 0 };
+    int param_formats[4] = { 0, 0, 1, 0 };  // Binary format for ciphertext
 
     PGresult *res = PQexecParams(
         ctx->pg_conn,
-        "INSERT INTO messages (sender, recipient, encrypted_message, timestamp, status) "
-        "VALUES ($1, $2, $3, NOW(), 'delivered')",
-        3,
+        "INSERT INTO messages (sender, recipient, ciphertext, ciphertext_len) "
+        "VALUES ($1, $2, $3, $4::integer)",
+        4,
         NULL,
         params,
         param_lengths,
