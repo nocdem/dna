@@ -53,6 +53,7 @@ private:
     QWidget *page2;
     QLineEdit *wordInputs[24];
     QLineEdit *passphraseInput;
+    QLabel *passphraseLabel;
     QPushButton *pasteButton;
     QLabel *errorLabel2;
     QPushButton *previousButton2;

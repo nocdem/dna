@@ -83,10 +83,9 @@ void IdentitySelectionDialog::setupUI()
     mainLayout->addLayout(buttonLayout);
 
     // Help text
-    QLabel *helpLabel = new QLabel("If this is your first time, click \"Create New Identity\" to get started.", this);
+    helpLabel = new QLabel("If this is your first time, click \"Create New Identity\" to get started.", this);
     helpLabel->setAlignment(Qt::AlignCenter);
     helpLabel->setWordWrap(true);
-    helpLabel->setStyleSheet("color: gray; font-size: 10pt;");
     mainLayout->addWidget(helpLabel);
 }
 
@@ -210,6 +209,7 @@ void IdentitySelectionDialog::applyTheme()
     CpunkTheme theme = ThemeManager::instance()->currentTheme();
     QString bgColor = (theme == THEME_CPUNK_IO) ? "#0f0f1e" : "#1a0f08";
     QString textColor = (theme == THEME_CPUNK_IO) ? "#ffffff" : "#fff5e6";
+    QString mutedColor = (theme == THEME_CPUNK_IO) ? "#a0a0b0" : "#d4a574";
     QString primaryColor = (theme == THEME_CPUNK_IO) ? "#00d9ff" : "#ff8c42";
     QString hoverColor = (theme == THEME_CPUNK_IO) ? "#00b8d4" : "#ff7028";
 
@@ -217,6 +217,14 @@ void IdentitySelectionDialog::applyTheme()
 
     if (titleLabel) {
         titleLabel->setStyleSheet(QString("font-size: 20pt; font-weight: bold; color: %1;").arg(primaryColor));
+    }
+
+    if (infoLabel) {
+        infoLabel->setStyleSheet(QString("color: %1;").arg(textColor));
+    }
+
+    if (helpLabel) {
+        helpLabel->setStyleSheet(QString("color: %1; font-size: 10pt;").arg(mutedColor));
     }
 
     if (identityList) {

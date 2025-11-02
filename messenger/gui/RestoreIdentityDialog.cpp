@@ -95,7 +95,6 @@ void RestoreIdentityDialog::createPage1_IdentityName()
     layout->addWidget(identityNameInput);
 
     errorLabel1 = new QLabel(page1);
-    errorLabel1->setStyleSheet("color: red; font-weight: bold;");
     errorLabel1->setWordWrap(true);
     layout->addWidget(errorLabel1);
 
@@ -151,8 +150,7 @@ void RestoreIdentityDialog::createPage2_SeedPhrase()
     layout->addLayout(gridLayout);
 
     // Optional passphrase
-    QLabel *passphraseLabel = new QLabel("Optional Passphrase (if you used one):", page2);
-    passphraseLabel->setStyleSheet("color: gray; font-size: 10pt;");
+    passphraseLabel = new QLabel("Optional Passphrase (if you used one):", page2);
     layout->addWidget(passphraseLabel);
 
     passphraseInput = new QLineEdit(page2);
@@ -162,7 +160,6 @@ void RestoreIdentityDialog::createPage2_SeedPhrase()
     layout->addWidget(passphraseInput);
 
     errorLabel2 = new QLabel(page2);
-    errorLabel2->setStyleSheet("color: red; font-weight: bold;");
     errorLabel2->setWordWrap(true);
     layout->addWidget(errorLabel2);
 
@@ -210,7 +207,6 @@ void RestoreIdentityDialog::createPage3_Progress()
 
     statusLabel = new QLabel("Validating seed phrase...", page3);
     statusLabel->setAlignment(Qt::AlignCenter);
-    statusLabel->setStyleSheet("font-size: 12pt; color: gray;");
     layout->addWidget(statusLabel);
 
     layout->addStretch();
@@ -433,10 +429,30 @@ void RestoreIdentityDialog::applyTheme()
     CpunkTheme theme = ThemeManager::instance()->currentTheme();
     QString bgColor = (theme == THEME_CPUNK_IO) ? "#0f0f1e" : "#1a0f08";
     QString textColor = (theme == THEME_CPUNK_IO) ? "#ffffff" : "#fff5e6";
+    QString mutedColor = (theme == THEME_CPUNK_IO) ? "#a0a0b0" : "#d4a574";
+    QString errorColor = (theme == THEME_CPUNK_IO) ? "#ff6b9d" : "#ff5252";
     QString primaryColor = (theme == THEME_CPUNK_IO) ? "#00d9ff" : "#ff8c42";
     QString hoverColor = (theme == THEME_CPUNK_IO) ? "#00b8d4" : "#ff7028";
 
     setStyleSheet(QString("QDialog { background-color: %1; color: %2; }").arg(bgColor).arg(textColor));
+
+    // Apply theme to error labels
+    if (errorLabel1) {
+        errorLabel1->setStyleSheet(QString("color: %1; font-weight: bold;").arg(errorColor));
+    }
+
+    if (errorLabel2) {
+        errorLabel2->setStyleSheet(QString("color: %1; font-weight: bold;").arg(errorColor));
+    }
+
+    // Apply theme to info labels
+    if (passphraseLabel) {
+        passphraseLabel->setStyleSheet(QString("color: %1; font-size: 10pt;").arg(mutedColor));
+    }
+
+    if (statusLabel) {
+        statusLabel->setStyleSheet(QString("font-size: 12pt; color: %1;").arg(mutedColor));
+    }
 
     QString buttonStyle = QString(
         "QPushButton {"

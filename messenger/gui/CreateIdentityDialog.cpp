@@ -90,7 +90,6 @@ void CreateIdentityDialog::createPage1_IdentityName()
 
     // Error label
     errorLabel1 = new QLabel(page1);
-    errorLabel1->setStyleSheet("color: red; font-weight: bold;");
     errorLabel1->setWordWrap(true);
     layout->addWidget(errorLabel1);
 
@@ -124,8 +123,7 @@ void CreateIdentityDialog::createPage2_SeedPhrase()
     layout->addWidget(seedPhraseWidget);
 
     // Optional passphrase
-    QLabel *passphraseLabel = new QLabel("Optional Passphrase (Advanced):", page2);
-    passphraseLabel->setStyleSheet("color: gray; font-size: 10pt;");
+    passphraseLabel = new QLabel("Optional Passphrase (Advanced):", page2);
     layout->addWidget(passphraseLabel);
 
     passphraseInput = new QLineEdit(page2);
@@ -247,7 +245,6 @@ void CreateIdentityDialog::createPage4_Progress()
     // Status label
     statusLabel = new QLabel("Initializing...", page4);
     statusLabel->setAlignment(Qt::AlignCenter);
-    statusLabel->setStyleSheet("font-size: 12pt; color: gray;");
     layout->addWidget(statusLabel);
 
     layout->addStretch();
@@ -278,14 +275,13 @@ void CreateIdentityDialog::createPage5_Success()
     layout->addWidget(successLabel);
 
     // Reminder
-    QLabel *reminderLabel = new QLabel(
+    reminderLabel = new QLabel(
         "Remember:\n"
         "• Your seed phrase is stored NOWHERE except where you wrote it down\n"
         "• Keep it safe and never share it with anyone\n"
         "• You'll need it to recover your identity on other devices", page5);
     reminderLabel->setWordWrap(true);
     reminderLabel->setAlignment(Qt::AlignCenter);
-    reminderLabel->setStyleSheet("color: gray; font-size: 11pt; padding: 20px;");
     layout->addWidget(reminderLabel);
 
     layout->addStretch();
@@ -490,10 +486,30 @@ void CreateIdentityDialog::applyTheme()
     CpunkTheme theme = ThemeManager::instance()->currentTheme();
     QString bgColor = (theme == THEME_CPUNK_IO) ? "#0f0f1e" : "#1a0f08";
     QString textColor = (theme == THEME_CPUNK_IO) ? "#ffffff" : "#fff5e6";
+    QString mutedColor = (theme == THEME_CPUNK_IO) ? "#a0a0b0" : "#d4a574";
+    QString errorColor = (theme == THEME_CPUNK_IO) ? "#ff6b9d" : "#ff5252";
     QString primaryColor = (theme == THEME_CPUNK_IO) ? "#00d9ff" : "#ff8c42";
     QString hoverColor = (theme == THEME_CPUNK_IO) ? "#00b8d4" : "#ff7028";
 
     setStyleSheet(QString("QDialog { background-color: %1; color: %2; }").arg(bgColor).arg(textColor));
+
+    // Apply theme to error labels
+    if (errorLabel1) {
+        errorLabel1->setStyleSheet(QString("color: %1; font-weight: bold;").arg(errorColor));
+    }
+
+    // Apply theme to info labels
+    if (passphraseLabel) {
+        passphraseLabel->setStyleSheet(QString("color: %1; font-size: 10pt;").arg(mutedColor));
+    }
+
+    if (statusLabel) {
+        statusLabel->setStyleSheet(QString("font-size: 12pt; color: %1;").arg(mutedColor));
+    }
+
+    if (reminderLabel) {
+        reminderLabel->setStyleSheet(QString("color: %1; font-size: 11pt; padding: 20px;").arg(mutedColor));
+    }
 
     // Style buttons
     QString buttonStyle = QString(

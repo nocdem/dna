@@ -53,6 +53,7 @@ private:
     SeedPhraseWidget *seedPhraseWidget;
     QCheckBox *confirmedCheckbox;
     QLineEdit *passphraseInput;
+    QLabel *passphraseLabel;
     QPushButton *previousButton2;
     QPushButton *nextButton2;
     QString generatedMnemonic;
@@ -60,6 +61,7 @@ private:
     // Page 3: Confirmation
     QWidget *page3;
     QLabel *confirmationLabel;
+    QLabel *reminderLabel;
     QCheckBox *understandCheckbox;
     QPushButton *previousButton3;
     QPushButton *createButton;

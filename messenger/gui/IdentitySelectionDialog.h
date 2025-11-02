@@ -38,6 +38,7 @@ private:
     QPushButton *restoreButton;
     QLabel *titleLabel;
     QLabel *infoLabel;
+    QLabel *helpLabel;
 
     QString selectedIdentity;
 };
