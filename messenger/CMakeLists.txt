@@ -325,8 +325,26 @@ if(WIN32)
         message(WARNING "argon2 not found - may cause linking errors with OpenDHT")
     endif()
 
-    # Link all dependencies
-    target_link_libraries(dna_messenger z stdc++ ${FMT_LIBRARY} ${JSONCPP_LIBRARY} ${GNUTLS_LIBRARY} ${ARGON2_LIBRARY})
+    # Find gnutls dependencies
+    find_library(TASN1_LIBRARY NAMES tasn1 libtasn1 PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(NETTLE_LIBRARY NAMES nettle libnettle PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(HOGWEED_LIBRARY NAMES hogweed libhogweed PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(GMP_LIBRARY NAMES gmp libgmp PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    find_library(UNISTRING_LIBRARY NAMES unistring libunistring PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+
+    # Link all dependencies (order matters for static linking)
+    target_link_libraries(dna_messenger
+        z stdc++
+        ${FMT_LIBRARY}
+        ${JSONCPP_LIBRARY}
+        ${GNUTLS_LIBRARY}
+        ${TASN1_LIBRARY}
+        ${NETTLE_LIBRARY}
+        ${HOGWEED_LIBRARY}
+        ${GMP_LIBRARY}
+        ${UNISTRING_LIBRARY}
+        ${ARGON2_LIBRARY}
+    )
 endif()
 
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
