@@ -21,6 +21,7 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include "messenger.h"
+#include "messenger_p2p.h"  // Phase 9.1b: P2P delivery integration
 #include "dna_config.h"
 #include "qgp_platform.h"
 #include "qgp_dilithium.h"
@@ -1539,6 +1540,25 @@ int messenger_send_message(
 
         PQclear(res);
         printf("✓ Message stored for '%s'\n", recipients[i]);
+    }
+
+    // Phase 9.1b: Try P2P delivery for each recipient
+    // If P2P succeeds, message delivered instantly
+    // If P2P fails, recipient will fetch from PostgreSQL when they poll
+    if (ctx->p2p_enabled && ctx->p2p_transport) {
+        printf("\n[P2P] Attempting direct P2P delivery to %zu recipient(s)...\n", recipient_count);
+
+        size_t p2p_success = 0;
+        for (size_t i = 0; i < recipient_count; i++) {
+            if (messenger_send_p2p(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
+                p2p_success++;
+            }
+        }
+
+        printf("[P2P] Delivery summary: %zu/%zu via P2P, %zu via PostgreSQL fallback\n\n",
+               p2p_success, recipient_count, recipient_count - p2p_success);
+    } else {
+        printf("\n[P2P] P2P disabled - recipients will fetch from PostgreSQL\n\n");
     }
 
     free(ciphertext);
