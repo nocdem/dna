@@ -291,17 +291,26 @@ target_link_libraries(dna_messenger
     SQLite::SQLite3
 )
 
-# On Windows, add zlib, C++ standard library, and libfmt (required by OpenDHT)
+# On Windows, add zlib, C++ standard library, and OpenDHT dependencies (libfmt, jsoncpp)
 if(WIN32)
     # Find libfmt (required by OpenDHT)
     find_library(FMT_LIBRARY NAMES fmt libfmt PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
     if(FMT_LIBRARY)
         message(STATUS "libfmt found: ${FMT_LIBRARY}")
-        target_link_libraries(dna_messenger z stdc++ ${FMT_LIBRARY})
     else()
         message(WARNING "libfmt not found - may cause linking errors with OpenDHT")
-        target_link_libraries(dna_messenger z stdc++)
     endif()
+
+    # Find jsoncpp (required by OpenDHT)
+    find_library(JSONCPP_LIBRARY NAMES jsoncpp libjsoncpp PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
+    if(JSONCPP_LIBRARY)
+        message(STATUS "jsoncpp found: ${JSONCPP_LIBRARY}")
+    else()
+        message(WARNING "jsoncpp not found - may cause linking errors with OpenDHT")
+    endif()
+
+    # Link all dependencies
+    target_link_libraries(dna_messenger z stdc++ ${FMT_LIBRARY} ${JSONCPP_LIBRARY})
 endif()
 
 target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
