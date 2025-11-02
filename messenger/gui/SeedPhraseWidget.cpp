@@ -197,15 +197,15 @@ void SeedPhraseWidget::applyTheme()
     // Update number labels - BRIGHT and explicitly visible
     for (int i = 0; i < 24; i++) {
         if (numLabels[i]) {
-            numLabels[i]->setStyleSheet(QString("color: #CCCCCC; font-size: 14pt; font-weight: bold;"));
+            numLabels[i]->setStyleSheet(QString("color: #CCCCCC; background: transparent; font-size: 14pt; font-weight: bold;"));
             numLabels[i]->setVisible(true);
             printf("[DEBUG SEED] numLabels[%d] setVisible(true) -> isVisible=%d\n", i, numLabels[i]->isVisible());
         }
     }
 
-    // Update word labels - MAXIMUM BRIGHTNESS and explicitly visible
+    // Update word labels - MAXIMUM BRIGHTNESS and explicitly visible with TRANSPARENT BACKGROUND
     for (int i = 0; i < 24; i++) {
-        wordLabels[i]->setStyleSheet(QString("color: #FFFFFF; font-size: 14pt; font-weight: bold;"));
+        wordLabels[i]->setStyleSheet(QString("color: #FFFFFF; background: transparent; font-size: 14pt; font-weight: bold;"));
         wordLabels[i]->setVisible(true);
         if (i == 0) {
             // Debug first label only
