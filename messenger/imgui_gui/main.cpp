@@ -37,6 +37,14 @@ struct Contact {
     bool is_online;
 };
 
+// Helper function for buttons with dark text
+inline bool ButtonDark(const char* label, const ImVec2& size = ImVec2(0, 0)) {
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));
+    bool result = ButtonDark(label, size);
+    ImGui::PopStyleColor();
+    return result;
+}
+
 class DNAMessengerApp {
 public:
     DNAMessengerApp() {
@@ -168,22 +176,18 @@ private:
         
         // Select button (only if identity selected)
         ImGui::BeginDisabled(selected_identity_idx < 0);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f)); // Dark text on button
-        if (ImGui::Button(ICON_FA_USER " Select Identity", ImVec2(-1, btn_height))) {
+        if (ButtonDark(ICON_FA_USER " Select Identity", ImVec2(-1, btn_height))) {
             if (selected_identity_idx >= 0 && selected_identity_idx < (int)identities.size()) {
                 current_identity = identities[selected_identity_idx];
                 loadIdentity(current_identity);
             }
         }
-        ImGui::PopStyleColor();
         ImGui::EndDisabled();
         
         // Create new button
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));
-        if (ImGui::Button(ICON_FA_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
+        if (ButtonDark(ICON_FA_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
             ImGui::OpenPopup("Create New Identity");
         }
-        ImGui::PopStyleColor();
         
         // Create identity popup
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
@@ -210,18 +214,16 @@ private:
             
             if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
             
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f)); // Dark text
-            if (ImGui::Button("Create", ImVec2(button_width, 40))) {
+            if (ButtonDark("Create", ImVec2(button_width, 40))) {
                 if (strlen(new_identity_name) > 0) {
                     createIdentity(new_identity_name);
                     ImGui::CloseCurrentPopup();
                 }
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(button_width, 40))) {
+            if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
                 ImGui::CloseCurrentPopup();
             }
-            ImGui::PopStyleColor();
             
             ImGui::EndPopup();
         } else {
@@ -362,7 +364,7 @@ private:
         if (current_view == VIEW_CONTACTS) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.6f));
         }
-        if (ImGui::Button(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60))) {
+        if (ButtonDark(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60))) {
             current_view = VIEW_CONTACTS;
         }
         if (current_view == VIEW_CONTACTS) {
@@ -375,7 +377,7 @@ private:
         if (current_view == VIEW_WALLET) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.6f));
         }
-        if (ImGui::Button(ICON_FA_WALLET "\nWallet", ImVec2(btn_width, 60))) {
+        if (ButtonDark(ICON_FA_WALLET "\nWallet", ImVec2(btn_width, 60))) {
             current_view = VIEW_WALLET;
             selected_contact = -1;
         }
@@ -389,7 +391,7 @@ private:
         if (current_view == VIEW_SETTINGS) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.6f));
         }
-        if (ImGui::Button(ICON_FA_GEAR "\nSettings", ImVec2(btn_width, 60))) {
+        if (ButtonDark(ICON_FA_GEAR "\nSettings", ImVec2(btn_width, 60))) {
             current_view = VIEW_SETTINGS;
             selected_contact = -1;
         }
@@ -400,7 +402,7 @@ private:
         ImGui::SameLine();
         
         // Profile button (placeholder)
-        if (ImGui::Button(ICON_FA_USER "\nProfile", ImVec2(btn_width, 60))) {
+        if (ButtonDark(ICON_FA_USER "\nProfile", ImVec2(btn_width, 60))) {
             // TODO: Profile view
         }
         
@@ -419,7 +421,7 @@ private:
         ImGui::SetWindowFontScale(1.0f);
         
         ImGui::SameLine(io.DisplaySize.x - 60);
-        if (ImGui::Button(ICON_FA_PLUS, ImVec2(50, 40))) {
+        if (ButtonDark(ICON_FA_PLUS, ImVec2(50, 40))) {
             // TODO: Add contact dialog
         }
         
@@ -447,7 +449,7 @@ private:
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.3f));
             }
             
-            if (ImGui::Button("##contact", ImVec2(-1, 80))) {
+            if (ButtonDark("##contact", ImVec2(-1, 80))) {
                 selected_contact = i;
                 current_view = VIEW_CHAT;
             }
@@ -491,13 +493,13 @@ private:
         ImGui::Separator();
         
         // Navigation buttons
-        if (ImGui::Button(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40))) {
+        if (ButtonDark(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40))) {
             current_view = VIEW_CONTACTS;
         }
-        if (ImGui::Button(ICON_FA_WALLET " Wallet", ImVec2(-1, 40))) {
+        if (ButtonDark(ICON_FA_WALLET " Wallet", ImVec2(-1, 40))) {
             current_view = VIEW_WALLET;
         }
-        if (ImGui::Button(ICON_FA_GEAR " Settings", ImVec2(-1, 40))) {
+        if (ButtonDark(ICON_FA_GEAR " Settings", ImVec2(-1, 40))) {
             current_view = VIEW_SETTINGS;
         }
         
@@ -526,7 +528,7 @@ private:
         
         // Add contact button at bottom
         ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 40);
-        if (ImGui::Button(ICON_FA_PLUS " Add Contact", ImVec2(-1, 30))) {
+        if (ButtonDark(ICON_FA_PLUS " Add Contact", ImVec2(-1, 30))) {
             // TODO: Open add contact dialog
         }
         
@@ -556,7 +558,7 @@ private:
         
         if (is_mobile) {
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
-            if (ImGui::Button(ICON_FA_ARROW_LEFT " Back", ImVec2(100, 40))) {
+            if (ButtonDark(ICON_FA_ARROW_LEFT " Back", ImVec2(100, 40))) {
                 current_view = VIEW_CONTACTS;
                 selected_contact = -1;
             }
@@ -641,7 +643,7 @@ private:
             ImGui::InputTextMultiline("##MessageInput", message_input, 
                 sizeof(message_input), ImVec2(-1, 60));
             
-            if (ImGui::Button("Send", ImVec2(-1, 35))) {
+            if (ButtonDark("Send", ImVec2(-1, 35))) {
                 if (strlen(message_input) > 0) {
                     Message msg;
                     msg.content = message_input;
@@ -657,7 +659,7 @@ private:
                 sizeof(message_input), ImVec2(-80, 60));
             ImGui::SameLine();
             
-            if (ImGui::Button("Send", ImVec2(70, 60))) {
+            if (ButtonDark("Send", ImVec2(70, 60))) {
                 if (strlen(message_input) > 0) {
                     Message msg;
                     msg.content = message_input;
@@ -723,34 +725,34 @@ private:
         
         if (is_mobile) {
             // Mobile: Stacked full-width buttons
-            if (ImGui::Button(ICON_FA_PAPER_PLANE " Send Tokens", ImVec2(-1, btn_height))) {
+            if (ButtonDark(ICON_FA_PAPER_PLANE " Send Tokens", ImVec2(-1, btn_height))) {
                 // TODO: Open send dialog
             }
             ImGui::Spacing();
             
-            if (ImGui::Button(ICON_FA_DOWNLOAD " Receive", ImVec2(-1, btn_height))) {
+            if (ButtonDark(ICON_FA_DOWNLOAD " Receive", ImVec2(-1, btn_height))) {
                 // TODO: Show receive address
             }
             ImGui::Spacing();
             
-            if (ImGui::Button(ICON_FA_RECEIPT " Transaction History", ImVec2(-1, btn_height))) {
+            if (ButtonDark(ICON_FA_RECEIPT " Transaction History", ImVec2(-1, btn_height))) {
                 // TODO: Show transaction history
             }
         } else {
             // Desktop: Side-by-side buttons
             float btn_width = (io.DisplaySize.x - 80.0f) / 3.0f;
             
-            if (ImGui::Button(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, btn_height))) {
+            if (ButtonDark(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, btn_height))) {
                 // TODO: Open send dialog
             }
             ImGui::SameLine();
             
-            if (ImGui::Button(ICON_FA_DOWNLOAD " Receive", ImVec2(btn_width, btn_height))) {
+            if (ButtonDark(ICON_FA_DOWNLOAD " Receive", ImVec2(btn_width, btn_height))) {
                 // TODO: Show receive address
             }
             ImGui::SameLine();
             
-            if (ImGui::Button(ICON_FA_RECEIPT " History", ImVec2(btn_width, btn_height))) {
+            if (ButtonDark(ICON_FA_RECEIPT " History", ImVec2(btn_width, btn_height))) {
                 // TODO: Show transaction history
             }
         }
@@ -806,20 +808,20 @@ private:
         float btn_height = is_mobile ? 50.0f : 40.0f;
         
         if (is_mobile) {
-            if (ImGui::Button("🆕 Create New Identity", ImVec2(-1, btn_height))) {
+            if (ButtonDark("🆕 Create New Identity", ImVec2(-1, btn_height))) {
                 // TODO: Create identity dialog
             }
             ImGui::Spacing();
             
-            if (ImGui::Button("📥 Import Identity", ImVec2(-1, btn_height))) {
+            if (ButtonDark("📥 Import Identity", ImVec2(-1, btn_height))) {
                 // TODO: Import identity dialog
             }
         } else {
-            if (ImGui::Button("Create New Identity", ImVec2(200, btn_height))) {
+            if (ButtonDark("Create New Identity", ImVec2(200, btn_height))) {
                 // TODO: Create identity dialog
             }
             ImGui::SameLine();
-            if (ImGui::Button("Import Identity", ImVec2(200, btn_height))) {
+            if (ButtonDark("Import Identity", ImVec2(200, btn_height))) {
                 // TODO: Import identity dialog
             }
         }
