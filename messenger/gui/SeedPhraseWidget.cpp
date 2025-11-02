@@ -25,12 +25,11 @@ void SeedPhraseWidget::setupUI()
     mainLayout->setSpacing(15);
 
     // Warning label
-    QLabel *warningLabel = new QLabel(this);
+    warningLabel = new QLabel(this);
     warningLabel->setText("⚠ WRITE DOWN THESE 24 WORDS IN ORDER\n"
                           "This is the ONLY way to recover your identity if your device is lost!");
     warningLabel->setAlignment(Qt::AlignCenter);
     warningLabel->setWordWrap(true);
-    warningLabel->setStyleSheet("QLabel { color: #ff4444; font-weight: bold; font-size: 12pt; padding: 10px; }");
     mainLayout->addWidget(warningLabel);
 
     // Grid frame for seed words
@@ -51,11 +50,11 @@ void SeedPhraseWidget::setupUI()
         int col = (i / 12) * 2;  // 0 or 2 (two columns with spacing)
 
         // Number label
-        QLabel *numLabel = new QLabel(QString::number(i + 1) + ".", gridFrame);
-        numLabel->setFont(monoFont);
-        numLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        numLabel->setMinimumWidth(30);
-        gridLayout->addWidget(numLabel, row, col);
+        numLabels[i] = new QLabel(QString::number(i + 1) + ".", gridFrame);
+        numLabels[i]->setFont(monoFont);
+        numLabels[i]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        numLabels[i]->setMinimumWidth(30);
+        gridLayout->addWidget(numLabels[i], row, col);
 
         // Word label
         wordLabels[i] = new QLabel("________", gridFrame);
@@ -76,14 +75,13 @@ void SeedPhraseWidget::setupUI()
     mainLayout->addWidget(copyButton);
 
     // Additional warnings
-    QLabel *securityWarning = new QLabel(this);
+    securityWarning = new QLabel(this);
     securityWarning->setText("⚠ SECURITY WARNINGS:\n"
                             "• Never share this seed phrase with anyone\n"
                             "• Never store it digitally (no photos, no cloud storage)\n"
                             "• Store it in a secure physical location\n"
                             "• Anyone with this seed phrase can access your identity");
     securityWarning->setWordWrap(true);
-    securityWarning->setStyleSheet("QLabel { color: #ff6666; font-size: 10pt; padding: 10px; }");
     mainLayout->addWidget(securityWarning);
 
     mainLayout->addStretch();
@@ -143,13 +141,33 @@ void SeedPhraseWidget::applyTheme()
     CpunkTheme theme = ThemeManager::instance()->currentTheme();
     QString bgColor = (theme == THEME_CPUNK_IO) ? "#1a1a2e" : "#2c1810";
     QString textColor = (theme == THEME_CPUNK_IO) ? "#ffffff" : "#fff5e6";
+    QString mutedColor = (theme == THEME_CPUNK_IO) ? "#a0a0b0" : "#d4a574";
+    QString warningColor = (theme == THEME_CPUNK_IO) ? "#ff6b9d" : "#ff4444";
     QString primaryColor = (theme == THEME_CPUNK_IO) ? "#00d9ff" : "#ff8c42";
+
+    // Update warning labels
+    if (warningLabel) {
+        warningLabel->setStyleSheet(QString("color: %1; font-weight: bold; font-size: 12pt; padding: 10px;")
+                                   .arg(warningColor));
+    }
+    if (securityWarning) {
+        securityWarning->setStyleSheet(QString("color: %1; font-size: 10pt; padding: 10px;")
+                                      .arg(warningColor));
+    }
 
     // Update grid frame style
     QFrame *gridFrame = findChild<QFrame*>();
     if (gridFrame) {
         gridFrame->setStyleSheet(QString("QFrame { background-color: %1; border: 2px solid %2; border-radius: 5px; }")
                                 .arg(bgColor).arg(primaryColor));
+    }
+
+    // Update number labels
+    for (int i = 0; i < 24; i++) {
+        if (numLabels[i]) {
+            numLabels[i]->setStyleSheet(QString("QLabel { color: %1; background: transparent; }")
+                                       .arg(mutedColor));
+        }
     }
 
     // Update word labels

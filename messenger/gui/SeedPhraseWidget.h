@@ -37,6 +37,9 @@ private:
     void applyTheme();
 
     QGridLayout *gridLayout;
+    QLabel *warningLabel;
+    QLabel *securityWarning;
+    QLabel *numLabels[24];   // Number labels (1-24)
     QLabel *wordLabels[24];  // Word labels (1-24)
     QPushButton *copyButton;
     QString seedPhrase;
