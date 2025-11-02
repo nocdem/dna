@@ -87,7 +87,7 @@ void SeedPhraseWidget::setupUI()
     }
 
     // Make grid frame smaller to fit in narrower dialog - 7pt font needs less space
-    gridFrame->setMinimumSize(315, 300);
+    gridFrame->setMinimumSize(189, 300);
     gridFrame->setMaximumHeight(300);
     gridFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 

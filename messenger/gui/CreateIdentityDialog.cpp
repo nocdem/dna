@@ -22,7 +22,7 @@ CreateIdentityDialog::CreateIdentityDialog(QWidget *parent)
     , page5(nullptr)
 {
     setWindowTitle("Create New Identity");
-    setMinimumSize(394, 700);
+    setMinimumSize(236, 700);
     setModal(true);
 
     setupUI();
@@ -109,7 +109,7 @@ void CreateIdentityDialog::createPage2_SeedPhrase()
 {
     page2 = new QWidget();
     QVBoxLayout *layout = new QVBoxLayout(page2);
-    layout->setContentsMargins(15, 30, 15, 30);
+    layout->setContentsMargins(10, 30, 10, 30);
     layout->setSpacing(15);
 
     // Title
