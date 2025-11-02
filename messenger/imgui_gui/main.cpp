@@ -178,29 +178,41 @@ private:
         
         // Create new button
         if (ImGui::Button(ICON_FA_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
-            ImGui::OpenPopup("CreateIdentity");
+            ImGui::OpenPopup("Create New Identity");
         }
         
         // Create identity popup
-        if (ImGui::BeginPopupModal("CreateIdentity", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.5f, 0.5f));
+        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 12));
+        ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0x0f/255.0f, 0x11/255.0f, 0x13/255.0f, 0.8f)); // Match popup bg
+        
+        if (ImGui::BeginPopupModal("Create New Identity", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor();
+            
+            ImGui::Spacing();
             ImGui::Text("Enter identity name:");
             ImGui::Spacing();
             
             ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name));
             ImGui::Spacing();
             
-            if (ImGui::Button("Create", ImVec2(120, 0))) {
+            if (ImGui::Button("Create", ImVec2(120, 40))) {
                 if (strlen(new_identity_name) > 0) {
                     createIdentity(new_identity_name);
                     ImGui::CloseCurrentPopup();
                 }
             }
             ImGui::SameLine();
-            if (ImGui::Button("Cancel", ImVec2(120, 0))) {
+            if (ImGui::Button("Cancel", ImVec2(120, 40))) {
                 ImGui::CloseCurrentPopup();
             }
             
             ImGui::EndPopup();
+        } else {
+            ImGui::PopStyleVar(3);
+            ImGui::PopStyleColor();
         }
         
         ImGui::End();
