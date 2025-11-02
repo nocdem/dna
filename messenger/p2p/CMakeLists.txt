@@ -20,12 +20,10 @@ endif()
 
 # Get absolute path to DHT directory
 get_filename_component(DHT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../dht" ABSOLUTE)
-set(DHT_LIB "${DHT_DIR}/build/libdht_lib.a")
 
-# Check if DHT library exists
-if(NOT EXISTS "${DHT_LIB}")
-    message(FATAL_ERROR "DHT library not found at ${DHT_LIB}. Please build DHT first: cd ../dht && mkdir -p build && cd build && cmake .. && make")
-endif()
+# DHT library is built as part of the main build (via add_subdirectory)
+# We reference it as a target, not as a file path
+set(DHT_LIB dht_lib)
 
 # P2P Transport library
 add_library(p2p_transport STATIC
