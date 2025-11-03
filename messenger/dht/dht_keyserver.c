@@ -144,6 +144,7 @@ static int deserialize_entry(const char *json_str, dht_pubkey_entry_t *entry) {
         return -1;
     }
     strncpy(entry->identity, json_object_get_string(identity_obj), sizeof(entry->identity) - 1);
+    entry->identity[sizeof(entry->identity) - 1] = '\0';  // Ensure null termination
 
     // Dilithium pubkey
     json_object *dilithium_obj;
@@ -192,6 +193,7 @@ static int deserialize_entry(const char *json_str, dht_pubkey_entry_t *entry) {
         return -1;
     }
     strncpy(entry->fingerprint, json_object_get_string(fingerprint_obj), sizeof(entry->fingerprint) - 1);
+    entry->fingerprint[sizeof(entry->fingerprint) - 1] = '\0';  // Ensure null termination
 
     // Signature
     json_object *signature_obj;
