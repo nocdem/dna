@@ -8,6 +8,8 @@
 #include "messenger.h"
 #include "p2p/p2p_transport.h"
 #include "dht/dht_offline_queue.h"
+#include "dht/dht_keyserver.h"
+#include "dht/dht_context.h"
 #include "keyserver_cache.h"
 #include "contacts_db.h"
 #include <stdio.h>
@@ -384,19 +386,45 @@ static char* extract_sender_from_encrypted(
     // Free contacts list
     contacts_db_free_list(contacts);
 
-    // Not in contacts - compute fingerprint and store for manual lookup
-    // The user will need to add this contact or it will remain "unknown"
-    // TODO: Could implement DHT iterator to search all entries (expensive)
+    // Not in contacts - try DHT reverse lookup (fingerprint → identity)
+    printf("[P2P] Sender not in contacts, querying DHT reverse mapping...\n");
 
-    printf("[P2P] Sender not in contacts (fingerprint: ");
-    unsigned char fingerprint[32];
-    SHA256(signing_pubkey, 1952, fingerprint);
-    for (int i = 0; i < 8; i++) {  // Print first 8 bytes
-        printf("%02x", fingerprint[i]);
+    // Compute fingerprint as hex string (SHA256 of pubkey)
+    unsigned char hash[SHA256_DIGEST_LENGTH];
+    SHA256(signing_pubkey, 1952, hash);
+
+    char fingerprint[65];
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
     }
-    printf("...)\n");
+    fingerprint[SHA256_DIGEST_LENGTH * 2] = '\0';
 
-    return NULL;  // No matching contact found
+    // Get DHT context from P2P transport
+    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    if (!dht_ctx) {
+        printf("[P2P] ✗ No DHT context available for reverse lookup\n");
+        return NULL;
+    }
+
+    // Query DHT for reverse mapping (fingerprint → identity)
+    char *identity = NULL;
+    int result = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &identity);
+
+    if (result == 0 && identity) {
+        printf("[P2P] ✓ DHT reverse lookup found: %s (fingerprint: %.16s...)\n", identity, fingerprint);
+
+        // Cache the identity in contacts for faster lookup next time
+        // (User can add them to contacts manually later if they want)
+        return identity;  // Caller must free
+    } else if (result == -2) {
+        printf("[P2P] ✗ Identity not found in DHT (fingerprint: %.16s...)\n", fingerprint);
+    } else if (result == -3) {
+        printf("[P2P] ✗ DHT reverse mapping signature verification failed (fingerprint: %.16s...)\n", fingerprint);
+    } else {
+        printf("[P2P] ✗ DHT reverse lookup error (fingerprint: %.16s...)\n", fingerprint);
+    }
+
+    return NULL;  // No matching identity found
 }
 
 static char* lookup_identity_for_pubkey(

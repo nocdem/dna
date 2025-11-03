@@ -368,6 +368,106 @@ int dht_keyserver_publish(
         return -1;
     }
 
+    // Publish SIGNED reverse mapping (fingerprint → identity) for unknown sender lookup
+    // This allows looking up identity from Dilithium pubkey fingerprint
+    // Entry is signed to prevent identity spoofing attacks
+
+    printf("[DHT_KEYSERVER_DEBUG] Starting reverse mapping publish\n");
+
+    // Build message to sign: dilithium_pubkey || identity || timestamp
+    size_t reverse_msg_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE + strlen(identity) + sizeof(uint64_t);
+    uint8_t *reverse_msg = malloc(reverse_msg_len);
+    if (!reverse_msg) {
+        fprintf(stderr, "[DHT_KEYSERVER] Warning: Failed to allocate reverse mapping message\n");
+    } else {
+        printf("[DHT_KEYSERVER_DEBUG] Allocated reverse_msg (%zu bytes)\n", reverse_msg_len);
+        size_t offset = 0;
+        memcpy(reverse_msg + offset, dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
+        offset += DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
+        memcpy(reverse_msg + offset, identity, strlen(identity));
+        offset += strlen(identity);
+
+        // Network byte order for cross-platform compatibility
+        uint64_t timestamp_net = htonll(entry.timestamp);
+        memcpy(reverse_msg + offset, &timestamp_net, sizeof(timestamp_net));
+
+        // Sign reverse mapping
+        uint8_t reverse_signature[DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE];
+        size_t reverse_siglen = DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE;
+
+        printf("[DHT_KEYSERVER_DEBUG] Signing reverse mapping message...\n");
+        int sign_result = qgp_dilithium3_signature(reverse_signature, &reverse_siglen,
+                                      reverse_msg, reverse_msg_len, dilithium_privkey);
+        printf("[DHT_KEYSERVER_DEBUG] Signature result: %d, siglen: %zu\n", sign_result, reverse_siglen);
+
+        if (sign_result != 0) {
+            fprintf(stderr, "[DHT_KEYSERVER] Warning: Failed to sign reverse mapping\n");
+            free(reverse_msg);
+        } else {
+            free(reverse_msg);
+            printf("[DHT_KEYSERVER_DEBUG] Reverse mapping signature succeeded, building JSON...\n");
+
+            // Build reverse mapping entry
+            json_object *reverse_obj = json_object_new_object();
+            if (!reverse_obj) {
+                fprintf(stderr, "[DHT_KEYSERVER] Warning: Failed to create JSON object for reverse mapping\n");
+                return 0;  // Non-critical, forward mapping already published
+            }
+            printf("[DHT_KEYSERVER_DEBUG] Created JSON object for reverse mapping\n");
+
+            // Store dilithium pubkey (needed for signature verification)
+            char dilithium_hex[DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE * 2 + 1];
+            for (int i = 0; i < DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE; i++) {
+                sprintf(dilithium_hex + (i * 2), "%02x", dilithium_pubkey[i]);
+            }
+            dilithium_hex[DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE * 2] = '\0';
+
+            json_object_object_add(reverse_obj, "dilithium_pubkey", json_object_new_string(dilithium_hex));
+            json_object_object_add(reverse_obj, "identity", json_object_new_string(identity));
+            json_object_object_add(reverse_obj, "timestamp", json_object_new_int64(entry.timestamp));
+            json_object_object_add(reverse_obj, "fingerprint", json_object_new_string(entry.fingerprint));
+
+            // Store signature
+            char sig_hex[DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE * 2 + 1];
+            for (int i = 0; i < DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE; i++) {
+                sprintf(sig_hex + (i * 2), "%02x", reverse_signature[i]);
+            }
+            sig_hex[DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE * 2] = '\0';
+            json_object_object_add(reverse_obj, "signature", json_object_new_string(sig_hex));
+
+            const char *reverse_json_str = json_object_to_json_string(reverse_obj);
+            char *reverse_json = strdup(reverse_json_str);
+            json_object_put(reverse_obj);
+
+            // Compute DHT key for reverse lookup
+            char reverse_key_input[128];
+            snprintf(reverse_key_input, sizeof(reverse_key_input), "%s:reverse", entry.fingerprint);
+
+            unsigned char reverse_hash[SHA256_DIGEST_LENGTH];
+            SHA256((unsigned char*)reverse_key_input, strlen(reverse_key_input), reverse_hash);
+
+            char reverse_dht_key[65];
+            for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+                sprintf(reverse_dht_key + (i * 2), "%02x", reverse_hash[i]);
+            }
+            reverse_dht_key[SHA256_DIGEST_LENGTH * 2] = '\0';
+
+            printf("[DHT_KEYSERVER] Publishing signed reverse mapping (fingerprint → identity)\n");
+            printf("[DHT_KEYSERVER] Reverse key: %s\n", reverse_dht_key);
+
+            ret = dht_put(dht_ctx, (uint8_t*)reverse_dht_key, strlen(reverse_dht_key),
+                          (uint8_t*)reverse_json, strlen(reverse_json));
+
+            free(reverse_json);
+
+            if (ret != 0) {
+                fprintf(stderr, "[DHT_KEYSERVER] Warning: Failed to store reverse mapping (non-critical)\n");
+            } else {
+                printf("[DHT_KEYSERVER] ✓ Signed reverse mapping published\n");
+            }
+        }
+    }
+
     printf("[DHT_KEYSERVER] ✓ Keys published successfully\n");
     return 0;
 }
@@ -428,6 +528,135 @@ int dht_keyserver_lookup(
     printf("[DHT_KEYSERVER] Version: %u\n", entry->version);
 
     *entry_out = entry;
+    return 0;
+}
+
+// Reverse lookup: fingerprint → identity (with signature verification)
+int dht_keyserver_reverse_lookup(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    char **identity_out
+) {
+    if (!dht_ctx || !fingerprint || !identity_out) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments to reverse_lookup\n");
+        return -1;
+    }
+
+    *identity_out = NULL;
+
+    // Compute DHT key: SHA256(fingerprint + ":reverse")
+    char reverse_key_input[128];
+    snprintf(reverse_key_input, sizeof(reverse_key_input), "%s:reverse", fingerprint);
+
+    unsigned char reverse_hash[SHA256_DIGEST_LENGTH];
+    SHA256((unsigned char*)reverse_key_input, strlen(reverse_key_input), reverse_hash);
+
+    char reverse_dht_key[65];
+    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+        sprintf(reverse_dht_key + (i * 2), "%02x", reverse_hash[i]);
+    }
+    reverse_dht_key[SHA256_DIGEST_LENGTH * 2] = '\0';
+
+    printf("[DHT_KEYSERVER] Reverse lookup for fingerprint: %s\n", fingerprint);
+    printf("[DHT_KEYSERVER] Reverse DHT key: %s\n", reverse_dht_key);
+
+    // Fetch from DHT
+    uint8_t *value = NULL;
+    size_t value_len = 0;
+
+    if (dht_get(dht_ctx, (uint8_t*)reverse_dht_key, strlen(reverse_dht_key),
+                &value, &value_len) != 0 || !value) {
+        printf("[DHT_KEYSERVER] Reverse mapping not found in DHT\n");
+        return -2;  // Not found
+    }
+
+    // Parse JSON
+    json_object *root = json_tokener_parse((char*)value);
+    free(value);
+
+    if (!root) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to parse reverse mapping JSON\n");
+        return -1;
+    }
+
+    // Extract fields
+    json_object *dilithium_obj, *identity_obj, *timestamp_obj, *fingerprint_obj, *signature_obj;
+
+    if (!json_object_object_get_ex(root, "dilithium_pubkey", &dilithium_obj) ||
+        !json_object_object_get_ex(root, "identity", &identity_obj) ||
+        !json_object_object_get_ex(root, "timestamp", &timestamp_obj) ||
+        !json_object_object_get_ex(root, "fingerprint", &fingerprint_obj) ||
+        !json_object_object_get_ex(root, "signature", &signature_obj)) {
+        fprintf(stderr, "[DHT_KEYSERVER] Reverse mapping missing required fields\n");
+        json_object_put(root);
+        return -1;
+    }
+
+    // Parse dilithium pubkey
+    const char *dilithium_hex = json_object_get_string(dilithium_obj);
+    uint8_t dilithium_pubkey[DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE];
+    if (hex_to_bytes(dilithium_hex, dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid dilithium pubkey in reverse mapping\n");
+        json_object_put(root);
+        return -1;
+    }
+
+    // Verify fingerprint matches (prevents pubkey substitution)
+    char computed_fingerprint[65];
+    compute_fingerprint(dilithium_pubkey, computed_fingerprint);
+
+    if (strcmp(computed_fingerprint, fingerprint) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Fingerprint mismatch in reverse mapping\n");
+        json_object_put(root);
+        return -3;  // Signature verification failed (invalid data)
+    }
+
+    const char *identity = json_object_get_string(identity_obj);
+    uint64_t timestamp = json_object_get_int64(timestamp_obj);
+
+    // Parse signature
+    const char *sig_hex = json_object_get_string(signature_obj);
+    uint8_t signature[DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE];
+    if (hex_to_bytes(sig_hex, signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid signature in reverse mapping\n");
+        json_object_put(root);
+        return -1;
+    }
+
+    // Rebuild message to verify: dilithium_pubkey || identity || timestamp
+    size_t msg_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE + strlen(identity) + sizeof(uint64_t);
+    uint8_t *msg = malloc(msg_len);
+    if (!msg) {
+        json_object_put(root);
+        return -1;
+    }
+
+    size_t offset = 0;
+    memcpy(msg + offset, dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
+    offset += DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
+    memcpy(msg + offset, identity, strlen(identity));
+    offset += strlen(identity);
+
+    // Network byte order
+    uint64_t timestamp_net = htonll(timestamp);
+    memcpy(msg + offset, &timestamp_net, sizeof(timestamp_net));
+
+    // Verify signature
+    int verify_result = qgp_dilithium3_verify(signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE,
+                                               msg, msg_len, dilithium_pubkey);
+    free(msg);
+
+    if (verify_result != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Reverse mapping signature verification failed\n");
+        json_object_put(root);
+        return -3;  // Signature verification failed
+    }
+
+    // All checks passed - return identity
+    *identity_out = strdup(identity);
+    printf("[DHT_KEYSERVER] ✓ Reverse lookup successful: %s\n", identity);
+
+    json_object_put(root);
     return 0;
 }
 

@@ -100,6 +100,21 @@ int dht_keyserver_update(
 );
 
 /**
+ * Reverse lookup: Find identity from Dilithium pubkey fingerprint
+ * Used when receiving messages from unknown senders
+ *
+ * @param dht_ctx: DHT context
+ * @param fingerprint: SHA256 fingerprint of Dilithium pubkey (64 hex chars)
+ * @param identity_out: Output identity string (caller must free)
+ * @return: 0 on success, -1 on error, -2 if not found, -3 if signature verification failed
+ */
+int dht_keyserver_reverse_lookup(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    char **identity_out
+);
+
+/**
  * Delete public keys from DHT
  * Note: DHT doesn't support true deletion, this is for completeness
  *
