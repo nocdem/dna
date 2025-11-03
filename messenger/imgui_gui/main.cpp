@@ -291,6 +291,48 @@ private:
         ImGui::Spacing();
         
         ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name));
+        
+        // Validate identity name
+        size_t name_len = strlen(new_identity_name);
+        bool name_valid = true;
+        std::string error_msg;
+        
+        if (name_len > 0) {
+            if (name_len < 3) {
+                name_valid = false;
+                error_msg = "Too short (minimum 3 characters)";
+            } else if (name_len > 20) {
+                name_valid = false;
+                error_msg = "Too long (maximum 20 characters)";
+            } else {
+                // Check for valid characters (alphanumeric and underscore only)
+                for (size_t i = 0; i < name_len; i++) {
+                    char c = new_identity_name[i];
+                    if (!((c >= 'a' && c <= 'z') || 
+                          (c >= 'A' && c <= 'Z') || 
+                          (c >= '0' && c <= '9') || 
+                          c == '_')) {
+                        name_valid = false;
+                        error_msg = "Invalid character (only a-z, A-Z, 0-9, _ allowed)";
+                        break;
+                    }
+                }
+            }
+        } else {
+            name_valid = false;
+        }
+        
+        // Show validation feedback
+        if (name_len > 0 && !name_valid) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f)); // Red
+            ImGui::TextWrapped("✗ %s", error_msg.c_str());
+            ImGui::PopStyleColor();
+        } else if (name_len > 0 && name_valid) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f)); // Green
+            ImGui::Text("✓ Valid identity name");
+            ImGui::PopStyleColor();
+        }
+        
         ImGui::Spacing();
         ImGui::Spacing();
         
@@ -302,9 +344,7 @@ private:
         
         if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
         
-        bool name_valid = strlen(new_identity_name) >= 3 && strlen(new_identity_name) <= 20;
-        
-        ImGui::BeginDisabled(!name_valid);
+        ImGui::BeginDisabled(!name_valid || name_len == 0);
         if (ButtonDark("Next", ImVec2(button_width, 40))) {
             // Generate BIP39 seed phrase
             if (bip39_generate_mnemonic(24, generated_mnemonic, sizeof(generated_mnemonic)) == 0) {
