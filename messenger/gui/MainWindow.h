@@ -57,6 +57,7 @@ private slots:
     void onGroupSettings();
     void onManageGroupMembers();
     void onUserMenuClicked();
+    void onPublishKeys();  // Publish public keys to DHT
     void onLogout();
     void onManageIdentities();
     void onWallet();

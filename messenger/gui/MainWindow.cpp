@@ -2617,15 +2617,118 @@ void MainWindow::onUserMenuClicked() {
         "}"
     );
 
+    QAction *publishKeysAction = menu.addAction(QString::fromUtf8("📡 Publish Keys to DHT"));
     QAction *logoutAction = menu.addAction(QString::fromUtf8("Logout"));
     QAction *manageIdentitiesAction = menu.addAction(QString::fromUtf8("🔑 Manage Identities"));
 
+    connect(publishKeysAction, &QAction::triggered, this, &MainWindow::onPublishKeys);
     connect(logoutAction, &QAction::triggered, this, &MainWindow::onLogout);
     connect(manageIdentitiesAction, &QAction::triggered, this, &MainWindow::onManageIdentities);
 
     // Show menu below the button
     QPoint globalPos = userMenuButton->mapToGlobal(QPoint(0, userMenuButton->height()));
     menu.exec(globalPos);
+}
+
+void MainWindow::onPublishKeys() {
+    statusLabel->setText(QString::fromUtf8("Loading local keys..."));
+    QApplication::processEvents();  // Update UI
+
+    // Get home directory (platform-specific)
+    QString homeDir = QDir::homePath();
+    QString dilithiumPath = homeDir + "/.dna/" + currentIdentity + "-dilithium3.pqkey";
+    QString kyberPath = homeDir + "/.dna/" + currentIdentity + "-kyber512.pqkey";
+
+    // Load Dilithium public key (skip first 4016 bytes private key, read next 1952 bytes public key)
+    QFile dilithiumFile(dilithiumPath);
+    if (!dilithiumFile.open(QIODevice::ReadOnly)) {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8("Failed to open Dilithium key file:\n%1").arg(dilithiumPath)
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to load keys"));
+        return;
+    }
+
+    dilithiumFile.seek(4016);  // Skip private key
+    QByteArray dilithiumPubkey = dilithiumFile.read(1952);
+    dilithiumFile.close();
+
+    if (dilithiumPubkey.size() != 1952) {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8("Invalid Dilithium key file (expected 1952 bytes public key)")
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to load keys"));
+        return;
+    }
+
+    // Load Kyber public key (skip first 1632 bytes private key, read next 800 bytes public key)
+    QFile kyberFile(kyberPath);
+    if (!kyberFile.open(QIODevice::ReadOnly)) {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8("Failed to open Kyber key file:\n%1").arg(kyberPath)
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to load keys"));
+        return;
+    }
+
+    kyberFile.seek(1632);  // Skip private key
+    QByteArray kyberPubkey = kyberFile.read(800);
+    kyberFile.close();
+
+    if (kyberPubkey.size() != 800) {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8("Invalid Kyber key file (expected 800 bytes public key)")
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to load keys"));
+        return;
+    }
+
+    // Publish keys to DHT
+    statusLabel->setText(QString::fromUtf8("Publishing keys to DHT..."));
+    QApplication::processEvents();
+
+    int result = messenger_store_pubkey(
+        ctx,
+        currentIdentity.toUtf8().constData(),
+        (const uint8_t*)dilithiumPubkey.constData(),
+        dilithiumPubkey.size(),
+        (const uint8_t*)kyberPubkey.constData(),
+        kyberPubkey.size()
+    );
+
+    if (result == 0) {
+        QMessageBox::information(
+            this,
+            QString::fromUtf8("Success"),
+            QString::fromUtf8(
+                "Public keys published to DHT successfully!\n\n"
+                "Identity: %1\n"
+                "Your keys are now discoverable by other users.\n\n"
+                "Keys published:\n"
+                "• Dilithium signing key (1952 bytes)\n"
+                "• Kyber encryption key (800 bytes)"
+            ).arg(currentIdentity)
+        );
+        statusLabel->setText(QString::fromUtf8("Keys published to DHT"));
+    } else {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8(
+                "Failed to publish keys to DHT.\n\n"
+                "Make sure P2P transport is initialized and DHT is connected."
+            )
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to publish keys"));
+    }
 }
 
 void MainWindow::onLogout() {
