@@ -1,5 +1,6 @@
 // DNA Messenger - ImGui GUI
 // Modern, lightweight, cross-platform messenger interface
+// UI SKETCH MODE - Backend integration disabled for UI development
 
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -21,6 +22,8 @@
 #include <direct.h>
 #endif
 
+// Comment out backend includes for UI sketch mode
+/*
 extern "C" {
 #include "../dna_api.h"
 #include "../messenger_p2p.h"
@@ -29,6 +32,7 @@ extern "C" {
 #include "../messenger/keyserver_register.h"
 #include "../bip39.h"
 }
+*/
 
 struct Message {
     std::string sender;
@@ -237,6 +241,14 @@ private:
     void scanIdentities() {
         identities.clear();
         
+        // UI SKETCH MODE - Add mock identities for testing
+        identities.push_back("alice");
+        identities.push_back("bob");
+        identities.push_back("charlie");
+        
+        printf("[SKETCH MODE] Loaded %zu mock identities\n", identities.size());
+        
+        /* DISABLED FOR SKETCH MODE - Real identity scanning
         // Scan ~/.dna for *-dilithium.pqkey files
         const char* home = getenv("HOME");
         if (!home) return;
@@ -272,6 +284,7 @@ private:
             closedir(dir);
         }
 #endif
+        */
     }
     
     // Input filter callback for identity name (alphanumeric + underscore only)
@@ -363,10 +376,10 @@ private:
         
         ImGui::BeginDisabled(!name_valid || name_len == 0);
         if (ButtonDark("Next", ImVec2(button_width, 40))) {
-            // Generate BIP39 seed phrase
-            if (bip39_generate_mnemonic(24, generated_mnemonic, sizeof(generated_mnemonic)) == 0) {
-                create_identity_step = STEP_SEED_PHRASE;
-            }
+            // Generate mock seed phrase for UI sketch mode
+            snprintf(generated_mnemonic, sizeof(generated_mnemonic), 
+                "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual");
+            create_identity_step = STEP_SEED_PHRASE;
         }
         ImGui::EndDisabled();
         
@@ -491,73 +504,23 @@ private:
     }
     
     void createIdentityWithSeed(const char* name, const char* mnemonic) {
-        // Call DNA API to create identity with key generation from seed
-        printf("Creating identity: %s with provided seed phrase\n", name);
+        // UI SKETCH MODE - Mock identity creation
+        printf("[SKETCH MODE] Creating identity: %s\n", name);
+        printf("[SKETCH MODE] Mnemonic: %s\n", mnemonic);
         
-        // Ensure ~/.dna directory exists
-        const char* home = getenv("HOME");
-        if (!home) {
-            printf("[ERROR] HOME environment variable not set\n");
-            ImGui::CloseCurrentPopup();
-            return;
-        }
-        
-        std::string dna_dir = std::string(home) + "/.dna";
-        
-#ifdef _WIN32
-        _mkdir(dna_dir.c_str());
-#else
-        mkdir(dna_dir.c_str(), 0700);
-#endif
-        
-        // Derive seeds from mnemonic
-        uint8_t signing_seed[32];
-        uint8_t encryption_seed[32];
-        
-        if (qgp_derive_seeds_from_mnemonic(mnemonic, "", signing_seed, encryption_seed) != 0) {
-            printf("[ERROR] Failed to derive seeds from mnemonic\n");
-            ImGui::CloseCurrentPopup();
-            return;
-        }
-        
-        printf("[INFO] Seeds derived from mnemonic\n");
-        
-        // Generate keys using messenger API
-        messenger_context_t *ctx = messenger_init(name);
-        if (!ctx) {
-            printf("[ERROR] Failed to initialize messenger context\n");
-            ImGui::CloseCurrentPopup();
-            return;
-        }
-        
-        // Generate and upload keys to keyserver
-        int result = messenger_generate_keys(ctx, name);
-        if (result != 0) {
-            printf("[ERROR] Failed to generate keys\n");
-            messenger_free(ctx);
-            ImGui::CloseCurrentPopup();
-            return;
-        }
-        
-        printf("[SUCCESS] Keys generated successfully\n");
-        
-        // Register to cpunk.io keyserver (non-critical)
-        if (register_to_keyserver(name) != 0) {
-            printf("[WARNING] Failed to register to cpunk.io keyserver\n");
-        }
-        
-        messenger_free(ctx);
-        
-        // Add to list and load
+        // Simulate success
         identities.push_back(name);
         current_identity = name;
-        loadIdentity(current_identity);
+        identity_loaded = true;
+        show_identity_selection = false;
         
         // Reset and close
         memset(new_identity_name, 0, sizeof(new_identity_name));
         memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
         seed_confirmed = false;
         ImGui::CloseCurrentPopup();
+        
+        printf("[SKETCH MODE] Identity created successfully\n");
     }
     
     void loadIdentity(const std::string& identity) {
