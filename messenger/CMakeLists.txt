@@ -188,6 +188,7 @@ add_library(dna_lib STATIC
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
     messenger_stubs.c  # DHT-based group functions (Phase 3)
     keyserver_cache.c  # Phase 4: SQLite keyserver cache
+    contacts_db.c      # Phase 9.4: Local contacts database
     ${COMMON_SOURCES}
 )
 

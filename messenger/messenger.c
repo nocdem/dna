@@ -35,6 +35,9 @@
 #include "aes_keywrap.h"  // For aes256_wrap_key
 #include "qgp_random.h"  // For qgp_randombytes
 #include "keyserver_cache.h"  // Phase 4: Keyserver cache
+#include "dht/dht_keyserver.h"   // Phase 9.4: DHT-based keyserver
+#include "p2p/p2p_transport.h"   // For getting DHT context
+#include "contacts_db.h"         // Phase 9.4: Local contacts database
 
 // Global configuration
 static dna_config_t g_config;
@@ -740,7 +743,20 @@ int messenger_store_pubkey(
         return -1;
     }
 
-    printf("⟳ Registering public keys for '%s' to keyserver...\n", identity);
+    // Phase 9.4: Use DHT-based keyserver instead of HTTP
+    printf("⟳ Publishing public keys for '%s' to DHT keyserver...\n", identity);
+
+    // Get DHT context from P2P transport
+    if (!ctx->p2p_transport) {
+        fprintf(stderr, "ERROR: P2P transport not initialized\n");
+        return -1;
+    }
+
+    dht_context_t *dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        fprintf(stderr, "ERROR: DHT context not available\n");
+        return -1;
+    }
 
     // Get dna_dir path
     const char *home = getenv("HOME");
@@ -755,161 +771,40 @@ int messenger_store_pubkey(
     char dna_dir[512];
     snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
 
-    // Base64 encode public keys
-    char *dilithium_b64 = base64_encode(signing_pubkey, signing_pubkey_len);
-    char *kyber_b64 = base64_encode(encryption_pubkey, encryption_pubkey_len);
-
-    if (!dilithium_b64 || !kyber_b64) {
-        fprintf(stderr, "ERROR: Failed to base64 encode keys\n");
-        if (dilithium_b64) free(dilithium_b64);
-        if (kyber_b64) free(kyber_b64);
-        return -1;
-    }
-
-    // Build JSON payload
-    int updated_at = (int)time(NULL);
-    json_object *payload = json_object_new_object();
-    json_object_object_add(payload, "v", json_object_new_int(1));
-    json_object_object_add(payload, "dna", json_object_new_string(identity));
-    json_object_object_add(payload, "dilithium_pub", json_object_new_string(dilithium_b64));
-    json_object_object_add(payload, "kyber_pub", json_object_new_string(kyber_b64));
-    json_object_object_add(payload, "cf20pub", json_object_new_string(""));
-    json_object_object_add(payload, "version", json_object_new_int(1));
-    json_object_object_add(payload, "updated_at", json_object_new_int(updated_at));
-
-    // Free base64 strings (json-c made copies)
-    free(dilithium_b64);
-    free(kyber_b64);
-
-    // Get canonical JSON string for signing
-    const char *json_payload = json_object_to_json_string_ext(payload,
-        JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE);
-
-    // Load private key to sign payload
+    // Load private key for signing
     char key_path[512];
     snprintf(key_path, sizeof(key_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
         fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
-        json_object_put(payload);
         return -1;
     }
 
     if (key->type != QGP_KEY_TYPE_DILITHIUM3 || !key->private_key) {
         fprintf(stderr, "ERROR: Not a Dilithium private key\n");
         qgp_key_free(key);
-        json_object_put(payload);
         return -1;
     }
 
-    // Sign the JSON payload
-    uint8_t signature[QGP_DILITHIUM3_BYTES];
-    size_t sig_len = QGP_DILITHIUM3_BYTES;
-
-    if (qgp_dilithium3_signature(signature, &sig_len,
-                                  (const uint8_t*)json_payload, strlen(json_payload),
-                                  key->private_key) != 0) {
-        fprintf(stderr, "ERROR: Failed to sign payload\n");
-        qgp_key_free(key);
-        json_object_put(payload);
-        return -1;
-    }
+    // Publish to DHT
+    int ret = dht_keyserver_publish(
+        dht_ctx,
+        identity,
+        signing_pubkey,
+        encryption_pubkey,
+        key->private_key
+    );
 
     qgp_key_free(key);
 
-    // Base64 encode signature
-    char *sig_b64 = base64_encode(signature, sig_len);
-    if (!sig_b64) {
-        fprintf(stderr, "ERROR: Failed to encode signature\n");
-        json_object_put(payload);
+    if (ret != 0) {
+        fprintf(stderr, "ERROR: Failed to publish keys to DHT keyserver\n");
         return -1;
     }
 
-    // Add signature to payload
-    json_object_object_add(payload, "sig", json_object_new_string(sig_b64));
-    free(sig_b64);
-
-    // Get final JSON with signature
-    const char *final_json = json_object_to_json_string_ext(payload,
-        JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE);
-
-    // Create temp file for curl
-#ifdef _WIN32
-    char temp_file[512];
-    if (tmpnam_s(temp_file, sizeof(temp_file)) != 0) {
-        fprintf(stderr, "ERROR: Failed to create temp filename\n");
-        json_object_put(payload);
-        return -1;
-    }
-    FILE *fp = fopen(temp_file, "w");
-#else
-    char temp_file[] = "/tmp/dna_register_XXXXXX";
-    int fd = mkstemp(temp_file);
-    if (fd == -1) {
-        fprintf(stderr, "ERROR: Failed to create temp file\n");
-        json_object_put(payload);
-        return -1;
-    }
-    FILE *fp = fdopen(fd, "w");
-#endif
-
-    if (!fp) {
-#ifndef _WIN32
-        close(fd);
-#endif
-        fprintf(stderr, "ERROR: Failed to open temp file\n");
-        json_object_put(payload);
-        return -1;
-    }
-
-    fprintf(fp, "%s", final_json);
-    fclose(fp);
-    json_object_put(payload);
-
-    // POST to keyserver using curl
-    char curl_cmd[1024];
-    snprintf(curl_cmd, sizeof(curl_cmd),
-             "curl -s -X POST \"https://cpunk.io/api/keyserver/register\" "
-             "-H \"Content-Type: application/json\" "
-             "-d @\"%s\"",
-             temp_file);
-
-    FILE *curl_fp = popen(curl_cmd, "r");
-    if (!curl_fp) {
-        unlink(temp_file);
-        fprintf(stderr, "ERROR: Failed to execute curl\n");
-        return -1;
-    }
-
-    // Read response
-    char response[4096];
-    size_t response_len = fread(response, 1, sizeof(response) - 1, curl_fp);
-    response[response_len] = '\0';
-    pclose(curl_fp);
-    unlink(temp_file);
-
-    // Parse response
-    json_object *resp_root = json_tokener_parse(response);
-    if (!resp_root) {
-        fprintf(stderr, "ERROR: Failed to parse keyserver response\n");
-        return -1;
-    }
-
-    json_object *success_obj = NULL;
-    json_object_object_get_ex(resp_root, "success", &success_obj);
-
-    int success = success_obj && json_object_get_boolean(success_obj);
-    json_object_put(resp_root);
-
-    if (success) {
-        printf("✓ Public keys registered successfully!\n");
-        return 0;
-    } else {
-        fprintf(stderr, "ERROR: Keyserver registration failed\n");
-        fprintf(stderr, "Response: %s\n", response);
-        return -1;
-    }
+    printf("✓ Public keys published to DHT successfully!\n");
+    return 0;
 }
 
 /**
@@ -978,79 +873,56 @@ int messenger_load_pubkey(
         return 0;
     }
 
-    // Cache miss - fetch from keyserver API
-    printf("⟳ Fetching public keys for '%s' from keyserver...\n", identity);
+    // Cache miss - fetch from DHT keyserver
+    printf("⟳ Fetching public keys for '%s' from DHT keyserver...\n", identity);
 
-    char url[512];
-    snprintf(url, sizeof(url), "https://cpunk.io/api/keyserver/lookup/%s", identity);
-
-    char cmd[1024];
-#ifdef _WIN32
-    snprintf(cmd, sizeof(cmd), "curl -s \"%s\"", url);
-#else
-    snprintf(cmd, sizeof(cmd), "curl -s '%s'", url);
-#endif
-
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        fprintf(stderr, "ERROR: Failed to fetch from keyserver\n");
+    // Get DHT context from P2P transport
+    if (!ctx->p2p_transport) {
+        fprintf(stderr, "ERROR: P2P transport not initialized\n");
         return -1;
     }
 
-    char response[102400]; // 100KB buffer
-    size_t response_len = fread(response, 1, sizeof(response) - 1, fp);
-    response[response_len] = '\0';
-    pclose(fp);
-
-    // Parse JSON
-    json_object *root = json_tokener_parse(response);
-    if (!root) {
-        fprintf(stderr, "ERROR: Failed to parse keyserver response\n");
+    dht_context_t *dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        fprintf(stderr, "ERROR: DHT context not available\n");
         return -1;
     }
 
-    json_object *success_obj = NULL;
-    json_object_object_get_ex(root, "success", &success_obj);
-    if (!success_obj || !json_object_get_boolean(success_obj)) {
-        fprintf(stderr, "ERROR: Identity not found in keyserver\n");
-        json_object_put(root);
+    // Lookup in DHT
+    dht_pubkey_entry_t *entry = NULL;
+    ret = dht_keyserver_lookup(dht_ctx, identity, &entry);
+
+    if (ret != 0) {
+        if (ret == -2) {
+            fprintf(stderr, "ERROR: Identity '%s' not found in DHT keyserver\n", identity);
+        } else if (ret == -3) {
+            fprintf(stderr, "ERROR: Signature verification failed for identity '%s'\n", identity);
+        } else {
+            fprintf(stderr, "ERROR: Failed to lookup identity in DHT keyserver\n");
+        }
         return -1;
     }
 
-    json_object *data_obj = NULL;
-    json_object_object_get_ex(root, "data", &data_obj);
-    if (!data_obj) {
-        fprintf(stderr, "ERROR: No data in keyserver response\n");
-        json_object_put(root);
-        return -1;
-    }
+    // Allocate and copy keys
+    uint8_t *dil_decoded = malloc(DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
+    uint8_t *kyber_decoded = malloc(DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
 
-    // Extract base64-encoded keys
-    json_object *dil_obj = NULL, *kyber_obj = NULL;
-    json_object_object_get_ex(data_obj, "dilithium_pub", &dil_obj);
-    json_object_object_get_ex(data_obj, "kyber_pub", &kyber_obj);
-
-    if (!dil_obj || !kyber_obj) {
-        fprintf(stderr, "ERROR: Missing public keys in keyserver response\n");
-        json_object_put(root);
-        return -1;
-    }
-
-    const char *dil_b64 = json_object_get_string(dil_obj);
-    const char *kyber_b64 = json_object_get_string(kyber_obj);
-
-    // Decode base64 keys
-    uint8_t *dil_decoded = NULL, *kyber_decoded = NULL;
-    size_t dil_len = base64_decode(dil_b64, &dil_decoded);
-    size_t kyber_len = base64_decode(kyber_b64, &kyber_decoded);
-
-    if (!dil_decoded || !kyber_decoded || dil_len == 0 || kyber_len == 0) {
-        fprintf(stderr, "ERROR: Failed to decode public keys\n");
+    if (!dil_decoded || !kyber_decoded) {
+        fprintf(stderr, "ERROR: Memory allocation failed\n");
         if (dil_decoded) free(dil_decoded);
         if (kyber_decoded) free(kyber_decoded);
-        json_object_put(root);
+        dht_keyserver_free_entry(entry);
         return -1;
     }
+
+    memcpy(dil_decoded, entry->dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
+    memcpy(kyber_decoded, entry->kyber_pubkey, DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
+
+    size_t dil_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
+    size_t kyber_len = DHT_KEYSERVER_KYBER_PUBKEY_SIZE;
+
+    // Free DHT entry
+    dht_keyserver_free_entry(entry);
 
     // Store in cache for future lookups
     keyserver_cache_put(identity, dil_decoded, dil_len, kyber_decoded, kyber_len, 0);
@@ -1060,8 +932,6 @@ int messenger_load_pubkey(
     *signing_pubkey_len_out = dil_len;
     *encryption_pubkey_out = kyber_decoded;
     *encryption_pubkey_len_out = kyber_len;
-
-    json_object_put(root);
     printf("✓ Loaded public keys for '%s' from keyserver\n", identity);
     return 0;
 }
@@ -1148,108 +1018,59 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
 }
 
 /**
- * Get contact list (identities from keyserver)
+ * Get contact list (from local contacts database)
+ * Phase 9.4: Replaced HTTP API with local contacts_db
  */
 int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out, int *count_out) {
     if (!ctx || !identities_out || !count_out) {
         return -1;
     }
 
-    // Fetch from cpunk.io API
-    const char *url = "https://cpunk.io/api/keyserver/list";
-    char cmd[1024];
-#ifdef _WIN32
-    snprintf(cmd, sizeof(cmd), "curl -s \"%s\"", url);
-#else
-    snprintf(cmd, sizeof(cmd), "curl -s '%s'", url);
-#endif
-
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        fprintf(stderr, "Error: Failed to fetch identity list from keyserver\n");
+    // Initialize contacts database if not already done
+    if (contacts_db_init() != 0) {
+        fprintf(stderr, "Error: Failed to initialize contacts database\n");
         return -1;
     }
 
-    char response[102400]; // 100KB buffer for large lists
-    size_t response_len = fread(response, 1, sizeof(response) - 1, fp);
-    response[response_len] = '\0';
-    pclose(fp);
-
-    // Trim whitespace
-    while (response_len > 0 &&
-           (response[response_len-1] == '\n' ||
-            response[response_len-1] == '\r' ||
-            response[response_len-1] == ' ' ||
-            response[response_len-1] == '\t')) {
-        response[--response_len] = '\0';
-    }
-
-    // Parse JSON response
-    struct json_object *root = json_tokener_parse(response);
-    if (!root) {
-        fprintf(stderr, "Error: Failed to parse JSON response\n");
+    // Get contact list from database
+    contact_list_t *list = NULL;
+    if (contacts_db_list(&list) != 0) {
+        fprintf(stderr, "Error: Failed to get contact list\n");
         return -1;
     }
 
-    // Check success field
-    struct json_object *success_obj = json_object_object_get(root, "success");
-    if (!success_obj || !json_object_get_boolean(success_obj)) {
-        fprintf(stderr, "Error: API returned failure\n");
-        json_object_put(root);
-        return -1;
-    }
+    *count_out = list->count;
 
-    // Get identities array
-    struct json_object *identities_obj = json_object_object_get(root, "identities");
-    if (!identities_obj || !json_object_is_type(identities_obj, json_type_array)) {
+    if (list->count == 0) {
         *identities_out = NULL;
-        *count_out = 0;
-        json_object_put(root);
-        return 0;
-    }
-
-    int rows = json_object_array_length(identities_obj);
-    *count_out = rows;
-
-    if (rows == 0) {
-        *identities_out = NULL;
-        json_object_put(root);
+        contacts_db_free_list(list);
         return 0;
     }
 
     // Allocate array of string pointers
-    char **identities = (char**)malloc(sizeof(char*) * rows);
+    char **identities = (char**)malloc(sizeof(char*) * list->count);
     if (!identities) {
-        fprintf(stderr, "Memory allocation failed\n");
-        json_object_put(root);
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        contacts_db_free_list(list);
         return -1;
     }
 
     // Copy each identity string
-    for (int i = 0; i < rows; i++) {
-        struct json_object *identity_obj = json_object_array_get_idx(identities_obj, i);
-        if (!identity_obj) {
-            identities[i] = strdup("unknown");
-            continue;
-        }
-
-        struct json_object *dna_obj = json_object_object_get(identity_obj, "dna");
-        const char *identity = dna_obj ? json_object_get_string(dna_obj) : "unknown";
-
-        identities[i] = strdup(identity);
+    for (size_t i = 0; i < list->count; i++) {
+        identities[i] = strdup(list->contacts[i].identity);
         if (!identities[i]) {
             // Clean up on failure
-            for (int j = 0; j < i; j++) {
+            for (size_t j = 0; j < i; j++) {
                 free(identities[j]);
             }
             free(identities);
-            json_object_put(root);
+            contacts_db_free_list(list);
             return -1;
         }
     }
 
     *identities_out = identities;
-    json_object_put(root);
+    contacts_db_free_list(list);
     return 0;
 }
 
