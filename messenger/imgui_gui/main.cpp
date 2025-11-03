@@ -4,6 +4,7 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include "modal_helper.h"
 #include "IconsFontAwesome6.h"
 #include <GLFW/glfw3.h>
 #include <stdio.h>
@@ -131,21 +132,20 @@ private:
         ImGuiIO& io = ImGui::GetIO();
         bool is_mobile = io.DisplaySize.x < 600.0f;
         
-        // Center the dialog
-        ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
-        ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        // Open the modal on first render
+        static bool first_render = true;
+        if (first_render) {
+            ImGui::OpenPopup("DNA Messenger - Select Identity");
+            first_render = false;
+        }
+        
+        // Set size before modal
         ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x * 0.9f : 500, is_mobile ? io.DisplaySize.y * 0.9f : 500));
         
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.5f, 0.5f)); // Center title
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 12)); // Title bar height
-        ImGui::Begin("DNA Messenger - Select Identity", nullptr, 
-            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove);
-        ImGui::PopStyleVar(3);
-        
-        // Add padding at top
-        ImGui::Spacing();
-        ImGui::Spacing();
+        if (CenteredModal::Begin("DNA Messenger - Select Identity", nullptr, ImGuiWindowFlags_NoResize)) {
+            // Add padding at top
+            ImGui::Spacing();
+            ImGui::Spacing();
         
         // Title
         ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
@@ -210,20 +210,21 @@ private:
             ImGui::OpenPopup("Create New Identity");
         }
         
-        // Create identity popup - multi-step wizard (using CenteredModal helper)
-        if (CenteredModal::Begin("Create New Identity")) {
-            if (create_identity_step == STEP_NAME) {
-                renderCreateIdentityStep1();
-            } else if (create_identity_step == STEP_SEED_PHRASE) {
-                renderCreateIdentityStep2();
-            } else if (create_identity_step == STEP_CREATING) {
-                renderCreateIdentityStep3();
+            // Create identity popup - multi-step wizard (using CenteredModal helper)
+            if (CenteredModal::Begin("Create New Identity")) {
+                if (create_identity_step == STEP_NAME) {
+                    renderCreateIdentityStep1();
+                } else if (create_identity_step == STEP_SEED_PHRASE) {
+                    renderCreateIdentityStep2();
+                } else if (create_identity_step == STEP_CREATING) {
+                    renderCreateIdentityStep3();
+                }
+                
+                CenteredModal::End();
             }
             
-            CenteredModal::End();
+            CenteredModal::End(); // End identity selection modal
         }
-        
-        ImGui::End();
     }
     
     void scanIdentities() {
