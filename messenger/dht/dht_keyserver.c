@@ -20,6 +20,20 @@
 #include <openssl/sha.h>
 #include <json-c/json.h>
 
+#ifdef _WIN32
+    #include <winsock2.h>
+    // Windows doesn't have htonll/ntohll, define them
+    #define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
+    #define ntohll(x) htonll(x)
+#else
+    #include <arpa/inet.h>
+    // Define htonll/ntohll if not available
+    #ifndef htonll
+        #define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
+        #define ntohll(x) htonll(x)
+    #endif
+#endif
+
 // Helper function: Compute DHT storage key
 static void compute_dht_key(const char *identity, char *key_out) {
     // Format: SHA256(identity + ":pubkey")
@@ -220,10 +234,15 @@ static int sign_entry(dht_pubkey_entry_t *entry, const uint8_t *dilithium_privke
     offset += DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
     memcpy(msg + offset, entry->kyber_pubkey, DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
     offset += DHT_KEYSERVER_KYBER_PUBKEY_SIZE;
-    memcpy(msg + offset, &entry->timestamp, sizeof(entry->timestamp));
-    offset += sizeof(entry->timestamp);
-    memcpy(msg + offset, &entry->version, sizeof(entry->version));
-    offset += sizeof(entry->version);
+
+    // Convert to network byte order for cross-platform compatibility
+    uint64_t timestamp_net = htonll(entry->timestamp);
+    uint32_t version_net = htonl(entry->version);
+
+    memcpy(msg + offset, &timestamp_net, sizeof(timestamp_net));
+    offset += sizeof(timestamp_net);
+    memcpy(msg + offset, &version_net, sizeof(version_net));
+    offset += sizeof(version_net);
     memcpy(msg + offset, entry->fingerprint, strlen(entry->fingerprint));
 
     // Sign
@@ -257,10 +276,15 @@ static int verify_entry(const dht_pubkey_entry_t *entry) {
     offset += DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
     memcpy(msg + offset, entry->kyber_pubkey, DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
     offset += DHT_KEYSERVER_KYBER_PUBKEY_SIZE;
-    memcpy(msg + offset, &entry->timestamp, sizeof(entry->timestamp));
-    offset += sizeof(entry->timestamp);
-    memcpy(msg + offset, &entry->version, sizeof(entry->version));
-    offset += sizeof(entry->version);
+
+    // Convert to network byte order for cross-platform compatibility (same as sign_entry)
+    uint64_t timestamp_net = htonll(entry->timestamp);
+    uint32_t version_net = htonl(entry->version);
+
+    memcpy(msg + offset, &timestamp_net, sizeof(timestamp_net));
+    offset += sizeof(timestamp_net);
+    memcpy(msg + offset, &version_net, sizeof(version_net));
+    offset += sizeof(version_net);
     memcpy(msg + offset, entry->fingerprint, strlen(entry->fingerprint));
 
     // Verify signature with dilithium pubkey
