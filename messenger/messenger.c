@@ -10,6 +10,7 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#include <stdbool.h>
 #ifdef _WIN32
 #include <windows.h>
 #define popen _popen
@@ -36,6 +37,7 @@
 #include "qgp_random.h"  // For qgp_randombytes
 #include "keyserver_cache.h"  // Phase 4: Keyserver cache
 #include "dht/dht_keyserver.h"   // Phase 9.4: DHT-based keyserver
+#include "dht/dht_context.h"     // Phase 9.4: DHT context management
 #include "p2p/p2p_transport.h"   // For getting DHT context
 #include "contacts_db.h"         // Phase 9.4: Local contacts database
 
@@ -746,16 +748,45 @@ int messenger_store_pubkey(
     // Phase 9.4: Use DHT-based keyserver instead of HTTP
     printf("⟳ Publishing public keys for '%s' to DHT keyserver...\n", identity);
 
-    // Get DHT context from P2P transport
-    if (!ctx->p2p_transport) {
-        fprintf(stderr, "ERROR: P2P transport not initialized\n");
-        return -1;
-    }
+    // For now: Initialize temporary DHT context for key publishing
+    // TODO: This should be replaced with proper P2P initialization in GUI/CLI
+    dht_context_t *dht_ctx = NULL;
+    bool temp_dht = false;
 
-    dht_context_t *dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
-    if (!dht_ctx) {
-        fprintf(stderr, "ERROR: DHT context not available\n");
-        return -1;
+    if (ctx->p2p_transport) {
+        // Use existing P2P transport's DHT
+        dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
+    } else {
+        // Create temporary DHT context for key publishing
+        printf("[INFO] Creating temporary DHT connection for key publishing...\n");
+
+        dht_config_t dht_config = {0};
+        dht_config.port = 0;  // Random port (not listening)
+        dht_config.is_bootstrap = false;
+        strncpy(dht_config.identity, identity, sizeof(dht_config.identity) - 1);
+
+        // Add bootstrap nodes
+        strncpy(dht_config.bootstrap_nodes[0], "154.38.182.161:4000", sizeof(dht_config.bootstrap_nodes[0]) - 1);
+        strncpy(dht_config.bootstrap_nodes[1], "164.68.105.227:4000", sizeof(dht_config.bootstrap_nodes[1]) - 1);
+        strncpy(dht_config.bootstrap_nodes[2], "164.68.116.180:4000", sizeof(dht_config.bootstrap_nodes[2]) - 1);
+        dht_config.bootstrap_count = 3;
+        dht_config.persistence_path[0] = '\0';  // Memory-only
+
+        dht_ctx = dht_context_new(&dht_config);
+        if (!dht_ctx) {
+            fprintf(stderr, "ERROR: Failed to create DHT context\n");
+            return -1;
+        }
+
+        // Start DHT node and bootstrap
+        if (dht_context_start(dht_ctx) != 0) {
+            fprintf(stderr, "ERROR: Failed to start DHT context\n");
+            dht_context_free(dht_ctx);
+            return -1;
+        }
+
+        printf("[INFO] DHT connection established\n");
+        temp_dht = true;
     }
 
     // Get dna_dir path
@@ -778,12 +809,14 @@ int messenger_store_pubkey(
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
         fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
+        if (temp_dht) dht_context_free(dht_ctx);
         return -1;
     }
 
     if (key->type != QGP_KEY_TYPE_DILITHIUM3 || !key->private_key) {
         fprintf(stderr, "ERROR: Not a Dilithium private key\n");
         qgp_key_free(key);
+        if (temp_dht) dht_context_free(dht_ctx);
         return -1;
     }
 
@@ -797,6 +830,12 @@ int messenger_store_pubkey(
     );
 
     qgp_key_free(key);
+
+    // Cleanup temporary DHT context
+    if (temp_dht) {
+        printf("[INFO] Cleaning up temporary DHT connection...\n");
+        dht_context_free(dht_ctx);
+    }
 
     if (ret != 0) {
         fprintf(stderr, "ERROR: Failed to publish keys to DHT keyserver\n");

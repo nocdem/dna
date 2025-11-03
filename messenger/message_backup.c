@@ -58,8 +58,11 @@ static const char *SCHEMA_SQL =
 static int get_db_path(const char *identity, char *path_out, size_t path_len) {
     const char *home = getenv("HOME");
     if (!home) {
-        fprintf(stderr, "[Backup] HOME environment variable not set\n");
-        return -1;
+        home = getenv("USERPROFILE");  // Windows fallback
+        if (!home) {
+            fprintf(stderr, "[Backup] HOME/USERPROFILE environment variable not set\n");
+            return -1;
+        }
     }
 
     // Create ~/.dna directory if it doesn't exist
