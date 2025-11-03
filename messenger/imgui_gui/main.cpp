@@ -58,7 +58,10 @@ public:
         show_identity_selection = true;
         identity_loaded = false;
         selected_identity_idx = -1;
+        create_identity_step = STEP_NAME;
+        seed_confirmed = false;
         memset(new_identity_name, 0, sizeof(new_identity_name));
+        memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
     }
 
     void render() {
@@ -99,6 +102,12 @@ private:
         VIEW_WALLET,
         VIEW_SETTINGS
     };
+    
+    enum CreateIdentityStep {
+        STEP_NAME,
+        STEP_SEED_PHRASE,
+        STEP_CREATING
+    };
 
     View current_view;
     int selected_contact;
@@ -106,6 +115,9 @@ private:
     bool show_identity_selection;
     bool identity_loaded;
     int selected_identity_idx;
+    CreateIdentityStep create_identity_step;
+    char generated_mnemonic[512];
+    bool seed_confirmed;
     
     std::vector<Contact> contacts;
     std::vector<Message> messages;
