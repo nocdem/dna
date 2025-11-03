@@ -1,5 +1,5 @@
 #include "dht_offline_queue.h"
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -14,12 +14,16 @@
 
 /**
  * SHA256 hash helper (same as p2p_transport.c)
+ * Updated to use OpenSSL 3.0 EVP API
  */
 static void sha256_hash(const uint8_t *data, size_t len, uint8_t *hash_out) {
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, data, len);
-    SHA256_Final(hash_out, &ctx);
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) return;
+
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, data, len);
+    EVP_DigestFinal_ex(ctx, hash_out, NULL);
+    EVP_MD_CTX_free(ctx);
 }
 
 /**

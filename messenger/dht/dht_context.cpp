@@ -66,8 +66,28 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
     }
 
     try {
-        // Run DHT node on specified port
-        ctx->runner.run(ctx->config.port, dht::crypto::generateIdentity(), true);
+        // Generate node identity
+        auto identity = dht::crypto::generateIdentity();
+
+        // Check if disk persistence is requested
+        if (ctx->config.persistence_path[0] != '\0') {
+            // Bootstrap nodes: Enable disk persistence
+            std::string persist_path(ctx->config.persistence_path);
+            std::cout << "[DHT] Enabling disk persistence: " << persist_path << std::endl;
+
+            // Create DhtRunner::Config with persistence
+            dht::DhtRunner::Config config;
+            config.dht_config.node_config.maintain_storage = true;
+            config.dht_config.node_config.persist_path = persist_path;
+            config.dht_config.id = identity;
+            config.threaded = true;
+
+            ctx->runner.run(ctx->config.port, config);
+        } else {
+            // User nodes: Memory-only (fast, no disk I/O)
+            std::cout << "[DHT] Running in memory-only mode (no disk persistence)" << std::endl;
+            ctx->runner.run(ctx->config.port, identity, true);
+        }
 
         std::cout << "[DHT] Node started on port " << ctx->config.port << std::endl;
 

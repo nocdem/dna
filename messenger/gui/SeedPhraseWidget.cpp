@@ -3,6 +3,8 @@
 #include "cpunk_themes.h"
 #include <QFont>
 #include <QFrame>
+#include <QPalette>
+#include <QSizePolicy>
 
 SeedPhraseWidget::SeedPhraseWidget(QWidget *parent)
     : QWidget(parent)
@@ -21,72 +23,95 @@ SeedPhraseWidget::SeedPhraseWidget(QWidget *parent)
 void SeedPhraseWidget::setupUI()
 {
     QVBoxLayout *mainLayout = new QVBoxLayout(this);
-    mainLayout->setContentsMargins(20, 20, 20, 20);
-    mainLayout->setSpacing(15);
+    mainLayout->setContentsMargins(15, 10, 15, 10);
+    mainLayout->setSpacing(8);
 
-    // Warning label
-    QLabel *warningLabel = new QLabel(this);
-    warningLabel->setText("⚠ WRITE DOWN THESE 24 WORDS IN ORDER\n"
-                          "This is the ONLY way to recover your identity if your device is lost!");
+    // Warning label - BRIGHT ORANGE, NO STYLESHEET
+    warningLabel = new QLabel("⚠ WRITE DOWN THESE 24 WORDS IN ORDER\n"
+                          "This is the ONLY way to recover your identity if your device is lost!", this);
     warningLabel->setAlignment(Qt::AlignCenter);
     warningLabel->setWordWrap(true);
-    warningLabel->setStyleSheet("QLabel { color: #ff4444; font-weight: bold; font-size: 12pt; padding: 10px; }");
+    QPalette warnPal = warningLabel->palette();
+    warnPal.setColor(QPalette::WindowText, QColor(255, 170, 0)); // Bright orange
+    warningLabel->setPalette(warnPal);
+    QFont warnFont = warningLabel->font();
+    warnFont.setPointSize(10);
+    warnFont.setBold(true);
+    warningLabel->setFont(warnFont);
     mainLayout->addWidget(warningLabel);
 
-    // Grid frame for seed words
+    // Grid frame for seed words - SIMPLE, NO FANCY STYLING
     QFrame *gridFrame = new QFrame(this);
     gridFrame->setFrameShape(QFrame::Box);
     gridFrame->setLineWidth(2);
 
-    gridLayout = new QGridLayout(gridFrame);
-    gridLayout->setSpacing(10);
-    gridLayout->setContentsMargins(15, 15, 15, 15);
+    // Set gridFrame palette DIRECTLY
+    QPalette framePal = gridFrame->palette();
+    framePal.setColor(QPalette::Window, QColor(26, 26, 46)); // Dark background
+    framePal.setColor(QPalette::Base, QColor(26, 26, 46));
+    gridFrame->setPalette(framePal);
+    gridFrame->setAutoFillBackground(true);
 
-    // Create 24 word labels in 2 columns (12 rows each)
-    QFont monoFont("Courier New", 11);
+    gridLayout = new QGridLayout(gridFrame);
+    gridLayout->setSpacing(6);
+    gridLayout->setContentsMargins(10, 10, 10, 10);
+
+    // Create 24 word labels - USE PALETTE, NOT STYLESHEET
+    QFont monoFont("Courier New", 7);
     monoFont.setBold(true);
 
     for (int i = 0; i < 24; i++) {
         int row = i % 12;
-        int col = (i / 12) * 2;  // 0 or 2 (two columns with spacing)
+        int col = (i / 12) * 2;
 
-        // Number label
-        QLabel *numLabel = new QLabel(QString::number(i + 1) + ".", gridFrame);
-        numLabel->setFont(monoFont);
-        numLabel->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        numLabel->setMinimumWidth(30);
-        gridLayout->addWidget(numLabel, row, col);
+        // Number label - LIGHT GRAY via palette
+        numLabels[i] = new QLabel(QString::number(i + 1) + ".", gridFrame);
+        numLabels[i]->setFont(monoFont);
+        numLabels[i]->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        numLabels[i]->setAutoFillBackground(false);
+        QPalette numPal = numLabels[i]->palette();
+        numPal.setColor(QPalette::WindowText, QColor(204, 204, 204));
+        numLabels[i]->setPalette(numPal);
+        gridLayout->addWidget(numLabels[i], row, col);
 
-        // Word label
+        // Word label - BRIGHT WHITE via palette
         wordLabels[i] = new QLabel("________", gridFrame);
         wordLabels[i]->setFont(monoFont);
         wordLabels[i]->setAlignment(Qt::AlignLeft | Qt::AlignVCenter);
-        wordLabels[i]->setMinimumWidth(100);
+        wordLabels[i]->setAutoFillBackground(false);
         wordLabels[i]->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        QPalette wordPal = wordLabels[i]->palette();
+        wordPal.setColor(QPalette::WindowText, QColor(255, 255, 255));
+        wordLabels[i]->setPalette(wordPal);
         gridLayout->addWidget(wordLabels[i], row, col + 1);
     }
 
-    mainLayout->addWidget(gridFrame);
+    // Make grid frame smaller to fit in narrower dialog - 7pt font needs less space
+    gridFrame->setMinimumSize(189, 300);
+    gridFrame->setMaximumHeight(300);
+    gridFrame->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
 
-    // Copy button
+    mainLayout->addWidget(gridFrame, 0, Qt::AlignTop);
+    mainLayout->addSpacing(10); // Add space before copy button
+
+    // Copy button - COMPACT
     copyButton = new QPushButton("📋 Copy to Clipboard", this);
-    copyButton->setMinimumHeight(40);
+    copyButton->setMinimumHeight(30);
     copyButton->setCursor(Qt::PointingHandCursor);
     connect(copyButton, &QPushButton::clicked, this, &SeedPhraseWidget::onCopyToClipboard);
     mainLayout->addWidget(copyButton);
+    mainLayout->addSpacing(5); // Small space before security warning
 
-    // Additional warnings
-    QLabel *securityWarning = new QLabel(this);
-    securityWarning->setText("⚠ SECURITY WARNINGS:\n"
-                            "• Never share this seed phrase with anyone\n"
-                            "• Never store it digitally (no photos, no cloud storage)\n"
-                            "• Store it in a secure physical location\n"
-                            "• Anyone with this seed phrase can access your identity");
-    securityWarning->setWordWrap(true);
-    securityWarning->setStyleSheet("QLabel { color: #ff6666; font-size: 10pt; padding: 10px; }");
+    // Security warnings - BRIGHT ORANGE via palette, VERY COMPACT
+    securityWarning = new QLabel("⚠ Never share • Secure offline storage only", this);
+    securityWarning->setAlignment(Qt::AlignCenter);
+    QPalette secPal = securityWarning->palette();
+    secPal.setColor(QPalette::WindowText, QColor(255, 170, 0));
+    securityWarning->setPalette(secPal);
+    QFont secFont = securityWarning->font();
+    secFont.setPointSize(7);
+    securityWarning->setFont(secFont);
     mainLayout->addWidget(securityWarning);
-
-    mainLayout->addStretch();
 }
 
 void SeedPhraseWidget::setSeedPhrase(const QString &phrase)
@@ -118,6 +143,9 @@ void SeedPhraseWidget::updateDisplay()
             wordLabels[i]->setText("________");
         }
     }
+
+    // Re-apply theme to ensure visibility and styling
+    applyTheme();
 }
 
 void SeedPhraseWidget::onCopyToClipboard()
@@ -138,40 +166,15 @@ void SeedPhraseWidget::onCopyToClipboard()
     emit seedPhraseCopied();
 }
 
+void SeedPhraseWidget::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    // Re-apply theme now that parent is visible
+    applyTheme();
+}
+
 void SeedPhraseWidget::applyTheme()
 {
-    CpunkTheme theme = ThemeManager::instance()->currentTheme();
-    QString bgColor = (theme == THEME_CPUNK_IO) ? "#1a1a2e" : "#2c1810";
-    QString textColor = (theme == THEME_CPUNK_IO) ? "#ffffff" : "#fff5e6";
-    QString primaryColor = (theme == THEME_CPUNK_IO) ? "#00d9ff" : "#ff8c42";
-
-    // Update grid frame style
-    QFrame *gridFrame = findChild<QFrame*>();
-    if (gridFrame) {
-        gridFrame->setStyleSheet(QString("QFrame { background-color: %1; border: 2px solid %2; border-radius: 5px; }")
-                                .arg(bgColor).arg(primaryColor));
-    }
-
-    // Update word labels
-    for (int i = 0; i < 24; i++) {
-        wordLabels[i]->setStyleSheet(QString("QLabel { color: %1; background: transparent; }")
-                                    .arg(textColor));
-    }
-
-    // Update copy button
-    if (copyButton) {
-        copyButton->setStyleSheet(QString(
-            "QPushButton {"
-            "  background-color: %1;"
-            "  color: %2;"
-            "  border: none;"
-            "  border-radius: 5px;"
-            "  font-weight: bold;"
-            "  font-size: 12pt;"
-            "}"
-            "QPushButton:hover {"
-            "  background-color: %3;"
-            "}"
-        ).arg(primaryColor).arg(bgColor).arg(primaryColor + "cc"));
-    }
+    // Force a repaint
+    update();
 }

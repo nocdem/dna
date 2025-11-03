@@ -13,9 +13,10 @@ Secure messaging using post-quantum cryptography (Kyber512 + Dilithium3) that re
 - **Minor:** 1 (Current feature set)
 - **Patch:** Auto-incremented with each commit
 
-**Available in two versions:**
-- **GUI:** Qt5 graphical interface with theme support and auto-updates
-- **CLI:** Command-line interface for terminal users
+**Primary Application:**
+- **GUI:** Qt5 graphical interface with theme support, wallet integration, and auto-updates
+
+_Note: CLI messenger is no longer supported. The GUI application provides all functionality._
 
 ## Quick Start
 
@@ -30,9 +31,9 @@ Binaries from the latest builds are available on GitLab CI/CD artifacts:
 - **Download:** https://gitlab.cpunk.io/cpunk/dna-messenger/-/artifacts
 
 Available platforms:
-- **Linux x86_64:** CLI and GUI binaries
-- **Linux ARM64:** CLI and GUI binaries
-- **Windows x64:** CLI and GUI executables (statically linked)
+- **Linux x86_64:** GUI binary (dna_messenger_gui), DHT bootstrap server (persistent_bootstrap)
+- **Linux ARM64:** GUI binary (dna_messenger_gui), DHT bootstrap server (persistent_bootstrap)
+- **Windows x64:** GUI executable (dna_messenger_gui.exe, statically linked)
 
 Note: Builds are generated on every push to main branch.
 
@@ -91,8 +92,8 @@ make
 # Run GUI
 ./gui/dna_messenger_gui
 
-# Or run CLI
-./dna_messenger
+# Optional: Run DHT bootstrap server (for running your own bootstrap node)
+./dht/persistent_bootstrap
 ```
 
 ### Windows (Cross-Compilation from Linux)
@@ -118,8 +119,7 @@ export MXE_DIR=/path/to/mxe  # e.g., /opt/buildtools/mxe or ~/.cache/mxe
 
 # Output:
 # - dist/dna-messenger-VERSION-windows-x64.zip
-# - build-release/windows-x64/dna_messenger.exe (CLI)
-# - build-release/windows-x64/gui/dna_messenger_gui.exe (GUI)
+# - build-release/windows-x64/gui/dna_messenger_gui.exe
 ```
 
 **MXE Setup (First Time Only):**
@@ -171,7 +171,7 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - Multi-recipient encryption support
 - Contact management (keyserver)
 
-### ✅ Phase 3: CLI Messenger Client (Complete)
+### ✅ Phase 3: CLI Messenger Client (Complete - No Longer Supported)
 - Command-line chat interface
 - PostgreSQL message storage
 - Contact list management
@@ -180,6 +180,8 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - File-based seed phrase restore
 - Auto-login for existing identities
 - Cross-platform support (Linux & Windows)
+
+_Note: CLI messenger is no longer built or maintained. All functionality is available in the GUI application._
 
 ### ✅ Phase 4: Qt Desktop App (Complete)
 - Qt5 GUI with contact list and chat area
@@ -244,6 +246,7 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
   - OpenDHT integration for peer discovery
   - Direct peer-to-peer messaging via TCP
   - 3 public bootstrap nodes (US/EU)
+  - `persistent_bootstrap` binary (Linux only) for running your own DHT bootstrap node
 
 - ✅ **Phase 9.2:** Offline Message Queueing (COMPLETE)
   - DHT-based message storage for offline recipients

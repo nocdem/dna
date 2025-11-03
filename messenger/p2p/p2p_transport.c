@@ -4,7 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <errno.h>
 
 // Platform-specific includes
@@ -198,12 +198,16 @@ static int get_external_ip(char *ip_out, size_t len) {
 /**
  * Compute SHA256 hash
  * Used for DHT keys: key = SHA256(public_key)
+ * Updated to use OpenSSL 3.0 EVP API
  */
 static void sha256_hash(const uint8_t *data, size_t len, uint8_t *hash_out) {
-    SHA256_CTX ctx;
-    SHA256_Init(&ctx);
-    SHA256_Update(&ctx, data, len);
-    SHA256_Final(hash_out, &ctx);
+    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
+    if (!ctx) return;
+
+    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
+    EVP_DigestUpdate(ctx, data, len);
+    EVP_DigestFinal_ex(ctx, hash_out, NULL);
+    EVP_MD_CTX_free(ctx);
 }
 
 /**

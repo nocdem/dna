@@ -4,7 +4,9 @@
 #include "ThemeManager.h"
 #include "cpunk_themes.h"
 #include <QFileInfo>
+#include <QFile>
 #include <QStandardPaths>
+#include <QDebug>
 
 IdentitySelectionDialog::IdentitySelectionDialog(QWidget *parent)
     : QDialog(parent)
@@ -81,10 +83,9 @@ void IdentitySelectionDialog::setupUI()
     mainLayout->addLayout(buttonLayout);
 
     // Help text
-    QLabel *helpLabel = new QLabel("If this is your first time, click \"Create New Identity\" to get started.", this);
+    helpLabel = new QLabel("If this is your first time, click \"Create New Identity\" to get started.", this);
     helpLabel->setAlignment(Qt::AlignCenter);
     helpLabel->setWordWrap(true);
-    helpLabel->setStyleSheet("color: gray; font-size: 10pt;");
     mainLayout->addWidget(helpLabel);
 }
 
@@ -111,12 +112,41 @@ void IdentitySelectionDialog::loadIdentities()
         return;
     }
 
-    // Extract identity names
+    // Extract identity names and verify both key files exist
+    QStringList validIdentities;
+    QStringList incompleteIdentities;
+
     for (const QFileInfo &fileInfo : files) {
         QString filename = fileInfo.fileName();
-        // Remove "-dilithium.pqkey" suffix
-        QString identity = filename.left(filename.length() - 17);
-        identityList->addItem(identity);
+        // Remove "-dilithium.pqkey" suffix (16 characters)
+        QString identity = filename.left(filename.length() - 16);
+
+        // Verify both key files exist
+        QString dilithiumKey = dnaDir + "/" + identity + "-dilithium.pqkey";
+        QString kyberKey = dnaDir + "/" + identity + "-kyber512.pqkey";
+
+        if (QFile::exists(dilithiumKey) && QFile::exists(kyberKey)) {
+            validIdentities << identity;
+            identityList->addItem(identity);
+        } else {
+            incompleteIdentities << identity;
+            qWarning() << "[Identity] Incomplete identity found:" << identity
+                      << "(missing" << (QFile::exists(kyberKey) ? "dilithium" : "kyber512") << "key)";
+        }
+    }
+
+    // Show warning if incomplete identities found
+    if (!incompleteIdentities.isEmpty()) {
+        QString warning = QString("Warning: %1 incomplete identit%2 found: %3\n")
+            .arg(incompleteIdentities.count())
+            .arg(incompleteIdentities.count() == 1 ? "y" : "ies")
+            .arg(incompleteIdentities.join(", "));
+        qWarning() << warning;
+    }
+
+    if (validIdentities.isEmpty()) {
+        infoLabel->setText("No complete identities found. Create a new identity to get started.");
+        return;
     }
 
     if (identityList->count() > 0) {
@@ -179,6 +209,7 @@ void IdentitySelectionDialog::applyTheme()
     CpunkTheme theme = ThemeManager::instance()->currentTheme();
     QString bgColor = (theme == THEME_CPUNK_IO) ? "#0f0f1e" : "#1a0f08";
     QString textColor = (theme == THEME_CPUNK_IO) ? "#ffffff" : "#fff5e6";
+    QString mutedColor = (theme == THEME_CPUNK_IO) ? "#a0a0b0" : "#d4a574";
     QString primaryColor = (theme == THEME_CPUNK_IO) ? "#00d9ff" : "#ff8c42";
     QString hoverColor = (theme == THEME_CPUNK_IO) ? "#00b8d4" : "#ff7028";
 
@@ -186,6 +217,14 @@ void IdentitySelectionDialog::applyTheme()
 
     if (titleLabel) {
         titleLabel->setStyleSheet(QString("font-size: 20pt; font-weight: bold; color: %1;").arg(primaryColor));
+    }
+
+    if (infoLabel) {
+        infoLabel->setStyleSheet(QString("color: %1;").arg(textColor));
+    }
+
+    if (helpLabel) {
+        helpLabel->setStyleSheet(QString("color: %1; font-size: 10pt;").arg(mutedColor));
     }
 
     if (identityList) {

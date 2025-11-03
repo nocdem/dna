@@ -105,6 +105,9 @@ if make -j${CORES}; then
     echo -e "${GREEN} ✓ Build Complete!${NC}"
     echo -e "${GREEN}=========================================${NC}"
     echo ""
+    echo -e "${BLUE}Build date:${NC} ${BUILD_DATE}"
+    echo -e "${BLUE}Git commit:${NC} ${GREEN}${GIT_SHA}${NC}"
+    echo ""
 
     # Show what was built
     echo -e "${BLUE}Built executables:${NC}"

@@ -8,6 +8,7 @@
 #include <QClipboard>
 #include <QApplication>
 #include <QMessageBox>
+#include <QShowEvent>
 
 class SeedPhraseWidget : public QWidget
 {
@@ -31,12 +32,18 @@ signals:
 private slots:
     void onCopyToClipboard();
 
+protected:
+    void showEvent(QShowEvent *event) override;
+
 private:
     void setupUI();
     void updateDisplay();
     void applyTheme();
 
     QGridLayout *gridLayout;
+    QLabel *warningLabel;
+    QLabel *securityWarning;
+    QLabel *numLabels[24];   // Number labels (1-24)
     QLabel *wordLabels[24];  // Word labels (1-24)
     QPushButton *copyButton;
     QString seedPhrase;

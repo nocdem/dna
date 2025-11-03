@@ -9,7 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <openssl/evp.h>
-#include <openssl/sha.h>
 #include <openssl/bio.h>
 #include <openssl/buffer.h>
 #include "qgp_types.h"
@@ -30,7 +29,7 @@ void qgp_hash_from_bytes(qgp_hash_t *hash, const uint8_t *data, size_t len) {
         return;
     }
 
-    SHA256(data, len, hash->hash);
+    EVP_Digest(data, len, hash->hash, NULL, EVP_sha256(), NULL);
 }
 
 /**
