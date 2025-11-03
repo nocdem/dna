@@ -444,17 +444,21 @@ bool CreateIdentityDialog::performKeyGeneration()
     }
 
     progressBar->setValue(3);
-    statusLabel->setText("Registering to keyserver...");
+    statusLabel->setText("Saving keys and registering to DHT keyserver...");
     QApplication::processEvents();
 
-    // Generate and upload keys to PostgreSQL keyserver
-    int result = messenger_generate_keys(ctx, identityBytes.data());
+    // Generate keys from seeds (non-interactive, no password prompts, no QGP files)
+    int result = messenger_generate_keys_from_seeds(ctx, identityBytes.data(),
+                                                     signing_seed, encryption_seed);
+
+    // Securely wipe seeds from memory
+    memset(signing_seed, 0, sizeof(signing_seed));
+    memset(encryption_seed, 0, sizeof(encryption_seed));
+
     if (result != 0) {
         messenger_free(ctx);
         return false;
     }
-
-    // Note: Registration to cpunk.io keyserver is handled by messenger_generate_keys() internally
 
     progressBar->setValue(5);
     statusLabel->setText("Complete!");

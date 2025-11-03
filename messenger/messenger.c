@@ -229,6 +229,158 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     return 0;
 }
 
+int messenger_generate_keys_from_seeds(
+    messenger_context_t *ctx,
+    const char *identity,
+    const uint8_t *signing_seed,
+    const uint8_t *encryption_seed)
+{
+    if (!ctx || !identity || !signing_seed || !encryption_seed) {
+        return -1;
+    }
+
+    // Check if identity already exists in keyserver
+    uint8_t *existing_sign = NULL, *existing_enc = NULL;
+    size_t sign_len = 0, enc_len = 0;
+
+    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
+        free(existing_sign);
+        free(existing_enc);
+        fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
+        fprintf(stderr, "Please choose a different name.\n\n");
+        return -1;
+    }
+
+    // Create ~/.dna directory
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        fprintf(stderr, "Error: Cannot get home directory\n");
+        return -1;
+    }
+
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    // Create directory if needed
+    if (!qgp_platform_is_directory(dna_dir)) {
+        if (qgp_platform_mkdir(dna_dir) != 0) {
+            fprintf(stderr, "Error: Cannot create directory: %s\n", dna_dir);
+            return -1;
+        }
+    }
+
+    // Generate Dilithium3 signing key from seed
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
+
+    qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DILITHIUM3, QGP_KEY_PURPOSE_SIGNING);
+    if (!sign_key) {
+        fprintf(stderr, "Error: Memory allocation failed for signing key\n");
+        return -1;
+    }
+
+    strncpy(sign_key->name, identity, sizeof(sign_key->name) - 1);
+
+    uint8_t *dilithium_pk = calloc(1, QGP_DILITHIUM3_PUBLICKEYBYTES);
+    uint8_t *dilithium_sk = calloc(1, QGP_DILITHIUM3_SECRETKEYBYTES);
+
+    if (!dilithium_pk || !dilithium_sk) {
+        fprintf(stderr, "Error: Memory allocation failed for Dilithium3 buffers\n");
+        free(dilithium_pk);
+        free(dilithium_sk);
+        qgp_key_free(sign_key);
+        return -1;
+    }
+
+    if (qgp_dilithium3_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
+        fprintf(stderr, "Error: Dilithium3 key generation from seed failed\n");
+        free(dilithium_pk);
+        free(dilithium_sk);
+        qgp_key_free(sign_key);
+        return -1;
+    }
+
+    sign_key->public_key = dilithium_pk;
+    sign_key->public_key_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+    sign_key->private_key = dilithium_sk;
+    sign_key->private_key_size = QGP_DILITHIUM3_SECRETKEYBYTES;
+
+    if (qgp_key_save(sign_key, dilithium_path) != 0) {
+        fprintf(stderr, "Error: Failed to save signing key\n");
+        qgp_key_free(sign_key);
+        return -1;
+    }
+
+    printf("✓ Dilithium3 signing key generated from seed\n");
+
+    // Copy dilithium public key for upload before freeing
+    uint8_t dilithium_pk_copy[1952];
+    memcpy(dilithium_pk_copy, dilithium_pk, sizeof(dilithium_pk_copy));
+
+    qgp_key_free(sign_key);
+
+    // Generate Kyber512 encryption key from seed
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s-kyber512.pqkey", dna_dir, identity);
+
+    qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KYBER512, QGP_KEY_PURPOSE_ENCRYPTION);
+    if (!enc_key) {
+        fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
+        return -1;
+    }
+
+    strncpy(enc_key->name, identity, sizeof(enc_key->name) - 1);
+
+    uint8_t *kyber_pk = calloc(1, 800);
+    uint8_t *kyber_sk = calloc(1, 1632);
+
+    if (!kyber_pk || !kyber_sk) {
+        fprintf(stderr, "Error: Memory allocation failed for Kyber512 buffers\n");
+        free(kyber_pk);
+        free(kyber_sk);
+        qgp_key_free(enc_key);
+        return -1;
+    }
+
+    if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
+        fprintf(stderr, "Error: Kyber512 key generation from seed failed\n");
+        free(kyber_pk);
+        free(kyber_sk);
+        qgp_key_free(enc_key);
+        return -1;
+    }
+
+    enc_key->public_key = kyber_pk;
+    enc_key->public_key_size = 800;
+    enc_key->private_key = kyber_sk;
+    enc_key->private_key_size = 1632;
+
+    if (qgp_key_save(enc_key, kyber_path) != 0) {
+        fprintf(stderr, "Error: Failed to save encryption key\n");
+        qgp_key_free(enc_key);
+        return -1;
+    }
+
+    printf("✓ Kyber512 encryption key generated from seed\n");
+
+    // Copy kyber public key for upload before freeing
+    uint8_t kyber_pk_copy[800];
+    memcpy(kyber_pk_copy, kyber_pk, sizeof(kyber_pk_copy));
+
+    qgp_key_free(enc_key);
+
+    // Upload public keys to DHT keyserver
+    if (messenger_store_pubkey(ctx, identity, dilithium_pk_copy, sizeof(dilithium_pk_copy),
+                                kyber_pk_copy, sizeof(kyber_pk_copy)) != 0) {
+        fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
+        return -1;
+    }
+
+    printf("✓ Keys uploaded to DHT keyserver\n");
+    printf("✓ Identity '%s' is now ready to use!\n", identity);
+    return 0;
+}
+
 int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     if (!ctx || !identity) {
         return -1;
