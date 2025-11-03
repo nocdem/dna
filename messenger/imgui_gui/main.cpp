@@ -383,7 +383,7 @@ private:
         ImGui::Spacing();
         
         // Copy button - full width
-        if (ImGui::Button("Copy All Words", ImVec2(-1, 40))) {
+        if (ButtonDark("Copy All Words", ImVec2(-1, 40))) {
             ImGui::SetClipboardText(generated_mnemonic);
         }
         ImGui::Spacing();
