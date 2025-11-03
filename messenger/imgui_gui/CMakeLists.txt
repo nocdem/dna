@@ -24,6 +24,7 @@ set(IMGUI_SOURCES
 # Main application
 add_executable(dna_messenger_imgui
     main.cpp
+    font_awesome.cpp
     ${IMGUI_SOURCES}
 )
 

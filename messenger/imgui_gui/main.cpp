@@ -6,7 +6,7 @@
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
 #include "modal_helper.h"
-#include "IconsFontAwesome6.h"
+#include "font_awesome.h"
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <string.h>
@@ -403,7 +403,7 @@ private:
         ImGui::Spacing();
         
         // Copy button - full width
-        if (ButtonDark("Copy All Words", ImVec2(-1, 40))) {
+        if (ButtonDark(ICON_FA_COPY " Copy All Words", ImVec2(-1, 40))) {
             ImGui::SetClipboardText(generated_mnemonic);
             seed_copied = true;
             seed_copied_timer = 3.0f; // Show message for 3 seconds
@@ -627,7 +627,7 @@ private:
         if (current_view == VIEW_SETTINGS) {
             ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.6f));
         }
-        if (ButtonDark(ICON_FA_GEAR "\nSettings", ImVec2(btn_width, 60))) {
+        if (ButtonDark(ICON_FA_COG "\nSettings", ImVec2(btn_width, 60))) {
             current_view = VIEW_SETTINGS;
             selected_contact = -1;
         }
@@ -735,7 +735,7 @@ private:
         if (ButtonDark(ICON_FA_WALLET " Wallet", ImVec2(-1, 40))) {
             current_view = VIEW_WALLET;
         }
-        if (ButtonDark(ICON_FA_GEAR " Settings", ImVec2(-1, 40))) {
+        if (ButtonDark(ICON_FA_COG " Settings", ImVec2(-1, 40))) {
             current_view = VIEW_SETTINGS;
         }
         
@@ -1009,7 +1009,7 @@ private:
         
         // Header
         ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
-        ImGui::Text(ICON_FA_GEAR " Settings");
+        ImGui::Text(ICON_FA_COG " Settings");
         ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         ImGui::Separator();
