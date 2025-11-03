@@ -10,7 +10,15 @@
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include <unistd.h>
+
+#ifdef _WIN32
+    #include <windows.h>
+    #include <shlobj.h>
+    #define MAX_PATH 260
+#else
+    #include <unistd.h>
+    #include <pwd.h>
+#endif
 
 // Default TTL: 7 days = 604800 seconds
 #define DEFAULT_TTL_SECONDS 604800
@@ -31,27 +39,49 @@ static const char *CACHE_SCHEMA =
 
 // Helper: Get default cache path (~/.dna/keyserver_cache.db)
 static void get_default_cache_path(char *path_out, size_t path_size) {
-    const char *home = getenv("HOME");
-    if (!home) {
-        home = getenv("USERPROFILE");  // Windows fallback
-        if (!home) {
-            home = "/tmp";  // Last resort fallback
-        }
+#ifdef _WIN32
+    // Windows: Use SHGetFolderPathA to get AppData
+    char appdata[MAX_PATH];
+    if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK) {
+        fprintf(stderr, "[CACHE] Failed to get AppData path\n");
+        snprintf(path_out, path_size, "C:\\Temp\\.dna\\keyserver_cache.db");
+        return;
     }
 
-    snprintf(path_out, path_size, "%s/.dna", home);
-
-    // Create ~/.dna directory if it doesn't exist
+    // Create .dna directory
+    char dna_dir[MAX_PATH];
+    snprintf(dna_dir, sizeof(dna_dir), "%s\\.dna", appdata);
     struct stat st = {0};
-    if (stat(path_out, &st) == -1) {
-#ifdef _WIN32
-        mkdir(path_out);  // Windows mkdir() takes only 1 argument
+    if (stat(dna_dir, &st) == -1) {
+        mkdir(dna_dir);  // Windows mkdir() takes only 1 argument
+    }
+
+    snprintf(path_out, path_size, "%s\\.dna\\keyserver_cache.db", appdata);
 #else
-        mkdir(path_out, 0700);  // Unix mkdir() takes mode
-#endif
+    // Linux/Unix: Use HOME environment variable
+    const char *home = getenv("HOME");
+    if (!home) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) {
+            home = pw->pw_dir;
+        }
+    }
+    if (!home) {
+        fprintf(stderr, "[CACHE] Failed to get home directory\n");
+        snprintf(path_out, path_size, "/tmp/.dna/keyserver_cache.db");
+        return;
+    }
+
+    // Create .dna directory
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+    struct stat st = {0};
+    if (stat(dna_dir, &st) == -1) {
+        mkdir(dna_dir, 0700);  // Unix mkdir() takes mode
     }
 
     snprintf(path_out, path_size, "%s/.dna/keyserver_cache.db", home);
+#endif
 }
 
 // Initialize keyserver cache
