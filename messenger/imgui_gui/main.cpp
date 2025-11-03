@@ -65,6 +65,8 @@ public:
         selected_identity_idx = -1;
         create_identity_step = STEP_NAME;
         seed_confirmed = false;
+        seed_copied = false;
+        seed_copied_timer = 0.0f;
         memset(new_identity_name, 0, sizeof(new_identity_name));
         memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
     }
@@ -123,6 +125,8 @@ private:
     CreateIdentityStep create_identity_step;
     char generated_mnemonic[512];
     bool seed_confirmed;
+    bool seed_copied;
+    float seed_copied_timer;
     
     std::vector<Contact> contacts;
     std::vector<Message> messages;
@@ -388,7 +392,21 @@ private:
         // Copy button - full width
         if (ButtonDark("Copy All Words", ImVec2(-1, 40))) {
             ImGui::SetClipboardText(generated_mnemonic);
+            seed_copied = true;
+            seed_copied_timer = 3.0f; // Show message for 3 seconds
         }
+        
+        // Show success message if recently copied
+        if (seed_copied && seed_copied_timer > 0.0f) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f)); // Green
+            ImGui::Text("✓ Words copied to clipboard!");
+            ImGui::PopStyleColor();
+            seed_copied_timer -= ImGui::GetIO().DeltaTime;
+            if (seed_copied_timer <= 0.0f) {
+                seed_copied = false;
+            }
+        }
+        
         ImGui::Spacing();
         
         // Display seed phrase in a bordered box with proper alignment
