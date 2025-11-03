@@ -200,6 +200,7 @@ add_library(dna_lib STATIC
     dna_api.c
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
+    messenger/keyserver_register.c
     ${COMMON_SOURCES}
 )
 

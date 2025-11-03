@@ -14,14 +14,18 @@
 #ifndef _WIN32
 #include <dirent.h>
 #include <sys/types.h>
+#include <sys/stat.h>
 #else
 #include <windows.h>
+#include <direct.h>
 #endif
 
 extern "C" {
 #include "../dna_api.h"
 #include "../messenger_p2p.h"
+#include "../messenger.h"
 #include "../wallet.h"
+#include "../messenger/keyserver_register.h"
 }
 
 struct Message {
@@ -275,10 +279,49 @@ private:
     }
     
     void createIdentity(const char* name) {
-        // TODO: Call DNA API to create identity
+        // Call DNA API to create identity with key generation
         printf("Creating identity: %s\n", name);
         
-        // For now, just add to list and load it
+        // Ensure ~/.dna directory exists
+        const char* home = getenv("HOME");
+        if (!home) {
+            printf("[ERROR] HOME environment variable not set\n");
+            return;
+        }
+        
+        std::string dna_dir = std::string(home) + "/.dna";
+        
+#ifdef _WIN32
+        _mkdir(dna_dir.c_str());
+#else
+        mkdir(dna_dir.c_str(), 0700);
+#endif
+        
+        // Generate keys using messenger API
+        messenger_context_t *ctx = messenger_init(name);
+        if (!ctx) {
+            printf("[ERROR] Failed to initialize messenger context\n");
+            return;
+        }
+        
+        // Generate and upload keys to keyserver
+        int result = messenger_generate_keys(ctx, name);
+        if (result != 0) {
+            printf("[ERROR] Failed to generate keys\n");
+            messenger_free(ctx);
+            return;
+        }
+        
+        printf("[SUCCESS] Keys generated successfully\n");
+        
+        // Register to cpunk.io keyserver (non-critical)
+        if (register_to_keyserver(name) != 0) {
+            printf("[WARNING] Failed to register to cpunk.io keyserver\n");
+        }
+        
+        messenger_free(ctx);
+        
+        // Add to list and load
         identities.push_back(name);
         current_identity = name;
         loadIdentity(current_identity);
