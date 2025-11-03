@@ -18,7 +18,12 @@ public:
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 12));
         ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0x0f/255.0f, 0x11/255.0f, 0x13/255.0f, 0.8f));
         
-        bool result = ImGui::BeginPopupModal(name, p_open, flags | ImGuiWindowFlags_AlwaysAutoResize);
+        // Only add AlwaysAutoResize if NoResize is not specified
+        if (!(flags & ImGuiWindowFlags_NoResize)) {
+            flags |= ImGuiWindowFlags_AlwaysAutoResize;
+        }
+        
+        bool result = ImGui::BeginPopupModal(name, p_open, flags);
         
         if (result) {
             // Pop styles inside the modal
