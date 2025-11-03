@@ -210,18 +210,8 @@ private:
             ImGui::OpenPopup("Create New Identity");
         }
         
-        // Create identity popup - multi-step wizard
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.5f, 0.5f));
-        ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 12));
-        ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0x0f/255.0f, 0x11/255.0f, 0x13/255.0f, 0.8f));
-        
-        if (ImGui::BeginPopupModal("Create New Identity", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
-            ImGui::PopStyleVar(3);
-            ImGui::PopStyleColor();
-            
-            ImGui::Spacing();
-            
+        // Create identity popup - multi-step wizard (using CenteredModal helper)
+        if (CenteredModal::Begin("Create New Identity")) {
             if (create_identity_step == STEP_NAME) {
                 renderCreateIdentityStep1();
             } else if (create_identity_step == STEP_SEED_PHRASE) {
@@ -230,10 +220,7 @@ private:
                 renderCreateIdentityStep3();
             }
             
-            ImGui::EndPopup();
-        } else {
-            ImGui::PopStyleVar(3);
-            ImGui::PopStyleColor();
+            CenteredModal::End();
         }
         
         ImGui::End();
