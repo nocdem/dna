@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-03
+**Last Updated:** 2025-11-04
 **Project:** DNA Messenger (Post-Quantum Encrypted Messenger)
-**Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2, 9.3 (PostgreSQL Migration) Complete
+**Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2, 9.3, 9.4 Complete
 
 ---
 
@@ -316,15 +316,56 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 - `dht/deploy-bootstrap.sh` (130+ lines)
 - `dht/monitor-bootstrap.sh` (200+ lines)
 
-**Files Modified:**
-- `CMakeLists.txt` - Removed PostgreSQL, added keyserver_cache.c
-- `dht/CMakeLists.txt` - Added dht_groups.c
-- `messenger.c` - Integrated keyserver cache
-- `messenger_stubs.c` - Completely rewritten (570 lines)
-- `p2p/p2p_transport.h` - Added getter for DHT context
-- `p2p/p2p_transport.c` - Implemented getter
+### Phase 9.4: DHT-based Keyserver with Signed Reverse Mapping (COMPLETE)
+**Status:** ✅ Complete (2025-11-04)
 
-**Result:** DNA Messenger is now fully decentralized with NO PostgreSQL dependencies.
+**What Was Implemented:**
+1. **Signed Reverse Mapping Storage** (`dht_keyserver.c`)
+   - Forward mapping: `SHA256(identity + ":pubkey")` → signed public key entry (existing)
+   - Reverse mapping: `SHA256(fingerprint + ":reverse")` → signed identity entry (NEW)
+   - Reverse entry contains: dilithium_pubkey, identity, timestamp, fingerprint, signature
+   - Signature covers: `dilithium_pubkey || identity || timestamp` (prevents spoofing)
+   - Network byte order for cross-platform compatibility
+
+2. **dht_keyserver_reverse_lookup() Function** (`dht_keyserver.c`)
+   - Fetches reverse mapping from DHT
+   - Verifies fingerprint matches pubkey (prevents pubkey substitution)
+   - Verifies Dilithium3 signature (prevents identity spoofing)
+   - Returns: 0 (success), -1 (error), -2 (not found), -3 (verification failed)
+
+3. **P2P Sender Identification** (`messenger_p2p.c`)
+   - Integrated reverse lookup into `extract_sender_from_encrypted()`
+   - Two-tier lookup: contacts cache first (fast), then DHT reverse mapping (fallback)
+   - Extracts fingerprint from message signature
+   - Queries DHT when sender not in contacts
+   - Displays actual identity instead of "unknown"
+
+**Security Features:**
+- Signed reverse mappings prevent identity spoofing
+- Fingerprint verification prevents pubkey substitution
+- Cross-platform compatible with network byte order
+- Non-critical failures (reverse mapping published as warning, not error)
+
+**Use Case:**
+- Alice publishes keys (creates forward + reverse mapping in DHT)
+- Bob sends message to Alice WITHOUT adding her as contact
+- Alice receives message, extracts fingerprint, queries DHT reverse mapping
+- Message displays sender as "Bob" instead of "unknown"
+
+**Files Modified:**
+- `dht/dht_keyserver.c` - Added signed reverse mapping storage and lookup (150+ lines)
+- `dht/dht_keyserver.h` - Added reverse lookup function declaration
+- `messenger_p2p.c` - Integrated reverse lookup into message receive flow (40+ lines)
+
+**Key Technical Decisions:**
+- SHA256(fingerprint + ":reverse") for DHT reverse mapping keys
+- JSON serialization for reverse mapping entries
+- Dilithium3 signature over (pubkey || identity || timestamp)
+- Two-tier lookup for performance (contacts → DHT)
+
+**Result:** Sender identification works without pre-adding contacts, enabling seamless P2P communication while maintaining strong security guarantees.
+
+---
 
 ### Key Technical Decisions
 - **Single queue per recipient:** Append all messages to one DHT entry (workaround for OpenDHT C wrapper limitations)

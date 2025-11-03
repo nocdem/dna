@@ -243,7 +243,7 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
   - Theme support across all wallet dialogs
   - Direct integration with local Cellframe node via RPC
 
-### 🚧 Phase 9: Distributed P2P Architecture (In Progress)
+### ✅ Phase 9: Distributed P2P Architecture (COMPLETE)
 - ✅ **Phase 9.1:** P2P Transport Layer (COMPLETE)
   - OpenDHT integration for peer discovery
   - Direct peer-to-peer messaging via TCP
@@ -256,8 +256,17 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
   - Binary serialization with SHA256 keys
   - 2-minute automatic polling in GUI
 
-- 📋 **Phase 9.3:** Group P2P messaging (planned)
-- 📋 **Phase 9.4:** Distributed DHT keyserver (planned)
+- ✅ **Phase 9.3:** PostgreSQL → SQLite Migration (COMPLETE)
+  - Local SQLite message storage (no centralized DB)
+  - DHT-based groups with UUID v4 + SHA256 keys
+  - Local SQLite cache for offline access
+  - Full CRUD operations for groups
+
+- ✅ **Phase 9.4:** DHT-based Keyserver with Signed Reverse Mapping (COMPLETE)
+  - Cryptographically signed reverse mappings (fingerprint → identity)
+  - Sender identification without pre-added contacts
+  - Cross-platform signature verification
+  - Prevents identity spoofing attacks
 
 ### 📋 Phase 10: DNA Board - Censorship-Resistant Social Media (Planned)
 **True free speech platform** built on cpunk validator network:

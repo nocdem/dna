@@ -418,21 +418,48 @@ Complete migration from centralized PostgreSQL to local SQLite storage:
 
 **Result:** DNA Messenger is now fully decentralized with NO centralized database dependencies.
 
-#### Phase 9.4: Local Cache & Sync (4 weeks)
+#### Phase 9.4: DHT-based Keyserver with Signed Reverse Mapping ✅ COMPLETE
+**Completed:** 2025-11-04
+
+Implemented cryptographically signed reverse mappings for sender identification without requiring pre-added contacts:
+
+- [x] **Forward Mapping:** `SHA256(identity + ":pubkey")` → signed public key entry
+- [x] **Reverse Mapping:** `SHA256(fingerprint + ":reverse")` → signed identity entry
+  - Stores: dilithium_pubkey, identity, timestamp, fingerprint, signature
+  - Signature covers: dilithium_pubkey || identity || timestamp
+  - Prevents identity spoofing attacks
+- [x] **dht_keyserver_reverse_lookup():** Fetches and verifies reverse mappings
+  - Verifies fingerprint matches pubkey (prevents substitution)
+  - Verifies Dilithium3 signature (prevents spoofing)
+  - Returns: 0 (success), -1 (error), -2 (not found), -3 (verification failed)
+- [x] **Sender Identification:** Integrated into P2P message receive flow
+  - Two-tier lookup: contacts cache first, then DHT reverse mapping
+  - Extracts fingerprint from message signature
+  - Queries DHT when sender not in contacts
+  - Displays actual identity instead of "unknown"
+- [x] **Cross-platform Compatibility:** Network byte order for timestamps
+- [x] **Security:** Signed mappings prevent identity spoofing and pubkey substitution
+
+**Use Case:** Alice publishes keys (forward + reverse). Bob sends message to Alice WITHOUT adding her as contact. Alice receives message and DHT reverse lookup identifies "Bob" from message signature.
+
+**Files Modified:**
+- `dht/dht_keyserver.c` - Added signed reverse mapping storage and lookup (150+ lines)
+- `dht/dht_keyserver.h` - Added reverse lookup function declaration
+- `messenger_p2p.c` - Integrated reverse lookup into message receive flow (40+ lines)
+
+#### Phase 9.5: Local Cache & Sync (Planned)
 - [ ] SQLite encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM)
 - [ ] Background sync protocol (local ↔ DHT)
 - [ ] Multi-device message synchronization
 - [ ] Offline mode with automatic sync on reconnect
 - [ ] Incremental sync for large histories
 
-#### Phase 9.5: Distributed DHT Keyserver (4 weeks)
-- [ ] Store public keys in DHT (replicated)
-- [ ] Replace centralized HTTP keyserver
-- [ ] Self-signed key verification (TOFU model)
+#### Phase 9.6: DHT Keyserver Enhancements (Planned)
 - [ ] Key rotation and update protocol
 - [ ] Optional: Blockchain anchoring for tamper-proofing
+- [ ] DHT replication monitoring
 
-#### Phase 9.6: Integration & Testing (4 weeks)
+#### Phase 9.7: Integration & Testing (Planned)
 - [ ] End-to-end testing with 5-10 peers
 - [ ] Network resilience testing (peer churn)
 - [ ] Performance optimization
@@ -792,6 +819,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - **Phase 9.1:** P2P Transport Layer (OpenDHT + TCP)
 - **Phase 9.2:** Offline Message Queueing (DHT storage with 7-day TTL)
 - **Phase 9.3:** PostgreSQL → SQLite Migration (Fully decentralized storage)
+- **Phase 9.4:** DHT-based Keyserver with Signed Reverse Mapping
 
 ### 🚧 In Progress
 - **Phase 5:** Web-Based Messenger (active on `feature/web-messenger` branch)
@@ -799,7 +827,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 ### 📋 Planned
 - **Phase 6:** Mobile Applications
 - **Phase 7:** Advanced Security Features
-- **Phase 9.4-9.6:** Multi-device sync, DHT keyserver, integration testing
+- **Phase 9.5-9.7:** Multi-device sync, DHT keyserver enhancements, integration testing
 - **Phase 10:** DNA Board (Censorship-resistant social media)
 - **Phase 11:** Post-Quantum Voice/Video Calls
 - **Phase 12+:** Future Enhancements
@@ -823,6 +851,11 @@ DNA Messenger is in active development. Contributions welcome!
 **Current Version:** 0.1.120+
 **Next Milestone:** Web Messenger (Phase 5)
 **Recent Achievements:**
+- ✅ **DHT-based Keyserver with Signed Reverse Mapping!** (Phase 9.4 - 2025-11-04)
+  - Cryptographically signed reverse mappings (fingerprint → identity)
+  - Sender identification without pre-added contacts
+  - Prevents identity spoofing attacks
+  - Cross-platform signature verification
 - ✅ **PostgreSQL → SQLite Migration Complete!** (Phase 9.3 - 2025-11-03)
   - Fully decentralized storage (NO centralized database)
   - DHT-based groups with UUID v4 + SHA256 keys
