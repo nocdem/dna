@@ -396,17 +396,6 @@ private:
             seed_copied_timer = 3.0f; // Show message for 3 seconds
         }
         
-        // Show success message if recently copied
-        if (seed_copied && seed_copied_timer > 0.0f) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f)); // Green
-            ImGui::Text("✓ Words copied to clipboard!");
-            ImGui::PopStyleColor();
-            seed_copied_timer -= ImGui::GetIO().DeltaTime;
-            if (seed_copied_timer <= 0.0f) {
-                seed_copied = false;
-            }
-        }
-        
         ImGui::Spacing();
         
         // Display seed phrase in a bordered box with proper alignment
@@ -446,6 +435,18 @@ private:
         ImGui::Spacing();
         ImGui::Checkbox("I have written down my 24-word seed phrase securely", &seed_confirmed);
         ImGui::Spacing();
+        
+        // Show success message if recently copied (above buttons)
+        if (seed_copied && seed_copied_timer > 0.0f) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f)); // Green
+            ImGui::Text("✓ Words copied to clipboard!");
+            ImGui::PopStyleColor();
+            seed_copied_timer -= ImGui::GetIO().DeltaTime;
+            if (seed_copied_timer <= 0.0f) {
+                seed_copied = false;
+            }
+        }
+        
         ImGui::Spacing();
         
         // Center buttons
