@@ -82,8 +82,9 @@ static int load_my_dilithium_pubkey(
         return -1;
     }
 
-    // Skip private key part (4016 bytes) and read public key (1952 bytes)
-    fseek(f, 4016, SEEK_SET);
+    // Skip header (276 bytes) and read public key (1952 bytes)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 1952 bytes][PRIVATE_KEY: 4032 bytes]
+    fseek(f, 276, SEEK_SET);
 
     uint8_t *pubkey = malloc(1952);
     if (!pubkey) {

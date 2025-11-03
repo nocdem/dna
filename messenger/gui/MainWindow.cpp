@@ -2639,7 +2639,8 @@ void MainWindow::onPublishKeys() {
     QString dilithiumPath = homeDir + "/.dna/" + currentIdentity + "-dilithium3.pqkey";
     QString kyberPath = homeDir + "/.dna/" + currentIdentity + "-kyber512.pqkey";
 
-    // Load Dilithium public key (skip first 4016 bytes private key, read next 1952 bytes public key)
+    // Load Dilithium public key (skip 276 byte header, then read 1952 bytes public key)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 1952 bytes][PRIVATE_KEY: 4032 bytes]
     QFile dilithiumFile(dilithiumPath);
     if (!dilithiumFile.open(QIODevice::ReadOnly)) {
         QMessageBox::critical(
@@ -2651,7 +2652,7 @@ void MainWindow::onPublishKeys() {
         return;
     }
 
-    dilithiumFile.seek(4016);  // Skip private key
+    dilithiumFile.seek(276);  // Skip header (qgp_privkey_file_header_t = 276 bytes)
     QByteArray dilithiumPubkey = dilithiumFile.read(1952);
     dilithiumFile.close();
 
@@ -2665,7 +2666,8 @@ void MainWindow::onPublishKeys() {
         return;
     }
 
-    // Load Kyber public key (skip first 1632 bytes private key, read next 800 bytes public key)
+    // Load Kyber public key (skip 276 byte header, then read 800 bytes public key)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 800 bytes][PRIVATE_KEY: 1632 bytes]
     QFile kyberFile(kyberPath);
     if (!kyberFile.open(QIODevice::ReadOnly)) {
         QMessageBox::critical(
@@ -2677,7 +2679,7 @@ void MainWindow::onPublishKeys() {
         return;
     }
 
-    kyberFile.seek(1632);  // Skip private key
+    kyberFile.seek(276);  // Skip header (qgp_privkey_file_header_t = 276 bytes)
     QByteArray kyberPubkey = kyberFile.read(800);
     kyberFile.close();
 
