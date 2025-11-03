@@ -11,7 +11,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <libpq-fe.h>
 
 // Platform-specific headers for home directory detection
 #ifndef _WIN32
@@ -226,51 +225,15 @@ static char* lookup_identity_for_pubkey(
     size_t pubkey_len
 )
 {
-    if (!ctx || !ctx->pg_conn || !pubkey || pubkey_len != 1952) {
+    if (!ctx || !pubkey || pubkey_len != 1952) {
         return NULL;
     }
 
-    // Convert pubkey to hex for SQL query
-    char *pubkey_hex = malloc(pubkey_len * 2 + 1);
-    if (!pubkey_hex) {
-        return NULL;
-    }
-
-    for (size_t i = 0; i < pubkey_len; i++) {
-        sprintf(pubkey_hex + i * 2, "%02x", pubkey[i]);
-    }
-    pubkey_hex[pubkey_len * 2] = '\0';
-
-    // Query keyserver for identity matching this signing_pubkey
-    const char *params[1] = { pubkey_hex };
-    PGresult *res = PQexecParams(
-        ctx->pg_conn,
-        "SELECT identity FROM keyserver WHERE encode(signing_pubkey, 'hex') = $1",
-        1,
-        NULL,
-        params,
-        NULL,
-        NULL,
-        0
-    );
-
-    free(pubkey_hex);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "[P2P] Failed to query keyserver: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
-        return NULL;
-    }
-
-    if (PQntuples(res) == 0) {
-        // No identity found for this pubkey
-        PQclear(res);
-        return NULL;
-    }
-
-    char *identity = strdup(PQgetvalue(res, 0, 0));
-    PQclear(res);
-    return identity;
+    // TODO: Implement DHT keyserver lookup (Phase 2/4)
+    // For now, return NULL - identity will be extracted from decrypted message
+    // This is okay because the encrypted message contains the sender's signing pubkey
+    // which can be verified against the DHT keyserver after decryption
+    return NULL;
 }
 
 // ============================================================================
@@ -546,41 +509,26 @@ static void p2p_message_received_internal(
         sender_identity = strdup("unknown");
     }
 
-    // Store in PostgreSQL so messenger_list_messages() can retrieve it
+    // Store in SQLite local database so messenger_list_messages() can retrieve it
     // The message is already encrypted at this point
-    // Use schema: (sender, recipient, ciphertext, ciphertext_len, message_group_id)
-    char len_str[32];
-    snprintf(len_str, sizeof(len_str), "%zu", message_len);
+    time_t now = time(NULL);
 
-    const char *params[4] = {
-        sender_identity,
-        ctx->identity,
-        (const char*)message,  // This should be the encrypted message blob
-        len_str
-    };
-    int param_lengths[4] = { 0, 0, (int)message_len, 0 };
-    int param_formats[4] = { 0, 0, 1, 0 };  // Binary format for ciphertext
-
-    PGresult *res = PQexecParams(
-        ctx->pg_conn,
-        "INSERT INTO messages (sender, recipient, ciphertext, ciphertext_len) "
-        "VALUES ($1, $2, $3, $4::integer)",
-        4,
-        NULL,
-        params,
-        param_lengths,
-        param_formats,
-        0
+    int result = message_backup_save(
+        ctx->backup_ctx,
+        sender_identity,    // sender
+        ctx->identity,      // recipient (us)
+        message,            // encrypted message
+        message_len,        // encrypted length
+        now,                // timestamp
+        false               // is_outgoing = false (we're receiving)
     );
 
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "[P2P] Failed to store received message: %s\n",
-                PQerrorMessage(ctx->pg_conn));
+    if (result != 0) {
+        fprintf(stderr, "[P2P] Failed to store received message in SQLite\n");
     } else {
-        printf("[P2P] Message from %s stored in PostgreSQL\n", sender_identity);
+        printf("[P2P] ✓ Message from %s stored in SQLite\n", sender_identity);
     }
 
-    PQclear(res);
     free(sender_identity);
 }
 

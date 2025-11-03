@@ -1176,35 +1176,46 @@ void MainWindow::checkForNewMessages() {
         return;
     }
 
-    // Query for new UNREAD messages since lastCheckedMessageId
-    char id_str[32];
-    snprintf(id_str, sizeof(id_str), "%d", lastCheckedMessageId);
+    // Get all messages from SQLite for current user
+    backup_message_t *all_messages = NULL;
+    int all_count = 0;
 
-    const char *query =
-        "SELECT id, sender, created_at, status "
-        "FROM messages "
-        "WHERE recipient = $1 AND id > $2 AND status != 'read' "
-        "ORDER BY id ASC";
-
-    const char *params[2] = {
-        currentIdentity.toUtf8().constData(),
-        id_str
-    };
-
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        PQclear(res);
+    int result = message_backup_search_by_identity(ctx->backup_ctx,
+                                                     currentIdentity.toUtf8().constData(),
+                                                     &all_messages,
+                                                     &all_count);
+    if (result != 0) {
+        fprintf(stderr, "[GUI] Failed to fetch messages from SQLite\n");
         return;
     }
 
-    int count = PQntuples(res);
+    // Filter for new UNREAD incoming messages since lastCheckedMessageId
+    for (int i = 0; i < all_count; i++) {
+        // Only process incoming messages (where we are recipient)
+        if (strcmp(all_messages[i].recipient, currentIdentity.toUtf8().constData()) != 0) {
+            continue;
+        }
 
-    for (int i = 0; i < count; i++) {
-        int msgId = atoi(PQgetvalue(res, i, 0));
-        QString sender = QString::fromUtf8(PQgetvalue(res, i, 1));
-        QString timestamp = QString::fromUtf8(PQgetvalue(res, i, 2));
-        QString status = QString::fromUtf8(PQgetvalue(res, i, 3));
+        // Only process messages newer than lastCheckedMessageId
+        if (all_messages[i].id <= lastCheckedMessageId) {
+            continue;
+        }
+
+        // Only process unread messages
+        if (all_messages[i].read) {
+            continue;
+        }
+
+        int msgId = all_messages[i].id;
+        QString sender = QString::fromUtf8(all_messages[i].sender);
+
+        // Format timestamp
+        struct tm *tm_info = localtime(&all_messages[i].timestamp);
+        char timestamp_str[32];
+        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+        QString timestamp = QString::fromUtf8(timestamp_str);
+
+        QString status = all_messages[i].read ? "read" : (all_messages[i].delivered ? "delivered" : "sent");
 
         if (msgId > lastCheckedMessageId) {
             lastCheckedMessageId = msgId;
@@ -1215,7 +1226,7 @@ void MainWindow::checkForNewMessages() {
         printf("[DELIVERY] Message ID %d marked as delivered (result: %d)\n", msgId, markResult);
 
         // Only notify if message is not already read
-        if (status != "read") {
+        if (!all_messages[i].read) {
             // Play notification sound
             notificationSound->play();
 
@@ -1240,7 +1251,7 @@ void MainWindow::checkForNewMessages() {
         }
     }
 
-    PQclear(res);
+    message_backup_free_messages(all_messages, all_count);
 }
 
 void MainWindow::checkForStatusUpdates() {
@@ -1249,33 +1260,39 @@ void MainWindow::checkForStatusUpdates() {
         return;
     }
 
-    // Query for detailed status updates on sent messages in current conversation
-    const char *query =
-        "SELECT id, status, delivered_at, read_at "
-        "FROM messages "
-        "WHERE sender = $1 AND recipient = $2 "
-        "AND status IN ('delivered', 'read') "
-        "ORDER BY id DESC LIMIT 5";
+    // Get conversation from SQLite
+    backup_message_t *messages = NULL;
+    int count = 0;
 
-    const char *params[2] = {
-        currentIdentity.toUtf8().constData(),
-        currentContact.toUtf8().constData()
-    };
-
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        PQclear(res);
+    int result = message_backup_get_conversation(ctx->backup_ctx,
+                                                   currentContact.toUtf8().constData(),
+                                                   &messages,
+                                                   &count);
+    if (result != 0) {
+        fprintf(stderr, "[GUI] Failed to fetch conversation from SQLite\n");
         return;
     }
 
+    // Check for delivered or read status on our sent messages (where we are sender)
+    int status_update_count = 0;
+    for (int i = count - 1; i >= 0 && status_update_count < 5; i--) {
+        // Only check messages we sent (sender = current identity)
+        if (strcmp(messages[i].sender, currentIdentity.toUtf8().constData()) != 0) {
+            continue;
+        }
+
+        // Only count messages that have been delivered or read
+        if (messages[i].delivered || messages[i].read) {
+            status_update_count++;
+        }
+    }
+
     // Silently refresh conversation to update checkmarks if there were any updates
-    int count = PQntuples(res);
-    if (count > 0) {
+    if (status_update_count > 0) {
         loadConversation(currentContact);
     }
 
-    PQclear(res);
+    message_backup_free_messages(messages, count);
 }
 
 void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {

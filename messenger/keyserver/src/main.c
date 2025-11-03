@@ -16,17 +16,17 @@
 #include <microhttpd.h>
 
 // API handler declarations
-enum MHD_Result api_health_handler(struct MHD_Connection *connection, PGconn *db_conn);
-enum MHD_Result api_list_handler(struct MHD_Connection *connection, PGconn *db_conn, const char *url);
-enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, PGconn *db_conn, const char *identity);
-enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *db_conn,
+enum MHD_Result api_health_handler(struct MHD_Connection *connection, sqlite3 *db_conn);
+enum MHD_Result api_list_handler(struct MHD_Connection *connection, sqlite3 *db_conn, const char *url);
+enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, sqlite3 *db_conn, const char *identity);
+enum MHD_Result api_register_handler(struct MHD_Connection *connection, sqlite3 *db_conn,
                                       const char *upload_data, size_t upload_data_size);
-enum MHD_Result api_update_handler(struct MHD_Connection *connection, PGconn *db_conn,
+enum MHD_Result api_update_handler(struct MHD_Connection *connection, sqlite3 *db_conn,
                                     const char *upload_data, size_t upload_data_size);
 
 // Global state
 static struct MHD_Daemon *http_daemon = NULL;
-static PGconn *db_conn = NULL;
+static sqlite3 *db_conn = NULL;
 static volatile sig_atomic_t running = 1;
 
 // Logging
@@ -175,7 +175,7 @@ int main(int argc, char *argv[]) {
     printf("\n");
 
     // Connect to database
-    LOG_INFO("Connecting to PostgreSQL...");
+    LOG_INFO("Connecting to SQLite database...");
     db_conn = db_connect(&g_config);
     if (!db_conn) {
         LOG_ERROR("Failed to connect to database");

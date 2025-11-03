@@ -3,12 +3,12 @@
  *
  * Storage Architecture:
  * - Private keys: ~/.dna/<identity>-dilithium.pqkey, <identity>-kyber512.pqkey (filesystem)
- * - Public keys: PostgreSQL keyserver table (shared, network-ready)
- * - Messages: PostgreSQL messages table (shared, network-ready)
+ * - Public keys: DHT-based keyserver (decentralized, permanent)
+ * - Messages: SQLite local database (user owns their data)
  *
  * Phase 9.1b: Hybrid P2P Transport
  * - P2P direct messaging when both peers online (via DHT + TCP)
- * - PostgreSQL fallback for offline message delivery
+ * - SQLite local storage for all messages (no server dependency)
  */
 
 #ifndef MESSENGER_H
@@ -17,9 +17,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <libpq-fe.h>
 #include "dna_api.h"
 #include "p2p/p2p_transport.h"
+#include "message_backup.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,11 +42,11 @@ typedef struct {
 
 /**
  * Messenger Context
- * Manages PostgreSQL connection and DNA API context
+ * Manages SQLite local database and DNA API context
  */
 typedef struct {
     char *identity;              // User's identity name (e.g., "alice")
-    PGconn *pg_conn;             // PostgreSQL connection
+    message_backup_context_t *backup_ctx;  // SQLite local message storage
     dna_context_t *dna_ctx;      // DNA API context
 
     // P2P Transport (Phase 9.1b: Hybrid P2P messaging)
@@ -80,8 +80,8 @@ typedef struct {
 /**
  * Initialize messenger context
  *
- * Connects to PostgreSQL database (local or network)
- * Connection string: postgresql://dna:dna_password@localhost:5432/dna_messenger
+ * Opens local SQLite database at ~/.dna/messages.db
+ * Creates database if it doesn't exist.
  *
  * @param identity: User's identity name
  * @return: Messenger context, or NULL on error

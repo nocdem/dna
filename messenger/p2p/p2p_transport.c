@@ -572,6 +572,13 @@ void p2p_transport_free(p2p_transport_t *ctx) {
     free(ctx);
 }
 
+dht_context_t* p2p_transport_get_dht_context(p2p_transport_t *ctx) {
+    if (!ctx) {
+        return NULL;
+    }
+    return ctx->dht;
+}
+
 // ============================================================================
 // Peer Discovery (DHT-based)
 // ============================================================================

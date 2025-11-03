@@ -79,8 +79,8 @@ git clone https://github.com/mxe/mxe.git ~/.cache/mxe
 ### Linux (Manual Build from Source)
 
 ```bash
-# Install dependencies
-sudo apt install cmake gcc libssl-dev libpq-dev libcurl4-openssl-dev qtbase5-dev qtmultimedia5-dev
+# Install dependencies (no PostgreSQL required - uses local SQLite)
+sudo apt install cmake gcc libssl-dev libsqlite3-dev libcurl4-openssl-dev qtbase5-dev qtmultimedia5-dev libopendht-dev
 
 # Build
 git clone https://github.com/nocdem/dna-messenger.git
@@ -142,14 +142,16 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ Persistent group chats with member management
 - ✅ 24-word BIP39 recovery phrases
 - ✅ Cross-platform (Linux & Windows)
-- ✅ Shared keyserver at ai.cpunk.io
+- ✅ Local SQLite storage (no server required for messages)
+- ✅ DHT-based decentralized groups (OpenDHT)
+- ✅ Keyserver cache (7-day TTL, local SQLite)
 - ✅ Auto-update mechanism
 - ✅ Theme switching (cpunk.io cyan / cpunk.club orange)
 - ✅ Dynamic font scaling (1x - 4x)
 - ✅ Message delivery and read receipts
 - ✅ Desktop notifications
 - ✅ cpunk Wallet integration (view balances, send/receive CPUNK/CELL/KEL tokens)
-- ✅ P2P messaging with DHT-based peer discovery (OpenDHT)
+- ✅ P2P messaging with DHT-based peer discovery (3 bootstrap nodes)
 - ✅ Offline message queueing (messages stored in DHT for 7 days)
 
 **Coming Soon:**
@@ -302,18 +304,34 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
 
 ## Architecture
 
-**Current (Phase 4):**
-- Client application (GUI, CLI, or Web)
-- PostgreSQL message storage (ai.cpunk.io:5432)
-- Centralized keyserver API for public key distribution
-- Your private keys stay on your device (`~/.dna/`)
+**Current (Post-Migration - Fully Decentralized):**
+
+**Data Storage:**
+- **Messages:** Local SQLite database (`~/.dna/messages.db`)
+- **Groups:** DHT-based storage with local SQLite cache (UUID v4 + SHA256 keys)
+- **Public Keys:** Cached locally in SQLite (7-day TTL, fetched from https://cpunk.io/api/keyserver)
+- **Private Keys:** Local encrypted storage (`~/.dna/`)
+
+**P2P Transport Layer:**
+- **Direct Messaging:** TCP connections on port 4001 (when peer online)
+- **Offline Queue:** DHT storage with 7-day TTL (when peer offline)
+- **Peer Discovery:** OpenDHT with 3 public bootstrap nodes:
+  - dna-bootstrap-us-1 (154.38.182.161)
+  - dna-bootstrap-eu-1 (164.68.105.227)
+  - dna-bootstrap-eu-2 (164.68.116.180)
+- **Group Management:** Decentralized DHT storage (no central server)
+
+**Deployment Scripts:**
+- `dht/deploy-bootstrap.sh` - Automated bootstrap node deployment
+- `dht/monitor-bootstrap.sh` - Health monitoring for bootstrap network
 
 **Security:**
 - Messages encrypted on your device before sending
 - Only recipient can decrypt (end-to-end encryption)
 - Post-quantum algorithms (Kyber512 + Dilithium3)
 - Cryptographically signed messages (tamper-proof)
-- Future: P2P transport with libp2p (encrypted multiplexing)
+- No centralized message storage (privacy by design)
+- DHT replication for offline message resilience
 
 ## Cryptography
 
@@ -345,7 +363,7 @@ Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 - **GitLab (Primary):** https://gitlab.cpunk.io/cpunk/dna-messenger
 - **GitHub (Backup):** https://github.com/nocdem/dna-messenger
 - **Parent Project:** https://github.com/nocdem/qgp
-- **Server:** ai.cpunk.io:5432
+- **Keyserver API:** https://cpunk.io/api/keyserver
 - **cpunk.io:** https://cpunk.io
 - **cpunk.club:** https://cpunk.club
 - **Telegram:** https://web.telegram.org/k/#@chippunk_official

@@ -10,7 +10,7 @@
 #include "db.h"
 #include <string.h>
 
-enum MHD_Result api_register_handler(struct MHD_Connection *connection, PGconn *db_conn,
+enum MHD_Result api_register_handler(struct MHD_Connection *connection, sqlite3 *db_conn,
                                       const char *upload_data, size_t upload_data_size) {
     char client_ip[46];
     char error_msg[512];

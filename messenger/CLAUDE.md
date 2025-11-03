@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-02
+**Last Updated:** 2025-11-03
 **Project:** DNA Messenger (Post-Quantum Encrypted Messenger)
-**Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2 Complete
+**Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2, 9.3 (PostgreSQL Migration) Complete
 
 ---
 
@@ -12,10 +12,12 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 
 **Key Features:**
 - End-to-end encrypted messaging
-- Group chats with member management
+- Group chats with member management (DHT-based, decentralized)
 - cpunk wallet integration (CPUNK, CELL, KEL tokens)
 - P2P messaging with DHT-based peer discovery (OpenDHT)
 - Offline message queueing (7-day DHT storage)
+- Local SQLite storage (NO centralized database dependencies)
+- Keyserver cache (7-day TTL, local SQLite)
 - Cross-platform (Linux, Windows)
 - Qt5 GUI with theme support
 - BIP39 recovery phrases
@@ -29,10 +31,11 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
    - Post-quantum cryptography (Kyber512, Dilithium3)
    - Memory-based encryption/decryption API
    - Multi-recipient support
+   - Keyserver cache (SQLite with 7-day TTL)
 
 2. **CLI Client** (`dna_messenger`)
    - Command-line interface
-   - PostgreSQL message storage
+   - ~~PostgreSQL message storage~~ → **Local SQLite** (Phase 9.3 migration)
    - Contact management
 
 3. **GUI Client** (`dna_messenger_gui`)
@@ -40,6 +43,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
    - Modern card-based UI
    - Theme system (cpunk.io cyan, cpunk.club orange)
    - Integrated wallet with transaction history
+   - Local SQLite message storage (`~/.dna/messages.db`)
 
 4. **Wallet Integration**
    - Cellframe wallet file support (.dwallet format)
@@ -47,12 +51,14 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
    - Transaction builder and signing
    - Balance and history queries
 
-5. **P2P Transport Layer** (Phase 9.1 & 9.2)
+5. **P2P Transport Layer** (Phase 9.1, 9.2, 9.3)
    - OpenDHT for peer discovery and storage
    - Direct peer-to-peer TCP connections (port 4001)
    - DHT-based offline message queueing
+   - DHT-based groups (UUID v4 + SHA256 keys)
    - 3 public bootstrap nodes (US/EU)
    - Automatic message delivery with 2-minute polling
+   - Bootstrap deployment scripts (automated VPS deployment)
 
 ### Directory Structure
 ```
@@ -60,9 +66,14 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 ├── crypto/                  # Cryptography libraries
 │   ├── dilithium/          # Dilithium3 signatures
 │   └── kyber512/           # Kyber512 key encapsulation
-├── dht/                     # DHT layer (Phase 9.1 & 9.2)
+├── dht/                     # DHT layer (Phase 9.1, 9.2, 9.3)
 │   ├── dht_context.*       # OpenDHT integration
-│   └── dht_offline_queue.* # Offline message queueing
+│   ├── dht_offline_queue.* # Offline message queueing
+│   ├── dht_groups.*        # DHT-based groups (NEW - Phase 9.3)
+│   ├── deploy-bootstrap.sh # Automated bootstrap deployment (NEW)
+│   ├── monitor-bootstrap.sh# Bootstrap health monitoring (NEW)
+│   ├── dna-dht-bootstrap.service # Systemd service
+│   └── persistent_bootstrap# DHT bootstrap server binary
 ├── p2p/                     # P2P transport layer (Phase 9.1)
 │   ├── p2p_transport.*     # TCP connections + DHT
 │   └── test_p2p_basic.c    # P2P transport tests
@@ -77,6 +88,8 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 ├── cellframe_rpc.c/h       # Cellframe RPC client
 ├── cellframe_tx_builder_minimal.c/h # Transaction builder
 ├── messenger_p2p.*         # P2P messaging integration
+├── messenger_stubs.c       # DHT-based group functions (Phase 9.3)
+├── keyserver_cache.*       # Local SQLite cache for public keys (NEW)
 ├── dna_api.h               # Public library API
 └── CMakeLists.txt          # Build configuration
 ```
@@ -97,11 +110,19 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 - All encryption/decryption must use memory-based operations
 - Never log or print keys or decrypted messages
 
-### 3. Database
-- PostgreSQL for message storage (ai.cpunk.io:5432)
-- Schema: `messages`, `contacts`, `groups`, `group_members`
-- Use prepared statements to prevent SQL injection
-- Handle connection failures gracefully
+### 3. Database (Migrated to SQLite - Phase 9.3)
+- **Messages:** Local SQLite database (`~/.dna/messages.db`)
+- **Groups:** DHT-based storage with local SQLite cache
+  - UUID v4 for group identification
+  - SHA256-based DHT keys
+  - JSON serialization for metadata
+  - Local cache for offline access
+- **Keyserver Cache:** Local SQLite (`~/.dna/keyserver_cache.db`)
+  - 7-day TTL with automatic expiry
+  - BLOB storage for public keys
+- Use prepared statements to prevent SQL injection (`sqlite3_prepare_v2`, `sqlite3_bind_*`)
+- Always check return codes from SQLite operations
+- NO PostgreSQL dependencies (fully decentralized)
 
 ### 4. GUI Development (Qt5)
 - Use Qt signals/slots for event handling
@@ -188,7 +209,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 3. **Hybrid Delivery** - Multi-tier message delivery
    - Primary: Direct P2P (if peer online)
    - Secondary: DHT queue (if peer offline)
-   - Tertiary: PostgreSQL fallback
+   - Tertiary: SQLite fallback (Phase 9.3 migration)
 
 ### Phase 9.2: Offline Message Queueing (COMPLETE)
 **What Was Implemented:**
@@ -206,7 +227,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 
 3. **Automatic Retrieval**
    - 2-minute polling timer in GUI (`MainWindow.cpp`)
-   - Automatic delivery to PostgreSQL when retrieved
+   - Automatic delivery to local SQLite when retrieved
    - Queue clearing after successful delivery
    - Message expiry handling
 
@@ -214,6 +235,96 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
    - `p2p_transport.c` - Queue/retrieve API
    - `messenger_p2p.c` - Hybrid send flow
    - `gui/MainWindow.cpp` - Automatic polling
+
+### Phase 9.3: PostgreSQL → SQLite Migration (COMPLETE)
+**Status:** ✅ Complete (2025-11-03)
+
+**What Was Implemented:**
+1. **Message Storage Migration**
+   - Removed all PostgreSQL dependencies from CMakeLists.txt
+   - Migrated to local SQLite (`~/.dna/messages.db`)
+   - Updated messenger.c to use SQLite instead of PostgreSQL
+
+2. **DHT-Based Groups** (`dht/dht_groups.c/h`)
+   - 882 lines of complete implementation (NO STUBS)
+   - UUID v4 group identification (36-character format)
+   - SHA256-based DHT keys for decentralized storage
+   - JSON serialization for group metadata
+   - Local SQLite cache for offline access
+   - Full CRUD operations:
+     - `dht_groups_create()` - Create group with members
+     - `dht_groups_get()` - Fetch from DHT
+     - `dht_groups_update()` - Update metadata
+     - `dht_groups_add_member()` - Add member to group
+     - `dht_groups_remove_member()` - Remove member
+     - `dht_groups_delete()` - Delete group (creator only)
+     - `dht_groups_list_for_user()` - List user's groups
+     - `dht_groups_sync_from_dht()` - Sync local cache
+
+3. **Keyserver Cache** (`keyserver_cache.c/h`)
+   - Local SQLite cache for public keys (`~/.dna/keyserver_cache.db`)
+   - 7-day TTL with automatic expiry
+   - Cache-first strategy (check cache → on miss fetch API → store)
+   - BLOB storage for Dilithium (1952 bytes) and Kyber (800 bytes) keys
+   - Cross-platform Windows/Linux support (#ifdef _WIN32 for mkdir)
+   - Integrated into `messenger_load_pubkey()` function
+
+4. **Group Functions Migration** (`messenger_stubs.c`)
+   - Completely rewrote all 11 group functions (NO STUBS):
+     - `messenger_create_group()`
+     - `messenger_get_group_members()`
+     - `messenger_add_group_member()`
+     - `messenger_remove_group_member()`
+     - `messenger_list_groups()`
+     - `messenger_get_group_info()`
+     - `messenger_update_group()`
+     - `messenger_delete_group()`
+     - `messenger_leave_group()`
+     - `messenger_is_group_member()`
+     - `messenger_get_group_creator()`
+   - All functions now use DHT via `p2p_transport_get_dht_context()`
+   - Proper error handling and authorization checks
+
+5. **Bootstrap Deployment Scripts**
+   - `dht/deploy-bootstrap.sh` (130+ lines) - Automated deployment:
+     - Build binary locally
+     - Test SSH connectivity
+     - Set hostname
+     - Install dependencies
+     - Stop old processes
+     - Upload binary to /opt/dna-messenger/dht/build/
+     - Deploy systemd service
+     - Start and verify
+   - `dht/monitor-bootstrap.sh` (200+ lines) - Health monitoring:
+     - 10 checks per node (SSH, service, process, ports, resources, errors)
+     - Color-coded output (RED/GREEN/YELLOW)
+     - Summary report for all nodes
+
+**Technical Decisions:**
+- UUID v4 for globally unique group IDs
+- SHA256(group_uuid) for DHT keys
+- JSON for group metadata serialization
+- Single-queue-per-recipient for offline messages
+- 7-day cache TTL for public keys
+- Opaque pointer pattern with getter functions
+
+**Files Created:**
+- `dht/dht_groups.h` (237 lines)
+- `dht/dht_groups.c` (882 lines)
+- `keyserver_cache.h` (130 lines)
+- `keyserver_cache.c` (428 lines)
+- `dht/deploy-bootstrap.sh` (130+ lines)
+- `dht/monitor-bootstrap.sh` (200+ lines)
+
+**Files Modified:**
+- `CMakeLists.txt` - Removed PostgreSQL, added keyserver_cache.c
+- `dht/CMakeLists.txt` - Added dht_groups.c
+- `messenger.c` - Integrated keyserver cache
+- `messenger_stubs.c` - Completely rewritten (570 lines)
+- `p2p/p2p_transport.h` - Added getter for DHT context
+- `p2p/p2p_transport.c` - Implemented getter
+
+**Result:** DNA Messenger is now fully decentralized with NO PostgreSQL dependencies.
 
 ### Key Technical Decisions
 - **Single queue per recipient:** Append all messages to one DHT entry (workaround for OpenDHT C wrapper limitations)

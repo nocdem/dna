@@ -77,6 +77,15 @@ int message_backup_save(message_backup_context_t *ctx,
                         bool is_outgoing);
 
 /**
+ * Mark message as delivered
+ *
+ * @param ctx Backup context
+ * @param message_id Message ID from database
+ * @return 0 on success, -1 on error
+ */
+int message_backup_mark_delivered(message_backup_context_t *ctx, int message_id);
+
+/**
  * Mark message as read
  *
  * @param ctx Backup context
@@ -157,6 +166,15 @@ int message_backup_get_stats(message_backup_context_t *ctx,
  */
 int message_backup_export_json(message_backup_context_t *ctx,
                                 const char *output_path);
+
+/**
+ * Delete a message by ID
+ *
+ * @param ctx Backup context
+ * @param message_id Message ID to delete
+ * @return 0 on success, -1 on error
+ */
+int message_backup_delete(message_backup_context_t *ctx, int message_id);
 
 /**
  * Free message array

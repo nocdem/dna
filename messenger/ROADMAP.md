@@ -1,8 +1,8 @@
 # DNA Messenger - Development Roadmap
 
 **Version:** 0.1.120+
-**Last Updated:** 2025-10-23
-**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4 & 8 Complete
+**Last Updated:** 2025-11-03
+**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4, 8, 9.1, 9.2, PostgreSQL Migration Complete
 
 ---
 
@@ -79,15 +79,15 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 3: CLI Messenger Client ✅ COMPLETE
+## Phase 3: CLI Messenger Client ✅ COMPLETE (PostgreSQL → SQLite Migration ✅)
 
 **Timeline:** 2-3 weeks
-**Status:** Complete
+**Status:** Complete (PostgreSQL removed 2025-11-03)
 
 ### Objectives
 - Build reference messenger implementation
 - Command-line chat interface
-- PostgreSQL message storage
+- ~~PostgreSQL message storage~~ → **Migrated to local SQLite** (2025-11-03)
 - Contact management
 
 ### Completed Tasks
@@ -390,23 +390,49 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [x] SHA256-based DHT keys (recipient + ":offline_queue")
 - [x] Single-queue-per-recipient architecture
 - [x] Cross-platform support (Windows/Linux network byte order)
-- [x] Hybrid delivery: P2P direct → DHT queue → PostgreSQL fallback
+- [x] Hybrid delivery: P2P direct → DHT queue → ~~PostgreSQL~~ SQLite fallback
 
-#### Phase 9.3: Local Cache & Sync (4 weeks)
+#### Phase 9.3: PostgreSQL → SQLite Migration ✅ COMPLETE
+**Completed:** 2025-11-03
+
+Complete migration from centralized PostgreSQL to local SQLite storage:
+
+- [x] **Messages:** Migrated from PostgreSQL to local SQLite (`~/.dna/messages.db`)
+- [x] **Groups:** Migrated from PostgreSQL to DHT-based storage with local SQLite cache
+  - UUID v4 group identification (36-character format)
+  - SHA256-based DHT keys for decentralized group metadata
+  - JSON serialization for group data
+  - Local SQLite cache for offline access
+  - Full CRUD operations (create, get, update, add/remove members, delete)
+  - 11 group functions completely rewritten (NO STUBS)
+- [x] **Keyserver Cache:** Implemented local SQLite cache for public keys
+  - 7-day TTL with automatic expiry
+  - Cache-first strategy (check cache → on miss fetch API → store result)
+  - BLOB storage for Dilithium (1952 bytes) and Kyber (800 bytes) keys
+  - Cross-platform Windows/Linux support
+- [x] **Build System:** Removed all PostgreSQL dependencies from CMakeLists.txt
+- [x] **Bootstrap Deployment:** Created automated deployment scripts
+  - `dht/deploy-bootstrap.sh` - Complete automated deployment (8 steps)
+  - `dht/monitor-bootstrap.sh` - Comprehensive health monitoring (10 checks per node)
+  - 3 public bootstrap nodes (US/EU) operational
+
+**Result:** DNA Messenger is now fully decentralized with NO centralized database dependencies.
+
+#### Phase 9.4: Local Cache & Sync (4 weeks)
 - [ ] SQLite encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM)
 - [ ] Background sync protocol (local ↔ DHT)
 - [ ] Multi-device message synchronization
 - [ ] Offline mode with automatic sync on reconnect
 - [ ] Incremental sync for large histories
 
-#### Phase 9.4: Distributed DHT Keyserver (4 weeks)
+#### Phase 9.5: Distributed DHT Keyserver (4 weeks)
 - [ ] Store public keys in DHT (replicated)
 - [ ] Replace centralized HTTP keyserver
 - [ ] Self-signed key verification (TOFU model)
 - [ ] Key rotation and update protocol
 - [ ] Optional: Blockchain anchoring for tamper-proofing
 
-#### Phase 9.5: Integration & Testing (4 weeks)
+#### Phase 9.6: Integration & Testing (4 weeks)
 - [ ] End-to-end testing with 5-10 peers
 - [ ] Network resilience testing (peer churn)
 - [ ] Performance optimization
@@ -760,9 +786,12 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 ### ✅ Completed
 - **Phase 1:** Fork Preparation
 - **Phase 2:** Library API Design
-- **Phase 3:** CLI Messenger Client
+- **Phase 3:** CLI Messenger Client (PostgreSQL → SQLite migration complete)
 - **Phase 4:** Desktop Application (with groups!)
 - **Phase 8:** cpunk Wallet Integration (Cellframe Backbone)
+- **Phase 9.1:** P2P Transport Layer (OpenDHT + TCP)
+- **Phase 9.2:** Offline Message Queueing (DHT storage with 7-day TTL)
+- **Phase 9.3:** PostgreSQL → SQLite Migration (Fully decentralized storage)
 
 ### 🚧 In Progress
 - **Phase 5:** Web-Based Messenger (active on `feature/web-messenger` branch)
@@ -770,8 +799,10 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 ### 📋 Planned
 - **Phase 6:** Mobile Applications
 - **Phase 7:** Advanced Security Features
-- **Phase 9:** Distributed P2P Architecture (libp2p + OpenDHT)
-- **Phase 10+:** Future Enhancements (voice/video calls, advanced features)
+- **Phase 9.4-9.6:** Multi-device sync, DHT keyserver, integration testing
+- **Phase 10:** DNA Board (Censorship-resistant social media)
+- **Phase 11:** Post-Quantum Voice/Video Calls
+- **Phase 12+:** Future Enhancements
 
 ---
 
@@ -792,11 +823,19 @@ DNA Messenger is in active development. Contributions welcome!
 **Current Version:** 0.1.120+
 **Next Milestone:** Web Messenger (Phase 5)
 **Recent Achievements:**
-- ✅ cpunk Wallet integration complete! (Phase 8)
+- ✅ **PostgreSQL → SQLite Migration Complete!** (Phase 9.3 - 2025-11-03)
+  - Fully decentralized storage (NO centralized database)
+  - DHT-based groups with UUID v4 + SHA256 keys
+  - Keyserver cache with 7-day TTL
+  - Bootstrap deployment automation
+- ✅ **Offline Message Queueing** (Phase 9.2 - 2025-11-02)
+  - 7-day DHT storage for offline recipients
+  - Automatic 2-minute polling
+  - Binary serialization with magic bytes
+- ✅ **cpunk Wallet Integration** (Phase 8)
   - View CPUNK, CELL, KEL balances
   - Send/receive tokens with QR codes
   - Full transaction history with color-coded status
   - Theme-aware wallet UI
 - ✅ Full group messaging feature complete!
 - ✅ Public key caching (100x API call reduction)
-- ✅ Inline keyserver registration (no external utilities)

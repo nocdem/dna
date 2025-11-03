@@ -7,7 +7,7 @@
 #include "db.h"
 #include <sys/sysinfo.h>
 
-enum MHD_Result api_health_handler(struct MHD_Connection *connection, PGconn *db_conn) {
+enum MHD_Result api_health_handler(struct MHD_Connection *connection, sqlite3 *db_conn) {
     json_object *response = json_object_new_object();
 
     // Basic health status
@@ -20,8 +20,8 @@ enum MHD_Result api_health_handler(struct MHD_Connection *connection, PGconn *db
         json_object_object_add(response, "uptime", json_object_new_int64(info.uptime));
     }
 
-    // Database status
-    if (db_conn && PQstatus(db_conn) == CONNECTION_OK) {
+    // Database status (SQLite is always connected if db_conn is non-NULL)
+    if (db_conn) {
         json_object_object_add(response, "database", json_object_new_string("connected"));
 
         // Get total identities count

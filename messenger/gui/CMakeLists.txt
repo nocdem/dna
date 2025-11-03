@@ -66,6 +66,7 @@ target_link_libraries(dna_messenger_gui
     cellframe_dilithium
     ${PQ_LIBRARY}
     ${JSONC_LIBRARIES}
+    ${SQLite3_LIBRARIES}
 )
 
 # Link CURL and OpenSSL (order matters for static linking)

@@ -125,34 +125,8 @@ else()
     endif()
 endif()
 
-# PostgreSQL for keyserver and message storage (Phase 3+4)
-find_library(PQ_LIBRARY NAMES pq libpq)
-find_path(PQ_INCLUDE_DIR libpq-fe.h PATHS /usr/include/postgresql PATH_SUFFIXES postgresql pgsql)
-if(NOT PQ_LIBRARY OR NOT PQ_INCLUDE_DIR)
-    message(FATAL_ERROR "PostgreSQL libpq not found. Install: apt install libpq-dev (Linux) or build with MXE for Windows cross-compilation")
-endif()
-message(STATUS "PostgreSQL libpq found: ${PQ_LIBRARY}")
-message(STATUS "PostgreSQL include: ${PQ_INCLUDE_DIR}")
-
-# PostgreSQL internal libraries (required for static linking on Windows)
-if(WIN32)
-    find_library(PGCOMMON_LIBRARY NAMES pgcommon libpgcommon PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-    find_library(PGPORT_LIBRARY NAMES pgport libpgport PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-
-    if(PGCOMMON_LIBRARY)
-        message(STATUS "PostgreSQL pgcommon found: ${PGCOMMON_LIBRARY}")
-    else()
-        message(WARNING "PostgreSQL pgcommon not found - may cause linking errors")
-    endif()
-
-    if(PGPORT_LIBRARY)
-        message(STATUS "PostgreSQL pgport found: ${PGPORT_LIBRARY}")
-    else()
-        message(WARNING "PostgreSQL pgport not found - may cause linking errors")
-    endif()
-endif()
-
-# SQLite3 for local message backup (Phase 9.3)
+# NOTE: PostgreSQL removed 2025-11-03 - migrated to SQLite for decentralization
+# SQLite3 for all local storage (messages, keyserver cache)
 find_package(SQLite3 REQUIRED)
 if(SQLite3_FOUND)
     message(STATUS "SQLite3 found: ${SQLite3_VERSION}")
@@ -212,6 +186,8 @@ add_library(dna_lib STATIC
     dna_api.c
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
+    messenger_stubs.c  # DHT-based group functions (Phase 3)
+    keyserver_cache.c  # Phase 4: SQLite keyserver cache
     ${COMMON_SOURCES}
 )
 
@@ -224,27 +200,17 @@ target_link_libraries(dna_lib
     dht_lib        # Link dht_lib again to resolve circular deps with p2p_transport
     p2p_transport  # Link p2p_transport again for static linking order
     stdc++         # C++ standard library (required by dht_lib and OpenDHT)
-    ${PQ_LIBRARY}
     ${JSONC_LIBRARIES}
     ${PLATFORM_LIBS}
 )
 
-# On Windows with static linking, link PostgreSQL internal libs and Windows system libs
+# On Windows with static linking, link Windows system libs
 if(WIN32)
-    # PostgreSQL internal libraries for static linking
-    if(PGCOMMON_LIBRARY)
-        target_link_libraries(dna_lib ${PGCOMMON_LIBRARY})
-    endif()
-    if(PGPORT_LIBRARY)
-        target_link_libraries(dna_lib ${PGPORT_LIBRARY})
-    endif()
-
-    # Windows system libraries (required by OpenSSL and PostgreSQL)
+    # Windows system libraries (required by OpenSSL and DHT)
     target_link_libraries(dna_lib
         ws2_32      # Windows Sockets
         crypt32     # Cryptography
         secur32     # Security functions (SSPI)
-        wldap32     # LDAP support (PostgreSQL)
     )
 endif()
 
@@ -257,7 +223,6 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/p2p  # Phase 9.1b: P2P transport headers
     ${CMAKE_SOURCE_DIR}/dht  # Phase 9.1: DHT headers
     ${OPENSSL_INCLUDE_DIR}
-    ${PQ_INCLUDE_DIR}
 )
 
 # Add json-c include directories if found
@@ -291,7 +256,6 @@ if(BUILD_CLI_MESSENGER)
     )
     target_link_libraries(dna_messenger
         dna_lib
-        ${PQ_LIBRARY}
         ${JSONC_LIBRARIES}
         OpenSSL::SSL
         OpenSSL::Crypto
@@ -364,7 +328,7 @@ if(BUILD_CLI_MESSENGER)
             ${UNISTRING_LIBRARY}
             ${ICONV_LIBRARY}
             ${ARGON2_LIBRARY}
-            # Windows system libraries (gnutls, OpenSSL, PostgreSQL dependencies)
+            # Windows system libraries (gnutls, OpenSSL, DHT dependencies)
             ${GNUTLS_LIBRARY}    # Link gnutls again for circular dependencies
             bcrypt       # Windows BCrypt API (random number generation)
             ncrypt       # Windows NCrypt API (CNG key storage)

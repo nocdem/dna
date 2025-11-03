@@ -179,6 +179,25 @@ int message_backup_save(message_backup_context_t *ctx,
 }
 
 /**
+ * Mark message as delivered
+ */
+int message_backup_mark_delivered(message_backup_context_t *ctx, int message_id) {
+    if (!ctx || !ctx->db) return -1;
+
+    const char *sql = "UPDATE messages SET delivered = 1 WHERE id = ?";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int(stmt, 1, message_id);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+/**
  * Mark message as read
  */
 int message_backup_mark_read(message_backup_context_t *ctx, int message_id) {
@@ -490,6 +509,44 @@ int message_backup_export_json(message_backup_context_t *ctx,
     fclose(fp);
 
     printf("[Backup] Exported ENCRYPTED messages to %s\n", output_path);
+    return 0;
+}
+
+/**
+ * Delete a message by ID
+ */
+int message_backup_delete(message_backup_context_t *ctx, int message_id) {
+    if (!ctx || !ctx->db) {
+        fprintf(stderr, "[Backup] Invalid context\n");
+        return -1;
+    }
+
+    const char *sql = "DELETE FROM messages WHERE id = ?";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[Backup] Failed to prepare delete: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, message_id);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "[Backup] Failed to delete message: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    int changes = sqlite3_changes(ctx->db);
+    if (changes == 0) {
+        fprintf(stderr, "[Backup] Message %d not found\n", message_id);
+        return -1;
+    }
+
+    printf("[Backup] Deleted message %d\n", message_id);
     return 0;
 }
 

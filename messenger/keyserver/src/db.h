@@ -1,27 +1,28 @@
 /*
- * Database Layer - PostgreSQL
+ * Database Layer - SQLite
+ * Migrated from PostgreSQL (2025-11-03)
  */
 
 #ifndef DB_H
 #define DB_H
 
 #include "keyserver.h"
-#include <libpq-fe.h>
+#include <sqlite3.h>
 
 /**
- * Connect to PostgreSQL database
+ * Connect to SQLite database
  *
- * @param config: Configuration with DB connection details
+ * @param config: Configuration with DB file path
  * @return Database connection or NULL on error
  */
-PGconn* db_connect(const config_t *config);
+sqlite3* db_connect(const config_t *config);
 
 /**
  * Disconnect from database
  *
  * @param conn: Database connection
  */
-void db_disconnect(PGconn *conn);
+void db_disconnect(sqlite3 *conn);
 
 /**
  * Insert new identity (registration only)
@@ -30,7 +31,7 @@ void db_disconnect(PGconn *conn);
  * @param identity: Identity data to insert
  * @return 0 on success, -1 on error, -3 if already exists
  */
-int db_insert_identity(PGconn *conn, const identity_t *identity);
+int db_insert_identity(sqlite3 *conn, const identity_t *identity);
 
 /**
  * Update existing identity (update only)
@@ -39,7 +40,7 @@ int db_insert_identity(PGconn *conn, const identity_t *identity);
  * @param identity: Identity data to update
  * @return 0 on success, -1 on error, -2 on version conflict, -4 if not found
  */
-int db_update_identity(PGconn *conn, const identity_t *identity);
+int db_update_identity(sqlite3 *conn, const identity_t *identity);
 
 /**
  * Insert or update identity in keyserver (DEPRECATED - use insert or update)
@@ -48,7 +49,7 @@ int db_update_identity(PGconn *conn, const identity_t *identity);
  * @param identity: Identity data to insert/update
  * @return 0 on success, -1 on error, -2 on version conflict
  */
-int db_insert_or_update_identity(PGconn *conn, const identity_t *identity);
+int db_insert_or_update_identity(sqlite3 *conn, const identity_t *identity);
 
 /**
  * Lookup identity by DNA handle
@@ -58,7 +59,7 @@ int db_insert_or_update_identity(PGconn *conn, const identity_t *identity);
  * @param identity: Identity structure to populate
  * @return 0 on success, -1 on error, -2 if not found
  */
-int db_lookup_identity(PGconn *conn, const char *dna, identity_t *identity);
+int db_lookup_identity(sqlite3 *conn, const char *dna, identity_t *identity);
 
 /**
  * List all identities with pagination
@@ -71,7 +72,7 @@ int db_lookup_identity(PGconn *conn, const char *dna, identity_t *identity);
  * @param count: Number of results returned
  * @return 0 on success, -1 on error
  */
-int db_list_identities(PGconn *conn, int limit, int offset, const char *search,
+int db_list_identities(sqlite3 *conn, int limit, int offset, const char *search,
                        identity_t **identities, int *count);
 
 /**
@@ -80,7 +81,7 @@ int db_list_identities(PGconn *conn, int limit, int offset, const char *search,
  * @param conn: Database connection
  * @return Count or -1 on error
  */
-int db_count_identities(PGconn *conn);
+int db_count_identities(sqlite3 *conn);
 
 /**
  * Free identity structure
