@@ -247,6 +247,14 @@ static int sign_entry(dht_pubkey_entry_t *entry, const uint8_t *dilithium_privke
 
     // Sign
     size_t siglen = DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE;
+
+    // DEBUG: Print first 32 bytes of message for debugging
+    printf("[DHT_KEYSERVER_DEBUG] Signing message (%zu bytes), first 32 bytes:\n  ", msg_len);
+    for (int i = 0; i < 32 && i < msg_len; i++) {
+        printf("%02x", msg[i]);
+    }
+    printf("\n");
+
     int ret = qgp_dilithium3_signature(entry->signature, &siglen, msg, msg_len, dilithium_privkey);
 
     free(msg);
@@ -286,6 +294,13 @@ static int verify_entry(const dht_pubkey_entry_t *entry) {
     memcpy(msg + offset, &version_net, sizeof(version_net));
     offset += sizeof(version_net);
     memcpy(msg + offset, entry->fingerprint, strlen(entry->fingerprint));
+
+    // DEBUG: Print first 32 bytes of message for debugging
+    printf("[DHT_KEYSERVER_DEBUG] Verifying message (%zu bytes), first 32 bytes:\n  ", msg_len);
+    for (int i = 0; i < 32 && i < msg_len; i++) {
+        printf("%02x", msg[i]);
+    }
+    printf("\n");
 
     // Verify signature with dilithium pubkey
     int ret = qgp_dilithium3_verify(entry->signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE,
