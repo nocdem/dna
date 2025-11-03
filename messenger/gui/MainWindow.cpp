@@ -10,6 +10,7 @@
 
 extern "C" {
     #include "../wallet.h"
+    #include "../contacts_db.h"
 }
 
 #include <QApplication>
@@ -405,6 +406,33 @@ void MainWindow::setupUI() {
     );
     connect(contactList, &QListWidget::itemClicked, this, &MainWindow::onContactSelected);
     leftLayout->addWidget(contactList);
+
+    // Add Contact button
+    addContactButton = new QPushButton("Add Contact");
+    addContactButton->setIcon(QIcon(":/icons/user.svg"));
+    addContactButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
+    addContactButton->setToolTip("Add a new contact");
+    addContactButton->setStyleSheet(
+        "QPushButton {"
+        "   background: rgba(0, 217, 255, 0.2);"
+        "   color: #00D9FF;"
+        "   border: 2px solid #00D9FF;"
+        "   border-radius: 15px;"
+        "   padding: 15px;"
+        "   font-weight: bold;"
+        "   font-family: 'Orbitron'; font-size: 12px;"
+        "}"
+        "QPushButton:hover {"
+        "   background: rgba(0, 217, 255, 0.3);"
+        "   border: 2px solid #33E6FF;"
+        "}"
+        "QPushButton:pressed {"
+        "   background: rgba(0, 217, 255, 0.4);"
+        "   border: 2px solid #00D9FF;"
+        "}"
+    );
+    connect(addContactButton, &QPushButton::clicked, this, &MainWindow::onAddContact);
+    leftLayout->addWidget(addContactButton);
 
     refreshButton = new QPushButton("Refresh");
     refreshButton->setIcon(QIcon(":/icons/refresh.svg"));
@@ -1159,6 +1187,53 @@ void MainWindow::onSendMessage() {
         QMessageBox::critical(this, QString::fromUtf8("Send Failed"),
                               QString::fromUtf8("Failed to send message. Check console for details."));
         statusLabel->setText(QString::fromUtf8("Message send failed"));
+    }
+}
+
+void MainWindow::onAddContact() {
+    bool ok;
+    QString identity = QInputDialog::getText(
+        this,
+        QString::fromUtf8("Add Contact"),
+        QString::fromUtf8("Enter contact identity:"),
+        QLineEdit::Normal,
+        QString::fromUtf8(""),
+        &ok
+    );
+
+    if (!ok || identity.trimmed().isEmpty()) {
+        return;  // User cancelled or entered empty string
+    }
+
+    identity = identity.trimmed();
+
+    // Check if contact already exists
+    if (contacts_db_exists(identity.toUtf8().constData())) {
+        QMessageBox::information(
+            this,
+            QString::fromUtf8("Contact Exists"),
+            QString::fromUtf8("'%1' is already in your contacts.").arg(identity)
+        );
+        return;
+    }
+
+    // Add contact to database
+    int result = contacts_db_add(identity.toUtf8().constData(), NULL);
+    if (result == 0) {
+        QMessageBox::information(
+            this,
+            QString::fromUtf8("Success"),
+            QString::fromUtf8("Contact '%1' added successfully.").arg(identity)
+        );
+        loadContacts();  // Refresh contact list
+        statusLabel->setText(QString::fromUtf8("Contact added"));
+    } else {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8("Failed to add contact '%1'.").arg(identity)
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to add contact"));
     }
 }
 

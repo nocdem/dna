@@ -40,6 +40,7 @@ private slots:
     void onRefreshMessages();
     void onAttachImage();  // Attach image to message
     void onToggleFullscreen();  // NEW: Toggle fullscreen mode
+    void onAddContact();  // Add new contact
     void onThemeIO();
     void onThemeClub();
     void onFontScaleSmall();
@@ -106,6 +107,7 @@ private:
     QLineEdit *messageInput;
     QPushButton *sendButton;
     QPushButton *refreshButton;
+    QPushButton *addContactButton;  // Add contact button
     QPushButton *addRecipientsButton;
     QPushButton *createGroupButton;
     QPushButton *groupSettingsButton;
