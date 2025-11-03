@@ -45,9 +45,12 @@ struct Contact {
 
 // Helper function for buttons with dark text
 inline bool ButtonDark(const char* label, const ImVec2& size = ImVec2(0, 0)) {
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 1.0f, 0.8f, 1.0f));        // #00FFCC
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.9f, 0.7f, 1.0f)); // Slightly darker on hover
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.8f, 0.6f, 1.0f));  // Even darker when clicked
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));       // Dark text
     bool result = ImGui::Button(label, size);
-    ImGui::PopStyleColor();
+    ImGui::PopStyleColor(4);
     return result;
 }
 
