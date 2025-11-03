@@ -33,7 +33,10 @@ static const char *CACHE_SCHEMA =
 static void get_default_cache_path(char *path_out, size_t path_size) {
     const char *home = getenv("HOME");
     if (!home) {
-        home = "/tmp";  // Fallback
+        home = getenv("USERPROFILE");  // Windows fallback
+        if (!home) {
+            home = "/tmp";  // Last resort fallback
+        }
     }
 
     snprintf(path_out, path_size, "%s/.dna", home);

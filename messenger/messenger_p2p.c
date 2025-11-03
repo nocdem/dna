@@ -32,6 +32,80 @@ static const char *BOOTSTRAP_NODES[] = {
 // ============================================================================
 
 /**
+ * Load my own Dilithium public key from local file
+ * Used during P2P init to avoid circular dependency with keyserver
+ *
+ * @return: 0 on success, -1 on error
+ */
+static int load_my_dilithium_pubkey(
+    messenger_context_t *ctx,
+    uint8_t **pubkey_out,
+    size_t *pubkey_len_out
+)
+{
+    // Get home directory
+    const char *home = NULL;
+
+#ifdef _WIN32
+    home = getenv("USERPROFILE");
+    if (!home) {
+        static char win_home[512];
+        const char *homedrive = getenv("HOMEDRIVE");
+        const char *homepath = getenv("HOMEPATH");
+        if (homedrive && homepath) {
+            snprintf(win_home, sizeof(win_home), "%s%s", homedrive, homepath);
+            home = win_home;
+        }
+    }
+#else
+    home = getenv("HOME");
+    if (!home) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) {
+            home = pw->pw_dir;
+        }
+    }
+#endif
+
+    if (!home) {
+        fprintf(stderr, "[P2P] Cannot determine home directory\n");
+        return -1;
+    }
+
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium3.pqkey",
+             home, ctx->identity);
+
+    FILE *f = fopen(key_path, "rb");
+    if (!f) {
+        fprintf(stderr, "[P2P] Failed to open key file: %s\n", key_path);
+        return -1;
+    }
+
+    // Skip private key part (4016 bytes) and read public key (1952 bytes)
+    fseek(f, 4016, SEEK_SET);
+
+    uint8_t *pubkey = malloc(1952);
+    if (!pubkey) {
+        fclose(f);
+        return -1;
+    }
+
+    size_t read = fread(pubkey, 1, 1952, f);
+    fclose(f);
+
+    if (read != 1952) {
+        fprintf(stderr, "[P2P] Invalid public key size: %zu (expected 1952)\n", read);
+        free(pubkey);
+        return -1;
+    }
+
+    *pubkey_out = pubkey;
+    *pubkey_len_out = 1952;
+    return 0;
+}
+
+/**
  * Load Dilithium public key for an identity from keyserver
  *
  * @return: 0 on success, -1 on error
@@ -280,8 +354,8 @@ int messenger_p2p_init(messenger_context_t *ctx)
         return -1;
     }
 
-    // Load Dilithium public key (from keyserver)
-    if (load_pubkey_for_identity(ctx, ctx->identity, &dilithium_pubkey, &dilithium_pubkey_len) != 0) {
+    // Load Dilithium public key (from local file, not keyserver to avoid circular dependency)
+    if (load_my_dilithium_pubkey(ctx, &dilithium_pubkey, &dilithium_pubkey_len) != 0) {
         fprintf(stderr, "[P2P] Failed to load Dilithium public key\n");
         free(dilithium_privkey);
         return -1;
