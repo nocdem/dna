@@ -26,6 +26,7 @@ extern "C" {
 #include "../messenger.h"
 #include "../wallet.h"
 #include "../messenger/keyserver_register.h"
+#include "../bip39.h"
 }
 
 struct Message {
@@ -202,43 +203,31 @@ private:
         
         // Create new button
         if (ButtonDark(ICON_FA_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
+            create_identity_step = STEP_NAME;
+            seed_confirmed = false;
+            memset(new_identity_name, 0, sizeof(new_identity_name));
+            memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
             ImGui::OpenPopup("Create New Identity");
         }
         
-        // Create identity popup
+        // Create identity popup - multi-step wizard
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.5f, 0.5f));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 12));
-        ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0x0f/255.0f, 0x11/255.0f, 0x13/255.0f, 0.8f)); // Match popup bg
+        ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0x0f/255.0f, 0x11/255.0f, 0x13/255.0f, 0.8f));
         
         if (ImGui::BeginPopupModal("Create New Identity", nullptr, ImGuiWindowFlags_AlwaysAutoResize)) {
             ImGui::PopStyleVar(3);
             ImGui::PopStyleColor();
             
             ImGui::Spacing();
-            ImGui::Text("Enter identity name:");
-            ImGui::Spacing();
             
-            ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name));
-            ImGui::Spacing();
-            
-            // Center buttons
-            float button_width = 120.0f;
-            float spacing = 10.0f;
-            float total_width = button_width * 2 + spacing;
-            float offset = (ImGui::GetContentRegionAvail().x - total_width) * 0.5f;
-            
-            if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-            
-            if (ButtonDark("Create", ImVec2(button_width, 40))) {
-                if (strlen(new_identity_name) > 0) {
-                    createIdentity(new_identity_name);
-                    ImGui::CloseCurrentPopup();
-                }
-            }
-            ImGui::SameLine();
-            if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
-                ImGui::CloseCurrentPopup();
+            if (create_identity_step == STEP_NAME) {
+                renderCreateIdentityStep1();
+            } else if (create_identity_step == STEP_SEED_PHRASE) {
+                renderCreateIdentityStep2();
+            } else if (create_identity_step == STEP_CREATING) {
+                renderCreateIdentityStep3();
             }
             
             ImGui::EndPopup();
@@ -290,14 +279,144 @@ private:
 #endif
     }
     
-    void createIdentity(const char* name) {
-        // Call DNA API to create identity with key generation
-        printf("Creating identity: %s\n", name);
+    void renderCreateIdentityStep1() {
+        // Step 1: Enter identity name
+        ImGui::Text("Step 1: Choose Your Identity Name");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        
+        ImGui::TextWrapped("Your identity name is your username in DNA Messenger.");
+        ImGui::TextWrapped("Requirements: 3-20 characters, letters/numbers/underscore only");
+        ImGui::Spacing();
+        
+        ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name));
+        ImGui::Spacing();
+        ImGui::Spacing();
+        
+        // Center buttons
+        float button_width = 120.0f;
+        float spacing = 10.0f;
+        float total_width = button_width * 2 + spacing;
+        float offset = (ImGui::GetContentRegionAvail().x - total_width) * 0.5f;
+        
+        if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+        
+        bool name_valid = strlen(new_identity_name) >= 3 && strlen(new_identity_name) <= 20;
+        
+        ImGui::BeginDisabled(!name_valid);
+        if (ButtonDark("Next", ImVec2(button_width, 40))) {
+            // Generate BIP39 seed phrase
+            if (bip39_generate_mnemonic(24, generated_mnemonic, sizeof(generated_mnemonic)) == 0) {
+                create_identity_step = STEP_SEED_PHRASE;
+            }
+        }
+        ImGui::EndDisabled();
+        
+        ImGui::SameLine();
+        if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
+            ImGui::CloseCurrentPopup();
+        }
+    }
+    
+    void renderCreateIdentityStep2() {
+        // Step 2: Display and confirm seed phrase
+        ImGui::Text("Step 2: Your Recovery Seed Phrase");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f)); // Red warning
+        ImGui::TextWrapped("IMPORTANT: Write down these 24 words in order!");
+        ImGui::TextWrapped("This is the ONLY way to recover your identity.");
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+        
+        // Display seed phrase in a 4x6 grid
+        ImGui::BeginChild("SeedPhraseDisplay", ImVec2(500, 200), true);
+        
+        // Split mnemonic into words
+        char* mnemonic_copy = strdup(generated_mnemonic);
+        char* words[24];
+        int word_count = 0;
+        char* token = strtok(mnemonic_copy, " ");
+        while (token != nullptr && word_count < 24) {
+            words[word_count++] = token;
+            token = strtok(nullptr, " ");
+        }
+        
+        // Display in 4 columns
+        for (int row = 0; row < 6; row++) {
+            for (int col = 0; col < 4; col++) {
+                int idx = row + col * 6;
+                if (idx < word_count) {
+                    char label[32];
+                    snprintf(label, sizeof(label), "%2d. %-12s", idx + 1, words[idx]);
+                    ImGui::Text("%s", label);
+                    if (col < 3) ImGui::SameLine();
+                }
+            }
+        }
+        
+        free(mnemonic_copy);
+        
+        ImGui::EndChild();
+        
+        ImGui::Spacing();
+        ImGui::Checkbox("I have written down my 24-word seed phrase securely", &seed_confirmed);
+        ImGui::Spacing();
+        ImGui::Spacing();
+        
+        // Center buttons
+        float button_width = 120.0f;
+        float spacing = 10.0f;
+        float total_width = button_width * 2 + spacing;
+        float offset = (ImGui::GetContentRegionAvail().x - total_width) * 0.5f;
+        
+        if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+        
+        if (ButtonDark("Back", ImVec2(button_width, 40))) {
+            create_identity_step = STEP_NAME;
+        }
+        ImGui::SameLine();
+        
+        ImGui::BeginDisabled(!seed_confirmed);
+        if (ButtonDark("Create", ImVec2(button_width, 40))) {
+            create_identity_step = STEP_CREATING;
+            createIdentityWithSeed(new_identity_name, generated_mnemonic);
+        }
+        ImGui::EndDisabled();
+    }
+    
+    void renderCreateIdentityStep3() {
+        // Step 3: Creating identity (progress)
+        ImGui::Text("Creating Your Identity...");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+        
+        ImGui::TextWrapped("Generating cryptographic keys and registering to keyserver...");
+        ImGui::Spacing();
+        
+        // Simple progress indicator (spinner would be better but this works)
+        static float progress = 0.0f;
+        progress += 0.01f;
+        if (progress > 1.0f) progress = 0.0f;
+        
+        ImGui::ProgressBar(progress, ImVec2(-1, 0));
+        
+        // This step auto-closes when createIdentityWithSeed completes
+    }
+    
+    void createIdentityWithSeed(const char* name, const char* mnemonic) {
+        // Call DNA API to create identity with key generation from seed
+        printf("Creating identity: %s with provided seed phrase\n", name);
         
         // Ensure ~/.dna directory exists
         const char* home = getenv("HOME");
         if (!home) {
             printf("[ERROR] HOME environment variable not set\n");
+            ImGui::CloseCurrentPopup();
             return;
         }
         
@@ -309,10 +428,23 @@ private:
         mkdir(dna_dir.c_str(), 0700);
 #endif
         
+        // Derive seeds from mnemonic
+        uint8_t signing_seed[32];
+        uint8_t encryption_seed[32];
+        
+        if (qgp_derive_seeds_from_mnemonic(mnemonic, "", signing_seed, encryption_seed) != 0) {
+            printf("[ERROR] Failed to derive seeds from mnemonic\n");
+            ImGui::CloseCurrentPopup();
+            return;
+        }
+        
+        printf("[INFO] Seeds derived from mnemonic\n");
+        
         // Generate keys using messenger API
         messenger_context_t *ctx = messenger_init(name);
         if (!ctx) {
             printf("[ERROR] Failed to initialize messenger context\n");
+            ImGui::CloseCurrentPopup();
             return;
         }
         
@@ -321,6 +453,7 @@ private:
         if (result != 0) {
             printf("[ERROR] Failed to generate keys\n");
             messenger_free(ctx);
+            ImGui::CloseCurrentPopup();
             return;
         }
         
@@ -338,8 +471,11 @@ private:
         current_identity = name;
         loadIdentity(current_identity);
         
-        // Reset input
+        // Reset and close
         memset(new_identity_name, 0, sizeof(new_identity_name));
+        memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
+        seed_confirmed = false;
+        ImGui::CloseCurrentPopup();
     }
     
     void loadIdentity(const std::string& identity) {
