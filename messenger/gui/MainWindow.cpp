@@ -1217,13 +1217,51 @@ void MainWindow::onAddContact() {
         return;
     }
 
+    // Verify identity exists on DHT by fetching public keys
+    statusLabel->setText(QString::fromUtf8("Verifying '%1' on DHT...").arg(identity));
+    QApplication::processEvents();  // Update UI
+
+    uint8_t *signing_pubkey = NULL;
+    size_t signing_pubkey_len = 0;
+    uint8_t *encryption_pubkey = NULL;
+    size_t encryption_pubkey_len = 0;
+
+    int result = messenger_load_pubkey(
+        ctx,
+        identity.toUtf8().constData(),
+        &signing_pubkey,
+        &signing_pubkey_len,
+        &encryption_pubkey,
+        &encryption_pubkey_len
+    );
+
+    if (result != 0) {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Identity Not Found"),
+            QString::fromUtf8(
+                "Identity '%1' not found on DHT keyserver.\n\n"
+                "Make sure the identity exists and has published their public keys."
+            ).arg(identity)
+        );
+        statusLabel->setText(QString::fromUtf8("Identity not found on DHT"));
+        return;
+    }
+
+    // Free the public keys (already cached by messenger_load_pubkey)
+    free(signing_pubkey);
+    free(encryption_pubkey);
+
     // Add contact to database
-    int result = contacts_db_add(identity.toUtf8().constData(), NULL);
+    result = contacts_db_add(identity.toUtf8().constData(), NULL);
     if (result == 0) {
         QMessageBox::information(
             this,
             QString::fromUtf8("Success"),
-            QString::fromUtf8("Contact '%1' added successfully.").arg(identity)
+            QString::fromUtf8(
+                "Contact '%1' added successfully.\n\n"
+                "Public keys verified and cached from DHT."
+            ).arg(identity)
         );
         loadContacts();  // Refresh contact list
         statusLabel->setText(QString::fromUtf8("Contact added"));
@@ -1231,7 +1269,7 @@ void MainWindow::onAddContact() {
         QMessageBox::critical(
             this,
             QString::fromUtf8("Error"),
-            QString::fromUtf8("Failed to add contact '%1'.").arg(identity)
+            QString::fromUtf8("Failed to add contact '%1' to database.").arg(identity)
         );
         statusLabel->setText(QString::fromUtf8("Failed to add contact"));
     }
