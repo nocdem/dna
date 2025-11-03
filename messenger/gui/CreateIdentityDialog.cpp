@@ -454,15 +454,7 @@ bool CreateIdentityDialog::performKeyGeneration()
         return false;
     }
 
-    progressBar->setValue(4);
-    statusLabel->setText("Registering to cpunk.io keyserver...");
-    QApplication::processEvents();
-
-    // Register to cpunk.io keyserver
-    if (register_to_keyserver(identityBytes.data()) != 0) {
-        // Note: This is non-critical, identity is still usable
-        printf("[WARNING] Failed to register to cpunk.io keyserver\n");
-    }
+    // Note: Registration to cpunk.io keyserver is handled by messenger_generate_keys() internally
 
     progressBar->setValue(5);
     statusLabel->setText("Complete!");
