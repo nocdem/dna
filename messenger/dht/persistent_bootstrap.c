@@ -29,7 +29,12 @@ int main(int argc, char **argv) {
     config.port = 4000;
     config.is_bootstrap = true;
     strncpy(config.identity, "bootstrap-node", sizeof(config.identity) - 1);
-    config.bootstrap_count = 0;  // First node - no bootstrap
+
+    // Bootstrap from all 3 public nodes (will ignore self if present)
+    config.bootstrap_count = 3;
+    strncpy(config.bootstrap_nodes[0], "154.38.182.161:4000", sizeof(config.bootstrap_nodes[0]) - 1);  // US
+    strncpy(config.bootstrap_nodes[1], "164.68.105.227:4000", sizeof(config.bootstrap_nodes[1]) - 1);  // EU1
+    strncpy(config.bootstrap_nodes[2], "164.68.116.180:4000", sizeof(config.bootstrap_nodes[2]) - 1);  // EU2
 
     // Enable disk persistence for bootstrap nodes (hybrid approach)
     strncpy(config.persistence_path, "/var/lib/dna-dht/bootstrap.state",
