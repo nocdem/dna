@@ -382,8 +382,14 @@ private:
         ImGui::PopStyleColor();
         ImGui::Spacing();
         
-        // Display seed phrase in a 4x6 grid
-        ImGui::BeginChild("SeedPhraseDisplay", ImVec2(500, 200), true);
+        // Copy button - full width
+        if (ImGui::Button("Copy All Words", ImVec2(-1, 40))) {
+            ImGui::SetClipboardText(generated_mnemonic);
+        }
+        ImGui::Spacing();
+        
+        // Display seed phrase in a bordered box with proper alignment
+        ImGui::BeginChild("SeedPhraseDisplay", ImVec2(0, 250), true, ImGuiWindowFlags_NoScrollbar);
         
         // Split mnemonic into words
         char* mnemonic_copy = strdup(generated_mnemonic);
@@ -395,18 +401,22 @@ private:
             token = strtok(nullptr, " ");
         }
         
-        // Display in 4 columns
-        for (int row = 0; row < 6; row++) {
-            for (int col = 0; col < 4; col++) {
-                int idx = row + col * 6;
-                if (idx < word_count) {
-                    char label[32];
-                    snprintf(label, sizeof(label), "%2d. %-12s", idx + 1, words[idx]);
-                    ImGui::Text("%s", label);
-                    if (col < 3) ImGui::SameLine();
-                }
+        // Display in 2 columns of 12 words each for better readability
+        ImGui::Columns(2, nullptr, false);
+        
+        for (int i = 0; i < word_count; i++) {
+            // Format: " 1. word      "
+            char label[32];
+            snprintf(label, sizeof(label), "%2d. %-14s", i + 1, words[i]);
+            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.8f, 1.0f), "%s", label);
+            
+            // Switch to second column after 12 words
+            if (i == 11) {
+                ImGui::NextColumn();
             }
         }
+        
+        ImGui::Columns(1);
         
         free(mnemonic_copy);
         
