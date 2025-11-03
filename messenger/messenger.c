@@ -16,6 +16,7 @@
 #define pclose _pclose
 #else
 #include <sys/time.h>
+#include <unistd.h>  // For unlink(), close()
 #endif
 #include <json-c/json.h>
 #include <openssl/bio.h>
@@ -711,6 +712,43 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 // PUBLIC KEY MANAGEMENT
 // ============================================================================
 
+/**
+ * Base64 encode helper
+ */
+static const char base64_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static char* base64_encode(const uint8_t *data, size_t len) {
+    size_t out_len = 4 * ((len + 2) / 3);
+    char *out = malloc(out_len + 1);
+    if (!out) return NULL;
+
+    size_t i, j;
+    for (i = 0, j = 0; i < len;) {
+        uint32_t octet_a = i < len ? data[i++] : 0;
+        uint32_t octet_b = i < len ? data[i++] : 0;
+        uint32_t octet_c = i < len ? data[i++] : 0;
+        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
+
+        out[j++] = base64_chars[(triple >> 18) & 0x3F];
+        out[j++] = base64_chars[(triple >> 12) & 0x3F];
+        out[j++] = base64_chars[(triple >> 6) & 0x3F];
+        out[j++] = base64_chars[triple & 0x3F];
+    }
+
+    // Add padding
+    size_t mod = len % 3;
+    if (mod == 1) {
+        out[out_len - 2] = '=';
+        out[out_len - 1] = '=';
+    } else if (mod == 2) {
+        out[out_len - 1] = '=';
+    }
+
+    out[out_len] = '\0';
+    return out;
+}
+
 int messenger_store_pubkey(
     messenger_context_t *ctx,
     const char *identity,
@@ -719,11 +757,181 @@ int messenger_store_pubkey(
     const uint8_t *encryption_pubkey,
     size_t encryption_pubkey_len
 ) {
-    // TODO: Phase 2 - Migrate to DHT keyserver
-    fprintf(stderr, "ERROR: messenger_store_pubkey() not yet implemented (DHT migration pending)\n");
-    (void)ctx; (void)identity; (void)signing_pubkey; (void)signing_pubkey_len;
-    (void)encryption_pubkey; (void)encryption_pubkey_len;
-    return -1;
+    if (!ctx || !identity || !signing_pubkey || !encryption_pubkey) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_store_pubkey\n");
+        return -1;
+    }
+
+    printf("⟳ Registering public keys for '%s' to keyserver...\n", identity);
+
+    // Get dna_dir path
+    const char *home = getenv("HOME");
+    if (!home) {
+        home = getenv("USERPROFILE");  // Windows fallback
+        if (!home) {
+            fprintf(stderr, "ERROR: HOME environment variable not set\n");
+            return -1;
+        }
+    }
+
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    // Base64 encode public keys
+    char *dilithium_b64 = base64_encode(signing_pubkey, signing_pubkey_len);
+    char *kyber_b64 = base64_encode(encryption_pubkey, encryption_pubkey_len);
+
+    if (!dilithium_b64 || !kyber_b64) {
+        fprintf(stderr, "ERROR: Failed to base64 encode keys\n");
+        if (dilithium_b64) free(dilithium_b64);
+        if (kyber_b64) free(kyber_b64);
+        return -1;
+    }
+
+    // Build JSON payload
+    int updated_at = (int)time(NULL);
+    json_object *payload = json_object_new_object();
+    json_object_object_add(payload, "v", json_object_new_int(1));
+    json_object_object_add(payload, "dna", json_object_new_string(identity));
+    json_object_object_add(payload, "dilithium_pub", json_object_new_string(dilithium_b64));
+    json_object_object_add(payload, "kyber_pub", json_object_new_string(kyber_b64));
+    json_object_object_add(payload, "cf20pub", json_object_new_string(""));
+    json_object_object_add(payload, "version", json_object_new_int(1));
+    json_object_object_add(payload, "updated_at", json_object_new_int(updated_at));
+
+    // Free base64 strings (json-c made copies)
+    free(dilithium_b64);
+    free(kyber_b64);
+
+    // Get canonical JSON string for signing
+    const char *json_payload = json_object_to_json_string_ext(payload,
+        JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE);
+
+    // Load private key to sign payload
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
+
+    qgp_key_t *key = NULL;
+    if (qgp_key_load(key_path, &key) != 0 || !key) {
+        fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
+        json_object_put(payload);
+        return -1;
+    }
+
+    if (key->type != QGP_KEY_TYPE_DILITHIUM3 || !key->private_key) {
+        fprintf(stderr, "ERROR: Not a Dilithium private key\n");
+        qgp_key_free(key);
+        json_object_put(payload);
+        return -1;
+    }
+
+    // Sign the JSON payload
+    uint8_t signature[QGP_DILITHIUM3_BYTES];
+    size_t sig_len = QGP_DILITHIUM3_BYTES;
+
+    if (qgp_dilithium3_signature(signature, &sig_len,
+                                  (const uint8_t*)json_payload, strlen(json_payload),
+                                  key->private_key) != 0) {
+        fprintf(stderr, "ERROR: Failed to sign payload\n");
+        qgp_key_free(key);
+        json_object_put(payload);
+        return -1;
+    }
+
+    qgp_key_free(key);
+
+    // Base64 encode signature
+    char *sig_b64 = base64_encode(signature, sig_len);
+    if (!sig_b64) {
+        fprintf(stderr, "ERROR: Failed to encode signature\n");
+        json_object_put(payload);
+        return -1;
+    }
+
+    // Add signature to payload
+    json_object_object_add(payload, "sig", json_object_new_string(sig_b64));
+    free(sig_b64);
+
+    // Get final JSON with signature
+    const char *final_json = json_object_to_json_string_ext(payload,
+        JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE);
+
+    // Create temp file for curl
+#ifdef _WIN32
+    char temp_file[512];
+    if (tmpnam_s(temp_file, sizeof(temp_file)) != 0) {
+        fprintf(stderr, "ERROR: Failed to create temp filename\n");
+        json_object_put(payload);
+        return -1;
+    }
+    FILE *fp = fopen(temp_file, "w");
+#else
+    char temp_file[] = "/tmp/dna_register_XXXXXX";
+    int fd = mkstemp(temp_file);
+    if (fd == -1) {
+        fprintf(stderr, "ERROR: Failed to create temp file\n");
+        json_object_put(payload);
+        return -1;
+    }
+    FILE *fp = fdopen(fd, "w");
+#endif
+
+    if (!fp) {
+#ifndef _WIN32
+        close(fd);
+#endif
+        fprintf(stderr, "ERROR: Failed to open temp file\n");
+        json_object_put(payload);
+        return -1;
+    }
+
+    fprintf(fp, "%s", final_json);
+    fclose(fp);
+    json_object_put(payload);
+
+    // POST to keyserver using curl
+    char curl_cmd[1024];
+    snprintf(curl_cmd, sizeof(curl_cmd),
+             "curl -s -X POST \"https://cpunk.io/api/keyserver/register\" "
+             "-H \"Content-Type: application/json\" "
+             "-d @\"%s\"",
+             temp_file);
+
+    FILE *curl_fp = popen(curl_cmd, "r");
+    if (!curl_fp) {
+        unlink(temp_file);
+        fprintf(stderr, "ERROR: Failed to execute curl\n");
+        return -1;
+    }
+
+    // Read response
+    char response[4096];
+    size_t response_len = fread(response, 1, sizeof(response) - 1, curl_fp);
+    response[response_len] = '\0';
+    pclose(curl_fp);
+    unlink(temp_file);
+
+    // Parse response
+    json_object *resp_root = json_tokener_parse(response);
+    if (!resp_root) {
+        fprintf(stderr, "ERROR: Failed to parse keyserver response\n");
+        return -1;
+    }
+
+    json_object *success_obj = NULL;
+    json_object_object_get_ex(resp_root, "success", &success_obj);
+
+    int success = success_obj && json_object_get_boolean(success_obj);
+    json_object_put(resp_root);
+
+    if (success) {
+        printf("✓ Public keys registered successfully!\n");
+        return 0;
+    } else {
+        fprintf(stderr, "ERROR: Keyserver registration failed\n");
+        fprintf(stderr, "Response: %s\n", response);
+        return -1;
+    }
 }
 
 /**
