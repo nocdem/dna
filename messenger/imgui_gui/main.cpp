@@ -313,24 +313,31 @@ private:
         std::string error_msg;
         
         if (name_len > 0) {
-            if (name_len < 3) {
-                name_valid = false;
-                error_msg = "Too short (minimum 3 characters)";
-            } else if (name_len > 20) {
-                name_valid = false;
-                error_msg = "Too long (maximum 20 characters)";
-            } else {
-                // Check for valid characters (alphanumeric and underscore only)
-                for (size_t i = 0; i < name_len; i++) {
-                    char c = new_identity_name[i];
-                    if (!((c >= 'a' && c <= 'z') || 
-                          (c >= 'A' && c <= 'Z') || 
-                          (c >= '0' && c <= '9') || 
-                          c == '_')) {
-                        name_valid = false;
-                        error_msg = "Invalid character (only a-z, A-Z, 0-9, _ allowed)";
-                        break;
-                    }
+            // First check for invalid characters (highest priority)
+            char invalid_char = '\0';
+            for (size_t i = 0; i < name_len; i++) {
+                char c = new_identity_name[i];
+                if (!((c >= 'a' && c <= 'z') || 
+                      (c >= 'A' && c <= 'Z') || 
+                      (c >= '0' && c <= '9') || 
+                      c == '_')) {
+                    name_valid = false;
+                    invalid_char = c;
+                    char buf[64];
+                    snprintf(buf, sizeof(buf), "Invalid character \"%c\"", c);
+                    error_msg = buf;
+                    break;
+                }
+            }
+            
+            // Then check length only if characters are valid
+            if (name_valid) {
+                if (name_len < 3) {
+                    name_valid = false;
+                    error_msg = "Too short (minimum 3 characters)";
+                } else if (name_len > 20) {
+                    name_valid = false;
+                    error_msg = "Too long (maximum 20 characters)";
                 }
             }
         } else {
