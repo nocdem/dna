@@ -110,7 +110,7 @@ static char* sign_json(const char *identity, const char *json_str) {
         if (!home) return NULL;
     }
 
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium.pqkey", home, identity);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium3.pqkey", home, identity);
 
     // Load Dilithium private key
     qgp_key_t *key = NULL;

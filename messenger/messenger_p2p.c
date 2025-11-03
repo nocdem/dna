@@ -108,7 +108,7 @@ static int load_my_privkey(
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium.pqkey",
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium3.pqkey",
              home, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");

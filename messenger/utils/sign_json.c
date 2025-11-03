@@ -67,7 +67,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium.pqkey", home, identity);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium3.pqkey", home, identity);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {

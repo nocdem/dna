@@ -64,7 +64,7 @@ void list_local_identities(void) {
 
     // Simple approach: list .pqkey files
     char cmd[1024];
-    snprintf(cmd, sizeof(cmd), "ls %s/*-dilithium.pqkey 2>/dev/null | sed 's/.*\\///;s/-dilithium.pqkey$//' || echo '  (no identities found)'", dna_dir);
+    snprintf(cmd, sizeof(cmd), "ls %s/*-dilithium3.pqkey 2>/dev/null | sed 's/.*\\///;s/-dilithium3.pqkey$//' || echo '  (no identities found)'", dna_dir);
     system(cmd);
 
     printf("\n");
@@ -87,7 +87,7 @@ char* get_local_identity(void) {
 #ifdef _WIN32
     // Windows: use FindFirstFile
     char search_path[600];
-    snprintf(search_path, sizeof(search_path), "%s\\*-dilithium.pqkey", dna_dir);
+    snprintf(search_path, sizeof(search_path), "%s\\*-dilithium3.pqkey", dna_dir);
 
     WIN32_FIND_DATAA find_data;
     HANDLE hFind = FindFirstFileA(search_path, &find_data);
@@ -96,11 +96,11 @@ char* get_local_identity(void) {
         return NULL;
     }
 
-    // Extract identity from filename (remove -dilithium.pqkey suffix)
+    // Extract identity from filename (remove -dilithium3.pqkey suffix)
     strncpy(identity, find_data.cFileName, sizeof(identity) - 1);
     identity[sizeof(identity) - 1] = '\0';
 
-    char *suffix = strstr(identity, "-dilithium.pqkey");
+    char *suffix = strstr(identity, "-dilithium3.pqkey");
     if (suffix) {
         *suffix = '\0';
     }
@@ -110,7 +110,7 @@ char* get_local_identity(void) {
 #else
     // Unix: use glob
     char pattern[600];
-    snprintf(pattern, sizeof(pattern), "%s/*-dilithium.pqkey", dna_dir);
+    snprintf(pattern, sizeof(pattern), "%s/*-dilithium3.pqkey", dna_dir);
 
     glob_t glob_result;
     if (glob(pattern, GLOB_NOSORT, NULL, &glob_result) == 0 && glob_result.gl_pathc > 0) {
@@ -123,11 +123,11 @@ char* get_local_identity(void) {
             filename = path;
         }
 
-        // Extract identity (remove -dilithium.pqkey suffix)
+        // Extract identity (remove -dilithium3.pqkey suffix)
         strncpy(identity, filename, sizeof(identity) - 1);
         identity[sizeof(identity) - 1] = '\0';
 
-        char *suffix = strstr(identity, "-dilithium.pqkey");
+        char *suffix = strstr(identity, "-dilithium3.pqkey");
         if (suffix) {
             *suffix = '\0';
         }

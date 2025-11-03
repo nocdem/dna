@@ -109,7 +109,7 @@ int cellframe_addr_for_identity(const char *identity, uint64_t net_id, char *add
     }
 
     char pubkey_path[512];
-    snprintf(pubkey_path, sizeof(pubkey_path), "%s/.dna/%s-dilithium.pqkey.pub",
+    snprintf(pubkey_path, sizeof(pubkey_path), "%s/.dna/%s-dilithium3.pqkey.pub",
              home, identity);
 
     // Read public key file

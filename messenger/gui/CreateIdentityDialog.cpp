@@ -350,7 +350,7 @@ void CreateIdentityDialog::validateIdentityName()
 
     // Check if identity already exists locally
     QString homeDir = QDir::homePath();
-    QString keyFile = homeDir + "/.dna/" + identity + "-dilithium.pqkey";
+    QString keyFile = homeDir + "/.dna/" + identity + "-dilithium3.pqkey";
     if (QFile::exists(keyFile)) {
         errorLabel1->setText("❌ Identity already exists locally");
         return;

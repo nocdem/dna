@@ -219,17 +219,6 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
         return -1;
     }
 
-    // Rename key files for messenger compatibility
-    // Messenger expects: <identity>-dilithium.pqkey and <identity>-kyber512.pqkey
-    // QGP creates: <identity>-dilithium3.pqkey and <identity>-kyber512.pqkey
-    char dilithium3_path[512], dilithium_path[512];
-    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
-
-    if (rename(dilithium3_path, dilithium_path) != 0) {
-        fprintf(stderr, "Warning: Could not rename signing key file\n");
-    }
-
     printf("\n✓ Keys uploaded to keyserver\n");
     printf("✓ Identity '%s' is now ready to use!\n\n", identity);
     return 0;
@@ -321,17 +310,6 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
                                 kyber_pk, sizeof(kyber_pk)) != 0) {
         fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
         return -1;
-    }
-
-    // Rename key files for messenger compatibility
-    // Messenger expects: <identity>-dilithium.pqkey and <identity>-kyber512.pqkey
-    // QGP creates: <identity>-dilithium3.pqkey and <identity>-kyber512.pqkey
-    char dilithium3_path[512], dilithium_path[512];
-    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
-
-    if (rename(dilithium3_path, dilithium_path) != 0) {
-        fprintf(stderr, "Warning: Could not rename signing key file\n");
     }
 
     printf("\n✓ Keys restored and uploaded to keyserver\n");
@@ -808,22 +786,14 @@ int messenger_store_pubkey(
         JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE);
 
     // Load private key to sign payload
-    // Try both QGP name (-dilithium3.pqkey) and messenger name (-dilithium.pqkey)
     char key_path[512];
-    qgp_key_t *key = NULL;
+    snprintf(key_path, sizeof(key_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
 
-    // Try messenger name first (after rename)
-    snprintf(key_path, sizeof(key_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
+    qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
-        // Try QGP name (before rename)
-        snprintf(key_path, sizeof(key_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
-        if (qgp_key_load(key_path, &key) != 0 || !key) {
-            fprintf(stderr, "ERROR: Failed to load signing key\n");
-            fprintf(stderr, "  Tried: %s/%s-dilithium.pqkey\n", dna_dir, identity);
-            fprintf(stderr, "  Tried: %s/%s-dilithium3.pqkey\n", dna_dir, identity);
-            json_object_put(payload);
-            return -1;
-        }
+        fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
+        json_object_put(payload);
+        return -1;
     }
 
     if (key->type != QGP_KEY_TYPE_DILITHIUM3 || !key->private_key) {
@@ -1570,7 +1540,7 @@ int messenger_send_message(
     // Load sender's private signing key from filesystem
     const char *home = qgp_platform_home_dir();
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s-dilithium.pqkey", home, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s-dilithium3.pqkey", home, ctx->identity);
 
     qgp_key_t *sender_sign_key = NULL;
     if (qgp_key_load(dilithium_path, &sender_sign_key) != 0) {

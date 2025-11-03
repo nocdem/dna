@@ -53,7 +53,7 @@ QString MainWindow::getLocalIdentity() {
 
 #ifdef _WIN32
     // Windows: use FindFirstFile
-    QString searchPath = dnaDir.filePath("*-dilithium.pqkey");
+    QString searchPath = dnaDir.filePath("*-dilithium3.pqkey");
     WIN32_FIND_DATAA findData;
     HANDLE hFind = FindFirstFileA(searchPath.toUtf8().constData(), &findData);
 
@@ -61,17 +61,17 @@ QString MainWindow::getLocalIdentity() {
         return QString();  // No identity files found
     }
 
-    // Extract identity from filename (remove -dilithium.pqkey suffix)
+    // Extract identity from filename (remove -dilithium3.pqkey suffix)
     QString filename = QString::fromUtf8(findData.cFileName);
     FindClose(hFind);
 
-    if (filename.endsWith("-dilithium.pqkey")) {
-        return filename.left(filename.length() - 16);  // Remove suffix (16 chars: "-dilithium.pqkey")
+    if (filename.endsWith("-dilithium3.pqkey")) {
+        return filename.left(filename.length() - 17);  // Remove suffix (17 chars: "-dilithium3.pqkey")
     }
     return QString();
 #else
     // Unix: use glob
-    QString pattern = dnaDir.filePath("*-dilithium.pqkey");
+    QString pattern = dnaDir.filePath("*-dilithium3.pqkey");
     glob_t globResult;
 
     if (glob(pattern.toUtf8().constData(), GLOB_NOSORT, NULL, &globResult) == 0 && globResult.gl_pathc > 0) {
@@ -81,8 +81,8 @@ QString MainWindow::getLocalIdentity() {
 
         globfree(&globResult);
 
-        if (filename.endsWith("-dilithium.pqkey")) {
-            return filename.left(filename.length() - 16);  // Remove suffix (16 chars: "-dilithium.pqkey")
+        if (filename.endsWith("-dilithium3.pqkey")) {
+            return filename.left(filename.length() - 17);  // Remove suffix (17 chars: "-dilithium3.pqkey")
         }
     }
 
@@ -2566,10 +2566,10 @@ void MainWindow::onManageIdentities() {
     QDir dnaDir = homeDir.filePath(".dna");
 
     if (dnaDir.exists()) {
-        QStringList keyFiles = dnaDir.entryList(QStringList() << "*-dilithium.pqkey", QDir::Files);
+        QStringList keyFiles = dnaDir.entryList(QStringList() << "*-dilithium3.pqkey", QDir::Files);
         for (const QString &keyFile : keyFiles) {
             QString identity = keyFile;
-            identity.remove("-dilithium.pqkey");
+            identity.remove("-dilithium3.pqkey");
 
             QString displayText = QString::fromUtf8("🔑 ") + identity;
             if (identity == currentIdentity) {

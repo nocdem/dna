@@ -102,9 +102,9 @@ void IdentitySelectionDialog::loadIdentities()
         return;
     }
 
-    // Scan for *-dilithium.pqkey files
+    // Scan for *-dilithium3.pqkey files
     QStringList filters;
-    filters << "*-dilithium.pqkey";
+    filters << "*-dilithium3.pqkey";
     QFileInfoList files = dir.entryInfoList(filters, QDir::Files);
 
     if (files.isEmpty()) {
@@ -118,11 +118,11 @@ void IdentitySelectionDialog::loadIdentities()
 
     for (const QFileInfo &fileInfo : files) {
         QString filename = fileInfo.fileName();
-        // Remove "-dilithium.pqkey" suffix (16 characters)
-        QString identity = filename.left(filename.length() - 16);
+        // Remove "-dilithium3.pqkey" suffix (17 characters)
+        QString identity = filename.left(filename.length() - 17);
 
         // Verify both key files exist
-        QString dilithiumKey = dnaDir + "/" + identity + "-dilithium.pqkey";
+        QString dilithiumKey = dnaDir + "/" + identity + "-dilithium3.pqkey";
         QString kyberKey = dnaDir + "/" + identity + "-kyber512.pqkey";
 
         if (QFile::exists(dilithiumKey) && QFile::exists(kyberKey)) {
@@ -131,7 +131,7 @@ void IdentitySelectionDialog::loadIdentities()
         } else {
             incompleteIdentities << identity;
             qWarning() << "[Identity] Incomplete identity found:" << identity
-                      << "(missing" << (QFile::exists(kyberKey) ? "dilithium" : "kyber512") << "key)";
+                      << "(missing" << (QFile::exists(kyberKey) ? "dilithium3" : "kyber512") << "key)";
         }
     }
 
