@@ -808,14 +808,22 @@ int messenger_store_pubkey(
         JSON_C_TO_STRING_PLAIN | JSON_C_TO_STRING_NOSLASHESCAPE);
 
     // Load private key to sign payload
+    // Try both QGP name (-dilithium3.pqkey) and messenger name (-dilithium.pqkey)
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
-
     qgp_key_t *key = NULL;
+
+    // Try messenger name first (after rename)
+    snprintf(key_path, sizeof(key_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
     if (qgp_key_load(key_path, &key) != 0 || !key) {
-        fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
-        json_object_put(payload);
-        return -1;
+        // Try QGP name (before rename)
+        snprintf(key_path, sizeof(key_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
+        if (qgp_key_load(key_path, &key) != 0 || !key) {
+            fprintf(stderr, "ERROR: Failed to load signing key\n");
+            fprintf(stderr, "  Tried: %s/%s-dilithium.pqkey\n", dna_dir, identity);
+            fprintf(stderr, "  Tried: %s/%s-dilithium3.pqkey\n", dna_dir, identity);
+            json_object_put(payload);
+            return -1;
+        }
     }
 
     if (key->type != QGP_KEY_TYPE_DILITHIUM3 || !key->private_key) {
