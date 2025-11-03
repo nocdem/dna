@@ -279,6 +279,20 @@ private:
 #endif
     }
     
+    // Input filter callback for identity name (alphanumeric + underscore only)
+    static int IdentityNameInputFilter(ImGuiInputTextCallbackData* data) {
+        if (data->EventChar < 256) {
+            char c = (char)data->EventChar;
+            if ((c >= 'a' && c <= 'z') || 
+                (c >= 'A' && c <= 'Z') || 
+                (c >= '0' && c <= '9') || 
+                c == '_') {
+                return 0; // Accept
+            }
+        }
+        return 1; // Reject
+    }
+    
     void renderCreateIdentityStep1() {
         // Step 1: Enter identity name
         ImGui::Text("Step 1: Choose Your Identity Name");
@@ -290,7 +304,8 @@ private:
         ImGui::TextWrapped("Requirements: 3-20 characters, letters/numbers/underscore only");
         ImGui::Spacing();
         
-        ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name));
+        ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name), 
+                        ImGuiInputTextFlags_CallbackCharFilter, IdentityNameInputFilter);
         
         // Validate identity name
         size_t name_len = strlen(new_identity_name);
