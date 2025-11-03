@@ -158,7 +158,7 @@ int register_to_keyserver(const char *identity) {
 
     // Export public keys
     printf("Exporting public keys...\n");
-    char *dilithium_pub = export_pubkey(identity, "dilithium");
+    char *dilithium_pub = export_pubkey(identity, "dilithium3");
     if (!dilithium_pub) {
         fprintf(stderr, "Error: Failed to export Dilithium public key\n");
         return -1;

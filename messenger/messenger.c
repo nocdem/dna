@@ -1066,8 +1066,6 @@ int messenger_load_pubkey(
     return 0;
 }
 
-#if 0  // DISABLED: Keyserver list functions (Phase 2/4 - DHT migration pending)
-
 int messenger_list_pubkeys(messenger_context_t *ctx) {
     if (!ctx) {
         return -1;
@@ -1254,8 +1252,6 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
     json_object_put(root);
     return 0;
 }
-
-#endif  // DISABLED: Keyserver list functions
 
 // ============================================================================
 // MESSAGE OPERATIONS

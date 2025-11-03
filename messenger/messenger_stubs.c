@@ -39,22 +39,6 @@ static int get_group_uuid_by_id(int group_id, char *uuid_out) {
 }
 
 // ============================================================================
-// Keyserver stubs (Phase 4 - DHT migration pending)
-// ============================================================================
-
-int messenger_list_pubkeys(messenger_context_t *ctx) {
-    fprintf(stderr, "ERROR: messenger_list_pubkeys() not implemented (DHT migration pending)\n");
-    (void)ctx;
-    return -1;
-}
-
-int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out, int *count_out) {
-    fprintf(stderr, "ERROR: messenger_get_contact_list() not implemented (DHT migration pending)\n");
-    (void)ctx; (void)identities_out; (void)count_out;
-    return -1;
-}
-
-// ============================================================================
 // Group Management - DHT Implementation
 // ============================================================================
 
