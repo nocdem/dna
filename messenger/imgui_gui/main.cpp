@@ -1063,7 +1063,7 @@ int main(int argc, char** argv) {
     config.GlyphMinAdvanceX = 13.0f;
     
     // Default font (larger for better readability)
-    io.Fonts->AddFontFromFileTTF("imgui_gui/misc/fonts/Roboto-Medium.ttf", 18.0f);
+    io.Fonts->AddFontFromFileTTF("/usr/share/fonts/noto/NotoSans-Regular.ttf", 18.0f);
     
     // Merge Font Awesome icons
     config.MergeMode = true;
