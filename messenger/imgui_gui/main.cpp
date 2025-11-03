@@ -177,7 +177,7 @@ private:
         }
         
         // Identity list
-        ImGui::BeginChild("IdentityList", ImVec2(0, -120), true);
+        ImGui::BeginChild("IdentityList", ImVec2(-1, -120), true);
         
         if (identities.empty()) {
             ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No identities found.");
