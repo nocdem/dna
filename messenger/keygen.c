@@ -118,7 +118,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
     if (!dilithium_pk || !dilithium_sk) {
-        fprintf(stderr, "Error: Memory allocation failed for Dilithium3 key buffers\n");
+        fprintf(stderr, "Error: Memory allocation failed for DSA-87 key buffers\n");
         free(dilithium_pk);
         free(dilithium_sk);
         qgp_key_free(sign_key);
@@ -129,7 +129,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
 
     // Generate Dilithium3 keypair
     if (qgp_dsa87_keypair(dilithium_pk, dilithium_sk) != 0) {
-        fprintf(stderr, "Error: Dilithium3 key generation failed\n");
+        fprintf(stderr, "Error: DSA-87 key generation failed\n");
         free(dilithium_pk);
         free(dilithium_sk);
         qgp_key_free(sign_key);
@@ -171,7 +171,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
         if (qgp_dsa87_sign(test_sig, &test_siglen,
                                       (const uint8_t*)test_data, test_len,
                                       sign_key->private_key) != 0) {
-            fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 signing failed\n");
+            fprintf(stderr, "  ✗ CRITICAL ERROR: DSA-87 signing failed\n");
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup;
         }
@@ -180,7 +180,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
         if (qgp_dsa87_verify(test_sig, test_siglen,
                                    (const uint8_t*)test_data, test_len,
                                    sign_key->public_key) != 0) {
-            fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 verification failed\n");
+            fprintf(stderr, "  ✗ CRITICAL ERROR: DSA-87 verification failed\n");
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup;
         }
@@ -219,7 +219,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
 
     // Generate random Kyber512 keypair using vendored implementation
     if (qgp_kem1024_keypair(kyber_pk, kyber_sk) != 0) {
-        fprintf(stderr, "Error: Kyber512 key generation failed\n");
+        fprintf(stderr, "Error: KEM-1024 key generation failed\n");
         free(kyber_pk);
         free(kyber_sk);
         ret = EXIT_CRYPTO_ERROR;
@@ -543,7 +543,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
         uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
         if (!dilithium_pk || !dilithium_sk) {
-            fprintf(stderr, "Error: Memory allocation failed for Dilithium3 key buffers\n");
+            fprintf(stderr, "Error: Memory allocation failed for DSA-87 key buffers\n");
             free(dilithium_pk);
             free(dilithium_sk);
             qgp_key_free(sign_key);
@@ -554,7 +554,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
 
         // Generate deterministic Dilithium3 keypair from seed
         if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
-            fprintf(stderr, "Error: Dilithium3 key generation from seed failed\n");
+            fprintf(stderr, "Error: DSA-87 key generation from seed failed\n");
             free(dilithium_pk);
             free(dilithium_sk);
             qgp_key_free(sign_key);
@@ -597,7 +597,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
         if (qgp_dsa87_sign(test_sig, &test_siglen,
                                       (const uint8_t*)test_data, test_len,
                                       sign_key->private_key) != 0) {
-            fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 signing failed\n");
+            fprintf(stderr, "  ✗ CRITICAL ERROR: DSA-87 signing failed\n");
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup;
         }
@@ -606,7 +606,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
         if (qgp_dsa87_verify(test_sig, test_siglen,
                                    (const uint8_t*)test_data, test_len,
                                    sign_key->public_key) != 0) {
-            fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 verification failed\n");
+            fprintf(stderr, "  ✗ CRITICAL ERROR: DSA-87 verification failed\n");
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup;
         }
@@ -645,7 +645,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
 
     // Generate deterministic Kyber512 keypair from seed
     if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
-        fprintf(stderr, "Error: Deterministic Kyber512 key generation failed\n");
+        fprintf(stderr, "Error: Deterministic KEM-1024 key generation failed\n");
         free(kyber_pk);
         free(kyber_sk);
         ret = EXIT_CRYPTO_ERROR;
@@ -973,7 +973,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
         uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
         if (!dilithium_pk || !dilithium_sk) {
-            fprintf(stderr, "Error: Memory allocation failed for Dilithium3 key buffers\n");
+            fprintf(stderr, "Error: Memory allocation failed for DSA-87 key buffers\n");
             free(dilithium_pk);
             free(dilithium_sk);
             qgp_key_free(sign_key);
@@ -984,7 +984,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
 
         // Generate deterministic Dilithium3 keypair from seed
         if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
-            fprintf(stderr, "Error: Dilithium3 key regeneration from seed failed\n");
+            fprintf(stderr, "Error: DSA-87 key regeneration from seed failed\n");
             free(dilithium_pk);
             free(dilithium_sk);
             qgp_key_free(sign_key);
@@ -1027,7 +1027,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
         if (qgp_dsa87_sign(test_sig, &test_siglen,
                                       (const uint8_t*)test_data, test_len,
                                       sign_key->private_key) != 0) {
-            fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 signing failed\n");
+            fprintf(stderr, "  ✗ CRITICAL ERROR: DSA-87 signing failed\n");
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup_restore;
         }
@@ -1036,7 +1036,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
         if (qgp_dsa87_verify(test_sig, test_siglen,
                                    (const uint8_t*)test_data, test_len,
                                    sign_key->public_key) != 0) {
-            fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 verification failed\n");
+            fprintf(stderr, "  ✗ CRITICAL ERROR: DSA-87 verification failed\n");
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup_restore;
         }
@@ -1075,7 +1075,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
 
     // Generate deterministic Kyber512 keypair from seed
     if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
-        fprintf(stderr, "Error: Deterministic Kyber512 key generation failed\n");
+        fprintf(stderr, "Error: Deterministic KEM-1024 key generation failed\n");
         free(kyber_pk);
         free(kyber_sk);
         ret = EXIT_CRYPTO_ERROR;

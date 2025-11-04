@@ -129,7 +129,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
             goto cleanup;
         }
         memcpy(sign_pubkey, sign_key->public_key, sign_pubkey_size);
-        printf("  ✓ Dilithium3 public key extracted (%lu bytes)\n", sign_pubkey_size);
+        printf("  ✓ DSA-87 public key extracted (%lu bytes)\n", sign_pubkey_size);
     }
 
     // For Kyber, use raw public_key
@@ -193,7 +193,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
              get_sign_algorithm_name(sign_key->type));
     armor_headers[header_count++] = header_buf[2];
 
-    snprintf(header_buf[3], sizeof(header_buf[3]), "EncryptionAlgorithm: Kyber512");
+    snprintf(header_buf[3], sizeof(header_buf[3]), "EncryptionAlgorithm: ML-KEM-1024");
     armor_headers[header_count++] = header_buf[3];
 
     time_t now = time(NULL);

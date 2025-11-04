@@ -286,7 +286,7 @@ int messenger_generate_keys_from_seeds(
     uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
     if (!dilithium_pk || !dilithium_sk) {
-        fprintf(stderr, "Error: Memory allocation failed for Dilithium3 buffers\n");
+        fprintf(stderr, "Error: Memory allocation failed for DSA-87 buffers\n");
         free(dilithium_pk);
         free(dilithium_sk);
         qgp_key_free(sign_key);
@@ -294,7 +294,7 @@ int messenger_generate_keys_from_seeds(
     }
 
     if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
-        fprintf(stderr, "Error: Dilithium3 key generation from seed failed\n");
+        fprintf(stderr, "Error: DSA-87 key generation from seed failed\n");
         free(dilithium_pk);
         free(dilithium_sk);
         qgp_key_free(sign_key);
@@ -336,7 +336,7 @@ int messenger_generate_keys_from_seeds(
     uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
 
     if (!kyber_pk || !kyber_sk) {
-        fprintf(stderr, "Error: Memory allocation failed for Kyber512 buffers\n");
+        fprintf(stderr, "Error: Memory allocation failed for KEM-1024 buffers\n");
         free(kyber_pk);
         free(kyber_sk);
         qgp_key_free(enc_key);
@@ -344,7 +344,7 @@ int messenger_generate_keys_from_seeds(
     }
 
     if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
-        fprintf(stderr, "Error: Kyber512 key generation from seed failed\n");
+        fprintf(stderr, "Error: KEM-1024 key generation from seed failed\n");
         free(kyber_pk);
         free(kyber_sk);
         qgp_key_free(enc_key);
@@ -613,7 +613,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
     if (!dilithium_pk || !dilithium_sk) {
-        fprintf(stderr, "Error: Memory allocation failed for Dilithium3 buffers\n");
+        fprintf(stderr, "Error: Memory allocation failed for DSA-87 buffers\n");
         free(dilithium_pk);
         free(dilithium_sk);
         qgp_key_free(sign_key);
@@ -623,7 +623,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     }
 
     if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
-        fprintf(stderr, "Error: Dilithium3 key generation from seed failed\n");
+        fprintf(stderr, "Error: DSA-87 key generation from seed failed\n");
         free(dilithium_pk);
         free(dilithium_sk);
         qgp_key_free(sign_key);
@@ -671,7 +671,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
 
     if (!kyber_pk || !kyber_sk) {
-        fprintf(stderr, "Error: Memory allocation failed for Kyber512 buffers\n");
+        fprintf(stderr, "Error: Memory allocation failed for KEM-1024 buffers\n");
         free(kyber_pk);
         free(kyber_sk);
         qgp_key_free(enc_key);
@@ -681,7 +681,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     }
 
     if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
-        fprintf(stderr, "Error: Kyber512 key generation from seed failed\n");
+        fprintf(stderr, "Error: KEM-1024 key generation from seed failed\n");
         free(kyber_pk);
         free(kyber_sk);
         qgp_key_free(enc_key);
@@ -1318,7 +1318,7 @@ static int messenger_encrypt_multi_recipient(
     if (qgp_dsa87_sign(qgp_signature_get_bytes(signature), &actual_sig_len,
                                   (const uint8_t*)plaintext, plaintext_len,
                                   sender_sign_key->private_key) != 0) {
-        fprintf(stderr, "Error: Dilithium3 signature creation failed\n");
+        fprintf(stderr, "Error: DSA-87 signature creation failed\n");
         qgp_signature_free(signature);
         goto cleanup;
     }
@@ -1386,7 +1386,7 @@ static int messenger_encrypt_multi_recipient(
 
         // Kyber512 encapsulation
         if (qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_enc_pubkeys[i]) != 0) {
-            fprintf(stderr, "Error: Kyber512 encapsulation failed for recipient %zu\n", i+1);
+            fprintf(stderr, "Error: KEM-1024 encapsulation failed for recipient %zu\n", i+1);
             memset(kek, 0, 32);
             goto cleanup;
         }

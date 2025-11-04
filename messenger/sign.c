@@ -79,14 +79,14 @@ int cmd_sign_file(const char *input_file, const char *key_path, const char *outp
                 &actual_sig_len,
                 file_data, file_size,
                 sign_key->private_key) != 0) {
-            fprintf(stderr, "Error: Dilithium3 signature creation failed\n");
+            fprintf(stderr, "Error: DSA-87 signature creation failed\n");
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup;
         }
 
         // Update signature size with actual length
         signature->signature_size = actual_sig_len;
-        printf("Dilithium3 signature created (%zu bytes)\n", actual_sig_len);
+        printf("ML-DSA-87 signature created (%zu bytes)\n", actual_sig_len);
 
         // Protocol Mode: MANDATORY round-trip verification
         printf("Performing round-trip verification...\n");

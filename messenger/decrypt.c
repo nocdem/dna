@@ -82,7 +82,7 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
     int ret = EXIT_ERROR;
     int found_entry = -1;
 
-    printf("Decrypting file with Kyber512 KEM + AES-256-GCM (AEAD)\n");
+    printf("Decrypting file with ML-KEM-1024 + AES-256-GCM (AEAD)\n");
     printf("  Input file: %s\n", input_file);
     printf("  Output file: %s\n", output_file);
     printf("  Encryption key: %s\n", key_path);
@@ -108,7 +108,7 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
 
     // Verify it's a Kyber512 encryption key
     if (enc_key->type != QGP_KEY_TYPE_KEM1024) {
-        fprintf(stderr, "Error: Key is not a Kyber512 encryption key (type: %d)\n", enc_key->type);
+        fprintf(stderr, "Error: Key is not a KEM-1024 encryption key (type: %d)\n", enc_key->type);
         ret = EXIT_KEY_ERROR;
         goto cleanup;
     }
@@ -153,7 +153,7 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
     }
 
     if (header.enc_key_type != DAP_ENC_KEY_TYPE_KEM_KYBER512) {
-        fprintf(stderr, "Error: File not encrypted with Kyber512 KEM\n");
+        fprintf(stderr, "Error: File not encrypted with ML-KEM-1024\n");
         fclose(in_fp);
         ret = EXIT_ERROR;
         goto cleanup;
@@ -399,7 +399,7 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
 
 
         if (signature->type != QGP_SIG_TYPE_DILITHIUM) {
-            fprintf(stderr, "  ✗ Error: Only Dilithium3 signatures are supported\n");
+            fprintf(stderr, "  ✗ Error: Only ML-DSA-87 signatures are supported\n");
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup;
         }
@@ -416,7 +416,7 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
         if (qgp_dsa87_verify(sig_bytes, sig_size, decrypted_data, decrypted_size, public_key) == 0) {
             printf("  ✓ Signature verified successfully\n");
             printf("  ✓ File authenticity confirmed\n");
-            printf("  ✓ Algorithm: Dilithium3\n");
+            printf("  ✓ Algorithm: ML-DSA-87\n");
         } else {
             fprintf(stderr, "  ✗ ERROR: Signature verification FAILED\n");
             fprintf(stderr, "  ✗ File has been tampered with or sent by wrong sender\n");

@@ -175,7 +175,7 @@ static int load_recipient_pubkey(const char *pubkey_file, uint8_t **pubkey_out, 
 
 
     if (header.enc_key_type != QGP_KEY_TYPE_KEM1024) {
-        fprintf(stderr, "Error: Public key does not contain Kyber512 encryption key (got type: %d)\n", header.enc_key_type);
+        fprintf(stderr, "Error: Public key does not contain ML-KEM-1024 encryption key (got type: %d)\n", header.enc_key_type);
         free(bundle_data);
         return EXIT_ERROR;
     }
@@ -210,7 +210,7 @@ static int load_recipient_pubkey(const char *pubkey_file, uint8_t **pubkey_out, 
     } else {
         printf("✓ Loaded recipient public key\n");
     }
-    printf("  Kyber512 public key: %u bytes\n", header.enc_pubkey_size);
+    printf("  ML-KEM-1024 public key: %u bytes\n", header.enc_pubkey_size);
 
     *pubkey_out = pubkey;
     *pubkey_size_out = header.enc_pubkey_size;
@@ -265,7 +265,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
     size_t ciphertext_size = 0;
     size_t signature_size = 0;
 
-    printf("Encrypting and signing file for %zu recipient(s) with Kyber512 KEM + AES-256\n", recipient_count);
+    printf("Encrypting and signing file for %zu recipient(s) with ML-KEM-1024 + AES-256\n", recipient_count);
     printf("  Input file: %s\n", input_file);
     printf("  Output file: %s\n", output_file);
     printf("  Signing key: %s\n", signing_key_path);
@@ -387,7 +387,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
 
 
     if (sign_key->type != QGP_KEY_TYPE_DSA87) {
-        fprintf(stderr, "Error: Only Dilithium3 signatures are supported\n");
+        fprintf(stderr, "Error: Only ML-DSA-87 signatures are supported\n");
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
     }
@@ -413,7 +413,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
             &actual_sig_len,
             plaintext, plaintext_size,
             sign_key->private_key) != 0) {
-        fprintf(stderr, "Error: Dilithium3 signature creation failed\n");
+        fprintf(stderr, "Error: DSA-87 signature creation failed\n");
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
     }
@@ -457,7 +457,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
 
     printf("  ✓ File signed successfully\n");
     printf("  ✓ Signature size: %zu bytes\n", signature_size);
-    printf("  ✓ Algorithm: Dilithium3\n");
+    printf("  ✓ Algorithm: ML-DSA-87\n");
 
     // ======================================================================
     // STEP 6: Generate random DEK (Data Encryption Key)
@@ -551,7 +551,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
 
         // Perform Kyber512 encapsulation: KEM.Encaps(recipient_pubkey) → (ciphertext, shared_secret/KEK)
         if (qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_pubkeys[i]) != 0) {
-            fprintf(stderr, "Error: Kyber512 encapsulation failed for recipient %zu\n", i+1);
+            fprintf(stderr, "Error: KEM-1024 encapsulation failed for recipient %zu\n", i+1);
             free(kyber_ciphertext);
             memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);  // Wipe KEK before freeing
             free(kek);
@@ -559,7 +559,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
             goto cleanup;
         }
 
-        printf("  ✓ Kyber512 encapsulation successful\n");
+        printf("  ✓ KEM-1024 encapsulation successful\n");
 
         // Wrap DEK with KEK using AES Key Wrap (RFC 3394)
         uint8_t wrapped_dek[40];  // 32-byte DEK + 8-byte IV

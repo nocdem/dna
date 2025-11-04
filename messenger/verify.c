@@ -130,7 +130,7 @@ int cmd_verify_file(const char *input_file, const char *sig_file) {
     } else {
         // QGP only supports Dilithium3 signatures
         fprintf(stderr, "Error: Unsupported signature algorithm\n");
-        fprintf(stderr, "QGP only supports Dilithium3 (ML-DSA-65) signatures\n");
+        fprintf(stderr, "QGP only supports ML-DSA-87 signatures\n");
         verify_result = -1;
     }
 

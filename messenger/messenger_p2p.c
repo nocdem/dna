@@ -504,7 +504,7 @@ int messenger_p2p_init(messenger_context_t *ctx)
 
     // Load Kyber512 key
     if (load_my_kyber_key(ctx, &kyber_key, &kyber_key_len) != 0) {
-        fprintf(stderr, "[P2P] Failed to load Kyber512 key\n");
+        fprintf(stderr, "[P2P] Failed to load KEM-1024 key\n");
         free(dilithium_privkey);
         free(dilithium_pubkey);
         return -1;
