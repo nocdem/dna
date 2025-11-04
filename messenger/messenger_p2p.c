@@ -79,7 +79,7 @@ static int load_my_dilithium_pubkey(
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium3.pqkey",
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa",
              home, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
@@ -189,7 +189,7 @@ static int load_my_privkey(
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium3.pqkey",
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa",
              home, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
@@ -262,7 +262,7 @@ static int load_my_kyber_key(
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-kyber512.pqkey",
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.kem",
              home, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");

@@ -2,7 +2,7 @@
  * DNA Messenger - CLI Messenger Module
  *
  * Storage Architecture:
- * - Private keys: ~/.dna/<identity>-dilithium3.pqkey, <identity>-kyber512.pqkey (filesystem)
+ * - Private keys: ~/.dna/<identity>.dsa, <identity>.kem (filesystem)
  * - Public keys: DHT-based keyserver (decentralized, permanent)
  * - Messages: SQLite local database (user owns their data)
  *
@@ -103,8 +103,8 @@ void messenger_free(messenger_context_t *ctx);
  * Generate new key pair for identity
  *
  * Creates:
- * - ~/.dna/<identity>-dilithium3.pqkey (private signing key)
- * - ~/.dna/<identity>-kyber512.pqkey (private encryption key)
+ * - ~/.dna/<identity>.dsa (private signing key)
+ * - ~/.dna/<identity>.kem (private encryption key)
  * - Uploads public keys to PostgreSQL keyserver
  *
  * @param ctx: Messenger context

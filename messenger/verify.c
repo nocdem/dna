@@ -1,7 +1,7 @@
 /*
  * pqsignum - Signature verification
  *
- * - qgp_dilithium3_verify() for Dilithium3 (vendored)
+ * - qgp_dsa87_verify() for Dilithium3 (vendored)
  * - Uses QGP's own signature format
  */
 
@@ -122,7 +122,7 @@ int cmd_verify_file(const char *input_file, const char *sig_file) {
         size_t sig_len = signature->signature_size;
 
         // Verify using Dilithium3 directly
-        verify_result = qgp_dilithium3_verify(
+        verify_result = qgp_dsa87_verify(
             sig, sig_len,
             file_data, file_size,
             pub_key

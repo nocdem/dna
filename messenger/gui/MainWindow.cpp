@@ -54,7 +54,7 @@ QString MainWindow::getLocalIdentity() {
 
 #ifdef _WIN32
     // Windows: use FindFirstFile
-    QString searchPath = dnaDir.filePath("*-dilithium3.pqkey");
+    QString searchPath = dnaDir.filePath("*.dsa");
     WIN32_FIND_DATAA findData;
     HANDLE hFind = FindFirstFileA(searchPath.toUtf8().constData(), &findData);
 
@@ -62,17 +62,17 @@ QString MainWindow::getLocalIdentity() {
         return QString();  // No identity files found
     }
 
-    // Extract identity from filename (remove -dilithium3.pqkey suffix)
+    // Extract identity from filename (remove .dsa suffix)
     QString filename = QString::fromUtf8(findData.cFileName);
     FindClose(hFind);
 
-    if (filename.endsWith("-dilithium3.pqkey")) {
-        return filename.left(filename.length() - 17);  // Remove suffix (17 chars: "-dilithium3.pqkey")
+    if (filename.endsWith(".dsa")) {
+        return filename.left(filename.length() - 4);  // Remove suffix (4 chars: ".dsa")
     }
     return QString();
 #else
     // Unix: use glob
-    QString pattern = dnaDir.filePath("*-dilithium3.pqkey");
+    QString pattern = dnaDir.filePath("*.dsa");
     glob_t globResult;
 
     if (glob(pattern.toUtf8().constData(), GLOB_NOSORT, NULL, &globResult) == 0 && globResult.gl_pathc > 0) {
@@ -82,8 +82,8 @@ QString MainWindow::getLocalIdentity() {
 
         globfree(&globResult);
 
-        if (filename.endsWith("-dilithium3.pqkey")) {
-            return filename.left(filename.length() - 17);  // Remove suffix (17 chars: "-dilithium3.pqkey")
+        if (filename.endsWith(".dsa")) {
+            return filename.left(filename.length() - 4);  // Remove suffix (4 chars: ".dsa")
         }
     }
 
@@ -2636,8 +2636,8 @@ void MainWindow::onPublishKeys() {
 
     // Get home directory (platform-specific)
     QString homeDir = QDir::homePath();
-    QString dilithiumPath = homeDir + "/.dna/" + currentIdentity + "-dilithium3.pqkey";
-    QString kyberPath = homeDir + "/.dna/" + currentIdentity + "-kyber512.pqkey";
+    QString dilithiumPath = homeDir + "/.dna/" + currentIdentity + ".dsa";
+    QString kyberPath = homeDir + "/.dna/" + currentIdentity + ".kem";
 
     // Load Dilithium public key (skip 276 byte header, then read 1952 bytes public key)
     // File format: [HEADER: 276 bytes][PUBLIC_KEY: 1952 bytes][PRIVATE_KEY: 4032 bytes]
@@ -2784,10 +2784,10 @@ void MainWindow::onManageIdentities() {
     QDir dnaDir = homeDir.filePath(".dna");
 
     if (dnaDir.exists()) {
-        QStringList keyFiles = dnaDir.entryList(QStringList() << "*-dilithium3.pqkey", QDir::Files);
+        QStringList keyFiles = dnaDir.entryList(QStringList() << "*.dsa", QDir::Files);
         for (const QString &keyFile : keyFiles) {
             QString identity = keyFile;
-            identity.remove("-dilithium3.pqkey");
+            identity.remove(".dsa");
 
             QString displayText = QString::fromUtf8("🔑 ") + identity;
             if (identity == currentIdentity) {

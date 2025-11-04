@@ -25,8 +25,8 @@
  */
 typedef enum {
     QGP_KEY_TYPE_INVALID = 0,
-    QGP_KEY_TYPE_DILITHIUM3 = 1,    // Post-quantum signature (ML-DSA-87, FIPS 204, Category 5)
-    QGP_KEY_TYPE_KYBER512 = 2       // Post-quantum KEM (ML-KEM-1024, FIPS 203, Category 5)
+    QGP_KEY_TYPE_DSA87 = 1,    // Post-quantum signature (ML-DSA-87, FIPS 204, Category 5)
+    QGP_KEY_TYPE_KEM1024 = 2   // Post-quantum KEM (ML-KEM-1024, FIPS 203, Category 5)
 } qgp_key_type_t;
 
 /**
@@ -34,8 +34,8 @@ typedef enum {
  */
 typedef enum {
     QGP_KEY_PURPOSE_UNKNOWN = 0,
-    QGP_KEY_PURPOSE_SIGNING = 1,     // Dilithium3 signing keys
-    QGP_KEY_PURPOSE_ENCRYPTION = 2   // Kyber512 encryption keys
+    QGP_KEY_PURPOSE_SIGNING = 1,     // DSA-87 signing keys
+    QGP_KEY_PURPOSE_ENCRYPTION = 2   // KEM-1024 encryption keys
 } qgp_key_purpose_t;
 
 // ============================================================================
@@ -50,8 +50,8 @@ typedef enum {
  * - Clear ownership (caller manages memory)
  *
  * Key Sizes (Category 5):
- * - Dilithium5 (ML-DSA-87): public=2592, private=4896
- * - Kyber1024 (ML-KEM-1024): public=1568, private=3168
+ * - DSA-87 (ML-DSA-87): public=2592, private=4896
+ * - KEM-1024 (ML-KEM-1024): public=1568, private=3168
  */
 typedef struct {
     qgp_key_type_t type;          // Algorithm type
@@ -78,7 +78,7 @@ typedef struct {
  */
 typedef enum {
     QGP_SIG_TYPE_INVALID = 0,
-    QGP_SIG_TYPE_DILITHIUM = 1   // Only Dilithium3 supported
+    QGP_SIG_TYPE_DILITHIUM = 1   // Only DSA-87 supported
 } qgp_sig_type_t;
 
 /**
@@ -93,8 +93,8 @@ typedef enum {
  */
 typedef struct {
     qgp_sig_type_t type;          // Signature algorithm
-    uint16_t public_key_size;     // Public key size (2592 for Dilithium5)
-    uint16_t signature_size;      // Signature size (up to 4627 for Dilithium5)
+    uint16_t public_key_size;     // Public key size (2592 for DSA-87)
+    uint16_t signature_size;      // Signature size (up to 4627 for DSA-87)
     uint8_t *data;                // public_key || signature (caller owns)
 } qgp_signature_t;
 
@@ -134,7 +134,7 @@ typedef struct {
 // ============================================================================
 
 /*
- * Kyber512 KEM key type identifier (value: 23) for backward compatibility
+ * KEM-1024 key type identifier (value: 23) for backward compatibility
  */
 #define DAP_ENC_KEY_TYPE_KEM_KYBER512 23
 

@@ -20,7 +20,7 @@
 
 static qgp_key_type_t get_sign_key_type(const char *algo) {
     if (strcasecmp(algo, "dilithium") == 0) {
-        return QGP_KEY_TYPE_DILITHIUM3;
+        return QGP_KEY_TYPE_DSA87;
     } else {
         fprintf(stderr, "Error: Unknown algorithm '%s'\n", algo);
         fprintf(stderr, "QGP only supports: dilithium (FIPS 204 / ML-DSA-65)\n");
@@ -32,8 +32,8 @@ static qgp_key_type_t get_sign_key_type(const char *algo) {
  * Generate keypair for pqsignum
  *
  * Creates TWO key files (PQSigNum format):
- * 1. <name>-signing.pqkey - Signing key (Dilithium3 only)
- * 2. <name>-encryption.pqkey - Encryption key (Kyber512 KEM)
+ * 1. <name>.dsa - Signing key (ML-DSA-87)
+ * 2. <name>.kem - Encryption key (ML-KEM-1024)
  *
  * Protocol Mode:
  * - All keys verified with round-trip tests
@@ -70,8 +70,8 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     // Build key file paths (algorithm-aware naming)
     char sign_filename[512];
     char enc_filename[512];
-    snprintf(sign_filename, sizeof(sign_filename), "%s-dilithium3.pqkey", name);
-    snprintf(enc_filename, sizeof(enc_filename), "%s-kyber512.pqkey", name);
+    snprintf(sign_filename, sizeof(sign_filename), "%s.dsa", name);
+    snprintf(enc_filename, sizeof(enc_filename), "%s.kem", name);
 
     sign_key_path = build_path(output_dir, sign_filename);
     enc_key_path = build_path(output_dir, enc_filename);
@@ -104,7 +104,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     printf("\n[1/2] Generating signing key (%s)...\n", algo);
 
 
-    sign_key = qgp_key_new(QGP_KEY_TYPE_DILITHIUM3, QGP_KEY_PURPOSE_SIGNING);
+    sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
     if (!sign_key) {
         fprintf(stderr, "Error: Memory allocation failed for signing key\n");
         ret = EXIT_ERROR;
@@ -114,8 +114,8 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     strncpy(sign_key->name, name, sizeof(sign_key->name) - 1);
 
     // Allocate Dilithium3 key buffers
-    uint8_t *dilithium_pk = calloc(1, QGP_DILITHIUM3_PUBLICKEYBYTES);
-    uint8_t *dilithium_sk = calloc(1, QGP_DILITHIUM3_SECRETKEYBYTES);
+    uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
+    uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
     if (!dilithium_pk || !dilithium_sk) {
         fprintf(stderr, "Error: Memory allocation failed for Dilithium3 key buffers\n");
@@ -128,7 +128,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     }
 
     // Generate Dilithium3 keypair
-    if (qgp_dilithium3_keypair(dilithium_pk, dilithium_sk) != 0) {
+    if (qgp_dsa87_keypair(dilithium_pk, dilithium_sk) != 0) {
         fprintf(stderr, "Error: Dilithium3 key generation failed\n");
         free(dilithium_pk);
         free(dilithium_sk);
@@ -140,13 +140,13 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
 
     // Store in qgp_key_t structure
     sign_key->public_key = dilithium_pk;
-    sign_key->public_key_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+    sign_key->public_key_size = QGP_DSA87_PUBLICKEYBYTES;
     sign_key->private_key = dilithium_sk;
-    sign_key->private_key_size = QGP_DILITHIUM3_SECRETKEYBYTES;
+    sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
     printf("  ✓ Dilithium3 (ML-DSA-65) signing key generated\n");
-    printf("  ✓ Public key: %d bytes\n", QGP_DILITHIUM3_PUBLICKEYBYTES);
-    printf("  ✓ Secret key: %d bytes\n", QGP_DILITHIUM3_SECRETKEYBYTES);
+    printf("  ✓ Public key: %d bytes\n", QGP_DSA87_PUBLICKEYBYTES);
+    printf("  ✓ Secret key: %d bytes\n", QGP_DSA87_SECRETKEYBYTES);
 
     // Save signing key in QGP format
     if (qgp_key_save(sign_key, sign_key_path) != 0) {
@@ -163,12 +163,12 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     size_t test_len = strlen(test_data);
 
 
-    if (sign_key->type == QGP_KEY_TYPE_DILITHIUM3) {
-        uint8_t test_sig[QGP_DILITHIUM3_BYTES];
+    if (sign_key->type == QGP_KEY_TYPE_DSA87) {
+        uint8_t test_sig[QGP_DSA87_SIGNATURE_BYTES];
         size_t test_siglen = 0;
 
         // Sign test data
-        if (qgp_dilithium3_signature(test_sig, &test_siglen,
+        if (qgp_dsa87_sign(test_sig, &test_siglen,
                                       (const uint8_t*)test_data, test_len,
                                       sign_key->private_key) != 0) {
             fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 signing failed\n");
@@ -177,7 +177,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
         }
 
         // Verify signature
-        if (qgp_dilithium3_verify(test_sig, test_siglen,
+        if (qgp_dsa87_verify(test_sig, test_siglen,
                                    (const uint8_t*)test_data, test_len,
                                    sign_key->public_key) != 0) {
             fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 verification failed\n");
@@ -196,7 +196,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     printf("\n[2/2] Generating encryption key (Kyber512 KEM)...\n");
 
 
-    enc_key = qgp_key_new(QGP_KEY_TYPE_KYBER512, QGP_KEY_PURPOSE_ENCRYPTION);
+    enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
     if (!enc_key) {
         fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
         ret = EXIT_ERROR;
@@ -206,8 +206,8 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     strncpy(enc_key->name, name, sizeof(enc_key->name) - 1);
 
     // Allocate buffers for Kyber keypair
-    uint8_t *kyber_pk = calloc(1, QGP_KYBER512_PUBLICKEYBYTES);
-    uint8_t *kyber_sk = calloc(1, QGP_KYBER512_SECRETKEYBYTES);
+    uint8_t *kyber_pk = calloc(1, QGP_KEM1024_PUBLICKEYBYTES);
+    uint8_t *kyber_sk = calloc(1, QGP_KEM1024_SECRETKEYBYTES);
 
     if (!kyber_pk || !kyber_sk) {
         fprintf(stderr, "Error: Memory allocation failed for Kyber key buffers\n");
@@ -218,7 +218,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     }
 
     // Generate random Kyber512 keypair using vendored implementation
-    if (qgp_kyber512_keypair(kyber_pk, kyber_sk) != 0) {
+    if (qgp_kem1024_keypair(kyber_pk, kyber_sk) != 0) {
         fprintf(stderr, "Error: Kyber512 key generation failed\n");
         free(kyber_pk);
         free(kyber_sk);
@@ -228,9 +228,9 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
 
     // Store in qgp_key_t structure
     enc_key->public_key = kyber_pk;
-    enc_key->public_key_size = QGP_KYBER512_PUBLICKEYBYTES;
+    enc_key->public_key_size = QGP_KEM1024_PUBLICKEYBYTES;
     enc_key->private_key = kyber_sk;
-    enc_key->private_key_size = QGP_KYBER512_SECRETKEYBYTES;
+    enc_key->private_key_size = QGP_KEM1024_SECRETKEYBYTES;
 
     printf("  ✓ Kyber512 KEM key generated\n");
 
@@ -354,8 +354,8 @@ cleanup:
  * Generate keypair from randomly generated BIP39 mnemonic
  *
  * Creates TWO key files (PQSigNum format) from deterministic seeds:
- * 1. <name>-signing.pqkey - Signing key (Dilithium/Falcon/SPHINCS+)
- * 2. <name>-encryption.pqkey - Encryption key (Kyber512 KEM)
+ * 1. <name>.dsa - Signing key (ML-DSA-87)
+ * 2. <name>.kem - Encryption key (ML-KEM-1024)
  *
  * Seed Derivation:
  * - Generates random 24-word BIP39 mnemonic
@@ -494,8 +494,8 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
     // Build key file paths (algorithm-aware naming)
     char sign_filename[512];
     char enc_filename[512];
-    snprintf(sign_filename, sizeof(sign_filename), "%s-dilithium3.pqkey", name);
-    snprintf(enc_filename, sizeof(enc_filename), "%s-kyber512.pqkey", name);
+    snprintf(sign_filename, sizeof(sign_filename), "%s.dsa", name);
+    snprintf(enc_filename, sizeof(enc_filename), "%s.kem", name);
 
     sign_key_path = build_path(output_dir, sign_filename);
     enc_key_path = build_path(output_dir, enc_filename);
@@ -528,8 +528,8 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
     printf("\n  [1/2] Generating signing key from seed (%s)...\n", algo);
 
 
-    if (sign_key_type == QGP_KEY_TYPE_DILITHIUM3) {
-        sign_key = qgp_key_new(QGP_KEY_TYPE_DILITHIUM3, QGP_KEY_PURPOSE_SIGNING);
+    if (sign_key_type == QGP_KEY_TYPE_DSA87) {
+        sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
         if (!sign_key) {
             fprintf(stderr, "Error: Memory allocation failed for signing key\n");
             ret = EXIT_ERROR;
@@ -539,8 +539,8 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
         strncpy(sign_key->name, name, sizeof(sign_key->name) - 1);
 
         // Allocate Dilithium3 key buffers
-        uint8_t *dilithium_pk = calloc(1, QGP_DILITHIUM3_PUBLICKEYBYTES);
-        uint8_t *dilithium_sk = calloc(1, QGP_DILITHIUM3_SECRETKEYBYTES);
+        uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
+        uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
         if (!dilithium_pk || !dilithium_sk) {
             fprintf(stderr, "Error: Memory allocation failed for Dilithium3 key buffers\n");
@@ -553,7 +553,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
         }
 
         // Generate deterministic Dilithium3 keypair from seed
-        if (qgp_dilithium3_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
+        if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
             fprintf(stderr, "Error: Dilithium3 key generation from seed failed\n");
             free(dilithium_pk);
             free(dilithium_sk);
@@ -565,13 +565,13 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
 
         // Store in qgp_key_t structure
         sign_key->public_key = dilithium_pk;
-        sign_key->public_key_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+        sign_key->public_key_size = QGP_DSA87_PUBLICKEYBYTES;
         sign_key->private_key = dilithium_sk;
-        sign_key->private_key_size = QGP_DILITHIUM3_SECRETKEYBYTES;
+        sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
         printf("  ✓ Dilithium3 (ML-DSA-65) signing key generated from seed (deterministic)\n");
-        printf("  ✓ Public key: %d bytes\n", QGP_DILITHIUM3_PUBLICKEYBYTES);
-        printf("  ✓ Secret key: %d bytes\n", QGP_DILITHIUM3_SECRETKEYBYTES);
+        printf("  ✓ Public key: %d bytes\n", QGP_DSA87_PUBLICKEYBYTES);
+        printf("  ✓ Secret key: %d bytes\n", QGP_DSA87_SECRETKEYBYTES);
     }
 
     // Save signing key in QGP format
@@ -589,12 +589,12 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
     size_t test_len = strlen(test_data);
 
 
-    if (sign_key->type == QGP_KEY_TYPE_DILITHIUM3) {
-        uint8_t test_sig[QGP_DILITHIUM3_BYTES];
+    if (sign_key->type == QGP_KEY_TYPE_DSA87) {
+        uint8_t test_sig[QGP_DSA87_SIGNATURE_BYTES];
         size_t test_siglen = 0;
 
         // Sign test data
-        if (qgp_dilithium3_signature(test_sig, &test_siglen,
+        if (qgp_dsa87_sign(test_sig, &test_siglen,
                                       (const uint8_t*)test_data, test_len,
                                       sign_key->private_key) != 0) {
             fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 signing failed\n");
@@ -603,7 +603,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
         }
 
         // Verify signature
-        if (qgp_dilithium3_verify(test_sig, test_siglen,
+        if (qgp_dsa87_verify(test_sig, test_siglen,
                                    (const uint8_t*)test_data, test_len,
                                    sign_key->public_key) != 0) {
             fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 verification failed\n");
@@ -622,7 +622,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
     printf("\n  [2/2] Generating encryption key from seed (Kyber512 KEM)...\n");
 
 
-    enc_key = qgp_key_new(QGP_KEY_TYPE_KYBER512, QGP_KEY_PURPOSE_ENCRYPTION);
+    enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
     if (!enc_key) {
         fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
         ret = EXIT_ERROR;
@@ -792,8 +792,8 @@ cleanup:
  * Restore keypair from existing BIP39 mnemonic
  *
  * Creates TWO key files (PQSigNum format) from user-provided mnemonic:
- * 1. <name>-signing.pqkey - Signing key (Dilithium/Falcon/SPHINCS+)
- * 2. <name>-encryption.pqkey - Encryption key (Kyber512 KEM)
+ * 1. <name>.dsa - Signing key (ML-DSA-87)
+ * 2. <name>.kem - Encryption key (ML-KEM-1024)
  *
  * Recovery Workflow:
  * - Prompts user for existing 24-word BIP39 mnemonic
@@ -924,8 +924,8 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     // Build key file paths (algorithm-aware naming)
     char sign_filename[512];
     char enc_filename[512];
-    snprintf(sign_filename, sizeof(sign_filename), "%s-dilithium3.pqkey", name);
-    snprintf(enc_filename, sizeof(enc_filename), "%s-kyber512.pqkey", name);
+    snprintf(sign_filename, sizeof(sign_filename), "%s.dsa", name);
+    snprintf(enc_filename, sizeof(enc_filename), "%s.kem", name);
 
     sign_key_path = build_path(output_dir, sign_filename);
     enc_key_path = build_path(output_dir, enc_filename);
@@ -958,8 +958,8 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     printf("\n  [1/2] Regenerating signing key from seed (%s)...\n", algo);
 
 
-    if (sign_key_type == QGP_KEY_TYPE_DILITHIUM3) {
-        sign_key = qgp_key_new(QGP_KEY_TYPE_DILITHIUM3, QGP_KEY_PURPOSE_SIGNING);
+    if (sign_key_type == QGP_KEY_TYPE_DSA87) {
+        sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
         if (!sign_key) {
             fprintf(stderr, "Error: Memory allocation failed for signing key\n");
             ret = EXIT_ERROR;
@@ -969,8 +969,8 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
         strncpy(sign_key->name, name, sizeof(sign_key->name) - 1);
 
         // Allocate Dilithium3 key buffers
-        uint8_t *dilithium_pk = calloc(1, QGP_DILITHIUM3_PUBLICKEYBYTES);
-        uint8_t *dilithium_sk = calloc(1, QGP_DILITHIUM3_SECRETKEYBYTES);
+        uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
+        uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
         if (!dilithium_pk || !dilithium_sk) {
             fprintf(stderr, "Error: Memory allocation failed for Dilithium3 key buffers\n");
@@ -983,7 +983,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
         }
 
         // Generate deterministic Dilithium3 keypair from seed
-        if (qgp_dilithium3_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
+        if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
             fprintf(stderr, "Error: Dilithium3 key regeneration from seed failed\n");
             free(dilithium_pk);
             free(dilithium_sk);
@@ -995,13 +995,13 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
 
         // Store in qgp_key_t structure
         sign_key->public_key = dilithium_pk;
-        sign_key->public_key_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+        sign_key->public_key_size = QGP_DSA87_PUBLICKEYBYTES;
         sign_key->private_key = dilithium_sk;
-        sign_key->private_key_size = QGP_DILITHIUM3_SECRETKEYBYTES;
+        sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
         printf("  ✓ Dilithium3 (ML-DSA-65) signing key regenerated from seed (deterministic)\n");
-        printf("  ✓ Public key: %d bytes\n", QGP_DILITHIUM3_PUBLICKEYBYTES);
-        printf("  ✓ Secret key: %d bytes\n", QGP_DILITHIUM3_SECRETKEYBYTES);
+        printf("  ✓ Public key: %d bytes\n", QGP_DSA87_PUBLICKEYBYTES);
+        printf("  ✓ Secret key: %d bytes\n", QGP_DSA87_SECRETKEYBYTES);
     }
 
     // Save signing key in QGP format
@@ -1019,12 +1019,12 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     size_t test_len = strlen(test_data);
 
 
-    if (sign_key->type == QGP_KEY_TYPE_DILITHIUM3) {
-        uint8_t test_sig[QGP_DILITHIUM3_BYTES];
+    if (sign_key->type == QGP_KEY_TYPE_DSA87) {
+        uint8_t test_sig[QGP_DSA87_SIGNATURE_BYTES];
         size_t test_siglen = 0;
 
         // Sign test data
-        if (qgp_dilithium3_signature(test_sig, &test_siglen,
+        if (qgp_dsa87_sign(test_sig, &test_siglen,
                                       (const uint8_t*)test_data, test_len,
                                       sign_key->private_key) != 0) {
             fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 signing failed\n");
@@ -1033,7 +1033,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
         }
 
         // Verify signature
-        if (qgp_dilithium3_verify(test_sig, test_siglen,
+        if (qgp_dsa87_verify(test_sig, test_siglen,
                                    (const uint8_t*)test_data, test_len,
                                    sign_key->public_key) != 0) {
             fprintf(stderr, "  ✗ CRITICAL ERROR: Dilithium3 verification failed\n");
@@ -1052,7 +1052,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     printf("\n  [2/2] Regenerating encryption key from seed (Kyber512 KEM)...\n");
 
 
-    enc_key = qgp_key_new(QGP_KEY_TYPE_KYBER512, QGP_KEY_PURPOSE_ENCRYPTION);
+    enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
     if (!enc_key) {
         fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
         ret = EXIT_ERROR;

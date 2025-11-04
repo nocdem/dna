@@ -98,16 +98,16 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
-    if (pubkey_len != QGP_DILITHIUM3_PUBLICKEYBYTES) {
+    if (pubkey_len != QGP_DSA87_PUBLICKEYBYTES) {
         fprintf(stderr, "Error: Invalid public key length (%zu, expected %d)\n",
-                pubkey_len, QGP_DILITHIUM3_PUBLICKEYBYTES);
+                pubkey_len, QGP_DSA87_PUBLICKEYBYTES);
         free(signature);
         free(pubkey);
         return 2;
     }
 
     // Verify signature
-    int result = qgp_dilithium3_verify(
+    int result = qgp_dsa87_verify(
         signature, sig_len,
         (const uint8_t*)json_str, strlen(json_str),
         pubkey

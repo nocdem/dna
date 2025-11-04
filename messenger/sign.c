@@ -2,7 +2,7 @@
  * pqsignum - File signing
  *
  * - qgp_key_load() to load signing key (QGP format)
- * - qgp_dilithium3_signature() for Dilithium3 (vendored)
+ * - qgp_dsa87_sign() for Dilithium3 (vendored)
  * - Round-trip verification mandatory before saving signature
  */
 
@@ -57,9 +57,9 @@ int cmd_sign_file(const char *input_file, const char *key_path, const char *outp
     printf("Creating signature...\n");
 
 
-    if (sign_key->type == QGP_KEY_TYPE_DILITHIUM3) {
-        size_t dilithium_sig_size = QGP_DILITHIUM3_BYTES;
-        size_t pkey_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+    if (sign_key->type == QGP_KEY_TYPE_DSA87) {
+        size_t dilithium_sig_size = QGP_DSA87_SIGNATURE_BYTES;
+        size_t pkey_size = QGP_DSA87_PUBLICKEYBYTES;
 
         // Allocate QGP signature structure
         signature = qgp_signature_new(QGP_SIG_TYPE_DILITHIUM, pkey_size, dilithium_sig_size);
@@ -74,7 +74,7 @@ int cmd_sign_file(const char *input_file, const char *key_path, const char *outp
 
         // Create Dilithium3 signature
         size_t actual_sig_len = 0;
-        if (qgp_dilithium3_signature(
+        if (qgp_dsa87_sign(
                 qgp_signature_get_bytes(signature),  // Output after public key
                 &actual_sig_len,
                 file_data, file_size,
@@ -90,7 +90,7 @@ int cmd_sign_file(const char *input_file, const char *key_path, const char *outp
 
         // Protocol Mode: MANDATORY round-trip verification
         printf("Performing round-trip verification...\n");
-        if (qgp_dilithium3_verify(
+        if (qgp_dsa87_verify(
                 qgp_signature_get_bytes(signature),  // Signature after public key
                 actual_sig_len,
                 file_data, file_size,

@@ -49,6 +49,8 @@ mxe/
 *.key
 *.pem
 *.priv
+*.dsa
+*.kem
 keys/
 wallets/
 
@@ -86,7 +88,8 @@ FOLDER_ANALYSIS.md
 *.asc
 *.sig
 *.enc
-*.pqkey
+*.dsa
+*.kem
 *.dcert
 *_test.*
 # Build artifacts

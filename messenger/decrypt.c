@@ -2,8 +2,8 @@
  * pqsignum - File decryption using Kyber512 KEM + AES-256-GCM (AEAD)
  *
  * - qgp_key_load() for loading encryption keys (QGP format)
- * - qgp_kyber512_dec() for Kyber512 decapsulation (vendored)
- * - qgp_dilithium3_verify() for signature verification (vendored)
+ * - qgp_kem1024_decapsulate() for Kyber512 decapsulation (vendored)
+ * - qgp_dsa87_verify() for signature verification (vendored)
  * - qgp_aes256_decrypt() for AES-GCM decryption with AAD (standalone)
  *
  * Security Model:
@@ -107,7 +107,7 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
     }
 
     // Verify it's a Kyber512 encryption key
-    if (enc_key->type != QGP_KEY_TYPE_KYBER512) {
+    if (enc_key->type != QGP_KEY_TYPE_KEM1024) {
         fprintf(stderr, "Error: Key is not a Kyber512 encryption key (type: %d)\n", enc_key->type);
         ret = EXIT_KEY_ERROR;
         goto cleanup;
@@ -223,7 +223,7 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
 
 
         // Decapsulate to get KEK using our private key
-        uint8_t *kek = malloc(QGP_KYBER512_BYTES);
+        uint8_t *kek = malloc(QGP_KEM1024_SHAREDSECRET_BYTES);
         if (!kek) {
             fprintf(stderr, "Error: Memory allocation failed for KEK\n");
             fclose(in_fp);
@@ -232,9 +232,9 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
         }
 
         // Perform Kyber512 decapsulation: KEM.Decaps(ciphertext, privkey) → KEK (shared secret)
-        if (qgp_kyber512_dec(kek, recipient_entries[i].kyber_ciphertext, privkey_bytes) != 0) {
+        if (qgp_kem1024_decapsulate(kek, recipient_entries[i].kyber_ciphertext, privkey_bytes) != 0) {
             printf("    ✗ Decapsulation failed\n");
-            memset(kek, 0, QGP_KYBER512_BYTES);  // Wipe KEK before freeing
+            memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);  // Wipe KEK before freeing
             free(kek);
             continue;
         }
@@ -244,13 +244,13 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
             // Success! This is our entry
             printf("    ✓ Found matching entry: %d/%u\n", i+1, recipient_count);
             found_entry = i;
-            memset(kek, 0, QGP_KYBER512_BYTES);  // Wipe KEK
+            memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);  // Wipe KEK
             free(kek);
             break;
         }
 
         printf("    ✗ DEK unwrap failed\n");
-        memset(kek, 0, QGP_KYBER512_BYTES);  // Wipe KEK before freeing
+        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);  // Wipe KEK before freeing
         free(kek);
     }
 
@@ -413,7 +413,7 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
         printf("  Signature size: %zu bytes\n", sig_size);
 
         // Verify signature against decrypted data using vendored Dilithium3
-        if (qgp_dilithium3_verify(sig_bytes, sig_size, decrypted_data, decrypted_size, public_key) == 0) {
+        if (qgp_dsa87_verify(sig_bytes, sig_size, decrypted_data, decrypted_size, public_key) == 0) {
             printf("  ✓ Signature verified successfully\n");
             printf("  ✓ File authenticity confirmed\n");
             printf("  ✓ Algorithm: Dilithium3\n");

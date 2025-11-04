@@ -67,7 +67,7 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium3.pqkey", home, identity);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, identity);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
@@ -75,17 +75,17 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    if (key->type != QGP_KEY_TYPE_DILITHIUM3 || !key->private_key) {
+    if (key->type != QGP_KEY_TYPE_DSA87 || !key->private_key) {
         fprintf(stderr, "Error: Not a Dilithium private key\n");
         qgp_key_free(key);
         return 1;
     }
 
     // Sign the JSON string
-    uint8_t signature[QGP_DILITHIUM3_BYTES];
-    size_t sig_len = QGP_DILITHIUM3_BYTES;
+    uint8_t signature[QGP_DSA87_SIGNATURE_BYTES];
+    size_t sig_len = QGP_DSA87_SIGNATURE_BYTES;
 
-    if (qgp_dilithium3_signature(signature, &sig_len,
+    if (qgp_dsa87_sign(signature, &sig_len,
                                   (const uint8_t*)json_str, strlen(json_str),
                                   key->private_key) != 0) {
         fprintf(stderr, "Error: Signing failed\n");

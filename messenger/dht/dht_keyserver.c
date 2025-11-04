@@ -266,7 +266,7 @@ static int sign_entry(dht_pubkey_entry_t *entry, const uint8_t *dilithium_privke
     }
     printf("\n");
 
-    int ret = qgp_dilithium3_signature(entry->signature, &siglen, msg, msg_len, dilithium_privkey);
+    int ret = qgp_dsa87_sign(entry->signature, &siglen, msg, msg_len, dilithium_privkey);
 
     free(msg);
     return ret;
@@ -314,7 +314,7 @@ static int verify_entry(const dht_pubkey_entry_t *entry) {
     printf("\n");
 
     // Verify signature with dilithium pubkey
-    int ret = qgp_dilithium3_verify(entry->signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE,
+    int ret = qgp_dsa87_verify(entry->signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE,
                                      msg, msg_len, entry->dilithium_pubkey);
 
     free(msg);
@@ -405,7 +405,7 @@ int dht_keyserver_publish(
         size_t reverse_siglen = DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE;
 
         printf("[DHT_KEYSERVER_DEBUG] Signing reverse mapping message...\n");
-        int sign_result = qgp_dilithium3_signature(reverse_signature, &reverse_siglen,
+        int sign_result = qgp_dsa87_sign(reverse_signature, &reverse_siglen,
                                       reverse_msg, reverse_msg_len, dilithium_privkey);
         printf("[DHT_KEYSERVER_DEBUG] Signature result: %d, siglen: %zu\n", sign_result, reverse_siglen);
 
@@ -658,7 +658,7 @@ int dht_keyserver_reverse_lookup(
     memcpy(msg + offset, &timestamp_net, sizeof(timestamp_net));
 
     // Verify signature
-    int verify_result = qgp_dilithium3_verify(signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE,
+    int verify_result = qgp_dsa87_verify(signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE,
                                                msg, msg_len, dilithium_pubkey);
     free(msg);
 

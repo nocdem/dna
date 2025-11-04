@@ -137,8 +137,8 @@ else()
 endif()
 
 # SDK Independence: Vendored cryptographic implementations
-add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
-add_subdirectory(crypto/dilithium)  # Dilithium5 signatures (NIST Category 5)
+add_subdirectory(crypto/kem)        # ML-KEM-1024 KEM (includes FIPS202/SHAKE256)
+add_subdirectory(crypto/dsa)        # ML-DSA-87 signatures (NIST Category 5)
 add_subdirectory(crypto/cellframe_dilithium)  # Cellframe-compatible Dilithium (for CF20 wallet)
 
 # Phase 9.1: DHT and P2P Transport Layer
@@ -195,8 +195,8 @@ add_library(dna_lib STATIC
 
 target_link_libraries(dna_lib
     OpenSSL::Crypto
-    kyber512
-    dilithium
+    kem
+    dsa
     dht_lib        # Phase 9.1: DHT library (MUST come BEFORE p2p_transport for Windows stub symbols)
     p2p_transport  # Phase 9.1b: P2P transport layer (links OpenDHT, needs dht_lib stubs first)
     dht_lib        # Link dht_lib again to resolve circular deps with p2p_transport

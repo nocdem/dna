@@ -32,9 +32,9 @@ typedef struct {
  */
 static const char* get_sign_algorithm_name(qgp_key_type_t type) {
     switch (type) {
-        case QGP_KEY_TYPE_DILITHIUM3:
+        case QGP_KEY_TYPE_DSA87:
             return "Dilithium";
-        case QGP_KEY_TYPE_KYBER512:
+        case QGP_KEY_TYPE_KEM1024:
             return "Kyber512";
         default:
             return "Unknown";
@@ -71,7 +71,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
     // Load signing key
     printf("\n[1/3] Loading signing key...\n");
     char sign_filename[512];
-    snprintf(sign_filename, sizeof(sign_filename), "%s-dilithium3.pqkey", name);
+    snprintf(sign_filename, sizeof(sign_filename), "%s.dsa", name);
     char *sign_key_path = build_path(key_dir, sign_filename);
 
     if (!file_exists(sign_key_path)) {
@@ -92,7 +92,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
     // Load encryption key
     printf("\n[2/3] Loading encryption key...\n");
     char enc_filename[512];
-    snprintf(enc_filename, sizeof(enc_filename), "%s-kyber512.pqkey", name);
+    snprintf(enc_filename, sizeof(enc_filename), "%s.kem", name);
     char *enc_key_path = build_path(key_dir, enc_filename);
 
     if (!file_exists(enc_key_path)) {
@@ -120,7 +120,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
     printf("\n[3/3] Extracting public keys...\n");
 
 
-    if (sign_key->type == QGP_KEY_TYPE_DILITHIUM3) {
+    if (sign_key->type == QGP_KEY_TYPE_DSA87) {
         sign_pubkey_size = sign_key->public_key_size;
         sign_pubkey = malloc(sign_pubkey_size);
         if (!sign_pubkey) {

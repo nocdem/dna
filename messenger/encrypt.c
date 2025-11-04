@@ -2,8 +2,8 @@
  * pqsignum - File encryption using Kyber512 KEM + AES-256
  *
  * - qgp_key_load() for loading signing keys (QGP format)
- * - qgp_kyber512_enc() for Kyber512 encapsulation (vendored)
- * - qgp_dilithium3_signature() for signing (vendored)
+ * - qgp_kem1024_encapsulate() for Kyber512 encapsulation (vendored)
+ * - qgp_dsa87_sign() for signing (vendored)
  * - qgp_aes256_encrypt() for AES encryption (standalone)
  *
  * Security Model:
@@ -174,7 +174,7 @@ static int load_recipient_pubkey(const char *pubkey_file, uint8_t **pubkey_out, 
     }
 
 
-    if (header.enc_key_type != QGP_KEY_TYPE_KYBER512) {
+    if (header.enc_key_type != QGP_KEY_TYPE_KEM1024) {
         fprintf(stderr, "Error: Public key does not contain Kyber512 encryption key (got type: %d)\n", header.enc_key_type);
         free(bundle_data);
         return EXIT_ERROR;
@@ -386,14 +386,14 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
     printf("\n[4/7] Signing file...\n");
 
 
-    if (sign_key->type != QGP_KEY_TYPE_DILITHIUM3) {
+    if (sign_key->type != QGP_KEY_TYPE_DSA87) {
         fprintf(stderr, "Error: Only Dilithium3 signatures are supported\n");
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
     }
 
-    size_t dilithium_sig_size = QGP_DILITHIUM3_BYTES;
-    size_t pkey_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+    size_t dilithium_sig_size = QGP_DSA87_SIGNATURE_BYTES;
+    size_t pkey_size = QGP_DSA87_PUBLICKEYBYTES;
 
     // Allocate QGP signature structure
     signature = qgp_signature_new(QGP_SIG_TYPE_DILITHIUM, pkey_size, dilithium_sig_size);
@@ -408,7 +408,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
 
     // Create Dilithium3 signature
     size_t actual_sig_len = 0;
-    if (qgp_dilithium3_signature(
+    if (qgp_dsa87_sign(
             qgp_signature_get_bytes(signature),  // Output after public key
             &actual_sig_len,
             plaintext, plaintext_size,
@@ -422,7 +422,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
     signature->signature_size = actual_sig_len;
 
     // Protocol Mode: MANDATORY round-trip verification
-    if (qgp_dilithium3_verify(
+    if (qgp_dsa87_verify(
             qgp_signature_get_bytes(signature),  // Signature after public key
             actual_sig_len,
             plaintext, plaintext_size,
@@ -538,8 +538,8 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
 
 
         // Allocate buffers for Kyber ciphertext and shared secret (KEK)
-        uint8_t *kyber_ciphertext = malloc(QGP_KYBER512_CIPHERTEXTBYTES);
-        uint8_t *kek = malloc(QGP_KYBER512_BYTES);  // KEK = shared secret
+        uint8_t *kyber_ciphertext = malloc(QGP_KEM1024_CIPHERTEXTBYTES);
+        uint8_t *kek = malloc(QGP_KEM1024_SHAREDSECRET_BYTES);  // KEK = shared secret
 
         if (!kyber_ciphertext || !kek) {
             fprintf(stderr, "Error: Memory allocation failed for recipient %zu\n", i+1);
@@ -550,10 +550,10 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
         }
 
         // Perform Kyber512 encapsulation: KEM.Encaps(recipient_pubkey) → (ciphertext, shared_secret/KEK)
-        if (qgp_kyber512_enc(kyber_ciphertext, kek, recipient_pubkeys[i]) != 0) {
+        if (qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_pubkeys[i]) != 0) {
             fprintf(stderr, "Error: Kyber512 encapsulation failed for recipient %zu\n", i+1);
             free(kyber_ciphertext);
-            memset(kek, 0, QGP_KYBER512_BYTES);  // Wipe KEK before freeing
+            memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);  // Wipe KEK before freeing
             free(kek);
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup;
@@ -566,7 +566,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
         if (aes256_wrap_key(dek, 32, kek, wrapped_dek) != 0) {
             fprintf(stderr, "Error: Failed to wrap DEK for recipient %zu\n", i+1);
             free(kyber_ciphertext);
-            memset(kek, 0, QGP_KYBER512_BYTES);  // Wipe KEK before freeing
+            memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);  // Wipe KEK before freeing
             free(kek);
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup;
@@ -580,7 +580,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
 
         // Cleanup for this recipient (securely wipe KEK)
         free(kyber_ciphertext);
-        memset(kek, 0, QGP_KYBER512_BYTES);  // Wipe KEK
+        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);  // Wipe KEK
         free(kek);
     }
 

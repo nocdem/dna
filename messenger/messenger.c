@@ -272,9 +272,9 @@ int messenger_generate_keys_from_seeds(
 
     // Generate Dilithium3 signing key from seed
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, identity);
 
-    qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DILITHIUM3, QGP_KEY_PURPOSE_SIGNING);
+    qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
     if (!sign_key) {
         fprintf(stderr, "Error: Memory allocation failed for signing key\n");
         return -1;
@@ -282,8 +282,8 @@ int messenger_generate_keys_from_seeds(
 
     strncpy(sign_key->name, identity, sizeof(sign_key->name) - 1);
 
-    uint8_t *dilithium_pk = calloc(1, QGP_DILITHIUM3_PUBLICKEYBYTES);
-    uint8_t *dilithium_sk = calloc(1, QGP_DILITHIUM3_SECRETKEYBYTES);
+    uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
+    uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
     if (!dilithium_pk || !dilithium_sk) {
         fprintf(stderr, "Error: Memory allocation failed for Dilithium3 buffers\n");
@@ -293,7 +293,7 @@ int messenger_generate_keys_from_seeds(
         return -1;
     }
 
-    if (qgp_dilithium3_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
+    if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
         fprintf(stderr, "Error: Dilithium3 key generation from seed failed\n");
         free(dilithium_pk);
         free(dilithium_sk);
@@ -302,9 +302,9 @@ int messenger_generate_keys_from_seeds(
     }
 
     sign_key->public_key = dilithium_pk;
-    sign_key->public_key_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+    sign_key->public_key_size = QGP_DSA87_PUBLICKEYBYTES;
     sign_key->private_key = dilithium_sk;
-    sign_key->private_key_size = QGP_DILITHIUM3_SECRETKEYBYTES;
+    sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
     if (qgp_key_save(sign_key, dilithium_path) != 0) {
         fprintf(stderr, "Error: Failed to save signing key\n");
@@ -322,9 +322,9 @@ int messenger_generate_keys_from_seeds(
 
     // Generate Kyber512 encryption key from seed
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s-kyber512.pqkey", dna_dir, identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, identity);
 
-    qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KYBER512, QGP_KEY_PURPOSE_ENCRYPTION);
+    qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
     if (!enc_key) {
         fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
         return -1;
@@ -597,9 +597,9 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 
     // Generate Dilithium3 signing key from seed
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, identity);
 
-    qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DILITHIUM3, QGP_KEY_PURPOSE_SIGNING);
+    qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
     if (!sign_key) {
         fprintf(stderr, "Error: Memory allocation failed for signing key\n");
         memset(signing_seed, 0, sizeof(signing_seed));
@@ -609,8 +609,8 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 
     strncpy(sign_key->name, identity, sizeof(sign_key->name) - 1);
 
-    uint8_t *dilithium_pk = calloc(1, QGP_DILITHIUM3_PUBLICKEYBYTES);
-    uint8_t *dilithium_sk = calloc(1, QGP_DILITHIUM3_SECRETKEYBYTES);
+    uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
+    uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
     if (!dilithium_pk || !dilithium_sk) {
         fprintf(stderr, "Error: Memory allocation failed for Dilithium3 buffers\n");
@@ -622,7 +622,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
         return -1;
     }
 
-    if (qgp_dilithium3_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
+    if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
         fprintf(stderr, "Error: Dilithium3 key generation from seed failed\n");
         free(dilithium_pk);
         free(dilithium_sk);
@@ -633,9 +633,9 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     }
 
     sign_key->public_key = dilithium_pk;
-    sign_key->public_key_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+    sign_key->public_key_size = QGP_DSA87_PUBLICKEYBYTES;
     sign_key->private_key = dilithium_sk;
-    sign_key->private_key_size = QGP_DILITHIUM3_SECRETKEYBYTES;
+    sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
     if (qgp_key_save(sign_key, dilithium_path) != 0) {
         fprintf(stderr, "Error: Failed to save signing key\n");
@@ -655,9 +655,9 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 
     // Generate Kyber512 encryption key from seed
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s-kyber512.pqkey", dna_dir, identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, identity);
 
-    qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KYBER512, QGP_KEY_PURPOSE_ENCRYPTION);
+    qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
     if (!enc_key) {
         fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
         memset(signing_seed, 0, sizeof(signing_seed));
@@ -832,8 +832,8 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 
     // Rename signing key file for messenger compatibility
     char dilithium3_path[512], dilithium_renamed[512];
-    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
-    snprintf(dilithium_renamed, sizeof(dilithium_renamed), "%s/%s-dilithium.pqkey", dna_dir, identity);
+    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);  // Old format for migration
+    snprintf(dilithium_renamed, sizeof(dilithium_renamed), "%s/%s.dsa", dna_dir, identity);
 
     if (rename(dilithium3_path, dilithium_renamed) != 0) {
         fprintf(stderr, "Warning: Could not rename signing key file\n");
@@ -934,7 +934,7 @@ int messenger_store_pubkey(
 
     // Load private key for signing
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
+    snprintf(key_path, sizeof(key_path), "%s/%s.dsa", dna_dir, identity);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
@@ -942,7 +942,7 @@ int messenger_store_pubkey(
         return -1;
     }
 
-    if (key->type != QGP_KEY_TYPE_DILITHIUM3 || !key->private_key) {
+    if (key->type != QGP_KEY_TYPE_DSA87 || !key->private_key) {
         fprintf(stderr, "ERROR: Not a Dilithium private key\n");
         qgp_key_free(key);
         return -1;
@@ -1304,18 +1304,18 @@ static int messenger_encrypt_multi_recipient(
 
     // Step 2: Sign plaintext with Dilithium3
     qgp_signature_t *signature = qgp_signature_new(QGP_SIG_TYPE_DILITHIUM,
-                                                     QGP_DILITHIUM3_PUBLICKEYBYTES,
-                                                     QGP_DILITHIUM3_BYTES);
+                                                     QGP_DSA87_PUBLICKEYBYTES,
+                                                     QGP_DSA87_SIGNATURE_BYTES);
     if (!signature) {
         fprintf(stderr, "Error: Memory allocation failed for signature\n");
         goto cleanup;
     }
 
     memcpy(qgp_signature_get_pubkey(signature), sender_sign_key->public_key,
-           QGP_DILITHIUM3_PUBLICKEYBYTES);
+           QGP_DSA87_PUBLICKEYBYTES);
 
     size_t actual_sig_len = 0;
-    if (qgp_dilithium3_signature(qgp_signature_get_bytes(signature), &actual_sig_len,
+    if (qgp_dsa87_sign(qgp_signature_get_bytes(signature), &actual_sig_len,
                                   (const uint8_t*)plaintext, plaintext_len,
                                   sender_sign_key->private_key) != 0) {
         fprintf(stderr, "Error: Dilithium3 signature creation failed\n");
@@ -1326,7 +1326,7 @@ static int messenger_encrypt_multi_recipient(
     signature->signature_size = actual_sig_len;
 
     // Round-trip verification
-    if (qgp_dilithium3_verify(qgp_signature_get_bytes(signature), actual_sig_len,
+    if (qgp_dsa87_verify(qgp_signature_get_bytes(signature), actual_sig_len,
                                (const uint8_t*)plaintext, plaintext_len,
                                qgp_signature_get_pubkey(signature)) != 0) {
         fprintf(stderr, "Error: Round-trip verification FAILED\n");
@@ -1385,7 +1385,7 @@ static int messenger_encrypt_multi_recipient(
         uint8_t kek[32];  // KEK = shared secret from Kyber
 
         // Kyber512 encapsulation
-        if (qgp_kyber512_enc(kyber_ciphertext, kek, recipient_enc_pubkeys[i]) != 0) {
+        if (qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_enc_pubkeys[i]) != 0) {
             fprintf(stderr, "Error: Kyber512 encapsulation failed for recipient %zu\n", i+1);
             memset(kek, 0, 32);
             goto cleanup;
@@ -1521,7 +1521,7 @@ int messenger_send_message(
     // Load sender's private signing key from filesystem
     const char *home = qgp_platform_home_dir();
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s-dilithium3.pqkey", home, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s.dsa", home, ctx->identity);
 
     qgp_key_t *sender_sign_key = NULL;
     if (qgp_key_load(dilithium_path, &sender_sign_key) != 0) {
@@ -1790,7 +1790,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     // Load recipient's private Kyber512 key from filesystem
     const char *home = qgp_platform_home_dir();
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s-kyber512.pqkey", home, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
@@ -1915,7 +1915,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     // Load recipient's private Kyber512 key from filesystem
     const char *home = qgp_platform_home_dir();
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s-kyber512.pqkey", home, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {

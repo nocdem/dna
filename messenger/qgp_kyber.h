@@ -5,26 +5,26 @@
 #include <stddef.h>
 
 /**
- * Kyber1024 Key Encapsulation Mechanism (KEM)
+ * KEM-1024 Key Encapsulation Mechanism (ML-KEM-1024)
  *
  * NIST FIPS 203 (ML-KEM-1024) implementation
  * Reference: pq-crystals/kyber
  * Security level: NIST Level 5 / Category 5 (256-bit post-quantum security)
  */
 
-#define QGP_KYBER512_PUBLICKEYBYTES  1568
-#define QGP_KYBER512_SECRETKEYBYTES  3168
-#define QGP_KYBER512_CIPHERTEXTBYTES 1568
-#define QGP_KYBER512_BYTES           32
+#define QGP_KEM1024_PUBLICKEYBYTES     1568
+#define QGP_KEM1024_SECRETKEYBYTES     3168
+#define QGP_KEM1024_CIPHERTEXTBYTES    1568
+#define QGP_KEM1024_SHAREDSECRET_BYTES 32
 
 /**
- * Generate Kyber1024 keypair
+ * Generate KEM-1024 keypair
  *
  * @param pk Output public key (1568 bytes)
  * @param sk Output secret key (3168 bytes)
  * @return 0 on success, -1 on error
  */
-int qgp_kyber512_keypair(uint8_t *pk, uint8_t *sk);
+int qgp_kem1024_keypair(uint8_t *pk, uint8_t *sk);
 
 /**
  * Encapsulation: Generate shared secret and ciphertext
@@ -34,7 +34,7 @@ int qgp_kyber512_keypair(uint8_t *pk, uint8_t *sk);
  * @param pk Input public key (1568 bytes)
  * @return 0 on success, -1 on error
  */
-int qgp_kyber512_enc(uint8_t *ct, uint8_t *ss, const uint8_t *pk);
+int qgp_kem1024_encapsulate(uint8_t *ct, uint8_t *ss, const uint8_t *pk);
 
 /**
  * Decapsulation: Recover shared secret from ciphertext
@@ -44,6 +44,6 @@ int qgp_kyber512_enc(uint8_t *ct, uint8_t *ss, const uint8_t *pk);
  * @param sk Input secret key (3168 bytes)
  * @return 0 on success, -1 on error
  */
-int qgp_kyber512_dec(uint8_t *ss, const uint8_t *ct, const uint8_t *sk);
+int qgp_kem1024_decapsulate(uint8_t *ss, const uint8_t *ct, const uint8_t *sk);
 
 #endif /* QGP_KYBER_H */

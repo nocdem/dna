@@ -4,7 +4,7 @@
 
 cmake_minimum_required(VERSION 3.10)
 
-project(dilithium C)
+project(dsa C)
 
 # Source files
 set(DILITHIUM_SOURCES
@@ -37,10 +37,10 @@ set(DILITHIUM_HEADERS
 )
 
 # Create static library
-add_library(dilithium STATIC ${DILITHIUM_SOURCES})
+add_library(dsa STATIC ${DILITHIUM_SOURCES})
 
 # Include directories
-target_include_directories(dilithium PUBLIC
+target_include_directories(dsa PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../..  # For qgp_random.h
 )
@@ -48,14 +48,14 @@ target_include_directories(dilithium PUBLIC
 # Compiler flags (cross-platform)
 if(MSVC)
     # MSVC compiler flags
-    target_compile_options(dilithium PRIVATE
+    target_compile_options(dsa PRIVATE
         /W3           # Warning level 3
         /O2           # Optimize for speed
     )
     # DILITHIUM_MODE now defined in config.h (Category 5: ML-DSA-87)
 else()
     # GCC/Clang compiler flags
-    target_compile_options(dilithium PRIVATE
+    target_compile_options(dsa PRIVATE
         -Wall
         -Wextra
         -O3
@@ -64,10 +64,10 @@ else()
 endif()
 
 # Installation
-install(TARGETS dilithium
+install(TARGETS dsa
     ARCHIVE DESTINATION lib
 )
 
 install(FILES ${DILITHIUM_HEADERS}
-    DESTINATION include/dilithium
+    DESTINATION include/dsa
 )
