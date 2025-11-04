@@ -740,10 +740,15 @@ dna_error_t dna_decrypt_message_raw(
     offset += sizeof(header);
 
     // Validate header
-    if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0 ||
-        header.version != DNA_ENC_VERSION) {
+    if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0) {
+        fprintf(stderr, "[DEBUG] Invalid magic bytes in header\n");
         return DNA_ERROR_DECRYPT;
     }
+    if (header.version != DNA_ENC_VERSION) {
+        fprintf(stderr, "[DEBUG] Version mismatch: got 0x%02x, expected 0x%02x\n", header.version, DNA_ENC_VERSION);
+        return DNA_ERROR_DECRYPT;
+    }
+    fprintf(stderr, "[DEBUG] Header validated: version 0x%02x, %u recipients\n", header.version, header.recipient_count);
 
     uint8_t recipient_count = header.recipient_count;
     size_t encrypted_size = header.encrypted_size;
@@ -788,9 +793,11 @@ dna_error_t dna_decrypt_message_raw(
     }
 
     if (found_entry == -1) {
+        fprintf(stderr, "[DEBUG] Kyber decapsulation failed for all %d recipients - wrong key or corrupted ciphertext\n", recipient_count);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
+    fprintf(stderr, "[DEBUG] Kyber decapsulation succeeded for recipient %d\n", found_entry);
 
     // Read nonce, encrypted data, tag
     if (offset + 12 + encrypted_size + 16 > ciphertext_len) {
@@ -823,9 +830,11 @@ dna_error_t dna_decrypt_message_raw(
     if (qgp_aes256_decrypt(dek, encrypted_data, encrypted_size,
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            nonce, tag, decrypted, &decrypted_size) != 0) {
+        fprintf(stderr, "[DEBUG] AES-256-GCM decryption failed - wrong DEK or corrupted ciphertext\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
+    fprintf(stderr, "[DEBUG] AES-256-GCM decryption succeeded (%zu bytes)\n", decrypted_size);
 
     // Parse and verify signature
     if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
@@ -837,8 +846,10 @@ dna_error_t dna_decrypt_message_raw(
             uint8_t *sig_pubkey = qgp_signature_get_pubkey(signature);
             uint8_t *sig_bytes = qgp_signature_get_bytes(signature);
 
+            fprintf(stderr, "[DEBUG] Verifying Dilithium signature (%zu bytes)...\n", signature->signature_size);
             if (qgp_dilithium3_verify(sig_bytes, signature->signature_size,
                                      decrypted, decrypted_size, sig_pubkey) != 0) {
+                fprintf(stderr, "[DEBUG] Dilithium signature verification FAILED\n");
                 result = DNA_ERROR_VERIFY;
                 goto cleanup;
             }
@@ -907,10 +918,15 @@ dna_error_t dna_decrypt_message(
     offset += sizeof(header);
 
     // Validate header
-    if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0 ||
-        header.version != DNA_ENC_VERSION) {
+    if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0) {
+        fprintf(stderr, "[DEBUG] Invalid magic bytes in header\n");
         return DNA_ERROR_DECRYPT;
     }
+    if (header.version != DNA_ENC_VERSION) {
+        fprintf(stderr, "[DEBUG] Version mismatch: got 0x%02x, expected 0x%02x\n", header.version, DNA_ENC_VERSION);
+        return DNA_ERROR_DECRYPT;
+    }
+    fprintf(stderr, "[DEBUG] Header validated: version 0x%02x, %u recipients\n", header.version, header.recipient_count);
 
     uint8_t recipient_count = header.recipient_count;
     size_t encrypted_size = header.encrypted_size;
@@ -972,9 +988,11 @@ dna_error_t dna_decrypt_message(
     }
 
     if (found_entry == -1) {
+        fprintf(stderr, "[DEBUG] Kyber decapsulation failed for all %d recipients - wrong key or corrupted ciphertext\n", recipient_count);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
+    fprintf(stderr, "[DEBUG] Kyber decapsulation succeeded for recipient %d\n", found_entry);
 
     // Read nonce, encrypted data, tag
     if (offset + 12 + encrypted_size + 16 > ciphertext_len) {
@@ -1007,9 +1025,11 @@ dna_error_t dna_decrypt_message(
     if (qgp_aes256_decrypt(dek, encrypted_data, encrypted_size,
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            nonce, tag, decrypted, &decrypted_size) != 0) {
+        fprintf(stderr, "[DEBUG] AES-256-GCM decryption failed - wrong DEK or corrupted ciphertext\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
+    fprintf(stderr, "[DEBUG] AES-256-GCM decryption succeeded (%zu bytes)\n", decrypted_size);
 
     // Parse and verify signature
     if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
@@ -1021,8 +1041,10 @@ dna_error_t dna_decrypt_message(
             uint8_t *sig_pubkey = qgp_signature_get_pubkey(signature);
             uint8_t *sig_bytes = qgp_signature_get_bytes(signature);
 
+            fprintf(stderr, "[DEBUG] Verifying Dilithium signature (%zu bytes)...\n", signature->signature_size);
             if (qgp_dilithium3_verify(sig_bytes, signature->signature_size,
                                      decrypted, decrypted_size, sig_pubkey) != 0) {
+                fprintf(stderr, "[DEBUG] Dilithium signature verification FAILED\n");
                 result = DNA_ERROR_VERIFY;
                 goto cleanup;
             }
