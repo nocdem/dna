@@ -359,7 +359,7 @@ int dht_keyserver_publish(
     }
 
     // Compute DHT key
-    char dht_key[65];
+    char dht_key[129];
     compute_dht_key(identity, dht_key);
 
     // Store in DHT (permanent, no expiry)
@@ -497,7 +497,7 @@ int dht_keyserver_lookup(
     }
 
     // Compute DHT key
-    char dht_key[65];
+    char dht_key[129];
     compute_dht_key(identity, dht_key);
 
     // Fetch from DHT
@@ -618,7 +618,7 @@ int dht_keyserver_reverse_lookup(
     }
 
     // Verify fingerprint matches (prevents pubkey substitution)
-    char computed_fingerprint[65];
+    char computed_fingerprint[129];
     compute_fingerprint(dilithium_pubkey, computed_fingerprint);
 
     if (strcmp(computed_fingerprint, fingerprint) != 0) {
@@ -725,7 +725,7 @@ int dht_keyserver_update(
     }
 
     // Compute DHT key
-    char dht_key[65];
+    char dht_key[129];
     compute_dht_key(identity, dht_key);
 
     // Store in DHT (overwrites old entry)
@@ -758,7 +758,7 @@ int dht_keyserver_delete(
     }
 
     // Compute DHT key
-    char dht_key[65];
+    char dht_key[129];
     compute_dht_key(identity, dht_key);
 
     // Note: DHT doesn't support true deletion, but we can try to overwrite with tombstone
