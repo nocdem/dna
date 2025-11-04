@@ -1,6 +1,7 @@
 #include "p2p_transport.h"
 #include "dht_context.h"
 #include "dht_offline_queue.h"
+#include "dht_singleton.h"  // Global DHT singleton
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -419,29 +420,22 @@ p2p_transport_t* p2p_transport_init(
     // Initialize mutex
     pthread_mutex_init(&ctx->connections_mutex, NULL);
 
-    // Initialize DHT
-    dht_config_t dht_config = {0};
-    dht_config.port = config->dht_port;
-    dht_config.is_bootstrap = false;
-    snprintf(dht_config.identity, sizeof(dht_config.identity), "%s", config->identity);
-
-    for (size_t i = 0; i < config->bootstrap_count && i < 5; i++) {
-        snprintf(dht_config.bootstrap_nodes[i], 256, "%s", config->bootstrap_nodes[i]);
-    }
-    dht_config.bootstrap_count = config->bootstrap_count;
-
-    ctx->dht = dht_context_new(&dht_config);
+    // Use global DHT singleton (initialized at app startup)
+    // No need to create/start DHT here - it's already running
+    ctx->dht = dht_singleton_get();
     if (!ctx->dht) {
-        printf("[P2P] Failed to create DHT context\n");
+        printf("[P2P] ERROR: Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
         free(ctx);
         return NULL;
     }
 
+    printf("[P2P] Using global DHT singleton for P2P transport\n");
+
     ctx->listen_sockfd = -1;
     ctx->running = false;
 
-    printf("[P2P] Transport initialized (DHT port: %d, TCP port: %d)\n",
-           config->dht_port, config->listen_port);
+    printf("[P2P] Transport initialized (TCP port: %d, using global DHT)\n",
+           config->listen_port);
 
     return ctx;
 }
@@ -451,19 +445,14 @@ int p2p_transport_start(p2p_transport_t *ctx) {
         return -1;
     }
 
-    // Start DHT
-    if (dht_context_start(ctx->dht) != 0) {
-        printf("[P2P] Failed to start DHT\n");
-        return -1;
-    }
-
-    printf("[P2P] DHT started on port %d\n", ctx->config.dht_port);
+    // DHT is already running (global singleton)
+    // No need to start it here
+    printf("[P2P] Using global DHT (already running)\n");
 
     // Create TCP listening socket
     ctx->listen_sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (ctx->listen_sockfd < 0) {
         printf("[P2P] Failed to create listening socket: %s\n", strerror(errno));
-        dht_context_stop(ctx->dht);
         return -1;
     }
 
@@ -485,7 +474,6 @@ int p2p_transport_start(p2p_transport_t *ctx) {
         printf("[P2P] Failed to bind to port %d: %s\n",
                ctx->config.listen_port, strerror(errno));
         close(ctx->listen_sockfd);
-        dht_context_stop(ctx->dht);
         return -1;
     }
 
@@ -493,7 +481,6 @@ int p2p_transport_start(p2p_transport_t *ctx) {
     if (listen(ctx->listen_sockfd, 32) < 0) {
         printf("[P2P] Failed to listen: %s\n", strerror(errno));
         close(ctx->listen_sockfd);
-        dht_context_stop(ctx->dht);
         return -1;
     }
 
@@ -504,7 +491,6 @@ int p2p_transport_start(p2p_transport_t *ctx) {
     if (pthread_create(&ctx->listen_thread, NULL, listener_thread, ctx) != 0) {
         printf("[P2P] Failed to create listener thread\n");
         close(ctx->listen_sockfd);
-        dht_context_stop(ctx->dht);
         ctx->running = false;
         return -1;
     }
@@ -546,8 +532,7 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
     ctx->connection_count = 0;
     pthread_mutex_unlock(&ctx->connections_mutex);
 
-    // Stop DHT
-    dht_context_stop(ctx->dht);
+    // Don't stop DHT - it's a global singleton managed at app level
 
     printf("[P2P] Transport stopped\n");
 }
@@ -559,9 +544,8 @@ void p2p_transport_free(p2p_transport_t *ctx) {
 
     p2p_transport_stop(ctx);
 
-    if (ctx->dht) {
-        dht_context_free(ctx->dht);
-    }
+    // Don't free DHT - it's a global singleton managed at app level
+    ctx->dht = NULL;
 
     pthread_mutex_destroy(&ctx->connections_mutex);
 

@@ -28,6 +28,7 @@
 #include "qgp_platform.h"
 #include "qgp_dilithium.h"
 #include "qgp_kyber.h"
+#include "dht/dht_singleton.h"  // Global DHT singleton
 #include "qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
 #include "bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
@@ -900,45 +901,22 @@ int messenger_store_pubkey(
     // Phase 9.4: Use DHT-based keyserver instead of HTTP
     printf("⟳ Publishing public keys for '%s' to DHT keyserver...\n", identity);
 
-    // For now: Initialize temporary DHT context for key publishing
-    // TODO: This should be replaced with proper P2P initialization in GUI/CLI
+    // Use global DHT singleton (initialized at app startup)
+    // This eliminates the need for temporary DHT contexts
     dht_context_t *dht_ctx = NULL;
-    bool temp_dht = false;
 
     if (ctx->p2p_transport) {
-        // Use existing P2P transport's DHT
+        // Use existing P2P transport's DHT (when logged in)
         dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
+        printf("[INFO] Using P2P transport DHT for key publishing\n");
     } else {
-        // Create temporary DHT context for key publishing
-        printf("[INFO] Creating temporary DHT connection for key publishing...\n");
-
-        dht_config_t dht_config = {0};
-        dht_config.port = 0;  // Random port (not listening)
-        dht_config.is_bootstrap = false;
-        strncpy(dht_config.identity, identity, sizeof(dht_config.identity) - 1);
-
-        // Add bootstrap nodes
-        strncpy(dht_config.bootstrap_nodes[0], "154.38.182.161:4000", sizeof(dht_config.bootstrap_nodes[0]) - 1);
-        strncpy(dht_config.bootstrap_nodes[1], "164.68.105.227:4000", sizeof(dht_config.bootstrap_nodes[1]) - 1);
-        strncpy(dht_config.bootstrap_nodes[2], "164.68.116.180:4000", sizeof(dht_config.bootstrap_nodes[2]) - 1);
-        dht_config.bootstrap_count = 3;
-        dht_config.persistence_path[0] = '\0';  // Memory-only
-
-        dht_ctx = dht_context_new(&dht_config);
+        // Use global DHT singleton (during identity creation, before login)
+        dht_ctx = dht_singleton_get();
         if (!dht_ctx) {
-            fprintf(stderr, "ERROR: Failed to create DHT context\n");
+            fprintf(stderr, "ERROR: Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
             return -1;
         }
-
-        // Start DHT node and bootstrap
-        if (dht_context_start(dht_ctx) != 0) {
-            fprintf(stderr, "ERROR: Failed to start DHT context\n");
-            dht_context_free(dht_ctx);
-            return -1;
-        }
-
-        printf("[INFO] DHT connection established\n");
-        temp_dht = true;
+        printf("[INFO] Using global DHT singleton for key publishing\n");
     }
 
     // Get dna_dir path
@@ -961,14 +939,12 @@ int messenger_store_pubkey(
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
         fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
-        if (temp_dht) dht_context_free(dht_ctx);
         return -1;
     }
 
     if (key->type != QGP_KEY_TYPE_DILITHIUM3 || !key->private_key) {
         fprintf(stderr, "ERROR: Not a Dilithium private key\n");
         qgp_key_free(key);
-        if (temp_dht) dht_context_free(dht_ctx);
         return -1;
     }
 
@@ -983,11 +959,8 @@ int messenger_store_pubkey(
 
     qgp_key_free(key);
 
-    // Cleanup temporary DHT context
-    if (temp_dht) {
-        printf("[INFO] Cleaning up temporary DHT connection...\n");
-        dht_context_free(dht_ctx);
-    }
+    // No cleanup needed - global DHT singleton persists for app lifetime
+    // P2P transport DHT is managed by p2p_transport_free()
 
     if (ret != 0) {
         fprintf(stderr, "ERROR: Failed to publish keys to DHT keyserver\n");
