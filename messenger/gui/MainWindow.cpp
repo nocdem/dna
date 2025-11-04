@@ -199,6 +199,11 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
     connect(offlineMessageTimer, &QTimer::timeout, this, &MainWindow::onCheckOfflineMessages);
     offlineMessageTimer->start(120000);  // 2 minutes = 120,000ms
 
+    // Initialize contact list sync timer (10 minutes)
+    contactSyncTimer = new QTimer(this);
+    connect(contactSyncTimer, &QTimer::timeout, this, &MainWindow::onAutoSyncContacts);
+    contactSyncTimer->start(600000);  // 10 minutes = 600,000ms
+
     // Save current identity (reuse settings from earlier)
     settings.setValue("currentIdentity", currentIdentity);  // Save logged-in user
     QString savedTheme = settings.value("theme", "io").toString();  // Default to "io" theme
@@ -290,6 +295,11 @@ void MainWindow::setupUI() {
 
     // Settings menu
     QMenu *settingsMenu = menuBar->addMenu(QString::fromUtf8("Settings"));
+
+    // Sync Contacts action
+    QAction *syncContactsAction = settingsMenu->addAction(QString::fromUtf8("🔄 Sync Contacts to DHT"));
+    connect(syncContactsAction, &QAction::triggered, this, &MainWindow::onSyncContacts);
+    settingsMenu->addSeparator();
 
     // Theme submenu
     QMenu *themeMenu = settingsMenu->addMenu(QString::fromUtf8("Theme"));
@@ -716,6 +726,10 @@ void MainWindow::setupUI() {
     // Status bar
     statusLabel = new QLabel(QString::fromUtf8("Ready"));
     statusBar()->addWidget(statusLabel);
+
+    // Contact list sync status indicator
+    syncStatusLabel = new QLabel(QString::fromUtf8("📇 Contacts: Local"));
+    statusBar()->addPermanentWidget(syncStatusLabel);
 
     // Phase 9.1b: P2P status indicator
     p2pStatusLabel = new QLabel(ctx->p2p_enabled ?
@@ -3086,4 +3100,77 @@ void MainWindow::onCheckOfflineMessages() {
         // Refresh message list to show newly delivered messages
         checkForNewMessages();
     }
+}
+
+// Manual contact list sync to DHT
+void MainWindow::onSyncContacts() {
+    if (!ctx) {
+        QMessageBox::warning(this, "Error", "Messenger context not initialized");
+        return;
+    }
+
+    // Update status
+    syncStatusLabel->setText(QString::fromUtf8("📇 Syncing..."));
+    statusLabel->setText(QString::fromUtf8("Syncing contacts to DHT..."));
+    QApplication::processEvents();  // Update UI
+
+    // Sync contacts to DHT
+    int result = messenger_sync_contacts_to_dht(ctx);
+
+    if (result == 0) {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Synced ✓"));
+        statusLabel->setText(QString::fromUtf8("Contacts synced to DHT successfully"));
+        QMessageBox::information(
+            this,
+            QString::fromUtf8("Sync Complete"),
+            QString::fromUtf8(
+                "Your contact list has been synced to DHT.\n\n"
+                "• Encrypted with your Kyber1024 public key\n"
+                "• Signed with your Dilithium5 private key\n"
+                "• Available on any device with your seed phrase"
+            )
+        );
+    } else {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Sync Failed"));
+        statusLabel->setText(QString::fromUtf8("Failed to sync contacts to DHT"));
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Sync Failed"),
+            QString::fromUtf8(
+                "Failed to sync contacts to DHT.\n\n"
+                "Make sure P2P transport is enabled and DHT is connected."
+            )
+        );
+    }
+
+    // Reset status after 5 seconds
+    QTimer::singleShot(5000, this, [this]() {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Contacts: Local"));
+    });
+}
+
+// Automatic contact list sync (timer-based)
+void MainWindow::onAutoSyncContacts() {
+    if (!ctx) {
+        return;  // Silently skip if context not initialized
+    }
+
+    // Update status
+    syncStatusLabel->setText(QString::fromUtf8("📇 Auto-sync..."));
+
+    // Sync contacts to DHT (silent, no message box)
+    int result = messenger_sync_contacts_to_dht(ctx);
+
+    if (result == 0) {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Synced ✓"));
+        printf("[GUI] Auto-synced contacts to DHT\n");
+    } else {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Sync Failed"));
+        fprintf(stderr, "[GUI] Failed to auto-sync contacts to DHT\n");
+    }
+
+    // Reset status after 5 seconds
+    QTimer::singleShot(5000, this, [this]() {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Contacts: Local"));
+    });
 }

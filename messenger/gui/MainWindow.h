@@ -66,6 +66,8 @@ private slots:
     void onRefreshP2PPresence();  // Phase 9.1b: Refresh P2P presence in DHT
     void onCheckPeerStatus();  // Phase 9.1b: Update peer online status
     void onCheckOfflineMessages();  // Phase 9.2: Check DHT for offline messages
+    void onSyncContacts();  // Manual contact list sync to DHT
+    void onAutoSyncContacts();  // Automatic contact list sync (timer-based)
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;  // For fullscreen ESC key
@@ -144,6 +146,10 @@ private:
     QLabel *p2pStatusLabel;  // P2P connection status indicator
     QTimer *p2pPresenceTimer;  // Refresh P2P presence every 5 minutes
     QTimer *offlineMessageTimer;  // Check DHT offline queue every 2 minutes (Phase 9.2)
+
+    // Contact List Sync
+    QLabel *syncStatusLabel;  // Contact list sync status indicator
+    QTimer *contactSyncTimer;  // Auto-sync contacts to DHT every 10 minutes
 
     // Multi-recipient support
     QStringList additionalRecipients;
