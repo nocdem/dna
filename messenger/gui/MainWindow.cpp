@@ -1328,6 +1328,20 @@ void MainWindow::onAddContact() {
         );
         loadContacts();  // Refresh contact list
         statusLabel->setText(QString::fromUtf8("Contact added"));
+
+        // Immediately sync to DHT after adding contact
+        printf("[CONTACT_SYNC] Auto-syncing after contact add...\n");
+        syncStatusLabel->setText(QString::fromUtf8("📇 Syncing..."));
+        QApplication::processEvents();  // Update UI
+
+        int sync_result = messenger_sync_contacts_to_dht(ctx);
+        if (sync_result == 0) {
+            printf("[CONTACT_SYNC] Successfully synced to DHT\n");
+            syncStatusLabel->setText(QString::fromUtf8("📇 Synced ✓"));
+        } else {
+            printf("[CONTACT_SYNC] Failed to sync to DHT\n");
+            syncStatusLabel->setText(QString::fromUtf8("📇 Sync failed"));
+        }
     } else {
         QMessageBox::critical(
             this,
