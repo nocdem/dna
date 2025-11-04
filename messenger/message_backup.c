@@ -161,9 +161,9 @@ int message_backup_save(message_backup_context_t *ctx,
         return -1;
     }
 
-    sqlite3_bind_text(stmt, 1, sender, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, recipient, -1, SQLITE_STATIC);
-    sqlite3_bind_blob(stmt, 3, encrypted_message, encrypted_len, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, sender, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, recipient, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 3, encrypted_message, encrypted_len, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 4, (int)encrypted_len);
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)timestamp);
     sqlite3_bind_int(stmt, 6, is_outgoing ? 1 : 0);
