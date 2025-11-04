@@ -229,6 +229,40 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
 }
 
 MainWindow::~MainWindow() {
+    // Stop all timers to prevent events on destroyed window
+    if (pollTimer) {
+        pollTimer->stop();
+        delete pollTimer;
+    }
+    if (statusPollTimer) {
+        statusPollTimer->stop();
+        delete statusPollTimer;
+    }
+    if (p2pPresenceTimer) {
+        p2pPresenceTimer->stop();
+        delete p2pPresenceTimer;
+    }
+    if (offlineMessageTimer) {
+        offlineMessageTimer->stop();
+        delete offlineMessageTimer;
+    }
+    if (contactSyncTimer) {
+        contactSyncTimer->stop();
+        delete contactSyncTimer;
+    }
+
+    // Clean up system tray icon
+    if (trayIcon) {
+        trayIcon->hide();
+        delete trayIcon;
+    }
+
+    // Clean up notification sound
+    if (notificationSound) {
+        delete notificationSound;
+    }
+
+    // Shutdown messenger context
     if (ctx) {
         // Phase 9.1b: Shutdown P2P transport before freeing messenger
         if (ctx->p2p_enabled) {
