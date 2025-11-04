@@ -290,7 +290,7 @@ int dht_groups_create(
     }
 
     // Compute DHT key
-    char dht_key[65];
+    char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
     // Store in DHT
@@ -350,7 +350,7 @@ int dht_groups_get(
     }
 
     // Compute DHT key
-    char dht_key[65];
+    char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
     // Retrieve from DHT
@@ -439,7 +439,7 @@ int dht_groups_update(
         return -1;
     }
 
-    char dht_key[65];
+    char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
     ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json));
@@ -518,7 +518,7 @@ int dht_groups_add_member(
         return -1;
     }
 
-    char dht_key[65];
+    char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
     ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json));
@@ -592,7 +592,7 @@ int dht_groups_remove_member(
         return -1;
     }
 
-    char dht_key[65];
+    char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
     ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json));
@@ -636,7 +636,7 @@ int dht_groups_delete(
     dht_groups_free_metadata(meta);
 
     // Delete from DHT (store empty value)
-    char dht_key[65];
+    char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
     // OpenDHT doesn't have explicit delete, so store a tombstone
