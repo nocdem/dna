@@ -65,8 +65,9 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 ```
 /opt/dna-messenger/
 ├── crypto/                  # Cryptography libraries
-│   ├── dilithium/          # Dilithium5 (ML-DSA-87) signatures
-│   └── kyber512/           # Kyber1024 (ML-KEM-1024) key encapsulation
+│   ├── dsa/                 # Dilithium5 (ML-DSA-87) signatures
+│   ├── kem/                 # Kyber1024 (ML-KEM-1024) key encapsulation
+│   └── cellframe_dilithium/ # Cellframe-specific Dilithium implementation
 ├── dht/                     # DHT layer (Phase 9.1, 9.2, 9.3, 9.5)
 │   ├── dht_context.*       # OpenDHT integration
 │   ├── dht_offline_queue.* # Offline message queueing
