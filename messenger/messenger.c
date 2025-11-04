@@ -1245,7 +1245,7 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
 // Multi-recipient encryption header and entry structures
 typedef struct {
     char magic[8];              // "PQSIGENC"
-    uint8_t version;            // 0x05 (GCM)
+    uint8_t version;            // 0x06 (Category 5: Kyber1024 + Dilithium5)
     uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t reserved;
@@ -1353,7 +1353,7 @@ static int messenger_encrypt_multi_recipient(
     messenger_enc_header_t header_for_aad;
     memset(&header_for_aad, 0, sizeof(header_for_aad));
     memcpy(header_for_aad.magic, "PQSIGENC", 8);
-    header_for_aad.version = 0x05;
+    header_for_aad.version = 0x06;
     header_for_aad.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header_for_aad.recipient_count = (uint8_t)recipient_count;
     header_for_aad.encrypted_size = (uint32_t)plaintext_len;
@@ -1425,7 +1425,7 @@ static int messenger_encrypt_multi_recipient(
     messenger_enc_header_t header;
     memset(&header, 0, sizeof(header));
     memcpy(header.magic, "PQSIGENC", 8);
-    header.version = 0x05;
+    header.version = 0x06;
     header.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header.recipient_count = (uint8_t)recipient_count;
     header.encrypted_size = (uint32_t)encrypted_size;
