@@ -138,7 +138,7 @@ endif()
 
 # SDK Independence: Vendored cryptographic implementations
 add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
-add_subdirectory(crypto/dilithium)  # Dilithium3 signatures
+add_subdirectory(crypto/dilithium)  # Dilithium5 signatures (NIST Category 5)
 add_subdirectory(crypto/cellframe_dilithium)  # Cellframe-compatible Dilithium (for CF20 wallet)
 
 # Phase 9.1: DHT and P2P Transport Layer

@@ -1,6 +1,6 @@
-# Dilithium3 (ML-DSA-65) signature scheme library
+# Dilithium5 (ML-DSA-87) signature scheme library
 # SDK Independence: Vendored from pq-crystals/dilithium reference implementation
-# FIPS 204 compliant - NIST Level 3 security
+# FIPS 204 compliant - NIST Category 5 security (256-bit quantum)
 
 cmake_minimum_required(VERSION 3.10)
 
@@ -52,17 +52,15 @@ if(MSVC)
         /W3           # Warning level 3
         /O2           # Optimize for speed
     )
-    target_compile_definitions(dilithium PRIVATE
-        DILITHIUM_MODE=3  # Build for Dilithium3 (ML-DSA-65, NIST Level 3)
-    )
+    # DILITHIUM_MODE now defined in config.h (Category 5: ML-DSA-87)
 else()
     # GCC/Clang compiler flags
     target_compile_options(dilithium PRIVATE
         -Wall
         -Wextra
         -O3
-        -DDILITHIUM_MODE=3  # Build for Dilithium3 (ML-DSA-65, NIST Level 3)
     )
+    # DILITHIUM_MODE now defined in config.h (Category 5: ML-DSA-87)
 endif()
 
 # Installation
