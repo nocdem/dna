@@ -74,8 +74,8 @@ void print_version(void) {
     printf("Git commit: %s\n", BUILD_HASH);
     printf("\nDNA Messenger - Post-quantum encrypted messaging (fork preparation phase)\n");
     printf("Forked from: QGP (Quantum Good Privacy)\n");
-    printf("Signatures: Dilithium3 (ML-DSA-65, FIPS 204)\n");
-    printf("Encryption: Kyber512 KEM + AES-256-GCM (AEAD)\n");
+    printf("Signatures: ML-DSA-87 (FIPS 204)\n");
+    printf("Encryption: ML-KEM-1024 + AES-256-GCM (AEAD)\n");
 }
 
 void print_help(void) {
@@ -212,8 +212,8 @@ void print_help(void) {
     printf("  │                                                                    │\n");
     printf("  └────────────────────────────────────────────────────────────────────┘\n\n");
     printf("ALGORITHMS:\n");
-    printf("  Signatures: Dilithium3 (ML-DSA-65, FIPS 204)\n");
-    printf("  Encryption: Kyber512 KEM + AES-256-CBC\n");
+    printf("  Signatures: ML-DSA-87 (FIPS 204)\n");
+    printf("  Encryption: ML-KEM-1024 + AES-256-CBC\n");
     printf("  Multi-Recipient: RFC 3394 AES Key Wrap\n\n");
     printf("For more information, visit: https://github.com/nocdem/qgp\n");
 }

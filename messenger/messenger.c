@@ -312,7 +312,7 @@ int messenger_generate_keys_from_seeds(
         return -1;
     }
 
-    printf("✓ Dilithium3 signing key generated from seed\n");
+    printf("✓ ML-DSA-87 signing key generated from seed\n");
 
     // Copy dilithium public key for upload before freeing
     uint8_t dilithium_pk_copy[2592];  // Dilithium5 public key size
@@ -362,7 +362,7 @@ int messenger_generate_keys_from_seeds(
         return -1;
     }
 
-    printf("✓ Kyber512 encryption key generated from seed\n");
+    printf("✓ ML-KEM-1024 encryption key generated from seed\n");
 
     // Copy kyber public key for upload before freeing
     uint8_t kyber_pk_copy[1568];  // Kyber1024 public key size
@@ -645,7 +645,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
         return -1;
     }
 
-    printf("✓ Dilithium3 signing key generated from seed\n");
+    printf("✓ ML-DSA-87 signing key generated from seed\n");
 
     // Copy dilithium public key for verification before freeing
     uint8_t dilithium_pk_verify[2592];  // Dilithium5 public key size
@@ -703,7 +703,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
         return -1;
     }
 
-    printf("✓ Kyber512 encryption key generated from seed\n");
+    printf("✓ ML-KEM-1024 encryption key generated from seed\n");
 
     // Copy kyber public key for verification before freeing
     uint8_t kyber_pk_verify[1568];  // Kyber1024 public key size

@@ -131,7 +131,7 @@ void IdentitySelectionDialog::loadIdentities()
         } else {
             incompleteIdentities << identity;
             qWarning() << "[Identity] Incomplete identity found:" << identity
-                      << "(missing" << (QFile::exists(kyberKey) ? "dilithium3" : "kyber512") << "key)";
+                      << "(missing" << (QFile::exists(kyberKey) ? ".dsa" : ".kem") << "key)";
         }
     }
 

@@ -49,7 +49,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
 
     printf("Generating keypair for: %s\n", name);
     printf("  Signing algorithm: %s\n", algo);
-    printf("  Encryption: Kyber512 KEM (post-quantum)\n");
+    printf("  Encryption: ML-KEM-1024 (post-quantum)\n");
     printf("  Output directory: %s\n", output_dir);
 
     // Get signing key type
@@ -144,7 +144,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     sign_key->private_key = dilithium_sk;
     sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
-    printf("  ✓ Dilithium3 (ML-DSA-65) signing key generated\n");
+    printf("  ✓ ML-DSA-87 signing key generated\n");
     printf("  ✓ Public key: %d bytes\n", QGP_DSA87_PUBLICKEYBYTES);
     printf("  ✓ Secret key: %d bytes\n", QGP_DSA87_SECRETKEYBYTES);
 
@@ -185,7 +185,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
             goto cleanup;
         }
 
-        printf("  ✓ Dilithium3 key verified (sign → verify PASSED)\n");
+        printf("  ✓ DSA-87 key verified (sign → verify PASSED)\n");
         printf("  ✓ Signature size: %zu bytes\n", test_siglen);
     }
 
@@ -193,7 +193,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     // STEP 2: Generate ENCRYPTION key (Kyber512 KEM)
     // ======================================================================
 
-    printf("\n[2/2] Generating encryption key (Kyber512 KEM)...\n");
+    printf("\n[2/2] Generating encryption key (ML-KEM-1024)...\n");
 
 
     enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
@@ -232,7 +232,7 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     enc_key->private_key = kyber_sk;
     enc_key->private_key_size = QGP_KEM1024_SECRETKEYBYTES;
 
-    printf("  ✓ Kyber512 KEM key generated\n");
+    printf("  ✓ ML-KEM-1024 key generated\n");
 
     // Validate key sizes
     if (!enc_key->public_key || enc_key->public_key_size != 1568) {  // Kyber1024 public key size
@@ -383,7 +383,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
 
     printf("Generating keypair with BIP39 recovery seed for: %s\n", name);
     printf("  Signing algorithm: %s\n", algo);
-    printf("  Encryption: Kyber512 KEM (post-quantum)\n");
+    printf("  Encryption: ML-KEM-1024 (post-quantum)\n");
     printf("  Output directory: %s\n", output_dir);
     printf("\n");
 
@@ -569,7 +569,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
         sign_key->private_key = dilithium_sk;
         sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
-        printf("  ✓ Dilithium3 (ML-DSA-65) signing key generated from seed (deterministic)\n");
+        printf("  ✓ ML-DSA-87 signing key generated from seed (deterministic)\n");
         printf("  ✓ Public key: %d bytes\n", QGP_DSA87_PUBLICKEYBYTES);
         printf("  ✓ Secret key: %d bytes\n", QGP_DSA87_SECRETKEYBYTES);
     }
@@ -611,7 +611,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
             goto cleanup;
         }
 
-        printf("  ✓ Dilithium3 key verified (sign → verify PASSED)\n");
+        printf("  ✓ DSA-87 key verified (sign → verify PASSED)\n");
         printf("  ✓ Signature size: %zu bytes\n", test_siglen);
     }
 
@@ -619,7 +619,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
     // STEP 7: Generate ENCRYPTION key from seed
     // ======================================================================
 
-    printf("\n  [2/2] Generating encryption key from seed (Kyber512 KEM)...\n");
+    printf("\n  [2/2] Generating encryption key from seed (ML-KEM-1024)...\n");
 
 
     enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
@@ -658,7 +658,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
     enc_key->private_key = kyber_sk;
     enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
-    printf("  ✓ Kyber512 KEM key generated from seed (deterministic)\n");
+    printf("  ✓ ML-KEM-1024 key generated from seed (deterministic)\n");
 
     // Validate key sizes
     if (!enc_key->public_key || enc_key->public_key_size != 1568) {  // Kyber1024 public key size
@@ -821,7 +821,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
 
     printf("Restoring keypair from BIP39 recovery seed for: %s\n", name);
     printf("  Signing algorithm: %s\n", algo);
-    printf("  Encryption: Kyber512 KEM (post-quantum)\n");
+    printf("  Encryption: ML-KEM-1024 (post-quantum)\n");
     printf("  Output directory: %s\n", output_dir);
     printf("\n");
 
@@ -999,7 +999,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
         sign_key->private_key = dilithium_sk;
         sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
-        printf("  ✓ Dilithium3 (ML-DSA-65) signing key regenerated from seed (deterministic)\n");
+        printf("  ✓ ML-DSA-87 signing key regenerated from seed (deterministic)\n");
         printf("  ✓ Public key: %d bytes\n", QGP_DSA87_PUBLICKEYBYTES);
         printf("  ✓ Secret key: %d bytes\n", QGP_DSA87_SECRETKEYBYTES);
     }
@@ -1041,7 +1041,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
             goto cleanup_restore;
         }
 
-        printf("  ✓ Dilithium3 key verified (sign → verify PASSED)\n");
+        printf("  ✓ DSA-87 key verified (sign → verify PASSED)\n");
         printf("  ✓ Signature size: %zu bytes\n", test_siglen);
     }
 
@@ -1049,7 +1049,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     // STEP 7: Generate ENCRYPTION key from seed
     // ======================================================================
 
-    printf("\n  [2/2] Regenerating encryption key from seed (Kyber512 KEM)...\n");
+    printf("\n  [2/2] Regenerating encryption key from seed (ML-KEM-1024)...\n");
 
 
     enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
@@ -1088,7 +1088,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     enc_key->private_key = kyber_sk;
     enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
-    printf("  ✓ Kyber512 KEM key regenerated from seed (deterministic)\n");
+    printf("  ✓ ML-KEM-1024 key regenerated from seed (deterministic)\n");
 
     // Validate key sizes
     if (!enc_key->public_key || enc_key->public_key_size != 1568) {  // Kyber1024 public key size

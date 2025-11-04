@@ -71,8 +71,8 @@ static char* export_pubkey(const char *identity, const char *key_type) {
         if (!home) return NULL;
     }
 
-    // Map key_type to extension (dilithium3 → .dsa, kyber512 → .kem)
-    const char *ext = (strcmp(key_type, "dilithium3") == 0) ? "dsa" : "kem";
+    // Map key_type to extension (dsa → .dsa, kem → .kem)
+    const char *ext = (strcmp(key_type, "dsa") == 0) ? "dsa" : "kem";
     snprintf(key_path, sizeof(key_path), "%s/.dna/%s.%s", home, identity, ext);
 
     // Load key directly
@@ -160,15 +160,15 @@ int register_to_keyserver(const char *identity) {
 
     // Export public keys
     printf("Exporting public keys...\n");
-    char *dilithium_pub = export_pubkey(identity, "dilithium3");
+    char *dilithium_pub = export_pubkey(identity, "dsa");
     if (!dilithium_pub) {
-        fprintf(stderr, "Error: Failed to export Dilithium public key\n");
+        fprintf(stderr, "Error: Failed to export DSA-87 public key\n");
         return -1;
     }
 
-    char *kyber_pub = export_pubkey(identity, "kyber512");
+    char *kyber_pub = export_pubkey(identity, "kem");
     if (!kyber_pub) {
-        fprintf(stderr, "Error: Failed to export Kyber public key\n");
+        fprintf(stderr, "Error: Failed to export KEM-1024 public key\n");
         return -1;
     }
 
