@@ -174,17 +174,8 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - Multi-recipient encryption support
 - Contact management (keyserver)
 
-### ✅ Phase 3: CLI Messenger Client (Complete - No Longer Supported)
-- Command-line chat interface
-- PostgreSQL message storage
-- Contact list management
-- Message send/receive/search
-- BIP39 mnemonic key generation
-- File-based seed phrase restore
-- Auto-login for existing identities
-- Cross-platform support (Linux & Windows)
-
-_Note: CLI messenger is no longer built or maintained. All functionality is available in the GUI application._
+### ❌ Phase 3: CLI Messenger Client (Removed - 2025-11-05)
+_CLI messenger was removed as unmaintained. All functionality is available in the GUI application._
 
 ### ✅ Phase 4: Qt Desktop App (Complete)
 - Qt5 GUI with contact list and chat area
@@ -331,7 +322,7 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
   - DHT sync with Kyber1024 self-encryption (SHA3-512 key derivation)
   - Multi-device support via BIP39 seed phrase
 - **Groups:** DHT-based storage with local SQLite cache (UUID v4 + SHA256 keys)
-- **Public Keys:** Cached locally in SQLite (7-day TTL, fetched from https://cpunk.io/api/keyserver)
+- **Public Keys:** DHT-based keyserver with local SQLite cache (7-day TTL, SHA3-512 keys)
 - **Private Keys:** Local encrypted storage (`~/.dna/`)
 
 **P2P Transport Layer:**
@@ -385,7 +376,6 @@ Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 - **GitLab (Primary):** https://gitlab.cpunk.io/cpunk/dna-messenger
 - **GitHub (Backup):** https://github.com/nocdem/dna-messenger
 - **Parent Project:** https://github.com/nocdem/qgp
-- **Keyserver API:** https://cpunk.io/api/keyserver
 - **cpunk.io:** https://cpunk.io
 - **cpunk.club:** https://cpunk.club
 - **Telegram:** https://web.telegram.org/k/#@chippunk_official

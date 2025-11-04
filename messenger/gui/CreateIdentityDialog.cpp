@@ -9,7 +9,6 @@
 extern "C" {
     #include "../messenger.h"
     #include "../bip39.h"
-    #include "../messenger/keyserver_register.h"
 }
 
 CreateIdentityDialog::CreateIdentityDialog(QWidget *parent)

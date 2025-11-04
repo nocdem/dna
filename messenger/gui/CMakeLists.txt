@@ -44,7 +44,6 @@ set(GUI_SOURCES
     ../bip39_pbkdf2.c
     ../seed_derivation.c
     ../keygen.c
-    ../messenger/keyserver_register.c
     resources.qrc
 )
 

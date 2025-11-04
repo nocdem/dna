@@ -34,19 +34,14 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
    - Multi-recipient support
    - Keyserver cache (SQLite with 7-day TTL)
 
-2. **CLI Client** (`dna_messenger`)
-   - Command-line interface
-   - ~~PostgreSQL message storage~~ → **Local SQLite** (Phase 9.3 migration)
-   - Contact management
-
-3. **GUI Client** (`dna_messenger_gui`)
+2. **GUI Client** (`dna_messenger_gui`)
    - Qt5 desktop application
    - Modern card-based UI
    - Theme system (cpunk.io cyan, cpunk.club orange)
    - Integrated wallet with transaction history
    - Local SQLite message storage (`~/.dna/messages.db`)
 
-4. **Wallet Integration**
+3. **Wallet Integration**
    - Cellframe wallet file support (.dwallet format)
    - RPC integration with Cellframe node
    - Transaction builder and signing
@@ -529,21 +524,15 @@ Upgraded DNA Messenger from **NIST Category 3** (192-bit quantum security) to **
 1. **Message Format:** Version 0x06 messages cannot be decrypted by v0.05 clients
 2. **DHT Keys:** SHA3-512 hashes are different from SHA-256 (old keys won't be found)
 3. **Key Sizes:** All key files must be regenerated
-4. **Keyserver:** Must upgrade HTTP API server and re-publish all keys
+4. **Keyserver:** DHT-based keyserver uses SHA3-512, all keys must be re-published
 
 ### Migration Steps
 
 **For Users:**
 1. Backup your wallet: `cp ~/.dna/*.dwallet ~/backup/`
 2. Upgrade messenger binary
-3. Regenerate PQ keys: `dna_messenger --gen-key --name YOUR_IDENTITY`
-4. Re-publish to keyserver: `dna_messenger --publish-keys`
-
-**For Keyserver Operators:**
-1. Rebuild keyserver: `cd keyserver/build && cmake .. && make`
-2. Rebuild verify_json: `cd utils && make verify_json`
-3. Update database schema (comments only, no migration)
-4. Restart keyserver daemon
+3. Regenerate PQ keys: Create new identity in GUI or CLI
+4. Keys are automatically published to DHT keyserver on identity creation
 
 ### API Compatibility
 
@@ -714,9 +703,6 @@ make -j$(nproc)
 
 ### Running Tests
 ```bash
-# CLI messenger
-./build/dna_messenger --help
-
 # GUI messenger
 ./build/gui/dna_messenger_gui
 ```
@@ -888,6 +874,7 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 - **Main README:** `/opt/dna-messenger/README.md`
 - **Roadmap:** `/opt/dna-messenger/ROADMAP.md`
 - **API Docs:** `/opt/dna-messenger/dna_api.h` (inline comments)
+- **Additional Docs:** `/opt/dna-messenger/docs/` (design specs, development logs, guides)
 
 ### External Links
 - **Cellframe Docs:** https://wiki.cellframe.net
@@ -916,12 +903,13 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 |---------|------|-------------|
 | 0.1.0 | 2025-10-14 | Initial fork from QGP |
 | 0.2.0 | 2025-10-15 | Library API complete |
-| 0.3.0 | 2025-10-16 | CLI messenger complete |
 | 0.4.0 | 2025-10-17 | Desktop GUI with groups |
 | 0.8.0 | 2025-10-23 | cpunk Wallet integration |
 | 0.5.0 | TBD | Web messenger (in progress) |
 
 **Current Version:** 0.1.120+ (auto-incremented)
+
+**Note:** CLI messenger (0.3.0) was removed as of 2025-11-05 (unmaintained). Use GUI application.
 
 ---
 

@@ -11,7 +11,6 @@
 extern "C" {
     #include "../messenger.h"
     #include "../bip39.h"
-    #include "../messenger/keyserver_register.h"
 }
 
 RestoreIdentityDialog::RestoreIdentityDialog(QWidget *parent)
