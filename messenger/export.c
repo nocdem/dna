@@ -33,9 +33,9 @@ typedef struct {
 static const char* get_sign_algorithm_name(qgp_key_type_t type) {
     switch (type) {
         case QGP_KEY_TYPE_DSA87:
-            return "Dilithium";
+            return "ML-DSA-87";
         case QGP_KEY_TYPE_KEM1024:
-            return "Kyber512";
+            return "ML-KEM-1024";
         default:
             return "Unknown";
     }

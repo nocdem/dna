@@ -82,9 +82,9 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
-    if (sig_len != QGP_DILITHIUM3_BYTES) {
+    if (sig_len != QGP_DSA87_SIGNATURE_BYTES) {
         fprintf(stderr, "Error: Invalid signature length (%zu, expected %d)\n",
-                sig_len, QGP_DILITHIUM3_BYTES);
+                sig_len, QGP_DSA87_SIGNATURE_BYTES);
         free(signature);
         return 2;
     }
