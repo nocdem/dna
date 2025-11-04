@@ -7,7 +7,7 @@
  * - qgp_aes256_encrypt() for AES encryption (standalone)
  *
  * Security Model:
- * - Kyber512 public key encapsulation (800-byte pubkey → 768-byte ciphertext)
+ * - Kyber1024 public key encapsulation (1568-byte pubkey → 1568-byte ciphertext)
  * - 32-byte shared secret derived via KEM
  * - AES-256-GCM encryption of file with derived key (AEAD)
  * - Header authenticated via AAD
@@ -25,13 +25,13 @@
 
 // File format for Kyber-encrypted files
 #define PQSIGNUM_ENC_MAGIC "PQSIGENC"
-#define PQSIGNUM_ENC_VERSION 0x05  // Version 5: Multi-recipient with AES-GCM (AEAD)
+#define PQSIGNUM_ENC_VERSION 0x06  // Version 6: Category 5 (Kyber1024 + Dilithium5 + SHA3-512)
 
 // Unified header (supports 1-255 recipients)
 PACK_STRUCT_BEGIN
 typedef struct {
     char magic[8];              // "PQSIGENC"
-    uint8_t version;            // 0x05 (GCM)
+    uint8_t version;            // 0x06 (Category 5)
     uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t reserved;
@@ -42,7 +42,7 @@ typedef struct {
 // Recipient entry for multi-recipient encryption
 PACK_STRUCT_BEGIN
 typedef struct {
-    uint8_t kyber_ciphertext[768];    // Kyber512 ciphertext (encapsulated shared secret)
+    uint8_t kyber_ciphertext[1568];   // Kyber1024 ciphertext (encapsulated shared secret)
     uint8_t wrapped_dek[40];          // AES-wrapped DEK (32-byte DEK + 8-byte IV)
 } PACK_STRUCT_END recipient_entry_t;
 
@@ -50,7 +50,7 @@ typedef struct {
  * Load recipient's public key from .pub file (binary or ASCII armored)
  *
  * Reads .pub file created by --export command
- * Extracts Kyber512 encryption public key (800 bytes)
+ * Extracts Kyber1024 encryption public key (1568 bytes)
  * Supports both binary and ASCII armored formats
  *
  * @param pubkey_file: Path to recipient's .pub file
@@ -180,8 +180,8 @@ static int load_recipient_pubkey(const char *pubkey_file, uint8_t **pubkey_out, 
         return EXIT_ERROR;
     }
 
-    if (header.enc_pubkey_size != 800) {
-        fprintf(stderr, "Error: Invalid Kyber512 public key size: %u (expected 800)\n", header.enc_pubkey_size);
+    if (header.enc_pubkey_size != 1568) {
+        fprintf(stderr, "Error: Invalid Kyber1024 public key size: %u (expected 1568)\n", header.enc_pubkey_size);
         free(bundle_data);
         return EXIT_ERROR;
     }
@@ -575,7 +575,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
         printf("  ✓ DEK wrapped successfully (AES Key Wrap)\n");
 
         // Store recipient entry
-        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ciphertext, 768);
+        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ciphertext, 1568);  // Kyber1024 ciphertext size
         memcpy(recipient_entries[i].wrapped_dek, wrapped_dek, 40);
 
         // Cleanup for this recipient (securely wipe KEK)

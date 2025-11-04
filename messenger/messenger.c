@@ -207,8 +207,8 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     memcpy(&enc_pubkey_size, pubkey_data + 16, 4);   // offset 16
 
     // Extract keys (after 20-byte header)
-    uint8_t dilithium_pk[1952];
-    uint8_t kyber_pk[800];
+    uint8_t dilithium_pk[2592];  // Dilithium5 public key size
+    uint8_t kyber_pk[1568];  // Kyber1024 public key size
     memcpy(dilithium_pk, pubkey_data + 20, sizeof(dilithium_pk));
     memcpy(kyber_pk, pubkey_data + 20 + sign_pubkey_size, sizeof(kyber_pk));
 
@@ -315,7 +315,7 @@ int messenger_generate_keys_from_seeds(
     printf("✓ Dilithium3 signing key generated from seed\n");
 
     // Copy dilithium public key for upload before freeing
-    uint8_t dilithium_pk_copy[1952];
+    uint8_t dilithium_pk_copy[2592];  // Dilithium5 public key size
     memcpy(dilithium_pk_copy, dilithium_pk, sizeof(dilithium_pk_copy));
 
     qgp_key_free(sign_key);
@@ -332,8 +332,8 @@ int messenger_generate_keys_from_seeds(
 
     strncpy(enc_key->name, identity, sizeof(enc_key->name) - 1);
 
-    uint8_t *kyber_pk = calloc(1, 800);
-    uint8_t *kyber_sk = calloc(1, 1632);
+    uint8_t *kyber_pk = calloc(1, 1568);  // Kyber1024 public key size
+    uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
 
     if (!kyber_pk || !kyber_sk) {
         fprintf(stderr, "Error: Memory allocation failed for Kyber512 buffers\n");
@@ -352,9 +352,9 @@ int messenger_generate_keys_from_seeds(
     }
 
     enc_key->public_key = kyber_pk;
-    enc_key->public_key_size = 800;
+    enc_key->public_key_size = 1568;  // Kyber1024 public key size
     enc_key->private_key = kyber_sk;
-    enc_key->private_key_size = 1632;
+    enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
     if (qgp_key_save(enc_key, kyber_path) != 0) {
         fprintf(stderr, "Error: Failed to save encryption key\n");
@@ -365,7 +365,7 @@ int messenger_generate_keys_from_seeds(
     printf("✓ Kyber512 encryption key generated from seed\n");
 
     // Copy kyber public key for upload before freeing
-    uint8_t kyber_pk_copy[800];
+    uint8_t kyber_pk_copy[1568];  // Kyber1024 public key size
     memcpy(kyber_pk_copy, kyber_pk, sizeof(kyber_pk_copy));
 
     qgp_key_free(enc_key);
@@ -452,8 +452,8 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     memcpy(&enc_pubkey_size, pubkey_data + 16, 4);   // offset 16
 
     // Extract keys (after 20-byte header)
-    uint8_t dilithium_pk[1952];
-    uint8_t kyber_pk[800];
+    uint8_t dilithium_pk[2592];  // Dilithium5 public key size
+    uint8_t kyber_pk[1568];  // Kyber1024 public key size
     memcpy(dilithium_pk, pubkey_data + 20, sizeof(dilithium_pk));
     memcpy(kyber_pk, pubkey_data + 20 + sign_pubkey_size, sizeof(kyber_pk));
 
@@ -648,7 +648,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     printf("✓ Dilithium3 signing key generated from seed\n");
 
     // Copy dilithium public key for verification before freeing
-    uint8_t dilithium_pk_verify[1952];
+    uint8_t dilithium_pk_verify[2592];  // Dilithium5 public key size
     memcpy(dilithium_pk_verify, dilithium_pk, sizeof(dilithium_pk_verify));
 
     qgp_key_free(sign_key);
@@ -667,8 +667,8 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 
     strncpy(enc_key->name, identity, sizeof(enc_key->name) - 1);
 
-    uint8_t *kyber_pk = calloc(1, 800);
-    uint8_t *kyber_sk = calloc(1, 1632);
+    uint8_t *kyber_pk = calloc(1, 1568);  // Kyber1024 public key size
+    uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
 
     if (!kyber_pk || !kyber_sk) {
         fprintf(stderr, "Error: Memory allocation failed for Kyber512 buffers\n");
@@ -691,9 +691,9 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     }
 
     enc_key->public_key = kyber_pk;
-    enc_key->public_key_size = 800;
+    enc_key->public_key_size = 1568;  // Kyber1024 public key size
     enc_key->private_key = kyber_sk;
-    enc_key->private_key_size = 1632;
+    enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
     if (qgp_key_save(enc_key, kyber_path) != 0) {
         fprintf(stderr, "Error: Failed to save encryption key\n");
@@ -706,7 +706,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     printf("✓ Kyber512 encryption key generated from seed\n");
 
     // Copy kyber public key for verification before freeing
-    uint8_t kyber_pk_verify[800];
+    uint8_t kyber_pk_verify[1568];  // Kyber1024 public key size
     memcpy(kyber_pk_verify, kyber_pk, sizeof(kyber_pk_verify));
 
     qgp_key_free(enc_key);
@@ -1254,7 +1254,7 @@ typedef struct {
 } messenger_enc_header_t;
 
 typedef struct {
-    uint8_t kyber_ciphertext[768];    // Kyber512 ciphertext
+    uint8_t kyber_ciphertext[1568];   // Kyber1024 ciphertext
     uint8_t wrapped_dek[40];          // AES-wrapped DEK (32-byte + 8-byte IV)
 } messenger_recipient_entry_t;
 
@@ -1263,7 +1263,7 @@ typedef struct {
  *
  * @param plaintext: Message to encrypt
  * @param plaintext_len: Message length
- * @param recipient_enc_pubkeys: Array of recipient Kyber512 public keys (800 bytes each)
+ * @param recipient_enc_pubkeys: Array of recipient Kyber1024 public keys (1568 bytes each)
  * @param recipient_count: Number of recipients (including sender)
  * @param sender_sign_key: Sender's Dilithium3 signing key
  * @param ciphertext_out: Output ciphertext (caller must free)
@@ -1381,7 +1381,7 @@ static int messenger_encrypt_multi_recipient(
     }
 
     for (size_t i = 0; i < recipient_count; i++) {
-        uint8_t kyber_ciphertext[768];
+        uint8_t kyber_ciphertext[1568];  // Kyber1024 ciphertext size
         uint8_t kek[32];  // KEK = shared secret from Kyber
 
         // Kyber512 encapsulation
@@ -1400,7 +1400,7 @@ static int messenger_encrypt_multi_recipient(
         }
 
         // Store recipient entry
-        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ciphertext, 768);
+        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ciphertext, 1568);  // Kyber1024 ciphertext size
         memcpy(recipient_entries[i].wrapped_dek, wrapped_dek, 40);
 
         // Wipe KEK
@@ -1799,8 +1799,8 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
         return -1;
     }
 
-    if (kyber_key->private_key_size != 1632) {
-        fprintf(stderr, "Error: Invalid Kyber512 private key size: %zu (expected 1632)\n",
+    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
+        fprintf(stderr, "Error: Invalid Kyber1024 private key size: %zu (expected 3168)\n",
                 kyber_key->private_key_size);
         qgp_key_free(kyber_key);
         message_backup_free_messages(all_messages, all_count);
@@ -1923,7 +1923,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
         return -1;
     }
 
-    if (kyber_key->private_key_size != 1632) {
+    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
         qgp_key_free(kyber_key);
         message_backup_free_messages(all_messages, all_count);
         return -1;

@@ -25,8 +25,8 @@
  */
 typedef enum {
     QGP_KEY_TYPE_INVALID = 0,
-    QGP_KEY_TYPE_DILITHIUM3 = 1,    // Post-quantum signature (ML-DSA-65, FIPS 204)
-    QGP_KEY_TYPE_KYBER512 = 2       // Post-quantum KEM (NIST Level 1)
+    QGP_KEY_TYPE_DILITHIUM3 = 1,    // Post-quantum signature (ML-DSA-87, FIPS 204, Category 5)
+    QGP_KEY_TYPE_KYBER512 = 2       // Post-quantum KEM (ML-KEM-1024, FIPS 203, Category 5)
 } qgp_key_type_t;
 
 /**
@@ -49,9 +49,9 @@ typedef enum {
  * - No callbacks (direct function calls instead)
  * - Clear ownership (caller manages memory)
  *
- * Key Sizes:
- * - Dilithium3: public=1952, private=4032
- * - Kyber512:   public=800,  private=1632
+ * Key Sizes (Category 5):
+ * - Dilithium5 (ML-DSA-87): public=2592, private=4896
+ * - Kyber1024 (ML-KEM-1024): public=1568, private=3168
  */
 typedef struct {
     qgp_key_type_t type;          // Algorithm type
@@ -93,8 +93,8 @@ typedef enum {
  */
 typedef struct {
     qgp_sig_type_t type;          // Signature algorithm
-    uint16_t public_key_size;     // Public key size (1952 for Dilithium3)
-    uint16_t signature_size;      // Signature size (up to 3309 for Dilithium3)
+    uint16_t public_key_size;     // Public key size (2592 for Dilithium5)
+    uint16_t signature_size;      // Signature size (up to 4627 for Dilithium5)
     uint8_t *data;                // public_key || signature (caller owns)
 } qgp_signature_t;
 
@@ -110,12 +110,23 @@ typedef struct {
 // ============================================================================
 
 /**
+ * QGP Hash Constants
+ *
+ * Category 5 security requires SHA3-512 (64 bytes = 512 bits)
+ * Provides 256-bit quantum security (Grover's algorithm resistance)
+ */
+#define QGP_HASH_SIZE 64           // SHA3-512 digest size in bytes
+#define QGP_HASH_HEX_SIZE 129      // 128 hex chars + null terminator
+#define QGP_FINGERPRINT_SIZE 64    // Fingerprint size (SHA3-512)
+#define QGP_FINGERPRINT_HEX_SIZE 129  // Fingerprint hex string size
+
+/**
  * QGP Hash Structure
  *
- * Simple hash container (SHA256)
+ * Simple hash container (SHA3-512 for Category 5 security)
  */
 typedef struct {
-    uint8_t hash[32];  // SHA256 hash (256 bits)
+    uint8_t hash[64];  // SHA3-512 hash (512 bits, 256-bit quantum security)
 } qgp_hash_t;
 
 // ============================================================================

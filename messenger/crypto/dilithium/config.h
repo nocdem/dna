@@ -1,8 +1,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
-// QGP Configuration: Use Dilithium3 (ML-DSA-65, NIST Level 3)
-#define DILITHIUM_MODE 3
+// QGP Configuration: Use Dilithium5 (ML-DSA-87, NIST Level 5 / Category 5)
+#define DILITHIUM_MODE 5
 #define DILITHIUM_RANDOMIZED_SIGNING
 //#define USE_RDPMC
 //#define DBENCH

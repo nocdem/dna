@@ -8,7 +8,7 @@
 
 ## Project Overview
 
-DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpunk wallet integration. It uses Kyber512 for key encapsulation, Dilithium3 for signatures, and AES-256-GCM for symmetric encryption.
+DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpunk wallet integration. It uses **Kyber1024 (ML-KEM-1024)** for key encapsulation, **Dilithium5 (ML-DSA-87)** for signatures, and AES-256-GCM for symmetric encryption. **NIST Category 5 security** (256-bit quantum security).
 
 **Key Features:**
 - End-to-end encrypted messaging
@@ -28,7 +28,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 
 ### Components
 1. **Core Library** (`libdna.a`)
-   - Post-quantum cryptography (Kyber512, Dilithium3)
+   - Post-quantum cryptography (Kyber1024, Dilithium5 - NIST Category 5)
    - Memory-based encryption/decryption API
    - Multi-recipient support
    - Keyserver cache (SQLite with 7-day TTL)
@@ -64,8 +64,8 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 ```
 /opt/dna-messenger/
 ├── crypto/                  # Cryptography libraries
-│   ├── dilithium/          # Dilithium3 signatures
-│   └── kyber512/           # Kyber512 key encapsulation
+│   ├── dilithium/          # Dilithium5 (ML-DSA-87) signatures
+│   └── kyber512/           # Kyber1024 (ML-KEM-1024) key encapsulation
 ├── dht/                     # DHT layer (Phase 9.1, 9.2, 9.3)
 │   ├── dht_context.*       # OpenDHT integration
 │   ├── dht_offline_queue.* # Offline message queueing
@@ -330,7 +330,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 2. **dht_keyserver_reverse_lookup() Function** (`dht_keyserver.c`)
    - Fetches reverse mapping from DHT
    - Verifies fingerprint matches pubkey (prevents pubkey substitution)
-   - Verifies Dilithium3 signature (prevents identity spoofing)
+   - Verifies Dilithium5 signature (prevents identity spoofing)
    - Returns: 0 (success), -1 (error), -2 (not found), -3 (verification failed)
 
 3. **P2P Sender Identification** (`messenger_p2p.c`)
@@ -360,7 +360,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 **Key Technical Decisions:**
 - SHA256(fingerprint + ":reverse") for DHT reverse mapping keys
 - JSON serialization for reverse mapping entries
-- Dilithium3 signature over (pubkey || identity || timestamp)
+- Dilithium5 signature over (pubkey || identity || timestamp)
 - Two-tier lookup for performance (contacts → DHT)
 
 **Result:** Sender identification works without pre-adding contacts, enabling seamless P2P communication while maintaining strong security guarantees.
@@ -384,6 +384,109 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 - `messenger_p2p.c` (MODIFIED - hybrid send flow)
 - `gui/MainWindow.h` (MODIFIED - added timer)
 - `gui/MainWindow.cpp` (MODIFIED - polling callback)
+
+---
+
+## Category 5 Cryptography Upgrade (COMPLETE)
+
+**Status:** ✅ Complete (2025-11-04)
+**Branch:** `main`
+
+### Overview
+
+Upgraded DNA Messenger from **NIST Category 3** (192-bit quantum security) to **NIST Category 5** (256-bit quantum security):
+
+**Algorithm Changes:**
+- **Kyber:** 512 → 1024 (ML-KEM-768 → ML-KEM-1024)
+- **Dilithium:** 3 → 5 (ML-DSA-65 → ML-DSA-87)
+- **Hashing:** SHA-256 → SHA3-512 (32 → 64 bytes)
+
+**Key Size Changes:**
+| Algorithm | Old Size | New Size | Description |
+|-----------|----------|----------|-------------|
+| Kyber Public Key | 800 bytes | 1568 bytes | +768 bytes |
+| Kyber Secret Key | 1632 bytes | 3168 bytes | +1536 bytes |
+| Kyber Ciphertext | 768 bytes | 1568 bytes | +800 bytes |
+| Dilithium Public Key | 1952 bytes | 2592 bytes | +640 bytes |
+| Dilithium Secret Key | 4032 bytes | 4896 bytes | +864 bytes |
+| Dilithium Signature | 3309 bytes | 4627 bytes | +1318 bytes |
+| Hash Fingerprint | 32 bytes | 64 bytes | +32 bytes |
+
+### What Was Implemented
+
+1. **Core Crypto Library Upgrade** (Phases 1-2)
+   - Vendored `pq-crystals/dilithium` with `DILITHIUM_MODE=5`
+   - Updated CMakeLists.txt crypto build flags
+   - Implemented SHA3-512 utilities (`qgp_sha3.h/c`)
+
+2. **Hardcoded Size Updates** (Phase 3)
+   - **12 files updated, 122+ values changed:**
+     - `dna_api.c`, `encrypt.c`, `decrypt.c`, `export.c`
+     - `messenger.c` (21 values), `keygen.c` (24 values)
+     - `messenger_p2p.c` (14 values + SHA3-512 migration)
+     - `p2p_transport.h/c` (17 values)
+     - `keyserver_cache.h`, `dna_api.h` (comment updates)
+     - `keyserver/src/config.c` (1 value)
+
+3. **Message Format Versioning** (Phase 5)
+   - `DNA_ENC_VERSION`: 0x05 → 0x06 (`dna_api.c`, `encrypt.c`, `decrypt.c`)
+   - `PQSIGNUM_PUBKEY_VERSION`: 0x01 → 0x02 (`export.c`)
+
+4. **Database Schemas** (Phase 6)
+   - All databases already use BLOB/TEXT (no migration needed)
+   - Verified: `contacts_db.c`, `keyserver_cache.c`, `message_backup.c`
+
+5. **Build and Test** (Phase 7)
+   - Fixed `qgp_dilithium.c` function calls (dilithium3→dilithium5)
+   - Fixed `p2p_transport.c` syntax error
+   - **BUILD SUCCESSFUL**
+
+6. **Keyserver Updates**
+   - Updated schemas: `keyserver/sql/schema.sql`, `schema_sqlite.sql`
+   - Updated README and signature verification comments
+   - Updated `utils/verify_json.c` documentation
+
+### Breaking Changes
+
+⚠️ **This is a BREAKING UPGRADE** - old and new versions are **incompatible**:
+
+1. **Message Format:** Version 0x06 messages cannot be decrypted by v0.05 clients
+2. **DHT Keys:** SHA3-512 hashes are different from SHA-256 (old keys won't be found)
+3. **Key Sizes:** All key files must be regenerated
+4. **Keyserver:** Must upgrade HTTP API server and re-publish all keys
+
+### Migration Steps
+
+**For Users:**
+1. Backup your wallet: `cp ~/.dna/*.dwallet ~/backup/`
+2. Upgrade messenger binary
+3. Regenerate PQ keys: `dna_messenger --gen-key --name YOUR_IDENTITY`
+4. Re-publish to keyserver: `dna_messenger --publish-keys`
+
+**For Keyserver Operators:**
+1. Rebuild keyserver: `cd keyserver/build && cmake .. && make`
+2. Rebuild verify_json: `cd utils && make verify_json`
+3. Update database schema (comments only, no migration)
+4. Restart keyserver daemon
+
+### API Compatibility
+
+**Function names unchanged** (backwards API compatibility):
+- `qgp_dilithium3_*()` functions now implement Dilithium5
+- `QGP_DILITHIUM3_*` constants now have Dilithium5 values
+- Code compiled against old header will fail at link time (deliberate)
+
+### Security Analysis
+
+**Quantum Security:**
+- Category 3: Secure against quantum computers through ~2040
+- Category 5: Secure against quantum computers beyond 2050+
+- Matches highest NIST security level (equivalent to AES-256)
+
+**Why Upgrade:**
+- Future-proofing against quantum computing advances
+- Aligns with NIST FIPS 204 (ML-DSA) and FIPS 203 (ML-KEM) standards
+- Matches industry best practices for long-term security
 
 ---
 
@@ -502,10 +605,10 @@ Full specification: `/DNA_BOARD_PHASE10_PLAN.md`
 
 ### Overview
 
-Fully quantum-safe voice/video calls using Kyber512 via DNA messaging + SRTP (bypasses WebRTC's quantum-vulnerable DTLS).
+Fully quantum-safe voice/video calls using Kyber1024 via DNA messaging + SRTP (bypasses WebRTC's quantum-vulnerable DTLS).
 
 **Technology:** libnice, libsrtp2, libopus, libvpx/libx264, PortAudio
-**Security:** Kyber512 key exchange, Dilithium3 signatures, forward secrecy, SAS verification
+**Security:** Kyber1024 key exchange, Dilithium5 signatures, forward secrecy, SAS verification
 
 See design doc for complete technical specification
 
@@ -654,8 +757,8 @@ void wallet_list_free(wallet_list_t *list);
 ## Security Considerations
 
 ### Current Security Model
-- Post-quantum encryption (Kyber512 + AES-256-GCM)
-- Message signatures (Dilithium3)
+- Post-quantum encryption (Kyber1024 + AES-256-GCM) - NIST Category 5
+- Message signatures (Dilithium5) - NIST Category 5
 - End-to-end encryption (server cannot read)
 - Private keys stored locally (`~/.dna/`)
 

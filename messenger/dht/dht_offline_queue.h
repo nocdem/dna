@@ -17,7 +17,7 @@ extern "C" {
  * Messages are retrieved when recipient comes online and auto-deleted.
  *
  * Architecture:
- * - Storage Key: SHA256(recipient_identity + ":offline_queue")
+ * - Storage Key: SHA3-512(recipient_identity + ":offline_queue") - 64 bytes
  * - Value: Serialized array of messages (binary format)
  * - TTL: 7 days default (604,800 seconds)
  * - Approach: Single queue per recipient (append-only)
@@ -53,7 +53,7 @@ typedef struct {
  * Store encrypted message in DHT for offline recipient
  *
  * Workflow:
- * 1. Query existing queue at SHA256(recipient + ":offline_queue")
+ * 1. Query existing queue at SHA3-512(recipient + ":offline_queue")
  * 2. Deserialize existing messages (if any)
  * 3. Append new message to array
  * 4. Serialize updated array
@@ -80,7 +80,7 @@ int dht_queue_message(
  * Retrieve all queued messages for recipient
  *
  * Workflow:
- * 1. Query DHT at SHA256(recipient + ":offline_queue")
+ * 1. Query DHT at SHA3-512(recipient + ":offline_queue")
  * 2. Deserialize message array
  * 3. Filter out expired messages
  * 4. Return valid messages
@@ -172,10 +172,10 @@ int dht_deserialize_messages(
 /**
  * Generate DHT storage key for recipient's offline queue
  *
- * Key format: SHA256(recipient + ":offline_queue")
+ * Key format: SHA3-512(recipient + ":offline_queue")
  *
  * @param recipient Recipient identity
- * @param key_out Output buffer (32 bytes for SHA256)
+ * @param key_out Output buffer (64 bytes for SHA3-512)
  */
 void dht_generate_queue_key(
     const char *recipient,

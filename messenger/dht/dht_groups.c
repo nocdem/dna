@@ -11,12 +11,13 @@
 
 #include "dht_groups.h"
 #include "dht_context.h"
+#include "../qgp_sha3.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 
 // Global database connection for group cache
 static sqlite3 *g_db = NULL;
@@ -71,16 +72,20 @@ static void generate_uuid_v4(char *uuid_out) {
         bytes[12], bytes[13], bytes[14], bytes[15]);
 }
 
-// Helper: Compute SHA256 hash for DHT key
+// Helper: Compute SHA3-512 hash for DHT key (Category 5)
 static void compute_dht_key(const char *group_uuid, char *key_out) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256((unsigned char*)group_uuid, strlen(group_uuid), hash);
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    if (qgp_sha3_512((unsigned char*)group_uuid, strlen(group_uuid), hash) != 0) {
+        // Fallback: clear output
+        key_out[0] = '\0';
+        return;
+    }
 
-    // Convert to hex string
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    // Convert to hex string (128 chars)
+    for (int i = 0; i < 64; i++) {
         sprintf(key_out + (i * 2), "%02x", hash[i]);
     }
-    key_out[SHA256_DIGEST_LENGTH * 2] = '\0';
+    key_out[128] = '\0';
 }
 
 // Helper: Serialize metadata to JSON string

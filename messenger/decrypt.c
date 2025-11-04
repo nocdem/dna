@@ -7,7 +7,7 @@
  * - qgp_aes256_decrypt() for AES-GCM decryption with AAD (standalone)
  *
  * Security Model:
- * - Kyber512 private key decapsulation (768-byte ciphertext → 32-byte shared secret)
+ * - Kyber1024 private key decapsulation (1568-byte ciphertext → 32-byte shared secret)
  * - AES-256-GCM (AEAD) decryption of file with derived key
  * - Header authenticated via AAD (Additional Authenticated Data)
  * - GCM authentication tag verification (integrity + authenticity)
@@ -24,13 +24,13 @@
 
 // File format for Kyber-encrypted files (must match encrypt.c)
 #define PQSIGNUM_ENC_MAGIC "PQSIGENC"
-#define PQSIGNUM_ENC_VERSION 0x05  // Version 5: Multi-recipient with AES-256-GCM (AEAD)
+#define PQSIGNUM_ENC_VERSION 0x06  // Version 6: Category 5 (Kyber1024 + Dilithium5 + SHA3-512)
 
 // Unified header (supports 1-255 recipients)
 PACK_STRUCT_BEGIN
 typedef struct {
     char magic[8];              // "PQSIGENC"
-    uint8_t version;            // 0x05
+    uint8_t version;            // 0x06 (Category 5)
     uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t reserved;
@@ -41,7 +41,7 @@ typedef struct {
 // Recipient entry for multi-recipient encryption
 PACK_STRUCT_BEGIN
 typedef struct {
-    uint8_t kyber_ciphertext[768];    // Kyber512 ciphertext (encapsulated shared secret)
+    uint8_t kyber_ciphertext[1568];   // Kyber1024 ciphertext (encapsulated shared secret)
     uint8_t wrapped_dek[40];          // AES-wrapped DEK (32-byte DEK + 8-byte IV)
 } PACK_STRUCT_END recipient_entry_t;
 
@@ -203,8 +203,8 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
     uint8_t *privkey_bytes = enc_key->private_key;
     size_t privkey_size = enc_key->private_key_size;
 
-    if (!privkey_bytes || privkey_size != 1632) {
-        fprintf(stderr, "Error: Invalid private key (expected 1632 bytes, got %zu)\n", privkey_size);
+    if (!privkey_bytes || privkey_size != 3168) {  // Kyber1024 secret key size
+        fprintf(stderr, "Error: Invalid private key (expected 3168 bytes, got %zu)\n", privkey_size);
         fclose(in_fp);
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;

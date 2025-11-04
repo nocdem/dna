@@ -14,17 +14,17 @@
 
 // Public key bundle file format
 #define PQSIGNUM_PUBKEY_MAGIC "PQPUBKEY"
-#define PQSIGNUM_PUBKEY_VERSION 0x01
+#define PQSIGNUM_PUBKEY_VERSION 0x02  // Version 2: Category 5 key sizes
 
 PACK_STRUCT_BEGIN
 typedef struct {
     char magic[8];              // "PQPUBKEY"
-    uint8_t version;            // 0x01
+    uint8_t version;            // 0x02 (Category 5)
     uint8_t sign_key_type;      // Signing algorithm type
-    uint8_t enc_key_type;       // Encryption algorithm type (always Kyber512)
+    uint8_t enc_key_type;       // Encryption algorithm type (always Kyber1024)
     uint8_t reserved;           // Reserved
     uint32_t sign_pubkey_size;  // Signing public key size
-    uint32_t enc_pubkey_size;   // Encryption public key size (800 bytes for Kyber512)
+    uint32_t enc_pubkey_size;   // Encryption public key size (1568 bytes for Kyber1024)
 } PACK_STRUCT_END pqsignum_pubkey_header_t;
 
 /**
@@ -134,8 +134,8 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
 
     // For Kyber, use raw public_key
     enc_pubkey_size = enc_key->public_key_size;
-    if (enc_pubkey_size != 800) {
-        fprintf(stderr, "Error: Invalid Kyber512 public key size (expected 800 bytes, got %lu)\n", enc_pubkey_size);
+    if (enc_pubkey_size != 1568) {  // Kyber1024 public key size
+        fprintf(stderr, "Error: Invalid Kyber1024 public key size (expected 1568 bytes, got %lu)\n", enc_pubkey_size);
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
     }
@@ -146,7 +146,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
         goto cleanup;
     }
     memcpy(enc_pubkey, enc_key->public_key, enc_pubkey_size);
-    printf("  ✓ Encryption public key extracted (%lu bytes, Kyber512)\n", enc_pubkey_size);
+    printf("  ✓ Encryption public key extracted (%lu bytes, Kyber1024)\n", enc_pubkey_size);
 
     // Build header
     pqsignum_pubkey_header_t header;

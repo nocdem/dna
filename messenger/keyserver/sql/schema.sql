@@ -12,15 +12,15 @@ CREATE TABLE keyserver_identities (
     dna VARCHAR(32) UNIQUE NOT NULL,
 
     -- Public keys (base64 encoded)
-    dilithium_pub TEXT NOT NULL,     -- ~2605 bytes decoded
-    kyber_pub TEXT NOT NULL,          -- ~1096 bytes decoded
+    dilithium_pub TEXT NOT NULL,     -- ~2592 bytes decoded (Dilithium5)
+    kyber_pub TEXT NOT NULL,          -- ~1568 bytes decoded (Kyber1024)
     cf20pub VARCHAR(103) NOT NULL DEFAULT '',  -- Cellframe address (empty for now)
 
     -- Versioning (monotonic counter)
     version INTEGER NOT NULL DEFAULT 1,
     updated_at INTEGER NOT NULL,      -- Unix timestamp from client
 
-    -- Signature (Dilithium3)
+    -- Signature (Dilithium5)
     sig TEXT NOT NULL,                -- base64 signature of canonical JSON
 
     -- Schema version (payload format version)
@@ -57,12 +57,12 @@ CREATE TRIGGER trigger_update_last_updated
 -- Comments
 COMMENT ON TABLE keyserver_identities IS 'DNA Messenger public key registry';
 COMMENT ON COLUMN keyserver_identities.dna IS 'DNA handle (3-32 alphanumeric + underscore)';
-COMMENT ON COLUMN keyserver_identities.dilithium_pub IS 'Dilithium3 public key (base64)';
-COMMENT ON COLUMN keyserver_identities.kyber_pub IS 'Kyber512 public key (base64)';
+COMMENT ON COLUMN keyserver_identities.dilithium_pub IS 'Dilithium5 public key (base64)';
+COMMENT ON COLUMN keyserver_identities.kyber_pub IS 'Kyber1024 public key (base64)';
 COMMENT ON COLUMN keyserver_identities.cf20pub IS 'Cellframe address (empty for now, for future blockchain proof)';
 COMMENT ON COLUMN keyserver_identities.version IS 'Monotonic version number (prevents replay)';
 COMMENT ON COLUMN keyserver_identities.updated_at IS 'Client-provided Unix timestamp';
-COMMENT ON COLUMN keyserver_identities.sig IS 'Dilithium3 signature of JSON payload';
+COMMENT ON COLUMN keyserver_identities.sig IS 'Dilithium5 signature of JSON payload';
 COMMENT ON COLUMN keyserver_identities.schema_version IS 'Payload format version (v field in JSON)';
 
 -- Grant permissions (adjust user as needed)

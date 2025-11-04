@@ -21,7 +21,7 @@ int qgp_dilithium3_keypair(uint8_t *pk, uint8_t *sk)
 
     // Call upstream Dilithium3 keypair generation
     // Context is NULL for pure Dilithium (no pre-hash)
-    return pqcrystals_dilithium3_ref_keypair(pk, sk);
+    return pqcrystals_dilithium5_ref_keypair(pk, sk);
 }
 
 int qgp_dilithium3_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *seed)
@@ -87,7 +87,7 @@ int qgp_dilithium3_signature(uint8_t *sig, size_t *siglen,
 
     // Call upstream Dilithium3 detached signature
     // Context (ctx) is NULL and ctxlen is 0 for pure Dilithium
-    return pqcrystals_dilithium3_ref_signature(sig, siglen, m, mlen, NULL, 0, sk);
+    return pqcrystals_dilithium5_ref_signature(sig, siglen, m, mlen, NULL, 0, sk);
 }
 
 int qgp_dilithium3_verify(const uint8_t *sig, size_t siglen,
@@ -100,5 +100,5 @@ int qgp_dilithium3_verify(const uint8_t *sig, size_t siglen,
 
     // Call upstream Dilithium3 signature verification
     // Context (ctx) is NULL and ctxlen is 0 for pure Dilithium
-    return pqcrystals_dilithium3_ref_verify(sig, siglen, m, mlen, NULL, 0, pk);
+    return pqcrystals_dilithium5_ref_verify(sig, siglen, m, mlen, NULL, 0, pk);
 }

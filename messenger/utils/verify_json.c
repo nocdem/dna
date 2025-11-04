@@ -1,5 +1,5 @@
 /*
- * verify_json - Verify JSON signature with Dilithium public key
+ * verify_json - Verify JSON signature with Dilithium5 public key
  *
  * Usage: verify_json <json_string> <signature_b64> <pubkey_b64>
  * Output: "VALID" or "INVALID" to stdout

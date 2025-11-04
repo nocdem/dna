@@ -171,6 +171,7 @@ set(COMMON_SOURCES
     qgp_aes.c
     qgp_kyber.c
     qgp_dilithium.c
+    qgp_sha3.c         # Phase 10: SHA3-512 for Category 5 security
     # SDK Independence: Infrastructure modules
     qgp_key.c
     qgp_signature.c

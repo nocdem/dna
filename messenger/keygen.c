@@ -235,15 +235,15 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     printf("  ✓ Kyber512 KEM key generated\n");
 
     // Validate key sizes
-    if (!enc_key->public_key || enc_key->public_key_size != 800) {
-        fprintf(stderr, "Error: Invalid public key (expected 800 bytes, got %zu)\n",
+    if (!enc_key->public_key || enc_key->public_key_size != 1568) {  // Kyber1024 public key size
+        fprintf(stderr, "Error: Invalid public key (expected 1568 bytes, got %zu)\n",
                 enc_key->public_key_size);
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
     }
 
-    if (!enc_key->private_key || enc_key->private_key_size != 1632) {
-        fprintf(stderr, "Error: Invalid private key (expected 1632 bytes, got %zu)\n",
+    if (!enc_key->private_key || enc_key->private_key_size != 3168) {  // Kyber1024 secret key size
+        fprintf(stderr, "Error: Invalid private key (expected 3168 bytes, got %zu)\n",
                 enc_key->private_key_size);
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
@@ -257,8 +257,8 @@ int cmd_gen_key(const char *name, const char *algo, const char *output_dir) {
     }
 
     printf("  ✓ Encryption key saved: %s\n", enc_key_path);
-    printf("  ✓ Public key: 800 bytes\n");
-    printf("  ✓ Private key: 1632 bytes\n");
+    printf("  ✓ Public key: 1568 bytes\n");  // Kyber1024
+    printf("  ✓ Private key: 3168 bytes\n");  // Kyber1024
 
     // ======================================================================
     // SUCCESS
@@ -632,8 +632,8 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
     strncpy(enc_key->name, name, sizeof(enc_key->name) - 1);
 
     // Allocate buffers for Kyber keypair
-    uint8_t *kyber_pk = calloc(1, 800);
-    uint8_t *kyber_sk = calloc(1, 1632);
+    uint8_t *kyber_pk = calloc(1, 1568);  // Kyber1024 public key size
+    uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
 
     if (!kyber_pk || !kyber_sk) {
         fprintf(stderr, "Error: Memory allocation failed for Kyber key buffers\n");
@@ -654,22 +654,22 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
 
     // Store in qgp_key_t structure
     enc_key->public_key = kyber_pk;
-    enc_key->public_key_size = 800;
+    enc_key->public_key_size = 1568;  // Kyber1024 public key size
     enc_key->private_key = kyber_sk;
-    enc_key->private_key_size = 1632;
+    enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
     printf("  ✓ Kyber512 KEM key generated from seed (deterministic)\n");
 
     // Validate key sizes
-    if (!enc_key->public_key || enc_key->public_key_size != 800) {
-        fprintf(stderr, "Error: Invalid public key (expected 800 bytes, got %zu)\n",
+    if (!enc_key->public_key || enc_key->public_key_size != 1568) {  // Kyber1024 public key size
+        fprintf(stderr, "Error: Invalid public key (expected 1568 bytes, got %zu)\n",
                 enc_key->public_key_size);
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
     }
 
-    if (!enc_key->private_key || enc_key->private_key_size != 1632) {
-        fprintf(stderr, "Error: Invalid private key (expected 1632 bytes, got %zu)\n",
+    if (!enc_key->private_key || enc_key->private_key_size != 3168) {  // Kyber1024 secret key size
+        fprintf(stderr, "Error: Invalid private key (expected 3168 bytes, got %zu)\n",
                 enc_key->private_key_size);
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
@@ -683,8 +683,8 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
     }
 
     printf("  ✓ Encryption key saved: %s\n", enc_key_path);
-    printf("  ✓ Public key: 800 bytes\n");
-    printf("  ✓ Private key: 1632 bytes\n");
+    printf("  ✓ Public key: 1568 bytes\n");  // Kyber1024
+    printf("  ✓ Private key: 3168 bytes\n");  // Kyber1024
 
     // ======================================================================
     // SUCCESS
@@ -1062,8 +1062,8 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     strncpy(enc_key->name, name, sizeof(enc_key->name) - 1);
 
     // Allocate buffers for Kyber keypair
-    uint8_t *kyber_pk = calloc(1, 800);
-    uint8_t *kyber_sk = calloc(1, 1632);
+    uint8_t *kyber_pk = calloc(1, 1568);  // Kyber1024 public key size
+    uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
 
     if (!kyber_pk || !kyber_sk) {
         fprintf(stderr, "Error: Memory allocation failed for Kyber key buffers\n");
@@ -1084,22 +1084,22 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
 
     // Store in qgp_key_t structure
     enc_key->public_key = kyber_pk;
-    enc_key->public_key_size = 800;
+    enc_key->public_key_size = 1568;  // Kyber1024 public key size
     enc_key->private_key = kyber_sk;
-    enc_key->private_key_size = 1632;
+    enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
     printf("  ✓ Kyber512 KEM key regenerated from seed (deterministic)\n");
 
     // Validate key sizes
-    if (!enc_key->public_key || enc_key->public_key_size != 800) {
-        fprintf(stderr, "Error: Invalid public key (expected 800 bytes, got %zu)\n",
+    if (!enc_key->public_key || enc_key->public_key_size != 1568) {  // Kyber1024 public key size
+        fprintf(stderr, "Error: Invalid public key (expected 1568 bytes, got %zu)\n",
                 enc_key->public_key_size);
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup_restore;
     }
 
-    if (!enc_key->private_key || enc_key->private_key_size != 1632) {
-        fprintf(stderr, "Error: Invalid private key (expected 1632 bytes, got %zu)\n",
+    if (!enc_key->private_key || enc_key->private_key_size != 3168) {  // Kyber1024 secret key size
+        fprintf(stderr, "Error: Invalid private key (expected 3168 bytes, got %zu)\n",
                 enc_key->private_key_size);
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup_restore;
@@ -1113,8 +1113,8 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     }
 
     printf("  ✓ Encryption key saved: %s\n", enc_key_path);
-    printf("  ✓ Public key: 800 bytes\n");
-    printf("  ✓ Private key: 1632 bytes\n");
+    printf("  ✓ Public key: 1568 bytes\n");  // Kyber1024
+    printf("  ✓ Private key: 3168 bytes\n");  // Kyber1024
 
     // ======================================================================
     // SUCCESS

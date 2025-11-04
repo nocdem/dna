@@ -2,7 +2,7 @@
 
 **Post-quantum encrypted messaging platform**
 
-Secure messaging using post-quantum cryptography (Kyber512 + Dilithium3) that remains secure against future quantum computer attacks.
+Secure messaging using **post-quantum cryptography** (Kyber1024 + Dilithium5 - NIST Category 5) that remains secure against future quantum computer attacks.
 
 ## Status
 
@@ -284,7 +284,7 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
 
 ### 📋 Phase 11: Post-Quantum Voice/Video Calls (Planned)
 **Full quantum-safe voice and video calls:**
-- Kyber512 via DNA messaging (bypasses WebRTC's quantum-vulnerable DTLS)
+- Kyber1024 via DNA messaging (bypasses WebRTC's quantum-vulnerable DTLS)
 - libsrtp2 + AES-256-GCM media encryption
 - libopus audio, libvpx/libx264 video
 - Timeline: ~20 weeks
@@ -337,15 +337,15 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
 **Security:**
 - Messages encrypted on your device before sending
 - Only recipient can decrypt (end-to-end encryption)
-- Post-quantum algorithms (Kyber512 + Dilithium3)
+- Post-quantum algorithms (Kyber1024 + Dilithium5 - NIST Category 5)
 - Cryptographically signed messages (tamper-proof)
 - No centralized message storage (privacy by design)
 - DHT replication for offline message resilience
 
 ## Cryptography
 
-- **Key Encapsulation:** Kyber512 (NIST PQC Level 1)
-- **Signatures:** Dilithium3 (ML-DSA-65, FIPS 204)
+- **Key Encapsulation:** Kyber1024 (ML-KEM-1024, FIPS 203) - NIST Category 5
+- **Signatures:** Dilithium5 (ML-DSA-87, FIPS 204) - NIST Category 5
 - **Symmetric:** AES-256-GCM (AEAD)
 - **Key Derivation:** PBKDF2-HMAC-SHA512
 

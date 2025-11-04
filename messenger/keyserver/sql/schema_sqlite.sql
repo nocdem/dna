@@ -13,15 +13,15 @@ CREATE TABLE keyserver_identities (
     dna TEXT UNIQUE NOT NULL CHECK(length(dna) >= 3 AND length(dna) <= 32),
 
     -- Public keys (base64 encoded)
-    dilithium_pub TEXT NOT NULL,     -- ~2605 bytes decoded
-    kyber_pub TEXT NOT NULL,          -- ~1096 bytes decoded
+    dilithium_pub TEXT NOT NULL,     -- ~2592 bytes decoded (Dilithium5)
+    kyber_pub TEXT NOT NULL,          -- ~1568 bytes decoded (Kyber1024)
     cf20pub TEXT NOT NULL DEFAULT '',  -- Cellframe address (empty for now)
 
     -- Versioning (monotonic counter)
     version INTEGER NOT NULL DEFAULT 1 CHECK(version > 0),
     updated_at INTEGER NOT NULL,      -- Unix timestamp from client
 
-    -- Signature (Dilithium3)
+    -- Signature (Dilithium5)
     sig TEXT NOT NULL,                -- base64 signature of canonical JSON
 
     -- Schema version (payload format version)

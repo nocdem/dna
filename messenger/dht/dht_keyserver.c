@@ -4,20 +4,21 @@
  *
  * Architecture:
  * - Public keys stored in DHT (distributed, permanent)
- * - Self-signed keys with Dilithium3 signatures
+ * - Self-signed keys with Dilithium5 signatures (Category 5)
  * - Versioned updates (signature required)
  *
- * DHT Key Format: SHA256(identity + ":pubkey")
+ * DHT Key Format: SHA3-512(identity + ":pubkey") - 128 hex chars
  */
 
 #include "dht_keyserver.h"
 #include "dht_context.h"
 #include "../qgp_dilithium.h"
+#include "../qgp_sha3.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <openssl/sha.h>
+#include <openssl/evp.h>
 #include <json-c/json.h>
 
 #ifdef _WIN32
@@ -34,32 +35,40 @@
     #endif
 #endif
 
-// Helper function: Compute DHT storage key
+// Helper function: Compute DHT storage key using SHA3-512
 static void compute_dht_key(const char *identity, char *key_out) {
-    // Format: SHA256(identity + ":pubkey")
+    // Format: SHA3-512(identity + ":pubkey") - 128 hex chars
     char buffer[512];
     snprintf(buffer, sizeof(buffer), "%s:pubkey", identity);
 
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256((unsigned char*)buffer, strlen(buffer), hash);
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    if (qgp_sha3_512((unsigned char*)buffer, strlen(buffer), hash) != 0) {
+        // Fallback: just clear the output
+        key_out[0] = '\0';
+        return;
+    }
 
-    // Convert to hex string
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    // Convert to hex string (128 chars)
+    for (int i = 0; i < 64; i++) {
         sprintf(key_out + (i * 2), "%02x", hash[i]);
     }
-    key_out[SHA256_DIGEST_LENGTH * 2] = '\0';
+    key_out[128] = '\0';
 }
 
-// Helper function: Compute fingerprint of dilithium pubkey
+// Helper function: Compute SHA3-512 fingerprint of dilithium pubkey
 static void compute_fingerprint(const uint8_t *dilithium_pubkey, char *fingerprint_out) {
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256(dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE, hash);
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    if (qgp_sha3_512(dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE, hash) != 0) {
+        // Fallback: clear output
+        fingerprint_out[0] = '\0';
+        return;
+    }
 
-    // Convert to hex string
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    // Convert to hex string (128 chars)
+    for (int i = 0; i < 64; i++) {
         sprintf(fingerprint_out + (i * 2), "%02x", hash[i]);
     }
-    fingerprint_out[SHA256_DIGEST_LENGTH * 2] = '\0';
+    fingerprint_out[128] = '\0';
 }
 
 // Helper function: Serialize entry to JSON
@@ -439,18 +448,22 @@ int dht_keyserver_publish(
             char *reverse_json = strdup(reverse_json_str);
             json_object_put(reverse_obj);
 
-            // Compute DHT key for reverse lookup
-            char reverse_key_input[128];
+            // Compute DHT key for reverse lookup using SHA3-512
+            char reverse_key_input[256];
             snprintf(reverse_key_input, sizeof(reverse_key_input), "%s:reverse", entry.fingerprint);
 
-            unsigned char reverse_hash[SHA256_DIGEST_LENGTH];
-            SHA256((unsigned char*)reverse_key_input, strlen(reverse_key_input), reverse_hash);
+            unsigned char reverse_hash[64];  // SHA3-512 = 64 bytes
+            if (qgp_sha3_512((unsigned char*)reverse_key_input, strlen(reverse_key_input), reverse_hash) != 0) {
+                fprintf(stderr, "[DHT_KEYSERVER] Failed to compute reverse DHT key\n");
+                free(reverse_json);
+                return ret;  // Still return success for main publish
+            }
 
-            char reverse_dht_key[65];
-            for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+            char reverse_dht_key[129];
+            for (int i = 0; i < 64; i++) {
                 sprintf(reverse_dht_key + (i * 2), "%02x", reverse_hash[i]);
             }
-            reverse_dht_key[SHA256_DIGEST_LENGTH * 2] = '\0';
+            reverse_dht_key[128] = '\0';
 
             printf("[DHT_KEYSERVER] Publishing signed reverse mapping (fingerprint → identity)\n");
             printf("[DHT_KEYSERVER] Reverse key: %s\n", reverse_dht_key);
@@ -544,18 +557,21 @@ int dht_keyserver_reverse_lookup(
 
     *identity_out = NULL;
 
-    // Compute DHT key: SHA256(fingerprint + ":reverse")
-    char reverse_key_input[128];
+    // Compute DHT key: SHA3-512(fingerprint + ":reverse")
+    char reverse_key_input[256];
     snprintf(reverse_key_input, sizeof(reverse_key_input), "%s:reverse", fingerprint);
 
-    unsigned char reverse_hash[SHA256_DIGEST_LENGTH];
-    SHA256((unsigned char*)reverse_key_input, strlen(reverse_key_input), reverse_hash);
+    unsigned char reverse_hash[64];  // SHA3-512 = 64 bytes
+    if (qgp_sha3_512((unsigned char*)reverse_key_input, strlen(reverse_key_input), reverse_hash) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to compute reverse DHT key\n");
+        return -1;
+    }
 
-    char reverse_dht_key[65];
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    char reverse_dht_key[129];
+    for (int i = 0; i < 64; i++) {
         sprintf(reverse_dht_key + (i * 2), "%02x", reverse_hash[i]);
     }
-    reverse_dht_key[SHA256_DIGEST_LENGTH * 2] = '\0';
+    reverse_dht_key[128] = '\0';
 
     printf("[DHT_KEYSERVER] Reverse lookup for fingerprint: %s\n", fingerprint);
     printf("[DHT_KEYSERVER] Reverse DHT key: %s\n", reverse_dht_key);

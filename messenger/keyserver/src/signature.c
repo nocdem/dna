@@ -1,5 +1,5 @@
 /*
- * Signature Verification - Dilithium3
+ * Signature Verification - Dilithium5
  */
 
 #include "signature.h"

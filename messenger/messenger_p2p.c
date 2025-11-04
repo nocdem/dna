@@ -12,6 +12,7 @@
 #include "dht/dht_context.h"
 #include "keyserver_cache.h"
 #include "contacts_db.h"
+#include "qgp_sha3.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -87,27 +88,27 @@ static int load_my_dilithium_pubkey(
         return -1;
     }
 
-    // Skip header (276 bytes) and read public key (1952 bytes)
-    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 1952 bytes][PRIVATE_KEY: 4032 bytes]
+    // Skip header (276 bytes) and read public key (2592 bytes)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 2592 bytes][PRIVATE_KEY: 4896 bytes]
     fseek(f, 276, SEEK_SET);
 
-    uint8_t *pubkey = malloc(1952);
+    uint8_t *pubkey = malloc(2592);  // Dilithium5 public key size
     if (!pubkey) {
         fclose(f);
         return -1;
     }
 
-    size_t read = fread(pubkey, 1, 1952, f);
+    size_t read = fread(pubkey, 1, 2592, f);
     fclose(f);
 
-    if (read != 1952) {
-        fprintf(stderr, "[P2P] Invalid public key size: %zu (expected 1952)\n", read);
+    if (read != 2592) {
+        fprintf(stderr, "[P2P] Invalid public key size: %zu (expected 2592)\n", read);
         free(pubkey);
         return -1;
     }
 
     *pubkey_out = pubkey;
-    *pubkey_len_out = 1952;
+    *pubkey_len_out = 2592;  // Dilithium5 public key size
     return 0;
 }
 
@@ -332,7 +333,7 @@ static char* extract_sender_from_encrypted(
 
     // Calculate signature offset
     size_t header_size = sizeof(msg_header_t);
-    size_t recipient_entry_size = 768 + 40;  // kyber_ct + wrapped_dek
+    size_t recipient_entry_size = 1568 + 40;  // Kyber1024 ciphertext + wrapped_dek
     size_t recipients_size = header->recipient_count * recipient_entry_size;
     size_t nonce_size = 12;
     size_t ciphertext_size = header->encrypted_size;
@@ -348,8 +349,8 @@ static char* extract_sender_from_encrypted(
     const uint8_t *sig_data = encrypted_msg + sig_offset;
     uint16_t pkey_size = (sig_data[1] << 8) | sig_data[2];
 
-    if (pkey_size != 1952) {
-        return NULL;  // Not Dilithium3
+    if (pkey_size != 2592) {  // Dilithium5 public key size
+        return NULL;  // Not Dilithium5
     }
 
     // Extract signing pubkey
@@ -372,7 +373,7 @@ static char* extract_sender_from_encrypted(
 
         if (keyserver_cache_get(identity, &entry) == 0 && entry) {
             // Compare Dilithium pubkeys
-            if (memcmp(entry->dilithium_pubkey, signing_pubkey, 1952) == 0) {
+            if (memcmp(entry->dilithium_pubkey, signing_pubkey, 2592) == 0) {  // Dilithium5 public key size
                 // Found matching contact!
                 char *result = strdup(identity);
                 keyserver_cache_free_entry(entry);
@@ -389,15 +390,15 @@ static char* extract_sender_from_encrypted(
     // Not in contacts - try DHT reverse lookup (fingerprint → identity)
     printf("[P2P] Sender not in contacts, querying DHT reverse mapping...\n");
 
-    // Compute fingerprint as hex string (SHA256 of pubkey)
-    unsigned char hash[SHA256_DIGEST_LENGTH];
-    SHA256(signing_pubkey, 1952, hash);
+    // Compute fingerprint as hex string (SHA3-512 of pubkey)
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    qgp_sha3_512(signing_pubkey, 2592, hash);  // Dilithium5 public key size
 
-    char fingerprint[65];
-    for (int i = 0; i < SHA256_DIGEST_LENGTH; i++) {
+    char fingerprint[129];  // SHA3-512 hex string = 128 chars + null
+    for (int i = 0; i < 64; i++) {
         sprintf(fingerprint + (i * 2), "%02x", hash[i]);
     }
-    fingerprint[SHA256_DIGEST_LENGTH * 2] = '\0';
+    fingerprint[128] = '\0';  // Null-terminate at position 128
 
     // Get DHT context from P2P transport
     dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
@@ -433,7 +434,7 @@ static char* lookup_identity_for_pubkey(
     size_t pubkey_len
 )
 {
-    if (!ctx || !pubkey || pubkey_len != 1952) {
+    if (!ctx || !pubkey || pubkey_len != 2592) {  // Dilithium5 public key size
         return NULL;
     }
 
@@ -712,7 +713,7 @@ static void p2p_message_received_internal(
     // Lookup identity for this pubkey (may be NULL if no handshake yet)
     char *sender_identity = NULL;
     if (peer_pubkey) {
-        sender_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 1952);
+        sender_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 2592);  // Dilithium5 public key size
     }
 
     // If not found via pubkey, try extracting from encrypted message signature
@@ -764,7 +765,7 @@ static void p2p_connection_state_changed(
         return;
     }
 
-    char *peer_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 1952);
+    char *peer_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 2592);  // Dilithium5 public key size
     if (peer_identity) {
         printf("[P2P] %s %s\n", peer_identity, is_connected ? "CONNECTED" : "DISCONNECTED");
         free(peer_identity);

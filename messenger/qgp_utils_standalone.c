@@ -18,7 +18,7 @@
 // ============================================================================
 
 /**
- * Compute SHA256 hash of data
+ * Compute SHA3-512 hash of data (Category 5 security)
  *
  * @param hash: Output hash structure
  * @param data: Input data
@@ -29,39 +29,36 @@ void qgp_hash_from_bytes(qgp_hash_t *hash, const uint8_t *data, size_t len) {
         return;
     }
 
-    EVP_Digest(data, len, hash->hash, NULL, EVP_sha256(), NULL);
+    // Use SHA3-512 for 256-bit quantum security (Category 5)
+    EVP_Digest(data, len, hash->hash, NULL, EVP_sha3_512(), NULL);
 }
 
 /**
  * Convert hash to hex string
  *
- * @param hash: Input hash
- * @param hex_out: Output hex string (must be at least 65 bytes)
+ * @param hash: Input hash (SHA3-512, 64 bytes)
+ * @param hex_out: Output hex string (must be at least 129 bytes: 128 hex + null)
  * @param hex_size: Size of output buffer
  */
 void qgp_hash_to_hex(const qgp_hash_t *hash, char *hex_out, size_t hex_size) {
-    if (!hash || !hex_out || hex_size < 65) {
+    if (!hash || !hex_out || hex_size < 129) {
         return;
     }
 
-    // Add 0x prefix
-    hex_out[0] = '0';
-    hex_out[1] = 'x';
-
-    // Convert each byte to hex
-    for (int i = 0; i < 32; i++) {
-        snprintf(&hex_out[2 + i * 2], 3, "%02X", hash->hash[i]);
+    // Convert each byte to hex (lowercase for consistency with SHA3-512 standard)
+    for (int i = 0; i < 64; i++) {
+        snprintf(&hex_out[i * 2], 3, "%02x", hash->hash[i]);
     }
 
-    hex_out[66] = '\0';
+    hex_out[128] = '\0';
 }
 
 /**
- * Compute SHA256 hash of public key (for identification)
+ * Compute SHA3-512 hash of public key (for identification / fingerprinting)
  *
  * @param public_key: Public key bytes
  * @param key_size: Public key size
- * @param hash_out: Output hash
+ * @param hash_out: Output hash (64 bytes)
  */
 void qgp_pubkey_hash(const uint8_t *public_key, size_t key_size, qgp_hash_t *hash_out) {
     if (!public_key || !hash_out) {

@@ -26,9 +26,9 @@ extern "C" {
  */
 typedef struct {
     char identity[256];              // DNA identity
-    uint8_t *dilithium_pubkey;       // Dilithium3 public key (1952 bytes)
+    uint8_t *dilithium_pubkey;       // Dilithium5 public key (2592 bytes)
     size_t dilithium_pubkey_len;
-    uint8_t *kyber_pubkey;           // Kyber512 public key (800 bytes)
+    uint8_t *kyber_pubkey;           // Kyber1024 public key (1568 bytes)
     size_t kyber_pubkey_len;
     uint64_t cached_at;              // Unix timestamp when cached
     uint64_t ttl_seconds;            // Time-to-live (default: 7 days = 604800)
@@ -64,9 +64,9 @@ int keyserver_cache_get(const char *identity, keyserver_cache_entry_t **entry_ou
  * Updates existing entry or creates new one
  *
  * @param identity: DNA identity
- * @param dilithium_pubkey: Dilithium3 public key (1952 bytes)
+ * @param dilithium_pubkey: Dilithium5 public key (2592 bytes)
  * @param dilithium_pubkey_len: Length of Dilithium key
- * @param kyber_pubkey: Kyber512 public key (800 bytes)
+ * @param kyber_pubkey: Kyber1024 public key (1568 bytes)
  * @param kyber_pubkey_len: Length of Kyber key
  * @param ttl_seconds: Time-to-live in seconds (0 = default 7 days)
  * @return: 0 on success, -1 on error

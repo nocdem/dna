@@ -43,7 +43,7 @@ void config_init_defaults(config_t *config) {
     config->device_min_length = MIN_DNA_LENGTH;
     config->device_max_length = MAX_DNA_LENGTH;
     config->dilithium_pub_size = 2592;
-    config->kyber_pub_size = 800;
+    config->kyber_pub_size = 1568;  // Kyber1024 public key size
 
     // Logging
     strcpy(config->log_level, "info");

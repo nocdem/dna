@@ -4,26 +4,26 @@
 #include <stdint.h>
 #include <stddef.h>
 
-// QGP Dilithium3 API
+// QGP Dilithium5 API
 // Wrapper for vendored pq-crystals/dilithium reference implementation
-// FIPS 204 compliant - ML-DSA-65 (NIST Level 3 security)
+// FIPS 204 compliant - ML-DSA-87 (NIST Level 5 / Category 5 security)
 
-// Dilithium3 key and signature sizes (FIPS 204 / ML-DSA-65)
-#define QGP_DILITHIUM3_PUBLICKEYBYTES  1952
-#define QGP_DILITHIUM3_SECRETKEYBYTES  4032
-#define QGP_DILITHIUM3_BYTES           3309
+// Dilithium5 key and signature sizes (FIPS 204 / ML-DSA-87)
+#define QGP_DILITHIUM3_PUBLICKEYBYTES  2592
+#define QGP_DILITHIUM3_SECRETKEYBYTES  4896
+#define QGP_DILITHIUM3_BYTES           4627
 
 // Key generation
-// Generates a Dilithium3 keypair
-// pk: output public key buffer (must be QGP_DILITHIUM3_PUBLICKEYBYTES)
-// sk: output secret key buffer (must be QGP_DILITHIUM3_SECRETKEYBYTES)
+// Generates a Dilithium5 keypair
+// pk: output public key buffer (must be QGP_DILITHIUM3_PUBLICKEYBYTES - 2592 bytes)
+// sk: output secret key buffer (must be QGP_DILITHIUM3_SECRETKEYBYTES - 4896 bytes)
 // Returns 0 on success, -1 on failure
 int qgp_dilithium3_keypair(uint8_t *pk, uint8_t *sk);
 
 // Deterministic key generation from seed
-// Generates a Dilithium3 keypair deterministically from a seed
-// pk: output public key buffer (must be QGP_DILITHIUM3_PUBLICKEYBYTES)
-// sk: output secret key buffer (must be QGP_DILITHIUM3_SECRETKEYBYTES)
+// Generates a Dilithium5 keypair deterministically from a seed
+// pk: output public key buffer (must be QGP_DILITHIUM3_PUBLICKEYBYTES - 2592 bytes)
+// sk: output secret key buffer (must be QGP_DILITHIUM3_SECRETKEYBYTES - 4896 bytes)
 // seed: input seed (must be 32 bytes)
 // Returns 0 on success, -1 on failure
 int qgp_dilithium3_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *seed);

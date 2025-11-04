@@ -31,7 +31,7 @@ struct dna_context {
 
 // File format constants (same as QGP)
 #define DNA_ENC_MAGIC "PQSIGENC"
-#define DNA_ENC_VERSION 0x05  // Version 5: Multi-recipient with AES-GCM
+#define DNA_ENC_VERSION 0x06  // Version 6: Category 5 (Kyber1024 + Dilithium5 + SHA3-512)
 #define DAP_ENC_KEY_TYPE_KEM_KYBER512 23
 
 // Header structure (same as encrypt.c/decrypt.c)
@@ -54,7 +54,7 @@ dna_enc_header_t;
 
 // Recipient entry
 typedef struct {
-    uint8_t kyber_ciphertext[768];
+    uint8_t kyber_ciphertext[1568];  // Kyber1024 ciphertext size
     uint8_t wrapped_dek[40];
 }
 #ifndef _MSC_VER
@@ -338,7 +338,7 @@ dna_error_t dna_encrypt_message(
         // Validate and extract encryption key
         if (memcmp(header.magic, "PQPUBKEY", 8) != 0 ||
             header.enc_key_type != QGP_KEY_TYPE_KYBER512 ||
-            header.enc_pubkey_size != 800) {
+            header.enc_pubkey_size != 1568) {  // Kyber1024 public key size
             free(bundle_data);
             result = DNA_ERROR_KEY_INVALID;
             goto cleanup;
@@ -346,20 +346,20 @@ dna_error_t dna_encrypt_message(
 
         // Extract encryption public key from bundle
         size_t enc_offset = sizeof(header) + header.sign_pubkey_size;
-        if (enc_offset + 800 > bundle_size) {
+        if (enc_offset + 1568 > bundle_size) {  // Kyber1024 public key size
             free(bundle_data);
             result = DNA_ERROR_KEY_INVALID;
             goto cleanup;
         }
 
-        recipient_pubkeys[i] = malloc(800);
+        recipient_pubkeys[i] = malloc(1568);  // Kyber1024 public key size
         if (!recipient_pubkeys[i]) {
             free(bundle_data);
             result = DNA_ERROR_MEMORY;
             goto cleanup;
         }
 
-        memcpy(recipient_pubkeys[i], bundle_data + enc_offset, 800);
+        memcpy(recipient_pubkeys[i], bundle_data + enc_offset, 1568);  // Kyber1024 public key size
         free(bundle_data);
     }
 
@@ -454,7 +454,7 @@ dna_error_t dna_encrypt_message(
             goto cleanup;
         }
 
-        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ct, 768);
+        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ct, 1568);  // Kyber1024 ciphertext size
         memset(kek, 0, QGP_KYBER512_BYTES);
     }
 
@@ -634,7 +634,7 @@ dna_error_t dna_encrypt_message_raw(
         goto cleanup;
     }
 
-    memcpy(recipient_entry.kyber_ciphertext, kyber_ct, 768);
+    memcpy(recipient_entry.kyber_ciphertext, kyber_ct, 1568);  // Kyber1024 ciphertext size
     memset(kek, 0, QGP_KYBER512_BYTES);
 
     // Serialize signature
