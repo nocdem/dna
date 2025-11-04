@@ -439,16 +439,24 @@ void WalletDialog::onRefreshBalances() {
     if (cellframe_rpc_get_balance("Backbone", address, "CPUNK", &response) == 0 && response->result) {
         json_object *jresult = response->result;
 
+        // DEBUG: Print raw JSON response
+        const char *json_str = json_object_to_json_string_ext(jresult, JSON_C_TO_STRING_PRETTY);
+        fprintf(stderr, "[DEBUG BALANCE] RPC Response:\n%s\n", json_str);
+
         if (json_object_is_type(jresult, json_type_array)) {
             int len = json_object_array_length(jresult);
+            fprintf(stderr, "[DEBUG BALANCE] jresult is array, length=%d\n", len);
             if (len > 0) {
                 json_object *first = json_object_array_get_idx(jresult, 0);
+                fprintf(stderr, "[DEBUG BALANCE] first element type=%d, is_array=%d\n",
+                        json_object_get_type(first), json_object_is_type(first, json_type_array));
                 if (json_object_is_type(first, json_type_array) && json_object_array_length(first) > 0) {
                     json_object *wallet_obj = json_object_array_get_idx(first, 0);
                     json_object *tokens_obj = nullptr;
 
                     if (json_object_object_get_ex(wallet_obj, "tokens", &tokens_obj)) {
                         int token_count = json_object_array_length(tokens_obj);
+                        fprintf(stderr, "[DEBUG BALANCE] Found tokens array with %d tokens\n", token_count);
 
                         double totalBalance = 0.0;
 
