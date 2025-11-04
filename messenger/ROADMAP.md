@@ -447,19 +447,57 @@ Implemented cryptographically signed reverse mappings for sender identification 
 - `dht/dht_keyserver.h` - Added reverse lookup function declaration
 - `messenger_p2p.c` - Integrated reverse lookup into message receive flow (40+ lines)
 
-#### Phase 9.5: Local Cache & Sync (Planned)
+#### Phase 9.5: Per-Identity Contact Lists with DHT Sync ✅ COMPLETE
+**Completed:** 2025-11-05
+
+Implemented per-identity contact lists with DHT synchronization for multi-device support:
+
+- [x] **Per-Identity Databases:** `~/.dna/<identity>_contacts.db` (isolated storage)
+- [x] **Automatic Migration:** Migrates from global `contacts.db` to per-identity databases
+- [x] **DHT Contact List Sync:** Full implementation in `dht/dht_contactlist.c/h` (820+ lines)
+  - SHA3-512 DHT key derivation: `hash(identity + ":contactlist")`
+  - JSON serialization with timestamp and version
+  - Kyber1024 self-encryption (user encrypts with own public key)
+  - Dilithium5 signatures for authenticity
+  - 7-day TTL with auto-republish capability
+- [x] **Multi-Device Support:** Same BIP39 seed → same keys → decrypt contacts on any device
+- [x] **GUI Integration:** Manual and automatic sync controls
+  - Status indicator: `📇 Contacts: Local` → `📇 Syncing...` → `📇 Synced ✓`
+  - Manual sync button: Settings → Sync Contacts to DHT
+  - Auto-sync timer: Every 10 minutes in background
+- [x] **Security Features:**
+  - Self-encryption prevents unauthorized access
+  - DHT is source of truth (replaces local on sync)
+  - Signature prevents tampering
+  - Predictable storage location but encrypted data
+
+**Use Case:** User adds contacts on Device A, syncs to DHT. Later restores identity from seed on Device B. Auto-sync downloads and decrypts contact list. Contacts appear automatically.
+
+**Files Created:**
+- `dht/dht_contactlist.h` (207 lines) - DHT contact list API
+- `dht/dht_contactlist.c` (820 lines) - Full implementation with encryption
+
+**Files Modified:**
+- `contacts_db.h/c` - Per-identity databases + migration (170+ lines)
+- `messenger.h/c` - Sync functions (240+ lines)
+- `gui/MainWindow.h/cpp` - Sync UI and timers (93 lines)
+- `dht/CMakeLists.txt` - Build configuration
+
+**Total Changes:** 1,469+ lines added/modified
+
+#### Phase 9.6: Local Cache & Sync (Planned)
 - [ ] SQLite encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM)
 - [ ] Background sync protocol (local ↔ DHT)
 - [ ] Multi-device message synchronization
 - [ ] Offline mode with automatic sync on reconnect
 - [ ] Incremental sync for large histories
 
-#### Phase 9.6: DHT Keyserver Enhancements (Planned)
+#### Phase 9.7: DHT Keyserver Enhancements (Planned)
 - [ ] Key rotation and update protocol
 - [ ] Optional: Blockchain anchoring for tamper-proofing
 - [ ] DHT replication monitoring
 
-#### Phase 9.7: Integration & Testing (Planned)
+#### Phase 9.8: Integration & Testing (Planned)
 - [ ] End-to-end testing with 5-10 peers
 - [ ] Network resilience testing (peer churn)
 - [ ] Performance optimization
@@ -820,6 +858,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - **Phase 9.2:** Offline Message Queueing (DHT storage with 7-day TTL)
 - **Phase 9.3:** PostgreSQL → SQLite Migration (Fully decentralized storage)
 - **Phase 9.4:** DHT-based Keyserver with Signed Reverse Mapping
+- **Phase 9.5:** Per-Identity Contact Lists with DHT Sync
 
 ### 🚧 In Progress
 - **Phase 5:** Web-Based Messenger (active on `feature/web-messenger` branch)
@@ -827,7 +866,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 ### 📋 Planned
 - **Phase 6:** Mobile Applications
 - **Phase 7:** Advanced Security Features
-- **Phase 9.5-9.7:** Multi-device sync, DHT keyserver enhancements, integration testing
+- **Phase 9.6-9.8:** Multi-device message sync, DHT keyserver enhancements, integration testing
 - **Phase 10:** DNA Board (Censorship-resistant social media)
 - **Phase 11:** Post-Quantum Voice/Video Calls
 - **Phase 12+:** Future Enhancements
@@ -851,6 +890,12 @@ DNA Messenger is in active development. Contributions welcome!
 **Current Version:** 0.1.120+
 **Next Milestone:** Web Messenger (Phase 5)
 **Recent Achievements:**
+- ✅ **Per-Identity Contact Lists with DHT Sync!** (Phase 9.5 - 2025-11-05)
+  - Isolated contact databases per identity
+  - Kyber1024 self-encryption for DHT storage
+  - Multi-device sync via BIP39 seed phrase
+  - Automatic migration from global contacts
+  - GUI sync controls with status indicators
 - ✅ **DHT-based Keyserver with Signed Reverse Mapping!** (Phase 9.4 - 2025-11-04)
   - Cryptographically signed reverse mappings (fingerprint → identity)
   - Sender identification without pre-added contacts

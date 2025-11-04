@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-04
+**Last Updated:** 2025-11-05
 **Project:** DNA Messenger (Post-Quantum Encrypted Messenger)
-**Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2, 9.3, 9.4 Complete
+**Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2, 9.3, 9.4, 9.5 Complete
 
 ---
 
@@ -13,6 +13,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 **Key Features:**
 - End-to-end encrypted messaging
 - Group chats with member management (DHT-based, decentralized)
+- Per-identity contact lists with DHT sync (multi-device support via BIP39)
 - cpunk wallet integration (CPUNK, CELL, KEL tokens)
 - P2P messaging with DHT-based peer discovery (OpenDHT)
 - Offline message queueing (7-day DHT storage)
@@ -66,12 +67,13 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 ├── crypto/                  # Cryptography libraries
 │   ├── dilithium/          # Dilithium5 (ML-DSA-87) signatures
 │   └── kyber512/           # Kyber1024 (ML-KEM-1024) key encapsulation
-├── dht/                     # DHT layer (Phase 9.1, 9.2, 9.3)
+├── dht/                     # DHT layer (Phase 9.1, 9.2, 9.3, 9.5)
 │   ├── dht_context.*       # OpenDHT integration
 │   ├── dht_offline_queue.* # Offline message queueing
-│   ├── dht_groups.*        # DHT-based groups (NEW - Phase 9.3)
-│   ├── deploy-bootstrap.sh # Automated bootstrap deployment (NEW)
-│   ├── monitor-bootstrap.sh# Bootstrap health monitoring (NEW)
+│   ├── dht_groups.*        # DHT-based groups (Phase 9.3)
+│   ├── dht_contactlist.*   # Contact list DHT sync (Phase 9.5)
+│   ├── deploy-bootstrap.sh # Automated bootstrap deployment
+│   ├── monitor-bootstrap.sh# Bootstrap health monitoring
 │   ├── dna-dht-bootstrap.service # Systemd service
 │   └── persistent_bootstrap# DHT bootstrap server binary
 ├── p2p/                     # P2P transport layer (Phase 9.1)
@@ -110,8 +112,13 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 - All encryption/decryption must use memory-based operations
 - Never log or print keys or decrypted messages
 
-### 3. Database (Migrated to SQLite - Phase 9.3)
+### 3. Database (Migrated to SQLite - Phase 9.3, 9.5)
 - **Messages:** Local SQLite database (`~/.dna/messages.db`)
+- **Contacts:** Per-identity SQLite databases (`~/.dna/<identity>_contacts.db`)
+  - Isolated storage per identity
+  - DHT sync with Kyber1024 self-encryption (Phase 9.5)
+  - SHA3-512 key derivation for DHT storage
+  - Automatic migration from global contacts.db
 - **Groups:** DHT-based storage with local SQLite cache
   - UUID v4 for group identification
   - SHA256-based DHT keys
@@ -364,6 +371,74 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 - Two-tier lookup for performance (contacts → DHT)
 
 **Result:** Sender identification works without pre-adding contacts, enabling seamless P2P communication while maintaining strong security guarantees.
+
+---
+
+### Phase 9.5: Per-Identity Contact Lists with DHT Sync (COMPLETE)
+**Status:** ✅ Complete (2025-11-05)
+
+**What Was Implemented:**
+1. **Per-Identity Contact Databases** (`contacts_db.c/h`)
+   - Each identity has isolated SQLite database: `~/.dna/<identity>_contacts.db`
+   - Automatic migration from global `contacts.db` to per-identity databases
+   - Database path resolution with identity parameter
+   - Full contact management: add, remove, list, get info
+   - 170+ lines of migration and database logic
+
+2. **DHT Contact List Synchronization** (`dht/dht_contactlist.c/h`)
+   - 820+ lines of complete implementation
+   - SHA3-512 DHT key derivation: `hash(identity + ":contactlist")`
+   - JSON serialization with version, timestamp, and contact list
+   - Kyber1024 self-encryption (user encrypts with their own public key)
+   - Dilithium5 signatures for authenticity (prevents tampering)
+   - 7-day TTL with configurable auto-republish capability
+   - Binary format: `[magic][version][timestamp][expiry][json_len][encrypted_json][sig_len][signature]`
+
+3. **Multi-Device Support via BIP39**
+   - Same BIP39 seed phrase → same Kyber/Dilithium keys
+   - User can decrypt their own contact list on any device
+   - DHT is source of truth (replaces local on fetch)
+   - Self-encryption architecture (only owner can decrypt)
+
+4. **Messenger API Integration** (`messenger.c`)
+   - `messenger_sync_contacts_to_dht()` - Publish contacts to DHT
+   - `messenger_fetch_contacts_from_dht()` - Retrieve and decrypt from DHT
+   - Proper key loading with `qgp_key_load()` (pointer semantics)
+   - Uses DNA encryption API: `dna_encrypt_message_raw()` and `dna_decrypt_message_raw()`
+   - 240+ lines of sync logic
+
+5. **GUI Sync Controls** (`gui/MainWindow.cpp`)
+   - Manual sync button in Settings menu: "🔄 Sync Contacts to DHT"
+   - Status bar indicator: "📇 Contacts: Local" / "📇 Syncing..." / "📇 Synced ✓"
+   - 10-minute auto-sync timer (silent operation)
+   - Success/failure dialogs for manual sync
+   - 93 lines of GUI integration
+
+**Security Features:**
+- Kyber1024 self-encryption (only owner can decrypt)
+- Dilithium5 signature prevents tampering
+- Fingerprint verification in signature validation
+- No plaintext contact list storage in DHT
+- Multi-device support without compromising security
+
+**Files Created:**
+- `dht/dht_contactlist.h` (207 lines)
+- `dht/dht_contactlist.c` (820 lines)
+
+**Files Modified:**
+- `contacts_db.h/c` - Per-identity databases + migration (170+ lines)
+- `messenger.h/c` - Sync functions (240+ lines)
+- `gui/MainWindow.h/cpp` - Sync UI and timers (93 lines)
+
+**Total Changes:** 1,469+ lines added/modified
+
+**Key Technical Decisions:**
+- SHA3-512 for DHT key derivation (64-byte keys)
+- JSON for contact list serialization
+- Self-encryption model (encrypt with own pubkey)
+- Per-identity database isolation
+- 7-day DHT TTL matches other DNA data structures
+- Automatic migration preserves existing contacts
 
 ---
 

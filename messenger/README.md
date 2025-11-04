@@ -140,6 +140,7 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ End-to-end encryption with post-quantum algorithms
 - ✅ Multi-recipient messaging (broadcast to multiple users)
 - ✅ Persistent group chats with member management
+- ✅ Per-identity contact lists with DHT sync (multi-device support via BIP39)
 - ✅ 24-word BIP39 recovery phrases
 - ✅ Cross-platform (Linux & Windows)
 - ✅ Local SQLite storage (no server required for messages)
@@ -268,6 +269,15 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
   - Cross-platform signature verification
   - Prevents identity spoofing attacks
 
+- ✅ **Phase 9.5:** Per-Identity Contact Lists with DHT Sync (COMPLETE)
+  - Per-identity SQLite databases (`~/.dna/<identity>_contacts.db`)
+  - Automatic migration from global contacts.db
+  - DHT synchronization with Kyber1024 self-encryption
+  - Dilithium5 signatures for authenticity
+  - Multi-device support via BIP39 seed phrase
+  - Manual and automatic sync in GUI (10-minute timer)
+  - SHA3-512 DHT key derivation for contact list storage
+
 ### 📋 Phase 10: DNA Board - Censorship-Resistant Social Media (Planned)
 **True free speech platform** built on cpunk validator network:
 - **No Censorship:** Content cannot be removed (no deletion endpoint)
@@ -317,6 +327,9 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
 
 **Data Storage:**
 - **Messages:** Local SQLite database (`~/.dna/messages.db`)
+- **Contacts:** Per-identity SQLite databases (`~/.dna/<identity>_contacts.db`)
+  - DHT sync with Kyber1024 self-encryption (SHA3-512 key derivation)
+  - Multi-device support via BIP39 seed phrase
 - **Groups:** DHT-based storage with local SQLite cache (UUID v4 + SHA256 keys)
 - **Public Keys:** Cached locally in SQLite (7-day TTL, fetched from https://cpunk.io/api/keyserver)
 - **Private Keys:** Local encrypted storage (`~/.dna/`)
