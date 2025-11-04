@@ -1,6 +1,6 @@
 /**
  * Contacts Database Implementation
- * Local SQLite database for contact management
+ * Local SQLite database for contact management (per-identity)
  */
 
 #include "contacts_db.h"
@@ -22,16 +22,22 @@
 #endif
 
 static sqlite3 *g_db = NULL;
+static char g_owner_identity[256] = {0};  // Current database owner
 
-// Get database path
-static int get_db_path(char *path_out, size_t path_size) {
+// Get database path for specific identity
+static int get_db_path(const char *owner_identity, char *path_out, size_t path_size) {
+    if (!owner_identity || strlen(owner_identity) == 0) {
+        fprintf(stderr, "[CONTACTS_DB] Invalid owner_identity\n");
+        return -1;
+    }
+
 #ifdef _WIN32
     char appdata[MAX_PATH];
     if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK) {
         fprintf(stderr, "[CONTACTS_DB] Failed to get AppData path\n");
         return -1;
     }
-    snprintf(path_out, path_size, "%s\\.dna\\contacts.db", appdata);
+    snprintf(path_out, path_size, "%s\\.dna\\%s_contacts.db", appdata, owner_identity);
 #else
     const char *home = getenv("HOME");
     if (!home) {
@@ -44,7 +50,7 @@ static int get_db_path(char *path_out, size_t path_size) {
         fprintf(stderr, "[CONTACTS_DB] Failed to get home directory\n");
         return -1;
     }
-    snprintf(path_out, path_size, "%s/.dna/contacts.db", home);
+    snprintf(path_out, path_size, "%s/.dna/%s_contacts.db", home, owner_identity);
 #endif
     return 0;
 }
@@ -78,14 +84,30 @@ static int ensure_directory(const char *db_path) {
 }
 
 // Initialize database
-int contacts_db_init(void) {
-    if (g_db) {
-        return 0;  // Already initialized
+int contacts_db_init(const char *owner_identity) {
+    if (!owner_identity || strlen(owner_identity) == 0) {
+        fprintf(stderr, "[CONTACTS_DB] Invalid owner_identity\n");
+        return -1;
     }
+
+    // If already initialized for same identity, return success
+    if (g_db && strcmp(g_owner_identity, owner_identity) == 0) {
+        return 0;
+    }
+
+    // If initialized for different identity, close first
+    if (g_db) {
+        printf("[CONTACTS_DB] Closing previous database for '%s'\n", g_owner_identity);
+        contacts_db_close();
+    }
+
+    // Store owner identity
+    strncpy(g_owner_identity, owner_identity, sizeof(g_owner_identity) - 1);
+    g_owner_identity[sizeof(g_owner_identity) - 1] = '\0';
 
     // Get database path
     char db_path[512];
-    if (get_db_path(db_path, sizeof(db_path)) != 0) {
+    if (get_db_path(owner_identity, db_path, sizeof(db_path)) != 0) {
         return -1;
     }
 
@@ -100,6 +122,7 @@ int contacts_db_init(void) {
         fprintf(stderr, "[CONTACTS_DB] Failed to open database: %s\n", sqlite3_errmsg(g_db));
         sqlite3_close(g_db);
         g_db = NULL;
+        g_owner_identity[0] = '\0';
         return -1;
     }
 
@@ -118,10 +141,11 @@ int contacts_db_init(void) {
         sqlite3_free(err_msg);
         sqlite3_close(g_db);
         g_db = NULL;
+        g_owner_identity[0] = '\0';
         return -1;
     }
 
-    printf("[CONTACTS_DB] Initialized: %s\n", db_path);
+    printf("[CONTACTS_DB] Initialized for identity '%s': %s\n", owner_identity, db_path);
     return 0;
 }
 
@@ -384,6 +408,175 @@ void contacts_db_close(void) {
     if (g_db) {
         sqlite3_close(g_db);
         g_db = NULL;
-        printf("[CONTACTS_DB] Closed\n");
+        printf("[CONTACTS_DB] Closed database for identity '%s'\n", g_owner_identity);
+        g_owner_identity[0] = '\0';  // Clear owner identity
     }
+}
+
+// Migrate contacts from global database to per-identity database
+int contacts_db_migrate_from_global(const char *owner_identity) {
+    if (!owner_identity || strlen(owner_identity) == 0) {
+        fprintf(stderr, "[CONTACTS_DB] Invalid owner_identity for migration\n");
+        return -1;
+    }
+
+    // Get old global database path
+    char old_db_path[512];
+#ifdef _WIN32
+    char appdata[MAX_PATH];
+    if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK) {
+        fprintf(stderr, "[CONTACTS_DB] Failed to get AppData path\n");
+        return -1;
+    }
+    snprintf(old_db_path, sizeof(old_db_path), "%s\\.dna\\contacts.db", appdata);
+#else
+    const char *home = getenv("HOME");
+    if (!home) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) {
+            home = pw->pw_dir;
+        }
+    }
+    if (!home) {
+        fprintf(stderr, "[CONTACTS_DB] Failed to get home directory\n");
+        return -1;
+    }
+    snprintf(old_db_path, sizeof(old_db_path), "%s/.dna/contacts.db", home);
+#endif
+
+    // Check if old database exists
+    struct stat st;
+    if (stat(old_db_path, &st) != 0) {
+        // No old database, nothing to migrate
+        return 0;
+    }
+
+    // Get new per-identity database path
+    char new_db_path[512];
+    if (get_db_path(owner_identity, new_db_path, sizeof(new_db_path)) != 0) {
+        return -1;
+    }
+
+    // Check if new database already exists
+    if (stat(new_db_path, &st) == 0) {
+        printf("[CONTACTS_DB] Per-identity database already exists, skipping migration\n");
+        return 0;
+    }
+
+    printf("[CONTACTS_DB] Migrating contacts from global database to '%s'\n", owner_identity);
+
+    // Open old database
+    sqlite3 *old_db = NULL;
+    int rc = sqlite3_open(old_db_path, &old_db);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[CONTACTS_DB] Failed to open old database: %s\n", sqlite3_errmsg(old_db));
+        if (old_db) sqlite3_close(old_db);
+        return -1;
+    }
+
+    // Query all contacts from old database
+    const char *query = "SELECT identity, added_timestamp, notes FROM contacts;";
+    sqlite3_stmt *stmt = NULL;
+    rc = sqlite3_prepare_v2(old_db, query, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[CONTACTS_DB] Failed to prepare query: %s\n", sqlite3_errmsg(old_db));
+        sqlite3_close(old_db);
+        return -1;
+    }
+
+    // Read all contacts into memory
+    typedef struct {
+        char identity[256];
+        uint64_t timestamp;
+        char notes[512];
+    } migrate_contact_t;
+
+    migrate_contact_t *contacts = NULL;
+    size_t contact_count = 0;
+    size_t capacity = 100;
+
+    contacts = (migrate_contact_t*)malloc(capacity * sizeof(migrate_contact_t));
+    if (!contacts) {
+        fprintf(stderr, "[CONTACTS_DB] Failed to allocate memory for migration\n");
+        sqlite3_finalize(stmt);
+        sqlite3_close(old_db);
+        return -1;
+    }
+
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        if (contact_count >= capacity) {
+            capacity *= 2;
+            migrate_contact_t *new_contacts = (migrate_contact_t*)realloc(contacts, capacity * sizeof(migrate_contact_t));
+            if (!new_contacts) {
+                fprintf(stderr, "[CONTACTS_DB] Failed to reallocate memory\n");
+                free(contacts);
+                sqlite3_finalize(stmt);
+                sqlite3_close(old_db);
+                return -1;
+            }
+            contacts = new_contacts;
+        }
+
+        const char *identity = (const char*)sqlite3_column_text(stmt, 0);
+        uint64_t timestamp = sqlite3_column_int64(stmt, 1);
+        const char *notes = (const char*)sqlite3_column_text(stmt, 2);
+
+        strncpy(contacts[contact_count].identity, identity ? identity : "", sizeof(contacts[contact_count].identity) - 1);
+        contacts[contact_count].identity[sizeof(contacts[contact_count].identity) - 1] = '\0';
+        contacts[contact_count].timestamp = timestamp;
+
+        if (notes) {
+            strncpy(contacts[contact_count].notes, notes, sizeof(contacts[contact_count].notes) - 1);
+            contacts[contact_count].notes[sizeof(contacts[contact_count].notes) - 1] = '\0';
+        } else {
+            contacts[contact_count].notes[0] = '\0';
+        }
+
+        contact_count++;
+    }
+
+    sqlite3_finalize(stmt);
+    sqlite3_close(old_db);
+
+    if (contact_count == 0) {
+        printf("[CONTACTS_DB] No contacts to migrate\n");
+        free(contacts);
+        return 0;
+    }
+
+    printf("[CONTACTS_DB] Found %zu contacts to migrate\n", contact_count);
+
+    // Initialize new per-identity database
+    if (contacts_db_init(owner_identity) != 0) {
+        fprintf(stderr, "[CONTACTS_DB] Failed to initialize new database\n");
+        free(contacts);
+        return -1;
+    }
+
+    // Insert all contacts into new database
+    size_t migrated = 0;
+    for (size_t i = 0; i < contact_count; i++) {
+        int result = contacts_db_add(contacts[i].identity,
+                                     contacts[i].notes[0] ? contacts[i].notes : NULL);
+        if (result == 0 || result == -2) {  // Success or already exists
+            migrated++;
+        } else {
+            fprintf(stderr, "[CONTACTS_DB] Warning: Failed to migrate contact '%s'\n", contacts[i].identity);
+        }
+    }
+
+    free(contacts);
+
+    printf("[CONTACTS_DB] Migration complete: %zu/%zu contacts migrated\n", migrated, contact_count);
+
+    // Rename old database to backup
+    char backup_path[512];
+    snprintf(backup_path, sizeof(backup_path), "%s.migrated", old_db_path);
+    if (rename(old_db_path, backup_path) == 0) {
+        printf("[CONTACTS_DB] Old database backed up to: %s\n", backup_path);
+    } else {
+        printf("[CONTACTS_DB] Warning: Could not rename old database (you can delete it manually)\n");
+    }
+
+    return (int)migrated;
 }

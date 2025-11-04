@@ -120,6 +120,21 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
         return;
     }
 
+    // Initialize per-identity contacts database
+    if (contacts_db_init(currentIdentity.toUtf8().constData()) != 0) {
+        QMessageBox::critical(this, "Error",
+                              QString("Failed to initialize contacts database for '%1'").arg(currentIdentity));
+        QApplication::quit();
+        return;
+    }
+
+    // Migrate from global contacts.db if needed (first time only)
+    int migrated = contacts_db_migrate_from_global(currentIdentity.toUtf8().constData());
+    if (migrated > 0) {
+        QMessageBox::information(this, "Contacts Migrated",
+                                QString("Migrated %1 contacts from global database to '%2'").arg(migrated).arg(currentIdentity));
+    }
+
     // Phase 9.1b: Initialize P2P transport
     printf("[P2P] Initializing P2P transport for %s...\n", currentIdentity.toUtf8().constData());
     if (messenger_p2p_init(ctx) == 0) {

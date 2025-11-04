@@ -224,6 +224,11 @@ int messenger_list_pubkeys(messenger_context_t *ctx);
  */
 int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out, int *count_out);
 
+// DHT contact list synchronization
+int messenger_sync_contacts_to_dht(messenger_context_t *ctx);
+int messenger_sync_contacts_from_dht(messenger_context_t *ctx);
+int messenger_contacts_auto_sync(messenger_context_t *ctx);
+
 /**
  * Delete public key from keyserver
  *

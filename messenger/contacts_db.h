@@ -1,12 +1,13 @@
 /**
  * Contacts Database
- * Local SQLite database for contact management
+ * Local SQLite database for contact management (per-identity)
  *
  * Architecture:
- * - Local contacts.db in ~/.dna/
+ * - Per-identity database: ~/.dna/<owner_identity>_contacts.db
  * - Manual "Add Contact" workflow
  * - Query DHT for public keys when needed
  * - No global directory listing
+ * - DHT synchronization for multi-device support
  *
  * Database Schema:
  * CREATE TABLE contacts (
@@ -45,12 +46,13 @@ typedef struct {
 } contact_list_t;
 
 /**
- * Initialize contacts database
- * Creates database file at ~/.dna/contacts.db if it doesn't exist
+ * Initialize contacts database for a specific identity
+ * Creates database file at ~/.dna/<owner_identity>_contacts.db if it doesn't exist
  *
+ * @param owner_identity: Identity who owns this contact list (e.g., "alice")
  * @return: 0 on success, -1 on error
  */
-int contacts_db_init(void);
+int contacts_db_init(const char *owner_identity);
 
 /**
  * Add contact to database
@@ -113,6 +115,16 @@ void contacts_db_free_list(contact_list_t *list);
  * Call on shutdown
  */
 void contacts_db_close(void);
+
+/**
+ * Migrate contacts from global database to per-identity database
+ * Copies all contacts from ~/.dna/contacts.db to ~/.dna/<owner_identity>_contacts.db
+ * Only runs if global database exists and per-identity database doesn't
+ *
+ * @param owner_identity: Identity to migrate contacts to
+ * @return: Number of contacts migrated, 0 if nothing to migrate, -1 on error
+ */
+int contacts_db_migrate_from_global(const char *owner_identity);
 
 #ifdef __cplusplus
 }

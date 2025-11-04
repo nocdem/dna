@@ -39,6 +39,7 @@
 #include "keyserver_cache.h"  // Phase 4: Keyserver cache
 #include "dht/dht_keyserver.h"   // Phase 9.4: DHT-based keyserver
 #include "dht/dht_context.h"     // Phase 9.4: DHT context management
+#include "dht/dht_contactlist.h" // DHT contact list sync
 #include "p2p/p2p_transport.h"   // For getting DHT context
 #include "contacts_db.h"         // Phase 9.4: Local contacts database
 
@@ -1190,10 +1191,20 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
         return -1;
     }
 
-    // Initialize contacts database if not already done
-    if (contacts_db_init() != 0) {
-        fprintf(stderr, "Error: Failed to initialize contacts database\n");
+    // Initialize contacts database if not already done (per-identity)
+    if (contacts_db_init(ctx->identity) != 0) {
+        fprintf(stderr, "Error: Failed to initialize contacts database for '%s'\n", ctx->identity);
         return -1;
+    }
+
+    // Migrate from global contacts.db if needed (first time only)
+    static bool migration_attempted = false;
+    if (!migration_attempted) {
+        int migrated = contacts_db_migrate_from_global(ctx->identity);
+        if (migrated > 0) {
+            printf("[MESSENGER] Migrated %d contacts from global database\n", migrated);
+        }
+        migration_attempted = true;
     }
 
     // Get contact list from database
@@ -3044,3 +3055,247 @@ void messenger_free_groups(group_info_t *groups, int count) {
 }
 
 #endif  // DISABLED: PostgreSQL group functions
+
+// ============================================================================
+// DHT CONTACT LIST SYNCHRONIZATION
+// ============================================================================
+
+/**
+ * Sync local contacts to DHT (publish)
+ * Encrypts with user's own Kyber1024 public key (self-encryption)
+ */
+int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
+    if (!ctx || !ctx->identity) {
+        fprintf(stderr, "[MESSENGER] Invalid context for DHT sync\n");
+        return -1;
+    }
+
+    // Get DHT context
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        fprintf(stderr, "[MESSENGER] DHT not available\n");
+        return -1;
+    }
+
+    printf("[MESSENGER] Syncing contacts to DHT for '%s'\n", ctx->identity);
+
+    // Load user's keys
+    const char *home = get_home_dir();
+    if (!home) {
+        fprintf(stderr, "[MESSENGER] Failed to get home directory\n");
+        return -1;
+    }
+
+    // Load Kyber keypair
+    char kyber_path[1024];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to load Kyber key\n");
+        return -1;
+    }
+
+    // Load Dilithium keypair
+    char dilithium_path[1024];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s.dsa", home, ctx->identity);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to load Dilithium key\n");
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    // Get contact list from local database
+    contact_list_t *list = NULL;
+    if (contacts_db_list(&list) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to get contact list\n");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        return -1;
+    }
+
+    // Convert to const char** array
+    const char **contacts = NULL;
+    if (list->count > 0) {
+        contacts = malloc(list->count * sizeof(char*));
+        if (!contacts) {
+            fprintf(stderr, "[MESSENGER] Failed to allocate contacts array\n");
+            contacts_db_free_list(list);
+            qgp_key_free(kyber_key);
+            qgp_key_free(dilithium_key);
+            return -1;
+        }
+
+        for (size_t i = 0; i < list->count; i++) {
+            contacts[i] = list->contacts[i].identity;
+        }
+    }
+
+    // Publish to DHT
+    int result = dht_contactlist_publish(
+        dht_ctx,
+        ctx->identity,
+        contacts,
+        list->count,
+        kyber_key->public_key,
+        kyber_key->private_key,
+        dilithium_key->public_key,
+        dilithium_key->private_key,
+        0  // Use default 7-day TTL
+    );
+
+    // Cleanup
+    if (contacts) free(contacts);
+    contacts_db_free_list(list);
+    qgp_key_free(kyber_key);
+    qgp_key_free(dilithium_key);
+
+    if (result == 0) {
+        printf("[MESSENGER] Successfully synced %zu contacts to DHT\n", list->count);
+    } else {
+        fprintf(stderr, "[MESSENGER] Failed to sync contacts to DHT\n");
+    }
+
+    return result;
+}
+
+/**
+ * Sync contacts from DHT to local database (DHT is source of truth)
+ * Replaces local contacts with DHT version
+ */
+int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
+    if (!ctx || !ctx->identity) {
+        fprintf(stderr, "[MESSENGER] Invalid context for DHT sync\n");
+        return -1;
+    }
+
+    // Get DHT context
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        fprintf(stderr, "[MESSENGER] DHT not available\n");
+        return -1;
+    }
+
+    printf("[MESSENGER] Syncing contacts from DHT for '%s'\n", ctx->identity);
+
+    // Load user's keys
+    const char *home = get_home_dir();
+    if (!home) {
+        fprintf(stderr, "[MESSENGER] Failed to get home directory\n");
+        return -1;
+    }
+
+    // Load Kyber private key for decryption
+    char kyber_path[1024];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to load Kyber key\n");
+        return -1;
+    }
+
+    // Load Dilithium public key for signature verification
+    char dilithium_path[1024];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s.dsa", home, ctx->identity);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to load Dilithium key\n");
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    // Fetch from DHT
+    char **contacts = NULL;
+    size_t count = 0;
+
+    int result = dht_contactlist_fetch(
+        dht_ctx,
+        ctx->identity,
+        &contacts,
+        &count,
+        kyber_key->private_key,
+        dilithium_key->public_key
+    );
+
+    qgp_key_free(kyber_key);
+    qgp_key_free(dilithium_key);
+
+    if (result == -2) {
+        // Not found in DHT - this is OK for first time users
+        printf("[MESSENGER] No contacts found in DHT (first time user)\n");
+        return 0;
+    }
+
+    if (result != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to fetch contacts from DHT\n");
+        return -1;
+    }
+
+    printf("[MESSENGER] Fetched %zu contacts from DHT\n", count);
+
+    // DHT is source of truth: Clear local database and repopulate
+    // Close current database
+    contacts_db_close();
+
+    // Delete local database file
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/.dna/%s_contacts.db", home, ctx->identity);
+    unlink(db_path);
+
+    // Reinitialize
+    if (contacts_db_init(ctx->identity) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to reinitialize contacts database\n");
+        dht_contactlist_free_contacts(contacts, count);
+        return -1;
+    }
+
+    // Add all contacts from DHT
+    size_t added = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (contacts_db_add(contacts[i], NULL) == 0) {
+            added++;
+        } else {
+            fprintf(stderr, "[MESSENGER] Warning: Failed to add contact '%s'\n", contacts[i]);
+        }
+    }
+
+    dht_contactlist_free_contacts(contacts, count);
+
+    printf("[MESSENGER] Successfully synced %zu/%zu contacts from DHT (DHT is source of truth)\n", added, count);
+    return 0;
+}
+
+/**
+ * Auto-sync on first access: Try to fetch from DHT, if not found publish local
+ * Called automatically when accessing contacts for the first time
+ */
+int messenger_contacts_auto_sync(messenger_context_t *ctx) {
+    if (!ctx || !ctx->identity) {
+        return -1;
+    }
+
+    static bool sync_attempted = false;
+    if (sync_attempted) {
+        return 0;  // Already attempted
+    }
+    sync_attempted = true;
+
+    printf("[MESSENGER] Auto-sync: Checking DHT for existing contacts\n");
+
+    // Try to sync from DHT first (DHT is source of truth)
+    int result = messenger_sync_contacts_from_dht(ctx);
+
+    if (result == 0) {
+        printf("[MESSENGER] Auto-sync: Successfully synced from DHT\n");
+        return 0;
+    }
+
+    // If DHT fetch failed or not found, publish local contacts to DHT
+    printf("[MESSENGER] Auto-sync: Publishing local contacts to DHT\n");
+    return messenger_sync_contacts_to_dht(ctx);
+}
+
