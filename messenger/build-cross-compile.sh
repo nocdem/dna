@@ -87,9 +87,12 @@ build_linux_x64() {
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64"
-    cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
+    # CLI is disabled, only package GUI
     if [ -f gui/dna_messenger_gui ]; then
         cp gui/dna_messenger_gui "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
+    else
+        echo -e "${RED}Error: GUI executable not found${NC}"
+        return 1
     fi
 
     # Create tarball
@@ -141,7 +144,14 @@ EOF
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64"
-    cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
+    # CLI is disabled, GUI not supported on ARM64 cross-compile yet
+    if [ -f dna_messenger ]; then
+        cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
+    elif [ -f gui/dna_messenger_gui ]; then
+        cp gui/dna_messenger_gui "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
+    else
+        echo -e "${YELLOW}Warning: No executable found to package${NC}"
+    fi
 
     # Create tarball
     cd "${PROJECT_ROOT}/${DIST_DIR}"
@@ -290,9 +300,12 @@ EOF
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64"
-    cp dna_messenger.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
+    # CLI is disabled, only package GUI
     if [ -f gui/dna_messenger_gui.exe ]; then
         cp gui/dna_messenger_gui.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
+    else
+        echo -e "${RED}Error: GUI executable not found${NC}"
+        return 1
     fi
 
     # Create zip
