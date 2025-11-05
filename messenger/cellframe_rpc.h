@@ -17,6 +17,9 @@ extern "C" {
 
 #define CELLFRAME_RPC_ENDPOINT "http://rpc.cellframe.net/connect"
 
+// DNA Name Registration Address (receives 0.01 CPUNK payments)
+#define DNA_REGISTRATION_ADDRESS "Rj7J7MiX2bWy8sNybZfJFiwvEcU44PH89JnTmBXGREmPgVHvx8j5XvXFDNmV5RYdB3MzvgCTAY3RimZ7DWkV2zwBDTSjJNCvroNW2Tps"
+
 /**
  * RPC request structure
  */
@@ -104,6 +107,22 @@ int cellframe_rpc_submit_tx(const char *net, const char *chain, const char *tx_j
  * Free RPC response
  */
 void cellframe_rpc_response_free(cellframe_rpc_response_t *response);
+
+/**
+ * Verify DNA name registration transaction
+ *
+ * Verifies that a transaction meets requirements for DNA name registration:
+ * - Amount: 0.01 CPUNK
+ * - Recipient: DNA_REGISTRATION_ADDRESS
+ * - Memo: DNA name being registered
+ * - Status: ACCEPTED (confirmed on blockchain)
+ *
+ * @param tx_hash - Transaction hash to verify
+ * @param network - Network name (e.g., "Backbone")
+ * @param expected_name - DNA name that should be in memo field
+ * @return 0 on success (valid registration), -1 on error, -2 on validation failure
+ */
+int cellframe_verify_registration_tx(const char *tx_hash, const char *network, const char *expected_name);
 
 #ifdef __cplusplus
 }

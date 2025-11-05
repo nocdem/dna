@@ -376,3 +376,45 @@ if(BUILD_DNA_SEND)
 
     target_include_directories(dna-send PRIVATE ${CMAKE_SOURCE_DIR})
 endif()
+
+# ===== TESTS =====
+option(BUILD_TESTS "Build unit tests" ON)
+if(BUILD_TESTS)
+    # DNA Profile Tests
+    add_executable(test_dna_profile
+        tests/test_dna_profile.c
+    )
+
+    target_link_libraries(test_dna_profile
+        dht_lib
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+        crypto
+        ${OPENSSL_LIBRARIES}
+    )
+
+    target_include_directories(test_dna_profile PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${OPENDHT_INCLUDE_DIRS}
+    )
+
+    # Simple test for debugging
+    add_executable(test_simple
+        tests/test_simple.c
+    )
+
+    target_link_libraries(test_simple
+        dht_lib
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+        crypto
+        ${OPENSSL_LIBRARIES}
+    )
+
+    target_include_directories(test_simple PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${OPENDHT_INCLUDE_DIRS}
+    )
+
+    message(STATUS "Building unit tests: test_dna_profile, test_simple")
+endif()

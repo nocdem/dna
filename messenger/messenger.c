@@ -18,6 +18,7 @@
 #else
 #include <sys/time.h>
 #include <unistd.h>  // For unlink(), close()
+#include <dirent.h>  // For directory operations (migration detection)
 #endif
 #include <json-c/json.h>
 #include <openssl/bio.h>
@@ -50,6 +51,49 @@ static dna_config_t g_config;
 // INITIALIZATION
 // ============================================================================
 
+/**
+ * Resolve identity to fingerprint
+ *
+ * This function supports the transition to fingerprint-first identities:
+ * - If input is 128 hex chars → already a fingerprint, return as-is
+ * - If input is a name → check if key file exists, compute fingerprint
+ *
+ * @param identity_input: Name or fingerprint
+ * @param fingerprint_out: Output buffer (129 bytes)
+ * @return: 0 on success, -1 on error
+ */
+static int resolve_identity_to_fingerprint(const char *identity_input, char *fingerprint_out) {
+    if (!identity_input || !fingerprint_out) {
+        return -1;
+    }
+
+    // Check if input is already a fingerprint
+    if (messenger_is_fingerprint(identity_input)) {
+        strncpy(fingerprint_out, identity_input, 128);
+        fingerprint_out[128] = '\0';
+        return 0;
+    }
+
+    // Input is a name, compute fingerprint from key file
+    const char *home = qgp_platform_home_dir();
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, identity_input);
+
+    // Check if key file exists
+    if (!file_exists(key_path)) {
+        fprintf(stderr, "Error: Key file not found: %s\n", key_path);
+        return -1;
+    }
+
+    // Compute fingerprint from key file
+    if (messenger_compute_identity_fingerprint(identity_input, fingerprint_out) != 0) {
+        fprintf(stderr, "Error: Failed to compute fingerprint for '%s'\n", identity_input);
+        return -1;
+    }
+
+    return 0;
+}
+
 messenger_context_t* messenger_init(const char *identity) {
     if (!identity) {
         fprintf(stderr, "Error: Identity required\n");
@@ -61,11 +105,26 @@ messenger_context_t* messenger_init(const char *identity) {
         return NULL;
     }
 
-    // Set identity
+    // Set identity (input name or fingerprint)
     ctx->identity = strdup(identity);
     if (!ctx->identity) {
         free(ctx);
         return NULL;
+    }
+
+    // Compute canonical fingerprint (Phase 4: Fingerprint-First Identity)
+    char fingerprint[129];
+    if (resolve_identity_to_fingerprint(identity, fingerprint) == 0) {
+        ctx->fingerprint = strdup(fingerprint);
+        if (!ctx->fingerprint) {
+            free(ctx->identity);
+            free(ctx);
+            return NULL;
+        }
+    } else {
+        // Fingerprint resolution failed (key file not found or invalid)
+        // For backward compatibility, continue without fingerprint
+        ctx->fingerprint = NULL;
     }
 
     // Initialize SQLite local message storage
@@ -97,6 +156,33 @@ messenger_context_t* messenger_init(const char *identity) {
         // Non-fatal - continue without cache
     }
 
+    // Phase 4: Detect if migration is needed
+    if (!messenger_is_fingerprint(identity)) {
+        // User is using old-style name, check if migration needed
+        if (!messenger_is_identity_migrated(identity)) {
+            printf("\n");
+            printf("╔═══════════════════════════════════════════════════════════════╗\n");
+            printf("║                    MIGRATION RECOMMENDED                      ║\n");
+            printf("╚═══════════════════════════════════════════════════════════════╝\n");
+            printf("\n");
+            printf("  Your identity files are using the old naming format.\n");
+            printf("  Phase 4 introduces fingerprint-based identities for improved\n");
+            printf("  compatibility with the new DNA Name Service (DHT-based).\n");
+            printf("\n");
+            printf("  Identity: %s\n", identity);
+            printf("\n");
+            printf("  To migrate your identity files, please use one of:\n");
+            printf("    • GUI: Settings → Migrate Identity\n");
+            printf("    • CLI: dna-migrate-identity %s\n", identity);
+            printf("\n");
+            printf("  Migration creates backups in: ~/.dna/backup_pre_migration/\n");
+            printf("\n");
+            printf("  Your current identity will continue to work without migration,\n");
+            printf("  but migration is recommended for full Phase 4 compatibility.\n");
+            printf("\n");
+        }
+    }
+
     printf("✓ Messenger initialized for '%s'\n", identity);
     printf("✓ SQLite database: ~/.dna/messages.db\n");
 
@@ -121,6 +207,11 @@ void messenger_free(messenger_context_t *ctx) {
 
     if (ctx->backup_ctx) {
         message_backup_close(ctx->backup_ctx);
+    }
+
+    // Free fingerprint (Phase 4)
+    if (ctx->fingerprint) {
+        free(ctx->fingerprint);
     }
 
     // Cleanup keyserver cache
@@ -843,6 +934,363 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     printf("\n✓ Keys restored from file and verified against keyserver\n");
     printf("✓ Identity '%s' is now ready to use!\n\n", identity);
     return 0;
+}
+
+// ============================================================================
+// FINGERPRINT UTILITIES (Phase 4: Fingerprint-First Identity)
+// ============================================================================
+
+/**
+ * Compute fingerprint from Dilithium5 public key in a key file
+ */
+int messenger_compute_identity_fingerprint(const char *identity, char *fingerprint_out) {
+    if (!identity || !fingerprint_out) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_compute_identity_fingerprint\n");
+        return -1;
+    }
+
+    // Load Dilithium key file
+    const char *home = qgp_platform_home_dir();
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, identity);
+
+    qgp_key_t *key = NULL;
+    if (qgp_key_load(key_path, &key) != 0 || !key) {
+        fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
+        return -1;
+    }
+
+    if (key->type != QGP_KEY_TYPE_DSA87 || !key->public_key) {
+        fprintf(stderr, "ERROR: Not a Dilithium5 key or missing public key\n");
+        qgp_key_free(key);
+        return -1;
+    }
+
+    // Compute fingerprint using DHT keyserver function
+    dna_compute_fingerprint(key->public_key, fingerprint_out);
+
+    qgp_key_free(key);
+    return 0;
+}
+
+/**
+ * Check if a string is a valid fingerprint (128 hex characters)
+ */
+bool messenger_is_fingerprint(const char *str) {
+    if (!str) return false;
+
+    size_t len = strlen(str);
+    if (len != 128) return false;
+
+    // Check all characters are hex
+    for (size_t i = 0; i < len; i++) {
+        char c = str[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * Get display name for an identity (fingerprint or name)
+ */
+int messenger_get_display_name(messenger_context_t *ctx, const char *identifier, char *display_name_out) {
+    if (!ctx || !identifier || !display_name_out) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_get_display_name\n");
+        return -1;
+    }
+
+    // Check if identifier is a fingerprint
+    if (messenger_is_fingerprint(identifier)) {
+        // Try to resolve to registered name via DHT
+        dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+        if (dht_ctx) {
+            char *registered_name = NULL;
+            int ret = dna_get_display_name(dht_ctx, identifier, &registered_name);
+            if (ret == 0 && registered_name) {
+                strncpy(display_name_out, registered_name, 255);
+                display_name_out[255] = '\0';
+                free(registered_name);
+                return 0;
+            }
+        }
+
+        // No registered name found, return shortened fingerprint
+        snprintf(display_name_out, 32, "%.16s...", identifier);
+        return 0;
+    }
+
+    // Not a fingerprint, assume it's already a name
+    strncpy(display_name_out, identifier, 255);
+    display_name_out[255] = '\0';
+    return 0;
+}
+
+// ============================================================================
+// IDENTITY MIGRATION (Phase 4: Old Names → Fingerprints)
+// ============================================================================
+
+/**
+ * Detect old-style identity files that need migration
+ */
+int messenger_detect_old_identities(char ***identities_out, int *count_out) {
+    if (!identities_out || !count_out) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_detect_old_identities\n");
+        return -1;
+    }
+
+    const char *home = qgp_platform_home_dir();
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    // Open directory
+    DIR *dir = opendir(dna_dir);
+    if (!dir) {
+        *identities_out = NULL;
+        *count_out = 0;
+        return 0;  // No .dna directory, no identities to migrate
+    }
+
+    // Scan for .dsa files
+    char **identities = NULL;
+    int count = 0;
+    int capacity = 10;
+
+    identities = malloc(capacity * sizeof(char*));
+    if (!identities) {
+        closedir(dir);
+        return -1;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        // Look for .dsa files
+        size_t len = strlen(entry->d_name);
+        if (len < 5 || strcmp(entry->d_name + len - 4, ".dsa") != 0) {
+            continue;
+        }
+
+        // Extract name (remove .dsa extension)
+        char name[256];
+        strncpy(name, entry->d_name, len - 4);
+        name[len - 4] = '\0';
+
+        // Skip if already a fingerprint (128 hex chars)
+        if (messenger_is_fingerprint(name)) {
+            continue;
+        }
+
+        // Skip backup directory
+        if (strstr(name, "backup") != NULL) {
+            continue;
+        }
+
+        // This is an old-style identity that needs migration
+        if (count >= capacity) {
+            capacity *= 2;
+            char **new_identities = realloc(identities, capacity * sizeof(char*));
+            if (!new_identities) {
+                for (int i = 0; i < count; i++) free(identities[i]);
+                free(identities);
+                closedir(dir);
+                return -1;
+            }
+            identities = new_identities;
+        }
+
+        identities[count] = strdup(name);
+        if (!identities[count]) {
+            for (int i = 0; i < count; i++) free(identities[i]);
+            free(identities);
+            closedir(dir);
+            return -1;
+        }
+        count++;
+    }
+
+    closedir(dir);
+
+    *identities_out = identities;
+    *count_out = count;
+    return 0;
+}
+
+/**
+ * Migrate identity files from old naming to fingerprint naming
+ */
+int messenger_migrate_identity_files(const char *old_name, char *fingerprint_out) {
+    if (!old_name || !fingerprint_out) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_migrate_identity_files\n");
+        return -1;
+    }
+
+    const char *home = qgp_platform_home_dir();
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    printf("[MIGRATION] Migrating identity '%s' to fingerprint-based naming...\n", old_name);
+
+    // 1. Compute fingerprint from existing key file
+    if (messenger_compute_identity_fingerprint(old_name, fingerprint_out) != 0) {
+        fprintf(stderr, "[MIGRATION] Failed to compute fingerprint for '%s'\n", old_name);
+        return -1;
+    }
+
+    printf("[MIGRATION] Computed fingerprint: %s\n", fingerprint_out);
+
+    // 2. Create backup directory
+    char backup_dir[512];
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backup_pre_migration", dna_dir);
+
+    if (qgp_platform_mkdir(backup_dir) != 0) {
+        // Directory might already exist, check if it's actually a directory
+        if (!qgp_platform_is_directory(backup_dir)) {
+            fprintf(stderr, "[MIGRATION] Failed to create backup directory\n");
+            return -1;
+        }
+    }
+
+    printf("[MIGRATION] Created backup directory: %s\n", backup_dir);
+
+    // 3. Define file paths
+    char old_dsa[512], old_kem[512], old_contacts[512];
+    char new_dsa[512], new_kem[512], new_contacts[512];
+    char backup_dsa[512], backup_kem[512], backup_contacts[512];
+
+    snprintf(old_dsa, sizeof(old_dsa), "%s/%s.dsa", dna_dir, old_name);
+    snprintf(old_kem, sizeof(old_kem), "%s/%s.kem", dna_dir, old_name);
+    snprintf(old_contacts, sizeof(old_contacts), "%s/%s_contacts.db", dna_dir, old_name);
+
+    snprintf(new_dsa, sizeof(new_dsa), "%s/%s.dsa", dna_dir, fingerprint_out);
+    snprintf(new_kem, sizeof(new_kem), "%s/%s.kem", dna_dir, fingerprint_out);
+    snprintf(new_contacts, sizeof(new_contacts), "%s/%s_contacts.db", dna_dir, fingerprint_out);
+
+    snprintf(backup_dsa, sizeof(backup_dsa), "%s/%s.dsa", backup_dir, old_name);
+    snprintf(backup_kem, sizeof(backup_kem), "%s/%s.kem", backup_dir, old_name);
+    snprintf(backup_contacts, sizeof(backup_contacts), "%s/%s_contacts.db", backup_dir, old_name);
+
+    // 4. Copy files to backup (before renaming)
+    bool has_errors = false;
+
+    if (file_exists(old_dsa)) {
+        FILE *src = fopen(old_dsa, "rb");
+        FILE *dst = fopen(backup_dsa, "wb");
+        if (src && dst) {
+            char buffer[8192];
+            size_t bytes;
+            while ((bytes = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+                fwrite(buffer, 1, bytes, dst);
+            }
+            fclose(src);
+            fclose(dst);
+            printf("[MIGRATION] Backed up: %s.dsa\n", old_name);
+        } else {
+            fprintf(stderr, "[MIGRATION] Warning: Failed to backup %s.dsa\n", old_name);
+            if (src) fclose(src);
+            if (dst) fclose(dst);
+            has_errors = true;
+        }
+    }
+
+    if (file_exists(old_kem)) {
+        FILE *src = fopen(old_kem, "rb");
+        FILE *dst = fopen(backup_kem, "wb");
+        if (src && dst) {
+            char buffer[8192];
+            size_t bytes;
+            while ((bytes = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+                fwrite(buffer, 1, bytes, dst);
+            }
+            fclose(src);
+            fclose(dst);
+            printf("[MIGRATION] Backed up: %s.kem\n", old_name);
+        } else {
+            fprintf(stderr, "[MIGRATION] Warning: Failed to backup %s.kem\n", old_name);
+            if (src) fclose(src);
+            if (dst) fclose(dst);
+            has_errors = true;
+        }
+    }
+
+    if (file_exists(old_contacts)) {
+        FILE *src = fopen(old_contacts, "rb");
+        FILE *dst = fopen(backup_contacts, "wb");
+        if (src && dst) {
+            char buffer[8192];
+            size_t bytes;
+            while ((bytes = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+                fwrite(buffer, 1, bytes, dst);
+            }
+            fclose(src);
+            fclose(dst);
+            printf("[MIGRATION] Backed up: %s_contacts.db\n", old_name);
+        } else {
+            if (src) fclose(src);
+            if (dst) fclose(dst);
+            // Contacts DB is optional, not an error if missing
+        }
+    }
+
+    if (has_errors) {
+        fprintf(stderr, "[MIGRATION] Backup had errors, aborting migration\n");
+        return -1;
+    }
+
+    // 5. Rename files to use fingerprint
+    if (file_exists(old_dsa)) {
+        if (rename(old_dsa, new_dsa) != 0) {
+            fprintf(stderr, "[MIGRATION] Failed to rename %s.dsa\n", old_name);
+            return -1;
+        }
+        printf("[MIGRATION] Renamed: %s.dsa → %s.dsa\n", old_name, fingerprint_out);
+    }
+
+    if (file_exists(old_kem)) {
+        if (rename(old_kem, new_kem) != 0) {
+            fprintf(stderr, "[MIGRATION] Failed to rename %s.kem\n", old_name);
+            // Try to rollback .dsa
+            rename(new_dsa, old_dsa);
+            return -1;
+        }
+        printf("[MIGRATION] Renamed: %s.kem → %s.kem\n", old_name, fingerprint_out);
+    }
+
+    if (file_exists(old_contacts)) {
+        if (rename(old_contacts, new_contacts) != 0) {
+            fprintf(stderr, "[MIGRATION] Warning: Failed to rename %s_contacts.db (non-fatal)\n", old_name);
+            // Non-fatal, continue
+        } else {
+            printf("[MIGRATION] Renamed: %s_contacts.db → %s_contacts.db\n", old_name, fingerprint_out);
+        }
+    }
+
+    printf("[MIGRATION] ✓ Migration complete for '%s'\n", old_name);
+    printf("[MIGRATION] New fingerprint: %s\n", fingerprint_out);
+    printf("[MIGRATION] Backups stored in: %s/\n", backup_dir);
+
+    return 0;
+}
+
+/**
+ * Check if an identity has already been migrated
+ */
+bool messenger_is_identity_migrated(const char *name) {
+    if (!name) return false;
+
+    // Compute fingerprint
+    char fingerprint[129];
+    if (messenger_compute_identity_fingerprint(name, fingerprint) != 0) {
+        return false;
+    }
+
+    // Check if fingerprint-named files exist
+    const char *home = qgp_platform_home_dir();
+    char fingerprint_dsa[512];
+    snprintf(fingerprint_dsa, sizeof(fingerprint_dsa), "%s/.dna/%s.dsa", home, fingerprint);
+
+    return file_exists(fingerprint_dsa);
 }
 
 // ============================================================================

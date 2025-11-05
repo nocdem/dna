@@ -68,6 +68,13 @@ private slots:
     void onCheckOfflineMessages();  // Phase 9.2: Check DHT for offline messages
     void onSyncContacts();  // Manual contact list sync to DHT
     void onAutoSyncContacts();  // Automatic contact list sync (timer-based)
+    void onMigrateIdentity();  // Phase 3: Open identity migration dialog
+    void onRegisterDNAName();  // Phase 4: Open DNA name registration dialog
+    void onEditProfile();  // Phase 5: Open profile editor dialog
+    void onViewMyMessageWall();  // Phase 6: View own message wall
+    void onViewContactMessageWall();  // Phase 6: View contact's message wall
+    void checkNameExpiration();  // Phase 7: Check DNA name expiration
+    void onRenewName();  // Phase 7: Renew DNA name registration
 
 protected:
     bool eventFilter(QObject *obj, QEvent *event) override;  // For fullscreen ESC key
@@ -84,6 +91,7 @@ private:
     int scaledIconSize(int baseSize) const;  // Helper for icon scaling
     QString processMessageForDisplay(const QString &messageText);  // NEW: Process images in message
     QString imageToBase64(const QString &imagePath);  // NEW: Convert image to base64
+    QString getDisplayNameForSender(const QString &senderFingerprint);  // Phase 7: Get registered name or shortened fingerprint
 
     // Contact/Group item type
     enum ContactType {
@@ -93,8 +101,9 @@ private:
 
     struct ContactItem {
         ContactType type;
-        QString name;
-        int groupId;  // Only used for groups
+        QString name;           // Display name (registered name or shortened fingerprint)
+        QString fingerprint;    // Full SHA3-512 fingerprint (128 hex chars)
+        int groupId;            // Only used for groups
     };
 
     // Messenger context

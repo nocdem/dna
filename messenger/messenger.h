@@ -45,7 +45,8 @@ typedef struct {
  * Manages SQLite local database and DNA API context
  */
 typedef struct {
-    char *identity;              // User's identity name (e.g., "alice")
+    char *identity;              // User's identity input (name or fingerprint, for file access)
+    char *fingerprint;           // SHA3-512 fingerprint (128 hex chars) - canonical identity (Phase 4)
     message_backup_context_t *backup_ctx;  // SQLite local message storage
     dna_context_t *dna_ctx;      // DNA API context
 
@@ -157,6 +158,86 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity);
  * @return: 0 on success, -1 on error
  */
 int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *identity, const char *seed_file);
+
+// ============================================================================
+// FINGERPRINT UTILITIES (Phase 4: Fingerprint-First Identity)
+// ============================================================================
+
+/**
+ * Compute fingerprint from Dilithium5 public key in a key file
+ *
+ * Reads the .dsa file and computes SHA3-512(dilithium_pubkey).
+ * This is the primary identity in the fingerprint-first model.
+ *
+ * @param identity: Current identity name (used to locate ~/.dna/<identity>.dsa)
+ * @param fingerprint_out: Output buffer (must be 129 bytes: 128 hex + null)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_compute_identity_fingerprint(const char *identity, char *fingerprint_out);
+
+/**
+ * Check if a string is a valid fingerprint (128 hex characters)
+ *
+ * @param str: String to check
+ * @return: true if valid fingerprint, false otherwise
+ */
+bool messenger_is_fingerprint(const char *str);
+
+/**
+ * Get display name for an identity (fingerprint or name)
+ *
+ * Resolution order:
+ * 1. If input is 128-char fingerprint → check DHT for registered name
+ * 2. If registered name found → return name
+ * 3. Otherwise → return shortened fingerprint (first 16 chars + "...")
+ *
+ * @param ctx: Messenger context
+ * @param identifier: Fingerprint or DNA name
+ * @param display_name_out: Output buffer (must be at least 256 bytes)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_get_display_name(messenger_context_t *ctx, const char *identifier, char *display_name_out);
+
+// ============================================================================
+// IDENTITY MIGRATION (Phase 4: Old Names → Fingerprints)
+// ============================================================================
+
+/**
+ * Detect old-style identity files that need migration
+ *
+ * Scans ~/.dna/ for .dsa files and checks if they use old naming (not fingerprints).
+ * Returns list of identities that need migration.
+ *
+ * @param identities_out: Array of identity names (caller must free each string and array)
+ * @param count_out: Number of identities found
+ * @return: 0 on success, -1 on error
+ */
+int messenger_detect_old_identities(char ***identities_out, int *count_out);
+
+/**
+ * Migrate identity files from old naming to fingerprint naming
+ *
+ * Renames files:
+ *   ~/.dna/<name>.dsa → ~/.dna/<fingerprint>.dsa
+ *   ~/.dna/<name>.kem → ~/.dna/<fingerprint>.kem
+ *   ~/.dna/<name>_contacts.db → ~/.dna/<fingerprint>_contacts.db
+ *
+ * Creates backup:
+ *   ~/.dna/backup_pre_migration/<name>.*
+ *
+ * @param old_name: Old identity name (e.g., "alice")
+ * @param fingerprint_out: Output buffer for computed fingerprint (129 bytes)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_migrate_identity_files(const char *old_name, char *fingerprint_out);
+
+/**
+ * Check if an identity has already been migrated
+ *
+ * @param name: Identity name to check
+ * @return: true if migrated (fingerprint files exist), false otherwise
+ */
+bool messenger_is_identity_migrated(const char *name);
 
 // ============================================================================
 // PUBLIC KEY MANAGEMENT (keyserver table)

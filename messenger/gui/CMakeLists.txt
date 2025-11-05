@@ -36,6 +36,14 @@ set(GUI_SOURCES
     TransactionHistoryDialog.h
     ThemeManager.cpp
     ThemeManager.h
+    MigrateIdentityDialog.cpp
+    MigrateIdentityDialog.h
+    RegisterDNANameDialog.cpp
+    RegisterDNANameDialog.h
+    ProfileEditorDialog.cpp
+    ProfileEditorDialog.h
+    MessageWallDialog.cpp
+    MessageWallDialog.h
     ../wallet.c
     ../cellframe_rpc.c
     ../cellframe_addr.c
@@ -63,6 +71,7 @@ target_link_libraries(dna_messenger_gui
     dna_lib
     cellframe_minimal
     cellframe_dilithium
+    dsa
     ${PQ_LIBRARY}
     ${JSONC_LIBRARIES}
     ${SQLite3_LIBRARIES}

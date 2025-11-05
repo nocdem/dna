@@ -7,8 +7,9 @@
  * - Local cache in keyserver_cache.db (7-day TTL)
  * - Self-signed keys with Dilithium5 signatures
  * - Versioned updates (signature required)
+ * - DNA name system support (optional human-readable names)
  *
- * DHT Key Format: SHA3-512(identity + ":pubkey") - 128 hex chars
+ * DHT Key Format: SHA3-512(fingerprint + ":profile") - 128 hex chars
  */
 
 #ifndef DHT_KEYSERVER_H
@@ -17,6 +18,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
+#include "dna_profile.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -133,6 +135,145 @@ int dht_keyserver_delete(
  * @param entry: Entry to free
  */
 void dht_keyserver_free_entry(dht_pubkey_entry_t *entry);
+
+// ===== DNA Name System Functions =====
+
+/**
+ * Compute fingerprint from Dilithium5 public key
+ * Fingerprint = SHA3-512(dilithium_pubkey) as 128 hex chars
+ *
+ * @param dilithium_pubkey: Dilithium5 public key (2592 bytes)
+ * @param fingerprint_out: Output buffer (must be 129 bytes for 128 hex + null)
+ */
+void dna_compute_fingerprint(
+    const uint8_t *dilithium_pubkey,
+    char *fingerprint_out
+);
+
+/**
+ * Register DNA name for a fingerprint identity
+ * Requires valid blockchain transaction hash as proof of payment (0.01 CPUNK)
+ *
+ * @param dht_ctx: DHT context
+ * @param fingerprint: Fingerprint (128 hex chars)
+ * @param name: DNA name to register (3-36 chars, alphanumeric + . _ -)
+ * @param tx_hash: Blockchain transaction hash (proof of payment)
+ * @param network: Network where tx was made (e.g., "Backbone")
+ * @param dilithium_privkey: Private key for signing
+ * @return: 0 on success, -1 on error, -2 on name taken, -3 on invalid tx
+ */
+int dna_register_name(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    const char *name,
+    const char *tx_hash,
+    const char *network,
+    const uint8_t *dilithium_privkey
+);
+
+/**
+ * Update DNA profile data
+ * Updates wallet addresses, social profiles, bio, etc.
+ *
+ * @param dht_ctx: DHT context
+ * @param fingerprint: Fingerprint (128 hex chars)
+ * @param profile: Profile data to update
+ * @param dilithium_privkey: Private key for signing
+ * @return: 0 on success, -1 on error
+ */
+int dna_update_profile(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    const dna_profile_data_t *profile,
+    const uint8_t *dilithium_privkey
+);
+
+/**
+ * Renew DNA name registration
+ * Extends expiration by 365 days. Requires new payment tx_hash.
+ *
+ * @param dht_ctx: DHT context
+ * @param fingerprint: Fingerprint (128 hex chars)
+ * @param renewal_tx_hash: New transaction hash (proof of renewal payment)
+ * @param dilithium_privkey: Private key for signing
+ * @return: 0 on success, -1 on error, -2 if name not registered, -3 on invalid tx
+ */
+int dna_renew_name(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    const char *renewal_tx_hash,
+    const uint8_t *dilithium_privkey
+);
+
+/**
+ * Load complete DNA identity from DHT
+ * Fetches unified identity structure with keys, name, profile data
+ *
+ * @param dht_ctx: DHT context
+ * @param fingerprint: Fingerprint (128 hex chars)
+ * @param identity_out: Output identity (caller must free with dna_identity_free)
+ * @return: 0 on success, -1 on error, -2 if not found, -3 if signature verification failed
+ */
+int dna_load_identity(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    dna_unified_identity_t **identity_out
+);
+
+/**
+ * Lookup fingerprint by DNA name
+ * Searches DHT for registered name and returns fingerprint
+ *
+ * @param dht_ctx: DHT context
+ * @param name: DNA name to lookup
+ * @param fingerprint_out: Output fingerprint (caller must free)
+ * @return: 0 on success, -1 on error, -2 if not found
+ */
+int dna_lookup_by_name(
+    dht_context_t *dht_ctx,
+    const char *name,
+    char **fingerprint_out
+);
+
+/**
+ * Check if DNA name has expired
+ *
+ * @param identity: Identity structure
+ * @return: true if expired, false otherwise
+ */
+bool dna_is_name_expired(const dna_unified_identity_t *identity);
+
+/**
+ * Get display name for fingerprint
+ * Returns registered name if available, otherwise shortened fingerprint
+ *
+ * @param dht_ctx: DHT context
+ * @param fingerprint: Fingerprint (128 hex chars)
+ * @param display_name_out: Output display name (caller must free)
+ * @return: 0 on success, -1 on error
+ */
+int dna_get_display_name(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    char **display_name_out
+);
+
+/**
+ * Resolve DNA name to wallet address
+ * Combines name lookup + wallet address extraction
+ *
+ * @param dht_ctx: DHT context
+ * @param name: DNA name or fingerprint
+ * @param network: Network identifier (e.g., "backbone", "eth", "btc")
+ * @param address_out: Output address (caller must free)
+ * @return: 0 on success, -1 on error, -2 if not found, -3 if no address for network
+ */
+int dna_resolve_address(
+    dht_context_t *dht_ctx,
+    const char *name,
+    const char *network,
+    char **address_out
+);
 
 #ifdef __cplusplus
 }

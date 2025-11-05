@@ -7,10 +7,17 @@
 #include "WalletDialog.h"
 #include "SendTokensDialog.h"
 #include "ThemeManager.h"
+#include "MigrateIdentityDialog.h"
+#include "RegisterDNANameDialog.h"
+#include "ProfileEditorDialog.h"
+#include "MessageWallDialog.h"
 
 extern "C" {
     #include "../wallet.h"
     #include "../contacts_db.h"
+    #include "../dht/dht_keyserver.h"
+    #include "../dht/dna_profile.h"
+    #include "../p2p/p2p_transport.h"
 }
 
 #include <QApplication>
@@ -90,6 +97,43 @@ QString MainWindow::getLocalIdentity() {
     globfree(&globResult);
     return QString();
 #endif
+}
+
+// Phase 7: Get display name for sender (registered name or shortened fingerprint)
+QString MainWindow::getDisplayNameForSender(const QString &senderFingerprint) {
+    if (!ctx || senderFingerprint.isEmpty()) {
+        return QString::fromUtf8("Unknown");
+    }
+
+    // Check if sender is in contacts first (fastest)
+    if (contactItems.contains(senderFingerprint)) {
+        return contactItems[senderFingerprint].name;
+    }
+
+    // Try DHT reverse lookup for registered name
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (dht_ctx) {
+        char *identity_result = nullptr;
+        int ret = dht_keyserver_reverse_lookup(dht_ctx,
+                                                senderFingerprint.toUtf8().constData(),
+                                                &identity_result);
+
+        if (ret == 0 && identity_result) {
+            // Found registered name
+            QString displayName = QString::fromUtf8(identity_result);
+            free(identity_result);
+
+            // Add verification indicator for registered names
+            return displayName + QString::fromUtf8(" ✓");
+        }
+    }
+
+    // No registered name, return shortened fingerprint
+    if (senderFingerprint.length() > 16) {
+        return senderFingerprint.left(8) + "..." + senderFingerprint.right(8);
+    }
+
+    return senderFingerprint;
 }
 
 MainWindow::MainWindow(const QString &identity, QWidget *parent)
@@ -183,6 +227,9 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
     pollTimer = new QTimer(this);
     connect(pollTimer, &QTimer::timeout, this, &MainWindow::checkForNewMessages);
     pollTimer->start(5000);
+
+    // Phase 7: Check DNA name expiration on startup (after 3 seconds delay)
+    QTimer::singleShot(3000, this, &MainWindow::checkNameExpiration);
 
     // Initialize status polling timer (10 seconds)
     statusPollTimer = new QTimer(this);
@@ -333,6 +380,22 @@ void MainWindow::setupUI() {
     // Sync Contacts action
     QAction *syncContactsAction = settingsMenu->addAction(QString::fromUtf8("🔄 Sync Contacts to DHT"));
     connect(syncContactsAction, &QAction::triggered, this, &MainWindow::onSyncContacts);
+
+    // Migrate Identity action (Phase 3)
+    QAction *migrateIdentityAction = settingsMenu->addAction(QString::fromUtf8("🔄 Migrate Identity"));
+    connect(migrateIdentityAction, &QAction::triggered, this, &MainWindow::onMigrateIdentity);
+
+    // Register DNA Name action (Phase 4)
+    QAction *registerNameAction = settingsMenu->addAction(QString::fromUtf8("🏷️ Register DNA Name"));
+    connect(registerNameAction, &QAction::triggered, this, &MainWindow::onRegisterDNAName);
+
+    // Edit Profile action (Phase 5)
+    QAction *editProfileAction = settingsMenu->addAction(QString::fromUtf8("✏️ Edit Profile"));
+    connect(editProfileAction, &QAction::triggered, this, &MainWindow::onEditProfile);
+
+    // View My Message Wall action (Phase 6)
+    QAction *viewMyWallAction = settingsMenu->addAction(QString::fromUtf8("📋 My Message Wall"));
+    connect(viewMyWallAction, &QAction::triggered, this, &MainWindow::onViewMyMessageWall);
     settingsMenu->addSeparator();
 
     // Theme submenu
@@ -785,13 +848,41 @@ void MainWindow::loadContacts() {
     if (messenger_get_contact_list(ctx, &identities, &contactCount) == 0) {
         for (int i = 0; i < contactCount; i++) {
             QString identity = QString::fromUtf8(identities[i]);
-            QString displayText = QString::fromUtf8("") + identity;
-            contactList->addItem(displayText);
+
+            // Phase 4: Resolve display name and fingerprint
+            char displayName[256] = {0};
+            char fingerprint[129] = {0};
+
+            // Get display name (registered name or shortened fingerprint)
+            if (messenger_get_display_name(ctx, identities[i], displayName) == 0) {
+                // Success
+            } else {
+                // Fallback to raw identity
+                strncpy(displayName, identities[i], sizeof(displayName) - 1);
+            }
+
+            // Compute fingerprint
+            if (messenger_compute_identity_fingerprint(identities[i], fingerprint) != 0) {
+                // If computation fails, store the identity as-is
+                strncpy(fingerprint, identities[i], sizeof(fingerprint) - 1);
+            }
+
+            QString displayText = QString::fromUtf8("") + QString::fromUtf8(displayName);
+            QListWidgetItem *listItem = new QListWidgetItem(displayText);
+
+            // Set tooltip with full fingerprint
+            QString tooltipText = QString("Identity: %1\nFingerprint: %2")
+                .arg(QString::fromUtf8(displayName))
+                .arg(QString::fromUtf8(fingerprint));
+            listItem->setToolTip(tooltipText);
+
+            contactList->addItem(listItem);
 
             // Store contact metadata
             ContactItem item;
             item.type = TYPE_CONTACT;
-            item.name = identity;
+            item.name = QString::fromUtf8(displayName);
+            item.fingerprint = QString::fromUtf8(fingerprint);
             item.groupId = -1;
             contactItems[displayText] = item;
 
@@ -910,9 +1001,12 @@ void MainWindow::loadConversation(const QString &contact) {
             ).arg(messageFontSize).arg(QString::fromUtf8("💭 No messages yet. Start the conversation!")));
         } else {
             for (int i = 0; i < count; i++) {
-                QString sender = QString::fromUtf8(messages[i].sender);
+                QString senderFingerprint = QString::fromUtf8(messages[i].sender);
                 QString recipient = QString::fromUtf8(messages[i].recipient);
                 QString timestamp = QString::fromUtf8(messages[i].timestamp);
+
+                // Phase 7: Resolve sender display name (contacts + DHT registered names)
+                QString sender = getDisplayNameForSender(senderFingerprint);
 
                 // Format timestamp (extract time from "YYYY-MM-DD HH:MM:SS")
                 QString timeOnly = timestamp.mid(11, 5);  // Extract "HH:MM"
@@ -921,7 +1015,7 @@ void MainWindow::loadConversation(const QString &contact) {
                 // This includes: received messages (recipient == currentIdentity)
                 // AND sent messages (sender == currentIdentity, thanks to sender-as-first-recipient)
                 QString messageText = "[encrypted]";
-                if (recipient == currentIdentity || sender == currentIdentity) {
+                if (recipient == currentIdentity || senderFingerprint == currentIdentity) {
                     char *plaintext = NULL;
                     size_t plaintext_len = 0;
 
@@ -933,7 +1027,7 @@ void MainWindow::loadConversation(const QString &contact) {
                     }
                 }
 
-                if (sender == currentIdentity) {
+                if (senderFingerprint == currentIdentity) {
                     // Generate status checkmark
                     QString statusCheckmark;
                     QString status = messages[i].status ? QString::fromUtf8(messages[i].status) : "sent";
@@ -1076,8 +1170,11 @@ void MainWindow::loadGroupConversation(int groupId) {
             ).arg(messageFontSize).arg(QString::fromUtf8("💭 No messages yet. Start the conversation!")));
         } else {
             for (int i = 0; i < count; i++) {
-                QString sender = QString::fromUtf8(messages[i].sender);
+                QString senderFingerprint = QString::fromUtf8(messages[i].sender);
                 QString timestamp = QString::fromUtf8(messages[i].timestamp);
+
+                // Phase 7: Resolve sender display name (contacts + DHT registered names)
+                QString sender = getDisplayNameForSender(senderFingerprint);
 
                 // Format timestamp (extract time from "YYYY-MM-DD HH:MM:SS")
                 QString timeOnly = timestamp.mid(11, 5);  // Extract "HH:MM"
@@ -1094,7 +1191,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                     messageText = QString::fromUtf8("🔒 [decryption failed]");
                 }
 
-                if (sender == currentIdentity) {
+                if (senderFingerprint == currentIdentity) {
                     // Sent messages by current user
                     QString statusCheckmark = QString::fromUtf8("<span style='color: #888888;'>✓</span>");
 
@@ -3195,6 +3292,160 @@ void MainWindow::onSyncContacts() {
     QTimer::singleShot(5000, this, [this]() {
         syncStatusLabel->setText(QString::fromUtf8("📇 Contacts: Local"));
     });
+}
+
+// Phase 3: Open identity migration dialog
+void MainWindow::onMigrateIdentity() {
+    MigrateIdentityDialog *dialog = new MigrateIdentityDialog(this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
+}
+
+// Phase 4: Open DNA name registration dialog
+void MainWindow::onRegisterDNAName() {
+    RegisterDNANameDialog *dialog = new RegisterDNANameDialog(ctx, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
+}
+
+// Phase 5: Open profile editor dialog
+void MainWindow::onEditProfile() {
+    ProfileEditorDialog *dialog = new ProfileEditorDialog(ctx, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
+}
+
+// Phase 6: View own message wall
+void MainWindow::onViewMyMessageWall() {
+    if (!ctx) {
+        return;
+    }
+
+    // Get own fingerprint
+    QString fingerprint = getLocalIdentity();
+    if (fingerprint.isEmpty()) {
+        QMessageBox::warning(this, "Error", "Could not determine your identity fingerprint.");
+        return;
+    }
+
+    // Get display name (registered name or shortened fingerprint)
+    QString displayName = QString::fromUtf8(ctx->identity);
+
+    // Open message wall dialog (own wall, posting enabled)
+    MessageWallDialog *dialog = new MessageWallDialog(ctx, fingerprint, displayName, true, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
+}
+
+// Phase 6: View contact's message wall
+void MainWindow::onViewContactMessageWall() {
+    if (!ctx || currentContactType != TYPE_CONTACT) {
+        return;
+    }
+
+    // Get selected contact info
+    if (!contactItems.contains(currentContact)) {
+        return;
+    }
+
+    ContactItem item = contactItems[currentContact];
+
+    // Open message wall dialog (contact's wall, read-only)
+    MessageWallDialog *dialog = new MessageWallDialog(ctx, item.fingerprint, item.name, false, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
+}
+
+// Phase 7: Check DNA name expiration
+void MainWindow::checkNameExpiration() {
+    if (!ctx) {
+        return;
+    }
+
+    // Get DHT context
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        return;
+    }
+
+    // Load own identity from DHT
+    QString fingerprint = getLocalIdentity();
+    if (fingerprint.isEmpty()) {
+        return;
+    }
+
+    dna_unified_identity_t *identity = nullptr;
+    int ret = dna_load_identity(dht_ctx, fingerprint.toUtf8().constData(), &identity);
+
+    if (ret != 0 || !identity) {
+        return;  // No identity in DHT yet
+    }
+
+    // Check if name is registered
+    if (!identity->has_registered_name) {
+        dna_identity_free(identity);
+        return;  // No name registered
+    }
+
+    // Check expiration
+    uint64_t now = (uint64_t)time(NULL);
+    uint64_t expires_at = identity->name_expires_at;
+    int64_t seconds_until_expiry = (int64_t)(expires_at - now);
+
+    // Warn if expiring within 30 days (2,592,000 seconds)
+    const int64_t THIRTY_DAYS = 30 * 24 * 60 * 60;
+
+    if (seconds_until_expiry > 0 && seconds_until_expiry <= THIRTY_DAYS) {
+        int days_remaining = seconds_until_expiry / (24 * 60 * 60);
+
+        QString warningMessage = QString::fromUtf8(
+            "Your DNA name \"%1\" will expire in %2 days.\n\n"
+            "To keep your name, you need to renew it by paying 0.01 CPUNK.\n\n"
+            "Would you like to renew it now?"
+        ).arg(QString::fromUtf8(identity->registered_name)).arg(days_remaining);
+
+        QMessageBox::StandardButton reply = QMessageBox::warning(
+            this,
+            "DNA Name Expiring Soon",
+            warningMessage,
+            QMessageBox::Yes | QMessageBox::No
+        );
+
+        if (reply == QMessageBox::Yes) {
+            dna_identity_free(identity);
+            onRenewName();
+            return;
+        }
+    } else if (seconds_until_expiry <= 0) {
+        // Name has already expired
+        QString expiredMessage = QString::fromUtf8(
+            "Your DNA name \"%1\" has expired.\n\n"
+            "To reclaim it, you need to register it again by paying 0.01 CPUNK.\n\n"
+            "Would you like to register it now?"
+        ).arg(QString::fromUtf8(identity->registered_name));
+
+        QMessageBox::StandardButton reply = QMessageBox::critical(
+            this,
+            "DNA Name Expired",
+            expiredMessage,
+            QMessageBox::Yes | QMessageBox::No
+        );
+
+        if (reply == QMessageBox::Yes) {
+            dna_identity_free(identity);
+            onRegisterDNAName();
+            return;
+        }
+    }
+
+    dna_identity_free(identity);
+}
+
+// Phase 7: Renew DNA name registration
+void MainWindow::onRenewName() {
+    // Renewal is the same as registration - just re-register with the same name
+    // The RegisterDNANameDialog will handle pre-filling the current name
+    onRegisterDNAName();
 }
 
 // Automatic contact list sync (timer-based)

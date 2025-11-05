@@ -361,3 +361,144 @@ void cellframe_rpc_response_free(cellframe_rpc_response_t *response) {
 
     free(response);
 }
+
+/**
+ * Verify DNA name registration transaction
+ */
+int cellframe_verify_registration_tx(const char *tx_hash, const char *network, const char *expected_name) {
+    if (!tx_hash || !network || !expected_name) {
+        fprintf(stderr, "[TX_VERIFY] NULL parameters\n");
+        return -1;
+    }
+
+    printf("[TX_VERIFY] Verifying transaction: %s\n", tx_hash);
+    printf("[TX_VERIFY] Network: %s, Expected name: %s\n", network, expected_name);
+
+    // 1. Query transaction from blockchain
+    cellframe_rpc_response_t *response = NULL;
+    int ret = cellframe_rpc_get_tx(network, tx_hash, &response);
+    if (ret != 0 || !response) {
+        fprintf(stderr, "[TX_VERIFY] Failed to query transaction\n");
+        return -1;
+    }
+
+    if (!response->result) {
+        fprintf(stderr, "[TX_VERIFY] No result in response\n");
+        cellframe_rpc_response_free(response);
+        return -1;
+    }
+
+    // 2. Parse transaction JSON from result
+    // Result is an array, get first element
+    json_object *tx_obj = NULL;
+    if (json_object_is_type(response->result, json_type_array)) {
+        if (json_object_array_length(response->result) == 0) {
+            fprintf(stderr, "[TX_VERIFY] Transaction not found\n");
+            cellframe_rpc_response_free(response);
+            return -2;
+        }
+        tx_obj = json_object_array_get_idx(response->result, 0);
+    } else {
+        tx_obj = response->result;
+    }
+
+    if (!tx_obj) {
+        fprintf(stderr, "[TX_VERIFY] No transaction object in response\n");
+        cellframe_rpc_response_free(response);
+        return -1;
+    }
+
+    // 3. Extract transaction fields
+    json_object *j_status = NULL;
+    json_object *j_value = NULL;
+    json_object *j_to_addr = NULL;
+    json_object *j_token = NULL;
+    json_object *j_memo = NULL;
+
+    json_object_object_get_ex(tx_obj, "status", &j_status);
+    json_object_object_get_ex(tx_obj, "value", &j_value);
+    json_object_object_get_ex(tx_obj, "recv_addr", &j_to_addr);
+    json_object_object_get_ex(tx_obj, "token", &j_token);
+    json_object_object_get_ex(tx_obj, "memo", &j_memo);
+
+    // 4. Verify status = "ACCEPTED"
+    if (!j_status) {
+        fprintf(stderr, "[TX_VERIFY] No status field\n");
+        cellframe_rpc_response_free(response);
+        return -2;
+    }
+
+    const char *status = json_object_get_string(j_status);
+    if (strcmp(status, "ACCEPTED") != 0) {
+        fprintf(stderr, "[TX_VERIFY] Transaction not accepted (status: %s)\n", status);
+        cellframe_rpc_response_free(response);
+        return -2;
+    }
+
+    // 5. Verify amount = "0.01" (stored as string)
+    if (!j_value) {
+        fprintf(stderr, "[TX_VERIFY] No value field\n");
+        cellframe_rpc_response_free(response);
+        return -2;
+    }
+
+    const char *value_str = json_object_get_string(j_value);
+    double value = atof(value_str);
+    if (value < 0.009 || value > 0.011) {  // Allow small floating point error
+        fprintf(stderr, "[TX_VERIFY] Invalid amount: %s (expected 0.01)\n", value_str);
+        cellframe_rpc_response_free(response);
+        return -2;
+    }
+
+    // 6. Verify recipient address
+    if (!j_to_addr) {
+        fprintf(stderr, "[TX_VERIFY] No recv_addr field\n");
+        cellframe_rpc_response_free(response);
+        return -2;
+    }
+
+    const char *to_addr = json_object_get_string(j_to_addr);
+    if (strcmp(to_addr, DNA_REGISTRATION_ADDRESS) != 0) {
+        fprintf(stderr, "[TX_VERIFY] Invalid recipient: %s\n", to_addr);
+        fprintf(stderr, "[TX_VERIFY] Expected: %s\n", DNA_REGISTRATION_ADDRESS);
+        cellframe_rpc_response_free(response);
+        return -2;
+    }
+
+    // 7. Verify token = "CPUNK"
+    if (!j_token) {
+        fprintf(stderr, "[TX_VERIFY] No token field\n");
+        cellframe_rpc_response_free(response);
+        return -2;
+    }
+
+    const char *token = json_object_get_string(j_token);
+    if (strcmp(token, "CPUNK") != 0) {
+        fprintf(stderr, "[TX_VERIFY] Invalid token: %s (expected CPUNK)\n", token);
+        cellframe_rpc_response_free(response);
+        return -2;
+    }
+
+    // 8. Verify memo = expected_name
+    if (!j_memo) {
+        fprintf(stderr, "[TX_VERIFY] No memo field\n");
+        cellframe_rpc_response_free(response);
+        return -2;
+    }
+
+    const char *memo = json_object_get_string(j_memo);
+    if (strcmp(memo, expected_name) != 0) {
+        fprintf(stderr, "[TX_VERIFY] Invalid memo: %s (expected: %s)\n", memo, expected_name);
+        cellframe_rpc_response_free(response);
+        return -2;
+    }
+
+    printf("[TX_VERIFY] ✓ Transaction verified successfully\n");
+    printf("[TX_VERIFY]   Amount: %s CPUNK\n", value_str);
+    printf("[TX_VERIFY]   To: %s\n", to_addr);
+    printf("[TX_VERIFY]   Memo: %s\n", memo);
+    printf("[TX_VERIFY]   Status: %s\n", status);
+
+    cellframe_rpc_response_free(response);
+    return 0;  // Valid ✅
+}
