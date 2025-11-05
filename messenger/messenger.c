@@ -157,33 +157,6 @@ messenger_context_t* messenger_init(const char *identity) {
         // Non-fatal - continue without cache
     }
 
-    // Phase 4: Detect if migration is needed
-    if (!messenger_is_fingerprint(identity)) {
-        // User is using old-style name, check if migration needed
-        if (!messenger_is_identity_migrated(identity)) {
-            printf("\n");
-            printf("╔═══════════════════════════════════════════════════════════════╗\n");
-            printf("║                    MIGRATION RECOMMENDED                      ║\n");
-            printf("╚═══════════════════════════════════════════════════════════════╝\n");
-            printf("\n");
-            printf("  Your identity files are using the old naming format.\n");
-            printf("  Phase 4 introduces fingerprint-based identities for improved\n");
-            printf("  compatibility with the new DNA Name Service (DHT-based).\n");
-            printf("\n");
-            printf("  Identity: %s\n", identity);
-            printf("\n");
-            printf("  To migrate your identity files, please use one of:\n");
-            printf("    • GUI: Settings → Migrate Identity\n");
-            printf("    • CLI: dna-migrate-identity %s\n", identity);
-            printf("\n");
-            printf("  Migration creates backups in: ~/.dna/backup_pre_migration/\n");
-            printf("\n");
-            printf("  Your current identity will continue to work without migration,\n");
-            printf("  but migration is recommended for full Phase 4 compatibility.\n");
-            printf("\n");
-        }
-    }
-
     printf("✓ Messenger initialized for '%s'\n", identity);
     printf("✓ SQLite database: ~/.dna/messages.db\n");
 
