@@ -362,10 +362,7 @@ int messenger_generate_keys_from_seeds(
         }
     }
 
-    // Generate Dilithium3 signing key from seed
-    char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, identity);
-
+    // Generate Dilithium5 (ML-DSA-87) signing key from seed
     qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
     if (!sign_key) {
         fprintf(stderr, "Error: Memory allocation failed for signing key\n");
@@ -398,13 +395,22 @@ int messenger_generate_keys_from_seeds(
     sign_key->private_key = dilithium_sk;
     sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
+    // Compute fingerprint from public key (SHA3-512 hash)
+    char fingerprint[129];
+    dna_compute_fingerprint(dilithium_pk, fingerprint);
+
+    printf("✓ ML-DSA-87 signing key generated from seed\n");
+    printf("  Fingerprint: %s\n", fingerprint);
+
+    // Save with fingerprint-based filename (Phase 4: fingerprint-first)
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, fingerprint);
+
     if (qgp_key_save(sign_key, dilithium_path) != 0) {
         fprintf(stderr, "Error: Failed to save signing key\n");
         qgp_key_free(sign_key);
         return -1;
     }
-
-    printf("✓ ML-DSA-87 signing key generated from seed\n");
 
     // Copy dilithium public key for upload before freeing
     uint8_t dilithium_pk_copy[2592];  // Dilithium5 public key size
@@ -412,10 +418,7 @@ int messenger_generate_keys_from_seeds(
 
     qgp_key_free(sign_key);
 
-    // Generate Kyber512 encryption key from seed
-    char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, identity);
-
+    // Generate Kyber1024 (ML-KEM-1024) encryption key from seed
     qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
     if (!enc_key) {
         fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
@@ -447,6 +450,10 @@ int messenger_generate_keys_from_seeds(
     enc_key->public_key_size = 1568;  // Kyber1024 public key size
     enc_key->private_key = kyber_sk;
     enc_key->private_key_size = 3168;  // Kyber1024 secret key size
+
+    // Save with fingerprint-based filename (Phase 4: fingerprint-first)
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, fingerprint);
 
     if (qgp_key_save(enc_key, kyber_path) != 0) {
         fprintf(stderr, "Error: Failed to save encryption key\n");

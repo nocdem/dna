@@ -347,12 +347,27 @@ void CreateIdentityDialog::validateIdentityName()
         return;
     }
 
-    // Check if identity already exists locally
-    QString homeDir = QDir::homePath();
-    QString keyFile = homeDir + "/.dna/" + identity + ".dsa";
-    if (QFile::exists(keyFile)) {
-        errorLabel1->setText("❌ Identity already exists locally");
-        return;
+    // Check if identity already exists in DHT keyserver
+    // NOTE: With fingerprint-first (Phase 4), local files use fingerprints as names,
+    // so we can't check local files until after key generation.
+    // Instead, check DHT keyserver for identity name collision.
+    QByteArray identityBytes = identity.toUtf8();
+    messenger_context_t *ctx = messenger_init(identityBytes.data());
+    if (ctx) {
+        uint8_t *existing_sign = nullptr, *existing_enc = nullptr;
+        size_t sign_len = 0, enc_len = 0;
+
+        if (messenger_load_pubkey(ctx, identityBytes.data(),
+                                   &existing_sign, &sign_len,
+                                   &existing_enc, &enc_len) == 0) {
+            // Identity name already registered
+            free(existing_sign);
+            free(existing_enc);
+            messenger_free(ctx);
+            errorLabel1->setText("❌ Identity name already registered in DHT keyserver");
+            return;
+        }
+        messenger_free(ctx);
     }
 
     // All validation passed
