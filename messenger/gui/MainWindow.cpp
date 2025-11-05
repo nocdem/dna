@@ -2871,7 +2871,8 @@ void MainWindow::onPublishKeys() {
 
     int result = messenger_store_pubkey(
         ctx,
-        currentIdentity.toUtf8().constData(),
+        currentIdentity.toUtf8().constData(),  // fingerprint (128 hex chars)
+        NULL,  // no display name (user hasn't registered one yet)
         (const uint8_t*)dilithiumPubkey.constData(),
         dilithiumPubkey.size(),
         (const uint8_t*)kyberPubkey.constData(),

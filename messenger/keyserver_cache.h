@@ -4,9 +4,10 @@
  *
  * Architecture:
  * - Local SQLite database (~/.dna/keyserver_cache.db)
- * - Caches: DNA identity, Dilithium3 public key, Kyber512 public key
+ * - Caches: Fingerprint (or name), Dilithium5 public key, Kyber1024 public key
  * - TTL: 7 days (configurable)
  * - Automatic cache invalidation and refresh
+ * - FINGERPRINT-FIRST: Primary key is fingerprint (128 hex chars)
  */
 
 #ifndef KEYSERVER_CACHE_H
@@ -23,9 +24,10 @@ extern "C" {
 
 /**
  * Cached Public Key Entry
+ * FINGERPRINT-FIRST: identity field stores fingerprint (128 hex chars)
  */
 typedef struct {
-    char identity[256];              // DNA identity
+    char identity[256];              // Fingerprint (128 hex) or name (for backwards compat)
     uint8_t *dilithium_pubkey;       // Dilithium5 public key (2592 bytes)
     size_t dilithium_pubkey_len;
     uint8_t *kyber_pubkey;           // Kyber1024 public key (1568 bytes)

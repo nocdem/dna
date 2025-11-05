@@ -265,21 +265,24 @@ bool messenger_is_identity_migrated(const char *name);
 // ============================================================================
 
 /**
- * Store public key in keyserver
+ * Store public key in keyserver (FINGERPRINT-FIRST architecture)
  *
  * Called when generating or importing a key pair.
+ * Publishes keys to DHT with fingerprint as PRIMARY KEY.
  *
  * @param ctx: Messenger context
- * @param identity: Key owner's identity
- * @param signing_pubkey: Dilithium3 public key
+ * @param fingerprint: SHA3-512 fingerprint (128 hex chars) - PRIMARY KEY
+ * @param display_name: Optional human-readable name (can be NULL)
+ * @param signing_pubkey: Dilithium5 public key (2592 bytes)
  * @param signing_pubkey_len: Signing key length
- * @param encryption_pubkey: Kyber512 public key
+ * @param encryption_pubkey: Kyber1024 public key (1568 bytes)
  * @param encryption_pubkey_len: Encryption key length
  * @return: 0 on success, -1 on error
  */
 int messenger_store_pubkey(
     messenger_context_t *ctx,
-    const char *identity,
+    const char *fingerprint,
+    const char *display_name,
     const uint8_t *signing_pubkey,
     size_t signing_pubkey_len,
     const uint8_t *encryption_pubkey,

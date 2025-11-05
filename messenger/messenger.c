@@ -29,6 +29,7 @@
 #include "qgp_platform.h"
 #include "qgp_dilithium.h"
 #include "qgp_kyber.h"
+#include "qgp_sha3.h"  // For SHA3-512 fingerprint computation
 #include "dht/dht_singleton.h"  // Global DHT singleton
 #include "qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
@@ -304,21 +305,39 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     memcpy(dilithium_pk, pubkey_data + 20, sizeof(dilithium_pk));
     memcpy(kyber_pk, pubkey_data + 20 + sign_pubkey_size, sizeof(kyber_pk));
 
+    // Compute fingerprint from Dilithium5 public key
+    char fingerprint[129];
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    if (qgp_sha3_512(dilithium_pk, sizeof(dilithium_pk), hash) != 0) {
+        fprintf(stderr, "Error: Failed to compute fingerprint\n");
+        free(type);
+        free(pubkey_data);
+        for (size_t i = 0; i < header_count; i++) free(headers[i]);
+        free(headers);
+        return -1;
+    }
+
+    // Convert to hex string (128 chars)
+    for (int i = 0; i < 64; i++) {
+        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+    }
+    fingerprint[128] = '\0';
+
     // Cleanup
     free(type);
     free(pubkey_data);
     for (size_t i = 0; i < header_count; i++) free(headers[i]);
     free(headers);
 
-    // Upload public keys to keyserver
-    if (messenger_store_pubkey(ctx, identity, dilithium_pk, sizeof(dilithium_pk),
+    // Upload public keys to keyserver (FINGERPRINT-FIRST)
+    if (messenger_store_pubkey(ctx, fingerprint, identity, dilithium_pk, sizeof(dilithium_pk),
                                 kyber_pk, sizeof(kyber_pk)) != 0) {
         fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
         return -1;
     }
 
     printf("\n✓ Keys uploaded to keyserver\n");
-    printf("✓ Identity '%s' is now ready to use!\n\n", identity);
+    printf("✓ Identity '%s' (fingerprint: %s) is now ready to use!\n\n", identity, fingerprint);
     return 0;
 }
 
@@ -529,21 +548,38 @@ int messenger_register_name(
         return -1;
     }
 
-    // Upload public keys to DHT keyserver with the registered name
-    if (messenger_store_pubkey(ctx, desired_name,
+    // Upload public keys to DHT keyserver (FINGERPRINT-FIRST)
+    // This publishes keys with fingerprint as primary key and name as display name
+    if (messenger_store_pubkey(ctx, fingerprint, desired_name,
                                 sign_key->public_key, sign_key->public_key_size,
                                 enc_key->public_key, enc_key->public_key_size) != 0) {
-        fprintf(stderr, "Error: Failed to register name to DHT keyserver\n");
+        fprintf(stderr, "Error: Failed to publish keys to DHT keyserver\n");
         qgp_key_free(sign_key);
         qgp_key_free(enc_key);
         return -1;
+    }
+
+    // Publish name → fingerprint alias for name-based lookups
+    dht_context_t *dht_ctx = NULL;
+    if (ctx->p2p_transport) {
+        dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
+    } else {
+        dht_ctx = dht_singleton_get();
+    }
+
+    if (!dht_ctx) {
+        fprintf(stderr, "Warning: DHT not available, alias not published\n");
+    } else {
+        if (dht_keyserver_publish_alias(dht_ctx, desired_name, fingerprint) != 0) {
+            fprintf(stderr, "Warning: Failed to publish name alias (name lookups may not work)\n");
+        }
     }
 
     qgp_key_free(sign_key);
     qgp_key_free(enc_key);
 
     printf("✓ Name '%s' registered successfully!\n", desired_name);
-    printf("✓ Others can now find you by searching for '%s'\n", desired_name);
+    printf("✓ Others can now find you by searching for '%s' or by fingerprint\n", desired_name);
     return 0;
 }
 
@@ -622,21 +658,39 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     memcpy(dilithium_pk, pubkey_data + 20, sizeof(dilithium_pk));
     memcpy(kyber_pk, pubkey_data + 20 + sign_pubkey_size, sizeof(kyber_pk));
 
+    // Compute fingerprint from Dilithium5 public key
+    char fingerprint[129];
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    if (qgp_sha3_512(dilithium_pk, sizeof(dilithium_pk), hash) != 0) {
+        fprintf(stderr, "Error: Failed to compute fingerprint\n");
+        free(type);
+        free(pubkey_data);
+        for (size_t i = 0; i < header_count; i++) free(headers[i]);
+        free(headers);
+        return -1;
+    }
+
+    // Convert to hex string (128 chars)
+    for (int i = 0; i < 64; i++) {
+        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+    }
+    fingerprint[128] = '\0';
+
     // Cleanup
     free(type);
     free(pubkey_data);
     for (size_t i = 0; i < header_count; i++) free(headers[i]);
     free(headers);
 
-    // Upload public keys to keyserver
-    if (messenger_store_pubkey(ctx, identity, dilithium_pk, sizeof(dilithium_pk),
+    // Upload public keys to keyserver (FINGERPRINT-FIRST)
+    if (messenger_store_pubkey(ctx, fingerprint, identity, dilithium_pk, sizeof(dilithium_pk),
                                 kyber_pk, sizeof(kyber_pk)) != 0) {
         fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
         return -1;
     }
 
     printf("\n✓ Keys restored and uploaded to keyserver\n");
-    printf("✓ Identity '%s' is now ready to use!\n\n", identity);
+    printf("✓ Identity '%s' (fingerprint: %s) is now ready to use!\n\n", identity, fingerprint);
     return 0;
 }
 
@@ -1416,19 +1470,24 @@ static char* base64_encode(const uint8_t *data, size_t len) {
 
 int messenger_store_pubkey(
     messenger_context_t *ctx,
-    const char *identity,
+    const char *fingerprint,
+    const char *display_name,
     const uint8_t *signing_pubkey,
     size_t signing_pubkey_len,
     const uint8_t *encryption_pubkey,
     size_t encryption_pubkey_len
 ) {
-    if (!ctx || !identity || !signing_pubkey || !encryption_pubkey) {
+    if (!ctx || !fingerprint || !signing_pubkey || !encryption_pubkey) {
         fprintf(stderr, "ERROR: Invalid arguments to messenger_store_pubkey\n");
         return -1;
     }
 
-    // Phase 9.4: Use DHT-based keyserver instead of HTTP
-    printf("⟳ Publishing public keys for '%s' to DHT keyserver...\n", identity);
+    // Fingerprint-first DHT publishing
+    if (display_name && strlen(display_name) > 0) {
+        printf("⟳ Publishing public keys for '%s' (fingerprint: %s) to DHT keyserver...\n", display_name, fingerprint);
+    } else {
+        printf("⟳ Publishing public keys for fingerprint '%s' to DHT keyserver...\n", fingerprint);
+    }
 
     // Use global DHT singleton (initialized at app startup)
     // This eliminates the need for temporary DHT contexts
@@ -1461,9 +1520,9 @@ int messenger_store_pubkey(
     char dna_dir[512];
     snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
 
-    // Load private key for signing
+    // Load private key for signing (using fingerprint)
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s.dsa", dna_dir, identity);
+    snprintf(key_path, sizeof(key_path), "%s/%s.dsa", dna_dir, fingerprint);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
@@ -1477,10 +1536,11 @@ int messenger_store_pubkey(
         return -1;
     }
 
-    // Publish to DHT
+    // Publish to DHT (FINGERPRINT-FIRST)
     int ret = dht_keyserver_publish(
         dht_ctx,
-        identity,
+        fingerprint,
+        display_name,  // Optional human-readable name
         signing_pubkey,
         encryption_pubkey,
         key->private_key
@@ -1614,11 +1674,11 @@ int messenger_load_pubkey(
     size_t dil_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
     size_t kyber_len = DHT_KEYSERVER_KYBER_PUBKEY_SIZE;
 
+    // Store in cache for future lookups (using fingerprint as key)
+    keyserver_cache_put(entry->fingerprint, dil_decoded, dil_len, kyber_decoded, kyber_len, 0);
+
     // Free DHT entry
     dht_keyserver_free_entry(entry);
-
-    // Store in cache for future lookups
-    keyserver_cache_put(identity, dil_decoded, dil_len, kyber_decoded, kyber_len, 0);
 
     // Return keys
     *signing_pubkey_out = dil_decoded;

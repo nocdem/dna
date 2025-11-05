@@ -37,11 +37,44 @@
     #endif
 #endif
 
-// Helper function: Compute DHT storage key using SHA3-512
-static void compute_dht_key(const char *identity, char *key_out) {
-    // Format: SHA3-512(identity + ":pubkey") - 128 hex chars
-    char buffer[512];
-    snprintf(buffer, sizeof(buffer), "%s:pubkey", identity);
+// Helper function: Validate fingerprint format (128 hex chars)
+static bool is_valid_fingerprint(const char *str) {
+    if (!str || strlen(str) != 128) {
+        return false;
+    }
+    for (int i = 0; i < 128; i++) {
+        if (!isxdigit(str[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// Helper function: Compute DHT storage key using SHA3-512 (fingerprint-based)
+static void compute_dht_key_by_fingerprint(const char *fingerprint, char *key_out) {
+    // Format: SHA3-512(fingerprint + ":pubkey") - 128 hex chars
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "%s:pubkey", fingerprint);
+
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    if (qgp_sha3_512((unsigned char*)buffer, strlen(buffer), hash) != 0) {
+        // Fallback: just clear the output
+        key_out[0] = '\0';
+        return;
+    }
+
+    // Convert to hex string (128 chars)
+    for (int i = 0; i < 64; i++) {
+        sprintf(key_out + (i * 2), "%02x", hash[i]);
+    }
+    key_out[128] = '\0';
+}
+
+// Helper function: Compute DHT storage key using SHA3-512 (name-based, for alias lookup)
+static void compute_dht_key_by_name(const char *name, char *key_out) {
+    // Format: SHA3-512(name + ":lookup") - 128 hex chars
+    char buffer[256];
+    snprintf(buffer, sizeof(buffer), "%s:lookup", name);
 
     unsigned char hash[64];  // SHA3-512 = 64 bytes
     if (qgp_sha3_512((unsigned char*)buffer, strlen(buffer), hash) != 0) {
@@ -323,29 +356,43 @@ static int verify_entry(const dht_pubkey_entry_t *entry) {
     return ret;
 }
 
-// Publish public keys to DHT
+// Publish public keys to DHT (FINGERPRINT-FIRST architecture)
 int dht_keyserver_publish(
     dht_context_t *dht_ctx,
-    const char *identity,
+    const char *fingerprint,
+    const char *display_name,  // Optional human-readable name
     const uint8_t *dilithium_pubkey,
     const uint8_t *kyber_pubkey,
     const uint8_t *dilithium_privkey
 ) {
-    if (!dht_ctx || !identity || !dilithium_pubkey || !kyber_pubkey || !dilithium_privkey) {
+    if (!dht_ctx || !fingerprint || !dilithium_pubkey || !kyber_pubkey || !dilithium_privkey) {
         fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments\n");
+        return -1;
+    }
+
+    // Validate fingerprint format
+    if (!is_valid_fingerprint(fingerprint)) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid fingerprint format (expected 128 hex chars)\n");
         return -1;
     }
 
     // Build entry
     dht_pubkey_entry_t entry = {0};
-    strncpy(entry.identity, identity, sizeof(entry.identity) - 1);
+
+    // Store display name (or fingerprint if no name provided)
+    if (display_name && strlen(display_name) > 0) {
+        strncpy(entry.identity, display_name, sizeof(entry.identity) - 1);
+    } else {
+        strncpy(entry.identity, fingerprint, sizeof(entry.identity) - 1);
+    }
+
     memcpy(entry.dilithium_pubkey, dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
     memcpy(entry.kyber_pubkey, kyber_pubkey, DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
     entry.timestamp = time(NULL);
     entry.version = 1;  // Initial version
 
-    // Compute fingerprint
-    compute_fingerprint(dilithium_pubkey, entry.fingerprint);
+    // Store fingerprint (should match computed one)
+    strncpy(entry.fingerprint, fingerprint, sizeof(entry.fingerprint) - 1);
 
     // Sign entry
     if (sign_entry(&entry, dilithium_privkey) != 0) {
@@ -360,14 +407,16 @@ int dht_keyserver_publish(
         return -1;
     }
 
-    // Compute DHT key
+    // Compute DHT key FROM FINGERPRINT (primary key)
     char dht_key[129];
-    compute_dht_key(identity, dht_key);
+    compute_dht_key_by_fingerprint(fingerprint, dht_key);
 
     // Store in DHT (permanent, no expiry)
-    printf("[DHT_KEYSERVER] Publishing keys for identity '%s' to DHT\n", identity);
+    printf("[DHT_KEYSERVER] Publishing keys for fingerprint '%s' to DHT\n", fingerprint);
+    if (display_name && strlen(display_name) > 0) {
+        printf("[DHT_KEYSERVER] Display name: %s\n", display_name);
+    }
     printf("[DHT_KEYSERVER] DHT key: %s\n", dht_key);
-    printf("[DHT_KEYSERVER] Fingerprint: %s\n", entry.fingerprint);
 
     int ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
                       (uint8_t*)json, strlen(json));
@@ -385,8 +434,10 @@ int dht_keyserver_publish(
 
     printf("[DHT_KEYSERVER_DEBUG] Starting reverse mapping publish\n");
 
-    // Build message to sign: dilithium_pubkey || identity || timestamp
-    size_t reverse_msg_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE + strlen(identity) + sizeof(uint64_t);
+    // Build message to sign: dilithium_pubkey || display_name || timestamp
+    // Use display_name for reverse mapping (or fingerprint if no name)
+    const char *name_for_reverse = (display_name && strlen(display_name) > 0) ? display_name : fingerprint;
+    size_t reverse_msg_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE + strlen(name_for_reverse) + sizeof(uint64_t);
     uint8_t *reverse_msg = malloc(reverse_msg_len);
     if (!reverse_msg) {
         fprintf(stderr, "[DHT_KEYSERVER] Warning: Failed to allocate reverse mapping message\n");
@@ -395,8 +446,8 @@ int dht_keyserver_publish(
         size_t offset = 0;
         memcpy(reverse_msg + offset, dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
         offset += DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
-        memcpy(reverse_msg + offset, identity, strlen(identity));
-        offset += strlen(identity);
+        memcpy(reverse_msg + offset, name_for_reverse, strlen(name_for_reverse));
+        offset += strlen(name_for_reverse);
 
         // Network byte order for cross-platform compatibility
         uint64_t timestamp_net = htonll(entry.timestamp);
@@ -434,9 +485,9 @@ int dht_keyserver_publish(
             dilithium_hex[DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE * 2] = '\0';
 
             json_object_object_add(reverse_obj, "dilithium_pubkey", json_object_new_string(dilithium_hex));
-            json_object_object_add(reverse_obj, "identity", json_object_new_string(identity));
+            json_object_object_add(reverse_obj, "identity", json_object_new_string(name_for_reverse));
             json_object_object_add(reverse_obj, "timestamp", json_object_new_int64(entry.timestamp));
-            json_object_object_add(reverse_obj, "fingerprint", json_object_new_string(entry.fingerprint));
+            json_object_object_add(reverse_obj, "fingerprint", json_object_new_string(fingerprint));
 
             // Store signature
             char sig_hex[DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE * 2 + 1];
@@ -487,23 +538,106 @@ int dht_keyserver_publish(
     return 0;
 }
 
-// Lookup public keys from DHT
+// Publish name → fingerprint alias (for name-based lookups)
+int dht_keyserver_publish_alias(
+    dht_context_t *dht_ctx,
+    const char *name,
+    const char *fingerprint
+) {
+    if (!dht_ctx || !name || !fingerprint) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments to publish_alias\n");
+        return -1;
+    }
+
+    // Validate name (3-20 alphanumeric)
+    size_t name_len = strlen(name);
+    if (name_len < 3 || name_len > 20) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid name length: %zu (must be 3-20 chars)\n", name_len);
+        return -1;
+    }
+
+    // Validate fingerprint
+    if (!is_valid_fingerprint(fingerprint)) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid fingerprint format (expected 128 hex chars)\n");
+        return -1;
+    }
+
+    // Compute alias DHT key
+    char alias_key[129];
+    compute_dht_key_by_name(name, alias_key);
+
+    // Store fingerprint as plain text (simple mapping)
+    printf("[DHT_KEYSERVER] Publishing alias: '%s' → %s\n", name, fingerprint);
+    printf("[DHT_KEYSERVER] Alias DHT key: %s\n", alias_key);
+
+    int ret = dht_put(dht_ctx, (uint8_t*)alias_key, strlen(alias_key),
+                      (uint8_t*)fingerprint, 128);  // Store 128-byte fingerprint
+
+    if (ret != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to publish alias\n");
+        return -1;
+    }
+
+    printf("[DHT_KEYSERVER] ✓ Alias published successfully\n");
+    return 0;
+}
+
+// Lookup public keys from DHT (supports both fingerprint and name)
 int dht_keyserver_lookup(
     dht_context_t *dht_ctx,
-    const char *identity,
+    const char *identity_or_fingerprint,
     dht_pubkey_entry_t **entry_out
 ) {
-    if (!dht_ctx || !identity || !entry_out) {
+    if (!dht_ctx || !identity_or_fingerprint || !entry_out) {
         fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments\n");
         return -1;
     }
 
-    // Compute DHT key
-    char dht_key[129];
-    compute_dht_key(identity, dht_key);
+    char fingerprint[129];
+    bool is_direct_fingerprint = false;
 
-    // Fetch from DHT
-    printf("[DHT_KEYSERVER] Looking up identity '%s' from DHT\n", identity);
+    // Detect input type: fingerprint (128 hex) or name (3-20 alphanumeric)
+    if (is_valid_fingerprint(identity_or_fingerprint)) {
+        // Direct fingerprint lookup
+        strncpy(fingerprint, identity_or_fingerprint, 128);
+        fingerprint[128] = '\0';
+        is_direct_fingerprint = true;
+        printf("[DHT_KEYSERVER] Direct fingerprint lookup: %s\n", fingerprint);
+    } else {
+        // Name lookup: first resolve name → fingerprint via alias
+        printf("[DHT_KEYSERVER] Name lookup: resolving '%s' to fingerprint\n", identity_or_fingerprint);
+
+        char alias_key[129];
+        compute_dht_key_by_name(identity_or_fingerprint, alias_key);
+
+        uint8_t *alias_data = NULL;
+        size_t alias_data_len = 0;
+        int alias_ret = dht_get(dht_ctx, (uint8_t*)alias_key, strlen(alias_key), &alias_data, &alias_data_len);
+
+        if (alias_ret != 0 || !alias_data) {
+            fprintf(stderr, "[DHT_KEYSERVER] Name '%s' not registered (alias not found)\n", identity_or_fingerprint);
+            return -2;  // Name not found
+        }
+
+        // Parse fingerprint from alias (simple text storage)
+        if (alias_data_len != 128) {
+            fprintf(stderr, "[DHT_KEYSERVER] Invalid alias data length: %zu (expected 128)\n", alias_data_len);
+            free(alias_data);
+            return -1;
+        }
+
+        memcpy(fingerprint, alias_data, 128);
+        fingerprint[128] = '\0';
+        free(alias_data);
+
+        printf("[DHT_KEYSERVER] ✓ Name resolved to fingerprint: %s\n", fingerprint);
+    }
+
+    // Lookup by fingerprint
+    char dht_key[129];
+    compute_dht_key_by_fingerprint(fingerprint, dht_key);
+
+    printf("[DHT_KEYSERVER] Fetching keys for fingerprint from DHT\n");
     printf("[DHT_KEYSERVER] DHT key: %s\n", dht_key);
 
     uint8_t *data = NULL;
@@ -511,7 +645,7 @@ int dht_keyserver_lookup(
     int ret = dht_get(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), &data, &data_len);
 
     if (ret != 0 || !data) {
-        fprintf(stderr, "[DHT_KEYSERVER] Identity not found in DHT\n");
+        fprintf(stderr, "[DHT_KEYSERVER] Keys not found in DHT for fingerprint %s\n", fingerprint);
         return -2;  // Not found
     }
 
@@ -726,14 +860,13 @@ int dht_keyserver_update(
         return -1;
     }
 
-    // Compute DHT key
+    // Compute DHT key FROM FINGERPRINT (fingerprint-first)
     char dht_key[129];
-    compute_dht_key(identity, dht_key);
+    compute_dht_key_by_fingerprint(entry.fingerprint, dht_key);
 
     // Store in DHT (overwrites old entry)
-    printf("[DHT_KEYSERVER] Updating keys for identity '%s'\n", identity);
+    printf("[DHT_KEYSERVER] Updating keys for fingerprint: %s\n", entry.fingerprint);
     printf("[DHT_KEYSERVER] New version: %u\n", new_version);
-    printf("[DHT_KEYSERVER] New fingerprint: %s\n", entry.fingerprint);
 
     ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
                   (uint8_t*)json, strlen(json));
@@ -759,9 +892,17 @@ int dht_keyserver_delete(
         return -1;
     }
 
-    // Compute DHT key
+    // Compute DHT key (use fingerprint if valid, otherwise treat as name for lookup)
     char dht_key[129];
-    compute_dht_key(identity, dht_key);
+    if (is_valid_fingerprint(identity)) {
+        // Direct fingerprint
+        compute_dht_key_by_fingerprint(identity, dht_key);
+    } else {
+        // Name - resolve to fingerprint first
+        // For now, just fail since deletion without fingerprint is ambiguous
+        fprintf(stderr, "[DHT_KEYSERVER] Delete requires fingerprint (128 hex chars), not name\n");
+        return -1;
+    }
 
     // Note: DHT doesn't support true deletion, but we can try to overwrite with tombstone
     // For now, just return success (keys will expire naturally if DHT implementation supports it)
