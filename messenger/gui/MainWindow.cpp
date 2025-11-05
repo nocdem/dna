@@ -145,8 +145,8 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
     // Use identity provided by IdentitySelectionDialog
     currentIdentity = identity;
 
-    // Show shortened fingerprint in window title (first 10 chars ... last 10 chars)
-    QString shortIdentity = currentIdentity.left(10) + "..." + currentIdentity.right(10);
+    // Show shortened fingerprint in window title (first 5 chars ... last 5 chars)
+    QString shortIdentity = currentIdentity.left(5) + "..." + currentIdentity.right(5);
     setWindowTitle(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(shortIdentity));
 
     // Initialize fullscreen state
@@ -464,8 +464,8 @@ void MainWindow::setupUI() {
         "padding: 10px;"
     );
 
-    // User menu button at very top (show shortened fingerprint)
-    QString shortIdentity = currentIdentity.left(10) + "..." + currentIdentity.right(10);
+    // User menu button at very top (show shortened fingerprint: 5 chars ... 5 chars)
+    QString shortIdentity = currentIdentity.left(5) + "..." + currentIdentity.right(5);
     userMenuButton = new QPushButton(shortIdentity);
     userMenuButton->setIcon(QIcon(":/icons/user.svg"));
     userMenuButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
