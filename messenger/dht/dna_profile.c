@@ -251,7 +251,8 @@ char* dna_identity_to_json(const dna_unified_identity_t *identity) {
         json_object_new_string(identity->fingerprint));
 
     // Allocate hex buffer on heap (too large for stack)
-    char *hex = malloc(5185);  // Max key size * 2 + null
+    // Max size: Dilithium5 signature (4627 bytes) → 9254 hex chars + 1 null = 9255 bytes
+    char *hex = malloc(9255);
     if (!hex) {
         json_object_put(root);
         return NULL;
