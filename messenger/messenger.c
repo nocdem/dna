@@ -1017,8 +1017,15 @@ int messenger_get_display_name(messenger_context_t *ctx, const char *identifier,
             }
         }
 
-        // No registered name found, return shortened fingerprint
-        snprintf(display_name_out, 32, "%.16s...", identifier);
+        // No registered name found, return shortened fingerprint (first 5 bytes + ... + last 5 bytes)
+        // Fingerprint is 128 hex chars (64 bytes), show first 10 chars + "..." + last 10 chars
+        size_t len = strlen(identifier);
+        if (len == 128) {
+            snprintf(display_name_out, 256, "%.10s...%.10s", identifier, identifier + 118);
+        } else {
+            // Fallback for non-standard length
+            snprintf(display_name_out, 256, "%.10s...", identifier);
+        }
         return 0;
     }
 

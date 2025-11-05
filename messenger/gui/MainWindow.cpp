@@ -128,9 +128,9 @@ QString MainWindow::getDisplayNameForSender(const QString &senderFingerprint) {
         }
     }
 
-    // No registered name, return shortened fingerprint
-    if (senderFingerprint.length() > 16) {
-        return senderFingerprint.left(8) + "..." + senderFingerprint.right(8);
+    // No registered name, return shortened fingerprint (first 5 bytes + ... + last 5 bytes)
+    if (senderFingerprint.length() > 20) {
+        return senderFingerprint.left(10) + "..." + senderFingerprint.right(10);
     }
 
     return senderFingerprint;
