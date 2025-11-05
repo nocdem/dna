@@ -438,6 +438,49 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 
 ---
 
+### Phase 4: Fingerprint-First Identity Creation (COMPLETE)
+**Status:** ✅ Complete (2025-11-05)
+
+**Problem:** Phase 4 introduced fingerprint-based identity model, but identity creation still used human-readable filenames (e.g., `alice.dsa`), requiring migration to fingerprint-based filenames afterward. This was redundant and confusing.
+
+**Solution:** New identities now use fingerprint-based filenames from the start, eliminating the need to migrate newly created identities.
+
+**What Was Implemented:**
+1. **Core Identity Generation** (`messenger.c:365-474`)
+   - Compute SHA3-512 fingerprint immediately after Dilithium5 key generation
+   - Save keys with fingerprint filenames: `~/.dna/<fingerprint>.dsa` and `~/.dna/<fingerprint>.kem`
+   - Display fingerprint to user during creation
+   - Identity name still used for DHT registration (human-readable name → fingerprint mapping)
+   - Fixed outdated comments (Dilithium3→Dilithium5, Kyber512→Kyber1024)
+
+2. **CreateIdentityDialog** (`gui/CreateIdentityDialog.cpp:350-374`)
+   - Updated validation to check DHT keyserver instead of local files
+   - Can't check local files until after key generation (fingerprint unknown beforehand)
+   - DHT check prevents duplicate identity names at registration time
+
+3. **IdentitySelectionDialog** (`gui/IdentitySelectionDialog.cpp:115-220`)
+   - Scan for fingerprint-based `.dsa`/`.kem` files (128 hex chars)
+   - Use DHT reverse lookup (Phase 9.4) to display registered names
+   - Fall back to shortened fingerprints if not registered
+   - Display format: `"alice"` or `"a3f9e2d1c5...b4a7f89012"`
+   - Store full fingerprint in `Qt::UserRole` for key loading
+
+**Technical Details:**
+- **Fingerprint:** SHA3-512(Dilithium5 public key) = 128 hex characters (64 bytes)
+- **Files:** `~/.dna/<fingerprint>.dsa` and `~/.dna/<fingerprint>.kem`
+- **DHT forward mapping:** identity name → keys
+- **DHT reverse mapping:** fingerprint → identity name
+- **Shortened display:** First 10 + "..." + last 10 hex chars (23 chars total)
+
+**Migration:** The migration tool (`MigrateIdentityDialog`) is still needed for identities created before this change.
+
+**Files Modified:**
+- `messenger.c` - Fingerprint computation and filename generation
+- `gui/CreateIdentityDialog.cpp` - DHT-based validation
+- `gui/IdentitySelectionDialog.cpp` - Reverse lookup and shortened display
+
+---
+
 ### Key Technical Decisions
 - **Single queue per recipient:** Append all messages to one DHT entry (workaround for OpenDHT C wrapper limitations)
 - **Binary serialization:** Custom format with magic bytes (0x444E4120 = "DNA ")
