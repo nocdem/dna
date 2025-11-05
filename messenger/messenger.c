@@ -324,23 +324,11 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
 
 int messenger_generate_keys_from_seeds(
     messenger_context_t *ctx,
-    const char *identity,
     const uint8_t *signing_seed,
-    const uint8_t *encryption_seed)
+    const uint8_t *encryption_seed,
+    char *fingerprint_out)
 {
-    if (!ctx || !identity || !signing_seed || !encryption_seed) {
-        return -1;
-    }
-
-    // Check if identity already exists in keyserver
-    uint8_t *existing_sign = NULL, *existing_enc = NULL;
-    size_t sign_len = 0, enc_len = 0;
-
-    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
-        free(existing_sign);
-        free(existing_enc);
-        fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
-        fprintf(stderr, "Please choose a different name.\n\n");
+    if (!ctx || !signing_seed || !encryption_seed || !fingerprint_out) {
         return -1;
     }
 
@@ -368,8 +356,6 @@ int messenger_generate_keys_from_seeds(
         fprintf(stderr, "Error: Memory allocation failed for signing key\n");
         return -1;
     }
-
-    strncpy(sign_key->name, identity, sizeof(sign_key->name) - 1);
 
     uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
     uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
@@ -412,10 +398,6 @@ int messenger_generate_keys_from_seeds(
         return -1;
     }
 
-    // Copy dilithium public key for upload before freeing
-    uint8_t dilithium_pk_copy[2592];  // Dilithium5 public key size
-    memcpy(dilithium_pk_copy, dilithium_pk, sizeof(dilithium_pk_copy));
-
     qgp_key_free(sign_key);
 
     // Generate Kyber1024 (ML-KEM-1024) encryption key from seed
@@ -424,8 +406,6 @@ int messenger_generate_keys_from_seeds(
         fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
         return -1;
     }
-
-    strncpy(enc_key->name, identity, sizeof(enc_key->name) - 1);
 
     uint8_t *kyber_pk = calloc(1, 1568);  // Kyber1024 public key size
     uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
@@ -463,21 +443,107 @@ int messenger_generate_keys_from_seeds(
 
     printf("✓ ML-KEM-1024 encryption key generated from seed\n");
 
-    // Copy kyber public key for upload before freeing
-    uint8_t kyber_pk_copy[1568];  // Kyber1024 public key size
-    memcpy(kyber_pk_copy, kyber_pk, sizeof(kyber_pk_copy));
-
     qgp_key_free(enc_key);
 
-    // Upload public keys to DHT keyserver
-    if (messenger_store_pubkey(ctx, identity, dilithium_pk_copy, sizeof(dilithium_pk_copy),
-                                kyber_pk_copy, sizeof(kyber_pk_copy)) != 0) {
-        fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
+    // Copy fingerprint to output parameter
+    strncpy(fingerprint_out, fingerprint, 128);
+    fingerprint_out[128] = '\0';
+
+    printf("✓ Identity created successfully!\n");
+    printf("✓ Fingerprint: %s\n", fingerprint);
+    printf("\nNote: Register a name via Settings menu to allow others to find you.\n");
+    return 0;
+}
+
+int messenger_register_name(
+    messenger_context_t *ctx,
+    const char *fingerprint,
+    const char *desired_name)
+{
+    if (!ctx || !fingerprint || !desired_name) {
+        fprintf(stderr, "Error: Invalid parameters\n");
         return -1;
     }
 
-    printf("✓ Keys uploaded to DHT keyserver\n");
-    printf("✓ Identity '%s' is now ready to use!\n", identity);
+    // Validate fingerprint length
+    if (strlen(fingerprint) != 128) {
+        fprintf(stderr, "Error: Invalid fingerprint length (must be 128 hex chars)\n");
+        return -1;
+    }
+
+    // Validate name format (3-20 chars, alphanumeric + underscore)
+    size_t name_len = strlen(desired_name);
+    if (name_len < 3 || name_len > 20) {
+        fprintf(stderr, "Error: Name must be 3-20 characters\n");
+        return -1;
+    }
+
+    for (size_t i = 0; i < name_len; i++) {
+        char c = desired_name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_')) {
+            fprintf(stderr, "Error: Name can only contain letters, numbers, and underscore\n");
+            return -1;
+        }
+    }
+
+    // Check if name already exists in keyserver
+    uint8_t *existing_sign = NULL, *existing_enc = NULL;
+    size_t sign_len = 0, enc_len = 0;
+
+    if (messenger_load_pubkey(ctx, desired_name, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
+        free(existing_sign);
+        free(existing_enc);
+        fprintf(stderr, "\nError: Name '%s' is already registered!\n", desired_name);
+        fprintf(stderr, "Please choose a different name.\n\n");
+        return -1;
+    }
+
+    // Load keys from fingerprint-based files
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        fprintf(stderr, "Error: Cannot get home directory\n");
+        return -1;
+    }
+
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    char dilithium_path[512];
+    char kyber_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, fingerprint);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, fingerprint);
+
+    // Load Dilithium key
+    qgp_key_t *sign_key = NULL;
+    if (qgp_key_load(dilithium_path, &sign_key) != 0 || !sign_key) {
+        fprintf(stderr, "Error: Failed to load signing key from %s\n", dilithium_path);
+        return -1;
+    }
+
+    // Load Kyber key
+    qgp_key_t *enc_key = NULL;
+    if (qgp_key_load(kyber_path, &enc_key) != 0 || !enc_key) {
+        fprintf(stderr, "Error: Failed to load encryption key from %s\n", kyber_path);
+        qgp_key_free(sign_key);
+        return -1;
+    }
+
+    // Upload public keys to DHT keyserver with the registered name
+    if (messenger_store_pubkey(ctx, desired_name,
+                                sign_key->public_key, sign_key->public_key_size,
+                                enc_key->public_key, enc_key->public_key_size) != 0) {
+        fprintf(stderr, "Error: Failed to register name to DHT keyserver\n");
+        qgp_key_free(sign_key);
+        qgp_key_free(enc_key);
+        return -1;
+    }
+
+    qgp_key_free(sign_key);
+    qgp_key_free(enc_key);
+
+    printf("✓ Name '%s' registered successfully!\n", desired_name);
+    printf("✓ Others can now find you by searching for '%s'\n", desired_name);
     return 0;
 }
 

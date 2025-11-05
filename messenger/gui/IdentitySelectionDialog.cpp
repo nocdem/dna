@@ -223,9 +223,9 @@ void IdentitySelectionDialog::onCreateNewIdentity()
 {
     CreateIdentityDialog dialog(this);
     if (dialog.exec() == QDialog::Accepted) {
-        QString newIdentity = dialog.getCreatedIdentity();
-        if (!newIdentity.isEmpty()) {
-            selectedIdentity = newIdentity;
+        QString newFingerprint = dialog.getCreatedFingerprint();
+        if (!newFingerprint.isEmpty()) {
+            selectedIdentity = newFingerprint;
             accept();
         }
     }

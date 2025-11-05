@@ -118,20 +118,41 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
  * Generate key pair from BIP39-derived seeds (non-interactive, for GUI)
  *
  * Generates keys deterministically from provided seeds without user prompts.
- * Creates DNA format files only (no QGP keyrings).
- * Uploads public keys to DHT keyserver.
+ * Creates fingerprint-based identity (no name required).
+ * Keys are saved as ~/.dna/<fingerprint>.dsa and ~/.dna/<fingerprint>.kem
+ * To allow others to find you, register a name separately using messenger_register_name().
  *
  * @param ctx: Messenger context
- * @param identity: Identity name (e.g., "alice")
- * @param signing_seed: 32-byte seed for Dilithium3 key generation
- * @param encryption_seed: 32-byte seed for Kyber512 key generation
+ * @param signing_seed: 32-byte seed for Dilithium5 key generation
+ * @param encryption_seed: 32-byte seed for Kyber1024 key generation
+ * @param fingerprint_out: Output buffer for 128-char fingerprint (must be 129 bytes for null terminator)
  * @return: 0 on success, -1 on error
  */
 int messenger_generate_keys_from_seeds(
     messenger_context_t *ctx,
-    const char *identity,
     const uint8_t *signing_seed,
-    const uint8_t *encryption_seed
+    const uint8_t *encryption_seed,
+    char *fingerprint_out
+);
+
+/**
+ * Register a human-readable name for an existing fingerprint identity
+ *
+ * Uploads public keys to DHT keyserver with both forward and reverse mappings:
+ * - Forward: name → keys (so others can find you)
+ * - Reverse: fingerprint → name (for display purposes)
+ *
+ * Payment integration: Free for now (will require 1 CPUNK in future)
+ *
+ * @param ctx: Messenger context
+ * @param fingerprint: 128-char fingerprint of existing identity
+ * @param desired_name: Human-readable name to register (3-20 chars, alphanumeric + underscore)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_register_name(
+    messenger_context_t *ctx,
+    const char *fingerprint,
+    const char *desired_name
 );
 
 /**
