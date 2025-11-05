@@ -131,7 +131,7 @@ static int load_pubkey_for_identity(
 
     // Load public keys from keyserver
     if (messenger_load_pubkey(ctx, identity, &signing_pubkey, &signing_len,
-                              &encryption_pubkey, &encryption_len) != 0) {
+                              &encryption_pubkey, &encryption_len, NULL) != 0) {
         fprintf(stderr, "[P2P] Failed to load public key for identity: %s\n", identity);
         return -1;
     }

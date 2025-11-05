@@ -1383,6 +1383,7 @@ void MainWindow::onAddContact() {
     size_t signing_pubkey_len = 0;
     uint8_t *encryption_pubkey = NULL;
     size_t encryption_pubkey_len = 0;
+    char fingerprint[129] = {0};  // Buffer for fingerprint output
 
     int result = messenger_load_pubkey(
         ctx,
@@ -1390,7 +1391,8 @@ void MainWindow::onAddContact() {
         &signing_pubkey,
         &signing_pubkey_len,
         &encryption_pubkey,
-        &encryption_pubkey_len
+        &encryption_pubkey_len,
+        fingerprint  // Get fingerprint from DHT lookup
     );
 
     if (result != 0) {
@@ -1410,8 +1412,8 @@ void MainWindow::onAddContact() {
     free(signing_pubkey);
     free(encryption_pubkey);
 
-    // Add contact to database
-    result = contacts_db_add(identity.toUtf8().constData(), NULL);
+    // Add contact to database using FINGERPRINT (not name!)
+    result = contacts_db_add(fingerprint, NULL);
     if (result == 0) {
         QMessageBox::information(
             this,

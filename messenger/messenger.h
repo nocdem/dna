@@ -306,7 +306,8 @@ int messenger_load_pubkey(
     uint8_t **signing_pubkey_out,
     size_t *signing_pubkey_len_out,
     uint8_t **encryption_pubkey_out,
-    size_t *encryption_pubkey_len_out
+    size_t *encryption_pubkey_len_out,
+    char *fingerprint_out  // NEW: Output fingerprint (129 bytes: 128 hex + null), can be NULL
 );
 
 /**

@@ -208,7 +208,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     uint8_t *existing_sign = NULL, *existing_enc = NULL;
     size_t sign_len = 0, enc_len = 0;
 
-    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
+    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len, NULL) == 0) {
         free(existing_sign);
         free(existing_enc);
         fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
@@ -483,7 +483,7 @@ int messenger_register_name(
     uint8_t *existing_sign = NULL, *existing_enc = NULL;
     size_t sign_len = 0, enc_len = 0;
 
-    if (messenger_load_pubkey(ctx, desired_name, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
+    if (messenger_load_pubkey(ctx, desired_name, &existing_sign, &sign_len, &existing_enc, &enc_len, NULL) == 0) {
         free(existing_sign);
         free(existing_enc);
         fprintf(stderr, "\nError: Name '%s' is already registered!\n", desired_name);
@@ -565,7 +565,7 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     uint8_t *existing_sign = NULL, *existing_enc = NULL;
     size_t sign_len = 0, enc_len = 0;
 
-    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
+    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len, NULL) == 0) {
         free(existing_sign);
         free(existing_enc);
         fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
@@ -677,7 +677,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     uint8_t *keyserver_sign = NULL, *keyserver_enc = NULL;
     size_t keyserver_sign_len = 0, keyserver_enc_len = 0;
 
-    if (messenger_load_pubkey(ctx, identity, &keyserver_sign, &keyserver_sign_len, &keyserver_enc, &keyserver_enc_len) != 0) {
+    if (messenger_load_pubkey(ctx, identity, &keyserver_sign, &keyserver_sign_len, &keyserver_enc, &keyserver_enc_len, NULL) != 0) {
         fprintf(stderr, "\nError: Identity '%s' not found in keyserver!\n", identity);
         fprintf(stderr, "Cannot restore - no keys to verify against.\n");
         fprintf(stderr, "Use 'Generate new identity' if this is a new identity.\n\n");
@@ -1567,7 +1567,8 @@ int messenger_load_pubkey(
     uint8_t **signing_pubkey_out,
     size_t *signing_pubkey_len_out,
     uint8_t **encryption_pubkey_out,
-    size_t *encryption_pubkey_len_out
+    size_t *encryption_pubkey_len_out,
+    char *fingerprint_out  // NEW: Output fingerprint (129 bytes), can be NULL
 ) {
     if (!ctx || !identity) {
         fprintf(stderr, "ERROR: Invalid arguments to messenger_load_pubkey\n");
@@ -1593,6 +1594,11 @@ int messenger_load_pubkey(
         memcpy(*encryption_pubkey_out, cached->kyber_pubkey, cached->kyber_pubkey_len);
         *signing_pubkey_len_out = cached->dilithium_pubkey_len;
         *encryption_pubkey_len_out = cached->kyber_pubkey_len;
+
+        // Return fingerprint from cache
+        if (fingerprint_out && strlen(cached->identity) == 128) {
+            strcpy(fingerprint_out, cached->identity);
+        }
 
         keyserver_cache_free_entry(cached);
         printf("✓ Loaded public keys for '%s' from cache\n", identity);
@@ -1649,6 +1655,11 @@ int messenger_load_pubkey(
 
     // Store in cache for future lookups (using fingerprint as key)
     keyserver_cache_put(entry->fingerprint, dil_decoded, dil_len, kyber_decoded, kyber_len, 0);
+
+    // Return fingerprint if requested
+    if (fingerprint_out) {
+        strcpy(fingerprint_out, entry->fingerprint);
+    }
 
     // Free DHT entry
     dht_keyserver_free_entry(entry);
@@ -2120,7 +2131,7 @@ int messenger_send_message(
         size_t sign_len = 0, enc_len = 0;
         if (messenger_load_pubkey(ctx, all_recipients[i],
                                    &sign_pubkeys[i], &sign_len,
-                                   &enc_pubkeys[i], &enc_len) != 0) {
+                                   &enc_pubkeys[i], &enc_len, NULL) != 0) {
             fprintf(stderr, "Error: Cannot load public key for '%s' from keyserver\n", all_recipients[i]);
 
             // Cleanup on error
@@ -2411,7 +2422,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     size_t sender_sign_len_keyserver = 0, sender_enc_len_keyserver = 0;
 
     if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
-                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver) != 0) {
+                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver, NULL) != 0) {
         fprintf(stderr, "Warning: Could not verify sender '%s' against keyserver\n", sender);
         fprintf(stderr, "Message decrypted but sender identity NOT verified!\n");
     } else {
@@ -2532,7 +2543,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     size_t sender_sign_len_keyserver = 0, sender_enc_len_keyserver = 0;
 
     if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
-                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver) == 0) {
+                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver, NULL) == 0) {
         // Compare public keys
         if (sender_sign_len_keyserver != sender_sign_pubkey_len ||
             memcmp(sender_sign_pubkey_keyserver, sender_sign_pubkey_from_msg, sender_sign_pubkey_len) != 0) {
