@@ -24,8 +24,8 @@ EMCC_FLAGS="-O3 \
 
 # Include paths
 INCLUDES="-I${SRC_DIR} \
-  -I${SRC_DIR}/crypto/kyber512 \
-  -I${SRC_DIR}/crypto/dilithium"
+  -I${SRC_DIR}/crypto/kem \
+  -I${SRC_DIR}/crypto/dsa"
 
 # Core source files
 CORE_SOURCES="${SRC_DIR}/dna_api.c \
@@ -37,28 +37,28 @@ CORE_SOURCES="${SRC_DIR}/dna_api.c \
   ${SRC_DIR}/aes_keywrap.c \
   ${SRC_DIR}/armor.c"
 
-# Kyber512 sources (exclude test files)
-KYBER_SOURCES="${SRC_DIR}/crypto/kyber512/cbd.c \
-  ${SRC_DIR}/crypto/kyber512/indcpa.c \
-  ${SRC_DIR}/crypto/kyber512/kem.c \
-  ${SRC_DIR}/crypto/kyber512/ntt_kyber.c \
-  ${SRC_DIR}/crypto/kyber512/poly_kyber.c \
-  ${SRC_DIR}/crypto/kyber512/polyvec.c \
-  ${SRC_DIR}/crypto/kyber512/reduce_kyber.c \
-  ${SRC_DIR}/crypto/kyber512/verify.c \
-  ${SRC_DIR}/crypto/kyber512/fips202_kyber.c \
-  ${SRC_DIR}/crypto/kyber512/symmetric-shake.c"
+# KEM sources (ML-KEM-1024) - exclude test files
+KYBER_SOURCES="${SRC_DIR}/crypto/kem/cbd.c \
+  ${SRC_DIR}/crypto/kem/indcpa.c \
+  ${SRC_DIR}/crypto/kem/kem.c \
+  ${SRC_DIR}/crypto/kem/ntt_kyber.c \
+  ${SRC_DIR}/crypto/kem/poly_kyber.c \
+  ${SRC_DIR}/crypto/kem/polyvec.c \
+  ${SRC_DIR}/crypto/kem/reduce_kyber.c \
+  ${SRC_DIR}/crypto/kem/verify.c \
+  ${SRC_DIR}/crypto/kem/fips202_kyber.c \
+  ${SRC_DIR}/crypto/kem/symmetric-shake.c"
 
-# Dilithium sources (exclude test files)
-DILITHIUM_SOURCES="${SRC_DIR}/crypto/dilithium/sign.c \
-  ${SRC_DIR}/crypto/dilithium/packing.c \
-  ${SRC_DIR}/crypto/dilithium/polyvec.c \
-  ${SRC_DIR}/crypto/dilithium/poly.c \
-  ${SRC_DIR}/crypto/dilithium/ntt.c \
-  ${SRC_DIR}/crypto/dilithium/rounding.c \
-  ${SRC_DIR}/crypto/dilithium/reduce.c \
-  ${SRC_DIR}/crypto/dilithium/fips202.c \
-  ${SRC_DIR}/crypto/dilithium/symmetric-shake.c"
+# DSA sources (ML-DSA-87) - exclude test files
+DILITHIUM_SOURCES="${SRC_DIR}/crypto/dsa/sign.c \
+  ${SRC_DIR}/crypto/dsa/packing.c \
+  ${SRC_DIR}/crypto/dsa/polyvec.c \
+  ${SRC_DIR}/crypto/dsa/poly.c \
+  ${SRC_DIR}/crypto/dsa/ntt.c \
+  ${SRC_DIR}/crypto/dsa/rounding.c \
+  ${SRC_DIR}/crypto/dsa/reduce.c \
+  ${SRC_DIR}/crypto/dsa/fips202.c \
+  ${SRC_DIR}/crypto/dsa/symmetric-shake.c"
 
 # Combine all sources
 ALL_SOURCES="$CORE_SOURCES $KYBER_SOURCES $DILITHIUM_SOURCES"

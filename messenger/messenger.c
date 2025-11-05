@@ -10,12 +10,14 @@
 #include <string.h>
 #include <time.h>
 #include <errno.h>
+#include <stdbool.h>
 #ifdef _WIN32
 #include <windows.h>
 #define popen _popen
 #define pclose _pclose
 #else
 #include <sys/time.h>
+#include <unistd.h>  // For unlink(), close()
 #endif
 #include <json-c/json.h>
 #include <openssl/bio.h>
@@ -26,6 +28,7 @@
 #include "qgp_platform.h"
 #include "qgp_dilithium.h"
 #include "qgp_kyber.h"
+#include "dht/dht_singleton.h"  // Global DHT singleton
 #include "qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
 #include "bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
@@ -33,6 +36,12 @@
 #include "qgp_aes.h"  // For qgp_aes256_encrypt
 #include "aes_keywrap.h"  // For aes256_wrap_key
 #include "qgp_random.h"  // For qgp_randombytes
+#include "keyserver_cache.h"  // Phase 4: Keyserver cache
+#include "dht/dht_keyserver.h"   // Phase 9.4: DHT-based keyserver
+#include "dht/dht_context.h"     // Phase 9.4: DHT context management
+#include "dht/dht_contactlist.h" // DHT contact list sync
+#include "p2p/p2p_transport.h"   // For getting DHT context
+#include "contacts_db.h"         // Phase 9.4: Local contacts database
 
 // Global configuration
 static dna_config_t g_config;
@@ -44,12 +53,6 @@ static dna_config_t g_config;
 messenger_context_t* messenger_init(const char *identity) {
     if (!identity) {
         fprintf(stderr, "Error: Identity required\n");
-        return NULL;
-    }
-
-    // Load configuration
-    if (dna_config_load(&g_config) != 0) {
-        fprintf(stderr, "Error: Failed to load configuration\n");
         return NULL;
     }
 
@@ -65,15 +68,10 @@ messenger_context_t* messenger_init(const char *identity) {
         return NULL;
     }
 
-    // Build connection string from config
-    char connstring[512];
-    dna_config_build_connstring(&g_config, connstring, sizeof(connstring));
-
-    // Connect to PostgreSQL
-    ctx->pg_conn = PQconnectdb(connstring);
-    if (PQstatus(ctx->pg_conn) != CONNECTION_OK) {
-        fprintf(stderr, "PostgreSQL connection failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQfinish(ctx->pg_conn);
+    // Initialize SQLite local message storage
+    ctx->backup_ctx = message_backup_init(identity);
+    if (!ctx->backup_ctx) {
+        fprintf(stderr, "Error: Failed to initialize SQLite message storage\n");
         free(ctx->identity);
         free(ctx);
         return NULL;
@@ -83,18 +81,24 @@ messenger_context_t* messenger_init(const char *identity) {
     ctx->dna_ctx = dna_context_new();
     if (!ctx->dna_ctx) {
         fprintf(stderr, "Error: Failed to create DNA context\n");
-        PQfinish(ctx->pg_conn);
+        message_backup_close(ctx->backup_ctx);
         free(ctx->identity);
         free(ctx);
         return NULL;
     }
 
-    // Initialize pubkey cache
+    // Initialize pubkey cache (in-memory)
     ctx->cache_count = 0;
     memset(ctx->cache, 0, sizeof(ctx->cache));
 
+    // Initialize keyserver cache (SQLite persistent)
+    if (keyserver_cache_init(NULL) != 0) {
+        fprintf(stderr, "Warning: Failed to initialize keyserver cache\n");
+        // Non-fatal - continue without cache
+    }
+
     printf("✓ Messenger initialized for '%s'\n", identity);
-    printf("✓ Connected to PostgreSQL: dna_messenger\n");
+    printf("✓ SQLite database: ~/.dna/messages.db\n");
 
     return ctx;
 }
@@ -115,9 +119,12 @@ void messenger_free(messenger_context_t *ctx) {
         dna_context_free(ctx->dna_ctx);
     }
 
-    if (ctx->pg_conn) {
-        PQfinish(ctx->pg_conn);
+    if (ctx->backup_ctx) {
+        message_backup_close(ctx->backup_ctx);
     }
+
+    // Cleanup keyserver cache
+    keyserver_cache_cleanup();
 
     free(ctx->identity);
     free(ctx);
@@ -201,8 +208,8 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     memcpy(&enc_pubkey_size, pubkey_data + 16, 4);   // offset 16
 
     // Extract keys (after 20-byte header)
-    uint8_t dilithium_pk[1952];
-    uint8_t kyber_pk[800];
+    uint8_t dilithium_pk[2592];  // Dilithium5 public key size
+    uint8_t kyber_pk[1568];  // Kyber1024 public key size
     memcpy(dilithium_pk, pubkey_data + 20, sizeof(dilithium_pk));
     memcpy(kyber_pk, pubkey_data + 20 + sign_pubkey_size, sizeof(kyber_pk));
 
@@ -219,19 +226,160 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
         return -1;
     }
 
-    // Rename key files for messenger compatibility
-    // Messenger expects: <identity>-dilithium.pqkey and <identity>-kyber512.pqkey
-    // QGP creates: <identity>-dilithium3.pqkey and <identity>-kyber512.pqkey
-    char dilithium3_path[512], dilithium_path[512];
-    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
-
-    if (rename(dilithium3_path, dilithium_path) != 0) {
-        fprintf(stderr, "Warning: Could not rename signing key file\n");
-    }
-
     printf("\n✓ Keys uploaded to keyserver\n");
     printf("✓ Identity '%s' is now ready to use!\n\n", identity);
+    return 0;
+}
+
+int messenger_generate_keys_from_seeds(
+    messenger_context_t *ctx,
+    const char *identity,
+    const uint8_t *signing_seed,
+    const uint8_t *encryption_seed)
+{
+    if (!ctx || !identity || !signing_seed || !encryption_seed) {
+        return -1;
+    }
+
+    // Check if identity already exists in keyserver
+    uint8_t *existing_sign = NULL, *existing_enc = NULL;
+    size_t sign_len = 0, enc_len = 0;
+
+    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
+        free(existing_sign);
+        free(existing_enc);
+        fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
+        fprintf(stderr, "Please choose a different name.\n\n");
+        return -1;
+    }
+
+    // Create ~/.dna directory
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        fprintf(stderr, "Error: Cannot get home directory\n");
+        return -1;
+    }
+
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    // Create directory if needed
+    if (!qgp_platform_is_directory(dna_dir)) {
+        if (qgp_platform_mkdir(dna_dir) != 0) {
+            fprintf(stderr, "Error: Cannot create directory: %s\n", dna_dir);
+            return -1;
+        }
+    }
+
+    // Generate Dilithium3 signing key from seed
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, identity);
+
+    qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
+    if (!sign_key) {
+        fprintf(stderr, "Error: Memory allocation failed for signing key\n");
+        return -1;
+    }
+
+    strncpy(sign_key->name, identity, sizeof(sign_key->name) - 1);
+
+    uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
+    uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
+
+    if (!dilithium_pk || !dilithium_sk) {
+        fprintf(stderr, "Error: Memory allocation failed for DSA-87 buffers\n");
+        free(dilithium_pk);
+        free(dilithium_sk);
+        qgp_key_free(sign_key);
+        return -1;
+    }
+
+    if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
+        fprintf(stderr, "Error: DSA-87 key generation from seed failed\n");
+        free(dilithium_pk);
+        free(dilithium_sk);
+        qgp_key_free(sign_key);
+        return -1;
+    }
+
+    sign_key->public_key = dilithium_pk;
+    sign_key->public_key_size = QGP_DSA87_PUBLICKEYBYTES;
+    sign_key->private_key = dilithium_sk;
+    sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
+
+    if (qgp_key_save(sign_key, dilithium_path) != 0) {
+        fprintf(stderr, "Error: Failed to save signing key\n");
+        qgp_key_free(sign_key);
+        return -1;
+    }
+
+    printf("✓ ML-DSA-87 signing key generated from seed\n");
+
+    // Copy dilithium public key for upload before freeing
+    uint8_t dilithium_pk_copy[2592];  // Dilithium5 public key size
+    memcpy(dilithium_pk_copy, dilithium_pk, sizeof(dilithium_pk_copy));
+
+    qgp_key_free(sign_key);
+
+    // Generate Kyber512 encryption key from seed
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, identity);
+
+    qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
+    if (!enc_key) {
+        fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
+        return -1;
+    }
+
+    strncpy(enc_key->name, identity, sizeof(enc_key->name) - 1);
+
+    uint8_t *kyber_pk = calloc(1, 1568);  // Kyber1024 public key size
+    uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
+
+    if (!kyber_pk || !kyber_sk) {
+        fprintf(stderr, "Error: Memory allocation failed for KEM-1024 buffers\n");
+        free(kyber_pk);
+        free(kyber_sk);
+        qgp_key_free(enc_key);
+        return -1;
+    }
+
+    if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
+        fprintf(stderr, "Error: KEM-1024 key generation from seed failed\n");
+        free(kyber_pk);
+        free(kyber_sk);
+        qgp_key_free(enc_key);
+        return -1;
+    }
+
+    enc_key->public_key = kyber_pk;
+    enc_key->public_key_size = 1568;  // Kyber1024 public key size
+    enc_key->private_key = kyber_sk;
+    enc_key->private_key_size = 3168;  // Kyber1024 secret key size
+
+    if (qgp_key_save(enc_key, kyber_path) != 0) {
+        fprintf(stderr, "Error: Failed to save encryption key\n");
+        qgp_key_free(enc_key);
+        return -1;
+    }
+
+    printf("✓ ML-KEM-1024 encryption key generated from seed\n");
+
+    // Copy kyber public key for upload before freeing
+    uint8_t kyber_pk_copy[1568];  // Kyber1024 public key size
+    memcpy(kyber_pk_copy, kyber_pk, sizeof(kyber_pk_copy));
+
+    qgp_key_free(enc_key);
+
+    // Upload public keys to DHT keyserver
+    if (messenger_store_pubkey(ctx, identity, dilithium_pk_copy, sizeof(dilithium_pk_copy),
+                                kyber_pk_copy, sizeof(kyber_pk_copy)) != 0) {
+        fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
+        return -1;
+    }
+
+    printf("✓ Keys uploaded to DHT keyserver\n");
+    printf("✓ Identity '%s' is now ready to use!\n", identity);
     return 0;
 }
 
@@ -305,8 +453,8 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     memcpy(&enc_pubkey_size, pubkey_data + 16, 4);   // offset 16
 
     // Extract keys (after 20-byte header)
-    uint8_t dilithium_pk[1952];
-    uint8_t kyber_pk[800];
+    uint8_t dilithium_pk[2592];  // Dilithium5 public key size
+    uint8_t kyber_pk[1568];  // Kyber1024 public key size
     memcpy(dilithium_pk, pubkey_data + 20, sizeof(dilithium_pk));
     memcpy(kyber_pk, pubkey_data + 20 + sign_pubkey_size, sizeof(kyber_pk));
 
@@ -321,17 +469,6 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
                                 kyber_pk, sizeof(kyber_pk)) != 0) {
         fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
         return -1;
-    }
-
-    // Rename key files for messenger compatibility
-    // Messenger expects: <identity>-dilithium.pqkey and <identity>-kyber512.pqkey
-    // QGP creates: <identity>-dilithium3.pqkey and <identity>-kyber512.pqkey
-    char dilithium3_path[512], dilithium_path[512];
-    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey", dna_dir, identity);
-
-    if (rename(dilithium3_path, dilithium_path) != 0) {
-        fprintf(stderr, "Warning: Could not rename signing key file\n");
     }
 
     printf("\n✓ Keys restored and uploaded to keyserver\n");
@@ -461,9 +598,9 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 
     // Generate Dilithium3 signing key from seed
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, identity);
 
-    qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DILITHIUM3, QGP_KEY_PURPOSE_SIGNING);
+    qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
     if (!sign_key) {
         fprintf(stderr, "Error: Memory allocation failed for signing key\n");
         memset(signing_seed, 0, sizeof(signing_seed));
@@ -473,11 +610,11 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 
     strncpy(sign_key->name, identity, sizeof(sign_key->name) - 1);
 
-    uint8_t *dilithium_pk = calloc(1, QGP_DILITHIUM3_PUBLICKEYBYTES);
-    uint8_t *dilithium_sk = calloc(1, QGP_DILITHIUM3_SECRETKEYBYTES);
+    uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
+    uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
     if (!dilithium_pk || !dilithium_sk) {
-        fprintf(stderr, "Error: Memory allocation failed for Dilithium3 buffers\n");
+        fprintf(stderr, "Error: Memory allocation failed for DSA-87 buffers\n");
         free(dilithium_pk);
         free(dilithium_sk);
         qgp_key_free(sign_key);
@@ -486,8 +623,8 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
         return -1;
     }
 
-    if (qgp_dilithium3_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
-        fprintf(stderr, "Error: Dilithium3 key generation from seed failed\n");
+    if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
+        fprintf(stderr, "Error: DSA-87 key generation from seed failed\n");
         free(dilithium_pk);
         free(dilithium_sk);
         qgp_key_free(sign_key);
@@ -497,9 +634,9 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     }
 
     sign_key->public_key = dilithium_pk;
-    sign_key->public_key_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+    sign_key->public_key_size = QGP_DSA87_PUBLICKEYBYTES;
     sign_key->private_key = dilithium_sk;
-    sign_key->private_key_size = QGP_DILITHIUM3_SECRETKEYBYTES;
+    sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
     if (qgp_key_save(sign_key, dilithium_path) != 0) {
         fprintf(stderr, "Error: Failed to save signing key\n");
@@ -509,19 +646,19 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
         return -1;
     }
 
-    printf("✓ Dilithium3 signing key generated from seed\n");
+    printf("✓ ML-DSA-87 signing key generated from seed\n");
 
     // Copy dilithium public key for verification before freeing
-    uint8_t dilithium_pk_verify[1952];
+    uint8_t dilithium_pk_verify[2592];  // Dilithium5 public key size
     memcpy(dilithium_pk_verify, dilithium_pk, sizeof(dilithium_pk_verify));
 
     qgp_key_free(sign_key);
 
     // Generate Kyber512 encryption key from seed
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s-kyber512.pqkey", dna_dir, identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, identity);
 
-    qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KYBER512, QGP_KEY_PURPOSE_ENCRYPTION);
+    qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
     if (!enc_key) {
         fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
         memset(signing_seed, 0, sizeof(signing_seed));
@@ -531,11 +668,11 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 
     strncpy(enc_key->name, identity, sizeof(enc_key->name) - 1);
 
-    uint8_t *kyber_pk = calloc(1, 800);
-    uint8_t *kyber_sk = calloc(1, 1632);
+    uint8_t *kyber_pk = calloc(1, 1568);  // Kyber1024 public key size
+    uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
 
     if (!kyber_pk || !kyber_sk) {
-        fprintf(stderr, "Error: Memory allocation failed for Kyber512 buffers\n");
+        fprintf(stderr, "Error: Memory allocation failed for KEM-1024 buffers\n");
         free(kyber_pk);
         free(kyber_sk);
         qgp_key_free(enc_key);
@@ -545,7 +682,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     }
 
     if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
-        fprintf(stderr, "Error: Kyber512 key generation from seed failed\n");
+        fprintf(stderr, "Error: KEM-1024 key generation from seed failed\n");
         free(kyber_pk);
         free(kyber_sk);
         qgp_key_free(enc_key);
@@ -555,9 +692,9 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     }
 
     enc_key->public_key = kyber_pk;
-    enc_key->public_key_size = 800;
+    enc_key->public_key_size = 1568;  // Kyber1024 public key size
     enc_key->private_key = kyber_sk;
-    enc_key->private_key_size = 1632;
+    enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
     if (qgp_key_save(enc_key, kyber_path) != 0) {
         fprintf(stderr, "Error: Failed to save encryption key\n");
@@ -567,10 +704,10 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
         return -1;
     }
 
-    printf("✓ Kyber512 encryption key generated from seed\n");
+    printf("✓ ML-KEM-1024 encryption key generated from seed\n");
 
     // Copy kyber public key for verification before freeing
-    uint8_t kyber_pk_verify[800];
+    uint8_t kyber_pk_verify[1568];  // Kyber1024 public key size
     memcpy(kyber_pk_verify, kyber_pk, sizeof(kyber_pk_verify));
 
     qgp_key_free(enc_key);
@@ -696,8 +833,8 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 
     // Rename signing key file for messenger compatibility
     char dilithium3_path[512], dilithium_renamed[512];
-    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);
-    snprintf(dilithium_renamed, sizeof(dilithium_renamed), "%s/%s-dilithium.pqkey", dna_dir, identity);
+    snprintf(dilithium3_path, sizeof(dilithium3_path), "%s/%s-dilithium3.pqkey", dna_dir, identity);  // Old format for migration
+    snprintf(dilithium_renamed, sizeof(dilithium_renamed), "%s/%s.dsa", dna_dir, identity);
 
     if (rename(dilithium3_path, dilithium_renamed) != 0) {
         fprintf(stderr, "Warning: Could not rename signing key file\n");
@@ -712,6 +849,43 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 // PUBLIC KEY MANAGEMENT
 // ============================================================================
 
+/**
+ * Base64 encode helper
+ */
+static const char base64_chars[] =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+static char* base64_encode(const uint8_t *data, size_t len) {
+    size_t out_len = 4 * ((len + 2) / 3);
+    char *out = malloc(out_len + 1);
+    if (!out) return NULL;
+
+    size_t i, j;
+    for (i = 0, j = 0; i < len;) {
+        uint32_t octet_a = i < len ? data[i++] : 0;
+        uint32_t octet_b = i < len ? data[i++] : 0;
+        uint32_t octet_c = i < len ? data[i++] : 0;
+        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
+
+        out[j++] = base64_chars[(triple >> 18) & 0x3F];
+        out[j++] = base64_chars[(triple >> 12) & 0x3F];
+        out[j++] = base64_chars[(triple >> 6) & 0x3F];
+        out[j++] = base64_chars[triple & 0x3F];
+    }
+
+    // Add padding
+    size_t mod = len % 3;
+    if (mod == 1) {
+        out[out_len - 2] = '=';
+        out[out_len - 1] = '=';
+    } else if (mod == 2) {
+        out[out_len - 1] = '=';
+    }
+
+    out[out_len] = '\0';
+    return out;
+}
+
 int messenger_store_pubkey(
     messenger_context_t *ctx,
     const char *identity,
@@ -721,46 +895,80 @@ int messenger_store_pubkey(
     size_t encryption_pubkey_len
 ) {
     if (!ctx || !identity || !signing_pubkey || !encryption_pubkey) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_store_pubkey\n");
         return -1;
     }
 
-    const char *paramValues[4];
-    int paramLengths[4];
-    int paramFormats[4] = {0, 1, 0, 1}; // text, binary, text, binary
+    // Phase 9.4: Use DHT-based keyserver instead of HTTP
+    printf("⟳ Publishing public keys for '%s' to DHT keyserver...\n", identity);
 
-    char len_str1[32], len_str2[32];
-    snprintf(len_str1, sizeof(len_str1), "%zu", signing_pubkey_len);
-    snprintf(len_str2, sizeof(len_str2), "%zu", encryption_pubkey_len);
+    // Use global DHT singleton (initialized at app startup)
+    // This eliminates the need for temporary DHT contexts
+    dht_context_t *dht_ctx = NULL;
 
-    paramValues[0] = identity;
-    paramValues[1] = (const char*)signing_pubkey;
-    paramLengths[1] = (int)signing_pubkey_len;
-    paramValues[2] = len_str1;
-    paramValues[3] = (const char*)encryption_pubkey;
-    paramLengths[3] = (int)encryption_pubkey_len;
+    if (ctx->p2p_transport) {
+        // Use existing P2P transport's DHT (when logged in)
+        dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
+        printf("[INFO] Using P2P transport DHT for key publishing\n");
+    } else {
+        // Use global DHT singleton (during identity creation, before login)
+        dht_ctx = dht_singleton_get();
+        if (!dht_ctx) {
+            fprintf(stderr, "ERROR: Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
+            return -1;
+        }
+        printf("[INFO] Using global DHT singleton for key publishing\n");
+    }
 
-    const char *query =
-        "INSERT INTO keyserver (identity, signing_pubkey, signing_pubkey_len, encryption_pubkey, encryption_pubkey_len) "
-        "VALUES ($1, $2, $3::integer, $4, $5::integer) "
-        "ON CONFLICT (identity) DO UPDATE SET "
-        "signing_pubkey = $2, signing_pubkey_len = $3::integer, "
-        "encryption_pubkey = $4, encryption_pubkey_len = $5::integer";
+    // Get dna_dir path
+    const char *home = getenv("HOME");
+    if (!home) {
+        home = getenv("USERPROFILE");  // Windows fallback
+        if (!home) {
+            fprintf(stderr, "ERROR: HOME environment variable not set\n");
+            return -1;
+        }
+    }
 
-    // Need 5 parameters
-    const char *all_params[5] = {identity, (const char*)signing_pubkey, len_str1, (const char*)encryption_pubkey, len_str2};
-    int all_lengths[5] = {0, (int)signing_pubkey_len, 0, (int)encryption_pubkey_len, 0};
-    int all_formats[5] = {0, 1, 0, 1, 0};
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
 
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 5, NULL, all_params, all_lengths, all_formats, 0);
+    // Load private key for signing
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/%s.dsa", dna_dir, identity);
 
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Store pubkey failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    qgp_key_t *key = NULL;
+    if (qgp_key_load(key_path, &key) != 0 || !key) {
+        fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
         return -1;
     }
 
-    PQclear(res);
-    printf("✓ Public key stored for '%s'\n", identity);
+    if (key->type != QGP_KEY_TYPE_DSA87 || !key->private_key) {
+        fprintf(stderr, "ERROR: Not a Dilithium private key\n");
+        qgp_key_free(key);
+        return -1;
+    }
+
+    // Publish to DHT
+    int ret = dht_keyserver_publish(
+        dht_ctx,
+        identity,
+        signing_pubkey,
+        encryption_pubkey,
+        key->private_key
+    );
+
+    qgp_key_free(key);
+
+    // No cleanup needed - global DHT singleton persists for app lifetime
+    // P2P transport DHT is managed by p2p_transport_free()
+
+    if (ret != 0) {
+        fprintf(stderr, "ERROR: Failed to publish keys to DHT keyserver\n");
+        return -1;
+    }
+
+    printf("✓ Public keys published to DHT successfully!\n");
     return 0;
 }
 
@@ -801,145 +1009,95 @@ int messenger_load_pubkey(
     size_t *encryption_pubkey_len_out
 ) {
     if (!ctx || !identity) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_load_pubkey\n");
         return -1;
     }
 
-    // Check cache first
-    for (int i = 0; i < ctx->cache_count; i++) {
-        if (strcmp(ctx->cache[i].identity, identity) == 0) {
-            // Cache hit - duplicate and return
-            *signing_pubkey_out = malloc(ctx->cache[i].signing_pubkey_len);
-            *encryption_pubkey_out = malloc(ctx->cache[i].encryption_pubkey_len);
+    // Phase 4: Check keyserver cache first
+    keyserver_cache_entry_t *cached = NULL;
+    int ret = keyserver_cache_get(identity, &cached);
+    if (ret == 0 && cached) {
+        // Cache hit!
+        *signing_pubkey_out = malloc(cached->dilithium_pubkey_len);
+        *encryption_pubkey_out = malloc(cached->kyber_pubkey_len);
 
-            if (!*signing_pubkey_out || !*encryption_pubkey_out) {
-                free(*signing_pubkey_out);
-                free(*encryption_pubkey_out);
-                return -1;
-            }
-
-            memcpy(*signing_pubkey_out, ctx->cache[i].signing_pubkey, ctx->cache[i].signing_pubkey_len);
-            memcpy(*encryption_pubkey_out, ctx->cache[i].encryption_pubkey, ctx->cache[i].encryption_pubkey_len);
-            *signing_pubkey_len_out = ctx->cache[i].signing_pubkey_len;
-            *encryption_pubkey_len_out = ctx->cache[i].encryption_pubkey_len;
-
-            return 0;
+        if (!*signing_pubkey_out || !*encryption_pubkey_out) {
+            if (*signing_pubkey_out) free(*signing_pubkey_out);
+            if (*encryption_pubkey_out) free(*encryption_pubkey_out);
+            keyserver_cache_free_entry(cached);
+            return -1;
         }
+
+        memcpy(*signing_pubkey_out, cached->dilithium_pubkey, cached->dilithium_pubkey_len);
+        memcpy(*encryption_pubkey_out, cached->kyber_pubkey, cached->kyber_pubkey_len);
+        *signing_pubkey_len_out = cached->dilithium_pubkey_len;
+        *encryption_pubkey_len_out = cached->kyber_pubkey_len;
+
+        keyserver_cache_free_entry(cached);
+        printf("✓ Loaded public keys for '%s' from cache\n", identity);
+        return 0;
     }
 
-    // Cache miss - fetch from API: https://cpunk.io/api/keyserver/lookup/<identity>
-    char url[512];
-    snprintf(url, sizeof(url), "https://cpunk.io/api/keyserver/lookup/%s", identity);
+    // Cache miss - fetch from DHT keyserver
+    printf("⟳ Fetching public keys for '%s' from DHT keyserver...\n", identity);
 
-    char cmd[1024];
-#ifdef _WIN32
-    snprintf(cmd, sizeof(cmd), "curl -s \"%s\"", url);
-#else
-    snprintf(cmd, sizeof(cmd), "curl -s '%s'", url);
-#endif
-
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        fprintf(stderr, "Error: Failed to fetch public key from API\n");
+    // Get DHT context from P2P transport
+    if (!ctx->p2p_transport) {
+        fprintf(stderr, "ERROR: P2P transport not initialized\n");
         return -1;
     }
 
-    // Read response (up to 10KB)
-    char response[10240];
-    size_t response_len = fread(response, 1, sizeof(response) - 1, fp);
-    response[response_len] = '\0';
-    pclose(fp);
-
-    // Trim whitespace and newlines (Windows CRLF issue)
-    while (response_len > 0 &&
-           (response[response_len-1] == '\n' ||
-            response[response_len-1] == '\r' ||
-            response[response_len-1] == ' ' ||
-            response[response_len-1] == '\t')) {
-        response[--response_len] = '\0';
-    }
-
-    // Parse JSON response using json-c
-    struct json_object *root = json_tokener_parse(response);
-    if (!root) {
-        fprintf(stderr, "Error: Failed to parse JSON response for '%s'\n", identity);
-        fprintf(stderr, "Raw response (%zu bytes): '%s'\n", response_len, response);
+    dht_context_t *dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        fprintf(stderr, "ERROR: DHT context not available\n");
         return -1;
     }
 
-    // Check success field
-    struct json_object *success_obj = json_object_object_get(root, "success");
-    if (!success_obj || !json_object_get_boolean(success_obj)) {
-        fprintf(stderr, "Error: API returned failure for identity '%s'\n", identity);
-        json_object_put(root);
+    // Lookup in DHT
+    dht_pubkey_entry_t *entry = NULL;
+    ret = dht_keyserver_lookup(dht_ctx, identity, &entry);
+
+    if (ret != 0) {
+        if (ret == -2) {
+            fprintf(stderr, "ERROR: Identity '%s' not found in DHT keyserver\n", identity);
+        } else if (ret == -3) {
+            fprintf(stderr, "ERROR: Signature verification failed for identity '%s'\n", identity);
+        } else {
+            fprintf(stderr, "ERROR: Failed to lookup identity in DHT keyserver\n");
+        }
         return -1;
     }
 
-    // Get data object
-    struct json_object *data_obj = json_object_object_get(root, "data");
-    if (!data_obj) {
-        fprintf(stderr, "Error: No 'data' field in API response\n");
-        json_object_put(root);
+    // Allocate and copy keys
+    uint8_t *dil_decoded = malloc(DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
+    uint8_t *kyber_decoded = malloc(DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
+
+    if (!dil_decoded || !kyber_decoded) {
+        fprintf(stderr, "ERROR: Memory allocation failed\n");
+        if (dil_decoded) free(dil_decoded);
+        if (kyber_decoded) free(kyber_decoded);
+        dht_keyserver_free_entry(entry);
         return -1;
     }
 
-    // Extract base64-encoded public keys
-    struct json_object *dilithium_obj = json_object_object_get(data_obj, "dilithium_pub");
-    struct json_object *kyber_obj = json_object_object_get(data_obj, "kyber_pub");
+    memcpy(dil_decoded, entry->dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
+    memcpy(kyber_decoded, entry->kyber_pubkey, DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
 
-    if (!dilithium_obj || !kyber_obj) {
-        fprintf(stderr, "Error: Missing public keys in API response\n");
-        json_object_put(root);
-        return -1;
-    }
+    size_t dil_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
+    size_t kyber_len = DHT_KEYSERVER_KYBER_PUBKEY_SIZE;
 
-    const char *dilithium_b64 = json_object_get_string(dilithium_obj);
-    const char *kyber_b64 = json_object_get_string(kyber_obj);
+    // Free DHT entry
+    dht_keyserver_free_entry(entry);
 
-    // Decode base64
-    uint8_t *dilithium_decoded = NULL;
-    uint8_t *kyber_decoded = NULL;
+    // Store in cache for future lookups
+    keyserver_cache_put(identity, dil_decoded, dil_len, kyber_decoded, kyber_len, 0);
 
-    size_t dilithium_len = base64_decode(dilithium_b64, &dilithium_decoded);
-    size_t kyber_len = base64_decode(kyber_b64, &kyber_decoded);
-
-    json_object_put(root);
-
-    if (dilithium_len == 0 || kyber_len == 0) {
-        fprintf(stderr, "Error: Base64 decode failed\n");
-        free(dilithium_decoded);
-        free(kyber_decoded);
-        return -1;
-    }
-
-    *signing_pubkey_out = dilithium_decoded;
-    *signing_pubkey_len_out = dilithium_len;
+    // Return keys
+    *signing_pubkey_out = dil_decoded;
+    *signing_pubkey_len_out = dil_len;
     *encryption_pubkey_out = kyber_decoded;
     *encryption_pubkey_len_out = kyber_len;
-
-    printf("✓ Fetched public key for '%s' from API (dilithium: %zu bytes, kyber: %zu bytes)\n",
-           identity, dilithium_len, kyber_len);
-
-    // Add to cache (if space available)
-    if (ctx->cache_count < PUBKEY_CACHE_SIZE) {
-        pubkey_cache_entry_t *entry = &ctx->cache[ctx->cache_count];
-        entry->identity = strdup(identity);
-        entry->signing_pubkey = malloc(dilithium_len);
-        entry->encryption_pubkey = malloc(kyber_len);
-
-        if (entry->identity && entry->signing_pubkey && entry->encryption_pubkey) {
-            memcpy(entry->signing_pubkey, dilithium_decoded, dilithium_len);
-            memcpy(entry->encryption_pubkey, kyber_decoded, kyber_len);
-            entry->signing_pubkey_len = dilithium_len;
-            entry->encryption_pubkey_len = kyber_len;
-            ctx->cache_count++;
-        } else {
-            // Cleanup on allocation failure
-            free(entry->identity);
-            free(entry->signing_pubkey);
-            free(entry->encryption_pubkey);
-        }
-    }
-
+    printf("✓ Loaded public keys for '%s' from keyserver\n", identity);
     return 0;
 }
 
@@ -1025,108 +1183,69 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
 }
 
 /**
- * Get contact list (identities from keyserver)
+ * Get contact list (from local contacts database)
+ * Phase 9.4: Replaced HTTP API with local contacts_db
  */
 int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out, int *count_out) {
     if (!ctx || !identities_out || !count_out) {
         return -1;
     }
 
-    // Fetch from cpunk.io API
-    const char *url = "https://cpunk.io/api/keyserver/list";
-    char cmd[1024];
-#ifdef _WIN32
-    snprintf(cmd, sizeof(cmd), "curl -s \"%s\"", url);
-#else
-    snprintf(cmd, sizeof(cmd), "curl -s '%s'", url);
-#endif
-
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        fprintf(stderr, "Error: Failed to fetch identity list from keyserver\n");
+    // Initialize contacts database if not already done (per-identity)
+    if (contacts_db_init(ctx->identity) != 0) {
+        fprintf(stderr, "Error: Failed to initialize contacts database for '%s'\n", ctx->identity);
         return -1;
     }
 
-    char response[102400]; // 100KB buffer for large lists
-    size_t response_len = fread(response, 1, sizeof(response) - 1, fp);
-    response[response_len] = '\0';
-    pclose(fp);
-
-    // Trim whitespace
-    while (response_len > 0 &&
-           (response[response_len-1] == '\n' ||
-            response[response_len-1] == '\r' ||
-            response[response_len-1] == ' ' ||
-            response[response_len-1] == '\t')) {
-        response[--response_len] = '\0';
+    // Migrate from global contacts.db if needed (first time only)
+    static bool migration_attempted = false;
+    if (!migration_attempted) {
+        int migrated = contacts_db_migrate_from_global(ctx->identity);
+        if (migrated > 0) {
+            printf("[MESSENGER] Migrated %d contacts from global database\n", migrated);
+        }
+        migration_attempted = true;
     }
 
-    // Parse JSON response
-    struct json_object *root = json_tokener_parse(response);
-    if (!root) {
-        fprintf(stderr, "Error: Failed to parse JSON response\n");
+    // Get contact list from database
+    contact_list_t *list = NULL;
+    if (contacts_db_list(&list) != 0) {
+        fprintf(stderr, "Error: Failed to get contact list\n");
         return -1;
     }
 
-    // Check success field
-    struct json_object *success_obj = json_object_object_get(root, "success");
-    if (!success_obj || !json_object_get_boolean(success_obj)) {
-        fprintf(stderr, "Error: API returned failure\n");
-        json_object_put(root);
-        return -1;
-    }
+    *count_out = list->count;
 
-    // Get identities array
-    struct json_object *identities_obj = json_object_object_get(root, "identities");
-    if (!identities_obj || !json_object_is_type(identities_obj, json_type_array)) {
+    if (list->count == 0) {
         *identities_out = NULL;
-        *count_out = 0;
-        json_object_put(root);
-        return 0;
-    }
-
-    int rows = json_object_array_length(identities_obj);
-    *count_out = rows;
-
-    if (rows == 0) {
-        *identities_out = NULL;
-        json_object_put(root);
+        contacts_db_free_list(list);
         return 0;
     }
 
     // Allocate array of string pointers
-    char **identities = (char**)malloc(sizeof(char*) * rows);
+    char **identities = (char**)malloc(sizeof(char*) * list->count);
     if (!identities) {
-        fprintf(stderr, "Memory allocation failed\n");
-        json_object_put(root);
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        contacts_db_free_list(list);
         return -1;
     }
 
     // Copy each identity string
-    for (int i = 0; i < rows; i++) {
-        struct json_object *identity_obj = json_object_array_get_idx(identities_obj, i);
-        if (!identity_obj) {
-            identities[i] = strdup("unknown");
-            continue;
-        }
-
-        struct json_object *dna_obj = json_object_object_get(identity_obj, "dna");
-        const char *identity = dna_obj ? json_object_get_string(dna_obj) : "unknown";
-
-        identities[i] = strdup(identity);
+    for (size_t i = 0; i < list->count; i++) {
+        identities[i] = strdup(list->contacts[i].identity);
         if (!identities[i]) {
             // Clean up on failure
-            for (int j = 0; j < i; j++) {
+            for (size_t j = 0; j < i; j++) {
                 free(identities[j]);
             }
             free(identities);
-            json_object_put(root);
+            contacts_db_free_list(list);
             return -1;
         }
     }
 
     *identities_out = identities;
-    json_object_put(root);
+    contacts_db_free_list(list);
     return 0;
 }
 
@@ -1137,7 +1256,7 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
 // Multi-recipient encryption header and entry structures
 typedef struct {
     char magic[8];              // "PQSIGENC"
-    uint8_t version;            // 0x05 (GCM)
+    uint8_t version;            // 0x06 (Category 5: Kyber1024 + Dilithium5)
     uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t reserved;
@@ -1146,7 +1265,7 @@ typedef struct {
 } messenger_enc_header_t;
 
 typedef struct {
-    uint8_t kyber_ciphertext[768];    // Kyber512 ciphertext
+    uint8_t kyber_ciphertext[1568];   // Kyber1024 ciphertext
     uint8_t wrapped_dek[40];          // AES-wrapped DEK (32-byte + 8-byte IV)
 } messenger_recipient_entry_t;
 
@@ -1155,7 +1274,7 @@ typedef struct {
  *
  * @param plaintext: Message to encrypt
  * @param plaintext_len: Message length
- * @param recipient_enc_pubkeys: Array of recipient Kyber512 public keys (800 bytes each)
+ * @param recipient_enc_pubkeys: Array of recipient Kyber1024 public keys (1568 bytes each)
  * @param recipient_count: Number of recipients (including sender)
  * @param sender_sign_key: Sender's Dilithium3 signing key
  * @param ciphertext_out: Output ciphertext (caller must free)
@@ -1196,21 +1315,21 @@ static int messenger_encrypt_multi_recipient(
 
     // Step 2: Sign plaintext with Dilithium3
     qgp_signature_t *signature = qgp_signature_new(QGP_SIG_TYPE_DILITHIUM,
-                                                     QGP_DILITHIUM3_PUBLICKEYBYTES,
-                                                     QGP_DILITHIUM3_BYTES);
+                                                     QGP_DSA87_PUBLICKEYBYTES,
+                                                     QGP_DSA87_SIGNATURE_BYTES);
     if (!signature) {
         fprintf(stderr, "Error: Memory allocation failed for signature\n");
         goto cleanup;
     }
 
     memcpy(qgp_signature_get_pubkey(signature), sender_sign_key->public_key,
-           QGP_DILITHIUM3_PUBLICKEYBYTES);
+           QGP_DSA87_PUBLICKEYBYTES);
 
     size_t actual_sig_len = 0;
-    if (qgp_dilithium3_signature(qgp_signature_get_bytes(signature), &actual_sig_len,
+    if (qgp_dsa87_sign(qgp_signature_get_bytes(signature), &actual_sig_len,
                                   (const uint8_t*)plaintext, plaintext_len,
                                   sender_sign_key->private_key) != 0) {
-        fprintf(stderr, "Error: Dilithium3 signature creation failed\n");
+        fprintf(stderr, "Error: DSA-87 signature creation failed\n");
         qgp_signature_free(signature);
         goto cleanup;
     }
@@ -1218,7 +1337,7 @@ static int messenger_encrypt_multi_recipient(
     signature->signature_size = actual_sig_len;
 
     // Round-trip verification
-    if (qgp_dilithium3_verify(qgp_signature_get_bytes(signature), actual_sig_len,
+    if (qgp_dsa87_verify(qgp_signature_get_bytes(signature), actual_sig_len,
                                (const uint8_t*)plaintext, plaintext_len,
                                qgp_signature_get_pubkey(signature)) != 0) {
         fprintf(stderr, "Error: Round-trip verification FAILED\n");
@@ -1245,7 +1364,7 @@ static int messenger_encrypt_multi_recipient(
     messenger_enc_header_t header_for_aad;
     memset(&header_for_aad, 0, sizeof(header_for_aad));
     memcpy(header_for_aad.magic, "PQSIGENC", 8);
-    header_for_aad.version = 0x05;
+    header_for_aad.version = 0x06;
     header_for_aad.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header_for_aad.recipient_count = (uint8_t)recipient_count;
     header_for_aad.encrypted_size = (uint32_t)plaintext_len;
@@ -1273,12 +1392,12 @@ static int messenger_encrypt_multi_recipient(
     }
 
     for (size_t i = 0; i < recipient_count; i++) {
-        uint8_t kyber_ciphertext[768];
+        uint8_t kyber_ciphertext[1568];  // Kyber1024 ciphertext size
         uint8_t kek[32];  // KEK = shared secret from Kyber
 
         // Kyber512 encapsulation
-        if (qgp_kyber512_enc(kyber_ciphertext, kek, recipient_enc_pubkeys[i]) != 0) {
-            fprintf(stderr, "Error: Kyber512 encapsulation failed for recipient %zu\n", i+1);
+        if (qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_enc_pubkeys[i]) != 0) {
+            fprintf(stderr, "Error: KEM-1024 encapsulation failed for recipient %zu\n", i+1);
             memset(kek, 0, 32);
             goto cleanup;
         }
@@ -1292,7 +1411,7 @@ static int messenger_encrypt_multi_recipient(
         }
 
         // Store recipient entry
-        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ciphertext, 768);
+        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ciphertext, 1568);  // Kyber1024 ciphertext size
         memcpy(recipient_entries[i].wrapped_dek, wrapped_dek, 40);
 
         // Wipe KEK
@@ -1317,7 +1436,7 @@ static int messenger_encrypt_multi_recipient(
     messenger_enc_header_t header;
     memset(&header, 0, sizeof(header));
     memcpy(header.magic, "PQSIGENC", 8);
-    header.version = 0x05;
+    header.version = 0x06;
     header.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header.recipient_count = (uint8_t)recipient_count;
     header.encrypted_size = (uint32_t)encrypted_size;
@@ -1413,7 +1532,7 @@ int messenger_send_message(
     // Load sender's private signing key from filesystem
     const char *home = qgp_platform_home_dir();
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s-dilithium.pqkey", home, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s.dsa", home, ctx->identity);
 
     qgp_key_t *sender_sign_key = NULL;
     if (qgp_key_load(dilithium_path, &sender_sign_key) != 0) {
@@ -1503,48 +1622,32 @@ int messenger_send_message(
 
     printf("✓ Assigned message_group_id: %d\n", message_group_id);
 
-    // Store in database - one row per actual recipient (not including sender)
-    const char *query =
-        "INSERT INTO messages (sender, recipient, ciphertext, ciphertext_len, message_group_id) "
-        "VALUES ($1, $2, $3, $4::integer, $5::integer)";
+    // Store in SQLite local database - one row per actual recipient (not sender)
+    time_t now = time(NULL);
 
-    char len_str[32];
-    snprintf(len_str, sizeof(len_str), "%zu", ciphertext_len);
-
-    char group_id_str[32];
-    snprintf(group_id_str, sizeof(group_id_str), "%d", message_group_id);
-
-    const char *paramValues[5];
-    int paramLengths[5];
-    int paramFormats[5] = {0, 0, 1, 0, 0}; // text, text, binary, text, text
-
-    paramValues[0] = ctx->identity;
-    paramValues[2] = (const char*)ciphertext;
-    paramLengths[2] = (int)ciphertext_len;
-    paramValues[3] = len_str;
-    paramValues[4] = group_id_str;
-
-    // Store one row for each actual recipient (not sender)
     for (size_t i = 0; i < recipient_count; i++) {
-        paramValues[1] = recipients[i];
+        int result = message_backup_save(
+            ctx->backup_ctx,
+            ctx->identity,      // sender
+            recipients[i],      // recipient
+            ciphertext,         // encrypted message
+            ciphertext_len,     // encrypted length
+            now,                // timestamp
+            true                // is_outgoing = true (we're sending)
+        );
 
-        PGresult *res = PQexecParams(ctx->pg_conn, query, 5, NULL, paramValues, paramLengths, paramFormats, 0);
-
-        if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-            fprintf(stderr, "Store message failed for recipient '%s': %s\n",
-                    recipients[i], PQerrorMessage(ctx->pg_conn));
-            PQclear(res);
+        if (result != 0) {
+            fprintf(stderr, "Store message failed for recipient '%s' in SQLite\n", recipients[i]);
             free(ciphertext);
             return -1;
         }
 
-        PQclear(res);
-        printf("✓ Message stored for '%s'\n", recipients[i]);
+        printf("✓ Message stored locally for '%s'\n", recipients[i]);
     }
 
     // Phase 9.1b: Try P2P delivery for each recipient
     // If P2P succeeds, message delivered instantly
-    // If P2P fails, recipient will fetch from PostgreSQL when they poll
+    // If P2P fails, message queued in DHT offline queue
     if (ctx->p2p_enabled && ctx->p2p_transport) {
         printf("\n[P2P] Attempting direct P2P delivery to %zu recipient(s)...\n", recipient_count);
 
@@ -1555,10 +1658,10 @@ int messenger_send_message(
             }
         }
 
-        printf("[P2P] Delivery summary: %zu/%zu via P2P, %zu via PostgreSQL fallback\n\n",
+        printf("[P2P] Delivery summary: %zu/%zu via P2P, %zu via DHT offline queue\n\n",
                p2p_success, recipient_count, recipient_count - p2p_success);
     } else {
-        printf("\n[P2P] P2P disabled - recipients will fetch from PostgreSQL\n\n");
+        printf("\n[P2P] P2P disabled - using DHT offline queue\n\n");
     }
 
     free(ciphertext);
@@ -1572,35 +1675,43 @@ int messenger_list_messages(messenger_context_t *ctx) {
         return -1;
     }
 
-    const char *paramValues[1] = {ctx->identity};
-    const char *query =
-        "SELECT id, sender, created_at FROM messages "
-        "WHERE recipient = $1 ORDER BY created_at DESC";
+    // Search SQLite for all messages involving this identity
+    backup_message_t *all_messages = NULL;
+    int all_count = 0;
 
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 1, NULL, paramValues, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "List messages failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
+    if (result != 0) {
+        fprintf(stderr, "List messages failed from SQLite\n");
         return -1;
     }
 
-    int rows = PQntuples(res);
-    printf("\n=== Inbox for %s (%d messages) ===\n\n", ctx->identity, rows);
-
-    for (int i = 0; i < rows; i++) {
-        const char *id = PQgetvalue(res, i, 0);
-        const char *sender = PQgetvalue(res, i, 1);
-        const char *timestamp = PQgetvalue(res, i, 2);
-        printf("  [%s] From: %s (%s)\n", id, sender, timestamp);
+    // Filter for incoming messages only (where recipient == ctx->identity)
+    int incoming_count = 0;
+    for (int i = 0; i < all_count; i++) {
+        if (strcmp(all_messages[i].recipient, ctx->identity) == 0) {
+            incoming_count++;
+        }
     }
 
-    if (rows == 0) {
+    printf("\n=== Inbox for %s (%d messages) ===\n\n", ctx->identity, incoming_count);
+
+    if (incoming_count == 0) {
         printf("  (no messages)\n");
+    } else {
+        // Print incoming messages in reverse chronological order
+        for (int i = all_count - 1; i >= 0; i--) {
+            if (strcmp(all_messages[i].recipient, ctx->identity) == 0) {
+                struct tm *tm_info = localtime(&all_messages[i].timestamp);
+                char timestamp_str[32];
+                strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+
+                printf("  [%d] From: %s (%s)\n", all_messages[i].id, all_messages[i].sender, timestamp_str);
+            }
+        }
     }
 
     printf("\n");
-    PQclear(res);
+    message_backup_free_messages(all_messages, all_count);
     return 0;
 }
 
@@ -1609,35 +1720,43 @@ int messenger_list_sent_messages(messenger_context_t *ctx) {
         return -1;
     }
 
-    const char *paramValues[1] = {ctx->identity};
-    const char *query =
-        "SELECT id, recipient, created_at FROM messages "
-        "WHERE sender = $1 ORDER BY created_at DESC";
+    // Search SQLite for all messages involving this identity
+    backup_message_t *all_messages = NULL;
+    int all_count = 0;
 
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 1, NULL, paramValues, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "List sent messages failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
+    if (result != 0) {
+        fprintf(stderr, "List sent messages failed from SQLite\n");
         return -1;
     }
 
-    int rows = PQntuples(res);
-    printf("\n=== Sent by %s (%d messages) ===\n\n", ctx->identity, rows);
-
-    for (int i = 0; i < rows; i++) {
-        const char *id = PQgetvalue(res, i, 0);
-        const char *recipient = PQgetvalue(res, i, 1);
-        const char *timestamp = PQgetvalue(res, i, 2);
-        printf("  [%s] To: %s (%s)\n", id, recipient, timestamp);
+    // Filter for outgoing messages only (where sender == ctx->identity)
+    int sent_count = 0;
+    for (int i = 0; i < all_count; i++) {
+        if (strcmp(all_messages[i].sender, ctx->identity) == 0) {
+            sent_count++;
+        }
     }
 
-    if (rows == 0) {
+    printf("\n=== Sent by %s (%d messages) ===\n\n", ctx->identity, sent_count);
+
+    if (sent_count == 0) {
         printf("  (no sent messages)\n");
+    } else {
+        // Print sent messages in reverse chronological order
+        for (int i = all_count - 1; i >= 0; i--) {
+            if (strcmp(all_messages[i].sender, ctx->identity) == 0) {
+                struct tm *tm_info = localtime(&all_messages[i].timestamp);
+                char timestamp_str[32];
+                strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+
+                printf("  [%d] To: %s (%s)\n", all_messages[i].id, all_messages[i].recipient, timestamp_str);
+            }
+        }
     }
 
     printf("\n");
-    PQclear(res);
+    message_backup_free_messages(all_messages, all_count);
     return 0;
 }
 
@@ -1646,30 +1765,34 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
         return -1;
     }
 
-    // Fetch message from database
-    char id_str[32];
-    snprintf(id_str, sizeof(id_str), "%d", message_id);
-    const char *paramValues[1] = {id_str};
-    const char *query = "SELECT sender, ciphertext FROM messages WHERE id = $1 AND recipient = $2";
+    // Search SQLite for all messages to find the one with matching ID
+    backup_message_t *all_messages = NULL;
+    int all_count = 0;
 
-    const char *params[2] = {id_str, ctx->identity};
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 1); // Binary result
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Fetch message failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
+    if (result != 0) {
+        fprintf(stderr, "Fetch message failed from SQLite\n");
         return -1;
     }
 
-    if (PQntuples(res) == 0) {
+    // Find message with matching ID where we are the recipient
+    backup_message_t *target_msg = NULL;
+    for (int i = 0; i < all_count; i++) {
+        if (all_messages[i].id == message_id && strcmp(all_messages[i].recipient, ctx->identity) == 0) {
+            target_msg = &all_messages[i];
+            break;
+        }
+    }
+
+    if (!target_msg) {
         fprintf(stderr, "Message %d not found or not for you\n", message_id);
-        PQclear(res);
+        message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
-    const char *sender = PQgetvalue(res, 0, 0);
-    const uint8_t *ciphertext = (const uint8_t*)PQgetvalue(res, 0, 1);
-    size_t ciphertext_len = PQgetlength(res, 0, 1);
+    const char *sender = target_msg->sender;
+    const uint8_t *ciphertext = target_msg->encrypted_message;
+    size_t ciphertext_len = target_msg->encrypted_len;
 
     printf("\n========================================\n");
     printf(" Message #%d from %s\n", message_id, sender);
@@ -1678,20 +1801,20 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     // Load recipient's private Kyber512 key from filesystem
     const char *home = qgp_platform_home_dir();
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s-kyber512.pqkey", home, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
         fprintf(stderr, "Error: Cannot load private key from %s\n", kyber_path);
-        PQclear(res);
+        message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
-    if (kyber_key->private_key_size != 1632) {
-        fprintf(stderr, "Error: Invalid Kyber512 private key size: %zu (expected 1632)\n",
+    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
+        fprintf(stderr, "Error: Invalid Kyber1024 private key size: %zu (expected 3168)\n",
                 kyber_key->private_key_size);
         qgp_key_free(kyber_key);
-        PQclear(res);
+        message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
@@ -1717,7 +1840,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
 
     if (err != DNA_OK) {
         fprintf(stderr, "Error: Decryption failed: %s\n", dna_error_string(err));
-        PQclear(res);
+        message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
@@ -1741,7 +1864,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
             free(sender_sign_pubkey_from_msg);
             free(sender_sign_pubkey_keyserver);
             free(sender_enc_pubkey_keyserver);
-            PQclear(res);
+            message_backup_free_messages(all_messages, all_count);
             return -1;
         }
         free(sender_sign_pubkey_keyserver);
@@ -1759,7 +1882,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     // Cleanup
     free(plaintext);
     free(sender_sign_pubkey_from_msg);
-    PQclear(res);
+    message_backup_free_messages(all_messages, all_count);
     printf("\n");
     return 0;
 }
@@ -1770,43 +1893,50 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
         return -1;
     }
 
-    // Fetch message from database
+    // Fetch message from SQLite local database
     // Support decrypting both received messages (recipient = identity) AND sent messages (sender = identity)
-    char id_str[32];
-    snprintf(id_str, sizeof(id_str), "%d", message_id);
-    const char *query = "SELECT sender, ciphertext FROM messages WHERE id = $1 AND (recipient = $2 OR sender = $2)";
+    backup_message_t *all_messages = NULL;
+    int all_count = 0;
 
-    const char *params[2] = {id_str, ctx->identity};
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 1); // Binary result
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        PQclear(res);
+    int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
+    if (result != 0) {
+        fprintf(stderr, "Fetch message failed from SQLite\n");
         return -1;
     }
 
-    if (PQntuples(res) == 0) {
-        PQclear(res);
+    // Find message with matching ID (either as sender OR recipient)
+    backup_message_t *target_msg = NULL;
+    for (int i = 0; i < all_count; i++) {
+        if (all_messages[i].id == message_id) {
+            target_msg = &all_messages[i];
+            break;
+        }
+    }
+
+    if (!target_msg) {
+        fprintf(stderr, "Message %d not found\n", message_id);
+        message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
-    const char *sender = PQgetvalue(res, 0, 0);
-    const uint8_t *ciphertext = (const uint8_t*)PQgetvalue(res, 0, 1);
-    size_t ciphertext_len = PQgetlength(res, 0, 1);
+    const char *sender = target_msg->sender;
+    const uint8_t *ciphertext = target_msg->encrypted_message;
+    size_t ciphertext_len = target_msg->encrypted_len;
 
     // Load recipient's private Kyber512 key from filesystem
     const char *home = qgp_platform_home_dir();
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s-kyber512.pqkey", home, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
-        PQclear(res);
+        message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
-    if (kyber_key->private_key_size != 1632) {
+    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
         qgp_key_free(kyber_key);
-        PQclear(res);
+        message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
@@ -1831,7 +1961,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     qgp_key_free(kyber_key);
 
     if (err != DNA_OK) {
-        PQclear(res);
+        message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
@@ -1850,7 +1980,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
             free(sender_sign_pubkey_from_msg);
             free(sender_sign_pubkey_keyserver);
             free(sender_enc_pubkey_keyserver);
-            PQclear(res);
+            message_backup_free_messages(all_messages, all_count);
             return -1;
         }
         free(sender_sign_pubkey_keyserver);
@@ -1858,7 +1988,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     }
 
     free(sender_sign_pubkey_from_msg);
-    PQclear(res);
+    message_backup_free_messages(all_messages, all_count);
 
     // Return plaintext as null-terminated string
     *plaintext_out = (char*)malloc(plaintext_len + 1);
@@ -1876,24 +2006,10 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
 }
 
 int messenger_delete_pubkey(messenger_context_t *ctx, const char *identity) {
-    if (!ctx || !identity) {
-        return -1;
-    }
-
-    const char *paramValues[1] = {identity};
-    const char *query = "DELETE FROM keyserver WHERE identity = $1";
-
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 1, NULL, paramValues, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Delete pubkey failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
-        return -1;
-    }
-
-    printf("✓ Public key deleted for '%s'\n", identity);
-    PQclear(res);
-    return 0;
+    // TODO: Phase 2/4 - Migrate to DHT keyserver
+    fprintf(stderr, "ERROR: messenger_delete_pubkey() not yet implemented (DHT migration pending)\n");
+    (void)ctx; (void)identity;
+    return -1;
 }
 
 int messenger_delete_message(messenger_context_t *ctx, int message_id) {
@@ -1901,22 +2017,14 @@ int messenger_delete_message(messenger_context_t *ctx, int message_id) {
         return -1;
     }
 
-    char id_str[32];
-    snprintf(id_str, sizeof(id_str), "%d", message_id);
-
-    const char *paramValues[1] = {id_str};
-    const char *query = "DELETE FROM messages WHERE id = $1";
-
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 1, NULL, paramValues, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Delete message failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    // Delete from SQLite local database
+    int result = message_backup_delete(ctx->backup_ctx, message_id);
+    if (result != 0) {
+        fprintf(stderr, "Delete message failed from SQLite\n");
         return -1;
     }
 
     printf("✓ Message %d deleted\n", message_id);
-    PQclear(res);
     return 0;
 }
 
@@ -1929,35 +2037,44 @@ int messenger_search_by_sender(messenger_context_t *ctx, const char *sender) {
         return -1;
     }
 
-    const char *paramValues[2] = {ctx->identity, sender};
-    const char *query =
-        "SELECT id, sender, created_at FROM messages "
-        "WHERE recipient = $1 AND sender = $2 "
-        "ORDER BY created_at DESC";
+    // Search SQLite for all messages involving this identity
+    backup_message_t *all_messages = NULL;
+    int all_count = 0;
 
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, paramValues, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Search by sender failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
+    if (result != 0) {
+        fprintf(stderr, "Search by sender failed from SQLite\n");
         return -1;
     }
 
-    int rows = PQntuples(res);
-    printf("\n=== Messages from %s to %s (%d messages) ===\n\n", sender, ctx->identity, rows);
-
-    for (int i = 0; i < rows; i++) {
-        const char *id = PQgetvalue(res, i, 0);
-        const char *timestamp = PQgetvalue(res, i, 2);
-        printf("  [%s] %s\n", id, timestamp);
+    // Filter for messages from specified sender to current user (incoming messages only)
+    int matching_count = 0;
+    for (int i = 0; i < all_count; i++) {
+        if (strcmp(all_messages[i].sender, sender) == 0 &&
+            strcmp(all_messages[i].recipient, ctx->identity) == 0) {
+            matching_count++;
+        }
     }
 
-    if (rows == 0) {
+    printf("\n=== Messages from %s to %s (%d messages) ===\n\n", sender, ctx->identity, matching_count);
+
+    // Print matching messages in reverse chronological order
+    if (matching_count == 0) {
         printf("  (no messages from %s)\n", sender);
+    } else {
+        for (int i = all_count - 1; i >= 0; i--) {
+            if (strcmp(all_messages[i].sender, sender) == 0 &&
+                strcmp(all_messages[i].recipient, ctx->identity) == 0) {
+                struct tm *tm_info = localtime(&all_messages[i].timestamp);
+                char timestamp_str[32];
+                strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+                printf("  [%d] %s\n", all_messages[i].id, timestamp_str);
+            }
+        }
     }
 
     printf("\n");
-    PQclear(res);
+    message_backup_free_messages(all_messages, all_count);
     return 0;
 }
 
@@ -1966,49 +2083,43 @@ int messenger_show_conversation(messenger_context_t *ctx, const char *other_iden
         return -1;
     }
 
-    const char *paramValues[4] = {ctx->identity, other_identity, other_identity, ctx->identity};
-    const char *query =
-        "SELECT id, sender, recipient, created_at FROM messages "
-        "WHERE (sender = $1 AND recipient = $2) OR (sender = $3 AND recipient = $4) "
-        "ORDER BY created_at ASC";
+    // Get conversation from SQLite local database
+    backup_message_t *messages = NULL;
+    int count = 0;
 
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 4, NULL, paramValues, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Show conversation failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    int result = message_backup_get_conversation(ctx->backup_ctx, other_identity, &messages, &count);
+    if (result != 0) {
+        fprintf(stderr, "Show conversation failed from SQLite\n");
         return -1;
     }
 
-    int rows = PQntuples(res);
     printf("\n");
     printf("========================================\n");
     printf(" Conversation: %s <-> %s\n", ctx->identity, other_identity);
-    printf(" (%d messages)\n", rows);
+    printf(" (%d messages)\n", count);
     printf("========================================\n\n");
 
-    for (int i = 0; i < rows; i++) {
-        const char *id = PQgetvalue(res, i, 0);
-        const char *sender = PQgetvalue(res, i, 1);
-        const char *recipient = PQgetvalue(res, i, 2);
-        const char *timestamp = PQgetvalue(res, i, 3);
+    for (int i = 0; i < count; i++) {
+        struct tm *tm_info = localtime(&messages[i].timestamp);
+        char timestamp_str[32];
+        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
 
         // Format: [ID] timestamp sender -> recipient
-        if (strcmp(sender, ctx->identity) == 0) {
+        if (strcmp(messages[i].sender, ctx->identity) == 0) {
             // Message sent by current user
-            printf("  [%s] %s  You -> %s\n", id, timestamp, recipient);
+            printf("  [%d] %s  You -> %s\n", messages[i].id, timestamp_str, messages[i].recipient);
         } else {
             // Message received by current user
-            printf("  [%s] %s  %s -> You\n", id, timestamp, sender);
+            printf("  [%d] %s  %s -> You\n", messages[i].id, timestamp_str, messages[i].sender);
         }
     }
 
-    if (rows == 0) {
+    if (count == 0) {
         printf("  (no messages exchanged)\n");
     }
 
     printf("\n");
-    PQclear(res);
+    message_backup_free_messages(messages, count);
     return 0;
 }
 
@@ -2021,55 +2132,58 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         return -1;
     }
 
-    const char *paramValues[4] = {ctx->identity, other_identity, other_identity, ctx->identity};
-    const char *query =
-        "SELECT id, sender, recipient, created_at, status, delivered_at, read_at FROM messages "
-        "WHERE (sender = $1 AND recipient = $2) OR (sender = $3 AND recipient = $4) "
-        "ORDER BY created_at ASC";
+    // Get conversation from SQLite local database
+    backup_message_t *backup_messages = NULL;
+    int backup_count = 0;
 
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 4, NULL, paramValues, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Get conversation failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    int result = message_backup_get_conversation(ctx->backup_ctx, other_identity, &backup_messages, &backup_count);
+    if (result != 0) {
+        fprintf(stderr, "Get conversation failed from SQLite\n");
         return -1;
     }
 
-    int rows = PQntuples(res);
-    *count_out = rows;
+    *count_out = backup_count;
 
-    if (rows == 0) {
+    if (backup_count == 0) {
         *messages_out = NULL;
-        PQclear(res);
         return 0;
     }
 
-    // Allocate array of message_info_t
-    message_info_t *messages = (message_info_t*)calloc(rows, sizeof(message_info_t));
+    // Convert backup_message_t to message_info_t for GUI compatibility
+    message_info_t *messages = (message_info_t*)calloc(backup_count, sizeof(message_info_t));
     if (!messages) {
         fprintf(stderr, "Memory allocation failed\n");
-        PQclear(res);
+        message_backup_free_messages(backup_messages, backup_count);
         return -1;
     }
 
-    // Copy message data
-    for (int i = 0; i < rows; i++) {
-        const char *id_str = PQgetvalue(res, i, 0);
-        const char *sender = PQgetvalue(res, i, 1);
-        const char *recipient = PQgetvalue(res, i, 2);
-        const char *timestamp = PQgetvalue(res, i, 3);
-        const char *status = PQgetvalue(res, i, 4);
-        const char *delivered_at = PQgetvalue(res, i, 5);
-        const char *read_at = PQgetvalue(res, i, 6);
+    // Convert each message
+    for (int i = 0; i < backup_count; i++) {
+        messages[i].id = backup_messages[i].id;
+        messages[i].sender = strdup(backup_messages[i].sender);
+        messages[i].recipient = strdup(backup_messages[i].recipient);
 
-        messages[i].id = atoi(id_str);
-        messages[i].sender = strdup(sender);
-        messages[i].recipient = strdup(recipient);
-        messages[i].timestamp = strdup(timestamp);
-        messages[i].status = strdup(status ? status : "sent");
-        messages[i].delivered_at = delivered_at ? strdup(delivered_at) : NULL;
-        messages[i].read_at = read_at ? strdup(read_at) : NULL;
-        messages[i].plaintext = NULL;  // Not decrypted
+        // Convert time_t to string (format: YYYY-MM-DD HH:MM:SS)
+        struct tm *tm_info = localtime(&backup_messages[i].timestamp);
+        messages[i].timestamp = (char*)malloc(32);
+        if (messages[i].timestamp) {
+            strftime(messages[i].timestamp, 32, "%Y-%m-%d %H:%M:%S", tm_info);
+        }
+
+        // Convert bool flags to status string
+        if (backup_messages[i].read) {
+            messages[i].status = strdup("read");
+        } else if (backup_messages[i].delivered) {
+            messages[i].status = strdup("delivered");
+        } else {
+            messages[i].status = strdup("sent");
+        }
+
+        // For now, we don't have separate timestamps for delivered/read
+        // We could add these to SQLite schema later if needed
+        messages[i].delivered_at = backup_messages[i].delivered ? strdup(messages[i].timestamp) : NULL;
+        messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
+        messages[i].plaintext = NULL;  // Not decrypted yet
 
         if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp || !messages[i].status) {
             // Clean up on failure
@@ -2083,13 +2197,13 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
                 free(messages[j].plaintext);
             }
             free(messages);
-            PQclear(res);
+            message_backup_free_messages(backup_messages, backup_count);
             return -1;
         }
     }
 
     *messages_out = messages;
-    PQclear(res);
+    message_backup_free_messages(backup_messages, backup_count);
     return 0;
 }
 
@@ -2124,52 +2238,54 @@ int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
         return -1;
     }
 
-    // Build dynamic query based on parameters
-    char query[1024];
-    int param_count = 1;  // Start with identity
-    const char *paramValues[5];
-    paramValues[0] = ctx->identity;
+    // Parse date strings to time_t for comparison (format: YYYY-MM-DD)
+    time_t start_time = 0;
+    time_t end_time = 0;
 
-    // Base query
-    strcpy(query, "SELECT id, sender, recipient, created_at FROM messages WHERE ");
-
-    // Sender/recipient conditions
-    if (include_sent && include_received) {
-        strcat(query, "(sender = $1 OR recipient = $1)");
-    } else if (include_sent) {
-        strcat(query, "sender = $1");
-    } else {
-        strcat(query, "recipient = $1");
-    }
-
-    // Date range conditions
     if (start_date) {
-        param_count++;
-        char condition[64];
-        snprintf(condition, sizeof(condition), " AND created_at >= $%d", param_count);
-        strcat(query, condition);
-        paramValues[param_count - 1] = start_date;
+        struct tm tm = {0};
+        if (sscanf(start_date, "%d-%d-%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday) == 3) {
+            tm.tm_year -= 1900;  // Years since 1900
+            tm.tm_mon -= 1;      // Months since January (0-11)
+            start_time = mktime(&tm);
+        }
     }
 
     if (end_date) {
-        param_count++;
-        char condition[64];
-        snprintf(condition, sizeof(condition), " AND created_at < $%d", param_count);
-        strcat(query, condition);
-        paramValues[param_count - 1] = end_date;
+        struct tm tm = {0};
+        if (sscanf(end_date, "%d-%d-%d", &tm.tm_year, &tm.tm_mon, &tm.tm_mday) == 3) {
+            tm.tm_year -= 1900;
+            tm.tm_mon -= 1;
+            end_time = mktime(&tm);
+        }
     }
 
-    strcat(query, " ORDER BY created_at DESC");
+    // Get all messages from SQLite
+    backup_message_t *all_messages = NULL;
+    int all_count = 0;
 
-    PGresult *res = PQexecParams(ctx->pg_conn, query, param_count, NULL, paramValues, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "Search by date failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
+    if (result != 0) {
+        fprintf(stderr, "Search by date failed from SQLite\n");
         return -1;
     }
 
-    int rows = PQntuples(res);
+    // Filter by date range and sent/received criteria
+    int matching_count = 0;
+    for (int i = 0; i < all_count; i++) {
+        // Check sent/received filter
+        bool is_sent = (strcmp(all_messages[i].sender, ctx->identity) == 0);
+        bool is_received = (strcmp(all_messages[i].recipient, ctx->identity) == 0);
+
+        if (!include_sent && is_sent) continue;
+        if (!include_received && is_received) continue;
+
+        // Check date range
+        if (start_date && all_messages[i].timestamp < start_time) continue;
+        if (end_date && all_messages[i].timestamp >= end_time) continue;
+
+        matching_count++;
+    }
 
     printf("\n=== Messages");
     if (start_date || end_date) {
@@ -2188,27 +2304,37 @@ int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
     }
     printf(" ===\n\n");
 
-    printf("Found %d messages:\n\n", rows);
+    printf("Found %d messages:\n\n", matching_count);
 
-    for (int i = 0; i < rows; i++) {
-        const char *id = PQgetvalue(res, i, 0);
-        const char *sender = PQgetvalue(res, i, 1);
-        const char *recipient = PQgetvalue(res, i, 2);
-        const char *timestamp = PQgetvalue(res, i, 3);
+    // Print matching messages in reverse chronological order
+    for (int i = all_count - 1; i >= 0; i--) {
+        // Apply same filters
+        bool is_sent = (strcmp(all_messages[i].sender, ctx->identity) == 0);
+        bool is_received = (strcmp(all_messages[i].recipient, ctx->identity) == 0);
 
-        if (strcmp(sender, ctx->identity) == 0) {
-            printf("  [%s] %s  To: %s\n", id, timestamp, recipient);
+        if (!include_sent && is_sent) continue;
+        if (!include_received && is_received) continue;
+
+        if (start_date && all_messages[i].timestamp < start_time) continue;
+        if (end_date && all_messages[i].timestamp >= end_time) continue;
+
+        struct tm *tm_info = localtime(&all_messages[i].timestamp);
+        char timestamp_str[32];
+        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+
+        if (strcmp(all_messages[i].sender, ctx->identity) == 0) {
+            printf("  [%d] %s  To: %s\n", all_messages[i].id, timestamp_str, all_messages[i].recipient);
         } else {
-            printf("  [%s] %s  From: %s\n", id, timestamp, sender);
+            printf("  [%d] %s  From: %s\n", all_messages[i].id, timestamp_str, all_messages[i].sender);
         }
     }
 
-    if (rows == 0) {
+    if (matching_count == 0) {
         printf("  (no messages found)\n");
     }
 
     printf("\n");
-    PQclear(res);
+    message_backup_free_messages(all_messages, all_count);
     return 0;
 }
 
@@ -2221,24 +2347,13 @@ int messenger_mark_delivered(messenger_context_t *ctx, int message_id) {
         return -1;
     }
 
-    char id_str[32];
-    snprintf(id_str, sizeof(id_str), "%d", message_id);
-
-    const char *query =
-        "UPDATE messages "
-        "SET status = 'delivered', delivered_at = CURRENT_TIMESTAMP "
-        "WHERE id = $1 AND status = 'sent'";
-
-    const char *params[1] = {id_str};
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 1, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Mark delivered failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    // Mark message as delivered in SQLite local database
+    int result = message_backup_mark_delivered(ctx->backup_ctx, message_id);
+    if (result != 0) {
+        fprintf(stderr, "Mark delivered failed from SQLite\n");
         return -1;
     }
 
-    PQclear(res);
     return 0;
 }
 
@@ -2247,31 +2362,39 @@ int messenger_mark_conversation_read(messenger_context_t *ctx, const char *sende
         return -1;
     }
 
-    // Update messages to 'read' status
-    // If delivered_at is NULL (message went directly from sent to read), set it to current timestamp
-    const char *query =
-        "UPDATE messages "
-        "SET status = 'read', "
-        "    delivered_at = COALESCE(delivered_at, CURRENT_TIMESTAMP), "
-        "    read_at = CURRENT_TIMESTAMP "
-        "WHERE recipient = $1 AND sender = $2 AND status IN ('sent', 'delivered')";
+    // Get all messages in conversation with sender
+    backup_message_t *messages = NULL;
+    int count = 0;
 
-    const char *params[2] = {ctx->identity, sender_identity};
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "Mark conversation read failed: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
+    int result = message_backup_get_conversation(ctx->backup_ctx, sender_identity, &messages, &count);
+    if (result != 0) {
+        fprintf(stderr, "Mark conversation read failed from SQLite\n");
         return -1;
     }
 
-    PQclear(res);
+    // Mark all incoming messages (where we are recipient) as read
+    for (int i = 0; i < count; i++) {
+        if (strcmp(messages[i].recipient, ctx->identity) == 0 && !messages[i].read) {
+            // First ensure it's marked as delivered
+            if (!messages[i].delivered) {
+                message_backup_mark_delivered(ctx->backup_ctx, messages[i].id);
+            }
+            // Then mark as read
+            message_backup_mark_read(ctx->backup_ctx, messages[i].id);
+        }
+    }
+
+    message_backup_free_messages(messages, count);
     return 0;
 }
 
 // ============================================================================
 // GROUP MANAGEMENT
 // ============================================================================
+// NOTE: Group functions temporarily disabled - being migrated to DHT (Phase 3)
+// See messenger_stubs.c for temporary stub implementations
+
+#if 0  // DISABLED: PostgreSQL group functions (Phase 3 - DHT migration pending)
 
 /**
  * Create a new group
@@ -2930,3 +3053,249 @@ void messenger_free_groups(group_info_t *groups, int count) {
     }
     free(groups);
 }
+
+#endif  // DISABLED: PostgreSQL group functions
+
+// ============================================================================
+// DHT CONTACT LIST SYNCHRONIZATION
+// ============================================================================
+
+/**
+ * Sync local contacts to DHT (publish)
+ * Encrypts with user's own Kyber1024 public key (self-encryption)
+ */
+int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
+    if (!ctx || !ctx->identity) {
+        fprintf(stderr, "[MESSENGER] Invalid context for DHT sync\n");
+        return -1;
+    }
+
+    // Get DHT context
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        fprintf(stderr, "[MESSENGER] DHT not available\n");
+        return -1;
+    }
+
+    printf("[MESSENGER] Syncing contacts to DHT for '%s'\n", ctx->identity);
+
+    // Load user's keys
+    const char *home = get_home_dir();
+    if (!home) {
+        fprintf(stderr, "[MESSENGER] Failed to get home directory\n");
+        return -1;
+    }
+
+    // Load Kyber keypair
+    char kyber_path[1024];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to load Kyber key\n");
+        return -1;
+    }
+
+    // Load Dilithium keypair
+    char dilithium_path[1024];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s.dsa", home, ctx->identity);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to load Dilithium key\n");
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    // Get contact list from local database
+    contact_list_t *list = NULL;
+    if (contacts_db_list(&list) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to get contact list\n");
+        qgp_key_free(kyber_key);
+        qgp_key_free(dilithium_key);
+        return -1;
+    }
+
+    // Convert to const char** array
+    const char **contacts = NULL;
+    if (list->count > 0) {
+        contacts = malloc(list->count * sizeof(char*));
+        if (!contacts) {
+            fprintf(stderr, "[MESSENGER] Failed to allocate contacts array\n");
+            contacts_db_free_list(list);
+            qgp_key_free(kyber_key);
+            qgp_key_free(dilithium_key);
+            return -1;
+        }
+
+        for (size_t i = 0; i < list->count; i++) {
+            contacts[i] = list->contacts[i].identity;
+        }
+    }
+
+    // Publish to DHT
+    int result = dht_contactlist_publish(
+        dht_ctx,
+        ctx->identity,
+        contacts,
+        list->count,
+        kyber_key->public_key,
+        kyber_key->private_key,
+        dilithium_key->public_key,
+        dilithium_key->private_key,
+        0  // Use default 7-day TTL
+    );
+
+    // Cleanup
+    if (contacts) free(contacts);
+    contacts_db_free_list(list);
+    qgp_key_free(kyber_key);
+    qgp_key_free(dilithium_key);
+
+    if (result == 0) {
+        printf("[MESSENGER] Successfully synced %zu contacts to DHT\n", list->count);
+    } else {
+        fprintf(stderr, "[MESSENGER] Failed to sync contacts to DHT\n");
+    }
+
+    return result;
+}
+
+/**
+ * Sync contacts from DHT to local database (DHT is source of truth)
+ * Replaces local contacts with DHT version
+ */
+int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
+    if (!ctx || !ctx->identity) {
+        fprintf(stderr, "[MESSENGER] Invalid context for DHT sync\n");
+        return -1;
+    }
+
+    // Get DHT context
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        fprintf(stderr, "[MESSENGER] DHT not available\n");
+        return -1;
+    }
+
+    printf("[MESSENGER] Syncing contacts from DHT for '%s'\n", ctx->identity);
+
+    // Load user's keys
+    const char *home = get_home_dir();
+    if (!home) {
+        fprintf(stderr, "[MESSENGER] Failed to get home directory\n");
+        return -1;
+    }
+
+    // Load Kyber private key for decryption
+    char kyber_path[1024];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to load Kyber key\n");
+        return -1;
+    }
+
+    // Load Dilithium public key for signature verification
+    char dilithium_path[1024];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s.dsa", home, ctx->identity);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to load Dilithium key\n");
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    // Fetch from DHT
+    char **contacts = NULL;
+    size_t count = 0;
+
+    int result = dht_contactlist_fetch(
+        dht_ctx,
+        ctx->identity,
+        &contacts,
+        &count,
+        kyber_key->private_key,
+        dilithium_key->public_key
+    );
+
+    qgp_key_free(kyber_key);
+    qgp_key_free(dilithium_key);
+
+    if (result == -2) {
+        // Not found in DHT - this is OK for first time users
+        printf("[MESSENGER] No contacts found in DHT (first time user)\n");
+        return 0;
+    }
+
+    if (result != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to fetch contacts from DHT\n");
+        return -1;
+    }
+
+    printf("[MESSENGER] Fetched %zu contacts from DHT\n", count);
+
+    // DHT is source of truth: Clear local database and repopulate
+    // Close current database
+    contacts_db_close();
+
+    // Delete local database file
+    char db_path[1024];
+    snprintf(db_path, sizeof(db_path), "%s/.dna/%s_contacts.db", home, ctx->identity);
+    unlink(db_path);
+
+    // Reinitialize
+    if (contacts_db_init(ctx->identity) != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to reinitialize contacts database\n");
+        dht_contactlist_free_contacts(contacts, count);
+        return -1;
+    }
+
+    // Add all contacts from DHT
+    size_t added = 0;
+    for (size_t i = 0; i < count; i++) {
+        if (contacts_db_add(contacts[i], NULL) == 0) {
+            added++;
+        } else {
+            fprintf(stderr, "[MESSENGER] Warning: Failed to add contact '%s'\n", contacts[i]);
+        }
+    }
+
+    dht_contactlist_free_contacts(contacts, count);
+
+    printf("[MESSENGER] Successfully synced %zu/%zu contacts from DHT (DHT is source of truth)\n", added, count);
+    return 0;
+}
+
+/**
+ * Auto-sync on first access: Try to fetch from DHT, if not found publish local
+ * Called automatically when accessing contacts for the first time
+ */
+int messenger_contacts_auto_sync(messenger_context_t *ctx) {
+    if (!ctx || !ctx->identity) {
+        return -1;
+    }
+
+    static bool sync_attempted = false;
+    if (sync_attempted) {
+        return 0;  // Already attempted
+    }
+    sync_attempted = true;
+
+    printf("[MESSENGER] Auto-sync: Checking DHT for existing contacts\n");
+
+    // Try to sync from DHT first (DHT is source of truth)
+    int result = messenger_sync_contacts_from_dht(ctx);
+
+    if (result == 0) {
+        printf("[MESSENGER] Auto-sync: Successfully synced from DHT\n");
+        return 0;
+    }
+
+    // If DHT fetch failed or not found, publish local contacts to DHT
+    printf("[MESSENGER] Auto-sync: Publishing local contacts to DHT\n");
+    return messenger_sync_contacts_to_dht(ctx);
+}
+

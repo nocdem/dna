@@ -2,7 +2,7 @@
 
 **Post-quantum encrypted messaging platform**
 
-Secure messaging using post-quantum cryptography (Kyber512 + Dilithium3) that remains secure against future quantum computer attacks.
+Secure messaging using **post-quantum cryptography** (Kyber1024 + Dilithium5 - NIST Category 5) that remains secure against future quantum computer attacks.
 
 ## Status
 
@@ -79,8 +79,8 @@ git clone https://github.com/mxe/mxe.git ~/.cache/mxe
 ### Linux (Manual Build from Source)
 
 ```bash
-# Install dependencies
-sudo apt install cmake gcc libssl-dev libpq-dev libcurl4-openssl-dev qtbase5-dev qtmultimedia5-dev
+# Install dependencies (no PostgreSQL required - uses local SQLite)
+sudo apt install cmake gcc libssl-dev libsqlite3-dev libcurl4-openssl-dev qtbase5-dev qtmultimedia5-dev libopendht-dev
 
 # Build
 git clone https://github.com/nocdem/dna-messenger.git
@@ -140,16 +140,19 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ End-to-end encryption with post-quantum algorithms
 - ✅ Multi-recipient messaging (broadcast to multiple users)
 - ✅ Persistent group chats with member management
+- ✅ Per-identity contact lists with DHT sync (multi-device support via BIP39)
 - ✅ 24-word BIP39 recovery phrases
 - ✅ Cross-platform (Linux & Windows)
-- ✅ Shared keyserver at ai.cpunk.io
+- ✅ Local SQLite storage (no server required for messages)
+- ✅ DHT-based decentralized groups (OpenDHT)
+- ✅ Keyserver cache (7-day TTL, local SQLite)
 - ✅ Auto-update mechanism
 - ✅ Theme switching (cpunk.io cyan / cpunk.club orange)
 - ✅ Dynamic font scaling (1x - 4x)
 - ✅ Message delivery and read receipts
 - ✅ Desktop notifications
 - ✅ cpunk Wallet integration (view balances, send/receive CPUNK/CELL/KEL tokens)
-- ✅ P2P messaging with DHT-based peer discovery (OpenDHT)
+- ✅ P2P messaging with DHT-based peer discovery (3 bootstrap nodes)
 - ✅ Offline message queueing (messages stored in DHT for 7 days)
 
 **Coming Soon:**
@@ -171,17 +174,8 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - Multi-recipient encryption support
 - Contact management (keyserver)
 
-### ✅ Phase 3: CLI Messenger Client (Complete - No Longer Supported)
-- Command-line chat interface
-- PostgreSQL message storage
-- Contact list management
-- Message send/receive/search
-- BIP39 mnemonic key generation
-- File-based seed phrase restore
-- Auto-login for existing identities
-- Cross-platform support (Linux & Windows)
-
-_Note: CLI messenger is no longer built or maintained. All functionality is available in the GUI application._
+### ❌ Phase 3: CLI Messenger Client (Removed - 2025-11-05)
+_CLI messenger was removed as unmaintained. All functionality is available in the GUI application._
 
 ### ✅ Phase 4: Qt Desktop App (Complete)
 - Qt5 GUI with contact list and chat area
@@ -241,7 +235,7 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
   - Theme support across all wallet dialogs
   - Direct integration with local Cellframe node via RPC
 
-### 🚧 Phase 9: Distributed P2P Architecture (In Progress)
+### ✅ Phase 9: Distributed P2P Architecture (COMPLETE)
 - ✅ **Phase 9.1:** P2P Transport Layer (COMPLETE)
   - OpenDHT integration for peer discovery
   - Direct peer-to-peer messaging via TCP
@@ -254,8 +248,26 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
   - Binary serialization with SHA256 keys
   - 2-minute automatic polling in GUI
 
-- 📋 **Phase 9.3:** Group P2P messaging (planned)
-- 📋 **Phase 9.4:** Distributed DHT keyserver (planned)
+- ✅ **Phase 9.3:** PostgreSQL → SQLite Migration (COMPLETE)
+  - Local SQLite message storage (no centralized DB)
+  - DHT-based groups with UUID v4 + SHA256 keys
+  - Local SQLite cache for offline access
+  - Full CRUD operations for groups
+
+- ✅ **Phase 9.4:** DHT-based Keyserver with Signed Reverse Mapping (COMPLETE)
+  - Cryptographically signed reverse mappings (fingerprint → identity)
+  - Sender identification without pre-added contacts
+  - Cross-platform signature verification
+  - Prevents identity spoofing attacks
+
+- ✅ **Phase 9.5:** Per-Identity Contact Lists with DHT Sync (COMPLETE)
+  - Per-identity SQLite databases (`~/.dna/<identity>_contacts.db`)
+  - Automatic migration from global contacts.db
+  - DHT synchronization with Kyber1024 self-encryption
+  - Dilithium5 signatures for authenticity
+  - Multi-device support via BIP39 seed phrase
+  - Manual and automatic sync in GUI (10-minute timer)
+  - SHA3-512 DHT key derivation for contact list storage
 
 ### 📋 Phase 10: DNA Board - Censorship-Resistant Social Media (Planned)
 **True free speech platform** built on cpunk validator network:
@@ -273,7 +285,7 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
 
 ### 📋 Phase 11: Post-Quantum Voice/Video Calls (Planned)
 **Full quantum-safe voice and video calls:**
-- Kyber512 via DNA messaging (bypasses WebRTC's quantum-vulnerable DTLS)
+- Kyber1024 via DNA messaging (bypasses WebRTC's quantum-vulnerable DTLS)
 - libsrtp2 + AES-256-GCM media encryption
 - libopus audio, libvpx/libx264 video
 - Timeline: ~20 weeks
@@ -302,23 +314,42 @@ _Note: CLI messenger is no longer built or maintained. All functionality is avai
 
 ## Architecture
 
-**Current (Phase 4):**
-- Client application (GUI, CLI, or Web)
-- PostgreSQL message storage (ai.cpunk.io:5432)
-- Centralized keyserver API for public key distribution
-- Your private keys stay on your device (`~/.dna/`)
+**Current (Post-Migration - Fully Decentralized):**
+
+**Data Storage:**
+- **Messages:** Local SQLite database (`~/.dna/messages.db`)
+- **Contacts:** Per-identity SQLite databases (`~/.dna/<identity>_contacts.db`)
+  - DHT sync with Kyber1024 self-encryption (SHA3-512 key derivation)
+  - Multi-device support via BIP39 seed phrase
+- **Groups:** DHT-based storage with local SQLite cache (UUID v4 + SHA256 keys)
+- **Public Keys:** DHT-based keyserver with local SQLite cache (7-day TTL, SHA3-512 keys)
+- **Private Keys:** Local encrypted storage (`~/.dna/`)
+
+**P2P Transport Layer:**
+- **Direct Messaging:** TCP connections on port 4001 (when peer online)
+- **Offline Queue:** DHT storage with 7-day TTL (when peer offline)
+- **Peer Discovery:** OpenDHT with 3 public bootstrap nodes:
+  - dna-bootstrap-us-1 (154.38.182.161)
+  - dna-bootstrap-eu-1 (164.68.105.227)
+  - dna-bootstrap-eu-2 (164.68.116.180)
+- **Group Management:** Decentralized DHT storage (no central server)
+
+**Deployment Scripts:**
+- `dht/deploy-bootstrap.sh` - Automated bootstrap node deployment
+- `dht/monitor-bootstrap.sh` - Health monitoring for bootstrap network
 
 **Security:**
 - Messages encrypted on your device before sending
 - Only recipient can decrypt (end-to-end encryption)
-- Post-quantum algorithms (Kyber512 + Dilithium3)
+- Post-quantum algorithms (Kyber1024 + Dilithium5 - NIST Category 5)
 - Cryptographically signed messages (tamper-proof)
-- Future: P2P transport with libp2p (encrypted multiplexing)
+- No centralized message storage (privacy by design)
+- DHT replication for offline message resilience
 
 ## Cryptography
 
-- **Key Encapsulation:** Kyber512 (NIST PQC Level 1)
-- **Signatures:** Dilithium3 (ML-DSA-65, FIPS 204)
+- **Key Encapsulation:** Kyber1024 (ML-KEM-1024, FIPS 203) - NIST Category 5
+- **Signatures:** Dilithium5 (ML-DSA-87, FIPS 204) - NIST Category 5
 - **Symmetric:** AES-256-GCM (AEAD)
 - **Key Derivation:** PBKDF2-HMAC-SHA512
 
@@ -345,7 +376,6 @@ Forked from [QGP (Quantum Good Privacy)](https://github.com/nocdem/qgp)
 - **GitLab (Primary):** https://gitlab.cpunk.io/cpunk/dna-messenger
 - **GitHub (Backup):** https://github.com/nocdem/dna-messenger
 - **Parent Project:** https://github.com/nocdem/qgp
-- **Server:** ai.cpunk.io:5432
 - **cpunk.io:** https://cpunk.io
 - **cpunk.club:** https://cpunk.club
 - **Telegram:** https://web.telegram.org/k/#@chippunk_official

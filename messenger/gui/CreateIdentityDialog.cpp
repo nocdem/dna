@@ -9,7 +9,6 @@
 extern "C" {
     #include "../messenger.h"
     #include "../bip39.h"
-    #include "../messenger/keyserver_register.h"
 }
 
 CreateIdentityDialog::CreateIdentityDialog(QWidget *parent)
@@ -350,7 +349,7 @@ void CreateIdentityDialog::validateIdentityName()
 
     // Check if identity already exists locally
     QString homeDir = QDir::homePath();
-    QString keyFile = homeDir + "/.dna/" + identity + "-dilithium.pqkey";
+    QString keyFile = homeDir + "/.dna/" + identity + ".dsa";
     if (QFile::exists(keyFile)) {
         errorLabel1->setText("❌ Identity already exists locally");
         return;
@@ -444,24 +443,20 @@ bool CreateIdentityDialog::performKeyGeneration()
     }
 
     progressBar->setValue(3);
-    statusLabel->setText("Registering to keyserver...");
+    statusLabel->setText("Saving keys and registering to DHT keyserver...");
     QApplication::processEvents();
 
-    // Generate and upload keys to PostgreSQL keyserver
-    int result = messenger_generate_keys(ctx, identityBytes.data());
+    // Generate keys from seeds (non-interactive, no password prompts, no QGP files)
+    int result = messenger_generate_keys_from_seeds(ctx, identityBytes.data(),
+                                                     signing_seed, encryption_seed);
+
+    // Securely wipe seeds from memory
+    memset(signing_seed, 0, sizeof(signing_seed));
+    memset(encryption_seed, 0, sizeof(encryption_seed));
+
     if (result != 0) {
         messenger_free(ctx);
         return false;
-    }
-
-    progressBar->setValue(4);
-    statusLabel->setText("Registering to cpunk.io keyserver...");
-    QApplication::processEvents();
-
-    // Register to cpunk.io keyserver
-    if (register_to_keyserver(identityBytes.data()) != 0) {
-        // Note: This is non-critical, identity is still usable
-        printf("[WARNING] Failed to register to cpunk.io keyserver\n");
     }
 
     progressBar->setValue(5);

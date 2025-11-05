@@ -8,10 +8,15 @@
 #include "messenger.h"
 #include "p2p/p2p_transport.h"
 #include "dht/dht_offline_queue.h"
+#include "dht/dht_keyserver.h"
+#include "dht/dht_context.h"
+#include "keyserver_cache.h"
+#include "contacts_db.h"
+#include "qgp_sha3.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <libpq-fe.h>
+#include <openssl/sha.h>
 
 // Platform-specific headers for home directory detection
 #ifndef _WIN32
@@ -31,6 +36,81 @@ static const char *BOOTSTRAP_NODES[] = {
 // ============================================================================
 // HELPER FUNCTIONS
 // ============================================================================
+
+/**
+ * Load my own Dilithium public key from local file
+ * Used during P2P init to avoid circular dependency with keyserver
+ *
+ * @return: 0 on success, -1 on error
+ */
+static int load_my_dilithium_pubkey(
+    messenger_context_t *ctx,
+    uint8_t **pubkey_out,
+    size_t *pubkey_len_out
+)
+{
+    // Get home directory
+    const char *home = NULL;
+
+#ifdef _WIN32
+    home = getenv("USERPROFILE");
+    if (!home) {
+        static char win_home[512];
+        const char *homedrive = getenv("HOMEDRIVE");
+        const char *homepath = getenv("HOMEPATH");
+        if (homedrive && homepath) {
+            snprintf(win_home, sizeof(win_home), "%s%s", homedrive, homepath);
+            home = win_home;
+        }
+    }
+#else
+    home = getenv("HOME");
+    if (!home) {
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) {
+            home = pw->pw_dir;
+        }
+    }
+#endif
+
+    if (!home) {
+        fprintf(stderr, "[P2P] Cannot determine home directory\n");
+        return -1;
+    }
+
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa",
+             home, ctx->identity);
+
+    FILE *f = fopen(key_path, "rb");
+    if (!f) {
+        fprintf(stderr, "[P2P] Failed to open key file: %s\n", key_path);
+        return -1;
+    }
+
+    // Skip header (276 bytes) and read public key (2592 bytes)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 2592 bytes][PRIVATE_KEY: 4896 bytes]
+    fseek(f, 276, SEEK_SET);
+
+    uint8_t *pubkey = malloc(2592);  // Dilithium5 public key size
+    if (!pubkey) {
+        fclose(f);
+        return -1;
+    }
+
+    size_t read = fread(pubkey, 1, 2592, f);
+    fclose(f);
+
+    if (read != 2592) {
+        fprintf(stderr, "[P2P] Invalid public key size: %zu (expected 2592)\n", read);
+        free(pubkey);
+        return -1;
+    }
+
+    *pubkey_out = pubkey;
+    *pubkey_len_out = 2592;  // Dilithium5 public key size
+    return 0;
+}
 
 /**
  * Load Dilithium public key for an identity from keyserver
@@ -109,7 +189,7 @@ static int load_my_privkey(
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium.pqkey",
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa",
              home, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
@@ -182,7 +262,7 @@ static int load_my_kyber_key(
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-kyber512.pqkey",
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.kem",
              home, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
@@ -220,57 +300,155 @@ static int load_my_kyber_key(
  *
  * @return: identity string (caller must free), or NULL if not found
  */
+/**
+ * Extract sender identity from encrypted message by parsing signature
+ * Encrypted format: [header | recipients | nonce | ciphertext | tag | signature]
+ * Signature format: [type(1) | pkey_size(2) | sig_size(2) | pubkey | sig_bytes]
+ */
+static char* extract_sender_from_encrypted(
+    messenger_context_t *ctx,
+    const uint8_t *encrypted_msg,
+    size_t msg_len
+)
+{
+    if (!ctx || !encrypted_msg || msg_len < 100) {
+        return NULL;
+    }
+
+    // Parse header to get signature offset
+    typedef struct {
+        char magic[8];
+        uint8_t version;
+        uint8_t enc_key_type;
+        uint8_t recipient_count;
+        uint8_t reserved;
+        uint32_t encrypted_size;
+        uint32_t signature_size;
+    } __attribute__((packed)) msg_header_t;
+
+    const msg_header_t *header = (const msg_header_t*)encrypted_msg;
+    if (memcmp(header->magic, "PQSIGENC", 8) != 0) {
+        return NULL;  // Invalid format
+    }
+
+    // Calculate signature offset
+    size_t header_size = sizeof(msg_header_t);
+    size_t recipient_entry_size = 1568 + 40;  // Kyber1024 ciphertext + wrapped_dek
+    size_t recipients_size = header->recipient_count * recipient_entry_size;
+    size_t nonce_size = 12;
+    size_t ciphertext_size = header->encrypted_size;
+    size_t tag_size = 16;
+
+    size_t sig_offset = header_size + recipients_size + nonce_size + ciphertext_size + tag_size;
+
+    if (sig_offset + 5 > msg_len) {
+        return NULL;  // Message too short
+    }
+
+    // Parse signature header: [type(1) | pkey_size(2) | sig_size(2) | pubkey | sig]
+    const uint8_t *sig_data = encrypted_msg + sig_offset;
+    uint16_t pkey_size = (sig_data[1] << 8) | sig_data[2];
+
+    if (pkey_size != 2592) {  // Dilithium5 public key size
+        return NULL;  // Not Dilithium5
+    }
+
+    // Extract signing pubkey
+    const uint8_t *signing_pubkey = sig_data + 5;
+
+    // Search keyserver cache for identity with matching Dilithium pubkey
+    // We'll use the keyserver cache lookup by iterating through it
+    // This is not optimal but works for small contact lists
+
+    // Get contacts list
+    contact_list_t *contacts = NULL;
+    if (contacts_db_list(&contacts) != 0 || !contacts) {
+        return NULL;
+    }
+
+    // Check each contact's cached pubkey
+    for (size_t i = 0; i < contacts->count; i++) {
+        const char *identity = contacts->contacts[i].identity;
+        keyserver_cache_entry_t *entry = NULL;
+
+        if (keyserver_cache_get(identity, &entry) == 0 && entry) {
+            // Compare Dilithium pubkeys
+            if (memcmp(entry->dilithium_pubkey, signing_pubkey, 2592) == 0) {  // Dilithium5 public key size
+                // Found matching contact!
+                char *result = strdup(identity);
+                keyserver_cache_free_entry(entry);
+                contacts_db_free_list(contacts);
+                return result;
+            }
+            keyserver_cache_free_entry(entry);
+        }
+    }
+
+    // Free contacts list
+    contacts_db_free_list(contacts);
+
+    // Not in contacts - try DHT reverse lookup (fingerprint → identity)
+    printf("[P2P] Sender not in contacts, querying DHT reverse mapping...\n");
+
+    // Compute fingerprint as hex string (SHA3-512 of pubkey)
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    qgp_sha3_512(signing_pubkey, 2592, hash);  // Dilithium5 public key size
+
+    char fingerprint[129];  // SHA3-512 hex string = 128 chars + null
+    for (int i = 0; i < 64; i++) {
+        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+    }
+    fingerprint[128] = '\0';  // Null-terminate at position 128
+
+    // Get DHT context from P2P transport
+    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    if (!dht_ctx) {
+        printf("[P2P] ✗ No DHT context available for reverse lookup\n");
+        return NULL;
+    }
+
+    // Query DHT for reverse mapping (fingerprint → identity)
+    char *identity = NULL;
+    int result = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &identity);
+
+    if (result == 0 && identity) {
+        printf("[P2P] ✓ DHT reverse lookup found: %s (fingerprint: %.16s...)\n", identity, fingerprint);
+
+        // Cache the identity in contacts for faster lookup next time
+        // (User can add them to contacts manually later if they want)
+        return identity;  // Caller must free
+    } else if (result == -2) {
+        printf("[P2P] ✗ Identity not found in DHT (fingerprint: %.16s...)\n", fingerprint);
+    } else if (result == -3) {
+        printf("[P2P] ✗ DHT reverse mapping signature verification failed (fingerprint: %.16s...)\n", fingerprint);
+    } else {
+        printf("[P2P] ✗ DHT reverse lookup error (fingerprint: %.16s...)\n", fingerprint);
+    }
+
+    return NULL;  // No matching identity found
+}
+
 static char* lookup_identity_for_pubkey(
     messenger_context_t *ctx,
     const uint8_t *pubkey,
     size_t pubkey_len
 )
 {
-    if (!ctx || !ctx->pg_conn || !pubkey || pubkey_len != 1952) {
+    if (!ctx || !pubkey || pubkey_len != 2592) {  // Dilithium5 public key size
         return NULL;
     }
 
-    // Convert pubkey to hex for SQL query
-    char *pubkey_hex = malloc(pubkey_len * 2 + 1);
-    if (!pubkey_hex) {
-        return NULL;
-    }
+    // Search DHT keyserver for identity matching this Dilithium pubkey
+    // This requires iterating through the keyserver or maintaining a reverse lookup
+    // For now, we'll extract identity from the encrypted message signature later
 
-    for (size_t i = 0; i < pubkey_len; i++) {
-        sprintf(pubkey_hex + i * 2, "%02x", pubkey[i]);
-    }
-    pubkey_hex[pubkey_len * 2] = '\0';
+    // TODO: Implement reverse DHT lookup (pubkey → identity)
+    // This would require either:
+    // 1. Storing a reverse index in local cache (pubkey_fingerprint → identity)
+    // 2. Iterating through known contacts and comparing pubkeys
+    // 3. Extracting identity from encrypted message signature
 
-    // Query keyserver for identity matching this signing_pubkey
-    const char *params[1] = { pubkey_hex };
-    PGresult *res = PQexecParams(
-        ctx->pg_conn,
-        "SELECT identity FROM keyserver WHERE encode(signing_pubkey, 'hex') = $1",
-        1,
-        NULL,
-        params,
-        NULL,
-        NULL,
-        0
-    );
-
-    free(pubkey_hex);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        fprintf(stderr, "[P2P] Failed to query keyserver: %s\n", PQerrorMessage(ctx->pg_conn));
-        PQclear(res);
-        return NULL;
-    }
-
-    if (PQntuples(res) == 0) {
-        // No identity found for this pubkey
-        PQclear(res);
-        return NULL;
-    }
-
-    char *identity = strdup(PQgetvalue(res, 0, 0));
-    PQclear(res);
-    return identity;
+    return NULL;  // Will be updated after message is processed
 }
 
 // ============================================================================
@@ -317,8 +495,8 @@ int messenger_p2p_init(messenger_context_t *ctx)
         return -1;
     }
 
-    // Load Dilithium public key (from keyserver)
-    if (load_pubkey_for_identity(ctx, ctx->identity, &dilithium_pubkey, &dilithium_pubkey_len) != 0) {
+    // Load Dilithium public key (from local file, not keyserver to avoid circular dependency)
+    if (load_my_dilithium_pubkey(ctx, &dilithium_pubkey, &dilithium_pubkey_len) != 0) {
         fprintf(stderr, "[P2P] Failed to load Dilithium public key\n");
         free(dilithium_privkey);
         return -1;
@@ -326,7 +504,7 @@ int messenger_p2p_init(messenger_context_t *ctx)
 
     // Load Kyber512 key
     if (load_my_kyber_key(ctx, &kyber_key, &kyber_key_len) != 0) {
-        fprintf(stderr, "[P2P] Failed to load Kyber512 key\n");
+        fprintf(stderr, "[P2P] Failed to load KEM-1024 key\n");
         free(dilithium_privkey);
         free(dilithium_pubkey);
         return -1;
@@ -535,52 +713,45 @@ static void p2p_message_received_internal(
     // Lookup identity for this pubkey (may be NULL if no handshake yet)
     char *sender_identity = NULL;
     if (peer_pubkey) {
-        sender_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 1952);
+        sender_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 2592);  // Dilithium5 public key size
+    }
+
+    // If not found via pubkey, try extracting from encrypted message signature
+    if (!sender_identity && message && message_len > 0) {
+        sender_identity = extract_sender_from_encrypted(ctx, message, message_len);
+        if (sender_identity) {
+            printf("[P2P] ✓ Identified sender from message signature: %s\n", sender_identity);
+        }
     }
 
     if (sender_identity) {
         printf("[P2P] ✓ Received P2P message from %s (%zu bytes)\n", sender_identity, message_len);
     } else {
         printf("[P2P] ✓ Received P2P message from unknown peer (%zu bytes)\n", message_len);
-        // We'll try to identify sender from the decrypted message content later
+        printf("[P2P] Hint: Add sender as contact to see their identity\n");
         sender_identity = strdup("unknown");
     }
 
-    // Store in PostgreSQL so messenger_list_messages() can retrieve it
+    // Store in SQLite local database so messenger_list_messages() can retrieve it
     // The message is already encrypted at this point
-    // Use schema: (sender, recipient, ciphertext, ciphertext_len, message_group_id)
-    char len_str[32];
-    snprintf(len_str, sizeof(len_str), "%zu", message_len);
+    time_t now = time(NULL);
 
-    const char *params[4] = {
-        sender_identity,
-        ctx->identity,
-        (const char*)message,  // This should be the encrypted message blob
-        len_str
-    };
-    int param_lengths[4] = { 0, 0, (int)message_len, 0 };
-    int param_formats[4] = { 0, 0, 1, 0 };  // Binary format for ciphertext
-
-    PGresult *res = PQexecParams(
-        ctx->pg_conn,
-        "INSERT INTO messages (sender, recipient, ciphertext, ciphertext_len) "
-        "VALUES ($1, $2, $3, $4::integer)",
-        4,
-        NULL,
-        params,
-        param_lengths,
-        param_formats,
-        0
+    int result = message_backup_save(
+        ctx->backup_ctx,
+        sender_identity,    // sender
+        ctx->identity,      // recipient (us)
+        message,            // encrypted message
+        message_len,        // encrypted length
+        now,                // timestamp
+        false               // is_outgoing = false (we're receiving)
     );
 
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        fprintf(stderr, "[P2P] Failed to store received message: %s\n",
-                PQerrorMessage(ctx->pg_conn));
+    if (result != 0) {
+        fprintf(stderr, "[P2P] Failed to store received message in SQLite\n");
     } else {
-        printf("[P2P] Message from %s stored in PostgreSQL\n", sender_identity);
+        printf("[P2P] ✓ Message from %s stored in SQLite\n", sender_identity);
     }
 
-    PQclear(res);
     free(sender_identity);
 }
 
@@ -594,7 +765,7 @@ static void p2p_connection_state_changed(
         return;
     }
 
-    char *peer_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 1952);
+    char *peer_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 2592);  // Dilithium5 public key size
     if (peer_identity) {
         printf("[P2P] %s %s\n", peer_identity, is_connected ? "CONNECTED" : "DISCONNECTED");
         free(peer_identity);

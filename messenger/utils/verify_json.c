@@ -1,5 +1,5 @@
 /*
- * verify_json - Verify JSON signature with Dilithium public key
+ * verify_json - Verify JSON signature with Dilithium5 public key
  *
  * Usage: verify_json <json_string> <signature_b64> <pubkey_b64>
  * Output: "VALID" or "INVALID" to stdout
@@ -82,9 +82,9 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
-    if (sig_len != QGP_DILITHIUM3_BYTES) {
+    if (sig_len != QGP_DSA87_SIGNATURE_BYTES) {
         fprintf(stderr, "Error: Invalid signature length (%zu, expected %d)\n",
-                sig_len, QGP_DILITHIUM3_BYTES);
+                sig_len, QGP_DSA87_SIGNATURE_BYTES);
         free(signature);
         return 2;
     }
@@ -98,16 +98,16 @@ int main(int argc, char *argv[]) {
         return 2;
     }
 
-    if (pubkey_len != QGP_DILITHIUM3_PUBLICKEYBYTES) {
+    if (pubkey_len != QGP_DSA87_PUBLICKEYBYTES) {
         fprintf(stderr, "Error: Invalid public key length (%zu, expected %d)\n",
-                pubkey_len, QGP_DILITHIUM3_PUBLICKEYBYTES);
+                pubkey_len, QGP_DSA87_PUBLICKEYBYTES);
         free(signature);
         free(pubkey);
         return 2;
     }
 
     // Verify signature
-    int result = qgp_dilithium3_verify(
+    int result = qgp_dsa87_verify(
         signature, sig_len,
         (const uint8_t*)json_str, strlen(json_str),
         pubkey

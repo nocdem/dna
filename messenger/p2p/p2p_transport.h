@@ -51,7 +51,7 @@ typedef struct {
     char ip[64];                    // IPv4 or IPv6 address
     uint16_t port;                  // TCP port
     uint64_t last_seen;             // Unix timestamp
-    uint8_t public_key[1952];       // Dilithium3 public key
+    uint8_t public_key[2592];       // Dilithium5 public key
     bool is_online;                 // Currently reachable
 } peer_info_t;
 
@@ -59,7 +59,7 @@ typedef struct {
  * Message Callback
  * Called when a P2P message is received
  *
- * @param peer_pubkey Sender's Dilithium3 public key (1952 bytes)
+ * @param peer_pubkey Sender's Dilithium5 public key (2592 bytes)
  * @param message Decrypted message data
  * @param message_len Length of decrypted message
  * @param user_data User-provided callback data
@@ -75,7 +75,7 @@ typedef void (*p2p_message_callback_t)(
  * Connection State Callback
  * Called when a peer connects or disconnects
  *
- * @param peer_pubkey Peer's Dilithium3 public key (1952 bytes)
+ * @param peer_pubkey Peer's Dilithium5 public key (2592 bytes)
  * @param is_connected true if connected, false if disconnected
  * @param user_data User-provided callback data
  */
@@ -94,7 +94,7 @@ typedef void (*p2p_connection_callback_t)(
  *
  * @param config Configuration (will be copied)
  * @param my_privkey_dilithium Dilithium3 private key (4016 bytes)
- * @param my_pubkey_dilithium Dilithium3 public key (1952 bytes)
+ * @param my_pubkey_dilithium Dilithium5 public key (2592 bytes)
  * @param my_kyber_key Kyber512 private key (2400 bytes) for encryption
  * @param message_callback Called when message received (can be NULL)
  * @param connection_callback Called on peer connect/disconnect (can be NULL)
@@ -134,6 +134,15 @@ void p2p_transport_stop(p2p_transport_t *ctx);
  */
 void p2p_transport_free(p2p_transport_t *ctx);
 
+/**
+ * Get DHT context from P2P transport
+ * Used for accessing DHT directly (e.g., for group management)
+ *
+ * @param ctx P2P transport context
+ * @return DHT context pointer (do not free)
+ */
+struct dht_context* p2p_transport_get_dht_context(p2p_transport_t *ctx);
+
 // ============================================================================
 // Peer Discovery (DHT-based)
 // ============================================================================
@@ -154,7 +163,7 @@ int p2p_register_presence(p2p_transport_t *ctx);
  * Queries: hash(peer_pubkey) -> { ip, port, timestamp }
  *
  * @param ctx P2P transport context
- * @param peer_pubkey Peer's Dilithium3 public key (1952 bytes)
+ * @param peer_pubkey Peer's Dilithium5 public key (2592 bytes)
  * @param peer_info Output - peer information (caller-allocated)
  * @return 0 on success (peer found), -1 if not found
  */
@@ -181,7 +190,7 @@ int p2p_lookup_peer(
  * If peer is offline and offline_queue is enabled, stores in DHT
  *
  * @param ctx P2P transport context
- * @param peer_pubkey Recipient's Dilithium3 public key (1952 bytes)
+ * @param peer_pubkey Recipient's Dilithium5 public key (2592 bytes)
  * @param message Plaintext message
  * @param message_len Length of message
  * @return 0 on success, -1 on failure
@@ -247,7 +256,7 @@ int p2p_queue_offline_message(
  */
 int p2p_get_connected_peers(
     p2p_transport_t *ctx,
-    uint8_t (*pubkeys)[1952],
+    uint8_t (*pubkeys)[2592],  // Dilithium5 public keys
     size_t max_peers,
     size_t *count
 );
@@ -256,7 +265,7 @@ int p2p_get_connected_peers(
  * Disconnect from a specific peer
  *
  * @param ctx P2P transport context
- * @param peer_pubkey Peer's Dilithium3 public key (1952 bytes)
+ * @param peer_pubkey Peer's Dilithium5 public key (2592 bytes)
  * @return 0 on success, -1 if peer not connected
  */
 int p2p_disconnect_peer(

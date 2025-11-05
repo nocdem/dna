@@ -1,4 +1,5 @@
 #include "dht_offline_queue.h"
+#include "../qgp_sha3.h"
 #include <openssl/evp.h>
 #include <string.h>
 #include <stdlib.h>
@@ -13,26 +14,21 @@
 #endif
 
 /**
- * SHA256 hash helper (same as p2p_transport.c)
- * Updated to use OpenSSL 3.0 EVP API
+ * SHA3-512 hash helper (Category 5 security)
+ * Uses qgp_sha3.h wrapper for consistent hashing
  */
-static void sha256_hash(const uint8_t *data, size_t len, uint8_t *hash_out) {
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) return;
-
-    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
-    EVP_DigestUpdate(ctx, data, len);
-    EVP_DigestFinal_ex(ctx, hash_out, NULL);
-    EVP_MD_CTX_free(ctx);
+static void sha3_512_hash(const uint8_t *data, size_t len, uint8_t *hash_out) {
+    qgp_sha3_512(data, len, hash_out);
 }
 
 /**
  * Generate DHT storage key for recipient's offline queue
+ * Uses SHA3-512 for 256-bit quantum security
  */
 void dht_generate_queue_key(const char *recipient, uint8_t *key_out) {
     char key_input[512];
     snprintf(key_input, sizeof(key_input), "%s:offline_queue", recipient);
-    sha256_hash((const uint8_t*)key_input, strlen(key_input), key_out);
+    sha3_512_hash((const uint8_t*)key_input, strlen(key_input), key_out);
 }
 
 /**

@@ -2,13 +2,13 @@
  * DNA Messenger - CLI Messenger Module
  *
  * Storage Architecture:
- * - Private keys: ~/.dna/<identity>-dilithium.pqkey, <identity>-kyber512.pqkey (filesystem)
- * - Public keys: PostgreSQL keyserver table (shared, network-ready)
- * - Messages: PostgreSQL messages table (shared, network-ready)
+ * - Private keys: ~/.dna/<identity>.dsa, <identity>.kem (filesystem)
+ * - Public keys: DHT-based keyserver (decentralized, permanent)
+ * - Messages: SQLite local database (user owns their data)
  *
  * Phase 9.1b: Hybrid P2P Transport
  * - P2P direct messaging when both peers online (via DHT + TCP)
- * - PostgreSQL fallback for offline message delivery
+ * - SQLite local storage for all messages (no server dependency)
  */
 
 #ifndef MESSENGER_H
@@ -17,9 +17,9 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include <libpq-fe.h>
 #include "dna_api.h"
 #include "p2p/p2p_transport.h"
+#include "message_backup.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -42,11 +42,11 @@ typedef struct {
 
 /**
  * Messenger Context
- * Manages PostgreSQL connection and DNA API context
+ * Manages SQLite local database and DNA API context
  */
 typedef struct {
     char *identity;              // User's identity name (e.g., "alice")
-    PGconn *pg_conn;             // PostgreSQL connection
+    message_backup_context_t *backup_ctx;  // SQLite local message storage
     dna_context_t *dna_ctx;      // DNA API context
 
     // P2P Transport (Phase 9.1b: Hybrid P2P messaging)
@@ -80,8 +80,8 @@ typedef struct {
 /**
  * Initialize messenger context
  *
- * Connects to PostgreSQL database (local or network)
- * Connection string: postgresql://dna:dna_password@localhost:5432/dna_messenger
+ * Opens local SQLite database at ~/.dna/messages.db
+ * Creates database if it doesn't exist.
  *
  * @param identity: User's identity name
  * @return: Messenger context, or NULL on error
@@ -103,8 +103,8 @@ void messenger_free(messenger_context_t *ctx);
  * Generate new key pair for identity
  *
  * Creates:
- * - ~/.dna/<identity>-dilithium.pqkey (private signing key)
- * - ~/.dna/<identity>-kyber512.pqkey (private encryption key)
+ * - ~/.dna/<identity>.dsa (private signing key)
+ * - ~/.dna/<identity>.kem (private encryption key)
  * - Uploads public keys to PostgreSQL keyserver
  *
  * @param ctx: Messenger context
@@ -112,6 +112,26 @@ void messenger_free(messenger_context_t *ctx);
  * @return: 0 on success, -1 on error
  */
 int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
+
+/**
+ * Generate key pair from BIP39-derived seeds (non-interactive, for GUI)
+ *
+ * Generates keys deterministically from provided seeds without user prompts.
+ * Creates DNA format files only (no QGP keyrings).
+ * Uploads public keys to DHT keyserver.
+ *
+ * @param ctx: Messenger context
+ * @param identity: Identity name (e.g., "alice")
+ * @param signing_seed: 32-byte seed for Dilithium3 key generation
+ * @param encryption_seed: 32-byte seed for Kyber512 key generation
+ * @return: 0 on success, -1 on error
+ */
+int messenger_generate_keys_from_seeds(
+    messenger_context_t *ctx,
+    const char *identity,
+    const uint8_t *signing_seed,
+    const uint8_t *encryption_seed
+);
 
 /**
  * Restore key pair from BIP39 recovery seed
@@ -203,6 +223,11 @@ int messenger_list_pubkeys(messenger_context_t *ctx);
  * @return: 0 on success, -1 on error
  */
 int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out, int *count_out);
+
+// DHT contact list synchronization
+int messenger_sync_contacts_to_dht(messenger_context_t *ctx);
+int messenger_sync_contacts_from_dht(messenger_context_t *ctx);
+int messenger_contacts_auto_sync(messenger_context_t *ctx);
 
 /**
  * Delete public key from keyserver

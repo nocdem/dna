@@ -15,7 +15,7 @@ NC='\033[0m'
 
 REPO_URL="https://github.com/nocdem/dna-messenger.git"
 INSTALL_DIR="${DNA_INSTALL_DIR:-$HOME/dna-messenger}"
-BUILD_TYPE="${BUILD_TYPE:-Release}"
+BUILD_TYPE="${BUILD_TYPE:-RelWithDebInfo}"  # Release with debug symbols for GDB
 
 echo -e "${BLUE}=========================================${NC}"
 echo -e "${BLUE} DNA Messenger - Build Script${NC}"
@@ -88,12 +88,8 @@ mkdir -p build
 cd build
 
 # Configure
-echo -e "${YELLOW}Configuring with CMake...${NC}"
-if [ "$BUILD_TYPE" = "Debug" ]; then
-    cmake .. -DCMAKE_BUILD_TYPE=Debug
-else
-    cmake .. -DCMAKE_BUILD_TYPE=Release
-fi
+echo -e "${YELLOW}Configuring with CMake (${BUILD_TYPE})...${NC}"
+cmake .. -DCMAKE_BUILD_TYPE=${BUILD_TYPE}
 
 # Build
 echo -e "${YELLOW}Building (this may take a few minutes)...${NC}"

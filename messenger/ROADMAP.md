@@ -1,8 +1,8 @@
 # DNA Messenger - Development Roadmap
 
 **Version:** 0.1.120+
-**Last Updated:** 2025-10-23
-**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4 & 8 Complete
+**Last Updated:** 2025-11-03
+**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4, 8, 9.1, 9.2, PostgreSQL Migration Complete
 
 ---
 
@@ -79,15 +79,15 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 3: CLI Messenger Client ✅ COMPLETE
+## Phase 3: CLI Messenger Client ✅ COMPLETE (PostgreSQL → SQLite Migration ✅)
 
 **Timeline:** 2-3 weeks
-**Status:** Complete
+**Status:** Complete (PostgreSQL removed 2025-11-03)
 
 ### Objectives
 - Build reference messenger implementation
 - Command-line chat interface
-- PostgreSQL message storage
+- ~~PostgreSQL message storage~~ → **Migrated to local SQLite** (2025-11-03)
 - Contact management
 
 ### Completed Tasks
@@ -390,23 +390,114 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [x] SHA256-based DHT keys (recipient + ":offline_queue")
 - [x] Single-queue-per-recipient architecture
 - [x] Cross-platform support (Windows/Linux network byte order)
-- [x] Hybrid delivery: P2P direct → DHT queue → PostgreSQL fallback
+- [x] Hybrid delivery: P2P direct → DHT queue → ~~PostgreSQL~~ SQLite fallback
 
-#### Phase 9.3: Local Cache & Sync (4 weeks)
+#### Phase 9.3: PostgreSQL → SQLite Migration ✅ COMPLETE
+**Completed:** 2025-11-03
+
+Complete migration from centralized PostgreSQL to local SQLite storage:
+
+- [x] **Messages:** Migrated from PostgreSQL to local SQLite (`~/.dna/messages.db`)
+- [x] **Groups:** Migrated from PostgreSQL to DHT-based storage with local SQLite cache
+  - UUID v4 group identification (36-character format)
+  - SHA256-based DHT keys for decentralized group metadata
+  - JSON serialization for group data
+  - Local SQLite cache for offline access
+  - Full CRUD operations (create, get, update, add/remove members, delete)
+  - 11 group functions completely rewritten (NO STUBS)
+- [x] **Keyserver Cache:** Implemented local SQLite cache for public keys
+  - 7-day TTL with automatic expiry
+  - Cache-first strategy (check cache → on miss fetch API → store result)
+  - BLOB storage for Dilithium (1952 bytes) and Kyber (800 bytes) keys
+  - Cross-platform Windows/Linux support
+- [x] **Build System:** Removed all PostgreSQL dependencies from CMakeLists.txt
+- [x] **Bootstrap Deployment:** Created automated deployment scripts
+  - `dht/deploy-bootstrap.sh` - Complete automated deployment (8 steps)
+  - `dht/monitor-bootstrap.sh` - Comprehensive health monitoring (10 checks per node)
+  - 3 public bootstrap nodes (US/EU) operational
+
+**Result:** DNA Messenger is now fully decentralized with NO centralized database dependencies.
+
+#### Phase 9.4: DHT-based Keyserver with Signed Reverse Mapping ✅ COMPLETE
+**Completed:** 2025-11-04
+
+Implemented cryptographically signed reverse mappings for sender identification without requiring pre-added contacts:
+
+- [x] **Forward Mapping:** `SHA256(identity + ":pubkey")` → signed public key entry
+- [x] **Reverse Mapping:** `SHA256(fingerprint + ":reverse")` → signed identity entry
+  - Stores: dilithium_pubkey, identity, timestamp, fingerprint, signature
+  - Signature covers: dilithium_pubkey || identity || timestamp
+  - Prevents identity spoofing attacks
+- [x] **dht_keyserver_reverse_lookup():** Fetches and verifies reverse mappings
+  - Verifies fingerprint matches pubkey (prevents substitution)
+  - Verifies Dilithium3 signature (prevents spoofing)
+  - Returns: 0 (success), -1 (error), -2 (not found), -3 (verification failed)
+- [x] **Sender Identification:** Integrated into P2P message receive flow
+  - Two-tier lookup: contacts cache first, then DHT reverse mapping
+  - Extracts fingerprint from message signature
+  - Queries DHT when sender not in contacts
+  - Displays actual identity instead of "unknown"
+- [x] **Cross-platform Compatibility:** Network byte order for timestamps
+- [x] **Security:** Signed mappings prevent identity spoofing and pubkey substitution
+
+**Use Case:** Alice publishes keys (forward + reverse). Bob sends message to Alice WITHOUT adding her as contact. Alice receives message and DHT reverse lookup identifies "Bob" from message signature.
+
+**Files Modified:**
+- `dht/dht_keyserver.c` - Added signed reverse mapping storage and lookup (150+ lines)
+- `dht/dht_keyserver.h` - Added reverse lookup function declaration
+- `messenger_p2p.c` - Integrated reverse lookup into message receive flow (40+ lines)
+
+#### Phase 9.5: Per-Identity Contact Lists with DHT Sync ✅ COMPLETE
+**Completed:** 2025-11-05
+
+Implemented per-identity contact lists with DHT synchronization for multi-device support:
+
+- [x] **Per-Identity Databases:** `~/.dna/<identity>_contacts.db` (isolated storage)
+- [x] **Automatic Migration:** Migrates from global `contacts.db` to per-identity databases
+- [x] **DHT Contact List Sync:** Full implementation in `dht/dht_contactlist.c/h` (820+ lines)
+  - SHA3-512 DHT key derivation: `hash(identity + ":contactlist")`
+  - JSON serialization with timestamp and version
+  - Kyber1024 self-encryption (user encrypts with own public key)
+  - Dilithium5 signatures for authenticity
+  - 7-day TTL with auto-republish capability
+- [x] **Multi-Device Support:** Same BIP39 seed → same keys → decrypt contacts on any device
+- [x] **GUI Integration:** Manual and automatic sync controls
+  - Status indicator: `📇 Contacts: Local` → `📇 Syncing...` → `📇 Synced ✓`
+  - Manual sync button: Settings → Sync Contacts to DHT
+  - Auto-sync timer: Every 10 minutes in background
+- [x] **Security Features:**
+  - Self-encryption prevents unauthorized access
+  - DHT is source of truth (replaces local on sync)
+  - Signature prevents tampering
+  - Predictable storage location but encrypted data
+
+**Use Case:** User adds contacts on Device A, syncs to DHT. Later restores identity from seed on Device B. Auto-sync downloads and decrypts contact list. Contacts appear automatically.
+
+**Files Created:**
+- `dht/dht_contactlist.h` (207 lines) - DHT contact list API
+- `dht/dht_contactlist.c` (820 lines) - Full implementation with encryption
+
+**Files Modified:**
+- `contacts_db.h/c` - Per-identity databases + migration (170+ lines)
+- `messenger.h/c` - Sync functions (240+ lines)
+- `gui/MainWindow.h/cpp` - Sync UI and timers (93 lines)
+- `dht/CMakeLists.txt` - Build configuration
+
+**Total Changes:** 1,469+ lines added/modified
+
+#### Phase 9.6: Local Cache & Sync (Planned)
 - [ ] SQLite encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM)
 - [ ] Background sync protocol (local ↔ DHT)
 - [ ] Multi-device message synchronization
 - [ ] Offline mode with automatic sync on reconnect
 - [ ] Incremental sync for large histories
 
-#### Phase 9.4: Distributed DHT Keyserver (4 weeks)
-- [ ] Store public keys in DHT (replicated)
-- [ ] Replace centralized HTTP keyserver
-- [ ] Self-signed key verification (TOFU model)
+#### Phase 9.7: DHT Keyserver Enhancements (Planned)
 - [ ] Key rotation and update protocol
 - [ ] Optional: Blockchain anchoring for tamper-proofing
+- [ ] DHT replication monitoring
 
-#### Phase 9.5: Integration & Testing (4 weeks)
+#### Phase 9.8: Integration & Testing (Planned)
 - [ ] End-to-end testing with 5-10 peers
 - [ ] Network resilience testing (peer churn)
 - [ ] Performance optimization
@@ -760,9 +851,14 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 ### ✅ Completed
 - **Phase 1:** Fork Preparation
 - **Phase 2:** Library API Design
-- **Phase 3:** CLI Messenger Client
+- **Phase 3:** CLI Messenger Client (PostgreSQL → SQLite migration complete)
 - **Phase 4:** Desktop Application (with groups!)
 - **Phase 8:** cpunk Wallet Integration (Cellframe Backbone)
+- **Phase 9.1:** P2P Transport Layer (OpenDHT + TCP)
+- **Phase 9.2:** Offline Message Queueing (DHT storage with 7-day TTL)
+- **Phase 9.3:** PostgreSQL → SQLite Migration (Fully decentralized storage)
+- **Phase 9.4:** DHT-based Keyserver with Signed Reverse Mapping
+- **Phase 9.5:** Per-Identity Contact Lists with DHT Sync
 
 ### 🚧 In Progress
 - **Phase 5:** Web-Based Messenger (active on `feature/web-messenger` branch)
@@ -770,8 +866,10 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 ### 📋 Planned
 - **Phase 6:** Mobile Applications
 - **Phase 7:** Advanced Security Features
-- **Phase 9:** Distributed P2P Architecture (libp2p + OpenDHT)
-- **Phase 10+:** Future Enhancements (voice/video calls, advanced features)
+- **Phase 9.6-9.8:** Multi-device message sync, DHT keyserver enhancements, integration testing
+- **Phase 10:** DNA Board (Censorship-resistant social media)
+- **Phase 11:** Post-Quantum Voice/Video Calls
+- **Phase 12+:** Future Enhancements
 
 ---
 
@@ -792,11 +890,30 @@ DNA Messenger is in active development. Contributions welcome!
 **Current Version:** 0.1.120+
 **Next Milestone:** Web Messenger (Phase 5)
 **Recent Achievements:**
-- ✅ cpunk Wallet integration complete! (Phase 8)
+- ✅ **Per-Identity Contact Lists with DHT Sync!** (Phase 9.5 - 2025-11-05)
+  - Isolated contact databases per identity
+  - Kyber1024 self-encryption for DHT storage
+  - Multi-device sync via BIP39 seed phrase
+  - Automatic migration from global contacts
+  - GUI sync controls with status indicators
+- ✅ **DHT-based Keyserver with Signed Reverse Mapping!** (Phase 9.4 - 2025-11-04)
+  - Cryptographically signed reverse mappings (fingerprint → identity)
+  - Sender identification without pre-added contacts
+  - Prevents identity spoofing attacks
+  - Cross-platform signature verification
+- ✅ **PostgreSQL → SQLite Migration Complete!** (Phase 9.3 - 2025-11-03)
+  - Fully decentralized storage (NO centralized database)
+  - DHT-based groups with UUID v4 + SHA256 keys
+  - Keyserver cache with 7-day TTL
+  - Bootstrap deployment automation
+- ✅ **Offline Message Queueing** (Phase 9.2 - 2025-11-02)
+  - 7-day DHT storage for offline recipients
+  - Automatic 2-minute polling
+  - Binary serialization with magic bytes
+- ✅ **cpunk Wallet Integration** (Phase 8)
   - View CPUNK, CELL, KEL balances
   - Send/receive tokens with QR codes
   - Full transaction history with color-coded status
   - Theme-aware wallet UI
 - ✅ Full group messaging feature complete!
 - ✅ Public key caching (100x API call reduction)
-- ✅ Inline keyserver registration (no external utilities)

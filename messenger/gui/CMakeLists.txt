@@ -44,7 +44,6 @@ set(GUI_SOURCES
     ../bip39_pbkdf2.c
     ../seed_derivation.c
     ../keygen.c
-    ../messenger/keyserver_register.c
     resources.qrc
 )
 
@@ -66,6 +65,7 @@ target_link_libraries(dna_messenger_gui
     cellframe_dilithium
     ${PQ_LIBRARY}
     ${JSONC_LIBRARIES}
+    ${SQLite3_LIBRARIES}
 )
 
 # Link CURL and OpenSSL (order matters for static linking)

@@ -20,7 +20,7 @@
 #include <stdlib.h>
 
 
-#include "crypto/kyber512/fips202_kyber.h"
+#include "crypto/kem/fips202_kyber.h"
 
 /**
  * Derive QGP signing and encryption seeds from BIP39 mnemonic

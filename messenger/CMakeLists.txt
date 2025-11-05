@@ -125,34 +125,8 @@ else()
     endif()
 endif()
 
-# PostgreSQL for keyserver and message storage (Phase 3+4)
-find_library(PQ_LIBRARY NAMES pq libpq)
-find_path(PQ_INCLUDE_DIR libpq-fe.h PATHS /usr/include/postgresql PATH_SUFFIXES postgresql pgsql)
-if(NOT PQ_LIBRARY OR NOT PQ_INCLUDE_DIR)
-    message(FATAL_ERROR "PostgreSQL libpq not found. Install: apt install libpq-dev (Linux) or build with MXE for Windows cross-compilation")
-endif()
-message(STATUS "PostgreSQL libpq found: ${PQ_LIBRARY}")
-message(STATUS "PostgreSQL include: ${PQ_INCLUDE_DIR}")
-
-# PostgreSQL internal libraries (required for static linking on Windows)
-if(WIN32)
-    find_library(PGCOMMON_LIBRARY NAMES pgcommon libpgcommon PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-    find_library(PGPORT_LIBRARY NAMES pgport libpgport PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-
-    if(PGCOMMON_LIBRARY)
-        message(STATUS "PostgreSQL pgcommon found: ${PGCOMMON_LIBRARY}")
-    else()
-        message(WARNING "PostgreSQL pgcommon not found - may cause linking errors")
-    endif()
-
-    if(PGPORT_LIBRARY)
-        message(STATUS "PostgreSQL pgport found: ${PGPORT_LIBRARY}")
-    else()
-        message(WARNING "PostgreSQL pgport not found - may cause linking errors")
-    endif()
-endif()
-
-# SQLite3 for local message backup (Phase 9.3)
+# NOTE: PostgreSQL removed 2025-11-03 - migrated to SQLite for decentralization
+# SQLite3 for all local storage (messages, keyserver cache)
 find_package(SQLite3 REQUIRED)
 if(SQLite3_FOUND)
     message(STATUS "SQLite3 found: ${SQLite3_VERSION}")
@@ -163,8 +137,8 @@ else()
 endif()
 
 # SDK Independence: Vendored cryptographic implementations
-add_subdirectory(crypto/kyber512)   # Kyber512 KEM (includes FIPS202/SHAKE256)
-add_subdirectory(crypto/dilithium)  # Dilithium3 signatures
+add_subdirectory(crypto/kem)        # ML-KEM-1024 KEM (includes FIPS202/SHAKE256)
+add_subdirectory(crypto/dsa)        # ML-DSA-87 signatures (NIST Category 5)
 add_subdirectory(crypto/cellframe_dilithium)  # Cellframe-compatible Dilithium (for CF20 wallet)
 
 # Phase 9.1: DHT and P2P Transport Layer
@@ -197,6 +171,7 @@ set(COMMON_SOURCES
     qgp_aes.c
     qgp_kyber.c
     qgp_dilithium.c
+    qgp_sha3.c         # Phase 10: SHA3-512 for Category 5 security
     # SDK Independence: Infrastructure modules
     qgp_key.c
     qgp_signature.c
@@ -212,40 +187,32 @@ add_library(dna_lib STATIC
     dna_api.c
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
-    messenger/keyserver_register.c
+    messenger_stubs.c  # DHT-based group functions (Phase 3)
+    keyserver_cache.c  # Phase 4: SQLite keyserver cache
+    contacts_db.c      # Phase 9.4: Local contacts database
     ${COMMON_SOURCES}
 )
 
 target_link_libraries(dna_lib
     OpenSSL::Crypto
-    kyber512
-    dilithium
+    kem
+    dsa
     dht_lib        # Phase 9.1: DHT library (MUST come BEFORE p2p_transport for Windows stub symbols)
     p2p_transport  # Phase 9.1b: P2P transport layer (links OpenDHT, needs dht_lib stubs first)
     dht_lib        # Link dht_lib again to resolve circular deps with p2p_transport
     p2p_transport  # Link p2p_transport again for static linking order
     stdc++         # C++ standard library (required by dht_lib and OpenDHT)
-    ${PQ_LIBRARY}
     ${JSONC_LIBRARIES}
     ${PLATFORM_LIBS}
 )
 
-# On Windows with static linking, link PostgreSQL internal libs and Windows system libs
+# On Windows with static linking, link Windows system libs
 if(WIN32)
-    # PostgreSQL internal libraries for static linking
-    if(PGCOMMON_LIBRARY)
-        target_link_libraries(dna_lib ${PGCOMMON_LIBRARY})
-    endif()
-    if(PGPORT_LIBRARY)
-        target_link_libraries(dna_lib ${PGPORT_LIBRARY})
-    endif()
-
-    # Windows system libraries (required by OpenSSL and PostgreSQL)
+    # Windows system libraries (required by OpenSSL and DHT)
     target_link_libraries(dna_lib
         ws2_32      # Windows Sockets
         crypt32     # Cryptography
         secur32     # Security functions (SSPI)
-        wldap32     # LDAP support (PostgreSQL)
     )
 endif()
 
@@ -258,7 +225,6 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/p2p  # Phase 9.1b: P2P transport headers
     ${CMAKE_SOURCE_DIR}/dht  # Phase 9.1: DHT headers
     ${OPENSSL_INCLUDE_DIR}
-    ${PQ_INCLUDE_DIR}
 )
 
 # Add json-c include directories if found
@@ -277,115 +243,9 @@ if(WIN32)
     )
 endif()
 
-# DNA Messenger CLI (Phase 3) - DISABLED
-# CLI messenger has complex OpenDHT dependency chain for Windows static linking.
-# Use GUI application instead (dna_messenger_gui).
-#
-# To re-enable: set BUILD_CLI_MESSENGER to ON
-option(BUILD_CLI_MESSENGER "Build command-line messenger (requires complex OpenDHT dependencies)" OFF)
-
-if(BUILD_CLI_MESSENGER)
-    add_executable(dna_messenger
-        messenger/main.c
-        messenger/keyserver_register.c
-        messenger.c
-    )
-    target_link_libraries(dna_messenger
-        dna_lib
-        ${PQ_LIBRARY}
-        ${JSONC_LIBRARIES}
-        OpenSSL::SSL
-        OpenSSL::Crypto
-        SQLite::SQLite3
-    )
-
-    # On Windows, add zlib, C++ standard library, and OpenDHT dependencies (libfmt, jsoncpp, gnutls, argon2)
-    if(WIN32)
-        # Find libfmt (required by OpenDHT)
-        find_library(FMT_LIBRARY NAMES fmt libfmt PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        if(FMT_LIBRARY)
-            message(STATUS "libfmt found: ${FMT_LIBRARY}")
-        else()
-            message(WARNING "libfmt not found - may cause linking errors with OpenDHT")
-        endif()
-
-        # Find jsoncpp (required by OpenDHT)
-        find_library(JSONCPP_LIBRARY NAMES jsoncpp libjsoncpp PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        if(JSONCPP_LIBRARY)
-            message(STATUS "jsoncpp found: ${JSONCPP_LIBRARY}")
-        else()
-            message(WARNING "jsoncpp not found - may cause linking errors with OpenDHT")
-        endif()
-
-        # Find gnutls (required by OpenDHT for TLS/crypto)
-        find_library(GNUTLS_LIBRARY NAMES gnutls libgnutls PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        if(GNUTLS_LIBRARY)
-            message(STATUS "gnutls found: ${GNUTLS_LIBRARY}")
-        else()
-            message(WARNING "gnutls not found - may cause linking errors with OpenDHT")
-        endif()
-
-        # Find argon2 (required by OpenDHT for password hashing)
-        find_library(ARGON2_LIBRARY NAMES argon2 libargon2 PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        if(ARGON2_LIBRARY)
-            message(STATUS "argon2 found: ${ARGON2_LIBRARY}")
-        else()
-            message(WARNING "argon2 not found - may cause linking errors with OpenDHT")
-        endif()
-
-        # Find gnutls dependencies
-        find_library(TASN1_LIBRARY NAMES tasn1 libtasn1 PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        find_library(NETTLE_LIBRARY NAMES nettle libnettle PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        find_library(HOGWEED_LIBRARY NAMES hogweed libhogweed PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        find_library(GMP_LIBRARY NAMES gmp libgmp PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        find_library(UNISTRING_LIBRARY NAMES unistring libunistring PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        find_library(ZSTD_LIBRARY NAMES zstd libzstd PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        find_library(IDN2_LIBRARY NAMES idn2 libidn2 PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        find_library(ICONV_LIBRARY NAMES iconv libiconv PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        find_library(BROTLIENC_LIBRARY NAMES brotlienc libbrotlienc PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        find_library(BROTLIDEC_LIBRARY NAMES brotlidec libbrotlidec PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-        find_library(BROTLICOMMON_LIBRARY NAMES brotlicommon libbrotlicommon PATHS ${CMAKE_FIND_ROOT_PATH}/lib)
-
-        # Link all dependencies (order matters for static linking)
-        # IMPORTANT: Dependencies must be linked BEFORE the libraries that use them
-        target_link_libraries(dna_messenger
-            z stdc++
-            ${FMT_LIBRARY}
-            ${JSONCPP_LIBRARY}
-            ${GNUTLS_LIBRARY}
-            ${TASN1_LIBRARY}
-            ${HOGWEED_LIBRARY}
-            ${NETTLE_LIBRARY}
-            ${GMP_LIBRARY}
-            ${BROTLIENC_LIBRARY}
-            ${BROTLIDEC_LIBRARY}
-            ${BROTLICOMMON_LIBRARY}
-            ${ZSTD_LIBRARY}
-            ${IDN2_LIBRARY}
-            ${UNISTRING_LIBRARY}
-            ${ICONV_LIBRARY}
-            ${ARGON2_LIBRARY}
-            # Windows system libraries (gnutls, OpenSSL, PostgreSQL dependencies)
-            ${GNUTLS_LIBRARY}    # Link gnutls again for circular dependencies
-            bcrypt       # Windows BCrypt API (random number generation)
-            ncrypt       # Windows NCrypt API (CNG key storage)
-            crypt32      # Windows certificate store
-            ws2_32       # Windows Sockets
-            iphlpapi     # IP Helper API (inet_ntop)
-        )
-    endif()
-
-    target_include_directories(dna_messenger PRIVATE ${CMAKE_SOURCE_DIR} ${PQ_INCLUDE_DIR})
-
-    # Platform-specific install paths
-    if(WIN32)
-        install(TARGETS dna_messenger DESTINATION .)
-    else()
-        install(TARGETS dna_messenger DESTINATION bin)
-    endif()
-else()
-    message(STATUS "CLI messenger disabled. Use GUI application (dna_messenger_gui) instead.")
-endif()
+# DNA Messenger CLI - REMOVED
+# CLI messenger has been removed (unmaintained).
+# Use GUI application (dna_messenger_gui) for all functionality.
 
 # Cellframe minimal library (transaction building and signing)
 # MUST be defined BEFORE GUI subdirectories that depend on it

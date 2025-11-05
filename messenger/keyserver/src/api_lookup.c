@@ -8,7 +8,7 @@
 #include "db.h"
 #include <string.h>
 
-enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, PGconn *db_conn,
+enum MHD_Result api_lookup_handler(struct MHD_Connection *connection, sqlite3 *db_conn,
                                     const char *dna) {
     char client_ip[46];
 

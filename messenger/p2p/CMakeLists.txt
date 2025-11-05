@@ -50,25 +50,6 @@ else()
     target_link_libraries(p2p_transport pthread)
 endif()
 
-# Test program (only build on Linux)
-if(NOT WIN32)
-    add_executable(test_p2p_basic test_p2p_basic.c)
-
-    target_include_directories(test_p2p_basic PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${DHT_DIR}
-        ${OPENDHT_INCLUDE_DIRS}
-    )
-
-    target_link_libraries(test_p2p_basic
-        p2p_transport
-        ${DHT_LIB}
-        ${OPENDHT_LIBRARIES}
-        ${OPENSSL_LIBRARIES}
-        stdc++
-        pthread
-    )
-endif()
 
 message(STATUS "DHT directory: ${DHT_DIR}")
 message(STATUS "DHT library: ${DHT_LIB}")

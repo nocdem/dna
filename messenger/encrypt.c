@@ -2,12 +2,12 @@
  * pqsignum - File encryption using Kyber512 KEM + AES-256
  *
  * - qgp_key_load() for loading signing keys (QGP format)
- * - qgp_kyber512_enc() for Kyber512 encapsulation (vendored)
- * - qgp_dilithium3_signature() for signing (vendored)
+ * - qgp_kem1024_encapsulate() for Kyber512 encapsulation (vendored)
+ * - qgp_dsa87_sign() for signing (vendored)
  * - qgp_aes256_encrypt() for AES encryption (standalone)
  *
  * Security Model:
- * - Kyber512 public key encapsulation (800-byte pubkey → 768-byte ciphertext)
+ * - Kyber1024 public key encapsulation (1568-byte pubkey → 1568-byte ciphertext)
  * - 32-byte shared secret derived via KEM
  * - AES-256-GCM encryption of file with derived key (AEAD)
  * - Header authenticated via AAD
@@ -25,13 +25,13 @@
 
 // File format for Kyber-encrypted files
 #define PQSIGNUM_ENC_MAGIC "PQSIGENC"
-#define PQSIGNUM_ENC_VERSION 0x05  // Version 5: Multi-recipient with AES-GCM (AEAD)
+#define PQSIGNUM_ENC_VERSION 0x06  // Version 6: Category 5 (Kyber1024 + Dilithium5 + SHA3-512)
 
 // Unified header (supports 1-255 recipients)
 PACK_STRUCT_BEGIN
 typedef struct {
     char magic[8];              // "PQSIGENC"
-    uint8_t version;            // 0x05 (GCM)
+    uint8_t version;            // 0x06 (Category 5)
     uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t reserved;
@@ -42,7 +42,7 @@ typedef struct {
 // Recipient entry for multi-recipient encryption
 PACK_STRUCT_BEGIN
 typedef struct {
-    uint8_t kyber_ciphertext[768];    // Kyber512 ciphertext (encapsulated shared secret)
+    uint8_t kyber_ciphertext[1568];   // Kyber1024 ciphertext (encapsulated shared secret)
     uint8_t wrapped_dek[40];          // AES-wrapped DEK (32-byte DEK + 8-byte IV)
 } PACK_STRUCT_END recipient_entry_t;
 
@@ -50,7 +50,7 @@ typedef struct {
  * Load recipient's public key from .pub file (binary or ASCII armored)
  *
  * Reads .pub file created by --export command
- * Extracts Kyber512 encryption public key (800 bytes)
+ * Extracts Kyber1024 encryption public key (1568 bytes)
  * Supports both binary and ASCII armored formats
  *
  * @param pubkey_file: Path to recipient's .pub file
@@ -174,14 +174,14 @@ static int load_recipient_pubkey(const char *pubkey_file, uint8_t **pubkey_out, 
     }
 
 
-    if (header.enc_key_type != QGP_KEY_TYPE_KYBER512) {
-        fprintf(stderr, "Error: Public key does not contain Kyber512 encryption key (got type: %d)\n", header.enc_key_type);
+    if (header.enc_key_type != QGP_KEY_TYPE_KEM1024) {
+        fprintf(stderr, "Error: Public key does not contain ML-KEM-1024 encryption key (got type: %d)\n", header.enc_key_type);
         free(bundle_data);
         return EXIT_ERROR;
     }
 
-    if (header.enc_pubkey_size != 800) {
-        fprintf(stderr, "Error: Invalid Kyber512 public key size: %u (expected 800)\n", header.enc_pubkey_size);
+    if (header.enc_pubkey_size != 1568) {
+        fprintf(stderr, "Error: Invalid Kyber1024 public key size: %u (expected 1568)\n", header.enc_pubkey_size);
         free(bundle_data);
         return EXIT_ERROR;
     }
@@ -210,7 +210,7 @@ static int load_recipient_pubkey(const char *pubkey_file, uint8_t **pubkey_out, 
     } else {
         printf("✓ Loaded recipient public key\n");
     }
-    printf("  Kyber512 public key: %u bytes\n", header.enc_pubkey_size);
+    printf("  ML-KEM-1024 public key: %u bytes\n", header.enc_pubkey_size);
 
     *pubkey_out = pubkey;
     *pubkey_size_out = header.enc_pubkey_size;
@@ -265,7 +265,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
     size_t ciphertext_size = 0;
     size_t signature_size = 0;
 
-    printf("Encrypting and signing file for %zu recipient(s) with Kyber512 KEM + AES-256\n", recipient_count);
+    printf("Encrypting and signing file for %zu recipient(s) with ML-KEM-1024 + AES-256\n", recipient_count);
     printf("  Input file: %s\n", input_file);
     printf("  Output file: %s\n", output_file);
     printf("  Signing key: %s\n", signing_key_path);
@@ -386,14 +386,14 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
     printf("\n[4/7] Signing file...\n");
 
 
-    if (sign_key->type != QGP_KEY_TYPE_DILITHIUM3) {
-        fprintf(stderr, "Error: Only Dilithium3 signatures are supported\n");
+    if (sign_key->type != QGP_KEY_TYPE_DSA87) {
+        fprintf(stderr, "Error: Only ML-DSA-87 signatures are supported\n");
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
     }
 
-    size_t dilithium_sig_size = QGP_DILITHIUM3_BYTES;
-    size_t pkey_size = QGP_DILITHIUM3_PUBLICKEYBYTES;
+    size_t dilithium_sig_size = QGP_DSA87_SIGNATURE_BYTES;
+    size_t pkey_size = QGP_DSA87_PUBLICKEYBYTES;
 
     // Allocate QGP signature structure
     signature = qgp_signature_new(QGP_SIG_TYPE_DILITHIUM, pkey_size, dilithium_sig_size);
@@ -408,12 +408,12 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
 
     // Create Dilithium3 signature
     size_t actual_sig_len = 0;
-    if (qgp_dilithium3_signature(
+    if (qgp_dsa87_sign(
             qgp_signature_get_bytes(signature),  // Output after public key
             &actual_sig_len,
             plaintext, plaintext_size,
             sign_key->private_key) != 0) {
-        fprintf(stderr, "Error: Dilithium3 signature creation failed\n");
+        fprintf(stderr, "Error: DSA-87 signature creation failed\n");
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
     }
@@ -422,7 +422,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
     signature->signature_size = actual_sig_len;
 
     // Protocol Mode: MANDATORY round-trip verification
-    if (qgp_dilithium3_verify(
+    if (qgp_dsa87_verify(
             qgp_signature_get_bytes(signature),  // Signature after public key
             actual_sig_len,
             plaintext, plaintext_size,
@@ -457,7 +457,7 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
 
     printf("  ✓ File signed successfully\n");
     printf("  ✓ Signature size: %zu bytes\n", signature_size);
-    printf("  ✓ Algorithm: Dilithium3\n");
+    printf("  ✓ Algorithm: ML-DSA-87\n");
 
     // ======================================================================
     // STEP 6: Generate random DEK (Data Encryption Key)
@@ -538,8 +538,8 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
 
 
         // Allocate buffers for Kyber ciphertext and shared secret (KEK)
-        uint8_t *kyber_ciphertext = malloc(QGP_KYBER512_CIPHERTEXTBYTES);
-        uint8_t *kek = malloc(QGP_KYBER512_BYTES);  // KEK = shared secret
+        uint8_t *kyber_ciphertext = malloc(QGP_KEM1024_CIPHERTEXTBYTES);
+        uint8_t *kek = malloc(QGP_KEM1024_SHAREDSECRET_BYTES);  // KEK = shared secret
 
         if (!kyber_ciphertext || !kek) {
             fprintf(stderr, "Error: Memory allocation failed for recipient %zu\n", i+1);
@@ -550,23 +550,23 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
         }
 
         // Perform Kyber512 encapsulation: KEM.Encaps(recipient_pubkey) → (ciphertext, shared_secret/KEK)
-        if (qgp_kyber512_enc(kyber_ciphertext, kek, recipient_pubkeys[i]) != 0) {
-            fprintf(stderr, "Error: Kyber512 encapsulation failed for recipient %zu\n", i+1);
+        if (qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_pubkeys[i]) != 0) {
+            fprintf(stderr, "Error: KEM-1024 encapsulation failed for recipient %zu\n", i+1);
             free(kyber_ciphertext);
-            memset(kek, 0, QGP_KYBER512_BYTES);  // Wipe KEK before freeing
+            memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);  // Wipe KEK before freeing
             free(kek);
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup;
         }
 
-        printf("  ✓ Kyber512 encapsulation successful\n");
+        printf("  ✓ KEM-1024 encapsulation successful\n");
 
         // Wrap DEK with KEK using AES Key Wrap (RFC 3394)
         uint8_t wrapped_dek[40];  // 32-byte DEK + 8-byte IV
         if (aes256_wrap_key(dek, 32, kek, wrapped_dek) != 0) {
             fprintf(stderr, "Error: Failed to wrap DEK for recipient %zu\n", i+1);
             free(kyber_ciphertext);
-            memset(kek, 0, QGP_KYBER512_BYTES);  // Wipe KEK before freeing
+            memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);  // Wipe KEK before freeing
             free(kek);
             ret = EXIT_CRYPTO_ERROR;
             goto cleanup;
@@ -575,12 +575,12 @@ int cmd_encrypt_file(const char *input_file, const char *output_file,
         printf("  ✓ DEK wrapped successfully (AES Key Wrap)\n");
 
         // Store recipient entry
-        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ciphertext, 768);
+        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ciphertext, 1568);  // Kyber1024 ciphertext size
         memcpy(recipient_entries[i].wrapped_dek, wrapped_dek, 40);
 
         // Cleanup for this recipient (securely wipe KEK)
         free(kyber_ciphertext);
-        memset(kek, 0, QGP_KYBER512_BYTES);  // Wipe KEK
+        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);  // Wipe KEK
         free(kek);
     }
 

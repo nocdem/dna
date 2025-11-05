@@ -21,22 +21,16 @@ pkg_check_modules(MICROHTTPD REQUIRED libmicrohttpd)
 include_directories(${MICROHTTPD_INCLUDE_DIRS})
 link_directories(${MICROHTTPD_LIBRARY_DIRS})
 
-# PostgreSQL libpq
-find_path(PostgreSQL_INCLUDE_DIR libpq-fe.h
-    PATHS /usr/include/postgresql /usr/local/include/postgresql
-          /usr/include/pgsql /usr/local/include/pgsql
-)
-find_library(PostgreSQL_LIBRARY pq
-    PATHS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu
-)
-
-if(PostgreSQL_INCLUDE_DIR AND PostgreSQL_LIBRARY)
-    message(STATUS "PostgreSQL found:")
-    message(STATUS "  Include: ${PostgreSQL_INCLUDE_DIR}")
-    message(STATUS "  Library: ${PostgreSQL_LIBRARY}")
-    include_directories(${PostgreSQL_INCLUDE_DIR})
+# SQLite3 (migrated from PostgreSQL 2025-11-03)
+find_package(SQLite3 REQUIRED)
+if(SQLite3_FOUND)
+    message(STATUS "SQLite3 found:")
+    message(STATUS "  Version: ${SQLite3_VERSION}")
+    message(STATUS "  Include: ${SQLite3_INCLUDE_DIRS}")
+    message(STATUS "  Library: ${SQLite3_LIBRARIES}")
+    include_directories(${SQLite3_INCLUDE_DIRS})
 else()
-    message(FATAL_ERROR "PostgreSQL not found")
+    message(FATAL_ERROR "SQLite3 not found")
 endif()
 
 # json-c
@@ -77,7 +71,7 @@ add_executable(keyserver ${SOURCES} ${HEADERS})
 # Link libraries
 target_link_libraries(keyserver
     ${MICROHTTPD_LIBRARIES}
-    ${PostgreSQL_LIBRARY}
+    ${SQLite3_LIBRARIES}
     ${JSON_C_LIBRARIES}
     m  # math library
 )
@@ -85,7 +79,7 @@ target_link_libraries(keyserver
 # Install target
 install(TARGETS keyserver DESTINATION bin)
 install(FILES config/keyserver.conf.example DESTINATION etc/dna-keyserver)
-install(FILES sql/schema.sql DESTINATION share/dna-keyserver/sql)
+install(FILES sql/schema_sqlite.sql DESTINATION share/dna-keyserver/sql)
 
 # Print configuration
 message(STATUS "")

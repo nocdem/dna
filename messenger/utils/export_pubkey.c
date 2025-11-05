@@ -49,7 +49,7 @@ char* base64_encode(const uint8_t *data, size_t len) {
 int main(int argc, char *argv[]) {
     if (argc != 2) {
         fprintf(stderr, "Usage: %s <key_path>\n", argv[0]);
-        fprintf(stderr, "Example: %s ~/.dna/nocdem-dilithium.pqkey\n", argv[0]);
+        fprintf(stderr, "Example: %s ~/.dna/nocdem.dsa\n", argv[0]);
         return 1;
     }
 

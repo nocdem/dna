@@ -5,7 +5,7 @@ HTTP REST API keyserver for DNA Messenger identity management.
 ## Features
 
 - RESTful HTTP API
-- Dilithium3 signature verification
+- Dilithium5 signature verification
 - PostgreSQL backend
 - Rate limiting
 - Version monotonicity (anti-replay)
@@ -126,7 +126,7 @@ PostgreSQL Database
 
 ## Security
 
-- Dilithium3 signature verification on all registrations
+- Dilithium5 signature verification on all registrations
 - Version monotonicity prevents replay attacks
 - Rate limiting per IP address
 - Input validation (handle format, key sizes, timestamps)
@@ -143,7 +143,7 @@ keyserver/
 │   ├── api_list.c       # GET /list handler
 │   ├── db.c             # PostgreSQL wrapper
 │   ├── validation.c     # Request validation
-│   ├── signature.c      # Dilithium3 verification
+│   ├── signature.c      # Dilithium5 verification
 │   └── rate_limit.c     # Rate limiting
 ├── sql/
 │   └── schema.sql       # PostgreSQL schema

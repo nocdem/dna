@@ -10,6 +10,7 @@
 
 extern "C" {
     #include "../wallet.h"
+    #include "../contacts_db.h"
 }
 
 #include <QApplication>
@@ -53,7 +54,7 @@ QString MainWindow::getLocalIdentity() {
 
 #ifdef _WIN32
     // Windows: use FindFirstFile
-    QString searchPath = dnaDir.filePath("*-dilithium.pqkey");
+    QString searchPath = dnaDir.filePath("*.dsa");
     WIN32_FIND_DATAA findData;
     HANDLE hFind = FindFirstFileA(searchPath.toUtf8().constData(), &findData);
 
@@ -61,17 +62,17 @@ QString MainWindow::getLocalIdentity() {
         return QString();  // No identity files found
     }
 
-    // Extract identity from filename (remove -dilithium.pqkey suffix)
+    // Extract identity from filename (remove .dsa suffix)
     QString filename = QString::fromUtf8(findData.cFileName);
     FindClose(hFind);
 
-    if (filename.endsWith("-dilithium.pqkey")) {
-        return filename.left(filename.length() - 16);  // Remove suffix (16 chars: "-dilithium.pqkey")
+    if (filename.endsWith(".dsa")) {
+        return filename.left(filename.length() - 4);  // Remove suffix (4 chars: ".dsa")
     }
     return QString();
 #else
     // Unix: use glob
-    QString pattern = dnaDir.filePath("*-dilithium.pqkey");
+    QString pattern = dnaDir.filePath("*.dsa");
     glob_t globResult;
 
     if (glob(pattern.toUtf8().constData(), GLOB_NOSORT, NULL, &globResult) == 0 && globResult.gl_pathc > 0) {
@@ -81,8 +82,8 @@ QString MainWindow::getLocalIdentity() {
 
         globfree(&globResult);
 
-        if (filename.endsWith("-dilithium.pqkey")) {
-            return filename.left(filename.length() - 16);  // Remove suffix (16 chars: "-dilithium.pqkey")
+        if (filename.endsWith(".dsa")) {
+            return filename.left(filename.length() - 4);  // Remove suffix (4 chars: ".dsa")
         }
     }
 
@@ -117,6 +118,21 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
                               QString("Failed to initialize messenger for '%1'").arg(currentIdentity));
         QApplication::quit();
         return;
+    }
+
+    // Initialize per-identity contacts database
+    if (contacts_db_init(currentIdentity.toUtf8().constData()) != 0) {
+        QMessageBox::critical(this, "Error",
+                              QString("Failed to initialize contacts database for '%1'").arg(currentIdentity));
+        QApplication::quit();
+        return;
+    }
+
+    // Migrate from global contacts.db if needed (first time only)
+    int migrated = contacts_db_migrate_from_global(currentIdentity.toUtf8().constData());
+    if (migrated > 0) {
+        QMessageBox::information(this, "Contacts Migrated",
+                                QString("Migrated %1 contacts from global database to '%2'").arg(migrated).arg(currentIdentity));
     }
 
     // Phase 9.1b: Initialize P2P transport
@@ -183,6 +199,11 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
     connect(offlineMessageTimer, &QTimer::timeout, this, &MainWindow::onCheckOfflineMessages);
     offlineMessageTimer->start(120000);  // 2 minutes = 120,000ms
 
+    // Initialize contact list sync timer (10 minutes)
+    contactSyncTimer = new QTimer(this);
+    connect(contactSyncTimer, &QTimer::timeout, this, &MainWindow::onAutoSyncContacts);
+    contactSyncTimer->start(600000);  // 10 minutes = 600,000ms
+
     // Save current identity (reuse settings from earlier)
     settings.setValue("currentIdentity", currentIdentity);  // Save logged-in user
     QString savedTheme = settings.value("theme", "io").toString();  // Default to "io" theme
@@ -208,6 +229,40 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
 }
 
 MainWindow::~MainWindow() {
+    // Stop all timers to prevent events on destroyed window
+    if (pollTimer) {
+        pollTimer->stop();
+        delete pollTimer;
+    }
+    if (statusPollTimer) {
+        statusPollTimer->stop();
+        delete statusPollTimer;
+    }
+    if (p2pPresenceTimer) {
+        p2pPresenceTimer->stop();
+        delete p2pPresenceTimer;
+    }
+    if (offlineMessageTimer) {
+        offlineMessageTimer->stop();
+        delete offlineMessageTimer;
+    }
+    if (contactSyncTimer) {
+        contactSyncTimer->stop();
+        delete contactSyncTimer;
+    }
+
+    // Clean up system tray icon
+    if (trayIcon) {
+        trayIcon->hide();
+        delete trayIcon;
+    }
+
+    // Clean up notification sound
+    if (notificationSound) {
+        delete notificationSound;
+    }
+
+    // Shutdown messenger context
     if (ctx) {
         // Phase 9.1b: Shutdown P2P transport before freeing messenger
         if (ctx->p2p_enabled) {
@@ -274,6 +329,11 @@ void MainWindow::setupUI() {
 
     // Settings menu
     QMenu *settingsMenu = menuBar->addMenu(QString::fromUtf8("Settings"));
+
+    // Sync Contacts action
+    QAction *syncContactsAction = settingsMenu->addAction(QString::fromUtf8("🔄 Sync Contacts to DHT"));
+    connect(syncContactsAction, &QAction::triggered, this, &MainWindow::onSyncContacts);
+    settingsMenu->addSeparator();
 
     // Theme submenu
     QMenu *themeMenu = settingsMenu->addMenu(QString::fromUtf8("Theme"));
@@ -405,6 +465,33 @@ void MainWindow::setupUI() {
     );
     connect(contactList, &QListWidget::itemClicked, this, &MainWindow::onContactSelected);
     leftLayout->addWidget(contactList);
+
+    // Add Contact button
+    addContactButton = new QPushButton("Add Contact");
+    addContactButton->setIcon(QIcon(":/icons/user.svg"));
+    addContactButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
+    addContactButton->setToolTip("Add a new contact");
+    addContactButton->setStyleSheet(
+        "QPushButton {"
+        "   background: rgba(0, 217, 255, 0.2);"
+        "   color: #00D9FF;"
+        "   border: 2px solid #00D9FF;"
+        "   border-radius: 15px;"
+        "   padding: 15px;"
+        "   font-weight: bold;"
+        "   font-family: 'Orbitron'; font-size: 12px;"
+        "}"
+        "QPushButton:hover {"
+        "   background: rgba(0, 217, 255, 0.3);"
+        "   border: 2px solid #33E6FF;"
+        "}"
+        "QPushButton:pressed {"
+        "   background: rgba(0, 217, 255, 0.4);"
+        "   border: 2px solid #00D9FF;"
+        "}"
+    );
+    connect(addContactButton, &QPushButton::clicked, this, &MainWindow::onAddContact);
+    leftLayout->addWidget(addContactButton);
 
     refreshButton = new QPushButton("Refresh");
     refreshButton->setIcon(QIcon(":/icons/refresh.svg"));
@@ -673,6 +760,10 @@ void MainWindow::setupUI() {
     // Status bar
     statusLabel = new QLabel(QString::fromUtf8("Ready"));
     statusBar()->addWidget(statusLabel);
+
+    // Contact list sync status indicator
+    syncStatusLabel = new QLabel(QString::fromUtf8("📇 Contacts: Local"));
+    statusBar()->addPermanentWidget(syncStatusLabel);
 
     // Phase 9.1b: P2P status indicator
     p2pStatusLabel = new QLabel(ctx->p2p_enabled ?
@@ -1162,6 +1253,105 @@ void MainWindow::onSendMessage() {
     }
 }
 
+void MainWindow::onAddContact() {
+    bool ok;
+    QString identity = QInputDialog::getText(
+        this,
+        QString::fromUtf8("Add Contact"),
+        QString::fromUtf8("Enter contact identity:"),
+        QLineEdit::Normal,
+        QString::fromUtf8(""),
+        &ok
+    );
+
+    if (!ok || identity.trimmed().isEmpty()) {
+        return;  // User cancelled or entered empty string
+    }
+
+    identity = identity.trimmed();
+
+    // Check if contact already exists
+    if (contacts_db_exists(identity.toUtf8().constData())) {
+        QMessageBox::information(
+            this,
+            QString::fromUtf8("Contact Exists"),
+            QString::fromUtf8("'%1' is already in your contacts.").arg(identity)
+        );
+        return;
+    }
+
+    // Verify identity exists on DHT by fetching public keys
+    statusLabel->setText(QString::fromUtf8("Verifying '%1' on DHT...").arg(identity));
+    QApplication::processEvents();  // Update UI
+
+    uint8_t *signing_pubkey = NULL;
+    size_t signing_pubkey_len = 0;
+    uint8_t *encryption_pubkey = NULL;
+    size_t encryption_pubkey_len = 0;
+
+    int result = messenger_load_pubkey(
+        ctx,
+        identity.toUtf8().constData(),
+        &signing_pubkey,
+        &signing_pubkey_len,
+        &encryption_pubkey,
+        &encryption_pubkey_len
+    );
+
+    if (result != 0) {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Identity Not Found"),
+            QString::fromUtf8(
+                "Identity '%1' not found on DHT keyserver.\n\n"
+                "Make sure the identity exists and has published their public keys."
+            ).arg(identity)
+        );
+        statusLabel->setText(QString::fromUtf8("Identity not found on DHT"));
+        return;
+    }
+
+    // Free the public keys (already cached by messenger_load_pubkey)
+    free(signing_pubkey);
+    free(encryption_pubkey);
+
+    // Add contact to database
+    result = contacts_db_add(identity.toUtf8().constData(), NULL);
+    if (result == 0) {
+        QMessageBox::information(
+            this,
+            QString::fromUtf8("Success"),
+            QString::fromUtf8(
+                "Contact '%1' added successfully.\n\n"
+                "Public keys verified and cached from DHT."
+            ).arg(identity)
+        );
+        loadContacts();  // Refresh contact list
+        statusLabel->setText(QString::fromUtf8("Contact added"));
+
+        // Immediately sync to DHT after adding contact
+        printf("[CONTACT_SYNC] Auto-syncing after contact add...\n");
+        syncStatusLabel->setText(QString::fromUtf8("📇 Syncing..."));
+        QApplication::processEvents();  // Update UI
+
+        int sync_result = messenger_sync_contacts_to_dht(ctx);
+        if (sync_result == 0) {
+            printf("[CONTACT_SYNC] Successfully synced to DHT\n");
+            syncStatusLabel->setText(QString::fromUtf8("📇 Synced ✓"));
+        } else {
+            printf("[CONTACT_SYNC] Failed to sync to DHT\n");
+            syncStatusLabel->setText(QString::fromUtf8("📇 Sync failed"));
+        }
+    } else {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8("Failed to add contact '%1' to database.").arg(identity)
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to add contact"));
+    }
+}
+
 void MainWindow::onRefreshMessages() {
     if (currentContactType == TYPE_CONTACT && !currentContact.isEmpty()) {
         loadConversation(currentContact);
@@ -1176,35 +1366,46 @@ void MainWindow::checkForNewMessages() {
         return;
     }
 
-    // Query for new UNREAD messages since lastCheckedMessageId
-    char id_str[32];
-    snprintf(id_str, sizeof(id_str), "%d", lastCheckedMessageId);
+    // Get all messages from SQLite for current user
+    backup_message_t *all_messages = NULL;
+    int all_count = 0;
 
-    const char *query =
-        "SELECT id, sender, created_at, status "
-        "FROM messages "
-        "WHERE recipient = $1 AND id > $2 AND status != 'read' "
-        "ORDER BY id ASC";
-
-    const char *params[2] = {
-        currentIdentity.toUtf8().constData(),
-        id_str
-    };
-
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        PQclear(res);
+    int result = message_backup_search_by_identity(ctx->backup_ctx,
+                                                     currentIdentity.toUtf8().constData(),
+                                                     &all_messages,
+                                                     &all_count);
+    if (result != 0) {
+        fprintf(stderr, "[GUI] Failed to fetch messages from SQLite\n");
         return;
     }
 
-    int count = PQntuples(res);
+    // Filter for new UNREAD incoming messages since lastCheckedMessageId
+    for (int i = 0; i < all_count; i++) {
+        // Only process incoming messages (where we are recipient)
+        if (strcmp(all_messages[i].recipient, currentIdentity.toUtf8().constData()) != 0) {
+            continue;
+        }
 
-    for (int i = 0; i < count; i++) {
-        int msgId = atoi(PQgetvalue(res, i, 0));
-        QString sender = QString::fromUtf8(PQgetvalue(res, i, 1));
-        QString timestamp = QString::fromUtf8(PQgetvalue(res, i, 2));
-        QString status = QString::fromUtf8(PQgetvalue(res, i, 3));
+        // Only process messages newer than lastCheckedMessageId
+        if (all_messages[i].id <= lastCheckedMessageId) {
+            continue;
+        }
+
+        // Only process unread messages
+        if (all_messages[i].read) {
+            continue;
+        }
+
+        int msgId = all_messages[i].id;
+        QString sender = QString::fromUtf8(all_messages[i].sender);
+
+        // Format timestamp
+        struct tm *tm_info = localtime(&all_messages[i].timestamp);
+        char timestamp_str[32];
+        strftime(timestamp_str, sizeof(timestamp_str), "%Y-%m-%d %H:%M:%S", tm_info);
+        QString timestamp = QString::fromUtf8(timestamp_str);
+
+        QString status = all_messages[i].read ? "read" : (all_messages[i].delivered ? "delivered" : "sent");
 
         if (msgId > lastCheckedMessageId) {
             lastCheckedMessageId = msgId;
@@ -1215,7 +1416,7 @@ void MainWindow::checkForNewMessages() {
         printf("[DELIVERY] Message ID %d marked as delivered (result: %d)\n", msgId, markResult);
 
         // Only notify if message is not already read
-        if (status != "read") {
+        if (!all_messages[i].read) {
             // Play notification sound
             notificationSound->play();
 
@@ -1240,7 +1441,7 @@ void MainWindow::checkForNewMessages() {
         }
     }
 
-    PQclear(res);
+    message_backup_free_messages(all_messages, all_count);
 }
 
 void MainWindow::checkForStatusUpdates() {
@@ -1249,33 +1450,39 @@ void MainWindow::checkForStatusUpdates() {
         return;
     }
 
-    // Query for detailed status updates on sent messages in current conversation
-    const char *query =
-        "SELECT id, status, delivered_at, read_at "
-        "FROM messages "
-        "WHERE sender = $1 AND recipient = $2 "
-        "AND status IN ('delivered', 'read') "
-        "ORDER BY id DESC LIMIT 5";
+    // Get conversation from SQLite
+    backup_message_t *messages = NULL;
+    int count = 0;
 
-    const char *params[2] = {
-        currentIdentity.toUtf8().constData(),
-        currentContact.toUtf8().constData()
-    };
-
-    PGresult *res = PQexecParams(ctx->pg_conn, query, 2, NULL, params, NULL, NULL, 0);
-
-    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
-        PQclear(res);
+    int result = message_backup_get_conversation(ctx->backup_ctx,
+                                                   currentContact.toUtf8().constData(),
+                                                   &messages,
+                                                   &count);
+    if (result != 0) {
+        fprintf(stderr, "[GUI] Failed to fetch conversation from SQLite\n");
         return;
     }
 
+    // Check for delivered or read status on our sent messages (where we are sender)
+    int status_update_count = 0;
+    for (int i = count - 1; i >= 0 && status_update_count < 5; i--) {
+        // Only check messages we sent (sender = current identity)
+        if (strcmp(messages[i].sender, currentIdentity.toUtf8().constData()) != 0) {
+            continue;
+        }
+
+        // Only count messages that have been delivered or read
+        if (messages[i].delivered || messages[i].read) {
+            status_update_count++;
+        }
+    }
+
     // Silently refresh conversation to update checkmarks if there were any updates
-    int count = PQntuples(res);
-    if (count > 0) {
+    if (status_update_count > 0) {
         loadConversation(currentContact);
     }
 
-    PQclear(res);
+    message_backup_free_messages(messages, count);
 }
 
 void MainWindow::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason) {
@@ -2487,15 +2694,120 @@ void MainWindow::onUserMenuClicked() {
         "}"
     );
 
+    QAction *publishKeysAction = menu.addAction(QString::fromUtf8("📡 Publish Keys to DHT"));
     QAction *logoutAction = menu.addAction(QString::fromUtf8("Logout"));
     QAction *manageIdentitiesAction = menu.addAction(QString::fromUtf8("🔑 Manage Identities"));
 
+    connect(publishKeysAction, &QAction::triggered, this, &MainWindow::onPublishKeys);
     connect(logoutAction, &QAction::triggered, this, &MainWindow::onLogout);
     connect(manageIdentitiesAction, &QAction::triggered, this, &MainWindow::onManageIdentities);
 
     // Show menu below the button
     QPoint globalPos = userMenuButton->mapToGlobal(QPoint(0, userMenuButton->height()));
     menu.exec(globalPos);
+}
+
+void MainWindow::onPublishKeys() {
+    statusLabel->setText(QString::fromUtf8("Loading local keys..."));
+    QApplication::processEvents();  // Update UI
+
+    // Get home directory (platform-specific)
+    QString homeDir = QDir::homePath();
+    QString dilithiumPath = homeDir + "/.dna/" + currentIdentity + ".dsa";
+    QString kyberPath = homeDir + "/.dna/" + currentIdentity + ".kem";
+
+    // Load Dilithium public key (skip 276 byte header, then read 1952 bytes public key)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 1952 bytes][PRIVATE_KEY: 4032 bytes]
+    QFile dilithiumFile(dilithiumPath);
+    if (!dilithiumFile.open(QIODevice::ReadOnly)) {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8("Failed to open Dilithium key file:\n%1").arg(dilithiumPath)
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to load keys"));
+        return;
+    }
+
+    dilithiumFile.seek(276);  // Skip header (qgp_privkey_file_header_t = 276 bytes)
+    QByteArray dilithiumPubkey = dilithiumFile.read(1952);
+    dilithiumFile.close();
+
+    if (dilithiumPubkey.size() != 1952) {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8("Invalid Dilithium key file (expected 1952 bytes public key)")
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to load keys"));
+        return;
+    }
+
+    // Load Kyber public key (skip 276 byte header, then read 800 bytes public key)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 800 bytes][PRIVATE_KEY: 1632 bytes]
+    QFile kyberFile(kyberPath);
+    if (!kyberFile.open(QIODevice::ReadOnly)) {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8("Failed to open Kyber key file:\n%1").arg(kyberPath)
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to load keys"));
+        return;
+    }
+
+    kyberFile.seek(276);  // Skip header (qgp_privkey_file_header_t = 276 bytes)
+    QByteArray kyberPubkey = kyberFile.read(800);
+    kyberFile.close();
+
+    if (kyberPubkey.size() != 800) {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8("Invalid Kyber key file (expected 800 bytes public key)")
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to load keys"));
+        return;
+    }
+
+    // Publish keys to DHT
+    statusLabel->setText(QString::fromUtf8("Publishing keys to DHT..."));
+    QApplication::processEvents();
+
+    int result = messenger_store_pubkey(
+        ctx,
+        currentIdentity.toUtf8().constData(),
+        (const uint8_t*)dilithiumPubkey.constData(),
+        dilithiumPubkey.size(),
+        (const uint8_t*)kyberPubkey.constData(),
+        kyberPubkey.size()
+    );
+
+    if (result == 0) {
+        QMessageBox::information(
+            this,
+            QString::fromUtf8("Success"),
+            QString::fromUtf8(
+                "Public keys published to DHT successfully!\n\n"
+                "Identity: %1\n"
+                "Your keys are now discoverable by other users.\n\n"
+                "Keys published:\n"
+                "• Dilithium signing key (1952 bytes)\n"
+                "• Kyber encryption key (800 bytes)"
+            ).arg(currentIdentity)
+        );
+        statusLabel->setText(QString::fromUtf8("Keys published to DHT"));
+    } else {
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Error"),
+            QString::fromUtf8(
+                "Failed to publish keys to DHT.\n\n"
+                "Make sure P2P transport is initialized and DHT is connected."
+            )
+        );
+        statusLabel->setText(QString::fromUtf8("Failed to publish keys"));
+    }
 }
 
 void MainWindow::onLogout() {
@@ -2549,10 +2861,10 @@ void MainWindow::onManageIdentities() {
     QDir dnaDir = homeDir.filePath(".dna");
 
     if (dnaDir.exists()) {
-        QStringList keyFiles = dnaDir.entryList(QStringList() << "*-dilithium.pqkey", QDir::Files);
+        QStringList keyFiles = dnaDir.entryList(QStringList() << "*.dsa", QDir::Files);
         for (const QString &keyFile : keyFiles) {
             QString identity = keyFile;
-            identity.remove("-dilithium.pqkey");
+            identity.remove(".dsa");
 
             QString displayText = QString::fromUtf8("🔑 ") + identity;
             if (identity == currentIdentity) {
@@ -2836,4 +3148,77 @@ void MainWindow::onCheckOfflineMessages() {
         // Refresh message list to show newly delivered messages
         checkForNewMessages();
     }
+}
+
+// Manual contact list sync to DHT
+void MainWindow::onSyncContacts() {
+    if (!ctx) {
+        QMessageBox::warning(this, "Error", "Messenger context not initialized");
+        return;
+    }
+
+    // Update status
+    syncStatusLabel->setText(QString::fromUtf8("📇 Syncing..."));
+    statusLabel->setText(QString::fromUtf8("Syncing contacts to DHT..."));
+    QApplication::processEvents();  // Update UI
+
+    // Sync contacts to DHT
+    int result = messenger_sync_contacts_to_dht(ctx);
+
+    if (result == 0) {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Synced ✓"));
+        statusLabel->setText(QString::fromUtf8("Contacts synced to DHT successfully"));
+        QMessageBox::information(
+            this,
+            QString::fromUtf8("Sync Complete"),
+            QString::fromUtf8(
+                "Your contact list has been synced to DHT.\n\n"
+                "• Encrypted with your Kyber1024 public key\n"
+                "• Signed with your Dilithium5 private key\n"
+                "• Available on any device with your seed phrase"
+            )
+        );
+    } else {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Sync Failed"));
+        statusLabel->setText(QString::fromUtf8("Failed to sync contacts to DHT"));
+        QMessageBox::critical(
+            this,
+            QString::fromUtf8("Sync Failed"),
+            QString::fromUtf8(
+                "Failed to sync contacts to DHT.\n\n"
+                "Make sure P2P transport is enabled and DHT is connected."
+            )
+        );
+    }
+
+    // Reset status after 5 seconds
+    QTimer::singleShot(5000, this, [this]() {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Contacts: Local"));
+    });
+}
+
+// Automatic contact list sync (timer-based)
+void MainWindow::onAutoSyncContacts() {
+    if (!ctx) {
+        return;  // Silently skip if context not initialized
+    }
+
+    // Update status
+    syncStatusLabel->setText(QString::fromUtf8("📇 Auto-sync..."));
+
+    // Sync contacts to DHT (silent, no message box)
+    int result = messenger_sync_contacts_to_dht(ctx);
+
+    if (result == 0) {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Synced ✓"));
+        printf("[GUI] Auto-synced contacts to DHT\n");
+    } else {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Sync Failed"));
+        fprintf(stderr, "[GUI] Failed to auto-sync contacts to DHT\n");
+    }
+
+    // Reset status after 5 seconds
+    QTimer::singleShot(5000, this, [this]() {
+        syncStatusLabel->setText(QString::fromUtf8("📇 Contacts: Local"));
+    });
 }

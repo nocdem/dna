@@ -58,8 +58,11 @@ static const char *SCHEMA_SQL =
 static int get_db_path(const char *identity, char *path_out, size_t path_len) {
     const char *home = getenv("HOME");
     if (!home) {
-        fprintf(stderr, "[Backup] HOME environment variable not set\n");
-        return -1;
+        home = getenv("USERPROFILE");  // Windows fallback
+        if (!home) {
+            fprintf(stderr, "[Backup] HOME/USERPROFILE environment variable not set\n");
+            return -1;
+        }
     }
 
     // Create ~/.dna directory if it doesn't exist
@@ -158,9 +161,9 @@ int message_backup_save(message_backup_context_t *ctx,
         return -1;
     }
 
-    sqlite3_bind_text(stmt, 1, sender, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, recipient, -1, SQLITE_STATIC);
-    sqlite3_bind_blob(stmt, 3, encrypted_message, encrypted_len, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 1, sender, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, recipient, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 3, encrypted_message, encrypted_len, SQLITE_TRANSIENT);
     sqlite3_bind_int(stmt, 4, (int)encrypted_len);
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)timestamp);
     sqlite3_bind_int(stmt, 6, is_outgoing ? 1 : 0);
@@ -176,6 +179,25 @@ int message_backup_save(message_backup_context_t *ctx,
     printf("[Backup] Saved ENCRYPTED message: %s → %s (%zu bytes ciphertext)\n",
            sender, recipient, encrypted_len);
     return 0;
+}
+
+/**
+ * Mark message as delivered
+ */
+int message_backup_mark_delivered(message_backup_context_t *ctx, int message_id) {
+    if (!ctx || !ctx->db) return -1;
+
+    const char *sql = "UPDATE messages SET delivered = 1 WHERE id = ?";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int(stmt, 1, message_id);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
 }
 
 /**
@@ -490,6 +512,44 @@ int message_backup_export_json(message_backup_context_t *ctx,
     fclose(fp);
 
     printf("[Backup] Exported ENCRYPTED messages to %s\n", output_path);
+    return 0;
+}
+
+/**
+ * Delete a message by ID
+ */
+int message_backup_delete(message_backup_context_t *ctx, int message_id) {
+    if (!ctx || !ctx->db) {
+        fprintf(stderr, "[Backup] Invalid context\n");
+        return -1;
+    }
+
+    const char *sql = "DELETE FROM messages WHERE id = ?";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[Backup] Failed to prepare delete: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, message_id);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "[Backup] Failed to delete message: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    int changes = sqlite3_changes(ctx->db);
+    if (changes == 0) {
+        fprintf(stderr, "[Backup] Message %d not found\n", message_id);
+        return -1;
+    }
+
+    printf("[Backup] Deleted message %d\n", message_id);
     return 0;
 }
 

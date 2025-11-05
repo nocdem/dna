@@ -14,17 +14,17 @@
 
 // Public key bundle file format
 #define PQSIGNUM_PUBKEY_MAGIC "PQPUBKEY"
-#define PQSIGNUM_PUBKEY_VERSION 0x01
+#define PQSIGNUM_PUBKEY_VERSION 0x02  // Version 2: Category 5 key sizes
 
 PACK_STRUCT_BEGIN
 typedef struct {
     char magic[8];              // "PQPUBKEY"
-    uint8_t version;            // 0x01
+    uint8_t version;            // 0x02 (Category 5)
     uint8_t sign_key_type;      // Signing algorithm type
-    uint8_t enc_key_type;       // Encryption algorithm type (always Kyber512)
+    uint8_t enc_key_type;       // Encryption algorithm type (always Kyber1024)
     uint8_t reserved;           // Reserved
     uint32_t sign_pubkey_size;  // Signing public key size
-    uint32_t enc_pubkey_size;   // Encryption public key size (800 bytes for Kyber512)
+    uint32_t enc_pubkey_size;   // Encryption public key size (1568 bytes for Kyber1024)
 } PACK_STRUCT_END pqsignum_pubkey_header_t;
 
 /**
@@ -32,10 +32,10 @@ typedef struct {
  */
 static const char* get_sign_algorithm_name(qgp_key_type_t type) {
     switch (type) {
-        case QGP_KEY_TYPE_DILITHIUM3:
-            return "Dilithium";
-        case QGP_KEY_TYPE_KYBER512:
-            return "Kyber512";
+        case QGP_KEY_TYPE_DSA87:
+            return "ML-DSA-87";
+        case QGP_KEY_TYPE_KEM1024:
+            return "ML-KEM-1024";
         default:
             return "Unknown";
     }
@@ -71,7 +71,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
     // Load signing key
     printf("\n[1/3] Loading signing key...\n");
     char sign_filename[512];
-    snprintf(sign_filename, sizeof(sign_filename), "%s-dilithium3.pqkey", name);
+    snprintf(sign_filename, sizeof(sign_filename), "%s.dsa", name);
     char *sign_key_path = build_path(key_dir, sign_filename);
 
     if (!file_exists(sign_key_path)) {
@@ -92,7 +92,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
     // Load encryption key
     printf("\n[2/3] Loading encryption key...\n");
     char enc_filename[512];
-    snprintf(enc_filename, sizeof(enc_filename), "%s-kyber512.pqkey", name);
+    snprintf(enc_filename, sizeof(enc_filename), "%s.kem", name);
     char *enc_key_path = build_path(key_dir, enc_filename);
 
     if (!file_exists(enc_key_path)) {
@@ -120,7 +120,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
     printf("\n[3/3] Extracting public keys...\n");
 
 
-    if (sign_key->type == QGP_KEY_TYPE_DILITHIUM3) {
+    if (sign_key->type == QGP_KEY_TYPE_DSA87) {
         sign_pubkey_size = sign_key->public_key_size;
         sign_pubkey = malloc(sign_pubkey_size);
         if (!sign_pubkey) {
@@ -129,13 +129,13 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
             goto cleanup;
         }
         memcpy(sign_pubkey, sign_key->public_key, sign_pubkey_size);
-        printf("  ✓ Dilithium3 public key extracted (%lu bytes)\n", sign_pubkey_size);
+        printf("  ✓ DSA-87 public key extracted (%lu bytes)\n", sign_pubkey_size);
     }
 
     // For Kyber, use raw public_key
     enc_pubkey_size = enc_key->public_key_size;
-    if (enc_pubkey_size != 800) {
-        fprintf(stderr, "Error: Invalid Kyber512 public key size (expected 800 bytes, got %lu)\n", enc_pubkey_size);
+    if (enc_pubkey_size != 1568) {  // Kyber1024 public key size
+        fprintf(stderr, "Error: Invalid Kyber1024 public key size (expected 1568 bytes, got %lu)\n", enc_pubkey_size);
         ret = EXIT_CRYPTO_ERROR;
         goto cleanup;
     }
@@ -146,7 +146,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
         goto cleanup;
     }
     memcpy(enc_pubkey, enc_key->public_key, enc_pubkey_size);
-    printf("  ✓ Encryption public key extracted (%lu bytes, Kyber512)\n", enc_pubkey_size);
+    printf("  ✓ Encryption public key extracted (%lu bytes, Kyber1024)\n", enc_pubkey_size);
 
     // Build header
     pqsignum_pubkey_header_t header;
@@ -193,7 +193,7 @@ int cmd_export_pubkey(const char *name, const char *key_dir, const char *output_
              get_sign_algorithm_name(sign_key->type));
     armor_headers[header_count++] = header_buf[2];
 
-    snprintf(header_buf[3], sizeof(header_buf[3]), "EncryptionAlgorithm: Kyber512");
+    snprintf(header_buf[3], sizeof(header_buf[3]), "EncryptionAlgorithm: ML-KEM-1024");
     armor_headers[header_count++] = header_buf[3];
 
     time_t now = time(NULL);

@@ -40,7 +40,7 @@ int cellframe_addr_from_pubkey(const uint8_t *pubkey, size_t pubkey_size,
 /**
  * Get Cellframe address for current DNA identity
  *
- * Reads the public key from ~/.dna/[identity]-dilithium.pqkey
+ * Reads the public key from ~/.dna/[identity]-dilithium3.pqkey
  *
  * @param identity - Identity name (e.g. "nocdem")
  * @param net_id - Network ID (e.g. CELLFRAME_NET_BACKBONE)

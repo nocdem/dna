@@ -1,30 +1,30 @@
 #include "qgp_dilithium.h"
-#include "crypto/dilithium/api.h"
-#include "crypto/dilithium/params.h"
-#include "crypto/dilithium/sign.h"
-#include "crypto/dilithium/packing.h"
-#include "crypto/dilithium/polyvec.h"
-#include "crypto/dilithium/poly.h"
-#include "crypto/dilithium/fips202.h"
+#include "crypto/dsa/api.h"
+#include "crypto/dsa/params.h"
+#include "crypto/dsa/sign.h"
+#include "crypto/dsa/packing.h"
+#include "crypto/dsa/polyvec.h"
+#include "crypto/dsa/poly.h"
+#include "crypto/dsa/fips202.h"
 #include <string.h>
 #include <stdio.h>
 
-// QGP Dilithium3 API
+// QGP DSA-87 API (ML-DSA-87)
 // Wrapper for vendored pq-crystals/dilithium reference implementation
-// FIPS 204 compliant - ML-DSA-65 (NIST Level 3 security)
+// FIPS 204 compliant - ML-DSA-87 (NIST Level 5 / Category 5 security)
 
-int qgp_dilithium3_keypair(uint8_t *pk, uint8_t *sk)
+int qgp_dsa87_keypair(uint8_t *pk, uint8_t *sk)
 {
     if (!pk || !sk) {
         return -1;
     }
 
-    // Call upstream Dilithium3 keypair generation
+    // Call upstream Dilithium5 keypair generation (ML-DSA-87)
     // Context is NULL for pure Dilithium (no pre-hash)
-    return pqcrystals_dilithium3_ref_keypair(pk, sk);
+    return pqcrystals_dilithium5_ref_keypair(pk, sk);
 }
 
-int qgp_dilithium3_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *seed)
+int qgp_dsa87_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *seed)
 {
     if (!pk || !sk || !seed) {
         return -1;
@@ -77,28 +77,28 @@ int qgp_dilithium3_keypair_derand(uint8_t *pk, uint8_t *sk, const uint8_t *seed)
     return 0;
 }
 
-int qgp_dilithium3_signature(uint8_t *sig, size_t *siglen,
-                              const uint8_t *m, size_t mlen,
-                              const uint8_t *sk)
+int qgp_dsa87_sign(uint8_t *sig, size_t *siglen,
+                   const uint8_t *m, size_t mlen,
+                   const uint8_t *sk)
 {
     if (!sig || !siglen || !m || !sk) {
         return -1;
     }
 
-    // Call upstream Dilithium3 detached signature
+    // Call upstream Dilithium5 detached signature (ML-DSA-87)
     // Context (ctx) is NULL and ctxlen is 0 for pure Dilithium
-    return pqcrystals_dilithium3_ref_signature(sig, siglen, m, mlen, NULL, 0, sk);
+    return pqcrystals_dilithium5_ref_signature(sig, siglen, m, mlen, NULL, 0, sk);
 }
 
-int qgp_dilithium3_verify(const uint8_t *sig, size_t siglen,
-                           const uint8_t *m, size_t mlen,
-                           const uint8_t *pk)
+int qgp_dsa87_verify(const uint8_t *sig, size_t siglen,
+                     const uint8_t *m, size_t mlen,
+                     const uint8_t *pk)
 {
     if (!sig || !m || !pk) {
         return -1;
     }
 
-    // Call upstream Dilithium3 signature verification
+    // Call upstream Dilithium5 signature verification (ML-DSA-87)
     // Context (ctx) is NULL and ctxlen is 0 for pure Dilithium
-    return pqcrystals_dilithium3_ref_verify(sig, siglen, m, mlen, NULL, 0, pk);
+    return pqcrystals_dilithium5_ref_verify(sig, siglen, m, mlen, NULL, 0, pk);
 }

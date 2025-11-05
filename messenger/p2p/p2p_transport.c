@@ -1,6 +1,8 @@
 #include "p2p_transport.h"
 #include "dht_context.h"
 #include "dht_offline_queue.h"
+#include "dht_singleton.h"  // Global DHT singleton
+#include "../qgp_sha3.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,7 +48,7 @@
  */
 struct p2p_connection {
     int sockfd;                         // TCP socket
-    uint8_t peer_pubkey[1952];          // Peer's Dilithium3 public key
+    uint8_t peer_pubkey[2592];          // Peer's Dilithium5 public key
     char peer_ip[64];                   // Peer IP address
     uint16_t peer_port;                 // Peer port
     time_t connected_at;                // Connection timestamp
@@ -67,7 +69,7 @@ struct p2p_transport {
 
     // My cryptographic keys
     uint8_t my_private_key[4016];       // Dilithium3 private key
-    uint8_t my_public_key[1952];        // Dilithium3 public key
+    uint8_t my_public_key[2592];        // Dilithium5 public key
     uint8_t my_kyber_key[2400];         // Kyber512 private key
 
     // TCP listener
@@ -196,18 +198,12 @@ static int get_external_ip(char *ip_out, size_t len) {
 }
 
 /**
- * Compute SHA256 hash
- * Used for DHT keys: key = SHA256(public_key)
- * Updated to use OpenSSL 3.0 EVP API
+ * Compute SHA3-512 hash (Category 5 security)
+ * Used for DHT keys: key = SHA3-512(public_key)
+ * Uses qgp_sha3.h wrapper for consistent hashing
  */
-static void sha256_hash(const uint8_t *data, size_t len, uint8_t *hash_out) {
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) return;
-
-    EVP_DigestInit_ex(ctx, EVP_sha256(), NULL);
-    EVP_DigestUpdate(ctx, data, len);
-    EVP_DigestFinal_ex(ctx, hash_out, NULL);
-    EVP_MD_CTX_free(ctx);
+static void sha3_512_hash(const uint8_t *data, size_t len, uint8_t *hash_out) {
+    qgp_sha3_512(data, len, hash_out);
 }
 
 /**
@@ -408,7 +404,7 @@ p2p_transport_t* p2p_transport_init(
 
     // Copy keys
     memcpy(ctx->my_private_key, my_privkey_dilithium, 4016);
-    memcpy(ctx->my_public_key, my_pubkey_dilithium, 1952);
+    memcpy(ctx->my_public_key, my_pubkey_dilithium, 2592);  // Dilithium5 public key size
     memcpy(ctx->my_kyber_key, my_kyber_key, 2400);
 
     // Callbacks
@@ -419,29 +415,22 @@ p2p_transport_t* p2p_transport_init(
     // Initialize mutex
     pthread_mutex_init(&ctx->connections_mutex, NULL);
 
-    // Initialize DHT
-    dht_config_t dht_config = {0};
-    dht_config.port = config->dht_port;
-    dht_config.is_bootstrap = false;
-    snprintf(dht_config.identity, sizeof(dht_config.identity), "%s", config->identity);
-
-    for (size_t i = 0; i < config->bootstrap_count && i < 5; i++) {
-        snprintf(dht_config.bootstrap_nodes[i], 256, "%s", config->bootstrap_nodes[i]);
-    }
-    dht_config.bootstrap_count = config->bootstrap_count;
-
-    ctx->dht = dht_context_new(&dht_config);
+    // Use global DHT singleton (initialized at app startup)
+    // No need to create/start DHT here - it's already running
+    ctx->dht = dht_singleton_get();
     if (!ctx->dht) {
-        printf("[P2P] Failed to create DHT context\n");
+        printf("[P2P] ERROR: Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
         free(ctx);
         return NULL;
     }
 
+    printf("[P2P] Using global DHT singleton for P2P transport\n");
+
     ctx->listen_sockfd = -1;
     ctx->running = false;
 
-    printf("[P2P] Transport initialized (DHT port: %d, TCP port: %d)\n",
-           config->dht_port, config->listen_port);
+    printf("[P2P] Transport initialized (TCP port: %d, using global DHT)\n",
+           config->listen_port);
 
     return ctx;
 }
@@ -451,19 +440,14 @@ int p2p_transport_start(p2p_transport_t *ctx) {
         return -1;
     }
 
-    // Start DHT
-    if (dht_context_start(ctx->dht) != 0) {
-        printf("[P2P] Failed to start DHT\n");
-        return -1;
-    }
-
-    printf("[P2P] DHT started on port %d\n", ctx->config.dht_port);
+    // DHT is already running (global singleton)
+    // No need to start it here
+    printf("[P2P] Using global DHT (already running)\n");
 
     // Create TCP listening socket
     ctx->listen_sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (ctx->listen_sockfd < 0) {
         printf("[P2P] Failed to create listening socket: %s\n", strerror(errno));
-        dht_context_stop(ctx->dht);
         return -1;
     }
 
@@ -485,7 +469,6 @@ int p2p_transport_start(p2p_transport_t *ctx) {
         printf("[P2P] Failed to bind to port %d: %s\n",
                ctx->config.listen_port, strerror(errno));
         close(ctx->listen_sockfd);
-        dht_context_stop(ctx->dht);
         return -1;
     }
 
@@ -493,7 +476,6 @@ int p2p_transport_start(p2p_transport_t *ctx) {
     if (listen(ctx->listen_sockfd, 32) < 0) {
         printf("[P2P] Failed to listen: %s\n", strerror(errno));
         close(ctx->listen_sockfd);
-        dht_context_stop(ctx->dht);
         return -1;
     }
 
@@ -504,7 +486,6 @@ int p2p_transport_start(p2p_transport_t *ctx) {
     if (pthread_create(&ctx->listen_thread, NULL, listener_thread, ctx) != 0) {
         printf("[P2P] Failed to create listener thread\n");
         close(ctx->listen_sockfd);
-        dht_context_stop(ctx->dht);
         ctx->running = false;
         return -1;
     }
@@ -546,8 +527,7 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
     ctx->connection_count = 0;
     pthread_mutex_unlock(&ctx->connections_mutex);
 
-    // Stop DHT
-    dht_context_stop(ctx->dht);
+    // Don't stop DHT - it's a global singleton managed at app level
 
     printf("[P2P] Transport stopped\n");
 }
@@ -559,9 +539,8 @@ void p2p_transport_free(p2p_transport_t *ctx) {
 
     p2p_transport_stop(ctx);
 
-    if (ctx->dht) {
-        dht_context_free(ctx->dht);
-    }
+    // Don't free DHT - it's a global singleton managed at app level
+    ctx->dht = NULL;
 
     pthread_mutex_destroy(&ctx->connections_mutex);
 
@@ -570,6 +549,13 @@ void p2p_transport_free(p2p_transport_t *ctx) {
     memset(ctx->my_kyber_key, 0, sizeof(ctx->my_kyber_key));
 
     free(ctx);
+}
+
+dht_context_t* p2p_transport_get_dht_context(p2p_transport_t *ctx) {
+    if (!ctx) {
+        return NULL;
+    }
+    return ctx->dht;
 }
 
 // ============================================================================
@@ -596,9 +582,9 @@ int p2p_register_presence(p2p_transport_t *ctx) {
         return -1;
     }
 
-    // Compute DHT key: SHA256(public_key)
-    uint8_t dht_key[32];
-    sha256_hash(ctx->my_public_key, 1952, dht_key);
+    // Compute DHT key: SHA3-512(public_key)
+    uint8_t dht_key[64];  // SHA3-512 = 64 bytes
+    sha3_512_hash(ctx->my_public_key, 2592, dht_key);  // Dilithium5 public key size
 
     printf("[P2P] Registering presence in DHT\n");
     printf("[P2P] DHT key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
@@ -628,9 +614,9 @@ int p2p_lookup_peer(
         return -1;
     }
 
-    // Compute DHT key: SHA256(peer_pubkey)
-    uint8_t dht_key[32];
-    sha256_hash(peer_pubkey, 1952, dht_key);
+    // Compute DHT key: SHA3-512(peer_pubkey)
+    uint8_t dht_key[64];  // SHA3-512 = 64 bytes
+    sha3_512_hash(peer_pubkey, 2592, dht_key);  // Dilithium5 public key size
 
     printf("[P2P] Looking up peer in DHT\n");
     printf("[P2P] DHT key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
@@ -656,7 +642,7 @@ int p2p_lookup_peer(
     }
 
     // Copy public key
-    memcpy(peer_info->public_key, peer_pubkey, 1952);
+    memcpy(peer_info->public_key, peer_pubkey, 2592);  // Dilithium5 public key size
 
     // Check if peer is online (last seen < 10 minutes)
     time_t now = time(NULL);
@@ -906,7 +892,7 @@ int p2p_queue_offline_message(
 
 int p2p_get_connected_peers(
     p2p_transport_t *ctx,
-    uint8_t (*pubkeys)[1952],
+    uint8_t (*pubkeys)[2592],  // Dilithium5 public keys
     size_t max_peers,
     size_t *count)
 {
@@ -920,7 +906,7 @@ int p2p_get_connected_peers(
     size_t idx = 0;
     for (size_t i = 0; i < 256 && idx < *count; i++) {
         if (ctx->connections[i] && ctx->connections[i]->active) {
-            memcpy(pubkeys[idx], ctx->connections[i]->peer_pubkey, 1952);
+            memcpy(pubkeys[idx], ctx->connections[i]->peer_pubkey, 2592);  // Dilithium5 public key size
             idx++;
         }
     }
@@ -940,8 +926,7 @@ int p2p_disconnect_peer(
     pthread_mutex_lock(&ctx->connections_mutex);
     for (size_t i = 0; i < 256; i++) {
         if (ctx->connections[i] &&
-            memcmp(ctx->connections[i]->peer_pubkey, peer_pubkey, 1952) == 0) {
-
+            memcmp(ctx->connections[i]->peer_pubkey, peer_pubkey, 2592) == 0) {  // Dilithium5 public key size
             ctx->connections[i]->active = false;
             close(ctx->connections[i]->sockfd);
             pthread_join(ctx->connections[i]->recv_thread, NULL);

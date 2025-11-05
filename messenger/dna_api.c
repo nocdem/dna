@@ -31,7 +31,7 @@ struct dna_context {
 
 // File format constants (same as QGP)
 #define DNA_ENC_MAGIC "PQSIGENC"
-#define DNA_ENC_VERSION 0x05  // Version 5: Multi-recipient with AES-GCM
+#define DNA_ENC_VERSION 0x06  // Version 6: Category 5 (Kyber1024 + Dilithium5 + SHA3-512)
 #define DAP_ENC_KEY_TYPE_KEM_KYBER512 23
 
 // Header structure (same as encrypt.c/decrypt.c)
@@ -54,7 +54,7 @@ dna_enc_header_t;
 
 // Recipient entry
 typedef struct {
-    uint8_t kyber_ciphertext[768];
+    uint8_t kyber_ciphertext[1568];  // Kyber1024 ciphertext size
     uint8_t wrapped_dek[40];
 }
 #ifndef _MSC_VER
@@ -337,8 +337,8 @@ dna_error_t dna_encrypt_message(
 
         // Validate and extract encryption key
         if (memcmp(header.magic, "PQPUBKEY", 8) != 0 ||
-            header.enc_key_type != QGP_KEY_TYPE_KYBER512 ||
-            header.enc_pubkey_size != 800) {
+            header.enc_key_type != QGP_KEY_TYPE_KEM1024 ||
+            header.enc_pubkey_size != 1568) {  // Kyber1024 public key size
             free(bundle_data);
             result = DNA_ERROR_KEY_INVALID;
             goto cleanup;
@@ -346,20 +346,20 @@ dna_error_t dna_encrypt_message(
 
         // Extract encryption public key from bundle
         size_t enc_offset = sizeof(header) + header.sign_pubkey_size;
-        if (enc_offset + 800 > bundle_size) {
+        if (enc_offset + 1568 > bundle_size) {  // Kyber1024 public key size
             free(bundle_data);
             result = DNA_ERROR_KEY_INVALID;
             goto cleanup;
         }
 
-        recipient_pubkeys[i] = malloc(800);
+        recipient_pubkeys[i] = malloc(1568);  // Kyber1024 public key size
         if (!recipient_pubkeys[i]) {
             free(bundle_data);
             result = DNA_ERROR_MEMORY;
             goto cleanup;
         }
 
-        memcpy(recipient_pubkeys[i], bundle_data + enc_offset, 800);
+        memcpy(recipient_pubkeys[i], bundle_data + enc_offset, 1568);  // Kyber1024 public key size
         free(bundle_data);
     }
 
@@ -378,25 +378,25 @@ dna_error_t dna_encrypt_message(
     free(sign_key_path);
 
     // Verify it's Dilithium3
-    if (sign_key->type != QGP_KEY_TYPE_DILITHIUM3) {
+    if (sign_key->type != QGP_KEY_TYPE_DSA87) {
         result = DNA_ERROR_KEY_INVALID;
         goto cleanup;
     }
 
     // Create signature
     signature = qgp_signature_new(QGP_SIG_TYPE_DILITHIUM,
-                                   QGP_DILITHIUM3_PUBLICKEYBYTES,
-                                   QGP_DILITHIUM3_BYTES);
+                                   QGP_DSA87_PUBLICKEYBYTES,
+                                   QGP_DSA87_SIGNATURE_BYTES);
     if (!signature) {
         result = DNA_ERROR_MEMORY;
         goto cleanup;
     }
 
     memcpy(qgp_signature_get_pubkey(signature), sign_key->public_key,
-           QGP_DILITHIUM3_PUBLICKEYBYTES);
+           QGP_DSA87_PUBLICKEYBYTES);
 
     size_t actual_sig_len = 0;
-    if (qgp_dilithium3_signature(qgp_signature_get_bytes(signature),
+    if (qgp_dsa87_sign(qgp_signature_get_bytes(signature),
                                   &actual_sig_len, plaintext, plaintext_len,
                                   sign_key->private_key) != 0) {
         result = DNA_ERROR_CRYPTO;
@@ -439,23 +439,23 @@ dna_error_t dna_encrypt_message(
 
     // Create recipient entries (wrap DEK for each recipient)
     for (size_t i = 0; i < recipient_count; i++) {
-        uint8_t kyber_ct[QGP_KYBER512_CIPHERTEXTBYTES];
-        uint8_t kek[QGP_KYBER512_BYTES];
+        uint8_t kyber_ct[QGP_KEM1024_CIPHERTEXTBYTES];
+        uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];
 
-        if (qgp_kyber512_enc(kyber_ct, kek, recipient_pubkeys[i]) != 0) {
-            memset(kek, 0, QGP_KYBER512_BYTES);
+        if (qgp_kem1024_encapsulate(kyber_ct, kek, recipient_pubkeys[i]) != 0) {
+            memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
             result = DNA_ERROR_CRYPTO;
             goto cleanup;
         }
 
         if (aes256_wrap_key(dek, 32, kek, recipient_entries[i].wrapped_dek) != 0) {
-            memset(kek, 0, QGP_KYBER512_BYTES);
+            memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
             result = DNA_ERROR_CRYPTO;
             goto cleanup;
         }
 
-        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ct, 768);
-        memset(kek, 0, QGP_KYBER512_BYTES);
+        memcpy(recipient_entries[i].kyber_ciphertext, kyber_ct, 1568);  // Kyber1024 ciphertext size
+        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
     }
 
     // Serialize signature
@@ -566,18 +566,18 @@ dna_error_t dna_encrypt_message_raw(
 
     // Create signature
     signature = qgp_signature_new(QGP_SIG_TYPE_DILITHIUM,
-                                   QGP_DILITHIUM3_PUBLICKEYBYTES,
-                                   QGP_DILITHIUM3_BYTES);
+                                   QGP_DSA87_PUBLICKEYBYTES,
+                                   QGP_DSA87_SIGNATURE_BYTES);
     if (!signature) {
         result = DNA_ERROR_MEMORY;
         goto cleanup;
     }
 
     memcpy(qgp_signature_get_pubkey(signature), sender_sign_pubkey,
-           QGP_DILITHIUM3_PUBLICKEYBYTES);
+           QGP_DSA87_PUBLICKEYBYTES);
 
     size_t actual_sig_len = 0;
-    if (qgp_dilithium3_signature(qgp_signature_get_bytes(signature),
+    if (qgp_dsa87_sign(qgp_signature_get_bytes(signature),
                                   &actual_sig_len, plaintext, plaintext_len,
                                   sender_sign_privkey) != 0) {
         result = DNA_ERROR_CRYPTO;
@@ -619,23 +619,23 @@ dna_error_t dna_encrypt_message_raw(
     }
 
     // Create recipient entry (wrap DEK for recipient)
-    uint8_t kyber_ct[QGP_KYBER512_CIPHERTEXTBYTES];
-    uint8_t kek[QGP_KYBER512_BYTES];
+    uint8_t kyber_ct[QGP_KEM1024_CIPHERTEXTBYTES];
+    uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];
 
-    if (qgp_kyber512_enc(kyber_ct, kek, recipient_enc_pubkey) != 0) {
-        memset(kek, 0, QGP_KYBER512_BYTES);
+    if (qgp_kem1024_encapsulate(kyber_ct, kek, recipient_enc_pubkey) != 0) {
+        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
         result = DNA_ERROR_CRYPTO;
         goto cleanup;
     }
 
     if (aes256_wrap_key(dek, 32, kek, recipient_entry.wrapped_dek) != 0) {
-        memset(kek, 0, QGP_KYBER512_BYTES);
+        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
         result = DNA_ERROR_CRYPTO;
         goto cleanup;
     }
 
-    memcpy(recipient_entry.kyber_ciphertext, kyber_ct, 768);
-    memset(kek, 0, QGP_KYBER512_BYTES);
+    memcpy(recipient_entry.kyber_ciphertext, kyber_ct, 1568);  // Kyber1024 ciphertext size
+    memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
 
     // Serialize signature
     uint8_t *sig_bytes = malloc(signature_size);
@@ -740,10 +740,15 @@ dna_error_t dna_decrypt_message_raw(
     offset += sizeof(header);
 
     // Validate header
-    if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0 ||
-        header.version != DNA_ENC_VERSION) {
+    if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0) {
+        fprintf(stderr, "[DEBUG] Invalid magic bytes in header\n");
         return DNA_ERROR_DECRYPT;
     }
+    if (header.version != DNA_ENC_VERSION) {
+        fprintf(stderr, "[DEBUG] Version mismatch: got 0x%02x, expected 0x%02x\n", header.version, DNA_ENC_VERSION);
+        return DNA_ERROR_DECRYPT;
+    }
+    fprintf(stderr, "[DEBUG] Header validated: version 0x%02x, %u recipients\n", header.version, header.recipient_count);
 
     uint8_t recipient_count = header.recipient_count;
     size_t encrypted_size = header.encrypted_size;
@@ -774,23 +779,25 @@ dna_error_t dna_decrypt_message_raw(
 
     int found_entry = -1;
     for (int i = 0; i < recipient_count; i++) {
-        uint8_t kek[QGP_KYBER512_BYTES];
+        uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];
 
-        if (qgp_kyber512_dec(kek, recipient_entries[i].kyber_ciphertext,
+        if (qgp_kem1024_decapsulate(kek, recipient_entries[i].kyber_ciphertext,
                             recipient_enc_privkey) == 0) {
             if (aes256_unwrap_key(recipient_entries[i].wrapped_dek, 40, kek, dek) == 0) {
                 found_entry = i;
-                memset(kek, 0, QGP_KYBER512_BYTES);
+                memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
                 break;
             }
         }
-        memset(kek, 0, QGP_KYBER512_BYTES);
+        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
     }
 
     if (found_entry == -1) {
+        fprintf(stderr, "[DEBUG] Kyber decapsulation failed for all %d recipients - wrong key or corrupted ciphertext\n", recipient_count);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
+    fprintf(stderr, "[DEBUG] Kyber decapsulation succeeded for recipient %d\n", found_entry);
 
     // Read nonce, encrypted data, tag
     if (offset + 12 + encrypted_size + 16 > ciphertext_len) {
@@ -823,9 +830,11 @@ dna_error_t dna_decrypt_message_raw(
     if (qgp_aes256_decrypt(dek, encrypted_data, encrypted_size,
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            nonce, tag, decrypted, &decrypted_size) != 0) {
+        fprintf(stderr, "[DEBUG] AES-256-GCM decryption failed - wrong DEK or corrupted ciphertext\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
+    fprintf(stderr, "[DEBUG] AES-256-GCM decryption succeeded (%zu bytes)\n", decrypted_size);
 
     // Parse and verify signature
     if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
@@ -837,8 +846,10 @@ dna_error_t dna_decrypt_message_raw(
             uint8_t *sig_pubkey = qgp_signature_get_pubkey(signature);
             uint8_t *sig_bytes = qgp_signature_get_bytes(signature);
 
-            if (qgp_dilithium3_verify(sig_bytes, signature->signature_size,
+            fprintf(stderr, "[DEBUG] Verifying Dilithium signature (%zu bytes)...\n", signature->signature_size);
+            if (qgp_dsa87_verify(sig_bytes, signature->signature_size,
                                      decrypted, decrypted_size, sig_pubkey) != 0) {
+                fprintf(stderr, "[DEBUG] Dilithium signature verification FAILED\n");
                 result = DNA_ERROR_VERIFY;
                 goto cleanup;
             }
@@ -907,10 +918,15 @@ dna_error_t dna_decrypt_message(
     offset += sizeof(header);
 
     // Validate header
-    if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0 ||
-        header.version != DNA_ENC_VERSION) {
+    if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0) {
+        fprintf(stderr, "[DEBUG] Invalid magic bytes in header\n");
         return DNA_ERROR_DECRYPT;
     }
+    if (header.version != DNA_ENC_VERSION) {
+        fprintf(stderr, "[DEBUG] Version mismatch: got 0x%02x, expected 0x%02x\n", header.version, DNA_ENC_VERSION);
+        return DNA_ERROR_DECRYPT;
+    }
+    fprintf(stderr, "[DEBUG] Header validated: version 0x%02x, %u recipients\n", header.version, header.recipient_count);
 
     uint8_t recipient_count = header.recipient_count;
     size_t encrypted_size = header.encrypted_size;
@@ -928,7 +944,7 @@ dna_error_t dna_decrypt_message(
     }
     free(enc_key_path);
 
-    if (enc_key->type != QGP_KEY_TYPE_KYBER512) {
+    if (enc_key->type != QGP_KEY_TYPE_KEM1024) {
         result = DNA_ERROR_KEY_INVALID;
         goto cleanup;
     }
@@ -958,23 +974,25 @@ dna_error_t dna_decrypt_message(
 
     int found_entry = -1;
     for (int i = 0; i < recipient_count; i++) {
-        uint8_t kek[QGP_KYBER512_BYTES];
+        uint8_t kek[QGP_KEM1024_SHAREDSECRET_BYTES];
 
-        if (qgp_kyber512_dec(kek, recipient_entries[i].kyber_ciphertext,
+        if (qgp_kem1024_decapsulate(kek, recipient_entries[i].kyber_ciphertext,
                             enc_key->private_key) == 0) {
             if (aes256_unwrap_key(recipient_entries[i].wrapped_dek, 40, kek, dek) == 0) {
                 found_entry = i;
-                memset(kek, 0, QGP_KYBER512_BYTES);
+                memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
                 break;
             }
         }
-        memset(kek, 0, QGP_KYBER512_BYTES);
+        memset(kek, 0, QGP_KEM1024_SHAREDSECRET_BYTES);
     }
 
     if (found_entry == -1) {
+        fprintf(stderr, "[DEBUG] Kyber decapsulation failed for all %d recipients - wrong key or corrupted ciphertext\n", recipient_count);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
+    fprintf(stderr, "[DEBUG] Kyber decapsulation succeeded for recipient %d\n", found_entry);
 
     // Read nonce, encrypted data, tag
     if (offset + 12 + encrypted_size + 16 > ciphertext_len) {
@@ -1007,9 +1025,11 @@ dna_error_t dna_decrypt_message(
     if (qgp_aes256_decrypt(dek, encrypted_data, encrypted_size,
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            nonce, tag, decrypted, &decrypted_size) != 0) {
+        fprintf(stderr, "[DEBUG] AES-256-GCM decryption failed - wrong DEK or corrupted ciphertext\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
+    fprintf(stderr, "[DEBUG] AES-256-GCM decryption succeeded (%zu bytes)\n", decrypted_size);
 
     // Parse and verify signature
     if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
@@ -1021,8 +1041,10 @@ dna_error_t dna_decrypt_message(
             uint8_t *sig_pubkey = qgp_signature_get_pubkey(signature);
             uint8_t *sig_bytes = qgp_signature_get_bytes(signature);
 
-            if (qgp_dilithium3_verify(sig_bytes, signature->signature_size,
+            fprintf(stderr, "[DEBUG] Verifying Dilithium signature (%zu bytes)...\n", signature->signature_size);
+            if (qgp_dsa87_verify(sig_bytes, signature->signature_size,
                                      decrypted, decrypted_size, sig_pubkey) != 0) {
+                fprintf(stderr, "[DEBUG] Dilithium signature verification FAILED\n");
                 result = DNA_ERROR_VERIFY;
                 goto cleanup;
             }

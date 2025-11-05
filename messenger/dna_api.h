@@ -151,9 +151,9 @@ dna_error_t dna_encrypt_message(
  * @param ctx: DNA context
  * @param plaintext: Plaintext message buffer
  * @param plaintext_len: Plaintext length
- * @param recipient_enc_pubkey: Recipient's Kyber512 public key (800 bytes)
- * @param sender_sign_pubkey: Sender's Dilithium3 public key (1952 bytes)
- * @param sender_sign_privkey: Sender's Dilithium3 private key (4032 bytes)
+ * @param recipient_enc_pubkey: Recipient's Kyber1024 public key (1568 bytes)
+ * @param sender_sign_pubkey: Sender's Dilithium5 public key (2592 bytes)
+ * @param sender_sign_privkey: Sender's Dilithium5 private key (4896 bytes)
  * @param ciphertext_out: Output ciphertext buffer (caller must free)
  * @param ciphertext_len_out: Output ciphertext length
  * @return: DNA_OK on success, error code otherwise
@@ -212,10 +212,10 @@ dna_error_t dna_decrypt_message(
  * @param ctx: DNA context
  * @param ciphertext: Encrypted message buffer
  * @param ciphertext_len: Ciphertext length
- * @param recipient_enc_privkey: Recipient's Kyber512 private key (1632 bytes)
+ * @param recipient_enc_privkey: Recipient's Kyber1024 private key (3168 bytes)
  * @param plaintext_out: Output plaintext buffer (caller must free)
  * @param plaintext_len_out: Output plaintext length
- * @param sender_sign_pubkey_out: Sender's Dilithium3 public key (caller must free)
+ * @param sender_sign_pubkey_out: Sender's Dilithium5 public key (caller must free)
  * @param sender_sign_pubkey_len_out: Sender's public key length
  * @return: DNA_OK on success, error code otherwise
  */

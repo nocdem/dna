@@ -74,8 +74,8 @@ void print_version(void) {
     printf("Git commit: %s\n", BUILD_HASH);
     printf("\nDNA Messenger - Post-quantum encrypted messaging (fork preparation phase)\n");
     printf("Forked from: QGP (Quantum Good Privacy)\n");
-    printf("Signatures: Dilithium3 (ML-DSA-65, FIPS 204)\n");
-    printf("Encryption: Kyber512 KEM + AES-256-GCM (AEAD)\n");
+    printf("Signatures: ML-DSA-87 (FIPS 204)\n");
+    printf("Encryption: ML-KEM-1024 + AES-256-GCM (AEAD)\n");
 }
 
 void print_help(void) {
@@ -123,7 +123,7 @@ void print_help(void) {
     printf("  -C, --config-create   Create default configuration file (~/.qgp/config)\n");
     printf("  -n, --name <name>     Key name (for generation/export/keyring)\n");
     printf("  -a, --algo <algo>     Algorithm: dilithium (FIPS 204 / ML-DSA-65)\n");
-    printf("  -k, --key <name|path> Keyring name OR path to private key (.pqkey)\n");
+    printf("  -k, --key <name|path> Keyring name OR path to private key (.dsa/.kem)\n");
     printf("  -r, --recipient <key> Keyring name OR public key file (.asc)\n");
     printf("                        Use multiple -r flags for multi-recipient encryption\n");
     printf("  -o, --output <path>   Output directory or file\n");
@@ -136,8 +136,8 @@ void print_help(void) {
     printf("  │                                                                    │\n");
     printf("  │ # Generate keys (automatically registered in keyring)             │\n");
     printf("  │ qgp --gen-key --name alice                                    │\n");
-    printf("  │ # Creates: ~/.qgp/alice-dilithium3.pqkey                      │\n");
-    printf("  │ #          ~/.qgp/alice-kyber512.pqkey                        │\n");
+    printf("  │ # Creates: ~/.qgp/alice.dsa                                   │\n");
+    printf("  │ #          ~/.qgp/alice.kem                                   │\n");
     printf("  │ #          ~/.qgp/keyring/alice.pub (auto-registered)         │\n");
     printf("  │                                                                    │\n");
     printf("  │ # Generate keys from BIP39 mnemonic (recoverable!)                │\n");
@@ -212,8 +212,8 @@ void print_help(void) {
     printf("  │                                                                    │\n");
     printf("  └────────────────────────────────────────────────────────────────────┘\n\n");
     printf("ALGORITHMS:\n");
-    printf("  Signatures: Dilithium3 (ML-DSA-65, FIPS 204)\n");
-    printf("  Encryption: Kyber512 KEM + AES-256-CBC\n");
+    printf("  Signatures: ML-DSA-87 (FIPS 204)\n");
+    printf("  Encryption: ML-KEM-1024 + AES-256-CBC\n");
     printf("  Multi-Recipient: RFC 3394 AES Key Wrap\n\n");
     printf("For more information, visit: https://github.com/nocdem/qgp\n");
 }
