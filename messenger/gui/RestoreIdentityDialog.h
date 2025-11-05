@@ -19,23 +19,19 @@ class RestoreIdentityDialog : public QDialog
 public:
     explicit RestoreIdentityDialog(QWidget *parent = nullptr);
 
-    // Get the restored identity name
-    QString getRestoredIdentity() const;
+    // Get the restored identity fingerprint
+    QString getRestoredFingerprint() const;
 
 private slots:
-    void onNextPage();
-    void onPreviousPage();
     void onRestoreIdentity();
     void onPasteSeedPhrase();
 
 private:
     void setupUI();
-    void createPage1_IdentityName();
-    void createPage2_SeedPhrase();
-    void createPage3_Progress();
-    void createPage4_Success();
+    void createPage1_SeedPhrase();
+    void createPage2_Progress();
+    void createPage3_Success();
 
-    void validateIdentityName();
     bool validateSeedPhrase();
     bool performRestore();
     void applyTheme();
@@ -43,41 +39,31 @@ private:
 
     QStackedWidget *stackedWidget;
 
-    // Page 1: Identity Name
+    // Page 1: Seed Phrase
     QWidget *page1;
     QLabel *titleLabel1;
-    QLabel *instructionsLabel;
-    QLabel *inputLabel1;
-    QLineEdit *identityNameInput;
-    QPushButton *nextButton1;
-    QLabel *errorLabel1;
-
-    // Page 2: Seed Phrase
-    QWidget *page2;
-    QLabel *titleLabel2;
     QLineEdit *wordInputs[24];
     QLineEdit *passphraseInput;
     QLabel *passphraseLabel;
     QPushButton *pasteButton;
-    QLabel *errorLabel2;
-    QPushButton *previousButton2;
+    QLabel *errorLabel1;
     QPushButton *restoreButton;
     QCompleter *wordCompleter;
     QStringListModel *wordListModel;
 
-    // Page 3: Progress
-    QWidget *page3;
-    QLabel *titleLabel3;
+    // Page 2: Progress
+    QWidget *page2;
+    QLabel *titleLabel2;
     QProgressBar *progressBar;
     QLabel *statusLabel;
 
-    // Page 4: Success
-    QWidget *page4;
-    QLabel *titleLabel4;
+    // Page 3: Success
+    QWidget *page3;
+    QLabel *titleLabel3;
     QLabel *successLabel;
     QPushButton *finishButton;
 
-    QString restoredIdentity;
+    QString restoredFingerprint;
 };
 
 #endif // RESTOREIDENTITYDIALOG_H

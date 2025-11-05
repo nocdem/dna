@@ -235,9 +235,9 @@ void IdentitySelectionDialog::onRestoreIdentity()
 {
     RestoreIdentityDialog dialog(this);
     if (dialog.exec() == QDialog::Accepted) {
-        QString restoredIdentity = dialog.getRestoredIdentity();
-        if (!restoredIdentity.isEmpty()) {
-            selectedIdentity = restoredIdentity;
+        QString restoredFingerprint = dialog.getRestoredFingerprint();
+        if (!restoredFingerprint.isEmpty()) {
+            selectedIdentity = restoredFingerprint;
             accept();
         }
     }

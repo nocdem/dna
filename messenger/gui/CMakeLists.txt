@@ -36,8 +36,6 @@ set(GUI_SOURCES
     TransactionHistoryDialog.h
     ThemeManager.cpp
     ThemeManager.h
-    MigrateIdentityDialog.cpp
-    MigrateIdentityDialog.h
     RegisterDNANameDialog.cpp
     RegisterDNANameDialog.h
     ProfileEditorDialog.cpp

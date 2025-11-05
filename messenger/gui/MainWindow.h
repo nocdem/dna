@@ -68,7 +68,6 @@ private slots:
     void onCheckOfflineMessages();  // Phase 9.2: Check DHT for offline messages
     void onSyncContacts();  // Manual contact list sync to DHT
     void onAutoSyncContacts();  // Automatic contact list sync (timer-based)
-    void onMigrateIdentity();  // Phase 3: Open identity migration dialog
     void onRegisterDNAName();  // Phase 4: Open DNA name registration dialog
     void onEditProfile();  // Phase 5: Open profile editor dialog
     void onViewMyMessageWall();  // Phase 6: View own message wall

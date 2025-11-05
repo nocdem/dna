@@ -7,7 +7,6 @@
 #include "WalletDialog.h"
 #include "SendTokensDialog.h"
 #include "ThemeManager.h"
-#include "MigrateIdentityDialog.h"
 #include "RegisterDNANameDialog.h"
 #include "ProfileEditorDialog.h"
 #include "MessageWallDialog.h"
@@ -380,10 +379,6 @@ void MainWindow::setupUI() {
     // Sync Contacts action
     QAction *syncContactsAction = settingsMenu->addAction(QString::fromUtf8("🔄 Sync Contacts to DHT"));
     connect(syncContactsAction, &QAction::triggered, this, &MainWindow::onSyncContacts);
-
-    // Migrate Identity action (Phase 3)
-    QAction *migrateIdentityAction = settingsMenu->addAction(QString::fromUtf8("🔄 Migrate Identity"));
-    connect(migrateIdentityAction, &QAction::triggered, this, &MainWindow::onMigrateIdentity);
 
     // Register DNA Name action (Phase 4)
     QAction *registerNameAction = settingsMenu->addAction(QString::fromUtf8("🏷️ Register DNA Name"));
@@ -3292,13 +3287,6 @@ void MainWindow::onSyncContacts() {
     QTimer::singleShot(5000, this, [this]() {
         syncStatusLabel->setText(QString::fromUtf8("📇 Contacts: Local"));
     });
-}
-
-// Phase 3: Open identity migration dialog
-void MainWindow::onMigrateIdentity() {
-    MigrateIdentityDialog *dialog = new MigrateIdentityDialog(this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->exec();
 }
 
 // Phase 4: Open DNA name registration dialog
