@@ -1001,19 +1001,19 @@ private:
     }
     
     void renderSidebar() {
-        ImGui::BeginChild("Sidebar", ImVec2(250, 0), true);
+        ImGui::BeginChild("Sidebar", ImVec2(250, 0), true, ImGuiWindowFlags_NoScrollbar);
         
         ImGui::Text("DNA Messenger");
         ImGui::Separator();
         
-        // Navigation buttons
-        if (ButtonDark(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40))) {
+        // Navigation buttons (40px each)
+        if (ThemedButton(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40), current_view == VIEW_CONTACTS || current_view == VIEW_CHAT)) {
             current_view = VIEW_CONTACTS;
         }
-        if (ButtonDark(ICON_FA_WALLET " Wallet", ImVec2(-1, 40))) {
+        if (ThemedButton(ICON_FA_WALLET " Wallet", ImVec2(-1, 40), current_view == VIEW_WALLET)) {
             current_view = VIEW_WALLET;
         }
-        if (ButtonDark(ICON_FA_COG " Settings", ImVec2(-1, 40))) {
+        if (ThemedButton(ICON_FA_COG " Settings", ImVec2(-1, 40), current_view == VIEW_SETTINGS)) {
             current_view = VIEW_SETTINGS;
         }
         
@@ -1021,7 +1021,12 @@ private:
         ImGui::Text("Contacts");
         ImGui::Separator();
         
-        // Contact list
+        // Contact list - calculate available height
+        // Height = window height - (title + separator + 3 buttons + separator + "Contacts" + separator + add button + padding)
+        float available_height = ImGui::GetWindowHeight() - 230.0f; // Space for buttons and UI elements
+        
+        ImGui::BeginChild("ContactList", ImVec2(0, available_height), false);
+        
         float list_width = ImGui::GetContentRegionAvail().x;
         for (size_t i = 0; i < contacts.size(); i++) {
             ImGui::PushID(i);
@@ -1058,13 +1063,14 @@ private:
             ImGui::PopID();
         }
         
-        // Add contact button at bottom (same size as main buttons)
-        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 70);
-        if (ThemedButton(ICON_FA_PLUS " Add Contact", ImVec2(-1, 60), false)) {
+        ImGui::EndChild(); // ContactList
+        
+        // Add contact button at bottom (40px to match main buttons)
+        if (ThemedButton(ICON_FA_PLUS " Add Contact", ImVec2(-1, 40), false)) {
             // TODO: Open add contact dialog
         }
         
-        ImGui::EndChild();
+        ImGui::EndChild(); // Sidebar
     }
     
     void renderChatView() {
