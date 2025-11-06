@@ -3386,7 +3386,8 @@ void MainWindow::checkNameExpiration() {
     int ret = dna_load_identity(dht_ctx, fingerprint.toUtf8().constData(), &identity);
 
     if (ret != 0 || !identity) {
-        return;  // No identity in DHT yet
+        // No full identity profile in DHT (this is expected - only keys + reverse mapping are published)
+        return;
     }
 
     // Check if name is registered

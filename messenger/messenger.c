@@ -546,6 +546,42 @@ int messenger_register_name(
         if (dht_keyserver_publish_alias(dht_ctx, desired_name, fingerprint) != 0) {
             fprintf(stderr, "Warning: Failed to publish name alias (name lookups may not work)\n");
         }
+
+        // Publish identity profile to DHT (for expiration checking)
+        dna_unified_identity_t *identity = dna_identity_create();
+        if (identity) {
+            strncpy(identity->fingerprint, fingerprint, sizeof(identity->fingerprint) - 1);
+            identity->has_registered_name = true;
+            strncpy(identity->registered_name, desired_name, sizeof(identity->registered_name) - 1);
+            identity->name_registered_at = time(NULL);
+            identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
+            identity->timestamp = time(NULL);
+            identity->version = 1;
+
+            char *json = dna_identity_to_json(identity);
+            if (json) {
+                char key_input[256];
+                snprintf(key_input, sizeof(key_input), "%s:profile", fingerprint);
+
+                unsigned char hash[64];
+                if (qgp_sha3_512((unsigned char*)key_input, strlen(key_input), hash) == 0) {
+                    char dht_key[129];
+                    for (int i = 0; i < 64; i++) {
+                        sprintf(dht_key + (i * 2), "%02x", hash[i]);
+                    }
+                    dht_key[128] = '\0';
+
+                    if (dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                          (uint8_t*)json, strlen(json)) != 0) {
+                        fprintf(stderr, "Warning: Failed to publish identity profile to DHT\n");
+                    } else {
+                        printf("[DNA] ✓ Published identity profile to DHT\n");
+                    }
+                }
+                free(json);
+            }
+            dna_identity_free(identity);
+        }
     }
 
     qgp_key_free(sign_key);
