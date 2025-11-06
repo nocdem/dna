@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <algorithm>
+#include <cstdlib>
 
 #ifndef _WIN32
 #include <dirent.h>
@@ -772,34 +774,56 @@ private:
     void loadIdentity(const std::string& identity) {
         printf("[SKETCH MODE] Loading identity: %s\n", identity.c_str());
         
-        // UI SKETCH MODE - Load mock contacts
+        // UI SKETCH MODE - Load 100 mock contacts with random online/offline
         contacts.clear();
         contact_messages.clear();
         
-        contacts.push_back({"Alice", "alice@dna", true});
-        contacts.push_back({"Bob", "bob@dna", false});
-        contacts.push_back({"Charlie", "charlie@dna", true});
-        contacts.push_back({"Diana", "diana@dna", true});
-        contacts.push_back({"Eve", "eve@dna", false});
-        contacts.push_back({"Frank", "frank@dna", true});
+        const char* names[] = {
+            "Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry",
+            "Ivy", "Jack", "Kate", "Liam", "Mia", "Noah", "Olivia", "Peter",
+            "Quinn", "Ruby", "Sam", "Tara", "Uma", "Victor", "Wendy", "Xander",
+            "Yara", "Zack", "Aiden", "Bella", "Caleb", "Daisy", "Ethan", "Fiona",
+            "George", "Hannah", "Isaac", "Julia", "Kevin", "Luna", "Mason", "Nina",
+            "Oscar", "Penny", "Quincy", "Rose", "Seth", "Tina", "Ulysses", "Vera",
+            "Wade", "Xena", "Yasmin", "Zane", "Aaron", "Bianca", "Colin", "Daphne",
+            "Elijah", "Freya", "Gavin", "Hazel", "Ian", "Jade", "Kyle", "Leah",
+            "Marcus", "Nora", "Owen", "Piper", "Quentin", "Rachel", "Simon", "Thea",
+            "Upton", "Violet", "Walter", "Willow", "Xavier", "Yvonne", "Zachary", "Aria",
+            "Blake", "Chloe", "Dylan", "Emma", "Felix", "Gemma", "Hugo", "Iris",
+            "James", "Kylie", "Lucas", "Maya", "Nathan", "Olive", "Paul", "Qiana",
+            "Ryan", "Sage", "Thomas", "Unity"
+        };
         
-        // Mock message history for Alice (contact 0)
-        contact_messages[0].push_back({"Alice", "Hey! How are you?", "Today 10:30 AM", false});
+        // Generate 100 contacts with random online/offline (60% online, 40% offline)
+        srand(12345); // Fixed seed for consistent mock data
+        for (int i = 0; i < 100; i++) {
+            bool is_online = (rand() % 100) < 60; // 60% online
+            char address[64];
+            snprintf(address, sizeof(address), "%s@dna", names[i]);
+            contacts.push_back({names[i], address, is_online});
+        }
+        
+        // Sort contacts: online first, then offline
+        std::sort(contacts.begin(), contacts.end(), [](const Contact& a, const Contact& b) {
+            if (a.is_online != b.is_online) {
+                return a.is_online > b.is_online; // Online first
+            }
+            return strcmp(a.name.c_str(), b.name.c_str()) < 0; // Then alphabetically
+        });
+        
+        // Mock message history for first contact
+        contact_messages[0].push_back({contacts[0].name, "Hey! How are you?", "Today 10:30 AM", false});
         contact_messages[0].push_back({"Me", "I'm good! Working on DNA Messenger", "Today 10:32 AM", true});
-        contact_messages[0].push_back({"Alice", "Nice! Post-quantum crypto is the future 🚀", "Today 10:33 AM", false});
-        contact_messages[0].push_back({"Me", "Absolutely! Kyber512 + Dilithium3", "Today 10:35 AM", true});
-        contact_messages[0].push_back({"Alice", "Can't wait to try it out!", "Today 10:36 AM", false});
+        contact_messages[0].push_back({contacts[0].name, "Nice! Post-quantum crypto is the future 🚀", "Today 10:33 AM", false});
+        contact_messages[0].push_back({"Me", "Absolutely! Kyber1024 + Dilithium5", "Today 10:35 AM", true});
+        contact_messages[0].push_back({contacts[0].name, "Can't wait to try it out!", "Today 10:36 AM", false});
         
-        // Mock message history for Bob (contact 1)
-        contact_messages[1].push_back({"Bob", "Are you available tomorrow?", "Yesterday 3:45 PM", false});
+        // Mock message history for second contact
+        contact_messages[1].push_back({contacts[1].name, "Are you available tomorrow?", "Yesterday 3:45 PM", false});
         contact_messages[1].push_back({"Me", "Yes, what's up?", "Yesterday 4:12 PM", true});
-        contact_messages[1].push_back({"Bob", "Let's discuss the new features", "Yesterday 4:15 PM", false});
+        contact_messages[1].push_back({contacts[1].name, "Let's discuss the new features", "Yesterday 4:15 PM", false});
         
-        // Mock message history for Charlie (contact 2)
-        contact_messages[2].push_back({"Charlie", "Check out this article!", "Nov 1, 2:20 PM", false});
-        contact_messages[2].push_back({"Me", "Thanks! Will read it later", "Nov 1, 2:45 PM", true});
-        
-        printf("[SKETCH MODE] Loaded %zu mock contacts\n", contacts.size());
+        printf("[SKETCH MODE] Loaded %zu mock contacts (sorted: online first)\n", contacts.size());
         
         identity_loaded = true;
         show_identity_selection = false;
