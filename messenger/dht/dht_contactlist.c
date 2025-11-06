@@ -349,8 +349,8 @@ int dht_contactlist_publish(
         return -1;
     }
 
-    // Step 6: Store in DHT
-    int result = dht_put(dht_ctx, dht_key, 64, blob, blob_size);
+    // Step 6: Store in DHT (permanent storage)
+    int result = dht_put_permanent(dht_ctx, dht_key, 64, blob, blob_size);
     free(blob);
 
     if (result != 0) {

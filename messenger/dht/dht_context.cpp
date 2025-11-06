@@ -219,22 +219,29 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
         std::vector<uint8_t> data(value, value + value_len);
         auto dht_value = std::make_shared<dht::Value>(data);
 
-        // Set TTL (0 = use default 7 days)
+        // Set TTL (0 = use default 7 days, UINT_MAX = permanent)
         if (ttl_seconds == 0) {
             ttl_seconds = 7 * 24 * 3600;  // 7 days
         }
 
-        // Choose ValueType based on TTL (365 days vs 7 days)
-        if (ttl_seconds >= 365 * 24 * 3600) {
-            dht_value->type = DNA_TYPE_365DAY.id;  // Assign type ID
+        // Handle permanent vs timed expiration
+        if (ttl_seconds == UINT_MAX) {
+            // Permanent storage (never expires)
+            std::cout << "[DHT] PUT PERMANENT: " << hash << " (" << value_len << " bytes)" << std::endl;
+            ctx->runner.put(hash, dht_value, dht::DoneCallbackSimple{}, dht::time_point::max(), true);
         } else {
-            dht_value->type = DNA_TYPE_7DAY.id;    // Assign type ID
+            // Choose ValueType based on TTL (365 days vs 7 days)
+            if (ttl_seconds >= 365 * 24 * 3600) {
+                dht_value->type = DNA_TYPE_365DAY.id;  // Assign type ID
+            } else {
+                dht_value->type = DNA_TYPE_7DAY.id;    // Assign type ID
+            }
+
+            std::cout << "[DHT] PUT: " << hash << " (" << value_len << " bytes, TTL=" << ttl_seconds << "s)" << std::endl;
+
+            // Put value (permanent=false to use type's expiration)
+            ctx->runner.put(hash, dht_value);
         }
-
-        std::cout << "[DHT] PUT: " << hash << " (" << value_len << " bytes, TTL=" << ttl_seconds << "s)" << std::endl;
-
-        // Put value (permanent=false to use type's expiration)
-        ctx->runner.put(hash, dht_value);
 
         return 0;
     } catch (const std::exception& e) {
@@ -250,6 +257,15 @@ extern "C" int dht_put(dht_context_t *ctx,
                        const uint8_t *key, size_t key_len,
                        const uint8_t *value, size_t value_len) {
     return dht_put_ttl(ctx, key, key_len, value, value_len, 0);  // 0 = use default
+}
+
+/**
+ * Put value in DHT permanently (never expires)
+ */
+extern "C" int dht_put_permanent(dht_context_t *ctx,
+                                 const uint8_t *key, size_t key_len,
+                                 const uint8_t *value, size_t value_len) {
+    return dht_put_ttl(ctx, key, key_len, value, value_len, UINT_MAX);
 }
 
 /**

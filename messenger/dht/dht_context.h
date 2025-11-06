@@ -83,13 +83,27 @@ bool dht_context_is_ready(dht_context_t *ctx);
  * @param key_len Key length
  * @param value Value to store
  * @param value_len Value length
- * @param ttl_seconds Time-to-live in seconds (0 = default 7 days)
+ * @param ttl_seconds Time-to-live in seconds (0 = default 7 days, UINT_MAX = permanent)
  * @return 0 on success, -1 on error
  */
 int dht_put_ttl(dht_context_t *ctx,
                 const uint8_t *key, size_t key_len,
                 const uint8_t *value, size_t value_len,
                 unsigned int ttl_seconds);
+
+/**
+ * Put value in DHT permanently (never expires)
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param value Value to store
+ * @param value_len Value length
+ * @return 0 on success, -1 on error
+ */
+int dht_put_permanent(dht_context_t *ctx,
+                      const uint8_t *key, size_t key_len,
+                      const uint8_t *value, size_t value_len);
 
 /**
  * Put value in DHT (default 7-day TTL)

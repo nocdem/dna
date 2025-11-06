@@ -418,8 +418,8 @@ int dht_keyserver_publish(
     }
     printf("[DHT_KEYSERVER] DHT key: %s\n", dht_key);
 
-    int ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                      (uint8_t*)json, strlen(json));
+    int ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                (uint8_t*)json, strlen(json));
 
     free(json);
 
@@ -521,8 +521,9 @@ int dht_keyserver_publish(
             printf("[DHT_KEYSERVER] Publishing signed reverse mapping (fingerprint → identity)\n");
             printf("[DHT_KEYSERVER] Reverse key: %s\n", reverse_dht_key);
 
-            ret = dht_put(dht_ctx, (uint8_t*)reverse_dht_key, strlen(reverse_dht_key),
-                          (uint8_t*)reverse_json, strlen(reverse_json));
+            unsigned int ttl_365_days = 365 * 24 * 3600;
+            ret = dht_put_ttl(dht_ctx, (uint8_t*)reverse_dht_key, strlen(reverse_dht_key),
+                              (uint8_t*)reverse_json, strlen(reverse_json), ttl_365_days);
 
             free(reverse_json);
 
@@ -870,8 +871,8 @@ int dht_keyserver_update(
     printf("[DHT_KEYSERVER] Updating keys for fingerprint: %s\n", entry.fingerprint);
     printf("[DHT_KEYSERVER] New version: %u\n", new_version);
 
-    ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                  (uint8_t*)json, strlen(json));
+    ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                            (uint8_t*)json, strlen(json));
 
     free(json);
 
@@ -1029,8 +1030,8 @@ int dna_register_name(
     }
     dht_key[128] = '\0';
 
-    ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                  (uint8_t*)json, strlen(json));
+    ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                            (uint8_t*)json, strlen(json));
     free(json);
 
     if (ret != 0) {
@@ -1059,8 +1060,9 @@ int dna_register_name(
     }
     dht_key[128] = '\0';
 
-    ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                  (uint8_t*)fingerprint, 128);  // Store fingerprint (128 hex chars)
+    unsigned int ttl_365_days = 365 * 24 * 3600;
+    ret = dht_put_ttl(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                      (uint8_t*)fingerprint, 128, ttl_365_days);  // Store fingerprint (128 hex chars)
 
     if (ret != 0) {
         fprintf(stderr, "[DNA] Failed to store name mapping in DHT\n");
@@ -1149,8 +1151,8 @@ int dna_update_profile(
     printf("[DNA] DHT key: %.32s...\n", dht_key);
 
     // Store in DHT (permanent storage)
-    ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                  (uint8_t*)json, strlen(json));
+    ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                            (uint8_t*)json, strlen(json));
 
     free(json);
     dna_identity_free(identity);
@@ -1242,8 +1244,8 @@ int dna_renew_name(
     }
     dht_key[128] = '\0';
 
-    int ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                  (uint8_t*)json, strlen(json));
+    int ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                (uint8_t*)json, strlen(json));
     free(json);
 
     if (ret != 0) {
