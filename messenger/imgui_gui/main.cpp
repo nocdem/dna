@@ -35,6 +35,9 @@ extern "C" {
 }
 */
 
+// Global theme variable
+int g_current_theme = 0; // 0 = DNA, 1 = Club
+
 struct Message {
     std::string sender;
     std::string content;
