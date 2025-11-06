@@ -232,6 +232,19 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
     // Phase 7: Check DNA name expiration on startup (after 3 seconds delay)
     QTimer::singleShot(3000, this, &MainWindow::checkNameExpiration);
 
+    // Update user menu button with DNA name after DHT is ready (5 second delay)
+    QTimer::singleShot(5000, this, [this]() {
+        if (!ctx || !userMenuButton) return;
+
+        char displayNameBuf[256] = {0};
+        if (messenger_get_display_name(ctx, currentIdentity.toUtf8().constData(), displayNameBuf) == 0) {
+            QString displayName = QString::fromUtf8(displayNameBuf);
+            userMenuButton->setText(displayName);
+            userMenuButton->setToolTip(QString("User Menu\n\nDNA Name: %1\n\nFull fingerprint:\n%2")
+                .arg(displayName).arg(currentIdentity));
+        }
+    });
+
     // Initialize status polling timer (10 seconds)
     statusPollTimer = new QTimer(this);
     connect(statusPollTimer, &QTimer::timeout, this, &MainWindow::checkForStatusUpdates);
