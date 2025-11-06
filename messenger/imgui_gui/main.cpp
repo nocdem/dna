@@ -217,16 +217,10 @@ inline bool ThemedButton(const char* label, const ImVec2& size = ImVec2(0, 0), b
     }
     
     if (is_active) {
-        // Active state: slightly darker than hover
-        ImVec4 active_bg = ImVec4(
-            active_color.x * 0.95f,
-            active_color.y * 0.95f,
-            active_color.z * 0.95f,
-            1.0f
-        );
-        ImGui::PushStyleColor(ImGuiCol_Button, active_bg);
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active_bg);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_bg);
+        // Active state: same as ButtonActive (slightly darker than hover)
+        ImGui::PushStyleColor(ImGuiCol_Button, active_color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active_color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
     } else {
         ImGui::PushStyleColor(ImGuiCol_Button, btn_color);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
