@@ -266,6 +266,26 @@ private:
         identities.push_back("alice");
         identities.push_back("bob");
         identities.push_back("charlie");
+        identities.push_back("david");
+        identities.push_back("emma");
+        identities.push_back("frank");
+        identities.push_back("grace");
+        identities.push_back("henry");
+        identities.push_back("isabella");
+        identities.push_back("jack");
+        identities.push_back("kate");
+        identities.push_back("liam");
+        identities.push_back("maria");
+        identities.push_back("noah");
+        identities.push_back("olivia");
+        identities.push_back("peter");
+        identities.push_back("quinn");
+        identities.push_back("rachel");
+        identities.push_back("steve");
+        identities.push_back("tina");
+        identities.push_back("ulysses");
+        identities.push_back("victoria");
+        identities.push_back("william");
         
         printf("[SKETCH MODE] Loaded %zu mock identities\n", identities.size());
         
