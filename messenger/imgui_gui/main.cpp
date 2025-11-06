@@ -1342,6 +1342,9 @@ int main(int argc, char** argv) {
     if (window == nullptr)
         return 1;
 
+    // Set minimum window size for desktop
+    glfwSetWindowSizeLimits(window, 1000, 600, GLFW_DONT_CARE, GLFW_DONT_CARE);
+
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
 
