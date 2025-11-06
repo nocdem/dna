@@ -464,9 +464,16 @@ void MainWindow::setupUI() {
         "padding: 10px;"
     );
 
-    // User menu button at very top (show shortened fingerprint: 5 chars ... 5 chars)
-    QString shortIdentity = currentIdentity.left(5) + "..." + currentIdentity.right(5);
-    userMenuButton = new QPushButton(shortIdentity);
+    // User menu button at very top (show DNA name or shortened fingerprint)
+    char displayNameBuf[256] = {0};
+    QString displayName;
+    if (messenger_get_display_name(ctx, currentIdentity.toUtf8().constData(), displayNameBuf) == 0) {
+        displayName = QString::fromUtf8(displayNameBuf);
+    } else {
+        // Fallback to shortened fingerprint
+        displayName = currentIdentity.left(5) + "..." + currentIdentity.right(5);
+    }
+    userMenuButton = new QPushButton(displayName);
     userMenuButton->setIcon(QIcon(":/icons/user.svg"));
     userMenuButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
     userMenuButton->setToolTip(QString("User Menu\n\nFull fingerprint:\n%1").arg(currentIdentity));
@@ -3322,8 +3329,15 @@ void MainWindow::onViewMyMessageWall() {
         return;
     }
 
-    // Get display name (registered name or shortened fingerprint)
-    QString displayName = QString::fromUtf8(ctx->identity);
+    // Get display name (registered DNA name or shortened fingerprint)
+    char displayNameBuf[256] = {0};
+    QString displayName;
+    if (messenger_get_display_name(ctx, fingerprint.toUtf8().constData(), displayNameBuf) == 0) {
+        displayName = QString::fromUtf8(displayNameBuf);
+    } else {
+        // Fallback to shortened fingerprint
+        displayName = fingerprint.left(10) + "..." + fingerprint.right(10);
+    }
 
     // Open message wall dialog (own wall, posting enabled)
     MessageWallDialog *dialog = new MessageWallDialog(ctx, fingerprint, displayName, true, this);
