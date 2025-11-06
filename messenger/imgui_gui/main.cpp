@@ -64,7 +64,7 @@ void ApplyTheme(int theme) {
         style.Colors[ImGuiCol_ScrollbarGrab] = DNATheme::Text();
         style.Colors[ImGuiCol_ScrollbarGrabHovered] = DNATheme::ButtonHover();
         style.Colors[ImGuiCol_ScrollbarGrabActive] = DNATheme::ButtonActive();
-        style.Colors[ImGuiCol_CheckMark] = DNATheme::Text();
+        style.Colors[ImGuiCol_CheckMark] = DNATheme::Background(); // Dark background for inner circle
         style.Colors[ImGuiCol_SliderGrab] = DNATheme::Text();
         style.Colors[ImGuiCol_SliderGrabActive] = DNATheme::ButtonActive();
         style.Colors[ImGuiCol_Button] = DNATheme::Text();
@@ -120,7 +120,7 @@ void ApplyTheme(int theme) {
         style.Colors[ImGuiCol_ScrollbarGrab] = ClubTheme::Text();
         style.Colors[ImGuiCol_ScrollbarGrabHovered] = ClubTheme::ButtonHover();
         style.Colors[ImGuiCol_ScrollbarGrabActive] = ClubTheme::ButtonActive();
-        style.Colors[ImGuiCol_CheckMark] = ClubTheme::Text();
+        style.Colors[ImGuiCol_CheckMark] = ClubTheme::Background(); // Dark background for inner circle
         style.Colors[ImGuiCol_SliderGrab] = ClubTheme::Text();
         style.Colors[ImGuiCol_SliderGrabActive] = ClubTheme::ButtonActive();
         style.Colors[ImGuiCol_Button] = ClubTheme::Text();
