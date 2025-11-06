@@ -312,25 +312,50 @@ private:
                 bool selected = (selected_identity_idx == (int)i);
                 
                 float item_height = is_mobile ? 50 : 35;
-                ImVec2 cursor_start = ImGui::GetCursorScreenPos();
+                ImVec2 text_size = ImGui::CalcTextSize(identities[i].c_str());
+                float text_offset_y = (item_height - text_size.y) * 0.5f;
                 
-                // Render selectable
-                if (ImGui::Selectable("##identity_select", selected, ImGuiSelectableFlags_None, ImVec2(0, item_height))) {
+                // Custom color handling for hover and selection
+                ImVec4 text_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+                ImVec4 bg_color = (g_current_theme == 0) ? DNATheme::Background() : ClubTheme::Background();
+                
+                ImVec2 pos = ImGui::GetCursorScreenPos();
+                ImVec2 size = ImVec2(ImGui::GetContentRegionAvail().x, item_height);
+                
+                // Check hover
+                bool hovered = ImGui::IsMouseHoveringRect(pos, ImVec2(pos.x + size.x, pos.y + size.y));
+                
+                if (hovered) {
+                    bg_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+                    text_color = (g_current_theme == 0) ? DNATheme::Background() : ClubTheme::Background();
+                }
+                
+                if (selected) {
+                    bg_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+                    text_color = (g_current_theme == 0) ? DNATheme::Background() : ClubTheme::Background();
+                }
+                
+                // Draw background
+                if (selected || hovered) {
+                    ImGui::GetWindowDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), ImGui::GetColorU32(bg_color));
+                }
+                
+                // Render invisible button for click detection
+                if (ImGui::InvisibleButton(identities[i].c_str(), size)) {
                     if (selected_identity_idx == (int)i) {
-                        selected_identity_idx = -1; // Deselect on second click
+                        selected_identity_idx = -1;
                     } else {
                         selected_identity_idx = i;
                     }
                 }
                 
-                // Calculate vertical centering
-                ImVec2 text_size = ImGui::CalcTextSize(identities[i].c_str());
-                float text_offset_y = (item_height - text_size.y) * 0.5f;
-                
-                // Draw text on top of selectable (using SameLine trick)
+                // Draw text centered vertically
                 ImGui::SameLine();
-                ImGui::SetCursorScreenPos(ImVec2(cursor_start.x + ImGui::GetStyle().FramePadding.x, cursor_start.y + text_offset_y));
+                ImGui::SetCursorPosX(ImGui::GetStyle().FramePadding.x);
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + text_offset_y);
+                ImGui::PushStyleColor(ImGuiCol_Text, text_color);
                 ImGui::Text("%s", identities[i].c_str());
+                ImGui::PopStyleColor();
                 
                 ImGui::PopID();
             }
