@@ -567,18 +567,20 @@ int dht_keyserver_publish_alias(
     compute_dht_key_by_name(name, alias_key);
 
     // Store fingerprint as plain text (simple mapping)
+    // Use 365-day TTL for name registrations (persistent identity)
     printf("[DHT_KEYSERVER] Publishing alias: '%s' → %s\n", name, fingerprint);
     printf("[DHT_KEYSERVER] Alias DHT key: %s\n", alias_key);
 
-    int ret = dht_put(dht_ctx, (uint8_t*)alias_key, strlen(alias_key),
-                      (uint8_t*)fingerprint, 128);  // Store 128-byte fingerprint
+    unsigned int ttl_365_days = 365 * 24 * 3600;  // 365 days in seconds
+    int ret = dht_put_ttl(dht_ctx, (uint8_t*)alias_key, strlen(alias_key),
+                          (uint8_t*)fingerprint, 128, ttl_365_days);
 
     if (ret != 0) {
         fprintf(stderr, "[DHT_KEYSERVER] Failed to publish alias\n");
         return -1;
     }
 
-    printf("[DHT_KEYSERVER] ✓ Alias published successfully\n");
+    printf("[DHT_KEYSERVER] ✓ Alias published successfully (TTL=365 days)\n");
     return 0;
 }
 

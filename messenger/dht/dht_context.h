@@ -76,7 +76,23 @@ void dht_context_free(dht_context_t *ctx);
 bool dht_context_is_ready(dht_context_t *ctx);
 
 /**
- * Put value in DHT
+ * Put value in DHT with custom TTL
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param value Value to store
+ * @param value_len Value length
+ * @param ttl_seconds Time-to-live in seconds (0 = default 7 days)
+ * @return 0 on success, -1 on error
+ */
+int dht_put_ttl(dht_context_t *ctx,
+                const uint8_t *key, size_t key_len,
+                const uint8_t *value, size_t value_len,
+                unsigned int ttl_seconds);
+
+/**
+ * Put value in DHT (default 7-day TTL)
  *
  * @param ctx DHT context
  * @param key Key (will be hashed to 160-bit infohash)

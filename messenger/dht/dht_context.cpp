@@ -15,6 +15,26 @@
 #include <memory>
 #include <vector>
 #include <iostream>
+#include <chrono>
+
+// Custom ValueTypes with different TTLs
+static const dht::ValueType DNA_TYPE_7DAY {
+    0x1001,                      // Type ID for 7-day data (messages, contacts, etc.)
+    "DNA_7DAY",
+    std::chrono::hours(7 * 24),  // 7 days
+    [](dht::InfoHash, std::shared_ptr<dht::Value>&, const dht::InfoHash&, const dht::SockAddr&) {
+        return true;  // Accept all
+    }
+};
+
+static const dht::ValueType DNA_TYPE_365DAY {
+    0x1002,                       // Type ID for 365-day data (name registrations)
+    "DNA_365DAY",
+    std::chrono::hours(365 * 24), // 365 days
+    [](dht::InfoHash, std::shared_ptr<dht::Value>&, const dht::InfoHash&, const dht::SockAddr&) {
+        return true;  // Accept all
+    }
+};
 
 // Internal C++ struct (hidden from C code)
 struct dht_context {
@@ -175,13 +195,14 @@ extern "C" bool dht_context_is_ready(dht_context_t *ctx) {
 }
 
 /**
- * Put value in DHT
+ * Put value in DHT with custom TTL
  */
-extern "C" int dht_put(dht_context_t *ctx,
-                       const uint8_t *key, size_t key_len,
-                       const uint8_t *value, size_t value_len) {
+extern "C" int dht_put_ttl(dht_context_t *ctx,
+                           const uint8_t *key, size_t key_len,
+                           const uint8_t *value, size_t value_len,
+                           unsigned int ttl_seconds) {
     if (!ctx || !key || !value) {
-        std::cerr << "[DHT] ERROR: NULL parameter in dht_put" << std::endl;
+        std::cerr << "[DHT] ERROR: NULL parameter in dht_put_ttl" << std::endl;
         return -1;
     }
 
@@ -198,16 +219,37 @@ extern "C" int dht_put(dht_context_t *ctx,
         std::vector<uint8_t> data(value, value + value_len);
         auto dht_value = std::make_shared<dht::Value>(data);
 
-        std::cout << "[DHT] PUT: " << hash << " (" << value_len << " bytes)" << std::endl;
+        // Set TTL (0 = use default 7 days)
+        if (ttl_seconds == 0) {
+            ttl_seconds = 7 * 24 * 3600;  // 7 days
+        }
 
-        // Put value (async)
+        // Choose ValueType based on TTL (365 days vs 7 days)
+        if (ttl_seconds >= 365 * 24 * 3600) {
+            dht_value->type = DNA_TYPE_365DAY.id;  // Assign type ID
+        } else {
+            dht_value->type = DNA_TYPE_7DAY.id;    // Assign type ID
+        }
+
+        std::cout << "[DHT] PUT: " << hash << " (" << value_len << " bytes, TTL=" << ttl_seconds << "s)" << std::endl;
+
+        // Put value (permanent=false to use type's expiration)
         ctx->runner.put(hash, dht_value);
 
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[DHT] Exception in dht_put: " << e.what() << std::endl;
+        std::cerr << "[DHT] Exception in dht_put_ttl: " << e.what() << std::endl;
         return -1;
     }
+}
+
+/**
+ * Put value in DHT (default 7-day TTL)
+ */
+extern "C" int dht_put(dht_context_t *ctx,
+                       const uint8_t *key, size_t key_len,
+                       const uint8_t *value, size_t value_len) {
+    return dht_put_ttl(ctx, key, key_len, value, value_len, 0);  // 0 = use default
 }
 
 /**
