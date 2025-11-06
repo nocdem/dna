@@ -111,6 +111,13 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
 
         std::cout << "[DHT] Node started on port " << ctx->config.port << std::endl;
 
+        // Register custom ValueTypes (CRITICAL: all nodes must know these types!)
+        std::cout << "[DHT] Registering custom ValueTypes..." << std::endl;
+        ctx->runner.registerType(DNA_TYPE_7DAY);
+        ctx->runner.registerType(DNA_TYPE_365DAY);
+        std::cout << "[DHT] ✓ Registered DNA_TYPE_7DAY (id=0x1001, TTL=7 days)" << std::endl;
+        std::cout << "[DHT] ✓ Registered DNA_TYPE_365DAY (id=0x1002, TTL=365 days)" << std::endl;
+
         // Bootstrap to other nodes
         if (ctx->config.bootstrap_count > 0) {
             std::cout << "[DHT] Bootstrapping to " << ctx->config.bootstrap_count << " nodes:" << std::endl;
