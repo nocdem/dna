@@ -1162,22 +1162,23 @@ int main(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
 
-    // Load fonts
+        // Load embedded fonts
+    #include "fonts/NotoSans-Regular.h"
+    #include "fonts/fa-solid-900.h"
+    
     ImFontConfig config;
     config.MergeMode = false;
-    config.GlyphMinAdvanceX = 13.0f;
     
-    // Default font (larger for better readability)
-    io.Fonts->AddFontFromFileTTF("/usr/share/fonts/noto/NotoSans-Regular.ttf", 18.0f);
+    // Default font (1.1x scale = 19.8px for base 18px)
+    float base_size = 18.0f * 1.1f;
+    io.Fonts->AddFontFromMemoryTTF(NotoSans_Regular_ttf, sizeof(NotoSans_Regular_ttf), base_size, &config);
     
     // Merge Font Awesome icons
     config.MergeMode = true;
-    config.GlyphMinAdvanceX = 18.0f;
+    config.GlyphMinAdvanceX = base_size;
     config.GlyphOffset = ImVec2(0, 2);
     static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
-    io.Fonts->AddFontFromFileTTF("imgui_gui/misc/fonts/fa-solid-900.ttf", 16.0f, &config, icon_ranges);
-    
-    // Don't call Build() - backend will do it automatically
+    io.Fonts->AddFontFromMemoryTTF(fa_solid_900_ttf, sizeof(fa_solid_900_ttf), base_size * 0.9f, &config, icon_ranges);
 
     ImGui::StyleColorsDark();
     
