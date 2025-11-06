@@ -1066,7 +1066,8 @@ private:
         ImGui::EndChild(); // ContactList
         
         // Add contact button at bottom (40px to match main buttons)
-        if (ThemedButton(ICON_FA_PLUS " Add Contact", ImVec2(-1, 40), false)) {
+        float button_width = ImGui::GetContentRegionAvail().x;
+        if (ThemedButton(ICON_FA_PLUS " Add Contact", ImVec2(button_width, 40), false)) {
             // TODO: Open add contact dialog
         }
         
