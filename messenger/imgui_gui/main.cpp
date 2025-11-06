@@ -171,12 +171,67 @@ struct Contact {
     bool is_online;
 };
 
-// Helper function for buttons with dark text
+// Helper function for modal/dialog buttons with dark text
 inline bool ButtonDark(const char* label, const ImVec2& size = ImVec2(0, 0)) {
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 1.0f, 0.8f, 1.0f));        // #00FFCC
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.0f, 0.9f, 0.7f, 1.0f)); // Slightly darker on hover
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.0f, 0.8f, 0.6f, 1.0f));  // Even darker when clicked
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.05f, 0.05f, 0.05f, 1.0f));       // Dark text
+    ImVec4 btn_color, hover_color, active_color, text_color;
+    
+    if (g_current_theme == 0) { // DNA Theme
+        btn_color = DNATheme::Text();
+        hover_color = ImVec4(0.0f, 0.9f, 0.7f, 1.0f);
+        active_color = ImVec4(0.0f, 0.8f, 0.6f, 1.0f);
+        text_color = DNATheme::SelectedText();
+    } else { // Club Theme
+        btn_color = ClubTheme::Text();
+        hover_color = ImVec4(0.876f, 0.371f, 0.104f, 1.0f);
+        active_color = ImVec4(0.776f, 0.271f, 0.004f, 1.0f);
+        text_color = ClubTheme::SelectedText();
+    }
+    
+    ImGui::PushStyleColor(ImGuiCol_Button, btn_color);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
+    ImGui::PushStyleColor(ImGuiCol_Text, text_color);
+    bool result = ImGui::Button(label, size);
+    ImGui::PopStyleColor(4);
+    return result;
+}
+
+// Helper function for themed main buttons
+inline bool ThemedButton(const char* label, const ImVec2& size = ImVec2(0, 0), bool is_active = false) {
+    ImVec4 btn_color, hover_color, active_color, text_color, text_bg;
+    
+    if (g_current_theme == 0) { // DNA Theme
+        btn_color = DNATheme::Text();
+        hover_color = DNATheme::ButtonHover();
+        active_color = DNATheme::ButtonActive();
+        text_color = DNATheme::SelectedText();
+        text_bg = DNATheme::Background();
+    } else { // Club Theme
+        btn_color = ClubTheme::Text();
+        hover_color = ClubTheme::ButtonHover();
+        active_color = ClubTheme::ButtonActive();
+        text_color = ClubTheme::SelectedText();
+        text_bg = ClubTheme::Background();
+    }
+    
+    if (is_active) {
+        // Active state: slightly darker than hover
+        ImVec4 active_bg = ImVec4(
+            active_color.x * 0.95f,
+            active_color.y * 0.95f,
+            active_color.z * 0.95f,
+            1.0f
+        );
+        ImGui::PushStyleColor(ImGuiCol_Button, active_bg);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active_bg);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_bg);
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Button, btn_color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
+    }
+    
+    ImGui::PushStyleColor(ImGuiCol_Text, text_color);
     bool result = ImGui::Button(label, size);
     ImGui::PopStyleColor(4);
     return result;
@@ -814,48 +869,30 @@ private:
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
         
         // Contacts button
-        if (current_view == VIEW_CONTACTS) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.6f));
-        }
-        if (ButtonDark(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60))) {
+        if (ThemedButton(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60), current_view == VIEW_CONTACTS)) {
             current_view = VIEW_CONTACTS;
-        }
-        if (current_view == VIEW_CONTACTS) {
-            ImGui::PopStyleColor();
         }
         
         ImGui::SameLine();
         
         // Wallet button
-        if (current_view == VIEW_WALLET) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.6f));
-        }
-        if (ButtonDark(ICON_FA_WALLET "\nWallet", ImVec2(btn_width, 60))) {
+        if (ThemedButton(ICON_FA_WALLET "\nWallet", ImVec2(btn_width, 60), current_view == VIEW_WALLET)) {
             current_view = VIEW_WALLET;
             selected_contact = -1;
-        }
-        if (current_view == VIEW_WALLET) {
-            ImGui::PopStyleColor();
         }
         
         ImGui::SameLine();
         
         // Settings button
-        if (current_view == VIEW_SETTINGS) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.6f));
-        }
-        if (ButtonDark(ICON_FA_COG "\nSettings", ImVec2(btn_width, 60))) {
+        if (ThemedButton(ICON_FA_COG "\nSettings", ImVec2(btn_width, 60), current_view == VIEW_SETTINGS)) {
             current_view = VIEW_SETTINGS;
             selected_contact = -1;
-        }
-        if (current_view == VIEW_SETTINGS) {
-            ImGui::PopStyleColor();
         }
         
         ImGui::SameLine();
         
         // Profile button (placeholder)
-        if (ButtonDark(ICON_FA_USER "\nProfile", ImVec2(btn_width, 60))) {
+        if (ThemedButton(ICON_FA_USER "\nProfile", ImVec2(btn_width, 60), false)) {
             // TODO: Profile view
         }
         
@@ -997,9 +1034,9 @@ private:
             ImGui::PopID();
         }
         
-        // Add contact button at bottom
-        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 40);
-        if (ButtonDark(ICON_FA_PLUS " Add Contact", ImVec2(-1, 30))) {
+        // Add contact button at bottom (same size as main buttons)
+        ImGui::SetCursorPosY(ImGui::GetWindowHeight() - 70);
+        if (ThemedButton(ICON_FA_PLUS " Add Contact", ImVec2(-1, 60), false)) {
             // TODO: Open add contact dialog
         }
         
