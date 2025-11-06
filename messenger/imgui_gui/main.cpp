@@ -1025,20 +1025,33 @@ private:
         for (size_t i = 0; i < contacts.size(); i++) {
             ImGui::PushID(i);
             
-            // Draw selectable with padding for indicator
-            ImVec2 cursor_pos = ImGui::GetCursorPos();
             float item_height = 30;
-            
-            // Invisible selectable for full width interaction
-            ImGui::SetCursorPos(cursor_pos);
             bool selected = (selected_contact == (int)i);
-            if (ImGui::Selectable("##item", selected, 0, ImVec2(list_width, item_height))) {
+            
+            // Use invisible button for interaction
+            ImVec2 cursor_screen_pos = ImGui::GetCursorScreenPos();
+            bool clicked = ImGui::InvisibleButton("##contact", ImVec2(list_width, item_height));
+            bool hovered = ImGui::IsItemHovered();
+            
+            if (clicked) {
                 selected_contact = i;
                 current_view = VIEW_CHAT;
             }
             
-            // Draw status and contact name
-            ImVec2 screen_pos = ImGui::GetItemRectMin();
+            // Draw background
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            ImVec2 rect_min = cursor_screen_pos;
+            ImVec2 rect_max = ImVec2(cursor_screen_pos.x + list_width, cursor_screen_pos.y + item_height);
+            
+            if (selected) {
+                ImVec4 col = (g_current_theme == 0) ? DNATheme::ButtonActive() : ClubTheme::ButtonActive();
+                ImU32 bg_color = IM_COL32((int)(col.x * 255), (int)(col.y * 255), (int)(col.z * 255), 255);
+                draw_list->AddRectFilled(rect_min, rect_max, bg_color);
+            } else if (hovered) {
+                ImVec4 col = (g_current_theme == 0) ? DNATheme::ButtonHover() : ClubTheme::ButtonHover();
+                ImU32 bg_color = IM_COL32((int)(col.x * 255), (int)(col.y * 255), (int)(col.z * 255), 255);
+                draw_list->AddRectFilled(rect_min, rect_max, bg_color);
+            }
             
             // Format: "✓ Name" or "✗ Name" with colored icons
             const char* icon = contacts[i].is_online ? ICON_FA_CHECK_CIRCLE : ICON_FA_TIMES_CIRCLE;
@@ -1046,12 +1059,12 @@ private:
             char display_text[256];
             snprintf(display_text, sizeof(display_text), "%s   %s", icon, contacts[i].name.c_str());
             
-            ImVec2 text_pos = ImVec2(screen_pos.x + 8, screen_pos.y + 7);
+            ImVec2 text_pos = ImVec2(cursor_screen_pos.x + 8, cursor_screen_pos.y + 7);
             ImU32 text_color;
-            if (selected) {
-                // Use theme background color when selected
-                ImVec4 bg_color = (g_current_theme == 0) ? DNATheme::Background() : ClubTheme::Background();
-                text_color = IM_COL32((int)(bg_color.x * 255), (int)(bg_color.y * 255), (int)(bg_color.z * 255), 255);
+            if (selected || hovered) {
+                // Use theme background color when selected or hovered
+                ImVec4 bg_col = (g_current_theme == 0) ? DNATheme::Background() : ClubTheme::Background();
+                text_color = IM_COL32((int)(bg_col.x * 255), (int)(bg_col.y * 255), (int)(bg_col.z * 255), 255);
             } else {
                 // Normal colors when not selected - use theme colors
                 if (contacts[i].is_online) {
@@ -1061,10 +1074,7 @@ private:
                     text_color = IM_COL32(100, 100, 100, 255);
                 }
             }
-            ImGui::GetWindowDrawList()->AddText(text_pos, text_color, display_text);
-            
-            // Move cursor to next position
-            ImGui::SetCursorPos(ImVec2(cursor_pos.x, cursor_pos.y + item_height));
+            draw_list->AddText(text_pos, text_color, display_text);
             
             ImGui::PopID();
         }
