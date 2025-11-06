@@ -191,9 +191,21 @@ private:
                 ImGui::PushID(i);
                 bool selected = (selected_identity_idx == (int)i);
                 
-                if (ImGui::Selectable(identities[i].c_str(), selected, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, is_mobile ? 50 : 35))) {
+                float item_height = is_mobile ? 50 : 35;
+                ImVec2 cursor_pos = ImGui::GetCursorPos();
+                
+                // Render selectable
+                if (ImGui::Selectable("##identity_select", selected, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, item_height))) {
                     selected_identity_idx = i;
                 }
+                
+                // Calculate vertical centering
+                ImVec2 text_size = ImGui::CalcTextSize(identities[i].c_str());
+                float text_offset_y = (item_height - text_size.y) * 0.5f;
+                
+                // Draw text centered
+                ImGui::SetCursorPos(ImVec2(cursor_pos.x + ImGui::GetStyle().FramePadding.x, cursor_pos.y + text_offset_y));
+                ImGui::Text("%s", identities[i].c_str());
                 
                 ImGui::PopID();
             }
