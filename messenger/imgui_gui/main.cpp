@@ -340,7 +340,14 @@ private:
                     ImGui::GetWindowDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), ImGui::GetColorU32(bg_color));
                 }
                 
-                // Render invisible button for click detection
+                // Draw text centered vertically BEFORE the button
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + text_offset_y);
+                ImGui::PushStyleColor(ImGuiCol_Text, text_color);
+                ImGui::Text("%s", identities[i].c_str());
+                ImGui::PopStyleColor();
+                
+                // Move cursor back and render invisible button for click detection
+                ImGui::SetCursorScreenPos(pos);
                 if (ImGui::InvisibleButton(identities[i].c_str(), size)) {
                     if (selected_identity_idx == (int)i) {
                         selected_identity_idx = -1;
@@ -348,14 +355,6 @@ private:
                         selected_identity_idx = i;
                     }
                 }
-                
-                // Draw text centered vertically
-                ImGui::SameLine();
-                ImGui::SetCursorPosX(ImGui::GetStyle().FramePadding.x);
-                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + text_offset_y);
-                ImGui::PushStyleColor(ImGuiCol_Text, text_color);
-                ImGui::Text("%s", identities[i].c_str());
-                ImGui::PopStyleColor();
                 
                 ImGui::PopID();
             }
