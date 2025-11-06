@@ -1104,11 +1104,11 @@ int messenger_get_display_name(messenger_context_t *ctx, const char *identifier,
 
     // Check if identifier is a fingerprint
     if (messenger_is_fingerprint(identifier)) {
-        // Try to resolve to registered name via DHT
+        // Try to resolve to registered name via DHT (using reverse lookup, not full profile)
         dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
         if (dht_ctx) {
             char *registered_name = NULL;
-            int ret = dna_get_display_name(dht_ctx, identifier, &registered_name);
+            int ret = dht_keyserver_reverse_lookup(dht_ctx, identifier, &registered_name);
             if (ret == 0 && registered_name) {
                 strncpy(display_name_out, registered_name, 255);
                 display_name_out[255] = '\0';
