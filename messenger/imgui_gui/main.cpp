@@ -192,19 +192,24 @@ private:
                 bool selected = (selected_identity_idx == (int)i);
                 
                 float item_height = is_mobile ? 50 : 35;
-                ImVec2 cursor_pos = ImGui::GetCursorPos();
+                ImVec2 cursor_start = ImGui::GetCursorScreenPos();
                 
                 // Render selectable
-                if (ImGui::Selectable("##identity_select", selected, ImGuiSelectableFlags_SpanAllColumns, ImVec2(0, item_height))) {
-                    selected_identity_idx = i;
+                if (ImGui::Selectable("##identity_select", selected, ImGuiSelectableFlags_None, ImVec2(0, item_height))) {
+                    if (selected_identity_idx == (int)i) {
+                        selected_identity_idx = -1; // Deselect on second click
+                    } else {
+                        selected_identity_idx = i;
+                    }
                 }
                 
                 // Calculate vertical centering
                 ImVec2 text_size = ImGui::CalcTextSize(identities[i].c_str());
                 float text_offset_y = (item_height - text_size.y) * 0.5f;
                 
-                // Draw text centered
-                ImGui::SetCursorPos(ImVec2(cursor_pos.x + ImGui::GetStyle().FramePadding.x, cursor_pos.y + text_offset_y));
+                // Draw text on top of selectable (using SameLine trick)
+                ImGui::SameLine();
+                ImGui::SetCursorScreenPos(ImVec2(cursor_start.x + ImGui::GetStyle().FramePadding.x, cursor_start.y + text_offset_y));
                 ImGui::Text("%s", identities[i].c_str());
                 
                 ImGui::PopID();
