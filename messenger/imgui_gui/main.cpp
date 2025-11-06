@@ -340,8 +340,9 @@ private:
                     ImGui::GetWindowDrawList()->AddRectFilled(pos, ImVec2(pos.x + size.x, pos.y + size.y), ImGui::GetColorU32(bg_color));
                 }
                 
-                // Draw text centered vertically BEFORE the button
+                // Draw text centered vertically with left padding
                 ImGui::SetCursorPosY(ImGui::GetCursorPosY() + text_offset_y);
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10.0f);
                 ImGui::PushStyleColor(ImGuiCol_Text, text_color);
                 ImGui::Text("%s", identities[i].c_str());
                 ImGui::PopStyleColor();
