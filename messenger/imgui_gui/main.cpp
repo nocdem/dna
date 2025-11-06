@@ -1047,8 +1047,20 @@ private:
             snprintf(display_text, sizeof(display_text), "%s   %s", icon, contacts[i].name.c_str());
             
             ImVec2 text_pos = ImVec2(screen_pos.x + 8, screen_pos.y + 7);
-            ImU32 text_color = contacts[i].is_online ? 
-                IM_COL32(0, 255, 204, 255) : IM_COL32(100, 100, 100, 255);  // Cyan if online, dark gray if offline
+            ImU32 text_color;
+            if (selected) {
+                // Use theme background color when selected
+                ImVec4 bg_color = (g_current_theme == 0) ? DNATheme::Background() : ClubTheme::Background();
+                text_color = IM_COL32((int)(bg_color.x * 255), (int)(bg_color.y * 255), (int)(bg_color.z * 255), 255);
+            } else {
+                // Normal colors when not selected - use theme colors
+                if (contacts[i].is_online) {
+                    ImVec4 text_col = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+                    text_color = IM_COL32((int)(text_col.x * 255), (int)(text_col.y * 255), (int)(text_col.z * 255), 255);
+                } else {
+                    text_color = IM_COL32(100, 100, 100, 255);
+                }
+            }
             ImGui::GetWindowDrawList()->AddText(text_pos, text_color, display_text);
             
             // Move cursor to next position
