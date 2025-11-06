@@ -7,6 +7,7 @@
 #include "imgui_impl_opengl3.h"
 #include "modal_helper.h"
 #include "font_awesome.h"
+#include "theme_colors.h"
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <string.h>
@@ -37,6 +38,125 @@ extern "C" {
 
 // Global theme variable
 int g_current_theme = 0; // 0 = DNA, 1 = Club
+
+// Apply theme colors to ImGui
+void ApplyTheme(int theme) {
+    ImGuiStyle& style = ImGui::GetStyle();
+    
+    if (theme == 0) { // DNA Theme
+        style.Colors[ImGuiCol_Text] = DNATheme::Text();
+        style.Colors[ImGuiCol_TextDisabled] = DNATheme::TextDisabled();
+        style.Colors[ImGuiCol_WindowBg] = DNATheme::Background();
+        style.Colors[ImGuiCol_ChildBg] = DNATheme::Background();
+        style.Colors[ImGuiCol_PopupBg] = DNATheme::Background();
+        style.Colors[ImGuiCol_Border] = DNATheme::Border();
+        style.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
+        style.Colors[ImGuiCol_FrameBg] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_FrameBgHovered] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_FrameBgActive] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_TitleBg] = DNATheme::Background();
+        style.Colors[ImGuiCol_TitleBgActive] = DNATheme::Background();
+        style.Colors[ImGuiCol_TitleBgCollapsed] = DNATheme::Background();
+        style.Colors[ImGuiCol_MenuBarBg] = DNATheme::Background();
+        style.Colors[ImGuiCol_ScrollbarBg] = DNATheme::Background();
+        style.Colors[ImGuiCol_ScrollbarGrab] = DNATheme::Text();
+        style.Colors[ImGuiCol_ScrollbarGrabHovered] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_ScrollbarGrabActive] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_CheckMark] = DNATheme::Text();
+        style.Colors[ImGuiCol_SliderGrab] = DNATheme::Text();
+        style.Colors[ImGuiCol_SliderGrabActive] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_Button] = DNATheme::Text();
+        style.Colors[ImGuiCol_ButtonHovered] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_ButtonActive] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_Header] = DNATheme::Text();
+        style.Colors[ImGuiCol_HeaderHovered] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_HeaderActive] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_Separator] = DNATheme::Separator();
+        style.Colors[ImGuiCol_SeparatorHovered] = DNATheme::Text();
+        style.Colors[ImGuiCol_SeparatorActive] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_ResizeGrip] = DNATheme::Text();
+        style.Colors[ImGuiCol_ResizeGripHovered] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_ResizeGripActive] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_Tab] = DNATheme::Background();
+        style.Colors[ImGuiCol_TabHovered] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_TabSelected] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_TabSelectedOverline] = DNATheme::Text();
+        style.Colors[ImGuiCol_TabDimmed] = DNATheme::Background();
+        style.Colors[ImGuiCol_TabDimmedSelected] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_TabDimmedSelectedOverline] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_PlotLines] = DNATheme::Text();
+        style.Colors[ImGuiCol_PlotLinesHovered] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_PlotHistogram] = DNATheme::Text();
+        style.Colors[ImGuiCol_PlotHistogramHovered] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_TableHeaderBg] = DNATheme::Background();
+        style.Colors[ImGuiCol_TableBorderStrong] = DNATheme::Border();
+        style.Colors[ImGuiCol_TableBorderLight] = DNATheme::Border();
+        style.Colors[ImGuiCol_TableRowBg] = DNATheme::Background();
+        style.Colors[ImGuiCol_TableRowBgAlt] = DNATheme::ButtonHover();
+        style.Colors[ImGuiCol_TextSelectedBg] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_DragDropTarget] = DNATheme::Text();
+        style.Colors[ImGuiCol_NavHighlight] = DNATheme::Text();
+        style.Colors[ImGuiCol_NavWindowingHighlight] = DNATheme::Text();
+        style.Colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.2f, 0.2f, 0.2f, 0.2f);
+        style.Colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.2f, 0.2f, 0.2f, 0.35f);
+    } else { // Club Theme
+        style.Colors[ImGuiCol_Text] = ClubTheme::Text();
+        style.Colors[ImGuiCol_TextDisabled] = ClubTheme::TextDisabled();
+        style.Colors[ImGuiCol_WindowBg] = ClubTheme::Background();
+        style.Colors[ImGuiCol_ChildBg] = ClubTheme::Background();
+        style.Colors[ImGuiCol_PopupBg] = ClubTheme::Background();
+        style.Colors[ImGuiCol_Border] = ClubTheme::Border();
+        style.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
+        style.Colors[ImGuiCol_FrameBg] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_FrameBgHovered] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_FrameBgActive] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_TitleBg] = ClubTheme::Background();
+        style.Colors[ImGuiCol_TitleBgActive] = ClubTheme::Background();
+        style.Colors[ImGuiCol_TitleBgCollapsed] = ClubTheme::Background();
+        style.Colors[ImGuiCol_MenuBarBg] = ClubTheme::Background();
+        style.Colors[ImGuiCol_ScrollbarBg] = ClubTheme::Background();
+        style.Colors[ImGuiCol_ScrollbarGrab] = ClubTheme::Text();
+        style.Colors[ImGuiCol_ScrollbarGrabHovered] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_ScrollbarGrabActive] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_CheckMark] = ClubTheme::Text();
+        style.Colors[ImGuiCol_SliderGrab] = ClubTheme::Text();
+        style.Colors[ImGuiCol_SliderGrabActive] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_Button] = ClubTheme::Text();
+        style.Colors[ImGuiCol_ButtonHovered] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_ButtonActive] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_Header] = ClubTheme::Text();
+        style.Colors[ImGuiCol_HeaderHovered] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_HeaderActive] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_Separator] = ClubTheme::Separator();
+        style.Colors[ImGuiCol_SeparatorHovered] = ClubTheme::Text();
+        style.Colors[ImGuiCol_SeparatorActive] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_ResizeGrip] = ClubTheme::Text();
+        style.Colors[ImGuiCol_ResizeGripHovered] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_ResizeGripActive] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_Tab] = ClubTheme::Background();
+        style.Colors[ImGuiCol_TabHovered] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_TabSelected] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_TabSelectedOverline] = ClubTheme::Text();
+        style.Colors[ImGuiCol_TabDimmed] = ClubTheme::Background();
+        style.Colors[ImGuiCol_TabDimmedSelected] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_TabDimmedSelectedOverline] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_PlotLines] = ClubTheme::Text();
+        style.Colors[ImGuiCol_PlotLinesHovered] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_PlotHistogram] = ClubTheme::Text();
+        style.Colors[ImGuiCol_PlotHistogramHovered] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_TableHeaderBg] = ClubTheme::Background();
+        style.Colors[ImGuiCol_TableBorderStrong] = ClubTheme::Border();
+        style.Colors[ImGuiCol_TableBorderLight] = ClubTheme::Border();
+        style.Colors[ImGuiCol_TableRowBg] = ClubTheme::Background();
+        style.Colors[ImGuiCol_TableRowBgAlt] = ClubTheme::ButtonHover();
+        style.Colors[ImGuiCol_TextSelectedBg] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_DragDropTarget] = ClubTheme::Text();
+        style.Colors[ImGuiCol_NavHighlight] = ClubTheme::Text();
+        style.Colors[ImGuiCol_NavWindowingHighlight] = ClubTheme::Text();
+        style.Colors[ImGuiCol_NavWindowingDimBg] = ImVec4(0.2f, 0.2f, 0.2f, 0.2f);
+        style.Colors[ImGuiCol_ModalWindowDimBg] = ImVec4(0.2f, 0.2f, 0.2f, 0.35f);
+    }
+}
 
 struct Message {
     std::string sender;
@@ -1116,19 +1236,25 @@ private:
         ImGui::Text("Theme");
         ImGui::Spacing();
         
-        static int theme = 0;
+        int prev_theme = g_current_theme;
         
         if (is_mobile) {
             // Mobile: Full-width radio buttons with larger touch targets
-            if (ImGui::RadioButton("cpunk.io (Cyan)##theme", theme == 0)) theme = 0;
+            if (ImGui::RadioButton("cpunk.io (Cyan)##theme", g_current_theme == 0)) {
+                g_current_theme = 0;
+            }
             ImGui::Spacing();
-            if (ImGui::RadioButton("cpunk.club (Orange)##theme", theme == 1)) theme = 1;
-            ImGui::Spacing();
-            if (ImGui::RadioButton("Dark Mode##theme", theme == 2)) theme = 2;
+            if (ImGui::RadioButton("cpunk.club (Orange)##theme", g_current_theme == 1)) {
+                g_current_theme = 1;
+            }
         } else {
-            ImGui::RadioButton("cpunk.io (Cyan)", &theme, 0);
-            ImGui::RadioButton("cpunk.club (Orange)", &theme, 1);
-            ImGui::RadioButton("Dark Mode", &theme, 2);
+            ImGui::RadioButton("cpunk.io (Cyan)", &g_current_theme, 0);
+            ImGui::RadioButton("cpunk.club (Orange)", &g_current_theme, 1);
+        }
+        
+        // Apply theme if changed
+        if (prev_theme != g_current_theme) {
+            ApplyTheme(g_current_theme);
         }
         
         ImGui::Spacing();
@@ -1219,79 +1345,8 @@ int main(int argc, char** argv) {
 
     ImGui::StyleColorsDark();
     
-    // DNA Messenger color scheme
+    // DNA Messenger styling
     ImGuiStyle& style = ImGui::GetStyle();
-    
-    // Colors
-    ImVec4 bg_main = ImVec4(0x15/255.0f, 0x17/255.0f, 0x19/255.0f, 1.0f);  // #151719
-    ImVec4 bg_popup = ImVec4(0x0f/255.0f, 0x11/255.0f, 0x13/255.0f, 1.0f); // Darker for popups
-    ImVec4 text_primary = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 1.0f); // #00FFCC (cyan)
-    ImVec4 text_secondary = ImVec4(0x80/255.0f, 0xff/255.0f, 0xe6/255.0f, 1.0f); // Lighter cyan
-    ImVec4 text_button = ImVec4(0.05f, 0.05f, 0.05f, 1.0f); // Dark text for buttons
-    ImVec4 accent = ImVec4(0x00/255.0f, 0xcc/255.0f, 0xa3/255.0f, 1.0f); // Darker cyan for buttons
-    ImVec4 accent_hover = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 1.0f); // Bright cyan on hover
-    
-    // Main colors
-    style.Colors[ImGuiCol_WindowBg] = bg_main;
-    style.Colors[ImGuiCol_ChildBg] = bg_main;
-    style.Colors[ImGuiCol_PopupBg] = bg_popup;
-    style.Colors[ImGuiCol_Border] = ImVec4(0.2f, 0.2f, 0.2f, 0.5f);
-    
-    // Text
-    style.Colors[ImGuiCol_Text] = text_primary;
-    style.Colors[ImGuiCol_TextDisabled] = ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
-    style.Colors[ImGuiCol_TextSelectedBg] = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 0.3f);
-    
-    // Buttons - dark text for contrast on cyan background
-    style.Colors[ImGuiCol_Button] = accent;
-    style.Colors[ImGuiCol_ButtonHovered] = accent_hover;
-    style.Colors[ImGuiCol_ButtonActive] = ImVec4(0x00/255.0f, 0xdd/255.0f, 0xaa/255.0f, 1.0f);
-    // Note: Button text color is controlled by ImGuiCol_Text, we'll override per-button as needed
-    
-    // Headers (selectables, etc)
-    style.Colors[ImGuiCol_Header] = ImVec4(0x00/255.0f, 0xcc/255.0f, 0xa3/255.0f, 0.3f);
-    style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 0.4f);
-    style.Colors[ImGuiCol_HeaderActive] = ImVec4(0x00/255.0f, 0xff/255.0f, 0xcc/255.0f, 0.5f);
-    
-    // Frames (inputs, etc)
-    style.Colors[ImGuiCol_FrameBg] = ImVec4(0.1f, 0.1f, 0.1f, 0.9f);
-    style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.2f, 0.2f, 0.2f, 0.9f);
-    style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.15f, 0.15f, 0.15f, 0.9f);
-    
-    // Titles
-    style.Colors[ImGuiCol_TitleBg] = bg_popup;
-    style.Colors[ImGuiCol_TitleBgActive] = bg_popup;
-    style.Colors[ImGuiCol_TitleBgCollapsed] = bg_popup;
-    
-    // Scrollbar
-    style.Colors[ImGuiCol_ScrollbarBg] = ImVec4(0.05f, 0.05f, 0.05f, 0.9f);
-    style.Colors[ImGuiCol_ScrollbarGrab] = accent;
-    style.Colors[ImGuiCol_ScrollbarGrabHovered] = accent_hover;
-    style.Colors[ImGuiCol_ScrollbarGrabActive] = accent_hover;
-    
-    // Checkboxes
-    style.Colors[ImGuiCol_CheckMark] = text_primary;
-    
-    // Sliders
-    style.Colors[ImGuiCol_SliderGrab] = accent;
-    style.Colors[ImGuiCol_SliderGrabActive] = accent_hover;
-    
-    // Separators
-    style.Colors[ImGuiCol_Separator] = ImVec4(0.3f, 0.3f, 0.3f, 0.5f);
-    style.Colors[ImGuiCol_SeparatorHovered] = accent_hover;
-    style.Colors[ImGuiCol_SeparatorActive] = accent_hover;
-    
-    // Resize grip
-    style.Colors[ImGuiCol_ResizeGrip] = accent;
-    style.Colors[ImGuiCol_ResizeGripHovered] = accent_hover;
-    style.Colors[ImGuiCol_ResizeGripActive] = accent_hover;
-    
-    // Tabs
-    style.Colors[ImGuiCol_Tab] = accent;
-    style.Colors[ImGuiCol_TabHovered] = accent_hover;
-    style.Colors[ImGuiCol_TabActive] = accent_hover;
-    style.Colors[ImGuiCol_TabUnfocused] = ImVec4(0.1f, 0.1f, 0.1f, 0.9f);
-    style.Colors[ImGuiCol_TabUnfocusedActive] = accent;
     
     // Rounding
     style.FrameRounding = 4.0f;
@@ -1300,6 +1355,9 @@ int main(int argc, char** argv) {
     style.GrabRounding = 4.0f;
     style.TabRounding = 4.0f;
     style.ScrollbarRounding = 4.0f;
+    
+    // Apply initial theme (DNA theme by default)
+    ApplyTheme(g_current_theme);
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);
