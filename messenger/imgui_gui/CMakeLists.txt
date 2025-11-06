@@ -24,24 +24,32 @@ set(IMGUI_SOURCES
 # Main application
 add_executable(dna_messenger_imgui
     main.cpp
-    font_awesome.cpp
+    settings_manager.cpp
     ${IMGUI_SOURCES}
 )
 
 target_include_directories(dna_messenger_imgui PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/..
 )
+
+# Find the DNA library
+find_library(DNA_LIB dna_lib PATHS ${CMAKE_SOURCE_DIR}/../build REQUIRED)
+find_package(CURL REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 target_link_libraries(dna_messenger_imgui PRIVATE
     OpenGL::GL
     glfw
-    dna_lib
+    ${DNA_LIB}
     ${CURL_LIBRARIES}
     ${OPENSSL_LIBRARIES}
     json-c
     pq
+    sqlite3
+    pthread
+    dl
 )
 
 # Platform-specific settings

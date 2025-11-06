@@ -38,3 +38,7 @@
 #define ICON_FA_BARS "\xef\x83\x89"              // f0c9
 #define ICON_FA_QR_CODE "\xef\x80\xa9"           // f029
 #define ICON_FA_QRCODE "\xef\x80\xa9"            // f029 (same)
+#define ICON_FA_CHECK "\xef\x80\x8c"             // f00c
+#define ICON_FA_TIMES "\xef\x80\x8d"             // f00d
+#define ICON_FA_XMARK "\xef\x80\x8d"             // f00d (same as times)
+#define ICON_FA_COPY "\xef\x83\x85"              // f0c5

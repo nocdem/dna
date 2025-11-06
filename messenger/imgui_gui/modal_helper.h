@@ -2,6 +2,10 @@
 #define MODAL_HELPER_H
 
 #include "imgui.h"
+#include "theme_colors.h"
+
+// Forward declare theme getter
+extern int g_current_theme;
 
 // Helper to create centered modal windows that stay centered on resize
 class CenteredModal {
@@ -16,7 +20,10 @@ public:
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.5f, 0.5f));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 12));
-        ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(0x0f/255.0f, 0x11/255.0f, 0x13/255.0f, 0.8f));
+        
+        // Use theme colors for modal background
+        ImVec4 bg = g_current_theme == 0 ? DNATheme::Background() : ClubTheme::Background();
+        ImGui::PushStyleColor(ImGuiCol_ModalWindowDimBg, ImVec4(bg.x * 0.9f, bg.y * 0.9f, bg.z * 0.9f, 0.8f));
         
         // Only add AlwaysAutoResize if NoResize is not specified
         if (!(flags & ImGuiWindowFlags_NoResize)) {

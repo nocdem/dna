@@ -12,6 +12,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include <map>
 
 #ifndef _WIN32
 #include <dirent.h>
@@ -133,7 +134,7 @@ private:
     float seed_copied_timer;
     
     std::vector<Contact> contacts;
-    std::vector<Message> messages;
+    std::map<int, std::vector<Message>> contact_messages;  // Per-contact message history
     std::vector<std::string> identities;
     std::string current_identity;
     char message_input[1024] = "";
@@ -312,8 +313,13 @@ private:
         ImGui::TextWrapped("Requirements: 3-20 characters, letters/numbers/underscore only");
         ImGui::Spacing();
         
-        ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name), 
-                        ImGuiInputTextFlags_CallbackCharFilter, IdentityNameInputFilter);
+        // Auto-focus input when step 1 is active
+        if (create_identity_step == STEP_NAME && strlen(new_identity_name) == 0) {
+            ImGui::SetKeyboardFocusHere();
+        }
+        
+        bool enter_pressed = ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name), 
+                        ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue, IdentityNameInputFilter);
         
         // Validate identity name
         size_t name_len = strlen(new_identity_name);
@@ -375,7 +381,7 @@ private:
         if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
         
         ImGui::BeginDisabled(!name_valid || name_len == 0);
-        if (ButtonDark("Next", ImVec2(button_width, 40))) {
+        if (ButtonDark("Next", ImVec2(button_width, 40)) || (enter_pressed && name_valid && name_len > 0)) {
             // Generate mock seed phrase for UI sketch mode
             snprintf(generated_mnemonic, sizeof(generated_mnemonic), 
                 "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual");
@@ -524,15 +530,41 @@ private:
     }
     
     void loadIdentity(const std::string& identity) {
-        printf("Loading identity: %s\n", identity.c_str());
+        printf("[SKETCH MODE] Loading identity: %s\n", identity.c_str());
         
-        // TODO: Call DNA API to load keys
+        // UI SKETCH MODE - Load mock contacts
+        contacts.clear();
+        contact_messages.clear();
+        
+        contacts.push_back({"Alice", "alice@dna", true});
+        contacts.push_back({"Bob", "bob@dna", false});
+        contacts.push_back({"Charlie", "charlie@dna", true});
+        contacts.push_back({"Diana", "diana@dna", true});
+        contacts.push_back({"Eve", "eve@dna", false});
+        contacts.push_back({"Frank", "frank@dna", true});
+        
+        // Mock message history for Alice (contact 0)
+        contact_messages[0].push_back({"Alice", "Hey! How are you?", "Today 10:30 AM", false});
+        contact_messages[0].push_back({"Me", "I'm good! Working on DNA Messenger", "Today 10:32 AM", true});
+        contact_messages[0].push_back({"Alice", "Nice! Post-quantum crypto is the future 🚀", "Today 10:33 AM", false});
+        contact_messages[0].push_back({"Me", "Absolutely! Kyber512 + Dilithium3", "Today 10:35 AM", true});
+        contact_messages[0].push_back({"Alice", "Can't wait to try it out!", "Today 10:36 AM", false});
+        
+        // Mock message history for Bob (contact 1)
+        contact_messages[1].push_back({"Bob", "Are you available tomorrow?", "Yesterday 3:45 PM", false});
+        contact_messages[1].push_back({"Me", "Yes, what's up?", "Yesterday 4:12 PM", true});
+        contact_messages[1].push_back({"Bob", "Let's discuss the new features", "Yesterday 4:15 PM", false});
+        
+        // Mock message history for Charlie (contact 2)
+        contact_messages[2].push_back({"Charlie", "Check out this article!", "Nov 1, 2:20 PM", false});
+        contact_messages[2].push_back({"Me", "Thanks! Will read it later", "Nov 1, 2:45 PM", true});
+        
+        printf("[SKETCH MODE] Loaded %zu mock contacts\n", contacts.size());
         
         identity_loaded = true;
         show_identity_selection = false;
         
-        // Show success message
-        printf("Identity loaded successfully!\n");
+        printf("[SKETCH MODE] Identity loaded successfully!\n");
     }
     
     void renderMobileLayout() {
@@ -540,8 +572,8 @@ private:
         float screen_height = io.DisplaySize.y;
         float bottom_nav_height = 60.0f;
         
-        // Content area (full screen minus bottom nav)
-        ImGui::BeginChild("MobileContent", ImVec2(0, -bottom_nav_height), false, ImGuiWindowFlags_NoScrollbar);
+        // Content area (full screen minus bottom nav) - use full width
+        ImGui::BeginChild("MobileContent", ImVec2(-1, -bottom_nav_height), false, ImGuiWindowFlags_NoScrollbar);
         
         switch(current_view) {
             case VIEW_CONTACTS:
@@ -648,8 +680,12 @@ private:
     void renderContactsList() {
         ImGuiIO& io = ImGui::GetIO();
         
+        // Get full available width before any child windows
+        float full_width = ImGui::GetContentRegionAvail().x;
+        printf("[DEBUG] ContactsList available width: %.1f, screen width: %.1f\n", full_width, io.DisplaySize.x);
+        
         // Top bar with title and add button
-        ImGui::BeginChild("ContactsHeader", ImVec2(0, 60), true, ImGuiWindowFlags_NoScrollbar);
+        ImGui::BeginChild("ContactsHeader", ImVec2(full_width, 60), true, ImGuiWindowFlags_NoScrollbar);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
         
         ImGui::SetWindowFontScale(1.5f);
@@ -664,20 +700,16 @@ private:
         ImGui::EndChild();
         
         // Contact list (large touch targets)
-        ImGui::BeginChild("ContactsScrollArea");
-        
-        // Demo contacts if empty
-        if (contacts.empty()) {
-            Contact demo1 = {"Alice", "12345", true};
-            Contact demo2 = {"Bob", "67890", false};
-            Contact demo3 = {"Charlie", "11111", true};
-            contacts.push_back(demo1);
-            contacts.push_back(demo2);
-            contacts.push_back(demo3);
-        }
+        ImGui::BeginChild("ContactsScrollArea", ImVec2(full_width, 0), false);
         
         for (size_t i = 0; i < contacts.size(); i++) {
             ImGui::PushID(i);
+            
+            // Get button width
+            float button_width = ImGui::GetContentRegionAvail().x;
+            if (i == 0) {
+                printf("[DEBUG] Contact button width: %.1f\n", button_width);
+            }
             
             // Large touch-friendly buttons (80px height)
             bool selected = (int)i == selected_contact;
@@ -685,7 +717,7 @@ private:
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.3f));
             }
             
-            if (ButtonDark("##contact", ImVec2(-1, 80))) {
+            if (ButtonDark("##contact", ImVec2(button_width, 80))) {
                 selected_contact = i;
                 current_view = VIEW_CHAT;
             }
@@ -744,20 +776,38 @@ private:
         ImGui::Separator();
         
         // Contact list
+        float list_width = ImGui::GetContentRegionAvail().x;
         for (size_t i = 0; i < contacts.size(); i++) {
             ImGui::PushID(i);
             
-            // Online indicator
-            ImVec4 color = contacts[i].is_online ? 
-                ImVec4(0.0f, 1.0f, 0.0f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f);
-            ImGui::TextColored(color, "●");
-            ImGui::SameLine();
+            // Draw selectable with padding for indicator
+            ImVec2 cursor_pos = ImGui::GetCursorPos();
+            float item_height = 30;
             
-            if (ImGui::Selectable(contacts[i].name.c_str(), 
-                selected_contact == (int)i, 0, ImVec2(-1, 30))) {
+            // Invisible selectable for full width interaction
+            ImGui::SetCursorPos(cursor_pos);
+            bool selected = (selected_contact == (int)i);
+            if (ImGui::Selectable("##item", selected, 0, ImVec2(list_width, item_height))) {
                 selected_contact = i;
                 current_view = VIEW_CHAT;
             }
+            
+            // Draw status and contact name
+            ImVec2 screen_pos = ImGui::GetItemRectMin();
+            
+            // Format: "✓ Name" or "✗ Name" with colored icons
+            const char* icon = contacts[i].is_online ? ICON_FA_CHECK_CIRCLE : ICON_FA_TIMES_CIRCLE;
+            
+            char display_text[256];
+            snprintf(display_text, sizeof(display_text), "%s   %s", icon, contacts[i].name.c_str());
+            
+            ImVec2 text_pos = ImVec2(screen_pos.x + 8, screen_pos.y + 7);
+            ImU32 text_color = contacts[i].is_online ? 
+                IM_COL32(0, 255, 204, 255) : IM_COL32(100, 100, 100, 255);  // Cyan if online, dark gray if offline
+            ImGui::GetWindowDrawList()->AddText(text_pos, text_color, display_text);
+            
+            // Move cursor to next position
+            ImGui::SetCursorPos(ImVec2(cursor_pos.x, cursor_pos.y + item_height));
             
             ImGui::PopID();
         }
@@ -818,45 +868,52 @@ private:
         float input_height = is_mobile ? 100.0f : 80.0f;
         ImGui::BeginChild("MessageArea", ImVec2(0, -input_height), true);
         
-        // Demo messages if empty
-        if (messages.empty()) {
-            Message demo1 = {"", "Hey! How are you?", "10:30 AM", false};
-            Message demo2 = {"", "I'm good! Working on DNA Messenger", "10:32 AM", true};
-            Message demo3 = {"", "Nice! Post-quantum crypto is the future 🚀", "10:33 AM", false};
-            messages.push_back(demo1);
-            messages.push_back(demo2);
-            messages.push_back(demo3);
-        }
+        // Get messages for current contact
+        std::vector<Message>& messages = contact_messages[selected_contact];
         
         for (size_t i = 0; i < messages.size(); i++) {
             const auto& msg = messages[i];
             
-            // Message bubble
-            float bubble_width = io.DisplaySize.x * (is_mobile ? 0.75f : 0.5f);
-            float indent = msg.is_outgoing ? (io.DisplaySize.x - bubble_width - 20.0f) : 10.0f;
+            // Calculate bubble width based on current window size
+            float available_width = ImGui::GetContentRegionAvail().x;
+            float bubble_width = available_width * 0.7f;  // 70% of available width
+            float indent = msg.is_outgoing ? (available_width - bubble_width) : 0.0f;
             
-            ImGui::SetCursorPosX(indent);
+            if (indent > 0) {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
+            }
             
-            ImGui::PushStyleColor(ImGuiCol_ChildBg, 
-                msg.is_outgoing ? ImVec4(0.0f, 0.6f, 0.6f, 0.4f) : ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 0.0f);
+            // Draw bubble background with proper padding
+            ImVec4 bg_color = msg.is_outgoing ? 
+                ImVec4(0.0f, 0.6f, 0.6f, 0.3f) : ImVec4(0.25f, 0.25f, 0.25f, 0.5f);
+            
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15.0f, 10.0f));
             
             char bubble_id[32];
             snprintf(bubble_id, sizeof(bubble_id), "bubble%zu", i);
             
-            ImGui::BeginChild(bubble_id, ImVec2(bubble_width, 0), true, 
-                ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoScrollbar);
+            // Calculate height: text + timestamp + padding
+            float content_width = bubble_width - 30.0f;  // Account for padding
+            ImVec2 text_size = ImGui::CalcTextSize(msg.content.c_str(), NULL, false, content_width);
+            ImVec2 timestamp_size = ImGui::CalcTextSize(msg.timestamp.c_str());
+            float bubble_height = text_size.y + (timestamp_size.y * 0.85f) + 25.0f;
             
-            ImGui::PushTextWrapPos(bubble_width - 20.0f);
-            ImGui::SetWindowFontScale(is_mobile ? 1.1f : 1.0f);
-            ImGui::Text("%s", msg.content.c_str());
-            ImGui::SetWindowFontScale(1.0f);
+            ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), true, 
+                ImGuiWindowFlags_NoScrollbar);
+            
+            // Message text with wrapping
+            ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
+            ImGui::TextWrapped("%s", msg.content.c_str());
             ImGui::PopTextWrapPos();
             
+            // Timestamp
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
             ImGui::SetWindowFontScale(0.85f);
-            ImGui::TextDisabled("%s", msg.timestamp.c_str());
+            ImGui::Text("%s", msg.timestamp.c_str());
             ImGui::SetWindowFontScale(1.0f);
+            ImGui::PopStyleColor();
             
             ImGui::EndChild();
             ImGui::PopStyleVar(2);
