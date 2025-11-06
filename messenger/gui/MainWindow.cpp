@@ -17,6 +17,7 @@ extern "C" {
     #include "../dht/dht_keyserver.h"
     #include "../dht/dna_profile.h"
     #include "../p2p/p2p_transport.h"
+    #include "../qgp_sha3.h"
 }
 
 #include <QApplication>
@@ -2878,15 +2879,60 @@ void MainWindow::onPublishKeys() {
     statusLabel->setText(QString::fromUtf8("Publishing keys to DHT..."));
     QApplication::processEvents();
 
+    // Check if user has a registered name via reverse lookup
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    char *registered_name = NULL;
+    if (dht_ctx) {
+        dht_keyserver_reverse_lookup(dht_ctx, currentIdentity.toUtf8().constData(), &registered_name);
+    }
+
     int result = messenger_store_pubkey(
         ctx,
         currentIdentity.toUtf8().constData(),  // fingerprint (128 hex chars)
-        NULL,  // no display name (user hasn't registered one yet)
+        registered_name,  // display name if registered
         (const uint8_t*)dilithiumPubkey.constData(),
         dilithiumPubkey.size(),
         (const uint8_t*)kyberPubkey.constData(),
         kyberPubkey.size()
     );
+
+    // If user has registered name, also publish identity profile
+    if (result == 0 && registered_name && dht_ctx) {
+        dna_unified_identity_t *identity = dna_identity_create();
+        if (identity) {
+            strncpy(identity->fingerprint, currentIdentity.toUtf8().constData(), sizeof(identity->fingerprint) - 1);
+            identity->has_registered_name = true;
+            strncpy(identity->registered_name, registered_name, sizeof(identity->registered_name) - 1);
+            identity->name_registered_at = time(NULL);
+            identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
+            identity->timestamp = time(NULL);
+            identity->version = 1;
+
+            char *json = dna_identity_to_json(identity);
+            if (json) {
+                char key_input[256];
+                snprintf(key_input, sizeof(key_input), "%s:profile", currentIdentity.toUtf8().constData());
+
+                unsigned char hash[64];
+                if (qgp_sha3_512((unsigned char*)key_input, strlen(key_input), hash) == 0) {
+                    char dht_key[129];
+                    for (int i = 0; i < 64; i++) {
+                        sprintf(dht_key + (i * 2), "%02x", hash[i]);
+                    }
+                    dht_key[128] = '\0';
+
+                    dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                      (uint8_t*)json, strlen(json));
+                }
+                free(json);
+            }
+            dna_identity_free(identity);
+        }
+    }
+
+    if (registered_name) {
+        free(registered_name);
+    }
 
     if (result == 0) {
         QMessageBox::information(
