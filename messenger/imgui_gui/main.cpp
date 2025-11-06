@@ -1021,9 +1021,9 @@ private:
         ImGui::Text("Contacts");
         ImGui::Separator();
         
-        // Contact list - calculate available height
-        // Height = window height - (title + separator + 3 buttons + separator + "Contacts" + separator + add button + padding)
-        float available_height = ImGui::GetWindowHeight() - 230.0f; // Space for buttons and UI elements
+        // Contact list - use remaining space minus add button height
+        float add_button_height = 40.0f;
+        float available_height = ImGui::GetContentRegionAvail().y - add_button_height - ImGui::GetStyle().ItemSpacing.y;
         
         ImGui::BeginChild("ContactList", ImVec2(0, available_height), false);
         
@@ -1067,7 +1067,7 @@ private:
         
         // Add contact button at bottom (40px to match main buttons)
         float button_width = ImGui::GetContentRegionAvail().x;
-        if (ThemedButton(ICON_FA_PLUS " Add Contact", ImVec2(button_width, 40), false)) {
+        if (ThemedButton(ICON_FA_PLUS " Add Contact", ImVec2(button_width, add_button_height), false)) {
             // TODO: Open add contact dialog
         }
         
