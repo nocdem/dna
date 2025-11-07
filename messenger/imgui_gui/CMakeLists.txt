@@ -31,32 +31,18 @@ add_executable(dna_messenger_imgui
 target_include_directories(dna_messenger_imgui PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${CMAKE_SOURCE_DIR}/..
 )
-
-# Find the DNA library
-find_library(DNA_LIB dna_lib PATHS ${CMAKE_SOURCE_DIR}/../build REQUIRED)
-find_package(CURL REQUIRED)
-find_package(OpenSSL REQUIRED)
 
 target_link_libraries(dna_messenger_imgui PRIVATE
     OpenGL::GL
     glfw
-    ${DNA_LIB}
-    ${CURL_LIBRARIES}
-    ${OPENSSL_LIBRARIES}
-    json-c
-    pq
-    sqlite3
-    pthread
-    dl
 )
 
 # Platform-specific settings
 if(WIN32)
     target_link_libraries(dna_messenger_imgui PRIVATE
-        ws2_32
-        bcrypt
+        opengl32
+        gdi32
     )
 endif()
 
