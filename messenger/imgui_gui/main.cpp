@@ -1322,7 +1322,7 @@ private:
             bool icon_clicked = ImGui::Button(ICON_FA_PAPER_PLANE "##send", ImVec2(50, 50));
             
             ImGui::PopStyleVar(2);
-            ImGui::PopStyleColor(4);
+            ImGui::PopStyleColor(4); // Matches 4 PushStyleColor above
             
             if (icon_clicked) {
                 if (strlen(message_input) > 0) {
@@ -1334,7 +1334,6 @@ private:
                     message_input[0] = '\0';
                 }
             }
-            ImGui::PopStyleColor(4); // Pop all 4 colors (Text, HeaderHovered, HeaderActive, Header)
         }
         
         ImGui::PopStyleColor(); // FrameBg
