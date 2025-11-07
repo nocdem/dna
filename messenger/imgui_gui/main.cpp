@@ -1273,18 +1273,18 @@ private:
         
         ImGui::EndChild();
         
-        // Message input area
-        ImGui::Separator();
+        // Message input area - Telegram style (one line, no background)
+        ImGui::Spacing();
+        ImGui::Spacing();
         
-        // Use recipient bubble color for input (0.12 opacity to match)
-        ImVec4 base_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
-        ImVec4 input_bg = ImVec4(base_color.x, base_color.y, base_color.z, 0.12f);
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
+        // Transparent background, grey placeholder text
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0)); // Transparent
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
         
         if (is_mobile) {
             // Mobile: stacked layout
-            ImGui::InputTextMultiline("##MessageInput", message_input, 
-                sizeof(message_input), ImVec2(-1, 60));
+            ImGui::InputTextWithHint("##MessageInput", "Write a message", message_input, 
+                sizeof(message_input), ImGuiInputTextFlags_None);
             
             if (ButtonDark("Send", ImVec2(-1, 35))) {
                 if (strlen(message_input) > 0) {
@@ -1298,11 +1298,11 @@ private:
             }
         } else {
             // Desktop: side-by-side
-            ImGui::InputTextMultiline("##MessageInput", message_input, 
-                sizeof(message_input), ImVec2(-80, 60));
+            ImGui::InputTextWithHint("##MessageInput", "Write a message", message_input, 
+                sizeof(message_input), ImGuiInputTextFlags_None);
             ImGui::SameLine();
             
-            if (ButtonDark("Send", ImVec2(70, 60))) {
+            if (ButtonDark("Send", ImVec2(70, 30))) {
                 if (strlen(message_input) > 0) {
                     Message msg;
                     msg.content = message_input;
@@ -1314,7 +1314,7 @@ private:
             }
         }
         
-        ImGui::PopStyleColor();
+        ImGui::PopStyleColor(2); // FrameBg and Border
     }
     
     void renderWalletView() {
