@@ -1,83 +1,182 @@
-# ImGui UI - Missing Features (After main.cpp Overwrite)
+# ImGui UI - Current Status & Missing Features
 
-## Lost Features (Need Re-implementation)
+**Last Updated:** 2025-11-07
+**Branch:** feature/imgui-gui
 
-### 1. Theme System
-- ✅ theme_colors.h exists (DNA/Club theme colors)
-- ❌ Theme switching not fully integrated in main.cpp
-- ❌ Settings page theme selector needs reconnection
-- **Files affected:** main.cpp (theme application logic)
+---
 
-### 2. Contact List
-- ❌ Contact list UI in sidebar (under Chat button)
-- ❌ 50 mock contacts
-- ❌ Online/offline status with FontAwesome icons (✓/✗)
-- ❌ Sorting (online first, then offline)
-- ❌ Selected contact indicator (bold text)
-- ❌ Scrollable contact area
-- ❌ Add Contact button (floats above contacts)
-- **Files affected:** main.cpp (renderDesktopLayout)
+## ✅ Implemented Features
 
-### 3. Chat Bubbles
-- ❌ Speech bubble UI for messages
-- ❌ Square bubbles with padding
-- ❌ Arrow pointing down to sender name
-- ❌ Sender name + timestamp below bubble
-- ❌ Text wrapping inside bubbles (using ImGui::BeginChild)
-- ❌ Recipient bubbles ~5% lighter than own bubbles
-- ❌ Theme-aware bubble colors
-- **Files affected:** main.cpp (renderChatArea)
+### 1. Theme System (COMPLETE)
+- ✅ theme_colors.h with DNA/Club theme colors
+- ✅ ApplyTheme() function applies colors to all ImGui elements
+- ✅ Settings page theme selector (radio buttons)
+- ✅ Theme persisted to disk via SettingsManager
+- ✅ Dynamic theme switching works
+- **Files:** main.cpp (ApplyTheme), theme_colors.h, settings_manager.cpp/h
 
-### 4. UI Animations
-- ❌ Smooth color transitions on hover (contacts, buttons)
-- ❌ Animation system for UI elements
-- ❌ Identity list animations (modal)
-- **Files affected:** main.cpp (custom animation logic)
+### 2. Contact List (COMPLETE)
+- ✅ Contact list UI in sidebar (desktop) and full-screen (mobile)
+- ✅ 100 mock contacts for testing
+- ✅ Online/offline status with FontAwesome icons (✓ green, ✗ gray)
+- ✅ Sorting: online first, then offline, then alphabetical
+- ✅ Selected contact indicator (hover + active states)
+- ✅ Scrollable contact area
+- ✅ "Add Contact" button at bottom of sidebar (40px height)
+- **Files:** main.cpp (renderSidebar, renderContactsList)
 
-### 5. Text Scaling
-- ❌ Settings page: "Default" (1.1x) and "Bigger" (1.3x)
-- ❌ Persistent settings (save/load)
-- ❌ Button scaling with text
-- ❌ Apply scaling globally
-- **Files affected:** main.cpp (settings), settings_manager.cpp/h
+### 3. Chat Bubbles (COMPLETE)
+- ✅ Speech bubble UI for messages
+- ✅ Square bubbles with padding (30px horizontal, 30px vertical)
+- ✅ Triangle arrow pointing DOWN from bubble to sender name
+- ✅ Sender name + timestamp below arrow
+- ✅ Text wrapping inside bubbles (85% of available width)
+- ✅ Recipient bubbles lighter (0.12 opacity) than own bubbles (0.25 opacity)
+- ✅ Theme-aware bubble colors (uses DNATheme::Text()/ClubTheme::Text())
+- ✅ Right-click context menu to copy message
+- **Files:** main.cpp (renderChatView)
 
-### 6. Font System
+### 4. Identity Management (COMPLETE)
+- ✅ Identity selection modal on first run
+- ✅ 3-step identity creation wizard (Name → Seed Phrase → Creating)
+- ✅ BIP39 mock seed phrase generation
+- ✅ Seed phrase copy to clipboard with visual feedback
+- ✅ Identity name validation (3-20 chars, alphanumeric + underscore)
+- ✅ Hover/selection states with theme colors
+- ✅ Text vertically centered in identity list
+- ✅ Deselect on second click
+- **Files:** main.cpp (renderIdentitySelection, renderCreateIdentity*)
+
+### 5. Settings Persistence (COMPLETE)
+- ✅ Settings file at ~/.config/dna_messenger/settings.conf
+- ✅ Save/load: theme, font_scale, window_width, window_height
+- ✅ SettingsManager::Load() on startup
+- ✅ SettingsManager::Save() on changes and exit
+- ✅ Default values: theme=0, font_scale=1.1, window=1280x720
+- **Files:** settings_manager.cpp/h
+
+### 6. Font System (COMPLETE)
 - ✅ Fonts embedded as headers (NotoSans-Regular.h, fa-solid-900.h, NotoEmoji-Regular.h)
-- ✅ Font loading code exists in main.cpp
-- ❌ Emoji support not fully working
-- **Files affected:** main.cpp (font atlas setup - lines ~1550)
+- ✅ Font loading with merge mode for FontAwesome icons
+- ✅ Base font size: 18px * 1.1 = 19.8px
+- ✅ Icon scaling: base_size * 0.9f
+- ✅ Unicode range support for icons
+- **Files:** main.cpp (main function, font atlas setup)
 
-### 7. UI Polish
-- ❌ Scrollbar colors follow theme
-- ❌ Separator lines follow theme (implemented in theme_colors.h, needs application)
-- ❌ Border colors follow theme (implemented in theme_colors.h, needs application)
-- ❌ Add Contact button same size as sidebar buttons
-- ❌ Minimum window size enforcement (desktop only)
+### 7. Responsive Layout (COMPLETE)
+- ✅ Mobile layout (< 600px): Bottom nav bar + full-screen views
+- ✅ Desktop layout: Sidebar + main content area
+- ✅ Adaptive button sizes (mobile: 50-80px, desktop: 40px)
+- ✅ Touch-friendly spacing on mobile
+- ✅ Minimum window size: 1000x600 (desktop only)
+- **Files:** main.cpp (renderMobileLayout, renderDesktopLayout)
 
-### 8. Identity List (Modal)
-- ❌ Hover animations
-- ❌ Selected identity has dark text (#191D21)
-- ❌ Deselect on second click
-- ❌ Text vertically centered
-- ❌ Hover text color #191D21
-- **Files affected:** main.cpp (renderIdentitySelection)
+### 8. Wallet View (COMPLETE)
+- ✅ Token balance cards (CPUNK, CELL, KEL)
+- ✅ Mock balances displayed
+- ✅ Action buttons: Send, Receive, Transaction History
+- ✅ Responsive layout (stacked on mobile, side-by-side on desktop)
+- **Files:** main.cpp (renderWalletView)
 
-## Current Status
-- **Build:** ✅ Compiles successfully
-- **Run:** ⚠️ Basic UI works, missing advanced features
-- **Branch:** feature/imgui-gui
-- **Font Size:** Default should be 1.1x (currently 1.0x)
+---
 
-## Priority Implementation Order
-1. **Theme system** - Make settings theme selector work
-2. **Text scaling** - Default 1.1x, Bigger 1.3x with persistence
-3. **Contact list** - Full contact sidebar with online/offline
-4. **Chat bubbles** - Speech bubble UI with arrows
-5. **Animations** - Smooth hover transitions
-6. **UI Polish** - Scrollbars, separators, borders follow theme
+## ❌ Missing Features (TODO)
 
-## Notes
+### 1. Text Scaling UI
+- ❌ Settings page: "Default" (1.1x) and "Bigger" (1.5x) radio buttons
+- ✅ font_scale stored in AppSettings struct (default 1.1f)
+- ✅ font_scale persisted to disk
+- ❌ Global font scale not applied (currently uses hardcoded SetWindowFontScale)
+- ❌ Need to rebuild font atlas when scale changes
+- **Priority:** Medium
+- **Files:** main.cpp (renderSettingsView), settings_manager.h
+
+### 2. UI Animations
+- ❌ Smooth color transitions on hover (contacts, buttons)
+- ❌ Animation system with delta time
+- ❌ Fade effects for theme switching
+- **Priority:** Low (polish)
+- **Files:** main.cpp (custom animation logic)
+
+### 3. Backend Integration
+- ❌ DNA messenger core API integration (currently commented out)
+- ❌ Real identity creation (bip39.h, messenger.h)
+- ❌ Real contact list (contacts_db.h)
+- ❌ Real message sending/receiving (messenger_p2p.h)
+- ❌ Real wallet operations (wallet.h, cellframe_rpc.h)
+- **Priority:** High (next phase)
+- **Files:** main.cpp (uncomment includes, replace mock data)
+
+### 4. Additional Dialogs
+- ❌ Add Contact dialog
+- ❌ Send Tokens dialog
+- ❌ Receive Address dialog (with QR code)
+- ❌ Transaction History dialog
+- ❌ Import Identity dialog (from BIP39 seed)
+- **Priority:** Medium
+- **Files:** main.cpp (new modal dialogs)
+
+### 5. Message Features
+- ❌ Message timestamps (relative: "Now", "5m ago", "Yesterday")
+- ❌ Unread message indicators
+- ❌ Typing indicators
+- ❌ Message status icons (sent, delivered, read)
+- ❌ File/image attachments
+- **Priority:** Medium-High
+- **Files:** main.cpp (Message struct, renderChatView)
+
+### 6. UI Polish
+- ❌ Emoji picker
+- ❌ Custom scrollbar styling (theme-aware)
+- ❌ Toast notifications for errors/success
+- ❌ Loading spinners for async operations
+- ❌ Confirmation dialogs (delete contact, etc.)
+- **Priority:** Medium
+- **Files:** main.cpp (new helpers)
+
+---
+
+## 📊 Code Statistics
+- **main.cpp:** 1,652 lines (monolithic, needs refactoring)
+- **settings_manager.cpp:** 93 lines
+- **theme_colors.h:** 32 lines
+- **Total:** ~1,800 lines
+
+---
+
+## 🎯 Next Steps
+
+### Phase 1: Text Scaling UI (1-2 hours)
+1. Add "Text Size" section to Settings view
+2. Radio buttons: "Default (1.1x)" and "Bigger (1.5x)"
+3. Apply font_scale globally (replace hardcoded SetWindowFontScale)
+4. Rebuild font atlas when scale changes (requires restart for now)
+
+### Phase 2: Backend Integration (1-2 weeks)
+1. Uncomment backend includes
+2. Replace mock identity creation with real bip39/messenger calls
+3. Replace mock contact list with contacts_db
+4. Replace mock messages with messenger_p2p
+5. Integrate wallet RPC calls
+
+### Phase 3: Feature Completeness (2-3 weeks)
+1. Add missing dialogs (Add Contact, Send Tokens, etc.)
+2. Implement message features (timestamps, status, attachments)
+3. Add UI polish (animations, toasts, confirmations)
+
+### Phase 4: Code Refactoring (1 week)
+1. Split main.cpp into separate files:
+   - app.cpp/h (main application class)
+   - views.cpp/h (contact list, chat, wallet, settings)
+   - dialogs.cpp/h (modals)
+   - theme.cpp/h (theme management)
+2. Extract UI helpers (ButtonDark, ThemedButton, etc.)
+
+---
+
+## 📝 Notes
 - All fonts are embedded (no external dependencies)
-- Settings manager exists but not fully integrated
-- Theme colors defined in theme_colors.h
-- Mock data system in place for testing
+- Settings file location: `~/.config/dna_messenger/settings.conf`
+- Mock data: 100 contacts (60% online), pre-populated messages
+- Current mode: **UI SKETCH MODE** (backend disabled for UI development)
+- Theme colors: DNA = Cyan (#00FFCC), Club = Orange (#FF7A1A)

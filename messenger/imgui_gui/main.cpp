@@ -348,7 +348,6 @@ private:
         ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         ImGui::Spacing();
-        ImGui::Separator();
         ImGui::Spacing();
 
         // Info text (centered)
@@ -1013,9 +1012,6 @@ private:
 
         ImGui::BeginChild("Sidebar", ImVec2(250, 0), true, ImGuiWindowFlags_NoScrollbar);
 
-        ImGui::Text("DNA Messenger");
-        ImGui::Separator();
-
         // Navigation buttons (40px each)
         if (ThemedButton(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40), current_view == VIEW_CONTACTS || current_view == VIEW_CHAT)) {
             current_view = VIEW_CONTACTS;
@@ -1027,9 +1023,9 @@ private:
             current_view = VIEW_SETTINGS;
         }
 
-        ImGui::Separator();
+        ImGui::Spacing();
         ImGui::Text("Contacts");
-        ImGui::Separator();
+        ImGui::Spacing();
 
         // Contact list - use remaining space minus add button height
         float add_button_height = 40.0f;
@@ -1547,7 +1543,7 @@ int main(int argc, char** argv) {
 
     // Load settings from file
     SettingsManager::Load(g_app_settings);
-    printf("[SKETCH MODE] Settings loaded: theme=%d, window=%dx%d\n", 
+    printf("[SKETCH MODE] Settings loaded: theme=%d, window=%dx%d\n",
            g_app_settings.theme, g_app_settings.window_width, g_app_settings.window_height);
 
     GLFWwindow* window = glfwCreateWindow(g_app_settings.window_width, g_app_settings.window_height, "DNA Messenger", nullptr, nullptr);
