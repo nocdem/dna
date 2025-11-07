@@ -1228,11 +1228,11 @@ private:
             
             ImGui::EndChild();
             
-            // Right-click context menu on bubble
+            // Right-click context menu on the bubble (use BeginPopupContextItem on the child)
             char popup_id[64];
-            snprintf(popup_id, sizeof(popup_id), "bubble_context%zu", i);
+            snprintf(popup_id, sizeof(popup_id), "bubble_menu%zu", i);
             if (ImGui::BeginPopupContextItem(popup_id)) {
-                if (ImGui::MenuItem("Copy")) {
+                if (ImGui::MenuItem(ICON_FA_COPY " Copy")) {
                     ImGui::SetClipboardText(msg.content.c_str());
                 }
                 ImGui::EndPopup();
