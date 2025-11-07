@@ -1317,7 +1317,9 @@ private:
             // Draw placeholder OVER the input if empty
             if (strlen(message_input) == 0) {
                 ImDrawList* draw_list = ImGui::GetWindowDrawList();
-                ImVec4 placeholder_color = ImVec4(0.6f, 0.6f, 0.6f, 1.0f); // Lighter gray
+                // Use theme text color with high opacity
+                ImVec4 text_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+                ImVec4 placeholder_color = ImVec4(text_color.x, text_color.y, text_color.z, 0.3f); // 30% opacity
                 ImVec2 text_pos = ImVec2(input_pos.x + 10.0f, input_pos.y + 20.0f);
                 draw_list->AddText(text_pos, ImGui::ColorConvertFloat4ToU32(placeholder_color), "Write a message");
             }
