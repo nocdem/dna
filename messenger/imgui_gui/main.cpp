@@ -1293,11 +1293,11 @@ private:
 
         if (is_mobile) {
             // Mobile: stacked layout
-            ImGui::InputTextMultiline("##MessageInput", message_input,
-                sizeof(message_input), ImVec2(-1, 60), ImGuiInputTextFlags_None);
+            bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", message_input,
+                sizeof(message_input), ImVec2(-1, 60), ImGuiInputTextFlags_EnterReturnsTrue);
 
             // Send button with paper plane icon
-            if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40))) {
+            if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
                 if (strlen(message_input) > 0) {
                     Message msg;
                     msg.content = message_input;
@@ -1314,8 +1314,8 @@ private:
             ImVec2 input_pos = ImGui::GetCursorScreenPos();
 
             ImGui::SetNextItemWidth(input_width);
-            ImGui::InputTextMultiline("##MessageInput", message_input,
-                sizeof(message_input), ImVec2(input_width, 60), ImGuiInputTextFlags_None);
+            bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", message_input,
+                sizeof(message_input), ImVec2(input_width, 60), ImGuiInputTextFlags_EnterReturnsTrue);
 
             ImGui::SameLine();
 
@@ -1341,7 +1341,7 @@ private:
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(4);
 
-            if (icon_clicked) {
+            if (icon_clicked || enter_pressed) {
                 if (strlen(message_input) > 0) {
                     Message msg;
                     msg.content = message_input;
