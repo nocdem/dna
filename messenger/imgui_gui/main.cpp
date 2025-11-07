@@ -1539,7 +1539,12 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "DNA Messenger", nullptr, nullptr);
+    // Load settings from file
+    SettingsManager::Load(g_app_settings);
+    printf("[SKETCH MODE] Settings loaded: theme=%d, window=%dx%d\n", 
+           g_app_settings.theme, g_app_settings.window_width, g_app_settings.window_height);
+
+    GLFWwindow* window = glfwCreateWindow(g_app_settings.window_width, g_app_settings.window_height, "DNA Messenger", nullptr, nullptr);
     if (window == nullptr)
         return 1;
 
@@ -1554,10 +1559,6 @@ int main(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = "dna_messenger.ini"; // Enable INI saving
-
-    // Load settings from file
-    SettingsManager::Load(g_app_settings);
-    printf("[SKETCH MODE] Settings loaded: theme=%d\n", g_app_settings.theme);
 
         // Load embedded fonts
     #include "fonts/NotoSans-Regular.h"
@@ -1625,6 +1626,13 @@ int main(int argc, char** argv) {
 
         glfwSwapBuffers(window);
     }
+
+    // Save window size before exit
+    int width, height;
+    glfwGetWindowSize(window, &width, &height);
+    g_app_settings.window_width = width;
+    g_app_settings.window_height = height;
+    SettingsManager::Save(g_app_settings);
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
