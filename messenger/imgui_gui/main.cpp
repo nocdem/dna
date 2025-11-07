@@ -1171,12 +1171,9 @@ private:
             
             // Calculate bubble width based on current window size
             float available_width = ImGui::GetContentRegionAvail().x;
-            float bubble_width = available_width * 0.55f;  // 55% of available width
-            float indent = msg.is_outgoing ? (available_width - bubble_width) : 0.0f;
+            float bubble_width = available_width * 0.65f;  // 65% of available width
             
-            if (indent > 0) {
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
-            }
+            // All bubbles aligned left (Telegram-style)
             
             // Draw bubble background with proper padding (theme-aware)
             ImVec4 base_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
@@ -1223,10 +1220,6 @@ private:
             ImGui::PopStyleColor(2);
             
             // Sender name and timestamp BELOW the bubble (theme-aware)
-            if (indent > 0) {
-                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
-            }
-            
             ImVec4 meta_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
             meta_color.w = 0.7f; // Slightly transparent
             
