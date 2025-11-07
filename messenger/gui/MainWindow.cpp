@@ -18,6 +18,20 @@ extern "C" {
     #include "../dht/dna_profile.h"
     #include "../p2p/p2p_transport.h"
     #include "../qgp_sha3.h"
+    #include "../qgp_dilithium.h"  // For qgp_dsa87_sign
+    #ifdef _WIN32
+        #include <winsock2.h>
+        // Windows doesn't have htonll/ntohll
+        #define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
+        #define ntohll(x) htonll(x)
+    #else
+        #include <arpa/inet.h>
+        // Define htonll if not available
+        #ifndef htonll
+            #define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
+            #define ntohll(x) htonll(x)
+        #endif
+    #endif
 }
 
 #include <QApplication>
@@ -2821,8 +2835,8 @@ void MainWindow::onPublishKeys() {
     QString dilithiumPath = homeDir + "/.dna/" + currentIdentity + ".dsa";
     QString kyberPath = homeDir + "/.dna/" + currentIdentity + ".kem";
 
-    // Load Dilithium public key (skip 276 byte header, then read 1952 bytes public key)
-    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 1952 bytes][PRIVATE_KEY: 4032 bytes]
+    // Load Dilithium5 public key (skip 276 byte header, then read 2592 bytes public key)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 2592 bytes][PRIVATE_KEY: 4896 bytes]
     QFile dilithiumFile(dilithiumPath);
     if (!dilithiumFile.open(QIODevice::ReadOnly)) {
         QMessageBox::critical(
@@ -2835,21 +2849,21 @@ void MainWindow::onPublishKeys() {
     }
 
     dilithiumFile.seek(276);  // Skip header (qgp_privkey_file_header_t = 276 bytes)
-    QByteArray dilithiumPubkey = dilithiumFile.read(1952);
+    QByteArray dilithiumPubkey = dilithiumFile.read(2592);  // Category 5
     dilithiumFile.close();
 
-    if (dilithiumPubkey.size() != 1952) {
+    if (dilithiumPubkey.size() != 2592) {
         QMessageBox::critical(
             this,
             QString::fromUtf8("Error"),
-            QString::fromUtf8("Invalid Dilithium key file (expected 1952 bytes public key)")
+            QString::fromUtf8("Invalid Dilithium key file (expected 2592 bytes public key for Category 5)")
         );
         statusLabel->setText(QString::fromUtf8("Failed to load keys"));
         return;
     }
 
-    // Load Kyber public key (skip 276 byte header, then read 800 bytes public key)
-    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 800 bytes][PRIVATE_KEY: 1632 bytes]
+    // Load Kyber1024 public key (skip 276 byte header, then read 1568 bytes public key)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 1568 bytes][PRIVATE_KEY: 3168 bytes]
     QFile kyberFile(kyberPath);
     if (!kyberFile.open(QIODevice::ReadOnly)) {
         QMessageBox::critical(
@@ -2862,14 +2876,14 @@ void MainWindow::onPublishKeys() {
     }
 
     kyberFile.seek(276);  // Skip header (qgp_privkey_file_header_t = 276 bytes)
-    QByteArray kyberPubkey = kyberFile.read(800);
+    QByteArray kyberPubkey = kyberFile.read(1568);  // Category 5
     kyberFile.close();
 
-    if (kyberPubkey.size() != 800) {
+    if (kyberPubkey.size() != 1568) {
         QMessageBox::critical(
             this,
             QString::fromUtf8("Error"),
-            QString::fromUtf8("Invalid Kyber key file (expected 800 bytes public key)")
+            QString::fromUtf8("Invalid Kyber key file (expected 1568 bytes public key for Category 5)")
         );
         statusLabel->setText(QString::fromUtf8("Failed to load keys"));
         return;
@@ -2901,12 +2915,95 @@ void MainWindow::onPublishKeys() {
         dna_unified_identity_t *identity = dna_identity_create();
         if (identity) {
             strncpy(identity->fingerprint, currentIdentity.toUtf8().constData(), sizeof(identity->fingerprint) - 1);
+
+            // Copy public keys for fingerprint verification
+            memcpy(identity->dilithium_pubkey, dilithiumPubkey.constData(), 2592);
+            memcpy(identity->kyber_pubkey, kyberPubkey.constData(), 1568);
+
             identity->has_registered_name = true;
             strncpy(identity->registered_name, registered_name, sizeof(identity->registered_name) - 1);
             identity->name_registered_at = time(NULL);
             identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
+            strncpy(identity->registration_tx_hash, "FREE_REGISTRATION", sizeof(identity->registration_tx_hash) - 1);
+            strncpy(identity->registration_network, "DNA_NETWORK", sizeof(identity->registration_network) - 1);
+            identity->name_version = 1;
             identity->timestamp = time(NULL);
             identity->version = 1;
+
+            // Load private key for signing
+            QFile dilithiumPrivFile(dilithiumPath);
+            if (dilithiumPrivFile.open(QIODevice::ReadOnly)) {
+                dilithiumPrivFile.seek(276 + 2592);  // Skip header + public key
+                QByteArray dilithiumPrivkey = dilithiumPrivFile.read(4896);  // Category 5 private key
+                dilithiumPrivFile.close();
+
+                if (dilithiumPrivkey.size() == 4896) {
+                    // Sign the identity profile (same as messenger.c)
+                    size_t msg_len = sizeof(identity->fingerprint) +
+                                   sizeof(identity->dilithium_pubkey) +
+                                   sizeof(identity->kyber_pubkey) +
+                                   sizeof(bool) +
+                                   sizeof(identity->registered_name) +
+                                   sizeof(uint64_t) * 2 +
+                                   sizeof(identity->registration_tx_hash) +
+                                   sizeof(identity->registration_network) +
+                                   sizeof(uint32_t) +
+                                   sizeof(identity->wallets) +
+                                   sizeof(identity->socials) +
+                                   sizeof(identity->bio) +
+                                   sizeof(identity->profile_picture_ipfs) +
+                                   sizeof(uint64_t) +
+                                   sizeof(uint32_t);
+
+                    uint8_t *msg = (uint8_t*)malloc(msg_len);
+                    if (msg) {
+                        size_t offset = 0;
+                        memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
+                        offset += sizeof(identity->fingerprint);
+                        memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
+                        offset += sizeof(identity->dilithium_pubkey);
+                        memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
+                        offset += sizeof(identity->kyber_pubkey);
+                        memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
+                        offset += sizeof(bool);
+                        memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
+                        offset += sizeof(identity->registered_name);
+
+                        uint64_t registered_at_net = htonll(identity->name_registered_at);
+                        uint64_t expires_at_net = htonll(identity->name_expires_at);
+                        uint32_t name_version_net = htonl(identity->name_version);
+                        uint64_t timestamp_net = htonll(identity->timestamp);
+                        uint32_t version_net = htonl(identity->version);
+
+                        memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
+                        offset += sizeof(uint64_t);
+                        memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
+                        offset += sizeof(uint64_t);
+                        memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+                        offset += sizeof(identity->registration_tx_hash);
+                        memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+                        offset += sizeof(identity->registration_network);
+                        memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
+                        offset += sizeof(uint32_t);
+                        memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
+                        offset += sizeof(identity->wallets);
+                        memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
+                        offset += sizeof(identity->socials);
+                        memcpy(msg + offset, identity->bio, sizeof(identity->bio));
+                        offset += sizeof(identity->bio);
+                        memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
+                        offset += sizeof(identity->profile_picture_ipfs);
+                        memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
+                        offset += sizeof(uint64_t);
+                        memcpy(msg + offset, &version_net, sizeof(uint32_t));
+
+                        size_t siglen = sizeof(identity->signature);
+                        qgp_dsa87_sign(identity->signature, &siglen, msg, msg_len, (const uint8_t*)dilithiumPrivkey.constData());
+
+                        free(msg);
+                    }
+                }
+            }
 
             char *json = dna_identity_to_json(identity);
             if (json) {
@@ -2943,8 +3040,8 @@ void MainWindow::onPublishKeys() {
                 "Identity: %1\n"
                 "Your keys are now discoverable by other users.\n\n"
                 "Keys published:\n"
-                "• Dilithium signing key (1952 bytes)\n"
-                "• Kyber encryption key (800 bytes)"
+                "• Dilithium5 signing key (2592 bytes)\n"
+                "• Kyber1024 encryption key (1568 bytes)"
             ).arg(currentIdentity)
         );
         statusLabel->setText(QString::fromUtf8("Keys published to DHT"));

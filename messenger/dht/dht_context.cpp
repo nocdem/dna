@@ -234,7 +234,9 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
         // Handle permanent vs timed expiration
         if (ttl_seconds == UINT_MAX) {
             // Permanent storage (never expires)
-            std::cout << "[DHT] PUT PERMANENT: " << hash << " (" << value_len << " bytes)" << std::endl;
+            // IMPORTANT: Must assign ValueType so bootstrap nodes recognize it
+            dht_value->type = DNA_TYPE_365DAY.id;  // Use 365-day type for permanent data
+            std::cout << "[DHT] PUT PERMANENT: " << hash << " (" << value_len << " bytes, type=0x" << std::hex << dht_value->type << std::dec << ")" << std::endl;
             ctx->runner.put(hash, dht_value, dht::DoneCallbackSimple{}, dht::time_point::max(), true);
         } else {
             // Choose ValueType based on TTL (365 days vs 7 days)

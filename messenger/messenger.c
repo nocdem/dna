@@ -15,10 +15,19 @@
 #include <windows.h>
 #define popen _popen
 #define pclose _pclose
+// Windows doesn't have htonll/ntohll, define them
+#define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
+#define ntohll(x) htonll(x)
 #else
 #include <sys/time.h>
 #include <unistd.h>  // For unlink(), close()
 #include <dirent.h>  // For directory operations (migration detection)
+#include <arpa/inet.h>  // For htonl, htonll
+// Define htonll/ntohll if not available
+#ifndef htonll
+#define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
+#define ntohll(x) htonll(x)
+#endif
 #endif
 #include <json-c/json.h>
 #include <openssl/bio.h>
@@ -551,12 +560,96 @@ int messenger_register_name(
         dna_unified_identity_t *identity = dna_identity_create();
         if (identity) {
             strncpy(identity->fingerprint, fingerprint, sizeof(identity->fingerprint) - 1);
+
+            // Copy public keys for fingerprint verification
+            memcpy(identity->dilithium_pubkey, sign_key->public_key,
+                   sign_key->public_key_size < sizeof(identity->dilithium_pubkey) ?
+                   sign_key->public_key_size : sizeof(identity->dilithium_pubkey));
+            memcpy(identity->kyber_pubkey, enc_key->public_key,
+                   enc_key->public_key_size < sizeof(identity->kyber_pubkey) ?
+                   enc_key->public_key_size : sizeof(identity->kyber_pubkey));
+
             identity->has_registered_name = true;
             strncpy(identity->registered_name, desired_name, sizeof(identity->registered_name) - 1);
             identity->name_registered_at = time(NULL);
             identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
+            strncpy(identity->registration_tx_hash, "FREE_REGISTRATION", sizeof(identity->registration_tx_hash) - 1);
+            strncpy(identity->registration_network, "DNA_NETWORK", sizeof(identity->registration_network) - 1);
+            identity->name_version = 1;
             identity->timestamp = time(NULL);
             identity->version = 1;
+
+            // Sign the identity profile with Dilithium5
+            // Message includes all fields except signature
+            size_t msg_len = sizeof(identity->fingerprint) +
+                           sizeof(identity->dilithium_pubkey) +
+                           sizeof(identity->kyber_pubkey) +
+                           sizeof(bool) +  // has_registered_name
+                           sizeof(identity->registered_name) +
+                           sizeof(uint64_t) * 2 +  // name_registered_at, name_expires_at
+                           sizeof(identity->registration_tx_hash) +
+                           sizeof(identity->registration_network) +
+                           sizeof(uint32_t) +  // name_version
+                           sizeof(identity->wallets) +
+                           sizeof(identity->socials) +
+                           sizeof(identity->bio) +
+                           sizeof(identity->profile_picture_ipfs) +
+                           sizeof(uint64_t) +  // timestamp
+                           sizeof(uint32_t);   // version
+
+            uint8_t *msg = malloc(msg_len);
+            if (msg) {
+                size_t offset = 0;
+                memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
+                offset += sizeof(identity->fingerprint);
+                memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
+                offset += sizeof(identity->dilithium_pubkey);
+                memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
+                offset += sizeof(identity->kyber_pubkey);
+                memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
+                offset += sizeof(bool);
+                memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
+                offset += sizeof(identity->registered_name);
+
+                // Network byte order for integers
+                uint64_t registered_at_net = htonll(identity->name_registered_at);
+                uint64_t expires_at_net = htonll(identity->name_expires_at);
+                uint32_t name_version_net = htonl(identity->name_version);
+                uint64_t timestamp_net = htonll(identity->timestamp);
+                uint32_t version_net = htonl(identity->version);
+
+                memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
+                offset += sizeof(uint64_t);
+                memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
+                offset += sizeof(uint64_t);
+                memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+                offset += sizeof(identity->registration_tx_hash);
+                memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+                offset += sizeof(identity->registration_network);
+                memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
+                offset += sizeof(uint32_t);
+                memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
+                offset += sizeof(identity->wallets);
+                memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
+                offset += sizeof(identity->socials);
+                memcpy(msg + offset, identity->bio, sizeof(identity->bio));
+                offset += sizeof(identity->bio);
+                memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
+                offset += sizeof(identity->profile_picture_ipfs);
+                memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
+                offset += sizeof(uint64_t);
+                memcpy(msg + offset, &version_net, sizeof(uint32_t));
+
+                // Sign with private key
+                size_t siglen = sizeof(identity->signature);
+                if (qgp_dsa87_sign(identity->signature, &siglen, msg, msg_len, sign_key->private_key) == 0) {
+                    printf("[DNA] ✓ Identity profile signed with Dilithium5\n");
+                } else {
+                    fprintf(stderr, "[DNA] Warning: Failed to sign identity profile\n");
+                }
+
+                free(msg);
+            }
 
             char *json = dna_identity_to_json(identity);
             if (json) {

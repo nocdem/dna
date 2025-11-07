@@ -1335,7 +1335,7 @@ int dna_load_identity(
         return -1;
     }
 
-    // Build message (same order as signing)
+    // Build message (same order as signing in messenger.c)
     size_t offset = 0;
     memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
     offset += sizeof(identity->fingerprint);
@@ -1343,11 +1343,53 @@ int dna_load_identity(
     offset += sizeof(identity->dilithium_pubkey);
     memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
     offset += sizeof(identity->kyber_pubkey);
+    memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
+    offset += sizeof(bool);
+    memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
+    offset += sizeof(identity->registered_name);
 
-    // Note: Signature verification simplified for Phase 2 MVP
-    // Full verification would need proper message serialization
+    // Network byte order for integers (same as signing)
+    uint64_t registered_at_net = htonll(identity->name_registered_at);
+    uint64_t expires_at_net = htonll(identity->name_expires_at);
+    uint32_t name_version_net = htonl(identity->name_version);
+    uint64_t timestamp_net = htonll(identity->timestamp);
+    uint32_t version_net = htonl(identity->version);
+
+    memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+    offset += sizeof(identity->registration_tx_hash);
+    memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+    offset += sizeof(identity->registration_network);
+    memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
+    memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
+    offset += sizeof(identity->wallets);
+    memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
+    offset += sizeof(identity->socials);
+    memcpy(msg + offset, identity->bio, sizeof(identity->bio));
+    offset += sizeof(identity->bio);
+    memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
+    offset += sizeof(identity->profile_picture_ipfs);
+    memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, &version_net, sizeof(uint32_t));
+
+    // Verify Dilithium5 signature
+    int sig_result = qgp_dsa87_verify(identity->signature, sizeof(identity->signature),
+                                       msg, msg_len, identity->dilithium_pubkey);
 
     free(msg);
+
+    if (sig_result != 0) {
+        fprintf(stderr, "[DNA] Signature verification failed\n");
+        dna_identity_free(identity);
+        return -3;  // Verification failed
+    }
+
+    printf("[DNA] ✓ Signature verified successfully\n");
 
     // Verify fingerprint matches
     char computed_fingerprint[129];
