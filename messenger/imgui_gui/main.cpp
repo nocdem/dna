@@ -1308,8 +1308,11 @@ private:
                 sizeof(message_input), ImVec2(input_width, 60), ImGuiInputTextFlags_None);
             ImGui::SameLine();
             
-            // Send button with bigger paper plane icon
-            if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(60, 60))) {
+            // Send icon - plain icon following theme (no button background)
+            ImVec4 icon_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+            ImGui::PushStyleColor(ImGuiCol_Text, icon_color);
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 15.0f); // Center vertically
+            if (ImGui::Selectable(ICON_FA_PAPER_PLANE, false, 0, ImVec2(60, 30))) {
                 if (strlen(message_input) > 0) {
                     Message msg;
                     msg.content = message_input;
@@ -1319,6 +1322,7 @@ private:
                     message_input[0] = '\0';
                 }
             }
+            ImGui::PopStyleColor();
         }
         
         ImGui::PopStyleColor(); // FrameBg
