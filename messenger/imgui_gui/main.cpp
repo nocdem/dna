@@ -1315,9 +1315,35 @@ private:
             ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0,0,0,0));  // Transparent on active
             ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0,0,0,0));        // Transparent background
             
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f); // Align with input
-            ImGui::PushFont(io.Fonts->Fonts[1]); // Use larger icon font
-            if (ImGui::Selectable(ICON_FA_PAPER_PLANE, false, 0, ImVec2(60, 44))) {
+            // Draw large paper plane icon
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
+            ImVec2 icon_pos = ImGui::GetCursorScreenPos();
+            ImVec2 icon_size(60, 44);
+            bool icon_clicked = ImGui::InvisibleButton("##send_icon", icon_size);
+            
+            // Draw the icon manually at larger size
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            ImGuiStyle& btn_style = ImGui::GetStyle();
+            ImVec4 text_col_v4 = btn_style.Colors[ImGuiCol_Text];
+            ImU32 text_col = ImGui::ColorConvertFloat4ToU32(text_col_v4);
+            
+            // Calculate centered position for icon
+            const char* icon_text = ICON_FA_PAPER_PLANE;
+            ImVec2 text_size = ImGui::CalcTextSize(icon_text);
+            ImVec2 text_pos = ImVec2(
+                icon_pos.x + (icon_size.x - text_size.x * 2.0f) * 0.5f,
+                icon_pos.y + (icon_size.y - text_size.y * 2.0f) * 0.5f
+            );
+            
+            // Draw icon at 2x scale
+            ImFont* font = ImGui::GetFont();
+            float font_size = ImGui::GetFontSize();
+            draw_list->AddText(font, font_size * 2.0f, text_pos, text_col, icon_text);
+            
+            ImGui::PopStyleVar();
+            
+            if (icon_clicked) {
                 if (strlen(message_input) > 0) {
                     Message msg;
                     msg.content = message_input;
@@ -1327,8 +1353,7 @@ private:
                     message_input[0] = '\0';
                 }
             }
-            ImGui::PopFont();
-            ImGui::PopStyleColor(4);
+            ImGui::PopStyleColor(2);
         }
         
         ImGui::PopStyleColor(); // FrameBg
