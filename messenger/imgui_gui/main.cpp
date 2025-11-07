@@ -339,17 +339,23 @@ private:
             ImGui::Spacing();
             ImGui::Spacing();
 
-        // Title
+        // Title (centered)
         ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
-        ImGui::Text("Welcome to DNA Messenger");
+        const char* title_text = "Welcome to DNA Messenger";
+        float title_width = ImGui::CalcTextSize(title_text).x * (is_mobile ? 1.5f : 1.3f);
+        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - title_width) * 0.5f);
+        ImGui::Text("%s", title_text);
         ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Info text
-        ImGui::TextWrapped("Select an existing identity or create a new one:");
+        // Info text (centered)
+        const char* info_text = "Select an existing identity or create a new one:";
+        float info_width = ImGui::CalcTextSize(info_text).x;
+        ImGui::SetCursorPosX((ImGui::GetWindowWidth() - info_width) * 0.5f);
+        ImGui::Text("%s", info_text);
         ImGui::Spacing();
 
         // Load identities on first render
