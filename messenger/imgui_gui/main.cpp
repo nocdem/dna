@@ -1308,18 +1308,20 @@ private:
             // Desktop: side-by-side
             float input_width = ImGui::GetContentRegionAvail().x - 70; // Reserve 70px for button
             
-            // Draw placeholder if input is empty
-            if (strlen(message_input) == 0) {
-                ImVec4 placeholder_color = ImVec4(0.8f, 0.8f, 0.8f, 0.5f); // Light gray
-                ImVec2 cursor_pos = ImGui::GetCursorPos();
-                ImGui::SetCursorPos(ImVec2(cursor_pos.x + 10.0f, cursor_pos.y + 22.0f));
-                ImGui::TextColored(placeholder_color, "Write a message");
-                ImGui::SetCursorPos(cursor_pos);
-            }
+            ImVec2 input_pos = ImGui::GetCursorScreenPos();
             
             ImGui::SetNextItemWidth(input_width);
             ImGui::InputTextMultiline("##MessageInput", message_input, 
                 sizeof(message_input), ImVec2(input_width, 60), ImGuiInputTextFlags_None);
+            
+            // Draw placeholder OVER the input if empty
+            if (strlen(message_input) == 0) {
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                ImVec4 placeholder_color = ImVec4(0.6f, 0.6f, 0.6f, 1.0f); // Lighter gray
+                ImVec2 text_pos = ImVec2(input_pos.x + 10.0f, input_pos.y + 20.0f);
+                draw_list->AddText(text_pos, ImGui::ColorConvertFloat4ToU32(placeholder_color), "Write a message");
+            }
+            
             ImGui::SameLine();
             
             // Send button - round button with paper plane icon
