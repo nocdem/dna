@@ -1215,14 +1215,39 @@ private:
             ImGui::TextWrapped("%s", msg.content.c_str());
             ImGui::PopTextWrapPos();
             
+            // Get bubble position for arrow
+            ImVec2 bubble_pos = ImGui::GetItemRectMin();
+            ImVec2 bubble_max = ImGui::GetItemRectMax();
+            
             ImGui::EndChild();
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(2);
             
-            // Sender name and timestamp BELOW the bubble (theme-aware)
+            // Draw triangle arrow pointing UP from username to bubble
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            ImVec4 arrow_color;
+            if (msg.is_outgoing) {
+                arrow_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.25f);
+            } else {
+                arrow_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.12f);
+            }
+            ImU32 arrow_col = ImGui::ColorConvertFloat4ToU32(arrow_color);
+            
+            // Triangle points: pointing UP to bubble from below
+            float arrow_x = bubble_pos.x + 20.0f; // 20px from left edge
+            float arrow_y = bubble_max.y + 8.0f; // Below the bubble
+            
+            ImVec2 p1(arrow_x, bubble_max.y);           // Top point (touching bubble bottom)
+            ImVec2 p2(arrow_x - 8.0f, arrow_y);         // Bottom left
+            ImVec2 p3(arrow_x + 8.0f, arrow_y);         // Bottom right
+            
+            draw_list->AddTriangleFilled(p1, p2, p3, arrow_col);
+            
+            // Sender name and timestamp BELOW the arrow (theme-aware)
             ImVec4 meta_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
             meta_color.w = 0.7f; // Slightly transparent
             
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f); // Space for arrow
             ImGui::PushStyleColor(ImGuiCol_Text, meta_color);
             const char* sender_label = msg.is_outgoing ? "You" : msg.sender.c_str();
             ImGui::Text("%s • %s", sender_label, msg.timestamp.c_str());
