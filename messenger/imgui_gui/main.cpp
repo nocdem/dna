@@ -1178,11 +1178,20 @@ private:
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
             }
             
-            // Draw bubble background with proper padding
-            ImVec4 bg_color = msg.is_outgoing ? 
-                ImVec4(0.0f, 0.6f, 0.6f, 0.3f) : ImVec4(0.25f, 0.25f, 0.25f, 0.5f);
+            // Draw bubble background with proper padding (theme-aware)
+            ImVec4 base_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+            
+            // Recipient bubble: lighter than own (95% opacity)
+            // Own bubble: full color
+            ImVec4 bg_color;
+            if (msg.is_outgoing) {
+                bg_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.25f);
+            } else {
+                bg_color = ImVec4(base_color.x * 0.95f, base_color.y * 0.95f, base_color.z * 0.95f, 0.20f);
+            }
             
             ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
             ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15.0f, 10.0f));
             
@@ -1195,7 +1204,7 @@ private:
             ImVec2 timestamp_size = ImGui::CalcTextSize(msg.timestamp.c_str());
             float bubble_height = text_size.y + (timestamp_size.y * 0.85f) + 25.0f;
             
-            ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), true, 
+            ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false, 
                 ImGuiWindowFlags_NoScrollbar);
             
             // Message text with wrapping
@@ -1212,7 +1221,7 @@ private:
             
             ImGui::EndChild();
             ImGui::PopStyleVar(2);
-            ImGui::PopStyleColor();
+            ImGui::PopStyleColor(2);
             
             ImGui::Spacing();
         }
