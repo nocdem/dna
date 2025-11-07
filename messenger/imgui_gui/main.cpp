@@ -1171,7 +1171,7 @@ private:
             
             // Calculate bubble width based on current window size
             float available_width = ImGui::GetContentRegionAvail().x;
-            float bubble_width = available_width * 0.65f;  // 65% of available width
+            float bubble_width = available_width * 0.85f;  // 85% of available width
             
             // All bubbles aligned left (Telegram-style)
             
