@@ -316,7 +316,7 @@ private:
     std::map<int, std::vector<Message>> contact_messages;  // Per-contact message history
     std::vector<std::string> identities;
     std::string current_identity;
-    char message_input[1024] = "";
+    char message_input[16384] = ""; // 16KB for long messages
     char new_identity_name[128];
     
     void renderIdentitySelection() {
