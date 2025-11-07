@@ -1223,6 +1223,14 @@ private:
                 ImVec2(content_width, text_size.y),
                 ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_NoHorizontalScroll);
             
+            // Right-click context menu on the text input itself
+            if (ImGui::BeginPopupContextItem()) {
+                if (ImGui::MenuItem("Copy")) {
+                    ImGui::SetClipboardText(msg.content.c_str());
+                }
+                ImGui::EndPopup();
+            }
+            
             ImGui::PopStyleVar();
             ImGui::PopStyleColor(2);
             
