@@ -1277,8 +1277,9 @@ private:
         ImGui::Separator();
         
         // Theme-aware input background (darker than chat bubbles)
-        ImVec4 input_bg = (g_current_theme == 0) ? DNATheme::Background() : ClubTheme::Background();
-        input_bg.x += 0.05f; input_bg.y += 0.05f; input_bg.z += 0.05f; // Slightly lighter
+        // Use recipient bubble color for input
+        ImVec4 input_bg = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+        input_bg.x *= 0.15f; input_bg.y *= 0.15f; input_bg.z *= 0.15f;
         ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
         
         if (is_mobile) {
