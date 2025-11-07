@@ -1297,7 +1297,9 @@ private:
                 }
             }
         } else {
-            // Desktop: side-by-side
+            // Desktop: side-by-side (full width)
+            float input_width = ImGui::GetContentRegionAvail().x - 80; // Reserve 80px for button
+            ImGui::SetNextItemWidth(input_width);
             ImGui::InputTextWithHint("##MessageInput", "Write a message", message_input, 
                 sizeof(message_input), ImGuiInputTextFlags_None);
             ImGui::SameLine();
