@@ -1059,7 +1059,10 @@ private:
             char display_text[256];
             snprintf(display_text, sizeof(display_text), "%s   %s", icon, contacts[i].name.c_str());
             
-            ImVec2 text_pos = ImVec2(cursor_screen_pos.x + 8, cursor_screen_pos.y + 7);
+            // Center text vertically
+            ImVec2 text_size = ImGui::CalcTextSize(display_text);
+            float text_offset_y = (item_height - text_size.y) * 0.5f;
+            ImVec2 text_pos = ImVec2(cursor_screen_pos.x + 8, cursor_screen_pos.y + text_offset_y);
             ImU32 text_color;
             if (selected || hovered) {
                 // Use theme background color when selected or hovered
