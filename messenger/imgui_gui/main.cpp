@@ -1223,18 +1223,20 @@ private:
                 ImVec2(content_width, text_size.y),
                 ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_NoHorizontalScroll);
             
-            // Right-click context menu on the text input itself
-            if (ImGui::BeginPopupContextItem()) {
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor(2);
+            
+            ImGui::EndChild();
+            
+            // Right-click context menu on bubble
+            char popup_id[64];
+            snprintf(popup_id, sizeof(popup_id), "bubble_context%zu", i);
+            if (ImGui::BeginPopupContextItem(popup_id)) {
                 if (ImGui::MenuItem("Copy")) {
                     ImGui::SetClipboardText(msg.content.c_str());
                 }
                 ImGui::EndPopup();
             }
-            
-            ImGui::PopStyleVar();
-            ImGui::PopStyleColor(2);
-            
-            ImGui::EndChild();
             
             // Get bubble position for arrow (AFTER EndChild)
             ImVec2 bubble_min = ImGui::GetItemRectMin();
