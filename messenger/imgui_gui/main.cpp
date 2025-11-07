@@ -1202,7 +1202,7 @@ private:
             
             ImVec2 text_size = ImGui::CalcTextSize(msg.content.c_str(), NULL, false, content_width);
             
-            float bubble_height = text_size.y + (padding_vertical * 2);
+            float bubble_height = text_size.y + (padding_vertical * 2) + 10.0f; // Extra space for input field
             
             ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false, 
                 ImGuiWindowFlags_NoScrollbar);
@@ -1210,10 +1210,21 @@ private:
             // Apply padding
             ImGui::SetCursorPos(ImVec2(padding_horizontal, padding_vertical));
             
-            // Message text with wrapping
-            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
-            ImGui::TextWrapped("%s", msg.content.c_str());
-            ImGui::PopTextWrapPos();
+            // Selectable text using InputTextMultiline (read-only)
+            char* msg_buffer = (char*)msg.content.c_str();
+            char input_id[64];
+            snprintf(input_id, sizeof(input_id), "##msg%zu", i);
+            
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0)); // Transparent background
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0)); // No extra padding
+            
+            ImGui::InputTextMultiline(input_id, msg_buffer, msg.content.size() + 1, 
+                ImVec2(content_width, text_size.y),
+                ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_NoHorizontalScroll);
+            
+            ImGui::PopStyleVar();
+            ImGui::PopStyleColor(2);
             
             ImGui::EndChild();
             
