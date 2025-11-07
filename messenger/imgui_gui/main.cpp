@@ -71,9 +71,9 @@ void ApplyTheme(int theme) {
         style.Colors[ImGuiCol_Button] = DNATheme::Text();
         style.Colors[ImGuiCol_ButtonHovered] = DNATheme::ButtonHover();
         style.Colors[ImGuiCol_ButtonActive] = DNATheme::ButtonActive();
-        style.Colors[ImGuiCol_Header] = DNATheme::Text();
-        style.Colors[ImGuiCol_HeaderHovered] = DNATheme::ButtonHover();
-        style.Colors[ImGuiCol_HeaderActive] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_Header] = ImVec4(0.0f, 1.0f, 0.8f, 0.2f); // 20% opacity
+        style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.0f, 1.0f, 0.8f, 0.4f); // 40% opacity - visible but not too bright
+        style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.0f, 1.0f, 0.8f, 0.5f); // 50% opacity
         style.Colors[ImGuiCol_Separator] = DNATheme::Separator();
         style.Colors[ImGuiCol_SeparatorHovered] = DNATheme::Text();
         style.Colors[ImGuiCol_SeparatorActive] = DNATheme::ButtonActive();
@@ -127,9 +127,9 @@ void ApplyTheme(int theme) {
         style.Colors[ImGuiCol_Button] = ClubTheme::Text();
         style.Colors[ImGuiCol_ButtonHovered] = ClubTheme::ButtonHover();
         style.Colors[ImGuiCol_ButtonActive] = ClubTheme::ButtonActive();
-        style.Colors[ImGuiCol_Header] = ClubTheme::Text();
-        style.Colors[ImGuiCol_HeaderHovered] = ClubTheme::ButtonHover();
-        style.Colors[ImGuiCol_HeaderActive] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_Header] = ImVec4(0.976f, 0.471f, 0.204f, 0.2f); // 20% opacity
+        style.Colors[ImGuiCol_HeaderHovered] = ImVec4(0.976f, 0.471f, 0.204f, 0.4f); // 40% opacity - visible but not too bright
+        style.Colors[ImGuiCol_HeaderActive] = ImVec4(0.976f, 0.471f, 0.204f, 0.5f); // 50% opacity
         style.Colors[ImGuiCol_Separator] = ClubTheme::Separator();
         style.Colors[ImGuiCol_SeparatorHovered] = ClubTheme::Text();
         style.Colors[ImGuiCol_SeparatorActive] = ClubTheme::ButtonActive();
@@ -1174,7 +1174,7 @@ private:
 
             // Calculate bubble width based on current window size
             float available_width = ImGui::GetContentRegionAvail().x;
-            float bubble_width = available_width * 0.85f;  // 85% of available width
+            float bubble_width = available_width;  // 100% of available width (padding inside bubble prevents overflow)
 
             // All bubbles aligned left (Telegram-style)
 
@@ -1193,7 +1193,6 @@ private:
             ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
             ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f); // Square corners
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(30.0f, 30.0f));
 
             char bubble_id[32];
             snprintf(bubble_id, sizeof(bubble_id), "bubble%zu", i);
@@ -1210,13 +1209,18 @@ private:
             ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false,
                 ImGuiWindowFlags_NoScrollbar);
 
-            // Right-click context menu INSIDE the BeginChild
+            // Right-click context menu - set compact style BEFORE opening
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.0f, 0.0f)); // No vertical padding
+            ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 0.0f)); // No vertical spacing
+            
             if (ImGui::BeginPopupContextWindow()) {
                 if (ImGui::MenuItem(ICON_FA_COPY " Copy")) {
                     ImGui::SetClipboardText(msg.content.c_str());
                 }
                 ImGui::EndPopup();
             }
+            
+            ImGui::PopStyleVar(2);
 
             // Apply padding
             ImGui::SetCursorPos(ImVec2(padding_horizontal, padding_vertical));
@@ -1232,8 +1236,8 @@ private:
             ImVec2 bubble_min = ImGui::GetItemRectMin();
             ImVec2 bubble_max = ImGui::GetItemRectMax();
 
-            ImGui::PopStyleVar(2);
-            ImGui::PopStyleColor(2);
+            ImGui::PopStyleVar(1); // ChildRounding
+            ImGui::PopStyleColor(2); // ChildBg, Border
 
             // Draw triangle arrow pointing DOWN from bubble to username
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
