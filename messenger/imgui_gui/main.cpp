@@ -1193,16 +1193,16 @@ private:
             ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
             ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f); // Square corners
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15.0f, 10.0f));
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(30.0f, 30.0f));
             
             char bubble_id[32];
             snprintf(bubble_id, sizeof(bubble_id), "bubble%zu", i);
             
             // Calculate height: text + timestamp + padding
-            float content_width = bubble_width - 30.0f;  // Account for padding
+            float content_width = bubble_width - 70.0f;  // Account for padding (30px * 2 + margin)
             ImVec2 text_size = ImGui::CalcTextSize(msg.content.c_str(), NULL, false, content_width);
             ImVec2 timestamp_size = ImGui::CalcTextSize(msg.timestamp.c_str());
-            float bubble_height = text_size.y + (timestamp_size.y * 0.85f) + 25.0f;
+            float bubble_height = text_size.y + (timestamp_size.y * 0.85f) + 65.0f;
             
             ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false, 
                 ImGuiWindowFlags_NoScrollbar);
