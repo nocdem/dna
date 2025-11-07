@@ -1132,18 +1132,30 @@ private:
                 selected_contact = -1;
             }
             ImGui::SameLine();
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
         }
         
-        ImGui::SetWindowFontScale(is_mobile ? 1.3f : 1.0f);
-        ImGui::Text("%s", contact.name.c_str());
-        ImGui::SetWindowFontScale(1.0f);
+        // Style contact name same as in contact list
+        const char* status_icon = contact.is_online ? ICON_FA_CHECK : ICON_FA_TIMES;
+        ImVec4 icon_color;
+        if (contact.is_online) {
+            icon_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+        } else {
+            icon_color = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
+        }
         
+        // Center text vertically in header
+        float text_size_y = ImGui::CalcTextSize(contact.name.c_str()).y;
+        float text_offset_y = (header_height - text_size_y) * 0.5f;
+        ImGui::SetCursorPosY(text_offset_y);
+        
+        ImGui::TextColored(icon_color, "%s", status_icon);
         ImGui::SameLine();
-        ImGui::TextColored(
-            contact.is_online ? ImVec4(0.0f, 1.0f, 0.0f, 1.0f) : ImVec4(0.5f, 0.5f, 0.5f, 1.0f),
-            contact.is_online ? "● Online" : "● Offline"
-        );
+        
+        ImVec4 text_col = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+        if (!contact.is_online) {
+            text_col = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
+        }
+        ImGui::TextColored(text_col, "%s", contact.name.c_str());
         
         ImGui::EndChild();
         
