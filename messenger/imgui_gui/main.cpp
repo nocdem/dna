@@ -1000,6 +1000,10 @@ private:
     }
     
     void renderSidebar() {
+        // Push border color before creating child
+        ImVec4 border_col = (g_current_theme == 0) ? DNATheme::Separator() : ClubTheme::Separator();
+        ImGui::PushStyleColor(ImGuiCol_Border, border_col);
+        
         ImGui::BeginChild("Sidebar", ImVec2(250, 0), true, ImGuiWindowFlags_NoScrollbar);
         
         ImGui::Text("DNA Messenger");
@@ -1096,6 +1100,8 @@ private:
         }
         
         ImGui::EndChild(); // Sidebar
+        
+        ImGui::PopStyleColor(); // Border
     }
     
     void renderChatView() {
@@ -1476,11 +1482,11 @@ int main(int argc, char** argv) {
     style.TabRounding = 4.0f;
     style.ScrollbarRounding = 4.0f;
     
-    // Remove all borders (test)
-    style.WindowBorderSize = 0.0f;
-    style.FrameBorderSize = 0.0f;
-    style.PopupBorderSize = 0.0f;
-    style.ChildBorderSize = 0.0f;
+    // Keep borders for now
+    style.WindowBorderSize = 1.0f;
+    style.FrameBorderSize = 1.0f;
+    style.PopupBorderSize = 1.0f;
+    style.ChildBorderSize = 1.0f;
     
     // Apply initial theme (DNA theme by default)
     ApplyTheme(g_current_theme);
