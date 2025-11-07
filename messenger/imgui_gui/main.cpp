@@ -1207,36 +1207,23 @@ private:
             ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false, 
                 ImGuiWindowFlags_NoScrollbar);
             
-            // Apply padding
-            ImGui::SetCursorPos(ImVec2(padding_horizontal, padding_vertical));
-            
-            // Selectable text using InputTextMultiline (read-only)
-            char* msg_buffer = (char*)msg.content.c_str();
-            char input_id[64];
-            snprintf(input_id, sizeof(input_id), "##msg%zu", i);
-            
-            ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0)); // Transparent background
-            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0)); // No extra padding
-            
-            ImGui::InputTextMultiline(input_id, msg_buffer, msg.content.size() + 1, 
-                ImVec2(content_width, text_size.y),
-                ImGuiInputTextFlags_ReadOnly | ImGuiInputTextFlags_NoHorizontalScroll);
-            
-            ImGui::PopStyleVar();
-            ImGui::PopStyleColor(2);
-            
-            ImGui::EndChild();
-            
-            // Right-click context menu on the bubble (use BeginPopupContextItem on the child)
-            char popup_id[64];
-            snprintf(popup_id, sizeof(popup_id), "bubble_menu%zu", i);
-            if (ImGui::BeginPopupContextItem(popup_id)) {
+            // Right-click context menu INSIDE the BeginChild
+            if (ImGui::BeginPopupContextWindow()) {
                 if (ImGui::MenuItem(ICON_FA_COPY " Copy")) {
                     ImGui::SetClipboardText(msg.content.c_str());
                 }
                 ImGui::EndPopup();
             }
+            
+            // Apply padding
+            ImGui::SetCursorPos(ImVec2(padding_horizontal, padding_vertical));
+            
+            // Use TextWrapped for better text rendering
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
+            ImGui::TextWrapped("%s", msg.content.c_str());
+            ImGui::PopTextWrapPos();
+            
+            ImGui::EndChild();
             
             // Get bubble position for arrow (AFTER EndChild)
             ImVec2 bubble_min = ImGui::GetItemRectMin();
