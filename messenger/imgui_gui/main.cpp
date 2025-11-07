@@ -1202,7 +1202,7 @@ private:
             
             ImVec2 text_size = ImGui::CalcTextSize(msg.content.c_str(), NULL, false, content_width);
             
-            float bubble_height = text_size.y + (padding_vertical * 2) + 10.0f; // Extra space for input field
+            float bubble_height = text_size.y + (padding_vertical * 2);
             
             ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false, 
                 ImGuiWindowFlags_NoScrollbar);
