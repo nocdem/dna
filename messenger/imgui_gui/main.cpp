@@ -1353,7 +1353,7 @@ private:
                     message_input[0] = '\0';
                 }
             }
-            ImGui::PopStyleColor(2);
+            ImGui::PopStyleColor(4); // Pop all 4 colors (Text, HeaderHovered, HeaderActive, Header)
         }
         
         ImGui::PopStyleColor(); // FrameBg
