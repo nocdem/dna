@@ -1487,17 +1487,19 @@ int main(int argc, char** argv) {
     
     ImFontConfig config;
     config.MergeMode = false;
+    config.FontDataOwnedByAtlas = false; // Don't let ImGui free our static embedded data
     
     // Default font (1.1x scale = 19.8px for base 18px)
     float base_size = 18.0f * 1.1f;
-    io.Fonts->AddFontFromMemoryTTF(NotoSans_Regular_ttf, sizeof(NotoSans_Regular_ttf), base_size, &config);
+    io.Fonts->AddFontFromMemoryTTF((void*)NotoSans_Regular_ttf, sizeof(NotoSans_Regular_ttf), base_size, &config);
     
     // Merge Font Awesome icons
     config.MergeMode = true;
     config.GlyphMinAdvanceX = base_size;
     config.GlyphOffset = ImVec2(0, 2);
+    config.FontDataOwnedByAtlas = false;
     static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
-    io.Fonts->AddFontFromMemoryTTF(fa_solid_900_ttf, sizeof(fa_solid_900_ttf), base_size * 0.9f, &config, icon_ranges);
+    io.Fonts->AddFontFromMemoryTTF((void*)fa_solid_900_ttf, sizeof(fa_solid_900_ttf), base_size * 0.9f, &config, icon_ranges);
 
     ImGui::StyleColorsDark();
     
