@@ -1273,20 +1273,25 @@ private:
         
         ImGui::EndChild();
         
-        // Message input area - Telegram style (one line, no background)
+        // Message input area - Multiline with recipient bubble color
         ImGui::Spacing();
         ImGui::Spacing();
         
-        // Transparent background, grey placeholder text
-        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0, 0, 0, 0)); // Transparent
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
+        // Recipient bubble background color
+        ImVec4 recipient_bg = g_current_theme == 0 
+            ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)  // DNA: slightly lighter than bg
+            : ImVec4(0.15f, 0.14f, 0.13f, 1.0f); // Club: slightly lighter
+        
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, recipient_bg);
         
         if (is_mobile) {
             // Mobile: stacked layout
-            ImGui::InputTextWithHint("##MessageInput", "Write a message", message_input, 
-                sizeof(message_input), ImGuiInputTextFlags_None);
+            ImGui::InputTextMultiline("##MessageInput", message_input, 
+                sizeof(message_input), ImVec2(-1, 60), ImGuiInputTextFlags_None);
             
-            if (ButtonDark("Send", ImVec2(-1, 35))) {
+            // Send button with paper plane icon
+            ImGui::PushFont(io.Fonts->Fonts[2]); // FontAwesome
+            if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40))) {
                 if (strlen(message_input) > 0) {
                     Message msg;
                     msg.content = message_input;
@@ -1296,15 +1301,18 @@ private:
                     message_input[0] = '\0';
                 }
             }
+            ImGui::PopFont();
         } else {
-            // Desktop: side-by-side (full width)
-            float input_width = ImGui::GetContentRegionAvail().x - 80; // Reserve 80px for button
+            // Desktop: side-by-side
+            float input_width = ImGui::GetContentRegionAvail().x - 70; // Reserve 70px for button
             ImGui::SetNextItemWidth(input_width);
-            ImGui::InputTextWithHint("##MessageInput", "Write a message", message_input, 
-                sizeof(message_input), ImGuiInputTextFlags_None);
+            ImGui::InputTextMultiline("##MessageInput", message_input, 
+                sizeof(message_input), ImVec2(input_width, 60), ImGuiInputTextFlags_None);
             ImGui::SameLine();
             
-            if (ButtonDark("Send", ImVec2(70, 30))) {
+            // Send button with bigger paper plane icon
+            ImGui::PushFont(io.Fonts->Fonts[2]); // FontAwesome
+            if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(60, 60))) {
                 if (strlen(message_input) > 0) {
                     Message msg;
                     msg.content = message_input;
@@ -1314,9 +1322,10 @@ private:
                     message_input[0] = '\0';
                 }
             }
+            ImGui::PopFont();
         }
         
-        ImGui::PopStyleColor(2); // FrameBg and Border
+        ImGui::PopStyleColor(); // FrameBg
     }
     
     void renderWalletView() {
