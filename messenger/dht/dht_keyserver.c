@@ -1117,9 +1117,84 @@ int dna_update_profile(
     identity->timestamp = time(NULL);
     identity->version++;
 
-    // TODO: Sign identity with dilithium_privkey
-    // For Phase 2 MVP, we skip full signature implementation
-    printf("[DNA] TODO: Sign identity with Dilithium5 (Phase 2 MVP skips this)\n");
+    // Sign the updated identity profile with Dilithium5
+    size_t msg_len = sizeof(identity->fingerprint) +
+                   sizeof(identity->dilithium_pubkey) +
+                   sizeof(identity->kyber_pubkey) +
+                   sizeof(bool) +
+                   sizeof(identity->registered_name) +
+                   sizeof(uint64_t) * 2 +
+                   sizeof(identity->registration_tx_hash) +
+                   sizeof(identity->registration_network) +
+                   sizeof(uint32_t) +
+                   sizeof(identity->wallets) +
+                   sizeof(identity->socials) +
+                   sizeof(identity->bio) +
+                   sizeof(identity->profile_picture_ipfs) +
+                   sizeof(uint64_t) +
+                   sizeof(uint32_t);
+
+    uint8_t *msg = malloc(msg_len);
+    if (!msg) {
+        fprintf(stderr, "[DNA] Failed to allocate message buffer for signing\n");
+        dna_identity_free(identity);
+        return -1;
+    }
+
+    size_t offset = 0;
+    memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
+    offset += sizeof(identity->fingerprint);
+    memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
+    offset += sizeof(identity->dilithium_pubkey);
+    memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
+    offset += sizeof(identity->kyber_pubkey);
+    memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
+    offset += sizeof(bool);
+    memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
+    offset += sizeof(identity->registered_name);
+
+    // Network byte order for integers
+    uint64_t registered_at_net = htonll(identity->name_registered_at);
+    uint64_t expires_at_net = htonll(identity->name_expires_at);
+    uint32_t name_version_net = htonl(identity->name_version);
+    uint64_t timestamp_net = htonll(identity->timestamp);
+    uint32_t version_net = htonl(identity->version);
+
+    memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+    offset += sizeof(identity->registration_tx_hash);
+    memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+    offset += sizeof(identity->registration_network);
+    memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
+    memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
+    offset += sizeof(identity->wallets);
+    memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
+    offset += sizeof(identity->socials);
+    memcpy(msg + offset, identity->bio, sizeof(identity->bio));
+    offset += sizeof(identity->bio);
+    memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
+    offset += sizeof(identity->profile_picture_ipfs);
+    memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, &version_net, sizeof(uint32_t));
+
+    // Sign with private key
+    size_t siglen = sizeof(identity->signature);
+    ret = qgp_dsa87_sign(identity->signature, &siglen, msg, msg_len, dilithium_privkey);
+
+    free(msg);
+
+    if (ret != 0) {
+        fprintf(stderr, "[DNA] Failed to sign identity profile\n");
+        dna_identity_free(identity);
+        return -1;
+    }
+
+    printf("[DNA] ✓ Identity profile signed with Dilithium5\n");
 
     // Serialize to JSON
     char *json = dna_identity_to_json(identity);
