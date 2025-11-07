@@ -1308,11 +1308,16 @@ private:
                 sizeof(message_input), ImVec2(input_width, 60), ImGuiInputTextFlags_None);
             ImGui::SameLine();
             
-            // Send icon - plain icon following theme (no button background)
+            // Send icon - plain icon following theme (larger, no background)
             ImVec4 icon_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
             ImGui::PushStyleColor(ImGuiCol_Text, icon_color);
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 15.0f); // Center vertically
-            if (ImGui::Selectable(ICON_FA_PAPER_PLANE, false, 0, ImVec2(60, 30))) {
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImVec4(0,0,0,0)); // Transparent on hover
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImVec4(0,0,0,0));  // Transparent on active
+            ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0,0,0,0));        // Transparent background
+            
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f); // Align with input
+            ImGui::PushFont(io.Fonts->Fonts[1]); // Use larger icon font
+            if (ImGui::Selectable(ICON_FA_PAPER_PLANE, false, 0, ImVec2(60, 44))) {
                 if (strlen(message_input) > 0) {
                     Message msg;
                     msg.content = message_input;
@@ -1322,7 +1327,8 @@ private:
                     message_input[0] = '\0';
                 }
             }
-            ImGui::PopStyleColor();
+            ImGui::PopFont();
+            ImGui::PopStyleColor(4);
         }
         
         ImGui::PopStyleColor(); // FrameBg
