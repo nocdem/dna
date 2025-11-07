@@ -239,6 +239,8 @@ public:
     DNAMessengerApp() {
         current_view = VIEW_CONTACTS;
         selected_contact = -1;
+        prev_selected_contact = -1;
+        should_focus_input = false;
         show_wallet = false;
         show_identity_selection = true;
         identity_loaded = false;
@@ -303,6 +305,8 @@ private:
 
     View current_view;
     int selected_contact;
+    int prev_selected_contact; // Track contact changes for autofocus
+    bool should_focus_input; // Flag to refocus after sending
     bool show_wallet;
     bool show_identity_selection;
     bool identity_loaded;
@@ -1291,10 +1295,21 @@ private:
 
         ImGui::PushStyleColor(ImGuiCol_FrameBg, recipient_bg);
 
+        // Check if we need to autofocus (contact changed or message sent)
+        bool should_autofocus = (prev_selected_contact != selected_contact) || should_focus_input;
+        if (prev_selected_contact != selected_contact) {
+            prev_selected_contact = selected_contact;
+        }
+        should_focus_input = false; // Reset flag
+
         if (is_mobile) {
             // Mobile: stacked layout
+            if (should_autofocus) {
+                ImGui::SetKeyboardFocusHere();
+            }
             bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", message_input,
-                sizeof(message_input), ImVec2(-1, 60), ImGuiInputTextFlags_EnterReturnsTrue);
+                sizeof(message_input), ImVec2(-1, 60), 
+                ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
 
             // Send button with paper plane icon
             if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
@@ -1305,6 +1320,7 @@ private:
                     msg.timestamp = "Now";
                     messages.push_back(msg);
                     message_input[0] = '\0';
+                    should_focus_input = true; // Set flag to refocus next frame
                 }
             }
         } else {
@@ -1313,9 +1329,13 @@ private:
 
             ImVec2 input_pos = ImGui::GetCursorScreenPos();
 
+            if (should_autofocus) {
+                ImGui::SetKeyboardFocusHere();
+            }
             ImGui::SetNextItemWidth(input_width);
             bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", message_input,
-                sizeof(message_input), ImVec2(input_width, 60), ImGuiInputTextFlags_EnterReturnsTrue);
+                sizeof(message_input), ImVec2(input_width, 60), 
+                ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
 
             ImGui::SameLine();
 
@@ -1349,6 +1369,7 @@ private:
                     msg.timestamp = "Now";
                     messages.push_back(msg);
                     message_input[0] = '\0';
+                    should_focus_input = true; // Set flag to refocus next frame
                 }
             }
         }
