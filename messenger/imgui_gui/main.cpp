@@ -342,7 +342,7 @@ private:
         // Title (centered)
         ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
         const char* title_text = "Welcome to DNA Messenger";
-        float title_width = ImGui::CalcTextSize(title_text).x * (is_mobile ? 1.5f : 1.3f);
+        float title_width = ImGui::CalcTextSize(title_text).x;
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - title_width) * 0.5f);
         ImGui::Text("%s", title_text);
         ImGui::SetWindowFontScale(1.0f);
