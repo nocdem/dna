@@ -1198,21 +1198,30 @@ private:
             char bubble_id[32];
             snprintf(bubble_id, sizeof(bubble_id), "bubble%zu", i);
             
-            // Calculate height: text + timestamp + padding
-            float content_width = bubble_width - 70.0f;  // Account for padding (30px * 2 + margin)
+            // Calculate padding and dimensions
+            float padding_horizontal = 15.0f;
+            float padding_vertical = 12.0f;
+            float content_width = bubble_width - (padding_horizontal * 2);
+            
             ImVec2 text_size = ImGui::CalcTextSize(msg.content.c_str(), NULL, false, content_width);
             ImVec2 timestamp_size = ImGui::CalcTextSize(msg.timestamp.c_str());
-            float bubble_height = text_size.y + (timestamp_size.y * 0.85f) + 65.0f;
+            timestamp_size.y *= 0.85f; // Account for font scale
+            
+            float bubble_height = text_size.y + timestamp_size.y + (padding_vertical * 2) + ImGui::GetStyle().ItemSpacing.y;
             
             ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false, 
                 ImGuiWindowFlags_NoScrollbar);
             
+            // Apply padding
+            ImGui::SetCursorPos(ImVec2(padding_horizontal, padding_vertical));
+            
             // Message text with wrapping
-            ImGui::PushTextWrapPos(ImGui::GetContentRegionAvail().x);
+            ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
             ImGui::TextWrapped("%s", msg.content.c_str());
             ImGui::PopTextWrapPos();
             
-            // Timestamp
+            // Timestamp with padding
+            ImGui::SetCursorPosX(padding_horizontal);
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
             ImGui::SetWindowFontScale(0.85f);
             ImGui::Text("%s", msg.timestamp.c_str());
