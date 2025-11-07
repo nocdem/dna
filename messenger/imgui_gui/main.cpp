@@ -1290,7 +1290,6 @@ private:
                 sizeof(message_input), ImVec2(-1, 60), ImGuiInputTextFlags_None);
             
             // Send button with paper plane icon
-            ImGui::PushFont(io.Fonts->Fonts[2]); // FontAwesome
             if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40))) {
                 if (strlen(message_input) > 0) {
                     Message msg;
@@ -1301,7 +1300,6 @@ private:
                     message_input[0] = '\0';
                 }
             }
-            ImGui::PopFont();
         } else {
             // Desktop: side-by-side
             float input_width = ImGui::GetContentRegionAvail().x - 70; // Reserve 70px for button
@@ -1311,7 +1309,6 @@ private:
             ImGui::SameLine();
             
             // Send button with bigger paper plane icon
-            ImGui::PushFont(io.Fonts->Fonts[2]); // FontAwesome
             if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(60, 60))) {
                 if (strlen(message_input) > 0) {
                     Message msg;
@@ -1322,7 +1319,6 @@ private:
                     message_input[0] = '\0';
                 }
             }
-            ImGui::PopFont();
         }
         
         ImGui::PopStyleColor(); // FrameBg
