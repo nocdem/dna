@@ -1286,6 +1286,10 @@ private:
         
         if (is_mobile) {
             // Mobile: stacked layout
+            if (strlen(message_input) == 0) {
+                ImGui::TextDisabled("Write a message");
+                ImGui::SetCursorPos(ImGui::GetCursorPos());
+            }
             ImGui::InputTextMultiline("##MessageInput", message_input, 
                 sizeof(message_input), ImVec2(-1, 60), ImGuiInputTextFlags_None);
             
@@ -1303,6 +1307,15 @@ private:
         } else {
             // Desktop: side-by-side
             float input_width = ImGui::GetContentRegionAvail().x - 70; // Reserve 70px for button
+            
+            // Draw placeholder if input is empty
+            if (strlen(message_input) == 0) {
+                ImVec2 cursor_pos = ImGui::GetCursorPos();
+                ImGui::SetCursorPos(ImVec2(cursor_pos.x + 10.0f, cursor_pos.y + 22.0f));
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Write a message");
+                ImGui::SetCursorPos(cursor_pos);
+            }
+            
             ImGui::SetNextItemWidth(input_width);
             ImGui::InputTextMultiline("##MessageInput", message_input, 
                 sizeof(message_input), ImVec2(input_width, 60), ImGuiInputTextFlags_None);
