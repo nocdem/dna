@@ -1171,7 +1171,7 @@ private:
             
             // Calculate bubble width based on current window size
             float available_width = ImGui::GetContentRegionAvail().x;
-            float bubble_width = available_width * 0.7f;  // 70% of available width
+            float bubble_width = available_width * 0.55f;  // 55% of available width
             float indent = msg.is_outgoing ? (available_width - bubble_width) : 0.0f;
             
             if (indent > 0) {
@@ -1181,13 +1181,13 @@ private:
             // Draw bubble background with proper padding (theme-aware)
             ImVec4 base_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
             
-            // Recipient bubble: lighter than own (95% opacity)
-            // Own bubble: full color
+            // Recipient bubble: much lighter (0.12 opacity)
+            // Own bubble: normal opacity (0.25)
             ImVec4 bg_color;
             if (msg.is_outgoing) {
                 bg_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.25f);
             } else {
-                bg_color = ImVec4(base_color.x * 0.95f, base_color.y * 0.95f, base_color.z * 0.95f, 0.20f);
+                bg_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.12f);
             }
             
             ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
