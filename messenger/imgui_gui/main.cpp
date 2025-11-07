@@ -1471,6 +1471,12 @@ int main(int argc, char** argv) {
     style.TabRounding = 4.0f;
     style.ScrollbarRounding = 4.0f;
     
+    // Remove all borders (test)
+    style.WindowBorderSize = 0.0f;
+    style.FrameBorderSize = 0.0f;
+    style.PopupBorderSize = 0.0f;
+    style.ChildBorderSize = 0.0f;
+    
     // Apply initial theme (DNA theme by default)
     ApplyTheme(g_current_theme);
 
