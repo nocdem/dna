@@ -1,0 +1,90 @@
+# DNA Messenger - ImGui GUI Sketch CI/CD Pipeline
+# Builds ONLY the ImGui GUI sketch for Linux and Windows
+#
+# Trigger manually or on feature/imgui-gui branch
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "feature/imgui-gui"
+      when: always
+    - if: $CI_PIPELINE_SOURCE == "web"
+      when: always
+    - when: never
+
+stages:
+  - build
+
+variables:
+  GIT_SUBMODULE_STRATEGY: none
+  CMAKE_BUILD_TYPE: Release
+
+# Linux x86_64 ImGui GUI only
+build:imgui-linux-x64:
+  stage: build
+  tags:
+    - linux
+  image: ubuntu:22.04
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq cmake gcc g++ make git xxd
+    - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libglew-dev
+  script:
+    - cd imgui_gui
+    - mkdir -p build
+    - cd build
+    - cmake .. -DCMAKE_BUILD_TYPE=Release
+    - make -j$(nproc)
+    - ls -lh
+  artifacts:
+    name: "dna-messenger-imgui-linux-x64-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - imgui_gui/build/dna_messenger_imgui
+    expire_in: 1 week
+
+# Windows x86_64 ImGui GUI only (using MXE)
+build:imgui-windows-x64:
+  stage: build
+  tags:
+    - linux
+  image: ubuntu:20.04
+  timeout: 20m
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq software-properties-common lsb-release gnupg cmake make xxd
+
+    # Add MXE APT repository
+    - apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 86B72ED9
+    - add-apt-repository "deb [arch=amd64] https://pkg.mxe.cc/repos/apt $(lsb_release -sc) main"
+    - apt-get update -qq
+
+    # Install MXE packages (minimal for ImGui GUI)
+    - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-cc
+    - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-glfw3
+    - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-glew
+
+    - export PATH=/usr/lib/mxe/usr/bin:$PATH
+
+  script:
+    - export PATH=/usr/lib/mxe/usr/bin:$PATH
+    - cd imgui_gui
+    - mkdir -p build
+    - cd build
+    - |
+      cat > toolchain.cmake << EOF
+      set(CMAKE_SYSTEM_NAME Windows)
+      set(CMAKE_C_COMPILER x86_64-w64-mingw32.static-gcc)
+      set(CMAKE_CXX_COMPILER x86_64-w64-mingw32.static-g++)
+      set(CMAKE_FIND_ROOT_PATH /usr/lib/mxe/usr/x86_64-w64-mingw32.static)
+      set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+      set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+      set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+      set(CMAKE_EXE_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")
+      EOF
+    - cmake .. -DCMAKE_TOOLCHAIN_FILE=toolchain.cmake -DCMAKE_BUILD_TYPE=Release
+    - make -j$(nproc)
+    - ls -lh
+  artifacts:
+    name: "dna-messenger-imgui-windows-x64-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - imgui_gui/build/dna_messenger_imgui.exe
+    expire_in: 1 week
