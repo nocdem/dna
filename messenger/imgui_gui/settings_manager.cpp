@@ -9,6 +9,7 @@
 #else
 #include <windows.h>
 #include <shlobj.h>
+#include <direct.h>  // For _mkdir
 #endif
 
 std::string SettingsManager::GetSettingsPath() {
@@ -36,7 +37,7 @@ std::string SettingsManager::GetSettingsPath() {
 #ifndef _WIN32
         mkdir(config_dir.c_str(), 0700);
 #else
-        _mkdir(config_dir.c_str());
+        _mkdir(config_dir.c_str()); // MinGW uses _mkdir from direct.h
 #endif
     }
     
