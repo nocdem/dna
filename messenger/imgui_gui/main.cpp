@@ -265,6 +265,10 @@ public:
         // Main window (fullscreen)
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(io.DisplaySize);
+        
+        // Add global padding
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
+        
         ImGui::Begin("DNA Messenger", nullptr, 
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | 
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse | 
@@ -279,6 +283,7 @@ public:
         }
         
         ImGui::End();
+        ImGui::PopStyleVar(); // Pop WindowPadding
     }
 
 private:
