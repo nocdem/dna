@@ -1317,12 +1317,18 @@ private:
             ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(btn_color.x * 0.8f, btn_color.y * 0.8f, btn_color.z * 0.8f, btn_color.w));
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.1f, 0.11f, 0.13f, 1.0f)); // Dark text on button
             ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 25.0f); // Round button
-            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(12, 12));
             
-            bool icon_clicked = ImGui::Button(ICON_FA_PAPER_PLANE "##send", ImVec2(50, 50));
+            // Center icon in button
+            const char* icon = ICON_FA_PAPER_PLANE;
+            ImVec2 icon_size = ImGui::CalcTextSize(icon);
+            float button_size = 50.0f;
+            ImVec2 padding((button_size - icon_size.x) * 0.5f, (button_size - icon_size.y) * 0.5f);
+            ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, padding);
+            
+            bool icon_clicked = ImGui::Button(icon, ImVec2(button_size, button_size));
             
             ImGui::PopStyleVar(2);
-            ImGui::PopStyleColor(4); // Matches 4 PushStyleColor above
+            ImGui::PopStyleColor(4);
             
             if (icon_clicked) {
                 if (strlen(message_input) > 0) {
