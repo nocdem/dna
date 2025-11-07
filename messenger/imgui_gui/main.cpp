@@ -1204,10 +1204,8 @@ private:
             float content_width = bubble_width - (padding_horizontal * 2);
             
             ImVec2 text_size = ImGui::CalcTextSize(msg.content.c_str(), NULL, false, content_width);
-            ImVec2 timestamp_size = ImGui::CalcTextSize(msg.timestamp.c_str());
-            timestamp_size.y *= 0.85f; // Account for font scale
             
-            float bubble_height = text_size.y + timestamp_size.y + (padding_vertical * 2) + ImGui::GetStyle().ItemSpacing.y;
+            float bubble_height = text_size.y + (padding_vertical * 2);
             
             ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false, 
                 ImGuiWindowFlags_NoScrollbar);
@@ -1220,18 +1218,24 @@ private:
             ImGui::TextWrapped("%s", msg.content.c_str());
             ImGui::PopTextWrapPos();
             
-            // Timestamp with padding
-            ImGui::SetCursorPosX(padding_horizontal);
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f));
-            ImGui::SetWindowFontScale(0.85f);
-            ImGui::Text("%s", msg.timestamp.c_str());
-            ImGui::SetWindowFontScale(1.0f);
-            ImGui::PopStyleColor();
-            
             ImGui::EndChild();
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(2);
             
+            // Sender name and timestamp BELOW the bubble (theme-aware)
+            if (indent > 0) {
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
+            }
+            
+            ImVec4 meta_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+            meta_color.w = 0.7f; // Slightly transparent
+            
+            ImGui::PushStyleColor(ImGuiCol_Text, meta_color);
+            const char* sender_label = msg.is_outgoing ? "You" : msg.sender.c_str();
+            ImGui::Text("%s • %s", sender_label, msg.timestamp.c_str());
+            ImGui::PopStyleColor();
+            
+            ImGui::Spacing();
             ImGui::Spacing();
         }
         
