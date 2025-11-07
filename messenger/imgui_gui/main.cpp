@@ -1215,11 +1215,12 @@ private:
             ImGui::TextWrapped("%s", msg.content.c_str());
             ImGui::PopTextWrapPos();
             
-            // Get bubble position for arrow
-            ImVec2 bubble_pos = ImGui::GetItemRectMin();
+            ImGui::EndChild();
+            
+            // Get bubble position for arrow (AFTER EndChild)
+            ImVec2 bubble_min = ImGui::GetItemRectMin();
             ImVec2 bubble_max = ImGui::GetItemRectMax();
             
-            ImGui::EndChild();
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(2);
             
@@ -1234,13 +1235,13 @@ private:
             ImU32 arrow_col = ImGui::ColorConvertFloat4ToU32(arrow_color);
             
             // Triangle points: pointing DOWN from bubble to username
-            float arrow_x = bubble_pos.x + 20.0f; // 20px from left edge
+            float arrow_x = bubble_min.x + 20.0f; // 20px from left edge
             float arrow_top = bubble_max.y; // Bottom of bubble
-            float arrow_bottom = bubble_max.y + 8.0f; // Point of arrow
+            float arrow_bottom = bubble_max.y + 10.0f; // Point of arrow extends down
             
             ImVec2 p1(arrow_x, arrow_bottom);           // Bottom point (pointing down)
-            ImVec2 p2(arrow_x - 8.0f, arrow_top);       // Top left (at bubble)
-            ImVec2 p3(arrow_x + 8.0f, arrow_top);       // Top right (at bubble)
+            ImVec2 p2(arrow_x - 8.0f, arrow_top);       // Top left (at bubble bottom)
+            ImVec2 p3(arrow_x + 8.0f, arrow_top);       // Top right (at bubble bottom)
             
             draw_list->AddTriangleFilled(p1, p2, p3, arrow_col);
             
