@@ -1482,11 +1482,11 @@ int main(int argc, char** argv) {
     style.TabRounding = 4.0f;
     style.ScrollbarRounding = 4.0f;
     
-    // Keep borders for now
-    style.WindowBorderSize = 1.0f;
-    style.FrameBorderSize = 1.0f;
-    style.PopupBorderSize = 1.0f;
-    style.ChildBorderSize = 1.0f;
+    // Selective borders: keep child borders (sidebar), remove others
+    style.WindowBorderSize = 0.0f;
+    style.FrameBorderSize = 0.0f;
+    style.PopupBorderSize = 0.0f;
+    style.ChildBorderSize = 1.0f;  // Keep this for sidebar
     
     // Apply initial theme (DNA theme by default)
     ApplyTheme(g_current_theme);
