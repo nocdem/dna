@@ -1310,8 +1310,7 @@ private:
             
             // Draw placeholder if input is empty
             if (strlen(message_input) == 0) {
-                ImVec4 placeholder_color = (g_current_theme == 0) ? DNATheme::Text() : ClubTheme::Text();
-                placeholder_color.w = 0.3f; // Transparent
+                ImVec4 placeholder_color = ImVec4(0.8f, 0.8f, 0.8f, 0.5f); // Light gray
                 ImVec2 cursor_pos = ImGui::GetCursorPos();
                 ImGui::SetCursorPos(ImVec2(cursor_pos.x + 10.0f, cursor_pos.y + 22.0f));
                 ImGui::TextColored(placeholder_color, "Write a message");
