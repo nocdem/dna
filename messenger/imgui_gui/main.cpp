@@ -1192,7 +1192,7 @@ private:
             
             ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
             ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
-            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f); // Square corners
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(15.0f, 10.0f));
             
             char bubble_id[32];
