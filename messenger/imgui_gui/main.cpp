@@ -1223,7 +1223,7 @@ private:
             ImGui::PopStyleVar(2);
             ImGui::PopStyleColor(2);
             
-            // Draw triangle arrow pointing UP from username to bubble
+            // Draw triangle arrow pointing DOWN from bubble to username
             ImDrawList* draw_list = ImGui::GetWindowDrawList();
             ImVec4 arrow_color;
             if (msg.is_outgoing) {
@@ -1233,13 +1233,14 @@ private:
             }
             ImU32 arrow_col = ImGui::ColorConvertFloat4ToU32(arrow_color);
             
-            // Triangle points: pointing UP to bubble from below
+            // Triangle points: pointing DOWN from bubble to username
             float arrow_x = bubble_pos.x + 20.0f; // 20px from left edge
-            float arrow_y = bubble_max.y + 8.0f; // Below the bubble
+            float arrow_top = bubble_max.y; // Bottom of bubble
+            float arrow_bottom = bubble_max.y + 8.0f; // Point of arrow
             
-            ImVec2 p1(arrow_x, bubble_max.y);           // Top point (touching bubble bottom)
-            ImVec2 p2(arrow_x - 8.0f, arrow_y);         // Bottom left
-            ImVec2 p3(arrow_x + 8.0f, arrow_y);         // Bottom right
+            ImVec2 p1(arrow_x, arrow_bottom);           // Bottom point (pointing down)
+            ImVec2 p2(arrow_x - 8.0f, arrow_top);       // Top left (at bubble)
+            ImVec2 p3(arrow_x + 8.0f, arrow_top);       // Top right (at bubble)
             
             draw_list->AddTriangleFilled(p1, p2, p3, arrow_col);
             
