@@ -267,7 +267,7 @@ void MessageWallDialog::onPostMessage() {
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s-dilithium.pqkey",
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa",
              home_dir, m_ctx->identity);
 
     qgp_key_t *key = nullptr;
