@@ -1,8 +1,14 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-06
+**Last Updated:** 2025-11-08
 **Project:** DNA Messenger (Post-Quantum Encrypted Messenger)
 **Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2, 9.3, 9.4, 9.5 Complete
+
+**Recent Updates (2025-11-08):**
+- Message wall now fetches newest version from DHT (uses `dht_get_all()` instead of `dht_get()`)
+- Added descriptive debug labels to all DHT GET/PUT operations for easier log analysis
+- Fixed MessageWallDialog to use fingerprint-based key filenames (.dsa)
+- Enhanced debug logging for message wall post/display operations
 
 ---
 

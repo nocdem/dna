@@ -154,6 +154,7 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ cpunk Wallet integration (view balances, send/receive CPUNK/CELL/KEL tokens)
 - ✅ P2P messaging with DHT-based peer discovery (3 bootstrap nodes)
 - ✅ Offline message queueing (messages stored in DHT for 7 days)
+- ✅ Public message walls (post signed messages to user's public DHT wall)
 
 **Coming Soon:**
 - 🚧 Web-based messenger (Phase 5 - in progress)
