@@ -88,8 +88,30 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
     }
 
     try {
-        // Generate node identity
-        auto identity = dht::crypto::generateIdentity();
+        // Load or generate persistent node identity
+        dht::crypto::Identity identity;
+
+        if (ctx->config.persistence_path[0] != '\0') {
+            // Bootstrap nodes: Use persistent identity
+            std::string identity_path = std::string(ctx->config.persistence_path) + ".identity";
+
+            try {
+                // Try to load existing identity
+                identity = dht::crypto::loadIdentity(identity_path);
+                std::cout << "[DHT] Loaded persistent identity from: " << identity_path << std::endl;
+            } catch (const std::exception& e) {
+                // Generate new identity if file doesn't exist
+                std::cout << "[DHT] Generating new persistent identity..." << std::endl;
+                identity = dht::crypto::generateIdentity();
+
+                // Save for future restarts
+                dht::crypto::saveIdentity(identity, identity_path);
+                std::cout << "[DHT] Saved identity to: " << identity_path << std::endl;
+            }
+        } else {
+            // User nodes: Ephemeral random identity
+            identity = dht::crypto::generateIdentity();
+        }
 
         // Check if disk persistence is requested
         if (ctx->config.persistence_path[0] != '\0') {
@@ -171,7 +193,10 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
     try {
         if (ctx->running) {
             std::cout << "[DHT] Stopping node..." << std::endl;
+            std::cout << "[DHT] Shutting down DHT runner (this will persist state to disk)..." << std::endl;
+            ctx->runner.shutdown();
             ctx->runner.join();
+            std::cout << "[DHT] ✓ DHT shutdown complete" << std::endl;
             ctx->running = false;
         }
     } catch (const std::exception& e) {
