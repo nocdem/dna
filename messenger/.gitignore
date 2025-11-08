@@ -97,3 +97,4 @@ p2p/test_p2p_basic
 p2p/build/
 dht/build/
 *.o
+CMakeCache.txt
