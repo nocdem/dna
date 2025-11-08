@@ -374,7 +374,7 @@ extern "C" int dht_put_permanent(dht_context_t *ctx,
 }
 
 /**
- * Get value from DHT
+ * Get value from DHT (returns first value only)
  */
 extern "C" int dht_get(dht_context_t *ctx,
                        const uint8_t *key, size_t key_len,
@@ -426,6 +426,89 @@ extern "C" int dht_get(dht_context_t *ctx,
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[DHT] Exception in dht_get: " << e.what() << std::endl;
+        return -1;
+    }
+}
+
+/**
+ * Get all values from DHT for a given key
+ */
+extern "C" int dht_get_all(dht_context_t *ctx,
+                           const uint8_t *key, size_t key_len,
+                           uint8_t ***values_out, size_t **values_len_out,
+                           size_t *count_out) {
+    if (!ctx || !key || !values_out || !values_len_out || !count_out) {
+        std::cerr << "[DHT] ERROR: NULL parameter in dht_get_all" << std::endl;
+        return -1;
+    }
+
+    if (!ctx->running) {
+        std::cerr << "[DHT] ERROR: Node not running" << std::endl;
+        return -1;
+    }
+
+    try {
+        // Hash the key
+        auto hash = dht::InfoHash::get(key, key_len);
+
+        std::cout << "[DHT] GET_ALL: " << hash << std::endl;
+
+        // Get all values using future-based API
+        auto future = ctx->runner.get(hash);
+        auto values = future.get();
+
+        if (values.empty()) {
+            std::cout << "[DHT] No values found" << std::endl;
+            return -1;
+        }
+
+        std::cout << "[DHT] Found " << values.size() << " value(s)" << std::endl;
+
+        // Allocate arrays for C API
+        uint8_t **value_array = (uint8_t**)malloc(values.size() * sizeof(uint8_t*));
+        size_t *len_array = (size_t*)malloc(values.size() * sizeof(size_t));
+
+        if (!value_array || !len_array) {
+            std::cerr << "[DHT] ERROR: malloc failed" << std::endl;
+            free(value_array);
+            free(len_array);
+            return -1;
+        }
+
+        // Copy each value
+        for (size_t i = 0; i < values.size(); i++) {
+            auto val = values[i];
+            if (!val || val->data.empty()) {
+                // Skip empty values
+                value_array[i] = nullptr;
+                len_array[i] = 0;
+                continue;
+            }
+
+            value_array[i] = (uint8_t*)malloc(val->data.size());
+            if (!value_array[i]) {
+                // Cleanup on failure
+                for (size_t j = 0; j < i; j++) {
+                    free(value_array[j]);
+                }
+                free(value_array);
+                free(len_array);
+                return -1;
+            }
+
+            memcpy(value_array[i], val->data.data(), val->data.size());
+            len_array[i] = val->data.size();
+
+            std::cout << "[DHT]   Value " << (i+1) << ": " << val->data.size() << " bytes" << std::endl;
+        }
+
+        *values_out = value_array;
+        *values_len_out = len_array;
+        *count_out = values.size();
+
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[DHT] Exception in dht_get_all: " << e.what() << std::endl;
         return -1;
     }
 }

@@ -1375,27 +1375,38 @@ int dna_load_identity(
     printf("[DNA] Loading identity for fingerprint %.16s...\n", fingerprint);
     printf("[DNA] DHT key: %.32s...\n", dht_key);
 
-    // Fetch from DHT
-    uint8_t *value = NULL;
-    size_t value_len = 0;
+    // Fetch ALL values from DHT (OpenDHT append-only model)
+    uint8_t **values = NULL;
+    size_t *values_len = NULL;
+    size_t value_count = 0;
 
-    if (dht_get(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), &value, &value_len) != 0 || !value) {
+    if (dht_get_all(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), &values, &values_len, &value_count) != 0) {
         fprintf(stderr, "[DNA] Identity not found in DHT\n");
         return -2;  // Not found
     }
 
-    // Parse JSON
-    dna_unified_identity_t *identity = NULL;
-    if (dna_identity_from_json((char*)value, &identity) != 0) {
-        fprintf(stderr, "[DNA] Failed to parse identity JSON\n");
-        free(value);
-        return -1;
-    }
+    printf("[DNA] Found %zu profile version(s) in DHT\n", value_count);
 
-    free(value);
+    // Parse and verify all values, track newest valid one
+    dna_unified_identity_t *best_identity = NULL;
+    uint64_t best_timestamp = 0;
 
-    // Verify signature
-    // Build message to verify: everything except signature field
+    for (size_t i = 0; i < value_count; i++) {
+        if (!values[i] || values_len[i] == 0) {
+            continue;  // Skip empty values
+        }
+
+        printf("[DNA] Verifying version %zu/%zu (%zu bytes)...\n", i+1, value_count, values_len[i]);
+
+        // Parse JSON
+        dna_unified_identity_t *identity = NULL;
+        if (dna_identity_from_json((char*)values[i], &identity) != 0) {
+            fprintf(stderr, "[DNA] ⚠ Version %zu: JSON parse failed\n", i+1);
+            continue;
+        }
+
+        // Verify signature
+        // Build message to verify: everything except signature field
     size_t msg_len = sizeof(identity->fingerprint) +
                      sizeof(identity->dilithium_pubkey) +
                      sizeof(identity->kyber_pubkey) +
@@ -1467,30 +1478,60 @@ int dna_load_identity(
 
     free(msg);
 
-    if (sig_result != 0) {
-        fprintf(stderr, "[DNA] Signature verification failed\n");
-        dna_identity_free(identity);
+        if (sig_result != 0) {
+            fprintf(stderr, "[DNA] ✗ Version %zu: Signature verification failed\n", i+1);
+            dna_identity_free(identity);
+            continue;
+        }
+
+        // Verify fingerprint matches
+        char computed_fingerprint[129];
+        compute_fingerprint(identity->dilithium_pubkey, computed_fingerprint);
+
+        if (strcmp(computed_fingerprint, fingerprint) != 0) {
+            fprintf(stderr, "[DNA] ✗ Version %zu: Fingerprint mismatch\n", i+1);
+            dna_identity_free(identity);
+            continue;
+        }
+
+        printf("[DNA] ✓ Version %zu: Valid (timestamp=%lu, version=%u)\n",
+               i+1, identity->timestamp, identity->version);
+
+        // Check if this is the newest valid version
+        if (identity->timestamp > best_timestamp) {
+            // Free previous best if exists
+            if (best_identity) {
+                dna_identity_free(best_identity);
+            }
+            best_identity = identity;
+            best_timestamp = identity->timestamp;
+        } else {
+            // This version is older, discard it
+            dna_identity_free(identity);
+        }
+    }
+
+    // Free values array
+    for (size_t i = 0; i < value_count; i++) {
+        free(values[i]);
+    }
+    free(values);
+    free(values_len);
+
+    // Check if we found any valid identity
+    if (!best_identity) {
+        fprintf(stderr, "[DNA] No valid identity found (all signatures failed)\n");
         return -3;  // Verification failed
     }
 
-    printf("[DNA] ✓ Signature verified successfully\n");
-
-    // Verify fingerprint matches
-    char computed_fingerprint[129];
-    compute_fingerprint(identity->dilithium_pubkey, computed_fingerprint);
-
-    if (strcmp(computed_fingerprint, fingerprint) != 0) {
-        fprintf(stderr, "[DNA] Fingerprint mismatch (tampering detected)\n");
-        dna_identity_free(identity);
-        return -3;  // Verification failed
+    printf("[DNA] ✓ Loaded newest valid profile (timestamp=%lu, version=%u)\n",
+           best_identity->timestamp, best_identity->version);
+    if (best_identity->has_registered_name) {
+        printf("[DNA] Name: %s (expires: %lu)\n",
+               best_identity->registered_name, best_identity->name_expires_at);
     }
 
-    printf("[DNA] ✓ Identity loaded successfully\n");
-    if (identity->has_registered_name) {
-        printf("[DNA] Name: %s (expires: %lu)\n", identity->registered_name, identity->name_expires_at);
-    }
-
-    *identity_out = identity;
+    *identity_out = best_identity;
     return 0;
 }
 
