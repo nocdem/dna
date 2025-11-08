@@ -247,6 +247,7 @@ public:
         identity_loaded = false;
         selected_identity_idx = -1;
         create_identity_step = STEP_NAME;
+        restore_identity_step = RESTORE_STEP_NAME;
         seed_confirmed = false;
         seed_copied = false;
         seed_copied_timer = 0.0f;
@@ -303,6 +304,11 @@ private:
         STEP_SEED_PHRASE,
         STEP_CREATING
     };
+    
+    enum RestoreIdentityStep {
+        RESTORE_STEP_NAME,
+        RESTORE_STEP_SEED
+    };
 
     View current_view;
     int selected_contact;
@@ -313,6 +319,7 @@ private:
     bool identity_loaded;
     int selected_identity_idx;
     CreateIdentityStep create_identity_step;
+    RestoreIdentityStep restore_identity_step;
     char generated_mnemonic[512];
     bool seed_confirmed;
     bool seed_copied;
@@ -365,8 +372,8 @@ private:
             scanIdentities();
         }
 
-        // Identity list
-        ImGui::BeginChild("IdentityList", ImVec2(0, -120), true);
+        // Identity list (reduce reserved space for buttons to prevent scrollbar)
+        ImGui::BeginChild("IdentityList", ImVec2(0, is_mobile ? -180 : -140), true);
 
         if (identities.empty()) {
             ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No identities found.");
@@ -450,6 +457,24 @@ private:
             memset(new_identity_name, 0, sizeof(new_identity_name));
             memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
             ImGui::OpenPopup("Create New Identity");
+        }
+        
+        // Restore from seed button
+        if (ButtonDark(ICON_FA_DOWNLOAD " Restore from Seed", ImVec2(-1, btn_height))) {
+            restore_identity_step = RESTORE_STEP_NAME;
+            memset(new_identity_name, 0, sizeof(new_identity_name));
+            memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
+            ImGui::OpenPopup("Restore from Seed");
+        }
+        
+        // Restore from seed popup
+        if (CenteredModal::Begin("Restore from Seed")) {
+            if (restore_identity_step == RESTORE_STEP_NAME) {
+                renderRestoreStep1_Name();
+            } else if (restore_identity_step == RESTORE_STEP_SEED) {
+                renderRestoreStep2_Seed();
+            }
+            CenteredModal::End();
         }
 
             // Create identity popup - multi-step wizard (using CenteredModal helper)
@@ -788,6 +813,134 @@ private:
         ImGui::CloseCurrentPopup();
 
         printf("[SKETCH MODE] Identity created successfully\n");
+    }
+    
+    void renderRestoreStep1_Name() {
+        ImGuiIO& io = ImGui::GetIO();
+        bool is_mobile = io.DisplaySize.x < 600.0f;
+        
+        ImGui::Text("Restore Your Identity");
+        ImGui::Spacing();
+        ImGui::Spacing();
+        
+        ImGui::TextWrapped("Enter the identity name you used when creating this identity.");
+        ImGui::Spacing();
+        ImGui::TextWrapped("This should be the same name you used originally.");
+        ImGui::Spacing();
+        ImGui::Spacing();
+        
+        ImGui::Text("Identity Name:");
+        ImGui::Spacing();
+        
+        // Style input like chat message input
+        ImVec4 input_bg = g_app_settings.theme == 0
+            ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)
+            : ImVec4(0.15f, 0.14f, 0.13f, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
+        
+        ImGui::SetNextItemWidth(-1);
+        bool enter_pressed = ImGui::InputText("##RestoreIdentityName", new_identity_name, sizeof(new_identity_name),
+                        ImGuiInputTextFlags_EnterReturnsTrue);
+        
+        ImGui::PopStyleColor();
+        
+        ImGui::Spacing();
+        ImGui::Spacing();
+        
+        float button_width = is_mobile ? -1 : 150.0f;
+        
+        if (ButtonDark("Cancel", ImVec2(button_width, 40)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+            ImGui::CloseCurrentPopup();
+        }
+        
+        if (!is_mobile) ImGui::SameLine();
+        
+        ImGui::BeginDisabled(strlen(new_identity_name) == 0);
+        if (ButtonDark("Next", ImVec2(button_width, 40)) || enter_pressed) {
+            restore_identity_step = RESTORE_STEP_SEED;
+        }
+        ImGui::EndDisabled();
+    }
+    
+    void renderRestoreStep2_Seed() {
+        ImGuiIO& io = ImGui::GetIO();
+        bool is_mobile = io.DisplaySize.x < 600.0f;
+        
+        ImGui::Text("Enter Your 24-Word Seed Phrase");
+        ImGui::Spacing();
+        
+        // Style input
+        ImVec4 input_bg = g_app_settings.theme == 0
+            ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)
+            : ImVec4(0.15f, 0.14f, 0.13f, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
+        
+        ImGui::SetNextItemWidth(-1);
+        ImGui::InputTextMultiline("##RestoreSeedPhrase", generated_mnemonic, sizeof(generated_mnemonic),
+                                 ImVec2(-1, 200));
+        
+        ImGui::PopStyleColor();
+        
+        ImGui::Spacing();
+        ImGui::TextWrapped("Paste or type your 24-word seed phrase (separated by spaces).");
+        ImGui::Spacing();
+        
+        // Validate word count
+        int word_count = 0;
+        if (strlen(generated_mnemonic) > 0) {
+            char* mnemonic_copy = strdup(generated_mnemonic);
+            char* token = strtok(mnemonic_copy, " \n\r\t");
+            while (token != nullptr) {
+                word_count++;
+                token = strtok(nullptr, " \n\r\t");
+            }
+            free(mnemonic_copy);
+            
+            if (word_count != 24) {
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), 
+                                  "Invalid: Found %d words, need exactly 24 words", word_count);
+            } else {
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "✓ Valid: 24 words");
+            }
+        }
+        
+        ImGui::Spacing();
+        
+        float button_width = is_mobile ? -1 : 150.0f;
+        
+        if (ButtonDark("Back", ImVec2(button_width, 40))) {
+            restore_identity_step = RESTORE_STEP_NAME;
+        }
+        
+        if (!is_mobile) ImGui::SameLine();
+        
+        ImGui::BeginDisabled(word_count != 24);
+        if (ButtonDark("Restore", ImVec2(button_width, 40))) {
+            restoreIdentityWithSeed(new_identity_name, generated_mnemonic);
+        }
+        ImGui::EndDisabled();
+    }
+    
+    void restoreIdentityWithSeed(const char* name, const char* mnemonic) {
+        // UI SKETCH MODE - Mock identity restore
+        printf("[SKETCH MODE] Restoring identity: %s\n", name);
+        printf("[SKETCH MODE] Mnemonic: %s\n", mnemonic);
+        
+        // Simulate success
+        identities.push_back(name);
+        current_identity = name;
+        identity_loaded = true;
+        show_identity_selection = false;
+        
+        // Load mock contacts
+        loadIdentity(name);
+        
+        // Reset and close
+        memset(new_identity_name, 0, sizeof(new_identity_name));
+        memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
+        ImGui::CloseCurrentPopup();
+        
+        printf("[SKETCH MODE] Identity restored successfully\n");
     }
 
     void loadIdentity(const std::string& identity) {
