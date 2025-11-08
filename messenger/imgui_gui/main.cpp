@@ -17,6 +17,7 @@
 #include <map>
 #include <algorithm>
 #include <cstdlib>
+#include <cmath>
 
 #ifndef _WIN32
 #include <dirent.h>
@@ -344,12 +345,10 @@ private:
             ImGui::Spacing();
 
         // Title (centered)
-        ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
         const char* title_text = "Welcome to DNA Messenger";
         float title_width = ImGui::CalcTextSize(title_text).x;
         ImGui::SetCursorPosX((ImGui::GetWindowWidth() - title_width) * 0.5f);
         ImGui::Text("%s", title_text);
-        ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         ImGui::Spacing();
         ImGui::Spacing();
@@ -569,8 +568,16 @@ private:
             ImGui::SetKeyboardFocusHere();
         }
 
+        // Style input like chat message input (recipient bubble color)
+        ImVec4 input_bg = g_app_settings.theme == 0
+            ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)  // DNA: slightly lighter than bg
+            : ImVec4(0.15f, 0.14f, 0.13f, 1.0f); // Club: slightly lighter
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
+
         bool enter_pressed = ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name),
                         ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue, IdentityNameInputFilter);
+
+        ImGui::PopStyleColor();
 
         // Validate identity name
         size_t name_len = strlen(new_identity_name);
@@ -770,6 +777,9 @@ private:
         current_identity = name;
         identity_loaded = true;
         show_identity_selection = false;
+        
+        // Load mock contacts for the new identity
+        loadIdentity(name);
 
         // Reset and close
         memset(new_identity_name, 0, sizeof(new_identity_name));
@@ -943,9 +953,7 @@ private:
         ImGui::BeginChild("ContactsHeader", ImVec2(full_width, 60), true, ImGuiWindowFlags_NoScrollbar);
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
 
-        ImGui::SetWindowFontScale(1.5f);
         ImGui::Text("  DNA Messenger");
-        ImGui::SetWindowFontScale(1.0f);
 
         ImGui::SameLine(io.DisplaySize.x - 60);
         if (ButtonDark(ICON_FA_PLUS, ImVec2(50, 40))) {
@@ -1031,9 +1039,11 @@ private:
         ImGui::Text("Contacts");
         ImGui::Spacing();
 
-        // Contact list - use remaining space minus add button height
+        // Contact list - use remaining space minus 3 action buttons
         float add_button_height = 40.0f;
-        float available_height = ImGui::GetContentRegionAvail().y - add_button_height - ImGui::GetStyle().ItemSpacing.y;
+        float num_buttons = 3.0f;
+        float spacing = ImGui::GetStyle().ItemSpacing.y;
+        float available_height = ImGui::GetContentRegionAvail().y - (add_button_height * num_buttons) - (spacing * num_buttons);
 
         ImGui::BeginChild("ContactList", ImVec2(0, available_height), false);
 
@@ -1100,10 +1110,18 @@ private:
 
         ImGui::EndChild(); // ContactList
 
-        // Add contact button at bottom (40px to match main buttons)
+        // Action buttons at bottom (40px each to match main buttons)
         float button_width = ImGui::GetContentRegionAvail().x;
         if (ThemedButton(ICON_FA_PLUS " Add Contact", ImVec2(button_width, add_button_height), false)) {
             // TODO: Open add contact dialog
+        }
+        
+        if (ThemedButton(ICON_FA_USERS " Create Group", ImVec2(button_width, add_button_height), false)) {
+            // TODO: Open create group dialog
+        }
+        
+        if (ThemedButton(ICON_FA_SYNC " Refresh", ImVec2(button_width, add_button_height), false)) {
+            // TODO: Refresh contact list / sync from DHT
         }
 
         ImGui::EndChild(); // Sidebar
@@ -1386,9 +1404,7 @@ private:
         ImGui::BeginChild("WalletContent", ImVec2(-padding, -padding), false);
 
         // Header
-        ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
         ImGui::Text(ICON_FA_WALLET " cpunk Wallet");
-        ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
@@ -1405,14 +1421,10 @@ private:
             ImGui::BeginChild(tokens[i], ImVec2(-1, card_height), true);
 
             ImGui::SetCursorPos(ImVec2(20, 15));
-            ImGui::SetWindowFontScale(is_mobile ? 1.0f : 0.9f);
             ImGui::TextDisabled("%s", tokens[i]);
-            ImGui::SetWindowFontScale(1.0f);
 
             ImGui::SetCursorPos(ImVec2(20, is_mobile ? 45 : 50));
-            ImGui::SetWindowFontScale(is_mobile ? 1.8f : 2.0f);
             ImGui::Text("%s", balances[i]);
-            ImGui::SetWindowFontScale(1.0f);
 
             ImGui::EndChild();
             ImGui::PopStyleColor();
@@ -1477,9 +1489,7 @@ private:
         ImGui::BeginChild("SettingsContent", ImVec2(-padding, -padding), false);
 
         // Header
-        ImGui::SetWindowFontScale(is_mobile ? 1.5f : 1.3f);
         ImGui::Text(ICON_FA_COG " Settings");
-        ImGui::SetWindowFontScale(1.0f);
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
@@ -1508,6 +1518,49 @@ private:
         if (prev_theme != g_app_settings.theme) {
             ApplyTheme(g_app_settings.theme);
             SettingsManager::Save(g_app_settings);
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // UI Scale selection
+        ImGui::Text("UI Scale (Accessibility)");
+        ImGui::Spacing();
+
+        float prev_scale = g_app_settings.ui_scale;
+        int scale_index = 0;
+        // Use tolerance for float comparison
+        if (g_app_settings.ui_scale < 1.25f) scale_index = 0;          // 100% (1.1)
+        else scale_index = 1;                                           // 125% (1.375)
+
+        if (is_mobile) {
+            if (ImGui::RadioButton("Normal (100%)##scale", scale_index == 0)) {
+                g_app_settings.ui_scale = 1.1f;
+            }
+            ImGui::Spacing();
+            if (ImGui::RadioButton("Large (125%)##scale", scale_index == 1)) {
+                g_app_settings.ui_scale = 1.375f;
+            }
+        } else {
+            if (ImGui::RadioButton("Normal (100%)", scale_index == 0)) {
+                g_app_settings.ui_scale = 1.1f;
+            }
+            if (ImGui::RadioButton("Large (125%)", scale_index == 1)) {
+                g_app_settings.ui_scale = 1.375f;
+            }
+        }
+
+        // Apply scale if changed (requires app restart)
+        if (prev_scale != g_app_settings.ui_scale) {
+            SettingsManager::Save(g_app_settings);
+        }
+        
+        // Show persistent warning if scale was changed (compare to current ImGui scale)
+        ImGuiStyle& current_style = ImGui::GetStyle();
+        if (fabs(g_app_settings.ui_scale - current_style.FontScaleMain) > 0.01f) {
+            ImGui::Spacing();
+            ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "⚠ Restart app to apply scale changes");
         }
 
         ImGui::Spacing();
@@ -1595,8 +1648,8 @@ int main(int argc, char** argv) {
     config.MergeMode = false;
     config.FontDataOwnedByAtlas = false; // Don't let ImGui free our static embedded data
 
-    // Default font (1.1x scale = 19.8px for base 18px)
-    float base_size = 18.0f * 1.1f;
+    // Base font size (will be scaled by ui_scale via FontScaleMain)
+    float base_size = 18.0f;
     io.Fonts->AddFontFromMemoryTTF((void*)NotoSans_Regular_ttf, sizeof(NotoSans_Regular_ttf), base_size, &config);
 
     // Merge Font Awesome icons
@@ -1628,6 +1681,10 @@ int main(int argc, char** argv) {
 
     // Apply initial theme (DNA theme by default)
     ApplyTheme(g_app_settings.theme);
+    
+    // Apply native ImGui scaling (fonts + UI elements)
+    style.ScaleAllSizes(g_app_settings.ui_scale);
+    style.FontScaleMain = g_app_settings.ui_scale;
 
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init(glsl_version);

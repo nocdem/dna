@@ -63,8 +63,11 @@ bool SettingsManager::Load(AppSettings& settings) {
         
         if (strncmp(line, "theme=", 6) == 0) {
             settings.theme = atoi(line + 6);
+        } else if (strncmp(line, "ui_scale=", 9) == 0) {
+            settings.ui_scale = (float)atof(line + 9);
         } else if (strncmp(line, "font_scale=", 11) == 0) {
-            settings.font_scale = (float)atof(line + 11);
+            // Legacy: convert old font_scale to ui_scale
+            settings.ui_scale = (float)atof(line + 11);
         } else if (strncmp(line, "window_width=", 13) == 0) {
             settings.window_width = atoi(line + 13);
         } else if (strncmp(line, "window_height=", 14) == 0) {
@@ -84,7 +87,7 @@ bool SettingsManager::Save(const AppSettings& settings) {
     }
     
     fprintf(f, "theme=%d\n", settings.theme);
-    fprintf(f, "font_scale=%.2f\n", settings.font_scale);
+    fprintf(f, "ui_scale=%.2f\n", settings.ui_scale);
     fprintf(f, "window_width=%d\n", settings.window_width);
     fprintf(f, "window_height=%d\n", settings.window_height);
     
