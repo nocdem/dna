@@ -1,0 +1,244 @@
+{
+	"BUILD_DIR" : "/opt/dna-messenger/gui/dna_messenger_gui_autogen",
+	"CMAKE_BINARY_DIR" : "/opt/dna-messenger",
+	"CMAKE_CURRENT_BINARY_DIR" : "/opt/dna-messenger/gui",
+	"CMAKE_CURRENT_SOURCE_DIR" : "/opt/dna-messenger/gui",
+	"CMAKE_EXECUTABLE" : "/usr/bin/cmake",
+	"CMAKE_LIST_FILES" : 
+	[
+		"/opt/dna-messenger/gui/CMakeLists.txt",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5/Qt5ConfigVersion.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5/Qt5Config.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5/Qt5ModuleLocation.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Core/Qt5CoreConfigVersion.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Core/Qt5CoreConfig.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Widgets/Qt5WidgetsConfigVersion.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Widgets/Qt5WidgetsConfig.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Multimedia/Qt5MultimediaConfigVersion.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Multimedia/Qt5MultimediaConfig.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Network/Qt5NetworkConfigVersion.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Network/Qt5NetworkConfig.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Network/Qt5Network_QConnmanEnginePlugin.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Network/Qt5Network_QGenericEnginePlugin.cmake",
+		"/usr/lib/x86_64-linux-gnu/cmake/Qt5Network/Qt5Network_QNetworkManagerEnginePlugin.cmake",
+		"/usr/share/cmake-3.25/Modules/FindCURL.cmake",
+		"/usr/share/cmake-3.25/Modules/FindPackageHandleStandardArgs.cmake",
+		"/usr/share/cmake-3.25/Modules/FindPackageMessage.cmake",
+		"/usr/share/cmake-3.25/Modules/FindPkgConfig.cmake",
+		"/usr/share/cmake-3.25/Modules/FindPackageHandleStandardArgs.cmake",
+		"/usr/share/cmake-3.25/Modules/FindPackageMessage.cmake",
+		"/opt/dna-messenger/gui/resources.qrc"
+	],
+	"CMAKE_SOURCE_DIR" : "/opt/dna-messenger",
+	"DEP_FILE" : "",
+	"DEP_FILE_RULE_NAME" : "",
+	"HEADERS" : 
+	[
+		[
+			"/opt/dna-messenger/base58.h",
+			"MU",
+			"YCDLW3T4OG/moc_base58.cpp",
+			null
+		],
+		[ "/opt/dna-messenger/bip39.h", "MU", "YCDLW3T4OG/moc_bip39.cpp", null ],
+		[
+			"/opt/dna-messenger/cellframe_addr.h",
+			"MU",
+			"YCDLW3T4OG/moc_cellframe_addr.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/cellframe_rpc.h",
+			"MU",
+			"YCDLW3T4OG/moc_cellframe_rpc.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/CreateIdentityDialog.h",
+			"MU",
+			"EWIEGA46WW/moc_CreateIdentityDialog.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/IdentitySelectionDialog.h",
+			"MU",
+			"EWIEGA46WW/moc_IdentitySelectionDialog.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/MainWindow.h",
+			"MU",
+			"EWIEGA46WW/moc_MainWindow.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/MessageWallDialog.h",
+			"MU",
+			"EWIEGA46WW/moc_MessageWallDialog.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/ProfileEditorDialog.h",
+			"MU",
+			"EWIEGA46WW/moc_ProfileEditorDialog.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/ReceiveDialog.h",
+			"MU",
+			"EWIEGA46WW/moc_ReceiveDialog.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/RegisterDNANameDialog.h",
+			"MU",
+			"EWIEGA46WW/moc_RegisterDNANameDialog.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/RestoreIdentityDialog.h",
+			"MU",
+			"EWIEGA46WW/moc_RestoreIdentityDialog.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/SeedPhraseWidget.h",
+			"MU",
+			"EWIEGA46WW/moc_SeedPhraseWidget.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/SendTokensDialog.h",
+			"MU",
+			"EWIEGA46WW/moc_SendTokensDialog.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/ThemeManager.h",
+			"MU",
+			"EWIEGA46WW/moc_ThemeManager.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/TransactionHistoryDialog.h",
+			"MU",
+			"EWIEGA46WW/moc_TransactionHistoryDialog.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/gui/WalletDialog.h",
+			"MU",
+			"EWIEGA46WW/moc_WalletDialog.cpp",
+			null
+		],
+		[
+			"/opt/dna-messenger/wallet.h",
+			"MU",
+			"YCDLW3T4OG/moc_wallet.cpp",
+			null
+		]
+	],
+	"HEADER_EXTENSIONS" : [ "h", "hh", "h++", "hm", "hpp", "hxx", "in", "txx" ],
+	"INCLUDE_DIR" : "/opt/dna-messenger/gui/dna_messenger_gui_autogen/include",
+	"MOC_COMPILATION_FILE" : "/opt/dna-messenger/gui/dna_messenger_gui_autogen/mocs_compilation.cpp",
+	"MOC_DEFINITIONS" : 
+	[
+		"BUILD_HASH=\"652879d\"",
+		"BUILD_TS=\"2025-11-08\"",
+		"PQSIGNUM_VERSION=\"0.1.371\"",
+		"QT_CORE_LIB",
+		"QT_GUI_LIB",
+		"QT_MULTIMEDIA_LIB",
+		"QT_NETWORK_LIB",
+		"QT_NO_DEBUG",
+		"QT_WIDGETS_LIB"
+	],
+	"MOC_DEPEND_FILTERS" : 
+	[
+		[
+			"Q_PLUGIN_METADATA",
+			"[\n][ \t]*Q_PLUGIN_METADATA[ \t]*\\([^\\)]*FILE[ \t]*\"([^\"]+)\""
+		]
+	],
+	"MOC_INCLUDES" : 
+	[
+		"/opt/dna-messenger",
+		"/opt/dna-messenger/p2p",
+		"/opt/dna-messenger/dht",
+		"/opt/dna-messenger/crypto/kem",
+		"/opt/dna-messenger/crypto/dsa",
+		"/opt/dna-messenger",
+		"/usr/include/p11-kit-1",
+		"/usr/include/jsoncpp",
+		"/opt/dna-messenger",
+		"/opt/dna-messenger/crypto",
+		"/opt/dna-messenger/crypto/cellframe_dilithium",
+		"/usr/include/x86_64-linux-gnu/qt5",
+		"/usr/include/x86_64-linux-gnu/qt5/QtCore",
+		"/usr/lib/x86_64-linux-gnu/qt5/mkspecs/linux-g++",
+		"/usr/include/x86_64-linux-gnu/qt5/QtWidgets",
+		"/usr/include/x86_64-linux-gnu/qt5/QtGui",
+		"/usr/include/x86_64-linux-gnu/qt5/QtMultimedia",
+		"/usr/include/x86_64-linux-gnu/qt5/QtNetwork",
+		"/usr/include/json-c",
+		"/usr/include",
+		"/usr/local/include",
+		"/usr/include/c++/12",
+		"/usr/include/x86_64-linux-gnu/c++/12",
+		"/usr/include/c++/12/backward",
+		"/usr/lib/gcc/x86_64-linux-gnu/12/include",
+		"/usr/include/x86_64-linux-gnu"
+	],
+	"MOC_MACRO_NAMES" : [ "Q_OBJECT", "Q_GADGET", "Q_NAMESPACE", "Q_NAMESPACE_EXPORT" ],
+	"MOC_OPTIONS" : [],
+	"MOC_PATH_PREFIX" : false,
+	"MOC_PREDEFS_CMD" : 
+	[
+		"/usr/bin/c++",
+		"-dM",
+		"-E",
+		"-c",
+		"/usr/share/cmake-3.25/Modules/CMakeCXXCompilerABI.cpp"
+	],
+	"MOC_PREDEFS_FILE" : "/opt/dna-messenger/gui/dna_messenger_gui_autogen/moc_predefs.h",
+	"MOC_RELAXED_MODE" : false,
+	"MOC_SKIP" : [],
+	"MULTI_CONFIG" : false,
+	"PARALLEL" : 4,
+	"PARSE_CACHE_FILE" : "/opt/dna-messenger/gui/CMakeFiles/dna_messenger_gui_autogen.dir/ParseCache.txt",
+	"QT_MOC_EXECUTABLE" : "/usr/lib/qt5/bin/moc",
+	"QT_UIC_EXECUTABLE" : "/usr/lib/qt5/bin/uic",
+	"QT_VERSION_MAJOR" : 5,
+	"QT_VERSION_MINOR" : 15,
+	"SETTINGS_FILE" : "/opt/dna-messenger/gui/CMakeFiles/dna_messenger_gui_autogen.dir/AutogenUsed.txt",
+	"SOURCES" : 
+	[
+		[ "/opt/dna-messenger/base58.c", "MU", null ],
+		[ "/opt/dna-messenger/bip39.c", "MU", null ],
+		[ "/opt/dna-messenger/bip39_pbkdf2.c", "MU", null ],
+		[ "/opt/dna-messenger/cellframe_addr.c", "MU", null ],
+		[ "/opt/dna-messenger/cellframe_rpc.c", "MU", null ],
+		[ "/opt/dna-messenger/gui/CreateIdentityDialog.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/IdentitySelectionDialog.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/MainWindow.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/MessageWallDialog.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/ProfileEditorDialog.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/ReceiveDialog.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/RegisterDNANameDialog.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/RestoreIdentityDialog.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/SeedPhraseWidget.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/SendTokensDialog.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/ThemeManager.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/TransactionHistoryDialog.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/WalletDialog.cpp", "MU", null ],
+		[ "/opt/dna-messenger/gui/main.cpp", "MU", null ],
+		[ "/opt/dna-messenger/keygen.c", "MU", null ],
+		[ "/opt/dna-messenger/seed_derivation.c", "MU", null ],
+		[ "/opt/dna-messenger/wallet.c", "MU", null ]
+	],
+	"UIC_OPTIONS" : [],
+	"UIC_SEARCH_PATHS" : [],
+	"UIC_SKIP" : [],
+	"UIC_UI_FILES" : [],
+	"VERBOSITY" : 0
+}

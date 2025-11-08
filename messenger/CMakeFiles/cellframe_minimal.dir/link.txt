@@ -1,0 +1,2 @@
+/usr/bin/ar qc libcellframe_minimal.a CMakeFiles/cellframe_minimal.dir/cellframe_tx_builder_minimal.c.o CMakeFiles/cellframe_minimal.dir/cellframe_sign_minimal.c.o CMakeFiles/cellframe_minimal.dir/cellframe_json_minimal.c.o CMakeFiles/cellframe_minimal.dir/base58.c.o
+/usr/bin/ranlib libcellframe_minimal.a

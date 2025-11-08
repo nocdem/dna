@@ -1,0 +1,1 @@
+/usr/bin/c++ CMakeFiles/persistent_bootstrap.dir/persistent_bootstrap.c.o -o persistent_bootstrap  libdht_lib.a -lcrypto ../crypto/dsa/libdsa.a -lopendht -lgnutls -ljsoncpp /usr/lib/x86_64-linux-gnu/libsqlite3.so -lopendht -lgnutls -ljsoncpp /usr/lib/x86_64-linux-gnu/libsqlite3.so -ljson-c -lcurl 

@@ -13,6 +13,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <climits>
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -65,6 +66,24 @@ static void hash_to_hex(const uint8_t *hash, size_t len, char *hex_out) {
         sprintf(hex_out + (i * 2), "%02x", hash[i]);
     }
     hex_out[len * 2] = '\0';
+}
+
+/**
+ * @brief Helper: Convert hex string to binary bytes
+ */
+static size_t hex_to_bytes(const char *hex, uint8_t *bytes_out, size_t max_len) {
+    size_t hex_len = strlen(hex);
+    size_t byte_len = hex_len / 2;
+
+    if (byte_len > max_len) {
+        byte_len = max_len;
+    }
+
+    for (size_t i = 0; i < byte_len; i++) {
+        sscanf(hex + (i * 2), "%2hhx", &bytes_out[i]);
+    }
+
+    return byte_len;
 }
 
 /**
@@ -496,11 +515,49 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
             expires_at = sqlite3_column_int64(stmt, 4);
         }
 
+        // Copy data (need to free mutex before DHT operation)
+        uint8_t *value_copy = (uint8_t*)malloc(value_len);
+        if (value_copy) {
+            memcpy(value_copy, value_blob, value_len);
+        }
+
         pthread_mutex_unlock(&storage->mutex);
 
-        // Republish via DHT context (NOT IMPLEMENTED YET - need dht_put_raw() function)
-        // For now, just count
-        count++;
+        if (!value_copy) {
+            std::cerr << "[Storage] Memory allocation failed during republish" << std::endl;
+            continue;
+        }
+
+        // Convert hex key back to bytes
+        uint8_t key_bytes[256];
+        size_t key_len = hex_to_bytes(key_hex, key_bytes, sizeof(key_bytes));
+
+        // Calculate TTL
+        unsigned int ttl_seconds = UINT_MAX;  // Default: permanent
+        if (expires_at > 0) {
+            uint64_t current_time = time(NULL);
+            if (expires_at > current_time) {
+                ttl_seconds = (unsigned int)(expires_at - current_time);
+            } else {
+                // Value expired, skip it
+                free(value_copy);
+                continue;
+            }
+        }
+
+        // Republish to DHT
+        int put_result = dht_put_ttl(ctx, key_bytes, key_len, value_copy, value_len, ttl_seconds);
+
+        free(value_copy);
+
+        if (put_result == 0) {
+            count++;
+        } else {
+            std::cerr << "[Storage] Failed to republish value (error " << put_result << ")" << std::endl;
+            pthread_mutex_lock(&storage->mutex);
+            storage->error_count++;
+            pthread_mutex_unlock(&storage->mutex);
+        }
 
         // Rate limit: 100ms delay per value
         std::this_thread::sleep_for(std::chrono::milliseconds(100));

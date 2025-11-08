@@ -1,0 +1,2 @@
+/usr/bin/ar qc libdsa.a CMakeFiles/dsa.dir/fips202.c.o CMakeFiles/dsa.dir/ntt.c.o CMakeFiles/dsa.dir/packing.c.o CMakeFiles/dsa.dir/poly.c.o CMakeFiles/dsa.dir/polyvec.c.o CMakeFiles/dsa.dir/reduce.c.o CMakeFiles/dsa.dir/rounding.c.o CMakeFiles/dsa.dir/sign.c.o "CMakeFiles/dsa.dir/symmetric-shake.c.o"
+/usr/bin/ranlib libdsa.a

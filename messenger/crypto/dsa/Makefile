@@ -132,14 +132,14 @@ install/strip/fast: preinstall/fast
 
 # The main all target
 all: cmake_check_build_system
-	cd /opt/dna-messenger && $(CMAKE_COMMAND) -E cmake_progress_start /opt/dna-messenger/CMakeFiles /opt/dna-messenger/crypto/dilithium//CMakeFiles/progress.marks
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 crypto/dilithium/all
+	cd /opt/dna-messenger && $(CMAKE_COMMAND) -E cmake_progress_start /opt/dna-messenger/CMakeFiles /opt/dna-messenger/crypto/dsa//CMakeFiles/progress.marks
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 crypto/dsa/all
 	$(CMAKE_COMMAND) -E cmake_progress_start /opt/dna-messenger/CMakeFiles 0
 .PHONY : all
 
 # The main clean target
 clean:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 crypto/dilithium/clean
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 crypto/dsa/clean
 .PHONY : clean
 
 # The main clean target
@@ -148,12 +148,12 @@ clean/fast: clean
 
 # Prepare targets for installation.
 preinstall: all
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 crypto/dilithium/preinstall
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 crypto/dsa/preinstall
 .PHONY : preinstall
 
 # Prepare targets for installation.
 preinstall/fast:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 crypto/dilithium/preinstall
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 crypto/dsa/preinstall
 .PHONY : preinstall/fast
 
 # clear depends
@@ -162,25 +162,25 @@ depend:
 .PHONY : depend
 
 # Convenience name for target.
-crypto/dilithium/CMakeFiles/dilithium.dir/rule:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 crypto/dilithium/CMakeFiles/dilithium.dir/rule
-.PHONY : crypto/dilithium/CMakeFiles/dilithium.dir/rule
+crypto/dsa/CMakeFiles/dsa.dir/rule:
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 crypto/dsa/CMakeFiles/dsa.dir/rule
+.PHONY : crypto/dsa/CMakeFiles/dsa.dir/rule
 
 # Convenience name for target.
-dilithium: crypto/dilithium/CMakeFiles/dilithium.dir/rule
-.PHONY : dilithium
+dsa: crypto/dsa/CMakeFiles/dsa.dir/rule
+.PHONY : dsa
 
 # fast build rule for target.
-dilithium/fast:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/build
-.PHONY : dilithium/fast
+dsa/fast:
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/build
+.PHONY : dsa/fast
 
 fips202.o: fips202.c.o
 .PHONY : fips202.o
 
 # target to build an object file
 fips202.c.o:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/fips202.c.o
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/fips202.c.o
 .PHONY : fips202.c.o
 
 fips202.i: fips202.c.i
@@ -188,7 +188,7 @@ fips202.i: fips202.c.i
 
 # target to preprocess a source file
 fips202.c.i:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/fips202.c.i
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/fips202.c.i
 .PHONY : fips202.c.i
 
 fips202.s: fips202.c.s
@@ -196,7 +196,7 @@ fips202.s: fips202.c.s
 
 # target to generate assembly for a file
 fips202.c.s:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/fips202.c.s
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/fips202.c.s
 .PHONY : fips202.c.s
 
 ntt.o: ntt.c.o
@@ -204,7 +204,7 @@ ntt.o: ntt.c.o
 
 # target to build an object file
 ntt.c.o:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/ntt.c.o
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/ntt.c.o
 .PHONY : ntt.c.o
 
 ntt.i: ntt.c.i
@@ -212,7 +212,7 @@ ntt.i: ntt.c.i
 
 # target to preprocess a source file
 ntt.c.i:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/ntt.c.i
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/ntt.c.i
 .PHONY : ntt.c.i
 
 ntt.s: ntt.c.s
@@ -220,7 +220,7 @@ ntt.s: ntt.c.s
 
 # target to generate assembly for a file
 ntt.c.s:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/ntt.c.s
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/ntt.c.s
 .PHONY : ntt.c.s
 
 packing.o: packing.c.o
@@ -228,7 +228,7 @@ packing.o: packing.c.o
 
 # target to build an object file
 packing.c.o:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/packing.c.o
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/packing.c.o
 .PHONY : packing.c.o
 
 packing.i: packing.c.i
@@ -236,7 +236,7 @@ packing.i: packing.c.i
 
 # target to preprocess a source file
 packing.c.i:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/packing.c.i
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/packing.c.i
 .PHONY : packing.c.i
 
 packing.s: packing.c.s
@@ -244,7 +244,7 @@ packing.s: packing.c.s
 
 # target to generate assembly for a file
 packing.c.s:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/packing.c.s
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/packing.c.s
 .PHONY : packing.c.s
 
 poly.o: poly.c.o
@@ -252,7 +252,7 @@ poly.o: poly.c.o
 
 # target to build an object file
 poly.c.o:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/poly.c.o
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/poly.c.o
 .PHONY : poly.c.o
 
 poly.i: poly.c.i
@@ -260,7 +260,7 @@ poly.i: poly.c.i
 
 # target to preprocess a source file
 poly.c.i:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/poly.c.i
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/poly.c.i
 .PHONY : poly.c.i
 
 poly.s: poly.c.s
@@ -268,7 +268,7 @@ poly.s: poly.c.s
 
 # target to generate assembly for a file
 poly.c.s:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/poly.c.s
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/poly.c.s
 .PHONY : poly.c.s
 
 polyvec.o: polyvec.c.o
@@ -276,7 +276,7 @@ polyvec.o: polyvec.c.o
 
 # target to build an object file
 polyvec.c.o:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/polyvec.c.o
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/polyvec.c.o
 .PHONY : polyvec.c.o
 
 polyvec.i: polyvec.c.i
@@ -284,7 +284,7 @@ polyvec.i: polyvec.c.i
 
 # target to preprocess a source file
 polyvec.c.i:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/polyvec.c.i
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/polyvec.c.i
 .PHONY : polyvec.c.i
 
 polyvec.s: polyvec.c.s
@@ -292,7 +292,7 @@ polyvec.s: polyvec.c.s
 
 # target to generate assembly for a file
 polyvec.c.s:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/polyvec.c.s
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/polyvec.c.s
 .PHONY : polyvec.c.s
 
 reduce.o: reduce.c.o
@@ -300,7 +300,7 @@ reduce.o: reduce.c.o
 
 # target to build an object file
 reduce.c.o:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/reduce.c.o
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/reduce.c.o
 .PHONY : reduce.c.o
 
 reduce.i: reduce.c.i
@@ -308,7 +308,7 @@ reduce.i: reduce.c.i
 
 # target to preprocess a source file
 reduce.c.i:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/reduce.c.i
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/reduce.c.i
 .PHONY : reduce.c.i
 
 reduce.s: reduce.c.s
@@ -316,7 +316,7 @@ reduce.s: reduce.c.s
 
 # target to generate assembly for a file
 reduce.c.s:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/reduce.c.s
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/reduce.c.s
 .PHONY : reduce.c.s
 
 rounding.o: rounding.c.o
@@ -324,7 +324,7 @@ rounding.o: rounding.c.o
 
 # target to build an object file
 rounding.c.o:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/rounding.c.o
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/rounding.c.o
 .PHONY : rounding.c.o
 
 rounding.i: rounding.c.i
@@ -332,7 +332,7 @@ rounding.i: rounding.c.i
 
 # target to preprocess a source file
 rounding.c.i:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/rounding.c.i
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/rounding.c.i
 .PHONY : rounding.c.i
 
 rounding.s: rounding.c.s
@@ -340,7 +340,7 @@ rounding.s: rounding.c.s
 
 # target to generate assembly for a file
 rounding.c.s:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/rounding.c.s
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/rounding.c.s
 .PHONY : rounding.c.s
 
 sign.o: sign.c.o
@@ -348,7 +348,7 @@ sign.o: sign.c.o
 
 # target to build an object file
 sign.c.o:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/sign.c.o
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/sign.c.o
 .PHONY : sign.c.o
 
 sign.i: sign.c.i
@@ -356,7 +356,7 @@ sign.i: sign.c.i
 
 # target to preprocess a source file
 sign.c.i:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/sign.c.i
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/sign.c.i
 .PHONY : sign.c.i
 
 sign.s: sign.c.s
@@ -364,7 +364,7 @@ sign.s: sign.c.s
 
 # target to generate assembly for a file
 sign.c.s:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/sign.c.s
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/sign.c.s
 .PHONY : sign.c.s
 
 symmetric-shake.o: symmetric-shake.c.o
@@ -372,7 +372,7 @@ symmetric-shake.o: symmetric-shake.c.o
 
 # target to build an object file
 symmetric-shake.c.o:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/symmetric-shake.c.o
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/symmetric-shake.c.o
 .PHONY : symmetric-shake.c.o
 
 symmetric-shake.i: symmetric-shake.c.i
@@ -380,7 +380,7 @@ symmetric-shake.i: symmetric-shake.c.i
 
 # target to preprocess a source file
 symmetric-shake.c.i:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/symmetric-shake.c.i
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/symmetric-shake.c.i
 .PHONY : symmetric-shake.c.i
 
 symmetric-shake.s: symmetric-shake.c.s
@@ -388,7 +388,7 @@ symmetric-shake.s: symmetric-shake.c.s
 
 # target to generate assembly for a file
 symmetric-shake.c.s:
-	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dilithium/CMakeFiles/dilithium.dir/build.make crypto/dilithium/CMakeFiles/dilithium.dir/symmetric-shake.c.s
+	cd /opt/dna-messenger && $(MAKE) $(MAKESILENT) -f crypto/dsa/CMakeFiles/dsa.dir/build.make crypto/dsa/CMakeFiles/dsa.dir/symmetric-shake.c.s
 .PHONY : symmetric-shake.c.s
 
 # Help Target
@@ -403,7 +403,7 @@ help:
 	@echo "... install/strip"
 	@echo "... list_install_components"
 	@echo "... rebuild_cache"
-	@echo "... dilithium"
+	@echo "... dsa"
 	@echo "... fips202.o"
 	@echo "... fips202.i"
 	@echo "... fips202.s"
