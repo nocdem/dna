@@ -18,6 +18,9 @@
 #include <chrono>
 #include <future>
 #include <thread>
+#include <fstream>
+#include <gnutls/x509.h>
+#include <gnutls/abstract.h>
 
 // Custom ValueTypes with different TTLs
 static const dht::ValueType DNA_TYPE_7DAY {
@@ -37,6 +40,103 @@ static const dht::ValueType DNA_TYPE_365DAY {
         return true;  // Accept all
     }
 };
+
+// Helper functions for persistent identity (OpenDHT 2.x and 3.x compatible)
+namespace {
+    // Save identity to PEM files (works with both 2.x and 3.x)
+    bool save_identity_pem(const dht::crypto::Identity& id, const std::string& base_path) {
+        try {
+            std::string cert_path = base_path + ".crt";
+            std::string key_path = base_path + ".pem";
+
+            // Get GNUTLS objects from OpenDHT Identity
+            auto cert = id.second->cert;  // gnutls_x509_crt_t
+            auto privkey = id.first->x509_key;  // gnutls_x509_privkey_t
+
+            // Export certificate to PEM
+            gnutls_datum_t cert_pem;
+            if (gnutls_x509_crt_export2(cert, GNUTLS_X509_FMT_PEM, &cert_pem) != GNUTLS_E_SUCCESS) {
+                std::cerr << "[DHT] Failed to export certificate" << std::endl;
+                return false;
+            }
+
+            // Export private key to PEM
+            gnutls_datum_t key_pem;
+            if (gnutls_x509_privkey_export2(privkey, GNUTLS_X509_FMT_PEM, &key_pem) != GNUTLS_E_SUCCESS) {
+                gnutls_free(cert_pem.data);
+                std::cerr << "[DHT] Failed to export private key" << std::endl;
+                return false;
+            }
+
+            // Write certificate to file
+            std::ofstream cert_file(cert_path, std::ios::binary);
+            cert_file.write(reinterpret_cast<char*>(cert_pem.data), cert_pem.size);
+            cert_file.close();
+
+            // Write private key to file
+            std::ofstream key_file(key_path, std::ios::binary);
+            key_file.write(reinterpret_cast<char*>(key_pem.data), key_pem.size);
+            key_file.close();
+
+            gnutls_free(cert_pem.data);
+            gnutls_free(key_pem.data);
+
+            std::cout << "[DHT] Saved identity to " << base_path << ".{crt,pem}" << std::endl;
+            return true;
+        } catch (const std::exception& e) {
+            std::cerr << "[DHT] Exception saving identity: " << e.what() << std::endl;
+            return false;
+        }
+    }
+
+    // Load identity from PEM files (works with both 2.x and 3.x)
+    dht::crypto::Identity load_identity_pem(const std::string& base_path) {
+        std::string cert_path = base_path + ".crt";
+        std::string key_path = base_path + ".pem";
+
+        // Read certificate file
+        std::ifstream cert_file(cert_path, std::ios::binary);
+        if (!cert_file) {
+            throw std::runtime_error("Certificate file not found");
+        }
+        std::string cert_pem((std::istreambuf_iterator<char>(cert_file)), std::istreambuf_iterator<char>());
+        cert_file.close();
+
+        // Read private key file
+        std::ifstream key_file(key_path, std::ios::binary);
+        if (!key_file) {
+            throw std::runtime_error("Private key file not found");
+        }
+        std::string key_pem((std::istreambuf_iterator<char>(key_file)), std::istreambuf_iterator<char>());
+        key_file.close();
+
+        // Import certificate
+        gnutls_x509_crt_t cert;
+        gnutls_x509_crt_init(&cert);
+        gnutls_datum_t cert_datum = { (unsigned char*)cert_pem.data(), (unsigned int)cert_pem.size() };
+        if (gnutls_x509_crt_import(cert, &cert_datum, GNUTLS_X509_FMT_PEM) != GNUTLS_E_SUCCESS) {
+            gnutls_x509_crt_deinit(cert);
+            throw std::runtime_error("Failed to import certificate");
+        }
+
+        // Import private key
+        gnutls_x509_privkey_t privkey;
+        gnutls_x509_privkey_init(&privkey);
+        gnutls_datum_t key_datum = { (unsigned char*)key_pem.data(), (unsigned int)key_pem.size() };
+        if (gnutls_x509_privkey_import(privkey, &key_datum, GNUTLS_X509_FMT_PEM) != GNUTLS_E_SUCCESS) {
+            gnutls_x509_crt_deinit(cert);
+            gnutls_x509_privkey_deinit(privkey);
+            throw std::runtime_error("Failed to import private key");
+        }
+
+        // Create Identity from GNUTLS objects
+        auto priv = std::make_shared<dht::crypto::PrivateKey>(privkey);
+        auto certificate = std::make_shared<dht::crypto::Certificate>(cert);
+
+        std::cout << "[DHT] Loaded identity from " << base_path << ".{crt,pem}" << std::endl;
+        return dht::crypto::Identity(priv, certificate);
+    }
+}
 
 // Internal C++ struct (hidden from C code)
 struct dht_context {
@@ -92,21 +192,22 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
         dht::crypto::Identity identity;
 
         if (ctx->config.persistence_path[0] != '\0') {
-            // Bootstrap nodes: Use persistent identity
+            // Bootstrap nodes: Use persistent identity (OpenDHT 2.x/3.x compatible)
             std::string identity_path = std::string(ctx->config.persistence_path) + ".identity";
 
             try {
-                // Try to load existing identity
-                identity = dht::crypto::loadIdentity(identity_path);
+                // Try to load existing identity from PEM files
+                identity = load_identity_pem(identity_path);
                 std::cout << "[DHT] Loaded persistent identity from: " << identity_path << std::endl;
             } catch (const std::exception& e) {
-                // Generate new identity if file doesn't exist
+                // Generate new identity if files don't exist
                 std::cout << "[DHT] Generating new persistent identity..." << std::endl;
                 identity = dht::crypto::generateIdentity();
 
-                // Save for future restarts
-                dht::crypto::saveIdentity(identity, identity_path);
-                std::cout << "[DHT] Saved identity to: " << identity_path << std::endl;
+                // Save for future restarts (PEM format, works on 2.x and 3.x)
+                if (!save_identity_pem(identity, identity_path)) {
+                    std::cerr << "[DHT] WARNING: Failed to save identity, will be ephemeral!" << std::endl;
+                }
             }
         } else {
             // User nodes: Ephemeral random identity
