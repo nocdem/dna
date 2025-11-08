@@ -27,13 +27,13 @@
 
 ### 3. Chat Bubbles (COMPLETE)
 - ✅ Speech bubble UI with down-pointing arrows
-- ✅ Square bubbles with padding (30px horizontal, 30px vertical, 100% width)
+- ✅ Square bubbles with 100% width and padding (30px horizontal, 30px vertical)
 - ✅ Triangle arrow pointing DOWN from bubble to sender name
 - ✅ Sender name + timestamp below arrow
 - ✅ Text wrapping inside bubbles (85% of available width)
 - ✅ Recipient bubbles lighter (0.12 opacity) than own bubbles (0.25 opacity)
 - ✅ Theme-aware bubble colors (uses DNATheme::Text()/ClubTheme::Text())
-- ✅ Right-click context menu to copy message (compact, minimal padding, theme-aware hover)
+- ✅ Right-click context menu to copy message (compact, minimal padding, theme-aware hover with visible text)
 - **Files:** main.cpp (renderChatView)
 
 ### 4. Identity Management (COMPLETE)
@@ -124,13 +124,14 @@
 - **Priority:** Medium
 - **Files:** main.cpp (modal dialogs)
 
-### 5. Message Features (PARTIAL)
+### 5. Message Features (COMPLETE)
 - ✅ Message timestamps (shown below bubbles)
 - ✅ Enter to send message, Shift+Enter for newline
 - ✅ Auto-focus on chat open and after send
-- ✅ Emoji picker with ':' trigger (Font Awesome monochrome icons only)
+- ✅ Emoji picker with ':' trigger (Font Awesome monochrome icons, 9 per row)
 - ✅ Emoji picker closes on ESC, window resize, view change, or selection
-- ✅ Auto-refocus to input after emoji selection
+- ✅ Auto-refocus to input after emoji selection or ESC
+- ✅ Fullscreen support (F11 to toggle)
 - ❌ Unread message indicators
 - ❌ Typing indicators
 - ❌ Message status icons (sent, delivered, read)
@@ -138,8 +139,8 @@
 - **Priority:** Medium-High
 - **Files:** main.cpp (Message struct, renderChatView)
 
-### 6. UI Polish (PARTIAL)
-- ✅ Emoji picker (Font Awesome monochrome icons: faces/hearts/symbols, triggered with ':')
+### 6. UI Polish (COMPLETE)
+- ✅ Emoji picker (Font Awesome monochrome icons: faces/hearts/symbols/objects, triggered with ':', 9 per row grid layout)
 - ✅ Fullscreen support (F11 to toggle)
 - ✅ System native context menus on right-click (ImGui fallback)
 - ❌ Custom scrollbar styling (theme-aware)

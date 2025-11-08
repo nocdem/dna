@@ -1570,25 +1570,26 @@ private:
                         show_emoji_picker = false;
                     }
                     
-                    // Font Awesome emoji icons
-                    const char* emoji_faces[] = {
+                    // Font Awesome emoji icons in a single flat array
+                    static const char* emojis[] = {
+                        // Smileys
                         ICON_FA_FACE_SMILE, ICON_FA_FACE_GRIN, ICON_FA_FACE_LAUGH, ICON_FA_FACE_GRIN_BEAM,
                         ICON_FA_FACE_GRIN_HEARTS, ICON_FA_FACE_KISS_WINK_HEART, ICON_FA_FACE_GRIN_WINK, ICON_FA_FACE_SMILE_WINK,
                         ICON_FA_FACE_GRIN_TONGUE, ICON_FA_FACE_SURPRISE, ICON_FA_FACE_FROWN, ICON_FA_FACE_SAD_TEAR,
-                        ICON_FA_FACE_ANGRY, ICON_FA_FACE_TIRED, ICON_FA_FACE_MEH, ICON_FA_FACE_ROLLING_EYES
-                    };
-                    const char* emoji_hearts[] = {
+                        ICON_FA_FACE_ANGRY, ICON_FA_FACE_TIRED, ICON_FA_FACE_MEH, ICON_FA_FACE_ROLLING_EYES,
+                        // Hearts & Symbols
                         ICON_FA_HEART, ICON_FA_HEART_PULSE, ICON_FA_HEART_CRACK, ICON_FA_STAR,
                         ICON_FA_THUMBS_UP, ICON_FA_THUMBS_DOWN, ICON_FA_FIRE, ICON_FA_ROCKET,
                         ICON_FA_BOLT, ICON_FA_CROWN, ICON_FA_GEM, ICON_FA_TROPHY,
-                        ICON_FA_GIFT, ICON_FA_CAKE_CANDLES, ICON_FA_BELL, ICON_FA_MUSIC
-                    };
-                    const char* emoji_misc[] = {
+                        ICON_FA_GIFT, ICON_FA_CAKE_CANDLES, ICON_FA_BELL, ICON_FA_MUSIC,
+                        // Objects
                         ICON_FA_CHECK, ICON_FA_XMARK, ICON_FA_CIRCLE_EXCLAMATION, ICON_FA_CIRCLE_QUESTION,
                         ICON_FA_LIGHTBULB, ICON_FA_COMMENT, ICON_FA_ENVELOPE, ICON_FA_PHONE,
                         ICON_FA_LOCATION_DOT, ICON_FA_CALENDAR, ICON_FA_CLOCK, ICON_FA_FLAG,
                         ICON_FA_SHIELD, ICON_FA_KEY, ICON_FA_LOCK, ICON_FA_EYE
                     };
+                    static const int emoji_count = sizeof(emojis) / sizeof(emojis[0]);
+                    static const int emojis_per_row = 9;
                     
                     ImGui::BeginChild("EmojiGrid", ImVec2(0, 0), false);
                     
@@ -1599,37 +1600,15 @@ private:
                     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 2));
                     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
                     
-                    // Display emoji buttons (10 per row)
-                    for (int i = 0; i < 16; i++) {
-                        if (ImGui::Button(emoji_faces[i], ImVec2(35, 35))) {
+                    // Display emojis in a grid (9 per row)
+                    for (int i = 0; i < emoji_count; i++) {
+                        if (ImGui::Button(emojis[i], ImVec2(35, 35))) {
                             if (len > 0) message_input[len-1] = '\0';
-                            strcat(message_input, emoji_faces[i]);
+                            strcat(message_input, emojis[i]);
                             show_emoji_picker = false;
                             should_focus_input = true;
                         }
-                        if ((i + 1) % 10 != 0 && i < 15) ImGui::SameLine();
-                    }
-                    
-                    ImGui::Spacing();
-                    for (int i = 0; i < 16; i++) {
-                        if (ImGui::Button(emoji_hearts[i], ImVec2(35, 35))) {
-                            if (len > 0) message_input[len-1] = '\0';
-                            strcat(message_input, emoji_hearts[i]);
-                            show_emoji_picker = false;
-                            should_focus_input = true;
-                        }
-                        if ((i + 1) % 10 != 0 && i < 15) ImGui::SameLine();
-                    }
-                    
-                    ImGui::Spacing();
-                    for (int i = 0; i < 16; i++) {
-                        if (ImGui::Button(emoji_misc[i], ImVec2(35, 35))) {
-                            if (len > 0) message_input[len-1] = '\0';
-                            strcat(message_input, emoji_misc[i]);
-                            show_emoji_picker = false;
-                            should_focus_input = true;
-                        }
-                        if ((i + 1) % 10 != 0 && i < 15) ImGui::SameLine();
+                        if ((i + 1) % emojis_per_row != 0 && i < emoji_count - 1) ImGui::SameLine();
                     }
                     
                     ImGui::PopStyleVar(2);
