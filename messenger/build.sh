@@ -84,6 +84,12 @@ if [ -d "build" ]; then
     rm -rf build
 fi
 
+# Clean any stray CMakeCache.txt in root (can cause path conflicts)
+if [ -f "CMakeCache.txt" ]; then
+    echo -e "${YELLOW}Removing stray CMakeCache.txt...${NC}"
+    rm -f CMakeCache.txt
+fi
+
 mkdir -p build
 cd build
 
