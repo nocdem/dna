@@ -558,7 +558,7 @@ private:
         ImGui::EndDisabled();
 
         // Create new button
-        if (ButtonDark(ICON_FA_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
+        if (ButtonDark(ICON_FA_CIRCLE_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
             create_identity_step = STEP_NAME;
             seed_confirmed = false;
             memset(new_identity_name, 0, sizeof(new_identity_name));
@@ -1228,7 +1228,7 @@ private:
         ImGui::Text("  DNA Messenger");
 
         ImGui::SameLine(io.DisplaySize.x - 60);
-        if (ButtonDark(ICON_FA_PLUS, ImVec2(50, 40))) {
+        if (ButtonDark(ICON_FA_CIRCLE_PLUS, ImVec2(50, 40))) {
             // TODO: Add contact dialog
         }
 
@@ -1384,7 +1384,7 @@ private:
 
         // Action buttons at bottom (40px each to match main buttons)
         float button_width = ImGui::GetContentRegionAvail().x;
-        if (ThemedButton(ICON_FA_PLUS " Add Contact", ImVec2(button_width, add_button_height), false)) {
+        if (ThemedButton(ICON_FA_CIRCLE_PLUS " Add Contact", ImVec2(button_width, add_button_height), false)) {
             // TODO: Open add contact dialog
         }
         
