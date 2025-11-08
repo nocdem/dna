@@ -284,6 +284,7 @@ public:
         show_wallet = false;
         show_identity_selection = true;
         is_first_frame = true;
+        loading_start_time = 0.0f;
         identity_loaded = false;
         selected_identity_idx = -1;
         create_identity_step = STEP_NAME;
@@ -300,32 +301,40 @@ public:
     void render() {
         ImGuiIO& io = ImGui::GetIO();
 
-        // Show loading spinner on first frame
+        // Show loading spinner for 2 seconds on first launch
         if (is_first_frame) {
-            ImGui::SetNextWindowPos(ImVec2(0, 0));
-            ImGui::SetNextWindowSize(io.DisplaySize);
-            ImGui::Begin("Loading", nullptr,
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse);
+            if (loading_start_time == 0.0f) {
+                loading_start_time = (float)ImGui::GetTime();
+            }
             
-            // Center spinner
-            float spinner_size = 32.0f;
-            ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
-            ImGui::SetCursorPos(ImVec2(center.x - spinner_size, center.y - spinner_size));
-            ThemedSpinner("##loading", spinner_size, 4.0f);
+            float elapsed = (float)ImGui::GetTime() - loading_start_time;
             
-            // Loading text below spinner
-            const char* loading_text = "Loading DNA Messenger...";
-            ImVec2 text_size = ImGui::CalcTextSize(loading_text);
-            ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_size + 20));
-            ImGui::Text("%s", loading_text);
-            
-            ImGui::End();
-            
-            // Mark first frame as done after rendering
-            is_first_frame = false;
-            return;
+            if (elapsed < 2.0f) {
+                ImGui::SetNextWindowPos(ImVec2(0, 0));
+                ImGui::SetNextWindowSize(io.DisplaySize);
+                ImGui::Begin("Loading", nullptr,
+                    ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                    ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse);
+                
+                // Center spinner
+                float spinner_size = 32.0f;
+                ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+                ImGui::SetCursorPos(ImVec2(center.x - spinner_size, center.y - spinner_size));
+                ThemedSpinner("##loading", spinner_size, 4.0f);
+                
+                // Loading text below spinner
+                const char* loading_text = "Loading DNA Messenger...";
+                ImVec2 text_size = ImGui::CalcTextSize(loading_text);
+                ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_size + 20));
+                ImGui::Text("%s", loading_text);
+                
+                ImGui::End();
+                return;
+            } else {
+                // 2 seconds elapsed, mark as done
+                is_first_frame = false;
+            }
         }
 
         // Show identity selection on first run
@@ -388,6 +397,7 @@ private:
     bool show_wallet;
     bool show_identity_selection;
     bool is_first_frame; // Show loading spinner on first frame
+    float loading_start_time; // Track when loading started
     bool identity_loaded;
     int selected_identity_idx;
     CreateIdentityStep create_identity_step;
