@@ -393,21 +393,74 @@ int dna_load_wall(dht_context_t *dht_ctx,
         return -1;
     }
 
-    // Query DHT
+    // Query DHT - fetch ALL versions (DHT is append-only)
     printf("[DNA_WALL] → DHT GET: Loading message wall for user\n");
-    uint8_t *json_data = NULL;
-    size_t json_len = 0;
-    int ret = dht_get(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                      &json_data, &json_len);
-    if (ret != 0 || !json_data) {
+    uint8_t **values = NULL;
+    size_t *values_len = NULL;
+    size_t value_count = 0;
+
+    int ret = dht_get_all(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
+                          &values, &values_len, &value_count);
+    if (ret != 0 || value_count == 0) {
         return -2;  // Not found
     }
 
-    // Parse JSON (cast to char* for JSON parsing)
-    ret = dna_message_wall_from_json((const char *)json_data, wall_out);
-    free(json_data);
+    printf("[DNA_WALL] Found %zu wall version(s) in DHT\n", value_count);
 
-    return ret;
+    // Parse all versions and find the one with newest message
+    dna_message_wall_t *best_wall = NULL;
+    uint64_t best_timestamp = 0;
+
+    for (size_t i = 0; i < value_count; i++) {
+        if (!values[i] || values_len[i] == 0) {
+            continue;
+        }
+
+        // Parse JSON
+        dna_message_wall_t *wall = NULL;
+        if (dna_message_wall_from_json((const char *)values[i], &wall) != 0) {
+            printf("[DNA_WALL] ⚠ Version %zu/%zu: JSON parse failed\n", i+1, value_count);
+            continue;
+        }
+
+        // Get timestamp of newest message (messages[0] is newest)
+        uint64_t wall_timestamp = 0;
+        if (wall->message_count > 0) {
+            wall_timestamp = wall->messages[0].timestamp;
+        }
+
+        printf("[DNA_WALL] Version %zu/%zu: %zu messages, newest=%lu\n",
+               i+1, value_count, wall->message_count, wall_timestamp);
+
+        // Keep the wall with the newest message
+        if (wall_timestamp > best_timestamp) {
+            if (best_wall) {
+                dna_message_wall_free(best_wall);
+            }
+            best_wall = wall;
+            best_timestamp = wall_timestamp;
+        } else {
+            dna_message_wall_free(wall);
+        }
+    }
+
+    // Free DHT data
+    for (size_t i = 0; i < value_count; i++) {
+        free(values[i]);
+    }
+    free(values);
+    free(values_len);
+
+    if (!best_wall) {
+        fprintf(stderr, "[DNA_WALL] No valid wall found\n");
+        return -2;
+    }
+
+    printf("[DNA_WALL] ✓ Loaded newest wall version (%zu messages, timestamp=%lu)\n",
+           best_wall->message_count, best_timestamp);
+
+    *wall_out = best_wall;
+    return 0;
 }
 
 /**
