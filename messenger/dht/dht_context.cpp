@@ -96,11 +96,14 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
             // Bootstrap nodes: Enable disk persistence
             std::string persist_path(ctx->config.persistence_path);
             std::cout << "[DHT] Enabling disk persistence: " << persist_path << std::endl;
+            std::cout << "[DHT] Bootstrap mode: " << (ctx->config.is_bootstrap ? "enabled" : "disabled") << std::endl;
 
             // Create DhtRunner::Config with persistence
             dht::DhtRunner::Config config;
             config.dht_config.node_config.maintain_storage = true;
             config.dht_config.node_config.persist_path = persist_path;
+            config.dht_config.node_config.is_bootstrap = ctx->config.is_bootstrap;
+            config.dht_config.node_config.public_stable = ctx->config.is_bootstrap;  // Public bootstrap nodes are stable
             config.dht_config.id = identity;
             config.threaded = true;
 
