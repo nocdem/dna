@@ -54,6 +54,7 @@ if(WIN32)
         gdi32
         harfbuzz
         ${FREETYPE_LIBRARIES}
+        harfbuzz
         png
         z
         bz2
