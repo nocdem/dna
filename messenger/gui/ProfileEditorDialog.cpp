@@ -538,16 +538,18 @@ void ProfileEditorDialog::saveProfile() {
             QString::fromUtf8("Profile Saved"),
             QString::fromUtf8("Your DNA profile has been updated in the DHT.\n\n"
                               "Changes are now visible to all users."));
+        // Close dialog after successful save
+        accept();
     } else {
         statusLabel->setText(QString::fromUtf8("⚠️ Failed to save profile to DHT"));
         QMessageBox::critical(this,
             QString::fromUtf8("Save Failed"),
             QString::fromUtf8("Failed to update profile in DHT.\n\n"
                               "Please check your connection and try again."));
+        // Re-enable buttons so user can retry
+        saveButton->setEnabled(true);
+        cancelButton->setEnabled(true);
     }
-
-    saveButton->setEnabled(true);
-    cancelButton->setEnabled(true);
 }
 
 void ProfileEditorDialog::onCancel() {
