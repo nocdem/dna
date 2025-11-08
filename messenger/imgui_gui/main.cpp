@@ -993,16 +993,9 @@ private:
         // Mock message history for first contact
         contact_messages[0].push_back({contacts[0].name, "Hey! How are you?", "Today 10:30 AM", false});
         contact_messages[0].push_back({"Me", "I'm good! Working on DNA Messenger", "Today 10:32 AM", true});
-        contact_messages[0].push_back({contacts[0].name, "Nice! Post-quantum crypto is the future 🚀", "Today 10:33 AM", false});
+        contact_messages[0].push_back({contacts[0].name, "Nice! Post-quantum crypto is the future", "Today 10:33 AM", false});
         contact_messages[0].push_back({"Me", "Absolutely! Kyber1024 + Dilithium5", "Today 10:35 AM", true});
         contact_messages[0].push_back({contacts[0].name, "Can't wait to try it out!", "Today 10:36 AM", false});
-        
-        // Emoji test messages
-        contact_messages[0].push_back({"Me", "Faces: 😀😁😂🤣😃😄😅😆😉😊😋😎😍😘🥰😗😙😚☺️🙂🤗🤔🤐🤨😐😑😶🙄😏😣😥😮🤤😪😴😌😛😜😝😒😓😔😕🙃🤑😲☹️🙁😖😞😟😤😢😭😦😧😨😩🤯😬😰😱🥵🥶😳🤪😵😡😠🤬😷🤒🤕🤢🤮🤧😇🤠🤡🤥🤫🤭🧐🤓", "Just now", true});
-        contact_messages[0].push_back({"Me", "Transport: 🚀🚁🚂🚃🚄🚅🚆🚇🚈🚉🚊🚝🚞🚋🚌🚍🚎🚐🚑🚒🚓🚔🚕🚖🚗🚘🚙🚚🚛🚜🛴🚲🛵🏍🛺🚡🚠🚟✈️🛫🛬🛩💺🛰🛸", "Just now", true});
-        contact_messages[0].push_back({"Me", "Symbols: ⭐️🌟✨⚡️☄️💥🔥🌈☀️🌤⛅️🌥☁️🌦🌧⛈🌩🌨❄️☃️⛄️🌬💨💧💦☔️☂️🌊🌫", "Just now", true});
-        contact_messages[0].push_back({"Me", "Hearts: ❤️🧡💛💚💙💜🖤🤍🤎💔❣️💕💞💓💗💖💘💝", "Just now", true});
-        contact_messages[0].push_back({"Me", "Hands: 👋🤚🖐✋🖖👌🤌🤏✌️🤞🤟🤘🤙👈👉👆🖕👇☝️👍👎✊👊🤛🤜👏🙌👐🤲🤝🙏", "Just now", true});
 
         // Mock message history for second contact
         contact_messages[1].push_back({contacts[1].name, "Are you available tomorrow?", "Yesterday 3:45 PM", false});
