@@ -1103,7 +1103,7 @@ private:
         ImGui::SameLine();
 
         // Settings button
-        if (ThemedButton(ICON_FA_COG "\nSettings", ImVec2(btn_width, 60), current_view == VIEW_SETTINGS)) {
+        if (ThemedButton(ICON_FA_GEAR "\nSettings", ImVec2(btn_width, 60), current_view == VIEW_SETTINGS)) {
             current_view = VIEW_SETTINGS;
             selected_contact = -1;
         }
@@ -1207,7 +1207,7 @@ private:
         if (ThemedButton(ICON_FA_WALLET " Wallet", ImVec2(-1, 40), current_view == VIEW_WALLET)) {
             current_view = VIEW_WALLET;
         }
-        if (ThemedButton(ICON_FA_COG " Settings", ImVec2(-1, 40), current_view == VIEW_SETTINGS)) {
+        if (ThemedButton(ICON_FA_GEAR " Settings", ImVec2(-1, 40), current_view == VIEW_SETTINGS)) {
             current_view = VIEW_SETTINGS;
         }
 
@@ -1256,7 +1256,7 @@ private:
             }
 
             // Format: "✓ Name" or "✗ Name" with colored icons
-            const char* icon = contacts[i].is_online ? ICON_FA_CHECK_CIRCLE : ICON_FA_TIMES_CIRCLE;
+            const char* icon = contacts[i].is_online ? ICON_FA_CIRCLE_CHECK : ICON_FA_CIRCLE_XMARK;
 
             char display_text[256];
             snprintf(display_text, sizeof(display_text), "%s   %s", icon, contacts[i].name.c_str());
@@ -1296,7 +1296,7 @@ private:
             // TODO: Open create group dialog
         }
         
-        if (ThemedButton(ICON_FA_SYNC " Refresh", ImVec2(button_width, add_button_height), false)) {
+        if (ThemedButton(ICON_FA_ARROWS_ROTATE " Refresh", ImVec2(button_width, add_button_height), false)) {
             // TODO: Refresh contact list / sync from DHT
         }
 
@@ -1336,7 +1336,7 @@ private:
         }
 
         // Style contact name same as in contact list
-        const char* status_icon = contact.is_online ? ICON_FA_CHECK : ICON_FA_TIMES;
+        const char* status_icon = contact.is_online ? ICON_FA_CHECK : ICON_FA_XMARK;
         ImVec4 icon_color;
         if (contact.is_online) {
             icon_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
@@ -1568,6 +1568,7 @@ private:
                     // ESC to close
                     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
                         show_emoji_picker = false;
+                        should_focus_input = true; // Refocus message input
                     }
                     
                     // Close if clicked outside
@@ -1772,7 +1773,7 @@ private:
         ImGui::BeginChild("SettingsContent", ImVec2(-padding, -padding), false);
 
         // Header
-        ImGui::Text(ICON_FA_COG " Settings");
+        ImGui::Text(ICON_FA_GEAR " Settings");
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
