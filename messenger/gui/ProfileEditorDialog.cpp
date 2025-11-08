@@ -13,6 +13,7 @@
 #include <QScrollArea>
 #include <QMessageBox>
 #include <QApplication>
+#include <QThread>
 
 extern "C" {
     #include "../p2p/p2p_transport.h"
@@ -532,8 +533,15 @@ void ProfileEditorDialog::saveProfile() {
 
     qgp_key_free(key);
 
+    printf("[GUI] DEBUG: dna_update_profile returned: %d\n", ret);
+
     if (ret == 0) {
         statusLabel->setText(QString::fromUtf8("✓ Profile saved to DHT successfully!"));
+
+        // Wait 2 seconds for DHT propagation (PUT is asynchronous)
+        printf("[GUI] Waiting 2 seconds for DHT propagation...\n");
+        QThread::sleep(2);
+
         QMessageBox::information(this,
             QString::fromUtf8("Profile Saved"),
             QString::fromUtf8("Your DNA profile has been updated in the DHT.\n\n"
