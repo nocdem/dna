@@ -45,7 +45,6 @@ target_include_directories(dna_messenger_imgui PRIVATE
 target_link_libraries(dna_messenger_imgui PRIVATE
     OpenGL::GL
     glfw
-    ${FREETYPE_LIBRARIES}
 )
 
 # Platform-specific settings
@@ -53,10 +52,15 @@ if(WIN32)
     target_link_libraries(dna_messenger_imgui PRIVATE
         opengl32
         gdi32
-        png
+        ${FREETYPE_LIBRARIES}
         harfbuzz
+        png
         z
         bz2
+    )
+else()
+    target_link_libraries(dna_messenger_imgui PRIVATE
+        ${FREETYPE_LIBRARIES}
     )
 endif()
 
