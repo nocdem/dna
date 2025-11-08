@@ -54,8 +54,4 @@ if(NOT WIN32)
     target_link_libraries(persistent_bootstrap dht_lib)
     target_include_directories(persistent_bootstrap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # Quick DHT lookup tool
-    add_executable(quick_lookup quick_lookup.c)
-    target_link_libraries(quick_lookup dht_lib)
-    target_include_directories(quick_lookup PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
