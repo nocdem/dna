@@ -7,10 +7,13 @@ set(CMAKE_CXX_STANDARD 17)
 
 # Enable wide character support for emoji (U+10000+)
 add_definitions(-DIMGUI_USE_WCHAR32)
+# Enable FreeType for colored emoji
+add_definitions(-DIMGUI_ENABLE_FREETYPE)
 
 # Find required packages
 find_package(OpenGL REQUIRED)
 find_package(glfw3 REQUIRED)
+find_package(Freetype REQUIRED)
 
 # ImGui source files
 set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR})
@@ -22,6 +25,7 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui_widgets.cpp
     ${IMGUI_DIR}/backends/imgui_impl_glfw.cpp
     ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+    ${IMGUI_DIR}/misc/freetype/imgui_freetype.cpp
 )
 
 # Main application
@@ -34,11 +38,14 @@ add_executable(dna_messenger_imgui
 target_include_directories(dna_messenger_imgui PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
+    ${IMGUI_DIR}/misc/freetype
+    ${FREETYPE_INCLUDE_DIRS}
 )
 
 target_link_libraries(dna_messenger_imgui PRIVATE
     OpenGL::GL
     glfw
+    ${FREETYPE_LIBRARIES}
 )
 
 # Platform-specific settings
@@ -47,6 +54,15 @@ if(WIN32)
         opengl32
         gdi32
     )
+endif()
+
+# Install emoji font to ~/.dna/fonts (Linux) or %APPDATA%\.dna\fonts (Windows)
+if(WIN32)
+    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/fonts/NotoColorEmoji.ttf 
+            DESTINATION "$ENV{APPDATA}/.dna/fonts")
+else()
+    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/fonts/NotoColorEmoji.ttf 
+            DESTINATION "$ENV{HOME}/.dna/fonts")
 endif()
 
 # Install

@@ -5,6 +5,7 @@
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
 #include "imgui_impl_opengl3.h"
+#include "imgui_freetype.h"
 #include "modal_helper.h"
 #include "font_awesome.h"
 #include "theme_colors.h"
@@ -1945,17 +1946,45 @@ int main(int argc, char** argv) {
     static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
     io.Fonts->AddFontFromMemoryTTF((void*)fa_solid_900_ttf, sizeof(fa_solid_900_ttf), base_size * 0.9f, &config, icon_ranges);
     
-    // Merge Emoji font (monochrome, using WCHAR32 for full Unicode support)
+    // Merge Emoji font (colored, loaded from external file)
     config.MergeMode = true;
     config.GlyphMinAdvanceX = base_size;
     config.GlyphOffset = ImVec2(0, 0);
-    config.FontDataOwnedByAtlas = false; // Embedded font
-    // With WCHAR32, we can use full emoji range
+    config.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_LoadColor; // Enable colored glyphs (FreeType)
+    
+    // Platform-specific font path
+    std::string emoji_font_path;
+    #ifdef _WIN32
+        const char* appdata = getenv("APPDATA");
+        if (appdata) {
+            emoji_font_path = std::string(appdata) + "\\.dna\\fonts\\NotoColorEmoji.ttf";
+        }
+    #else
+        const char* home = getenv("HOME");
+        if (home) {
+            emoji_font_path = std::string(home) + "/.dna/fonts/NotoColorEmoji.ttf";
+        }
+    #endif
+    
+    // Try to load emoji font from file
     static const ImWchar emoji_ranges[] = {
-        0x1, 0x1FFFF, // Full Unicode BMP + SMP (includes all emoji)
+        0x1, 0x1FFFF, // Full Unicode range for emoji
         0
     };
-    io.Fonts->AddFontFromMemoryTTF((void*)NotoEmoji_Regular_ttf, sizeof(NotoEmoji_Regular_ttf), base_size, &config, emoji_ranges);
+    
+    if (!emoji_font_path.empty()) {
+        ImFont* emoji_font = io.Fonts->AddFontFromFileTTF(emoji_font_path.c_str(), base_size, &config, emoji_ranges);
+        if (!emoji_font) {
+            printf("[WARNING] Failed to load NotoColorEmoji.ttf from %s, falling back to embedded NotoEmoji\n", emoji_font_path.c_str());
+            // Fallback to embedded monochrome emoji
+            config.FontDataOwnedByAtlas = false;
+            io.Fonts->AddFontFromMemoryTTF((void*)NotoEmoji_Regular_ttf, sizeof(NotoEmoji_Regular_ttf), base_size, &config, emoji_ranges);
+        }
+    } else {
+        printf("[WARNING] Could not determine emoji font path, using embedded NotoEmoji\n");
+        config.FontDataOwnedByAtlas = false;
+        io.Fonts->AddFontFromMemoryTTF((void*)NotoEmoji_Regular_ttf, sizeof(NotoEmoji_Regular_ttf), base_size, &config, emoji_ranges);
+    }
 
     ImGui::StyleColorsDark();
 
