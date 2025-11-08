@@ -107,6 +107,12 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
             config.dht_config.id = identity;
             config.threaded = true;
 
+            std::cout << "[DHT] Configured persistence:" << std::endl;
+            std::cout << "[DHT]   maintain_storage = " << config.dht_config.node_config.maintain_storage << std::endl;
+            std::cout << "[DHT]   persist_path = " << config.dht_config.node_config.persist_path << std::endl;
+            std::cout << "[DHT]   is_bootstrap = " << config.dht_config.node_config.is_bootstrap << std::endl;
+            std::cout << "[DHT]   public_stable = " << config.dht_config.node_config.public_stable << std::endl;
+
             ctx->runner.run(ctx->config.port, config);
         } else {
             // User nodes: Memory-only (fast, no disk I/O)
