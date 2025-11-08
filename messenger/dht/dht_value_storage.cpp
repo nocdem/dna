@@ -48,15 +48,13 @@ struct dht_value_storage {
  */
 static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS dht_values ("
-    "  key_hash TEXT NOT NULL,"
+    "  key_hash TEXT NOT NULL PRIMARY KEY,"
     "  value_data BLOB NOT NULL,"
     "  value_type INTEGER NOT NULL,"
     "  created_at INTEGER NOT NULL,"
-    "  expires_at INTEGER,"
-    "  PRIMARY KEY (key_hash, created_at)"
+    "  expires_at INTEGER"
     ");"
-    "CREATE INDEX IF NOT EXISTS idx_expires ON dht_values(expires_at);"
-    "CREATE INDEX IF NOT EXISTS idx_key ON dht_values(key_hash);";
+    "CREATE INDEX IF NOT EXISTS idx_expires ON dht_values(expires_at);";
 
 /**
  * @brief Helper: Convert binary hash to hex string
