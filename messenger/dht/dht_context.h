@@ -175,6 +175,17 @@ int dht_get_stats(dht_context_t *ctx,
                   size_t *node_count,
                   size_t *stored_values);
 
+/**
+ * Get storage pointer from DHT context
+ *
+ * Returns the value storage handle, or NULL if storage not enabled.
+ * Used by bootstrap monitoring to access storage statistics.
+ *
+ * @param ctx DHT context
+ * @return Storage handle, or NULL if not enabled
+ */
+struct dht_value_storage* dht_get_storage(dht_context_t *ctx);
+
 #ifdef __cplusplus
 }
 #endif

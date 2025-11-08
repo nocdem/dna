@@ -9,6 +9,7 @@
  */
 
 #include "dht_context.h"
+#include "dht_value_storage.h"
 #include <opendht/dhtrunner.h>
 #include <opendht/crypto.h>
 #include <cstring>
@@ -143,8 +144,9 @@ struct dht_context {
     dht::DhtRunner runner;
     dht_config_t config;
     bool running;
+    dht_value_storage_t *storage;  // Value persistence (NULL for user nodes)
 
-    dht_context() : running(false) {
+    dht_context() : running(false), storage(nullptr) {
         memset(&config, 0, sizeof(config));
     }
 };
@@ -277,6 +279,26 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
             std::cout << "[DHT] No bootstrap nodes (first node in network)" << std::endl;
         }
 
+        // Initialize value storage (bootstrap nodes only)
+        if (ctx->config.persistence_path[0] != '\0') {
+            std::string storage_path = std::string(ctx->config.persistence_path) + ".values.db";
+            std::cout << "[DHT] Initializing value storage: " << storage_path << std::endl;
+
+            ctx->storage = dht_value_storage_new(storage_path.c_str());
+            if (ctx->storage) {
+                std::cout << "[DHT] ✓ Value storage initialized" << std::endl;
+
+                // Launch async republish in background
+                if (dht_value_storage_restore_async(ctx->storage, ctx) == 0) {
+                    std::cout << "[DHT] ✓ Async value republish started" << std::endl;
+                } else {
+                    std::cerr << "[DHT] WARNING: Failed to start async republish" << std::endl;
+                }
+            } else {
+                std::cerr << "[DHT] WARNING: Value storage initialization failed" << std::endl;
+            }
+        }
+
         ctx->running = true;
         return 0;
     } catch (const std::exception& e) {
@@ -298,6 +320,14 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
             ctx->runner.shutdown();
             ctx->runner.join();
             std::cout << "[DHT] ✓ DHT shutdown complete" << std::endl;
+
+            // Cleanup value storage
+            if (ctx->storage) {
+                std::cout << "[DHT] Cleaning up value storage..." << std::endl;
+                dht_value_storage_free(ctx->storage);
+                ctx->storage = nullptr;
+            }
+
             ctx->running = false;
         }
     } catch (const std::exception& e) {
@@ -454,6 +484,33 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
             ctx->runner.put(hash, dht_value,
                            [](bool success, const std::vector<std::shared_ptr<dht::Node>>&){},
                            creation_time, false);
+        }
+
+        // Store value to persistent storage (if enabled)
+        if (ctx->storage) {
+            uint64_t expires_at = 0;  // 0 = permanent
+            if (ttl_seconds != UINT_MAX) {
+                expires_at = time(NULL) + ttl_seconds;
+            }
+
+            // Convert InfoHash to bytes
+            std::string hash_str = hash.toString();
+            const uint8_t *hash_bytes = (const uint8_t*)hash_str.data();
+
+            dht_value_metadata_t metadata;
+            metadata.key_hash = hash_bytes;
+            metadata.key_hash_len = hash_str.size();
+            metadata.value_data = value;
+            metadata.value_data_len = value_len;
+            metadata.value_type = dht_value->type;
+            metadata.created_at = time(NULL);
+            metadata.expires_at = expires_at;
+
+            if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
+                if (dht_value_storage_should_persist(metadata.value_type, metadata.expires_at)) {
+                    std::cout << "[Storage] ✓ Value persisted to disk" << std::endl;
+                }
+            }
         }
 
         return 0;
@@ -689,4 +746,14 @@ extern "C" int dht_get_stats(dht_context_t *ctx,
         std::cerr << "[DHT] Exception in dht_get_stats: " << e.what() << std::endl;
         return -1;
     }
+}
+
+/**
+ * Get storage pointer from DHT context
+ */
+extern "C" dht_value_storage_t* dht_get_storage(dht_context_t *ctx) {
+    if (!ctx) {
+        return NULL;
+    }
+    return ctx->storage;
 }
