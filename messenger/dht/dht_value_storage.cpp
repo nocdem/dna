@@ -48,13 +48,15 @@ struct dht_value_storage {
  */
 static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS dht_values ("
-    "  key_hash TEXT NOT NULL PRIMARY KEY,"
+    "  key_hash TEXT NOT NULL,"
     "  value_data BLOB NOT NULL,"
     "  value_type INTEGER NOT NULL,"
     "  created_at INTEGER NOT NULL,"
-    "  expires_at INTEGER"
+    "  expires_at INTEGER,"
+    "  PRIMARY KEY (key_hash, created_at)"
     ");"
-    "CREATE INDEX IF NOT EXISTS idx_expires ON dht_values(expires_at);";
+    "CREATE INDEX IF NOT EXISTS idx_expires ON dht_values(expires_at);"
+    "CREATE INDEX IF NOT EXISTS idx_key ON dht_values(key_hash);";
 
 /**
  * @brief Helper: Convert binary hash to hex string
@@ -464,11 +466,16 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
     storage->republish_in_progress = true;
     pthread_mutex_unlock(&storage->mutex);
 
-    // Query all non-expired values
+    // Query only LATEST version per key (not all versions)
     sqlite3_stmt *stmt;
     const char *sql = "SELECT key_hash, value_data, value_type, created_at, expires_at "
                       "FROM dht_values "
-                      "WHERE expires_at IS NULL OR expires_at > ?";
+                      "WHERE (expires_at IS NULL OR expires_at > ?) "
+                      "  AND created_at = ("
+                      "    SELECT MAX(created_at) "
+                      "    FROM dht_values AS dv2 "
+                      "    WHERE dv2.key_hash = dht_values.key_hash"
+                      "  )";
 
     uint64_t now = time(NULL);
 
