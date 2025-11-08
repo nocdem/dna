@@ -529,6 +529,7 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     new_msg.signature_len = sig_len;
 
     // Add message to wall (prepend, newest first)
+    printf("[DNA_WALL] Adding message to wall (current: %zu messages)\n", wall->message_count);
     size_t new_count = wall->message_count + 1;
     if (new_count > DNA_MESSAGE_WALL_MAX_MESSAGES) {
         new_count = DNA_MESSAGE_WALL_MAX_MESSAGES;
@@ -542,12 +543,17 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
 
     // First message is the new one
     new_messages[0] = new_msg;
+    printf("[DNA_WALL] New message at index 0: timestamp=%lu, text='%s'\n",
+           new_msg.timestamp, new_msg.text);
 
     // Copy old messages (up to limit - 1)
     size_t copy_count = (wall->message_count < new_count - 1) ?
                         wall->message_count : (new_count - 1);
+    printf("[DNA_WALL] Copying %zu old messages\n", copy_count);
     for (size_t i = 0; i < copy_count; i++) {
         new_messages[i + 1] = wall->messages[i];
+        printf("[DNA_WALL]   Old message %zu at index %zu: timestamp=%lu, text='%s'\n",
+               i, i+1, wall->messages[i].timestamp, wall->messages[i].text);
     }
 
     // Replace messages array
@@ -555,6 +561,7 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     wall->messages = new_messages;
     wall->message_count = new_count;
     wall->allocated_count = new_count;
+    printf("[DNA_WALL] Wall now has %zu messages\n", new_count);
 
     // Serialize to JSON
     char *json_data = NULL;

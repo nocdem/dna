@@ -178,11 +178,14 @@ void MessageWallDialog::displayMessages(const dna_message_wall_t *wall) {
         return;
     }
 
+    printf("[GUI] Displaying %zu messages from wall\n", wall->message_count);
     messageList->clear();
 
     // Display messages (newest first)
     for (size_t i = 0; i < wall->message_count; i++) {
         const dna_wall_message_t *msg = &wall->messages[i];
+        printf("[GUI] Message %zu/%zu: timestamp=%lu, text_len=%zu, text='%s'\n",
+               i+1, wall->message_count, msg->timestamp, strlen(msg->text), msg->text);
 
         // Create message item widget
         QWidget *itemWidget = new QWidget();
