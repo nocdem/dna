@@ -244,9 +244,14 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
             std::promise<bool> done_promise;
             auto done_future = done_promise.get_future();
 
-            ctx->runner.put(hash, dht_value, [&done_promise](bool success) {
+            std::cout << "[DHT] Initiating PUT to network (expecting replication to " << ctx->config.bootstrap_count << " bootstrap nodes)..." << std::endl;
+
+            ctx->runner.put(hash, dht_value, [&done_promise](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes) {
                 if (success) {
-                    std::cout << "[DHT] PUT PERMANENT: ✓ Stored on at least one node" << std::endl;
+                    std::cout << "[DHT] PUT PERMANENT: ✓ Stored on " << nodes.size() << " remote node(s)" << std::endl;
+                    if (nodes.empty()) {
+                        std::cerr << "[DHT] WARNING: Success but 0 nodes confirmed! Data might be local-only." << std::endl;
+                    }
                 } else {
                     std::cout << "[DHT] PUT PERMANENT: ✗ Failed to store on any node" << std::endl;
                 }
