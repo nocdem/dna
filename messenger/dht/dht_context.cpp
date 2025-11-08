@@ -23,12 +23,36 @@
 #include <gnutls/x509.h>
 #include <gnutls/abstract.h>
 
-// Custom ValueTypes with different TTLs
+// Global storage pointer (accessed from ValueType store callbacks)
+static dht_value_storage_t *g_global_storage = nullptr;
+
+// Custom ValueTypes with different TTLs and storage callbacks
 static const dht::ValueType DNA_TYPE_7DAY {
     0x1001,                      // Type ID for 7-day data (messages, contacts, etc.)
     "DNA_7DAY",
     std::chrono::hours(7 * 24),  // 7 days
-    [](dht::InfoHash, std::shared_ptr<dht::Value>&, const dht::InfoHash&, const dht::SockAddr&) {
+    [](dht::InfoHash key, std::shared_ptr<dht::Value>& value, const dht::InfoHash&, const dht::SockAddr&) {
+        // Store to persistent storage if available (7-day values - skip ephemeral)
+        if (g_global_storage && value) {
+            uint64_t now = time(NULL);
+            uint64_t expires_at = now + (7 * 24 * 3600);  // 7 days from now
+
+            if (dht_value_storage_should_persist(value->type, expires_at)) {
+                std::string key_str = key.toString();
+                dht_value_metadata_t metadata;
+                metadata.key_hash = (const uint8_t*)key_str.data();
+                metadata.key_hash_len = key_str.size();
+                metadata.value_data = value->data.data();
+                metadata.value_data_len = value->data.size();
+                metadata.value_type = value->type;
+                metadata.created_at = now;
+                metadata.expires_at = expires_at;
+
+                if (dht_value_storage_put(g_global_storage, &metadata) == 0) {
+                    std::cout << "[Storage] ✓ Persisted 7-day value (" << value->data.size() << " bytes)" << std::endl;
+                }
+            }
+        }
         return true;  // Accept all
     }
 };
@@ -37,7 +61,28 @@ static const dht::ValueType DNA_TYPE_365DAY {
     0x1002,                       // Type ID for 365-day data (name registrations)
     "DNA_365DAY",
     std::chrono::hours(365 * 24), // 365 days
-    [](dht::InfoHash, std::shared_ptr<dht::Value>&, const dht::InfoHash&, const dht::SockAddr&) {
+    [](dht::InfoHash key, std::shared_ptr<dht::Value>& value, const dht::InfoHash&, const dht::SockAddr&) {
+        // Store to persistent storage if available (365-day values - PERMANENT)
+        if (g_global_storage && value) {
+            uint64_t now = time(NULL);
+            uint64_t expires_at = now + (365 * 24 * 3600);  // 365 days from now
+
+            if (dht_value_storage_should_persist(value->type, expires_at)) {
+                std::string key_str = key.toString();
+                dht_value_metadata_t metadata;
+                metadata.key_hash = (const uint8_t*)key_str.data();
+                metadata.key_hash_len = key_str.size();
+                metadata.value_data = value->data.data();
+                metadata.value_data_len = value->data.size();
+                metadata.value_type = value->type;
+                metadata.created_at = now;
+                metadata.expires_at = expires_at;
+
+                if (dht_value_storage_put(g_global_storage, &metadata) == 0) {
+                    std::cout << "[Storage] ✓ Persisted 365-day value (" << value->data.size() << " bytes)" << std::endl;
+                }
+            }
+        }
         return true;  // Accept all
     }
 };
@@ -288,6 +333,10 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
             if (ctx->storage) {
                 std::cout << "[DHT] ✓ Value storage initialized" << std::endl;
 
+                // Set global storage pointer (used by ValueType store callbacks)
+                g_global_storage = ctx->storage;
+                std::cout << "[DHT] ✓ Storage callbacks enabled in ValueTypes" << std::endl;
+
                 // Launch async republish in background
                 if (dht_value_storage_restore_async(ctx->storage, ctx) == 0) {
                     std::cout << "[DHT] ✓ Async value republish started" << std::endl;
@@ -324,6 +373,7 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
             // Cleanup value storage
             if (ctx->storage) {
                 std::cout << "[DHT] Cleaning up value storage..." << std::endl;
+                g_global_storage = nullptr;  // Clear global pointer first
                 dht_value_storage_free(ctx->storage);
                 ctx->storage = nullptr;
             }
