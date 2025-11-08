@@ -52,8 +52,8 @@ if(WIN32)
     target_link_libraries(dna_messenger_imgui PRIVATE
         opengl32
         gdi32
-        ${FREETYPE_LIBRARIES}
         harfbuzz
+        ${FREETYPE_LIBRARIES}
         png
         z
         bz2
