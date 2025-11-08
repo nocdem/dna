@@ -866,7 +866,7 @@ private:
         ImGuiIO& io = ImGui::GetIO();
         bool is_mobile = io.DisplaySize.x < 600.0f;
         
-        ImGui::Text("Enter Your 24-Word Seed Phrase");
+        ImGui::TextWrapped("Enter Your 24-Word Seed Phrase");
         ImGui::Spacing();
         
         // Style input
@@ -877,7 +877,7 @@ private:
         
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextMultiline("##RestoreSeedPhrase", generated_mnemonic, sizeof(generated_mnemonic),
-                                 ImVec2(-1, 200));
+                                 ImVec2(-1, 200), ImGuiInputTextFlags_WordWrap);
         
         ImGui::PopStyleColor();
         
@@ -897,8 +897,10 @@ private:
             free(mnemonic_copy);
             
             if (word_count != 24) {
+                ImGui::PushTextWrapPos(0.0f);
                 ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), 
                                   "Invalid: Found %d words, need exactly 24 words", word_count);
+                ImGui::PopTextWrapPos();
             } else {
                 ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "✓ Valid: 24 words");
             }
@@ -989,6 +991,13 @@ private:
         contact_messages[0].push_back({contacts[0].name, "Nice! Post-quantum crypto is the future 🚀", "Today 10:33 AM", false});
         contact_messages[0].push_back({"Me", "Absolutely! Kyber1024 + Dilithium5", "Today 10:35 AM", true});
         contact_messages[0].push_back({contacts[0].name, "Can't wait to try it out!", "Today 10:36 AM", false});
+        
+        // Emoji test messages
+        contact_messages[0].push_back({"Me", "Faces: 😀😁😂🤣😃😄😅😆😉😊😋😎😍😘🥰😗😙😚☺️🙂🤗🤔🤐🤨😐😑😶🙄😏😣😥😮🤤😪😴😌😛😜😝😒😓😔😕🙃🤑😲☹️🙁😖😞😟😤😢😭😦😧😨😩🤯😬😰😱🥵🥶😳🤪😵😡😠🤬😷🤒🤕🤢🤮🤧😇🤠🤡🤥🤫🤭🧐🤓", "Just now", true});
+        contact_messages[0].push_back({"Me", "Transport: 🚀🚁🚂🚃🚄🚅🚆🚇🚈🚉🚊🚝🚞🚋🚌🚍🚎🚐🚑🚒🚓🚔🚕🚖🚗🚘🚙🚚🚛🚜🛴🚲🛵🏍🛺🚡🚠🚟✈️🛫🛬🛩💺🛰🛸", "Just now", true});
+        contact_messages[0].push_back({"Me", "Symbols: ⭐️🌟✨⚡️☄️💥🔥🌈☀️🌤⛅️🌥☁️🌦🌧⛈🌩🌨❄️☃️⛄️🌬💨💧💦☔️☂️🌊🌫", "Just now", true});
+        contact_messages[0].push_back({"Me", "Hearts: ❤️🧡💛💚💙💜🖤🤍🤎💔❣️💕💞💓💗💖💘💝", "Just now", true});
+        contact_messages[0].push_back({"Me", "Hands: 👋🤚🖐✋🖖👌🤌🤏✌️🤞🤟🤘🤙👈👉👆🖕👇☝️👍👎✊👊🤛🤜👏🙌👐🤲🤝🙏", "Just now", true});
 
         // Mock message history for second contact
         contact_messages[1].push_back({contacts[1].name, "Are you available tomorrow?", "Yesterday 3:45 PM", false});
@@ -1796,6 +1805,7 @@ int main(int argc, char** argv) {
         // Load embedded fonts
     #include "fonts/NotoSans-Regular.h"
     #include "fonts/fa-solid-900.h"
+    #include "fonts/NotoEmoji-Regular.h"
 
     ImFontConfig config;
     config.MergeMode = false;
@@ -1812,6 +1822,18 @@ int main(int argc, char** argv) {
     config.FontDataOwnedByAtlas = false;
     static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
     io.Fonts->AddFontFromMemoryTTF((void*)fa_solid_900_ttf, sizeof(fa_solid_900_ttf), base_size * 0.9f, &config, icon_ranges);
+    
+    // Merge Emoji font (monochrome, using WCHAR32 for full Unicode support)
+    config.MergeMode = true;
+    config.GlyphMinAdvanceX = base_size;
+    config.GlyphOffset = ImVec2(0, 0);
+    config.FontDataOwnedByAtlas = false; // Embedded font
+    // With WCHAR32, we can use full emoji range
+    static const ImWchar emoji_ranges[] = {
+        0x1, 0x1FFFF, // Full Unicode BMP + SMP (includes all emoji)
+        0
+    };
+    io.Fonts->AddFontFromMemoryTTF((void*)NotoEmoji_Regular_ttf, sizeof(NotoEmoji_Regular_ttf), base_size, &config, emoji_ranges);
 
     ImGui::StyleColorsDark();
 

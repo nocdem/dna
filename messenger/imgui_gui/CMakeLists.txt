@@ -5,6 +5,9 @@ project(dna_messenger_imgui CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
+# Enable wide character support for emoji (U+10000+)
+add_definitions(-DIMGUI_USE_WCHAR32)
+
 # Find required packages
 find_package(OpenGL REQUIRED)
 find_package(glfw3 REQUIRED)
