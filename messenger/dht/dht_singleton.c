@@ -51,29 +51,11 @@ int dht_singleton_init(void)
     }
     dht_config.bootstrap_count = BOOTSTRAP_COUNT;
 
-    // Enable persistent storage to ~/.dna/dht/
-    const char *home = getenv("HOME");
-    if (!home) {
-        #ifdef _WIN32
-        home = getenv("USERPROFILE");
-        #else
-        home = "/tmp";
-        #endif
-    }
+    // NO PERSISTENCE for client DHT (only bootstrap nodes need persistence)
+    // Client DHT is temporary and should not republish stored values
+    dht_config.persistence_path[0] = '\0';  // Empty = no persistence
 
-    // Ensure ~/.dna directory exists
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
-    mkdir(dna_dir, 0700);
-
-    // Set DHT persistence path
-    snprintf(dht_config.persistence_path, sizeof(dht_config.persistence_path),
-             "%s/.dna/dht", home);
-
-    // Create DHT directory
-    mkdir(dht_config.persistence_path, 0700);
-
-    printf("[DHT_SINGLETON] Using persistent storage: %s\n", dht_config.persistence_path);
+    printf("[DHT_SINGLETON] Client DHT mode (no persistence)\n");
 
     // Create DHT context
     g_dht_context = dht_context_new(&dht_config);
