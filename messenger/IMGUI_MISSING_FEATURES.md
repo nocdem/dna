@@ -22,38 +22,42 @@
 - ✅ Sorting: online first, then offline, then alphabetical
 - ✅ Selected contact indicator (hover + active states)
 - ✅ Scrollable contact area
-- ✅ "Add Contact" button at bottom of sidebar (40px height)
+- ✅ "Add Contact", "Create Group", and "Refresh" buttons at bottom of sidebar (40px height each)
 - **Files:** main.cpp (renderSidebar, renderContactsList)
 
 ### 3. Chat Bubbles (COMPLETE)
-- ✅ Speech bubble UI for messages
+- ✅ Speech bubble UI with down-pointing arrows
 - ✅ Square bubbles with padding (30px horizontal, 30px vertical, 100% width)
 - ✅ Triangle arrow pointing DOWN from bubble to sender name
 - ✅ Sender name + timestamp below arrow
 - ✅ Text wrapping inside bubbles (85% of available width)
 - ✅ Recipient bubbles lighter (0.12 opacity) than own bubbles (0.25 opacity)
 - ✅ Theme-aware bubble colors (uses DNATheme::Text()/ClubTheme::Text())
-- ✅ Right-click context menu to copy message (compact, no padding, theme-aware hover)
+- ✅ Right-click context menu to copy message (compact, minimal padding, theme-aware hover)
 - **Files:** main.cpp (renderChatView)
 
 ### 4. Identity Management (COMPLETE)
 - ✅ Identity selection modal on first run
 - ✅ 3-step identity creation wizard (Name → Seed Phrase → Creating)
+- ✅ Restore from seed dialog with 24-word BIP39 validation (text wrapping, word count validation)
 - ✅ BIP39 mock seed phrase generation
 - ✅ Seed phrase copy to clipboard with visual feedback
 - ✅ Identity name validation (3-20 chars, alphanumeric + underscore)
 - ✅ Hover/selection states with theme colors
 - ✅ Text vertically centered in identity list
 - ✅ Deselect on second click
-- **Files:** main.cpp (renderIdentitySelection, renderCreateIdentity*)
+- ✅ Modal sizing optimized for 1000x600 minimum window
+- **Files:** main.cpp (renderIdentitySelection, renderCreateIdentity*, renderRestoreFromSeed)
 
 ### 5. Settings Persistence (COMPLETE)
-- ✅ Settings file at ~/.config/dna_messenger/settings.conf (Linux), %APPDATA%/dna_messenger (Windows), ~/Library/Application Support/dna_messenger (Mac)
+- ✅ Settings file at ~/.config/dna_messenger/settings.conf (Linux), %APPDATA%/dna_messenger (Windows), ~/Library/Application Support/dna_messenger (Mac), ~/.dna (Android)
+- ✅ Cross-platform configuration support (Linux, Windows, Mac, Android)
 - ✅ Save/load: theme, scale, window_width, window_height
 - ✅ SettingsManager::Load() on startup
-- ✅ SettingsManager::Save() on changes and exit
-- ✅ Default values: theme=0, scale=1 (1.1x internal), window=1280x720
-- ✅ Scale presets: Normal (1.1x), Large (1.5x)
+- �ingsManager::Save() on changes and exit
+- ✅ Default values: theme=0, scale=0 (1.1x internal shown as 100%), window=1280x720
+- ✅ Scale presets: Normal (1.1x/100%), Large (1.5x/150%)
+- ✅ Restart notification when scale is changed
 - **Files:** settings_manager.cpp/h
 
 ### 6. Font System (COMPLETE)
@@ -122,9 +126,11 @@
 
 ### 5. Message Features (PARTIAL)
 - ✅ Message timestamps (shown below bubbles)
-- ✅ Enter to send, Shift+Enter for newline
+- ✅ Enter to send message, Shift+Enter for newline
 - ✅ Auto-focus on chat open and after send
-- ✅ Emoji picker with ':' trigger (Font Awesome icons)
+- ✅ Emoji picker with ':' trigger (Font Awesome monochrome icons only)
+- ✅ Emoji picker closes on ESC, window resize, view change, or selection
+- ✅ Auto-refocus to input after emoji selection
 - ❌ Unread message indicators
 - ❌ Typing indicators
 - ❌ Message status icons (sent, delivered, read)
@@ -133,8 +139,9 @@
 - **Files:** main.cpp (Message struct, renderChatView)
 
 ### 6. UI Polish (PARTIAL)
-- ✅ Emoji picker (Font Awesome faces/hearts/symbols, triggered with ':')
+- ✅ Emoji picker (Font Awesome monochrome icons: faces/hearts/symbols, triggered with ':')
 - ✅ Fullscreen support (F11 to toggle)
+- ✅ System native context menus on right-click (ImGui fallback)
 - ❌ Custom scrollbar styling (theme-aware)
 - ❌ Toast notifications for errors/success
 - ❌ Loading spinners for async operations
