@@ -17,6 +17,7 @@
 #include <iostream>
 #include <chrono>
 #include <future>
+#include <thread>
 
 // Custom ValueTypes with different TTLs
 static const dht::ValueType DNA_TYPE_7DAY {
@@ -268,6 +269,32 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
             }
 
             std::cout << "[DHT] ✓ PUT PERMANENT confirmed by network" << std::endl;
+
+            // Verify data is actually retrievable (wait 5 seconds for propagation, then test GET)
+            std::cout << "[DHT] Verifying data is retrievable (waiting 5 seconds)..." << std::endl;
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+
+            // Try to GET the data back from the network
+            auto get_future = ctx->runner.get(hash);
+            auto get_status = get_future.wait_for(std::chrono::seconds(10));
+
+            if (get_status == std::future_status::timeout) {
+                std::cerr << "[DHT] WARNING: GET timed out, data may not be retrievable yet" << std::endl;
+            } else {
+                auto values = get_future.get();
+                bool found = false;
+                for (const auto& val : values) {
+                    if (val && val->data.size() == value_len) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (found) {
+                    std::cout << "[DHT] ✓ Verified: Data is retrievable from DHT network" << std::endl;
+                } else {
+                    std::cerr << "[DHT] WARNING: PUT succeeded but data not yet retrievable from network" << std::endl;
+                }
+            }
         } else {
             // Choose ValueType based on TTL (365 days vs 7 days)
             if (ttl_seconds >= 365 * 24 * 3600) {
