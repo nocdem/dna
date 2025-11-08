@@ -1607,7 +1607,7 @@ private:
                             show_emoji_picker = false;
                             should_focus_input = true;
                         }
-                        if ((i + 1) % 9 != 0) ImGui::SameLine();
+                        if ((i + 1) % 10 != 0 && i < 15) ImGui::SameLine();
                     }
                     
                     ImGui::Spacing();
@@ -1618,7 +1618,7 @@ private:
                             show_emoji_picker = false;
                             should_focus_input = true;
                         }
-                        if ((i + 1) % 9 != 0) ImGui::SameLine();
+                        if ((i + 1) % 10 != 0 && i < 15) ImGui::SameLine();
                     }
                     
                     ImGui::Spacing();
@@ -1629,7 +1629,7 @@ private:
                             show_emoji_picker = false;
                             should_focus_input = true;
                         }
-                        if ((i + 1) % 9 != 0) ImGui::SameLine();
+                        if ((i + 1) % 10 != 0 && i < 15) ImGui::SameLine();
                     }
                     
                     ImGui::PopStyleVar(2);
