@@ -1950,7 +1950,8 @@ int main(int argc, char** argv) {
     config.MergeMode = true;
     config.GlyphMinAdvanceX = base_size;
     config.GlyphOffset = ImVec2(0, 0);
-    config.FontLoaderFlags |= ImGuiFreeTypeBuilderFlags_LoadColor; // Enable colored glyphs (FreeType)
+    config.FontDataOwnedByAtlas = true; // Let ImGui manage the file-loaded font
+    config.FontLoaderFlags = ImGuiFreeTypeBuilderFlags_LoadColor; // Enable colored glyphs
     
     // Platform-specific font path
     std::string emoji_font_path;
@@ -1973,12 +1974,15 @@ int main(int argc, char** argv) {
     };
     
     if (!emoji_font_path.empty()) {
+        printf("[INFO] Attempting to load NotoColorEmoji.ttf from: %s\n", emoji_font_path.c_str());
         ImFont* emoji_font = io.Fonts->AddFontFromFileTTF(emoji_font_path.c_str(), base_size, &config, emoji_ranges);
         if (!emoji_font) {
             printf("[WARNING] Failed to load NotoColorEmoji.ttf from %s, falling back to embedded NotoEmoji\n", emoji_font_path.c_str());
             // Fallback to embedded monochrome emoji
             config.FontDataOwnedByAtlas = false;
             io.Fonts->AddFontFromMemoryTTF((void*)NotoEmoji_Regular_ttf, sizeof(NotoEmoji_Regular_ttf), base_size, &config, emoji_ranges);
+        } else {
+            printf("[INFO] Successfully loaded NotoColorEmoji.ttf (colored emoji enabled)\n");
         }
     } else {
         printf("[WARNING] Could not determine emoji font path, using embedded NotoEmoji\n");
