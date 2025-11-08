@@ -53,6 +53,10 @@ if(WIN32)
     target_link_libraries(dna_messenger_imgui PRIVATE
         opengl32
         gdi32
+        png
+        harfbuzz
+        z
+        bz2
     )
 endif()
 
