@@ -27,13 +27,13 @@
 
 ### 3. Chat Bubbles (COMPLETE)
 - ✅ Speech bubble UI for messages
-- ✅ Square bubbles with padding (30px horizontal, 30px vertical)
+- ✅ Square bubbles with padding (30px horizontal, 30px vertical, 100% width)
 - ✅ Triangle arrow pointing DOWN from bubble to sender name
 - ✅ Sender name + timestamp below arrow
 - ✅ Text wrapping inside bubbles (85% of available width)
 - ✅ Recipient bubbles lighter (0.12 opacity) than own bubbles (0.25 opacity)
 - ✅ Theme-aware bubble colors (uses DNATheme::Text()/ClubTheme::Text())
-- ✅ Right-click context menu to copy message
+- ✅ Right-click context menu to copy message (compact, no padding, theme-aware hover)
 - **Files:** main.cpp (renderChatView)
 
 ### 4. Identity Management (COMPLETE)
@@ -48,19 +48,22 @@
 - **Files:** main.cpp (renderIdentitySelection, renderCreateIdentity*)
 
 ### 5. Settings Persistence (COMPLETE)
-- ✅ Settings file at ~/.config/dna_messenger/settings.conf
-- ✅ Save/load: theme, font_scale, window_width, window_height
+- ✅ Settings file at ~/.config/dna_messenger/settings.conf (Linux), %APPDATA%/dna_messenger (Windows), ~/Library/Application Support/dna_messenger (Mac)
+- ✅ Save/load: theme, scale, window_width, window_height
 - ✅ SettingsManager::Load() on startup
 - ✅ SettingsManager::Save() on changes and exit
-- ✅ Default values: theme=0, font_scale=1.1, window=1280x720
+- ✅ Default values: theme=0, scale=1 (1.1x internal), window=1280x720
+- ✅ Scale presets: Normal (1.1x), Large (1.5x)
 - **Files:** settings_manager.cpp/h
 
 ### 6. Font System (COMPLETE)
-- ✅ Fonts embedded as headers (NotoSans-Regular.h, fa-solid-900.h, NotoEmoji-Regular.h)
+- ✅ Fonts embedded as headers (NotoSans-Regular.h, fa-solid-900.h)
+- ✅ FreeType font rendering for better text quality
 - ✅ Font loading with merge mode for FontAwesome icons
-- ✅ Base font size: 18px * 1.1 = 19.8px
+- ✅ Base font size: 18px * scale_multiplier (1.1x default, 1.5x large)
 - ✅ Icon scaling: base_size * 0.9f
 - ✅ Unicode range support for icons
+- ✅ No colored emoji support (monochrome Font Awesome icons only)
 - **Files:** main.cpp (main function, font atlas setup)
 
 ### 7. Responsive Layout (COMPLETE)
@@ -82,13 +85,12 @@
 
 ## ❌ Missing Features (TODO)
 
-### 1. Text Scaling UI
-- ❌ Settings page: "Default" (1.1x) and "Bigger" (1.5x) radio buttons
-- ✅ font_scale stored in AppSettings struct (default 1.1f)
-- ✅ font_scale persisted to disk
-- ❌ Global font scale not applied (currently uses hardcoded SetWindowFontScale)
-- ❌ Need to rebuild font atlas when scale changes
-- **Priority:** Medium
+### 1. Text Scaling UI (COMPLETE)
+- ✅ Settings page: "Normal" (1.1x) and "Large" (1.5x) radio buttons
+- ✅ scale stored in AppSettings struct (0=Normal, 1=Large)
+- ✅ scale persisted to disk
+- ✅ Font atlas rebuilt on scale change (requires app restart)
+- ✅ Restart notification shown when scale changed
 - **Files:** main.cpp (renderSettingsView), settings_manager.h
 
 ### 2. UI Animations
@@ -107,17 +109,22 @@
 - **Priority:** High (next phase)
 - **Files:** main.cpp (uncomment includes, replace mock data)
 
-### 4. Additional Dialogs
+### 4. Additional Dialogs (PARTIAL)
+- ✅ Create Identity wizard (3-step: Name → Seed → Creating)
+- ✅ Restore from Seed dialog (24-word BIP39 validation)
 - ❌ Add Contact dialog
+- ❌ Create Group dialog
 - ❌ Send Tokens dialog
 - ❌ Receive Address dialog (with QR code)
 - ❌ Transaction History dialog
-- ❌ Import Identity dialog (from BIP39 seed)
 - **Priority:** Medium
-- **Files:** main.cpp (new modal dialogs)
+- **Files:** main.cpp (modal dialogs)
 
-### 5. Message Features
-- ❌ Message timestamps (relative: "Now", "5m ago", "Yesterday")
+### 5. Message Features (PARTIAL)
+- ✅ Message timestamps (shown below bubbles)
+- ✅ Enter to send, Shift+Enter for newline
+- ✅ Auto-focus on chat open and after send
+- ✅ Emoji picker with ':' trigger (Font Awesome icons)
 - ❌ Unread message indicators
 - ❌ Typing indicators
 - ❌ Message status icons (sent, delivered, read)
@@ -125,14 +132,15 @@
 - **Priority:** Medium-High
 - **Files:** main.cpp (Message struct, renderChatView)
 
-### 6. UI Polish
-- ❌ Emoji picker
+### 6. UI Polish (PARTIAL)
+- ✅ Emoji picker (Font Awesome faces/hearts/symbols, triggered with ':')
+- ✅ Fullscreen support (F11 to toggle)
 - ❌ Custom scrollbar styling (theme-aware)
 - ❌ Toast notifications for errors/success
 - ❌ Loading spinners for async operations
 - ❌ Confirmation dialogs (delete contact, etc.)
 - **Priority:** Medium
-- **Files:** main.cpp (new helpers)
+- **Files:** main.cpp (emoji picker, fullscreen toggle)
 
 ---
 

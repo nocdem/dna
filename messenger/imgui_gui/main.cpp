@@ -1577,11 +1577,25 @@ private:
                         show_emoji_picker = false;
                     }
                     
-                    // Emoji categories (solid emoji only)
-                    const char* emoji_faces[] = {"😀", "😁", "😂", "🤣", "😃", "😄", "😅", "😆", "😉", "😊", "😋", "😎", "😍", "😘", "🥰", "😗", "😙", "😚", "🙂", "🤗", "🤩", "😏", "😌", "😔"};
-                    const char* emoji_symbols[] = {"❤️", "💙", "💚", "💛", "🧡", "💜", "🖤", "🤍", "💖", "💗", "💓", "💕", "💞", "💝", "💘", "💔", "🌟", "💫", "🌙", "🌎", "🌍", "🌏", "💎", "🔥"};
-                    const char* emoji_transport[] = {"🚀", "🚁", "🚂", "🚃", "🚄", "🚅", "🚙", "🚗", "🚕", "🚌", "🚎", "🏍", "🚲", "🚆", "🚇", "🚈", "🚉", "🚊", "🚝", "🚞", "🚋", "🚛", "🚚", "🚜"};
-                    const char* emoji_hands[] = {"👍", "👎", "👋", "🤚", "🖖", "👌", "🤞", "🤟", "🤘", "🤙", "👈", "👉", "👆", "👇", "👊", "🤛", "🤜", "👏", "🙌", "👐", "🤲", "🙏", "💪", "🦾"};
+                    // Font Awesome emoji icons
+                    const char* emoji_faces[] = {
+                        ICON_FA_FACE_SMILE, ICON_FA_FACE_GRIN, ICON_FA_FACE_LAUGH, ICON_FA_FACE_GRIN_BEAM,
+                        ICON_FA_FACE_GRIN_HEARTS, ICON_FA_FACE_KISS_WINK_HEART, ICON_FA_FACE_GRIN_WINK, ICON_FA_FACE_SMILE_WINK,
+                        ICON_FA_FACE_GRIN_TONGUE, ICON_FA_FACE_SURPRISE, ICON_FA_FACE_FROWN, ICON_FA_FACE_SAD_TEAR,
+                        ICON_FA_FACE_ANGRY, ICON_FA_FACE_TIRED, ICON_FA_FACE_MEH, ICON_FA_FACE_ROLLING_EYES
+                    };
+                    const char* emoji_hearts[] = {
+                        ICON_FA_HEART, ICON_FA_HEART_PULSE, ICON_FA_HEART_CRACK, ICON_FA_STAR,
+                        ICON_FA_THUMBS_UP, ICON_FA_THUMBS_DOWN, ICON_FA_FIRE, ICON_FA_ROCKET,
+                        ICON_FA_BOLT, ICON_FA_CROWN, ICON_FA_GEM, ICON_FA_TROPHY,
+                        ICON_FA_GIFT, ICON_FA_CAKE_CANDLES, ICON_FA_BELL, ICON_FA_MUSIC
+                    };
+                    const char* emoji_misc[] = {
+                        ICON_FA_CHECK, ICON_FA_XMARK, ICON_FA_CIRCLE_EXCLAMATION, ICON_FA_CIRCLE_QUESTION,
+                        ICON_FA_LIGHTBULB, ICON_FA_COMMENT, ICON_FA_ENVELOPE, ICON_FA_PHONE,
+                        ICON_FA_LOCATION_DOT, ICON_FA_CALENDAR, ICON_FA_CLOCK, ICON_FA_FLAG,
+                        ICON_FA_SHIELD, ICON_FA_KEY, ICON_FA_LOCK, ICON_FA_EYE
+                    };
                     
                     ImGui::BeginChild("EmojiGrid", ImVec2(0, 0), false);
                     
@@ -1593,43 +1607,36 @@ private:
                     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
                     
                     // Display emoji buttons
-                    for (int i = 0; i < 24; i++) {
+                    for (int i = 0; i < 16; i++) {
                         if (ImGui::Button(emoji_faces[i], ImVec2(35, 35))) {
                             if (len > 0) message_input[len-1] = '\0';
                             strcat(message_input, emoji_faces[i]);
                             show_emoji_picker = false;
+                            should_focus_input = true;
                         }
-                        if ((i + 1) % 8 != 0) ImGui::SameLine();
+                        if ((i + 1) % 9 != 0) ImGui::SameLine();
                     }
                     
                     ImGui::Spacing();
-                    for (int i = 0; i < 24; i++) {
-                        if (ImGui::Button(emoji_symbols[i], ImVec2(35, 35))) {
+                    for (int i = 0; i < 16; i++) {
+                        if (ImGui::Button(emoji_hearts[i], ImVec2(35, 35))) {
                             if (len > 0) message_input[len-1] = '\0';
-                            strcat(message_input, emoji_symbols[i]);
+                            strcat(message_input, emoji_hearts[i]);
                             show_emoji_picker = false;
+                            should_focus_input = true;
                         }
-                        if ((i + 1) % 8 != 0) ImGui::SameLine();
+                        if ((i + 1) % 9 != 0) ImGui::SameLine();
                     }
                     
                     ImGui::Spacing();
-                    for (int i = 0; i < 24; i++) {
-                        if (ImGui::Button(emoji_transport[i], ImVec2(35, 35))) {
+                    for (int i = 0; i < 16; i++) {
+                        if (ImGui::Button(emoji_misc[i], ImVec2(35, 35))) {
                             if (len > 0) message_input[len-1] = '\0';
-                            strcat(message_input, emoji_transport[i]);
+                            strcat(message_input, emoji_misc[i]);
                             show_emoji_picker = false;
+                            should_focus_input = true;
                         }
-                        if ((i + 1) % 8 != 0) ImGui::SameLine();
-                    }
-                    
-                    ImGui::Spacing();
-                    for (int i = 0; i < 24; i++) {
-                        if (ImGui::Button(emoji_hands[i], ImVec2(35, 35))) {
-                            if (len > 0) message_input[len-1] = '\0';
-                            strcat(message_input, emoji_hands[i]);
-                            show_emoji_picker = false;
-                        }
-                        if ((i + 1) % 8 != 0) ImGui::SameLine();
+                        if ((i + 1) % 9 != 0) ImGui::SameLine();
                     }
                     
                     ImGui::PopStyleVar(2);
@@ -1928,7 +1935,6 @@ int main(int argc, char** argv) {
         // Load embedded fonts
     #include "fonts/NotoSans-Regular.h"
     #include "fonts/fa-solid-900.h"
-    #include "fonts/NotoEmoji-Regular.h"
 
     ImFontConfig config;
     config.MergeMode = false;
@@ -1945,50 +1951,6 @@ int main(int argc, char** argv) {
     config.FontDataOwnedByAtlas = false;
     static const ImWchar icon_ranges[] = { ICON_MIN_FA, ICON_MAX_FA, 0 };
     io.Fonts->AddFontFromMemoryTTF((void*)fa_solid_900_ttf, sizeof(fa_solid_900_ttf), base_size * 0.9f, &config, icon_ranges);
-    
-    // Merge Emoji font (colored, loaded from external file)
-    config.MergeMode = true;
-    config.GlyphMinAdvanceX = base_size;
-    config.GlyphOffset = ImVec2(0, 0);
-    config.FontDataOwnedByAtlas = true; // Let ImGui manage the file-loaded font
-    config.FontLoaderFlags = ImGuiFreeTypeBuilderFlags_LoadColor; // Enable colored glyphs
-    
-    // Platform-specific font path
-    std::string emoji_font_path;
-    #ifdef _WIN32
-        const char* appdata = getenv("APPDATA");
-        if (appdata) {
-            emoji_font_path = std::string(appdata) + "\\.dna\\fonts\\NotoColorEmoji.ttf";
-        }
-    #else
-        const char* home = getenv("HOME");
-        if (home) {
-            emoji_font_path = std::string(home) + "/.dna/fonts/NotoColorEmoji.ttf";
-        }
-    #endif
-    
-    // Try to load emoji font from file
-    static const ImWchar emoji_ranges[] = {
-        0x1, 0x1FFFF, // Full Unicode range for emoji
-        0
-    };
-    
-    if (!emoji_font_path.empty()) {
-        printf("[INFO] Attempting to load NotoColorEmoji.ttf from: %s\n", emoji_font_path.c_str());
-        ImFont* emoji_font = io.Fonts->AddFontFromFileTTF(emoji_font_path.c_str(), base_size, &config, emoji_ranges);
-        if (!emoji_font) {
-            printf("[WARNING] Failed to load NotoColorEmoji.ttf from %s, falling back to embedded NotoEmoji\n", emoji_font_path.c_str());
-            // Fallback to embedded monochrome emoji
-            config.FontDataOwnedByAtlas = false;
-            io.Fonts->AddFontFromMemoryTTF((void*)NotoEmoji_Regular_ttf, sizeof(NotoEmoji_Regular_ttf), base_size, &config, emoji_ranges);
-        } else {
-            printf("[INFO] Successfully loaded NotoColorEmoji.ttf (colored emoji enabled)\n");
-        }
-    } else {
-        printf("[WARNING] Could not determine emoji font path, using embedded NotoEmoji\n");
-        config.FontDataOwnedByAtlas = false;
-        io.Fonts->AddFontFromMemoryTTF((void*)NotoEmoji_Regular_ttf, sizeof(NotoEmoji_Regular_ttf), base_size, &config, emoji_ranges);
-    }
 
     ImGui::StyleColorsDark();
 
