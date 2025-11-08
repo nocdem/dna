@@ -44,7 +44,7 @@ else()
     add_library(dht_lib STATIC dht_context.cpp dht_offline_queue.c dht_groups.c dht_keyserver.c dht_contactlist.c dht_singleton.c dna_profile.c dna_message_wall.c)
 endif()
 target_include_directories(dht_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
-target_link_libraries(dht_lib ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} crypto dsa)
+target_link_libraries(dht_lib ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} crypto dsa gnutls)
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD 17)
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD_REQUIRED ON)
 
