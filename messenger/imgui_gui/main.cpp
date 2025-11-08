@@ -1599,7 +1599,7 @@ private:
                     ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 2));
                     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
                     
-                    // Display emoji buttons
+                    // Display emoji buttons (10 per row)
                     for (int i = 0; i < 16; i++) {
                         if (ImGui::Button(emoji_faces[i], ImVec2(35, 35))) {
                             if (len > 0) message_input[len-1] = '\0';
@@ -1607,7 +1607,7 @@ private:
                             show_emoji_picker = false;
                             should_focus_input = true;
                         }
-                        if ((i + 1) % 10 != 0 && i < 15) ImGui::SameLine();
+                        if (i % 10 != 9 && i < 15) ImGui::SameLine();
                     }
                     
                     ImGui::Spacing();
@@ -1618,7 +1618,7 @@ private:
                             show_emoji_picker = false;
                             should_focus_input = true;
                         }
-                        if ((i + 1) % 10 != 0 && i < 15) ImGui::SameLine();
+                        if (i % 10 != 9 && i < 15) ImGui::SameLine();
                     }
                     
                     ImGui::Spacing();
@@ -1629,7 +1629,7 @@ private:
                             show_emoji_picker = false;
                             should_focus_input = true;
                         }
-                        if ((i + 1) % 10 != 0 && i < 15) ImGui::SameLine();
+                        if (i % 10 != 9 && i < 15) ImGui::SameLine();
                     }
                     
                     ImGui::PopStyleVar(2);
@@ -1976,8 +1976,38 @@ int main(int argc, char** argv) {
 
     DNAMessengerApp app;
 
+    // Track fullscreen state
+    static bool is_fullscreen = false;
+    static int windowed_xpos, windowed_ypos, windowed_width, windowed_height;
+    static bool f11_was_pressed = false;
+
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+
+        // F11 to toggle fullscreen
+        if (glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS) {
+            if (!f11_was_pressed) {
+                f11_was_pressed = true;
+                
+                if (!is_fullscreen) {
+                    // Save windowed position and size
+                    glfwGetWindowPos(window, &windowed_xpos, &windowed_ypos);
+                    glfwGetWindowSize(window, &windowed_width, &windowed_height);
+                    
+                    // Switch to fullscreen
+                    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+                    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+                    glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+                    is_fullscreen = true;
+                } else {
+                    // Restore windowed mode
+                    glfwSetWindowMonitor(window, nullptr, windowed_xpos, windowed_ypos, windowed_width, windowed_height, 0);
+                    is_fullscreen = false;
+                }
+            }
+        } else {
+            f11_was_pressed = false;
+        }
 
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplGlfw_NewFrame();
