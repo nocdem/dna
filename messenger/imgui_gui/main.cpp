@@ -251,6 +251,8 @@ public:
         seed_confirmed = false;
         seed_copied = false;
         seed_copied_timer = 0.0f;
+        show_emoji_picker = false;
+        emoji_picker_pos = ImVec2(0, 0);
         memset(new_identity_name, 0, sizeof(new_identity_name));
         memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
     }
@@ -324,6 +326,8 @@ private:
     bool seed_confirmed;
     bool seed_copied;
     float seed_copied_timer;
+    bool show_emoji_picker;
+    ImVec2 emoji_picker_pos;
 
     std::vector<Contact> contacts;
     std::map<int, std::vector<Message>> contact_messages;  // Per-contact message history
@@ -1016,6 +1020,16 @@ private:
         ImGuiIO& io = ImGui::GetIO();
         float screen_height = io.DisplaySize.y;
         float bottom_nav_height = 60.0f;
+        
+        // Track view changes to close emoji picker
+        static View prev_view = VIEW_CONTACTS;
+        static int prev_contact = -1;
+        
+        if (prev_view != current_view || prev_contact != selected_contact) {
+            show_emoji_picker = false;
+        }
+        prev_view = current_view;
+        prev_contact = selected_contact;
 
         // Content area (full screen minus bottom nav) - use full width
         ImGui::BeginChild("MobileContent", ImVec2(-1, -bottom_nav_height), false, ImGuiWindowFlags_NoScrollbar);
@@ -1516,6 +1530,113 @@ private:
             bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", message_input,
                 sizeof(message_input), ImVec2(input_width, 60), 
                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
+            
+            // Check if ':' was just typed to trigger emoji picker
+            static char prev_message[16384] = "";
+            static bool already_triggered_for_current = false;
+            static ImVec2 prev_window_size = ImVec2(0, 0);
+            ImVec2 current_window_size = ImGui::GetIO().DisplaySize;
+            size_t len = strlen(message_input);
+            bool message_changed = (strcmp(message_input, prev_message) != 0);
+            
+            // Close emoji picker if window was resized
+            if (show_emoji_picker && (prev_window_size.x != current_window_size.x || prev_window_size.y != current_window_size.y)) {
+                show_emoji_picker = false;
+            }
+            prev_window_size = current_window_size;
+            
+            // Reset trigger flag if message changed
+            if (message_changed) {
+                already_triggered_for_current = false;
+                strcpy(prev_message, message_input);
+            }
+            
+            // Detect if ':' was just typed
+            if (!already_triggered_for_current && len > 0 && message_input[len-1] == ':' && ImGui::IsItemActive()) {
+                show_emoji_picker = true;
+                emoji_picker_pos = ImVec2(input_pos.x, input_pos.y - 320);
+                already_triggered_for_current = true;
+            }
+            
+            // Emoji picker popup
+            if (show_emoji_picker) {
+                ImGui::SetNextWindowPos(emoji_picker_pos, ImGuiCond_Appearing);
+                ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_Always);
+                ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
+                
+                if (ImGui::Begin("##EmojiPicker", &show_emoji_picker, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
+                    // ESC to close
+                    if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                        show_emoji_picker = false;
+                    }
+                    
+                    // Close if clicked outside
+                    if (ImGui::IsMouseClicked(0) && !ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows)) {
+                        show_emoji_picker = false;
+                    }
+                    
+                    // Emoji categories (solid emoji only)
+                    const char* emoji_faces[] = {"😀", "😁", "😂", "🤣", "😃", "😄", "😅", "😆", "😉", "😊", "😋", "😎", "😍", "😘", "🥰", "😗", "😙", "😚", "🙂", "🤗", "🤩", "😏", "😌", "😔"};
+                    const char* emoji_symbols[] = {"❤️", "💙", "💚", "💛", "🧡", "💜", "🖤", "🤍", "💖", "💗", "💓", "💕", "💞", "💝", "💘", "💔", "🌟", "💫", "🌙", "🌎", "🌍", "🌏", "💎", "🔥"};
+                    const char* emoji_transport[] = {"🚀", "🚁", "🚂", "🚃", "🚄", "🚅", "🚙", "🚗", "🚕", "🚌", "🚎", "🏍", "🚲", "🚆", "🚇", "🚈", "🚉", "🚊", "🚝", "🚞", "🚋", "🚛", "🚚", "🚜"};
+                    const char* emoji_hands[] = {"👍", "👎", "👋", "🤚", "🖖", "👌", "🤞", "🤟", "🤘", "🤙", "👈", "👉", "👆", "👇", "👊", "🤛", "🤜", "👏", "🙌", "👐", "🤲", "🙏", "💪", "🦾"};
+                    
+                    ImGui::BeginChild("EmojiGrid", ImVec2(0, 0), false);
+                    
+                    // Transparent button style
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.3f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.4f, 0.4f, 0.4f, 0.4f));
+                    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(2, 2));
+                    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(4, 4));
+                    
+                    // Display emoji buttons
+                    for (int i = 0; i < 24; i++) {
+                        if (ImGui::Button(emoji_faces[i], ImVec2(35, 35))) {
+                            if (len > 0) message_input[len-1] = '\0';
+                            strcat(message_input, emoji_faces[i]);
+                            show_emoji_picker = false;
+                        }
+                        if ((i + 1) % 8 != 0) ImGui::SameLine();
+                    }
+                    
+                    ImGui::Spacing();
+                    for (int i = 0; i < 24; i++) {
+                        if (ImGui::Button(emoji_symbols[i], ImVec2(35, 35))) {
+                            if (len > 0) message_input[len-1] = '\0';
+                            strcat(message_input, emoji_symbols[i]);
+                            show_emoji_picker = false;
+                        }
+                        if ((i + 1) % 8 != 0) ImGui::SameLine();
+                    }
+                    
+                    ImGui::Spacing();
+                    for (int i = 0; i < 24; i++) {
+                        if (ImGui::Button(emoji_transport[i], ImVec2(35, 35))) {
+                            if (len > 0) message_input[len-1] = '\0';
+                            strcat(message_input, emoji_transport[i]);
+                            show_emoji_picker = false;
+                        }
+                        if ((i + 1) % 8 != 0) ImGui::SameLine();
+                    }
+                    
+                    ImGui::Spacing();
+                    for (int i = 0; i < 24; i++) {
+                        if (ImGui::Button(emoji_hands[i], ImVec2(35, 35))) {
+                            if (len > 0) message_input[len-1] = '\0';
+                            strcat(message_input, emoji_hands[i]);
+                            show_emoji_picker = false;
+                        }
+                        if ((i + 1) % 8 != 0) ImGui::SameLine();
+                    }
+                    
+                    ImGui::PopStyleVar(2);
+                    ImGui::PopStyleColor(3);
+                    ImGui::EndChild();
+                    ImGui::End();
+                }
+                ImGui::PopStyleVar();
+            }
 
             ImGui::SameLine();
 
