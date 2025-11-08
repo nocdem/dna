@@ -394,6 +394,7 @@ int dna_load_wall(dht_context_t *dht_ctx,
     }
 
     // Query DHT
+    printf("[DNA_WALL] → DHT GET: Loading message wall for user\n");
     uint8_t *json_data = NULL;
     size_t json_len = 0;
     int ret = dht_get(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
@@ -519,6 +520,7 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
         return -1;
     }
 
+    printf("[DNA_WALL] → DHT PUT: Publishing message wall (%zu messages)\n", wall->message_count);
     ret = dht_put(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
                   (const uint8_t *)json_data, strlen(json_data));
     free(json_data);

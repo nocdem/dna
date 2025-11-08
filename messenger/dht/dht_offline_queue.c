@@ -350,6 +350,7 @@ int dht_queue_message(
     dht_offline_message_t *existing_messages = NULL;
     size_t existing_count = 0;
 
+    printf("[DHT Queue] → DHT GET: Checking existing offline queue\n");
     int get_result = dht_get(ctx, queue_key, 32, &existing_data, &existing_len);
     if (get_result == 0 && existing_data && existing_len > 1) {
         // Queue exists, deserialize
@@ -416,6 +417,7 @@ int dht_queue_message(
     printf("[DHT Queue] Serialized queue: %zu messages, %zu bytes\n", new_count, serialized_len);
 
     // 5. Store in DHT
+    printf("[DHT Queue] → DHT PUT: Queueing offline message (%zu total in queue)\n", new_count);
     int put_result = dht_put(ctx, queue_key, 32, serialized, serialized_len);
 
     free(serialized);
@@ -458,6 +460,7 @@ int dht_retrieve_queued_messages(
     uint8_t *queue_data = NULL;
     size_t queue_len = 0;
 
+    printf("[DHT Queue] → DHT GET: Retrieving offline messages\n");
     int get_result = dht_get(ctx, queue_key, 32, &queue_data, &queue_len);
     if (get_result != 0 || !queue_data || queue_len <= 1) {
         printf("[DHT Queue] No queued messages found\n");
@@ -556,6 +559,7 @@ int dht_clear_queue(
     uint32_t zero = htonl(0);
     memcpy(empty_queue, &zero, sizeof(uint32_t));
 
+    printf("[DHT Queue] → DHT PUT: Clearing offline queue\n");
     int result = dht_put(ctx, queue_key, 32, empty_queue, sizeof(uint32_t));
     if (result != 0) {
         fprintf(stderr, "[DHT Queue] Failed to clear queue\n");
