@@ -243,6 +243,7 @@ public:
         selected_contact = -1;
         prev_selected_contact = -1;
         should_focus_input = false;
+        input_cursor_pos = -1;
         show_wallet = false;
         show_identity_selection = true;
         identity_loaded = false;
@@ -317,6 +318,7 @@ private:
     int selected_contact;
     int prev_selected_contact; // Track contact changes for autofocus
     bool should_focus_input; // Flag to refocus after sending
+    int input_cursor_pos; // Desired cursor position after refocus
     bool show_wallet;
     bool show_identity_selection;
     bool identity_loaded;
@@ -1521,9 +1523,25 @@ private:
                 ImGui::SetKeyboardFocusHere();
             }
             ImGui::SetNextItemWidth(input_width);
+            
+            // Callback to set cursor position if needed
+            auto input_callback = [](ImGuiInputTextCallbackData* data) -> int {
+                DNAMessengerApp* app = (DNAMessengerApp*)data->UserData;
+                if (app->input_cursor_pos >= 0) {
+                    data->CursorPos = app->input_cursor_pos;
+                    data->SelectionStart = data->SelectionEnd = data->CursorPos;
+                    app->input_cursor_pos = -1; // Reset
+                }
+                return 0;
+            };
+            
             bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", message_input,
                 sizeof(message_input), ImVec2(input_width, 60), 
-                ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
+                ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_CallbackAlways,
+                input_callback, this);
+            
+            // Get input box position right after rendering it
+            ImVec2 input_rect_min = ImGui::GetItemRectMin();
             
             // Check if ':' was just typed to trigger emoji picker
             static char prev_message[16384] = "";
@@ -1545,17 +1563,54 @@ private:
                 strcpy(prev_message, message_input);
             }
             
-            // Detect if ':' was just typed
+            // Detect if ':' was just typed - calculate text cursor position
             if (!already_triggered_for_current && len > 0 && message_input[len-1] == ':' && ImGui::IsItemActive()) {
                 show_emoji_picker = true;
-                emoji_picker_pos = ImVec2(input_pos.x, input_pos.y - 320);
+                
+                // Calculate approximate cursor position based on text
+                ImFont* font = ImGui::GetFont();
+                float font_size = ImGui::GetFontSize();
+                
+                // Count newlines to determine which line we're on
+                int line_num = 0;
+                int last_newline_pos = -1;
+                for (size_t i = 0; i < len; i++) {
+                    if (message_input[i] == '\n') {
+                        line_num++;
+                        last_newline_pos = i;
+                    }
+                }
+                
+                // Calculate text width from last newline (or start) to cursor
+                const char* line_start = (last_newline_pos >= 0) ? &message_input[last_newline_pos + 1] : message_input;
+                size_t chars_in_line = len - (last_newline_pos + 1);
+                ImVec2 text_size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, line_start, line_start + chars_in_line);
+                
+                // Position picker at text cursor location
+                float cursor_x = input_rect_min.x + text_size.x + 5.0f; // 5px padding
+                float cursor_y = input_rect_min.y + (line_num * font_size * 1.2f); // 1.2 line height multiplier
+                
+                // Emoji picker size
+                float picker_width = 400.0f;
+                float picker_height = 200.0f;
+                
+                // Check if picker would go outside window bounds (right side)
+                float window_right = ImGui::GetIO().DisplaySize.x;
+                if (cursor_x + picker_width > window_right) {
+                    // Place on left side of cursor instead
+                    cursor_x = cursor_x - picker_width - 10.0f;
+                    // Make sure it doesn't go off left side
+                    if (cursor_x < 0) cursor_x = 10.0f;
+                }
+                
+                emoji_picker_pos = ImVec2(cursor_x, cursor_y - 210);
                 already_triggered_for_current = true;
             }
             
             // Emoji picker popup
             if (show_emoji_picker) {
-                ImGui::SetNextWindowPos(emoji_picker_pos, ImGuiCond_Appearing);
-                ImGui::SetNextWindowSize(ImVec2(400, 300), ImGuiCond_Always);
+                ImGui::SetNextWindowPos(emoji_picker_pos, ImGuiCond_Always);
+                ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_Always);
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
                 
                 if (ImGui::Begin("##EmojiPicker", &show_emoji_picker, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
@@ -1603,8 +1658,9 @@ private:
                     // Display emojis in a grid (9 per row)
                     for (int i = 0; i < emoji_count; i++) {
                         if (ImGui::Button(emojis[i], ImVec2(35, 35))) {
-                            if (len > 0) message_input[len-1] = '\0';
+                            if (len > 0) message_input[len-1] = '\0'; // Remove the ':'
                             strcat(message_input, emojis[i]);
+                            input_cursor_pos = strlen(message_input); // Set cursor to end
                             show_emoji_picker = false;
                             should_focus_input = true;
                         }
