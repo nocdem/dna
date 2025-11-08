@@ -27,7 +27,7 @@ build:imgui-linux-x64:
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq cmake gcc g++ make git xxd
-    - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libglew-dev
+    - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libglew-dev libfreetype6-dev
   script:
     - cd imgui_gui
     - mkdir -p build
@@ -61,6 +61,7 @@ build:imgui-windows-x64:
     - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-cc
     - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-glfw3
     - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-glew
+    - apt-get install -y -qq mxe-x86-64-w64-mingw32.static-freetype
 
     - export PATH=/usr/lib/mxe/usr/bin:$PATH
 
