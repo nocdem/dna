@@ -236,6 +236,43 @@ inline bool ThemedButton(const char* label, const ImVec2& size = ImVec2(0, 0), b
     return result;
 }
 
+// Global themed spinner utility (simple version without internal API)
+// radius: spinner size (default 16.0f)
+// thickness: line thickness (default 3.0f)
+inline void ThemedSpinner(const char* label, float radius = 16.0f, float thickness = 3.0f) {
+    ImGui::BeginGroup();
+    
+    // Get theme color
+    ImVec4 color;
+    if (g_app_settings.theme == 0) { // DNA Theme
+        color = DNATheme::Text();
+    } else { // Club Theme
+        color = ClubTheme::Text();
+    }
+
+    // Render rotating arc
+    const float t = (float)ImGui::GetTime();
+    const float angle = t * 4.0f; // Rotation speed
+    const float angle_offset = 3.14159265f * 2.0f / 12.0f;
+    const int circle_count = 12;
+
+    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+    ImVec2 pos = ImGui::GetCursorScreenPos();
+    ImVec2 center = ImVec2(pos.x + radius, pos.y + radius);
+
+    for (int i = 0; i < circle_count; i++) {
+        const float a = angle + (i * angle_offset);
+        const float alpha = (0.1f > (1.0f - (i / (float)circle_count))) ? 0.1f : (1.0f - (i / (float)circle_count));
+        ImU32 col = ImGui::GetColorU32(ImVec4(color.x, color.y, color.z, alpha));
+        const float x = center.x + cosf(a) * radius;
+        const float y = center.y + sinf(a) * radius;
+        draw_list->AddCircleFilled(ImVec2(x, y), thickness, col);
+    }
+    
+    ImGui::Dummy(ImVec2(radius * 2, radius * 2));
+    ImGui::EndGroup();
+}
+
 class DNAMessengerApp {
 public:
     DNAMessengerApp() {
@@ -246,6 +283,7 @@ public:
         input_cursor_pos = -1;
         show_wallet = false;
         show_identity_selection = true;
+        is_first_frame = true;
         identity_loaded = false;
         selected_identity_idx = -1;
         create_identity_step = STEP_NAME;
@@ -261,6 +299,34 @@ public:
 
     void render() {
         ImGuiIO& io = ImGui::GetIO();
+
+        // Show loading spinner on first frame
+        if (is_first_frame) {
+            ImGui::SetNextWindowPos(ImVec2(0, 0));
+            ImGui::SetNextWindowSize(io.DisplaySize);
+            ImGui::Begin("Loading", nullptr,
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse);
+            
+            // Center spinner
+            float spinner_size = 32.0f;
+            ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+            ImGui::SetCursorPos(ImVec2(center.x - spinner_size, center.y - spinner_size));
+            ThemedSpinner("##loading", spinner_size, 4.0f);
+            
+            // Loading text below spinner
+            const char* loading_text = "Loading DNA Messenger...";
+            ImVec2 text_size = ImGui::CalcTextSize(loading_text);
+            ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_size + 20));
+            ImGui::Text("%s", loading_text);
+            
+            ImGui::End();
+            
+            // Mark first frame as done after rendering
+            is_first_frame = false;
+            return;
+        }
 
         // Show identity selection on first run
         if (show_identity_selection) {
@@ -321,6 +387,7 @@ private:
     int input_cursor_pos; // Desired cursor position after refocus
     bool show_wallet;
     bool show_identity_selection;
+    bool is_first_frame; // Show loading spinner on first frame
     bool identity_loaded;
     int selected_identity_idx;
     CreateIdentityStep create_identity_step;
