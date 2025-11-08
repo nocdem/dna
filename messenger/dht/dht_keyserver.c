@@ -1107,11 +1107,20 @@ int dna_update_profile(
     }
 
     // Update profile data
+    printf("[DNA] DEBUG: Updating profile fields...\n");
+    printf("[DNA] DEBUG: Input bio: '%s'\n", profile->bio[0] ? profile->bio : "(empty)");
+    printf("[DNA] DEBUG: Input telegram: '%s'\n", profile->socials.telegram[0] ? profile->socials.telegram : "(empty)");
+    printf("[DNA] DEBUG: Input twitter: '%s'\n", profile->socials.x[0] ? profile->socials.x : "(empty)");
+    printf("[DNA] DEBUG: Input backbone: '%s'\n", profile->wallets.backbone[0] ? profile->wallets.backbone : "(empty)");
+
     memcpy(&identity->wallets, &profile->wallets, sizeof(identity->wallets));
     memcpy(&identity->socials, &profile->socials, sizeof(identity->socials));
     strncpy(identity->bio, profile->bio, sizeof(identity->bio) - 1);
     strncpy(identity->profile_picture_ipfs, profile->profile_picture_ipfs,
             sizeof(identity->profile_picture_ipfs) - 1);
+
+    printf("[DNA] DEBUG: After copy bio: '%s'\n", identity->bio[0] ? identity->bio : "(empty)");
+    printf("[DNA] DEBUG: After copy telegram: '%s'\n", identity->socials.telegram[0] ? identity->socials.telegram : "(empty)");
 
     // Update metadata
     identity->timestamp = time(NULL);

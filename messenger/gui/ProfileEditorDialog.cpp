@@ -318,10 +318,10 @@ void ProfileEditorDialog::loadProfile() {
         }
 
         // Load wallet addresses
-        if (profile->wallets.backbone) {
+        if (profile->wallets.backbone[0] != '\0') {
             backboneAddressEdit->setText(QString::fromUtf8(profile->wallets.backbone));
         }
-        if (profile->wallets.kelvpn) {
+        if (profile->wallets.kelvpn[0] != '\0') {
             kelvpnAddressEdit->setText(QString::fromUtf8(profile->wallets.kelvpn));
         }
         if (profile->wallets.subzero[0] != '\0') {
@@ -364,7 +364,7 @@ void ProfileEditorDialog::loadProfile() {
         }
 
         // Load bio
-        if (profile->bio) {
+        if (profile->bio[0] != '\0') {
             bioEdit->setPlainText(QString::fromUtf8(profile->bio));
         }
 
