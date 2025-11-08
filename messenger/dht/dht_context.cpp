@@ -443,10 +443,17 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
                 dht_value->type = DNA_TYPE_7DAY.id;    // Assign type ID
             }
 
-            std::cout << "[DHT] PUT: " << hash << " (" << value_len << " bytes, TTL=" << ttl_seconds << "s)" << std::endl;
+            std::cout << "[DHT] PUT: " << hash << " (" << value_len << " bytes, TTL=" << ttl_seconds << "s, type=0x" << std::hex << dht_value->type << std::dec << ")" << std::endl;
 
-            // Put value (permanent=false to use type's expiration)
-            ctx->runner.put(hash, dht_value);
+            // CRITICAL: Pass creation_time explicitly (NOT time_point::max()!)
+            // OpenDHT calculates expiration as: creation_time + ValueType.expiration
+            // If we let it default to time_point::max(), OpenDHT uses a fallback 3-hour TTL
+            auto creation_time = dht::clock::now();  // Use OpenDHT's clock (steady_clock)
+
+            // Put value with explicit creation time (permanent=false to use ValueType's expiration)
+            ctx->runner.put(hash, dht_value,
+                           [](bool success, const std::vector<std::shared_ptr<dht::Node>>&){},
+                           creation_time, false);
         }
 
         return 0;
