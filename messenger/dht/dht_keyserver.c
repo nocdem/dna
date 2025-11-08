@@ -365,6 +365,9 @@ int dht_keyserver_publish(
     const uint8_t *kyber_pubkey,
     const uint8_t *dilithium_privkey
 ) {
+    printf("[DEBUG PUBLISH] dht_keyserver_publish() called for: %.16s... (name: %s)\n",
+           fingerprint, display_name ? display_name : "(none)");
+
     if (!dht_ctx || !fingerprint || !dilithium_pubkey || !kyber_pubkey || !dilithium_privkey) {
         fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments\n");
         return -1;
