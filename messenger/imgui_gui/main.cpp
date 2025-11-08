@@ -1844,6 +1844,12 @@ private:
             ImGui::TextDisabled("%s", tokens[i]);
 
             ImGui::SetCursorPos(ImVec2(20, is_mobile ? 45 : 50));
+            
+            // Show spinner while loading (mockup - always show spinner)
+            float spinner_size = is_mobile ? 10.0f : 12.0f;
+            ThemedSpinner("##spinner", spinner_size, 2.0f);
+            
+            ImGui::SameLine();
             ImGui::Text("%s", balances[i]);
 
             ImGui::EndChild();
