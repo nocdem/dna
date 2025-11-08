@@ -16,6 +16,7 @@
 #include <vector>
 #include <iostream>
 #include <chrono>
+#include <future>
 
 // Custom ValueTypes with different TTLs
 static const dht::ValueType DNA_TYPE_7DAY {
@@ -236,8 +237,37 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
             // Permanent storage (never expires)
             // IMPORTANT: Must assign ValueType so bootstrap nodes recognize it
             dht_value->type = DNA_TYPE_365DAY.id;  // Use 365-day type for permanent data
-            std::cout << "[DHT] PUT PERMANENT: " << hash << " (" << value_len << " bytes, type=0x" << std::hex << dht_value->type << std::dec << ")" << std::endl;
-            ctx->runner.put(hash, dht_value, dht::DoneCallbackSimple{}, dht::time_point::max(), true);
+            std::cout << "[DHT] PUT PERMANENT (async): " << hash << " (" << value_len << " bytes, type=0x" << std::hex << dht_value->type << std::dec << ")" << std::endl;
+
+            // Use done callback to track completion
+            std::promise<bool> done_promise;
+            auto done_future = done_promise.get_future();
+
+            ctx->runner.put(hash, dht_value, [&done_promise](bool success) {
+                if (success) {
+                    std::cout << "[DHT] PUT PERMANENT: ✓ Stored on at least one node" << std::endl;
+                } else {
+                    std::cout << "[DHT] PUT PERMANENT: ✗ Failed to store on any node" << std::endl;
+                }
+                done_promise.set_value(success);
+            }, dht::time_point::max(), true);
+
+            // Wait for confirmation (timeout after 30 seconds)
+            std::cout << "[DHT] Waiting for confirmation from DHT network..." << std::endl;
+            auto status = done_future.wait_for(std::chrono::seconds(30));
+
+            if (status == std::future_status::timeout) {
+                std::cerr << "[DHT] WARNING: PUT operation timed out after 30 seconds" << std::endl;
+                return -2;  // Timeout error
+            }
+
+            bool success = done_future.get();
+            if (!success) {
+                std::cerr << "[DHT] ERROR: PUT operation failed" << std::endl;
+                return -3;  // Put failed
+            }
+
+            std::cout << "[DHT] ✓ PUT PERMANENT confirmed by network" << std::endl;
         } else {
             // Choose ValueType based on TTL (365 days vs 7 days)
             if (ttl_seconds >= 365 * 24 * 3600) {

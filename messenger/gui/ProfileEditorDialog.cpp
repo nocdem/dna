@@ -536,21 +536,12 @@ void ProfileEditorDialog::saveProfile() {
     printf("[GUI] DEBUG: dna_update_profile returned: %d\n", ret);
 
     if (ret == 0) {
-        statusLabel->setText(QString::fromUtf8("💾 Saving to DHT... (please wait 10 seconds)"));
-        QApplication::processEvents();
-
-        // Wait 10 seconds for DHT propagation (PUT is asynchronous and needs to replicate)
-        printf("[GUI] Waiting 10 seconds for DHT propagation across bootstrap nodes...\n");
-        QThread::sleep(10);
-
         statusLabel->setText(QString::fromUtf8("✓ Profile saved to DHT successfully!"));
 
         QMessageBox::information(this,
             QString::fromUtf8("Profile Saved"),
             QString::fromUtf8("Your DNA profile has been updated in the DHT.\n\n"
-                              "Changes are now visible to all users.\n\n"
-                              "⚠️  IMPORTANT: Please wait at least 30 seconds before closing\n"
-                              "the app to ensure full DHT network propagation."));
+                              "Changes are now visible to all users."));
         // Close dialog after successful save
         accept();
     } else {
