@@ -31,6 +31,7 @@ set(IMGUI_SOURCES
 # Main application
 add_executable(dna_messenger_imgui
     main.cpp
+    app.cpp
     settings_manager.cpp
     ui_helpers.cpp
     ${IMGUI_SOURCES}
