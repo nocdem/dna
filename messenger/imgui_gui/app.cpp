@@ -784,25 +784,76 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
 
 
 void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnemonic) {
-    // UI SKETCH MODE - Mock identity restore
-    printf("[SKETCH MODE] Restoring identity: %s\n", name);
-    printf("[SKETCH MODE] Mnemonic: %s\n", mnemonic);
-
-    // Simulate success
-    state.identities.push_back(name);
-    state.current_identity = name;
+    printf("[Identity] Restoring identity from seed phrase\n");
+    
+    // Validate mnemonic using BIP39
+    if (bip39_validate_mnemonic(mnemonic) != 0) {
+        printf("[Identity] ERROR: Invalid BIP39 mnemonic\n");
+        // TODO: Show error modal to user
+        return;
+    }
+    
+    printf("[Identity] Seed phrase validated\n");
+    
+    // Derive seeds from mnemonic (no passphrase)
+    uint8_t signing_seed[32];
+    uint8_t encryption_seed[32];
+    
+    if (qgp_derive_seeds_from_mnemonic(mnemonic, "", signing_seed, encryption_seed) != 0) {
+        printf("[Identity] ERROR: Failed to derive seeds from mnemonic\n");
+        return;
+    }
+    
+    printf("[Identity] Derived seeds from mnemonic\n");
+    
+    // Create temporary messenger context
+    messenger_context_t *ctx = messenger_init("temp");
+    if (!ctx) {
+        printf("[Identity] ERROR: Failed to initialize messenger context\n");
+        // Securely wipe seeds
+        memset(signing_seed, 0, sizeof(signing_seed));
+        memset(encryption_seed, 0, sizeof(encryption_seed));
+        return;
+    }
+    
+    printf("[Identity] Generating keys from seeds...\n");
+    
+    // Generate keys from seeds (fingerprint-first, no name required)
+    char fingerprint[129];
+    int result = messenger_generate_keys_from_seeds(ctx, signing_seed, encryption_seed, fingerprint);
+    
+    // Securely wipe seeds from memory
+    memset(signing_seed, 0, sizeof(signing_seed));
+    memset(encryption_seed, 0, sizeof(encryption_seed));
+    
+    if (result != 0) {
+        printf("[Identity] ERROR: Failed to generate keys from seeds\n");
+        messenger_free(ctx);
+        return;
+    }
+    
+    printf("✓ Identity restored successfully!\n");
+    printf("✓ Fingerprint: %s\n", fingerprint);
+    
+    // Keys are saved to ~/.dna/<fingerprint>.{dsa,kem}
+    // Add to identity list
+    state.identities.push_back(fingerprint);
+    state.current_identity = fingerprint;
     state.identity_loaded = true;
     state.show_identity_selection = false;
-
-    // Load mock state.contacts
-    loadIdentity(name);
-
-    // Reset and close
+    
+    // Load identity state (contacts, etc)
+    loadIdentity(fingerprint);
+    
+    // Cleanup
+    messenger_free(ctx);
+    
+    // Reset UI state
     memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
     memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
     ImGui::CloseCurrentPopup();
-
-    printf("[SKETCH MODE] Identity restored successfully\n");
+    
+    printf("[Identity] Identity restore complete\n");
 }
 
 
