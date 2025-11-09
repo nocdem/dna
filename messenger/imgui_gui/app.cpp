@@ -1291,12 +1291,17 @@ void DNAMessengerApp::renderAddContactDialog() {
     ImGui::Text("Enter contact fingerprint or name:");
     ImGui::Spacing();
 
+    // Style input like other inputs (themed background)
+    ImVec4 input_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
+
     // Input field for fingerprint/name
     ImGui::PushItemWidth(-1);
     bool input_changed = ImGui::InputText("##contact_input", state.add_contact_input,
-                                          sizeof(state.add_contact_input),
-                                          ImGuiInputTextFlags_CallbackAlways);
+                                          sizeof(state.add_contact_input));
     ImGui::PopItemWidth();
+    
+    ImGui::PopStyleColor(); // FrameBg
     ImGui::Spacing();
 
     // Auto-search as user types (debounced)
