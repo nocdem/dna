@@ -96,6 +96,46 @@ void DNAMessengerApp::render() {
         renderDesktopLayout();
     }
 
+    // Render operation spinner overlay (for async DHT operations)
+    if (state.show_operation_spinner) {
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(io.DisplaySize);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.7f)); // Semi-transparent background
+        ImGui::Begin("##operation_spinner", nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoInputs);
+        
+        // Center spinner
+        float spinner_size = 40.0f;
+        ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+        ImGui::SetCursorPos(ImVec2(center.x - spinner_size, center.y - spinner_size * 2));
+        ThemedSpinner("##op_spinner", spinner_size, 6.0f);
+        
+        // Show latest message from async task
+        auto messages = dht_publish_task.getMessages();
+        if (!messages.empty()) {
+            const char* msg = messages.back().c_str();
+            ImVec2 text_size = ImGui::CalcTextSize(msg);
+            ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_size));
+            ImGui::Text("%s", msg);
+        } else {
+            // Fallback to static message
+            ImVec2 text_size = ImGui::CalcTextSize(state.operation_spinner_message);
+            ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_size));
+            ImGui::Text("%s", state.operation_spinner_message);
+        }
+        
+        ImGui::End();
+        ImGui::PopStyleColor();
+        
+        // Check if async task completed
+        if (dht_publish_task.isCompleted() && !dht_publish_task.isRunning()) {
+            state.show_operation_spinner = false;
+        }
+    }
+
     ImGui::End();
     ImGui::PopStyleVar(); // Pop WindowPadding
 }
@@ -597,8 +637,24 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
 
     ImGui::BeginDisabled(!state.seed_confirmed);
     if (ButtonDark("Create", ImVec2(button_width, 40))) {
-        state.create_identity_step = STEP_CREATING;
-        createIdentityWithSeed(state.new_identity_name, state.generated_mnemonic);
+        // Close modal immediately
+        ImGui::CloseCurrentPopup();
+        
+        // Show spinner overlay
+        state.show_operation_spinner = true;
+        snprintf(state.operation_spinner_message, sizeof(state.operation_spinner_message), 
+                 "Creating identity...");
+        
+        // Copy name and mnemonic to heap for async task
+        std::string name_copy = std::string(state.new_identity_name);
+        std::string mnemonic_copy = std::string(state.generated_mnemonic);
+        
+        // Start async DHT publishing task
+        dht_publish_task.start([this, name_copy, mnemonic_copy](AsyncTask* task) {
+            task->addMessage("Generating cryptographic keys...");
+            createIdentityWithSeed(name_copy.c_str(), mnemonic_copy.c_str());
+            task->addMessage("✓ Identity created successfully!");
+        });
     }
     ImGui::EndDisabled();
 }
@@ -727,14 +783,17 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
     // Load contacts for the new identity
     loadIdentity(fingerprint);
     
-    // Reset and close
+    // Reset wizard state
     memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
     memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
     state.seed_confirmed = false;
-    ImGui::CloseCurrentPopup();
+    // Modal already closed before async task started
     
     messenger_free(ctx);
     printf("[Identity] Identity created successfully\n");
+    
+    // Hide spinner (async task will finish)
+    state.show_operation_spinner = false;
 }
 
 

@@ -6,6 +6,7 @@
 #include "ui_helpers.h"
 #include "font_awesome.h"
 #include "modal_helper.h"
+#include "async_task.h"
 #include "core/app_state.h"
 #include <algorithm>
 #include <cmath>
@@ -26,6 +27,9 @@ public:
 private:
     // Centralized application state
     AppState state;
+    
+    // Async task for DHT operations
+    AsyncTask dht_publish_task;
 
     // Identity selection and management
     void renderIdentitySelection();

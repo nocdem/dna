@@ -14,6 +14,7 @@ AppState::AppState() {
     show_identity_selection = true;
     is_first_frame = true;
     loading_start_time = 0.0f;
+    show_operation_spinner = false;
     identity_loaded = false;
     identities_scanned = false;
     selected_identity_idx = -1;

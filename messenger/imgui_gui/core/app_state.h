@@ -62,6 +62,10 @@ public:
     // Loading screen state
     bool is_first_frame;
     float loading_start_time;
+    
+    // Background operation spinner
+    bool show_operation_spinner;
+    char operation_spinner_message[256];
 
     // Emoji picker state
     bool show_emoji_picker;
