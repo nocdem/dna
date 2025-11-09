@@ -175,20 +175,19 @@ void DNAMessengerApp::renderIdentitySelection() {
     ImGui::Text("%s", info_text);
     ImGui::Spacing();
 
-    // Load identities on first render
-    if (!state.identities_scanned) {
-        scanIdentities();
-        state.identities_scanned = true;  // Mark as scanned
+    // Load identities on first render (async)
+    if (!state.identities_scanned && !identity_scan_task.isRunning()) {
+        DNAMessengerApp* app = this;
         
-        // Do DHT reverse lookups for names (synchronous for now, async in future)
-        static bool lookups_done = false;
-        if (!lookups_done) {
-            lookups_done = true;
+        identity_scan_task.start([app](AsyncTask* task) {
+            // Scan for identity files
+            app->scanIdentities();
             
+            // Do DHT reverse lookups for names (in background)
             dht_context_t *dht_ctx = dht_singleton_get();
             if (dht_ctx) {
-                for (const auto& fp : state.identities) {
-                    if (fp.length() == 128 && state.identity_name_cache.find(fp) == state.identity_name_cache.end()) {
+                for (const auto& fp : app->state.identities) {
+                    if (fp.length() == 128 && app->state.identity_name_cache.find(fp) == app->state.identity_name_cache.end()) {
                         // Try DHT reverse lookup to get registered name
                         char *registered_name = nullptr;
                         int ret = dht_keyserver_reverse_lookup(dht_ctx, fp.c_str(), &registered_name);
@@ -196,24 +195,28 @@ void DNAMessengerApp::renderIdentitySelection() {
                         if (ret == 0 && registered_name != nullptr) {
                             // Found registered name, cache it
                             printf("[Identity] DHT lookup: %s → %s\n", fp.substr(0, 16).c_str(), registered_name);
-                            state.identity_name_cache[fp] = std::string(registered_name);
+                            app->state.identity_name_cache[fp] = std::string(registered_name);
                             free(registered_name);
                         } else {
                             // Not registered or lookup failed, use shortened fingerprint
-                            state.identity_name_cache[fp] = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
+                            app->state.identity_name_cache[fp] = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
                         }
                     }
                 }
             } else {
                 // No DHT available, use shortened fingerprints
-                for (const auto& fp : state.identities) {
-                    if (fp.length() == 128 && state.identity_name_cache.find(fp) == state.identity_name_cache.end()) {
-                        state.identity_name_cache[fp] = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
+                for (const auto& fp : app->state.identities) {
+                    if (fp.length() == 128 && app->state.identity_name_cache.find(fp) == app->state.identity_name_cache.end()) {
+                        app->state.identity_name_cache[fp] = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
                     }
                 }
             }
-        }
+            
+            // Mark as complete
+            app->state.identities_scanned = true;
+        });
     }
+
 
     // Identity list (reduce reserved space for buttons to prevent scrollbar)
     ImGui::BeginChild("IdentityList", ImVec2(0, is_mobile ? -180 : -140), true);

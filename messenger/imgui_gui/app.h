@@ -37,6 +37,7 @@ private:
     AsyncTask message_poll_task;
     AsyncTask message_send_task;
     AsyncTask message_load_task;
+    AsyncTask identity_scan_task;
 
     // Identity selection and management
     void renderIdentitySelection();
