@@ -1158,6 +1158,7 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
     contact_sync_task.start([app, ctx](AsyncTask* task) {
         printf("[Contacts] Syncing from DHT...\n");
         
+        // First: Fetch contacts from DHT (merge with local)
         int result = messenger_sync_contacts_from_dht(ctx);
         if (result == 0) {
             printf("[Contacts] ✓ Synced from DHT successfully\n");
@@ -1165,6 +1166,11 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
         } else {
             printf("[Contacts] DHT sync failed or no data found\n");
         }
+        
+        // Second: Push local contacts back to DHT (ensure DHT is up-to-date)
+        printf("[Contacts] Publishing local contacts to DHT...\n");
+        messenger_sync_contacts_to_dht(ctx);
+        printf("[Contacts] ✓ Local contacts published to DHT\n");
     });
 
     // Preload messages for all contacts (improves UX - instant switching)
@@ -1571,6 +1577,16 @@ void DNAMessengerApp::renderAddContactDialog() {
                 state.add_contact_found_name.clear();
                 state.add_contact_found_fingerprint.clear();
                 task->addMessage("Cannot add self");
+                return;
+            }
+
+            // Check if contact already exists by fingerprint
+            if (contacts_db_exists(fingerprint)) {
+                state.add_contact_error_message = "Contact already exists in your list";
+                state.add_contact_lookup_in_progress = false;
+                state.add_contact_found_name.clear();
+                state.add_contact_found_fingerprint.clear();
+                task->addMessage("Already exists");
                 return;
             }
 
