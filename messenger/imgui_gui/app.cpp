@@ -33,40 +33,9 @@ extern AppSettings g_app_settings;
 void DNAMessengerApp::render() {
     ImGuiIO& io = ImGui::GetIO();
 
-    // Show loading spinner for 2 seconds on first launch
+    // First frame initialization (removed unnecessary loading spinner)
     if (state.is_first_frame) {
-        if (state.loading_start_time == 0.0f) {
-            state.loading_start_time = (float)ImGui::GetTime();
-        }
-
-        float elapsed = (float)ImGui::GetTime() - state.loading_start_time;
-
-        if (elapsed < 2.0f) {
-            ImGui::SetNextWindowPos(ImVec2(0, 0));
-            ImGui::SetNextWindowSize(io.DisplaySize);
-            ImGui::Begin("Loading", nullptr,
-                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
-                ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse);
-
-            // Center spinner (same size as DHT loading spinner for consistency)
-            float spinner_size = 40.0f;
-            ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
-            ImGui::SetCursorPos(ImVec2(center.x - spinner_size, center.y - spinner_size));
-            ThemedSpinner("##loading", spinner_size, 6.0f);
-
-            // Loading text below spinner
-            const char* loading_text = "Loading DNA Messenger...";
-            ImVec2 text_size = ImGui::CalcTextSize(loading_text);
-            ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_size + 20));
-            ImGui::Text("%s", loading_text);
-
-            ImGui::End();
-            return;
-        } else {
-            // 2 seconds elapsed, mark as done
-            state.is_first_frame = false;
-        }
+        state.is_first_frame = false;
     }
 
     // Periodic message polling (every 5 seconds)
