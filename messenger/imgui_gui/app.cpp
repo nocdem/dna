@@ -2085,7 +2085,6 @@ void DNAMessengerApp::renderChatView() {
         state.wall_display_name = contact.name;
         state.wall_is_own = false;  // Viewing someone else's wall
         state.show_message_wall = true;
-        loadMessageWall();  // Load wall messages
     }
 
     ImGui::EndChild();
@@ -2911,7 +2910,6 @@ void DNAMessengerApp::renderSettingsView() {
 
         if (ButtonDark(ICON_FA_USER " Edit DNA Profile", ImVec2(-1, btn_height))) {
             state.show_profile_editor = true;
-            loadProfile();  // Load current profile data
         }
         ImGui::Spacing();
 
@@ -2926,7 +2924,6 @@ void DNAMessengerApp::renderSettingsView() {
             state.wall_display_name = "My Wall";
             state.wall_is_own = true;  // Can post to own wall
             state.show_message_wall = true;
-            loadMessageWall();
         }
     } else {
         if (ButtonDark("Create New Identity", ImVec2(200, btn_height))) {
@@ -2941,7 +2938,6 @@ void DNAMessengerApp::renderSettingsView() {
 
         if (ButtonDark(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
             state.show_profile_editor = true;
-            loadProfile();  // Load current profile data
         }
         ImGui::SameLine();
         if (ButtonDark(ICON_FA_TAG " Register Name", ImVec2(200, btn_height))) {
@@ -2956,7 +2952,6 @@ void DNAMessengerApp::renderSettingsView() {
             state.wall_display_name = "My Wall";
             state.wall_is_own = true;  // Can post to own wall
             state.show_message_wall = true;
-            loadMessageWall();
         }
     }
 
