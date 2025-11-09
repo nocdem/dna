@@ -454,3 +454,30 @@
 - **DHT Layer:** `dht/dht_*.h` files
 - **Encryption:** `dna_api.h`, `qgp_*.h` files
 - **Database:** `contacts_db.h`, `message_backup.h`, `keyserver_cache.h`
+
+---
+
+## 📦 Code Organization Status (2025-11-09)
+
+### Current Structure:
+- **main.cpp** - 2,066 lines (reduced from 2,185)
+  - DNAMessengerApp class (1,734 lines)
+  - Main loop and font setup
+  - ApplyTheme() function
+  
+- **ui_helpers.h/cpp** - 150 lines ✅ EXTRACTED
+  - ButtonDark()
+  - ThemedButton()
+  - ThemedSpinner()
+  
+- **settings_manager.h/cpp** - 100 lines ✅ SEPARATE
+- **theme_colors.h** - 32 lines ✅ SEPARATE
+
+### Future Refactoring (Optional, Post-Integration):
+Once backend integration is complete, consider:
+- Extract view methods to views.cpp (renderChatView, renderWalletView, etc.)
+- Extract dialog methods to dialogs.cpp (renderIdentitySelection, etc.)
+- Move DNAMessengerApp class declaration to app.h
+
+**Decision: Proceed with backend integration now.** Further code organization can wait until after integration is complete and stable.
+
