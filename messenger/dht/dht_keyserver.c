@@ -728,9 +728,19 @@ int dht_keyserver_reverse_lookup(
         return -2;  // Not found
     }
 
-    // Parse JSON
-    json_object *root = json_tokener_parse((char*)value);
+    // Parse JSON (need to null-terminate first as DHT data isn't)
+    char *json_str = (char*)malloc(value_len + 1);
+    if (!json_str) {
+        free(value);
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to allocate memory for JSON string\n");
+        return -1;
+    }
+    memcpy(json_str, value, value_len);
+    json_str[value_len] = '\0';
     free(value);
+    
+    json_object *root = json_tokener_parse(json_str);
+    free(json_str);
 
     if (!root) {
         fprintf(stderr, "[DHT_KEYSERVER] Failed to parse reverse mapping JSON\n");
