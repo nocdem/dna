@@ -80,6 +80,10 @@ public:
     float add_contact_last_input_time;  // Track when user last typed
     std::string add_contact_last_searched_input;  // Track what we last searched
 
+    // Message polling state (check offline queue every 5 seconds)
+    float last_poll_time;  // Last time we checked for offline messages
+    bool new_messages_received;  // Flag to reload current conversation
+
     // Data
     std::vector<Contact> contacts;
     std::map<int, std::vector<Message>> contact_messages;

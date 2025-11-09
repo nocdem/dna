@@ -15,6 +15,7 @@
 // Backend includes
 extern "C" {
     #include "../messenger.h"
+    #include "../messenger_p2p.h"  // For messenger_p2p_check_offline_messages
     #include "../bip39.h"
     #include "../dht/dht_keyserver.h"
     #include "../dht/dht_singleton.h"
@@ -65,6 +66,21 @@ void DNAMessengerApp::render() {
         } else {
             // 2 seconds elapsed, mark as done
             state.is_first_frame = false;
+        }
+    }
+
+    // Periodic message polling (every 5 seconds)
+    if (state.identity_loaded) {
+        float current_time = (float)ImGui::GetTime();
+        if (current_time - state.last_poll_time >= 5.0f) {
+            checkForNewMessages();
+            state.last_poll_time = current_time;
+        }
+
+        // Reload current conversation if new messages arrived
+        if (state.new_messages_received && state.selected_contact >= 0) {
+            loadMessagesForContact(state.selected_contact);
+            state.new_messages_received = false;
         }
     }
 
@@ -1229,6 +1245,37 @@ void DNAMessengerApp::loadMessagesForContact(int contact_index) {
     } else {
         printf("[Messages] No messages found or error loading conversation\n");
     }
+}
+
+void DNAMessengerApp::checkForNewMessages() {
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (!ctx || !state.identity_loaded) {
+        return;
+    }
+
+    // Don't start a new poll if one is already running
+    if (message_poll_task.isRunning()) {
+        return;
+    }
+
+    // Capture state by value for the worker thread
+    DNAMessengerApp* app = this;
+
+    // Start async poll task
+    message_poll_task.start([app, ctx](AsyncTask* task) {
+        size_t messages_received = 0;
+
+        // Check DHT offline queue for new messages
+        int result = messenger_p2p_check_offline_messages(ctx, &messages_received);
+
+        if (result == 0 && messages_received > 0) {
+            printf("[Poll] ✓ Received %zu new message(s) from DHT offline queue\n", messages_received);
+            // Set flag for main thread to reload messages
+            app->state.new_messages_received = true;
+        } else if (result != 0) {
+            printf("[Poll] Warning: Error checking offline messages\n");
+        }
+    });
 }
 
 

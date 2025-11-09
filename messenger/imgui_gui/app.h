@@ -31,6 +31,7 @@ private:
     // Async tasks for DHT operations
     AsyncTask dht_publish_task;
     AsyncTask contact_lookup_task;
+    AsyncTask message_poll_task;
 
     // Identity selection and management
     void renderIdentitySelection();
@@ -52,6 +53,9 @@ private:
     // Data loading
     void loadIdentity(const std::string& identity);
     void loadMessagesForContact(int contact_index);
+
+    // Message polling
+    void checkForNewMessages();
 
     // Contact management
     void renderAddContactDialog();
