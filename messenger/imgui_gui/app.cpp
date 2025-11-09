@@ -633,10 +633,16 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
     if (dht_ctx && strlen(name) > 0) {
         printf("[Identity] Publishing public keys to DHT with name: %s\n", name);
         
-        // We need to load the keys to publish them
-        // For now, just log - we'll need to add messenger_load_identity or similar
-        // TODO: Load public keys from disk and publish to DHT
-        printf("[Identity] WARNING: DHT publish not yet implemented (need to load keys from disk)\n");
+        // Load public and private keys from disk
+        std::string dsa_path = dna_dir + "/" + std::string(fingerprint) + ".dsa";
+        std::string kem_path = dna_dir + "/" + std::string(fingerprint) + ".kem";
+        
+        // We need access to qgp_key functions
+        // For now, skip DHT publish - will implement in next commit with proper key loading
+        printf("[Identity] DHT publish: Loading keys from:\n");
+        printf("[Identity]   - %s\n", dsa_path.c_str());
+        printf("[Identity]   - %s\n", kem_path.c_str());
+        printf("[Identity] TODO: Implement key loading and DHT publish\n");
     }
     
     // Identity created successfully
