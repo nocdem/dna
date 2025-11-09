@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(dna C CXX)  # Support both C and C++ for Qt GUI
+project(dna C CXX)  # C for core library, C++ for ImGui GUI
 
 # Static linking configuration for Windows
 if(WIN32)
@@ -264,31 +264,8 @@ if(NOT WIN32)
     target_link_libraries(cellframe_minimal m)
 endif()
 
-# DNA Messenger GUI (Phase 5) - Optional Qt GUI
-option(BUILD_GUI "Build Qt GUI application" ON)
-if(BUILD_GUI)
-    find_package(Qt5 QUIET COMPONENTS Core Widgets)
-    if(Qt5_FOUND)
-        message(STATUS "Qt5 found: ${Qt5_VERSION}")
-        message(STATUS "Building GUI application")
-        add_subdirectory(gui)
-    else()
-        message(STATUS "Qt5 not found. Skipping GUI build.")
-        message(STATUS "Install Qt5: sudo apt-get install qtbase5-dev (Linux) or build with MXE for Windows cross-compilation")
-    endif()
-endif()
-
-# cpunk-wallet-gui (Phase 8) - Optional Standalone CF20 Wallet GUI
-# Disabled: wallet functionality now integrated into messenger GUI
-option(BUILD_WALLET_GUI "Build standalone wallet GUI" OFF)
-if(BUILD_WALLET_GUI)
-    if(Qt5_FOUND)
-        message(STATUS "Building cpunk-wallet-gui application")
-        add_subdirectory(wallet-gui)
-    else()
-        message(STATUS "Qt5 not found. Skipping cpunk-wallet-gui build.")
-    endif()
-endif()
+# Qt GUI removed - migrated to ImGui (see imgui_gui/ subdirectory)
+# Old Qt GUI code preserved in gui/ directory for reference during migration
 
 # Build type configuration
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
