@@ -1167,8 +1167,12 @@ void DNAMessengerApp::loadMessagesForContact(int contact_index) {
         return;
     }
 
-    // Clear existing messages for this contact immediately
-    state.contact_messages[contact_index].clear();
+    // Check if messages are already cached
+    if (!state.contact_messages[contact_index].empty()) {
+        printf("[Messages] Using cached messages for contact %d (%zu messages)\n", 
+               contact_index, state.contact_messages[contact_index].size());
+        return;  // Already loaded, use cache!
+    }
 
     // Copy data for async task
     std::string contact_address = contact.address;
