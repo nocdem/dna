@@ -20,7 +20,7 @@
 
 ---
 
-## 📊 Current Status (2025-11-09)
+## 📊 Current Status (2025-11-09 09:18 UTC)
 
 ### ✅ Phase 1: Identity Management - COMPLETE
 - ✅ **Real identity scanning** (scans ~/.dna/*.dsa files)
@@ -28,16 +28,20 @@
 - ✅ **Real key generation** (Kyber1024 + Dilithium5 from seeds)
 - ✅ **Keys saved to disk** (~/.dna/fingerprint.{dsa,kem})
 - ✅ **DHT singleton initialization** (threaded, non-blocking)
+- ✅ **DHT key publishing** (forward + reverse mapping to DHT)
 - ✅ **DHT reverse lookup** (displays registered names)
 - ✅ **Name caching** (prevents blocking lookups)
 - ✅ **Loading spinner** (animated, theme-aware, with status messages)
 - ✅ **AsyncTask class** (reusable threaded operations)
+- ✅ **Identity restore from seed** (BIP39 validation + key derivation)
 
 **Working Features:**
-- Create identity → generates real cryptographic keys
+- Create identity → generates real cryptographic keys + publishes to DHT
+- Restore identity → derives keys from BIP39 seed + publishes to DHT
 - Identity list → shows actual identities from ~/.dna/
-- DHT lookup → attempts to find registered names
+- DHT lookup → finds registered names (reverse mapping)
 - UI stays responsive (60fps) during DHT operations
+- Contact list → loads real contacts from per-identity SQLite database
 
 **Reference:** `gui/CreateIdentityDialog.cpp`, `gui/IdentitySelectionDialog.cpp`, `gui/main.cpp`
 
@@ -195,29 +199,28 @@ lookup_task.start([fingerprint](AsyncTask* task) {
 - `imgui_gui/app.cpp` - Add new dialog function
 - `imgui_gui/core/app_state.h` - Add dialog state
 
-#### Task D: DHT Key Publishing (3-4 hours)
-**Location:** `imgui_gui/app.cpp` - `createIdentityWithSeed()` function (line 620)
+#### Task D: DHT Key Publishing ✅ COMPLETE (2025-11-09)
+**Location:** `imgui_gui/app.cpp` - `createIdentityWithSeed()` function (lines 773-791)
 **Qt Reference:** Look for `dht_keyserver_publish()` calls in Qt (might be in Settings)
-**Status:** TODO marked, keys saved but not published
+**Status:** ✅ Complete - Keys are published to DHT with reverse mapping
 
-**What to do:**
-1. After identity creation, load public keys from disk
-2. Call `dht_keyserver_publish()` with name and keys
-3. Handle success/failure
-4. Test: New identity should be findable via DHT reverse lookup
+**What was done:**
+1. Keys published to DHT after identity creation
+2. Forward mapping: fingerprint → public keys
+3. Reverse mapping: fingerprint → display name
+4. Success/failure handling with cache update
+5. Verified working via DHT logs (3-node replication confirmed)
 
-**💡 TIP:** Publish in background to avoid blocking UI:
-```cpp
-AsyncTask publish_task;
-publish_task.start([](AsyncTask* task) {
-    task->addMessage("Publishing keys to DHT...");
-    // Do dht_keyserver_publish() here
-    task->addMessage("Published!");
-});
+**Files modified:**
+- `imgui_gui/app.cpp` - `createIdentityWithSeed()` now calls `dht_keyserver_publish()`
+
+**Evidence from logs:**
 ```
-
-**Files to modify:**
-- `imgui_gui/app.cpp` - Complete DHT publish in `createIdentityWithSeed()`
+[DHT_KEYSERVER] Publishing keys for fingerprint '711fc8a2...' to DHT
+[DHT] PUT PERMANENT: ✓ Stored on 3 remote node(s)
+[DHT_KEYSERVER] ✓ Signed reverse mapping published
+[DHT_KEYSERVER] ✓ Keys published successfully
+```
 
 ### 🎯 Medium Priority - Needs Phase 1 Complete
 
@@ -299,7 +302,7 @@ balance_task.start([](AsyncTask* task) {
 
 ## 📋 Backend Integration Checklist
 
-### Phase 1: Identity Management (✅ MOSTLY COMPLETE)
+### Phase 1: Identity Management (✅ COMPLETE - 2025-11-09)
 - [x] **1.1 Identity Creation** ✅ DONE (2025-11-09)
   - [x] Integrate BIP39 seed generation (`bip39.h`, `bip39_pbkdf2.c`)
   - [x] Connect to key generation (`qgp_key.c`, `kyber_deterministic.c`)
@@ -307,30 +310,30 @@ balance_task.start([](AsyncTask* task) {
   - [x] Replace mock identity list with real filesystem scan
   - [x] DHT singleton initialization (threaded)
   - [x] Name caching for DHT reverse lookups
-  - [ ] DHT key publishing (TODO marked in code)
+  - [x] DHT key publishing (forward + reverse mapping)
   - **Reference:** `gui/CreateIdentityDialog.cpp` (Qt implementation)
 
-- [ ] **1.2 Identity Restore** ⚠️ HIGH PRIORITY - Can be done in parallel
-  - [ ] Validate BIP39 seed phrase (24 words)
-  - [ ] Derive keys from seed phrase
-  - [ ] Store restored identity
-  - [ ] **Reference:** `gui/RestoreIdentityDialog.cpp`
-  - **Task:** See "Task A" above
+- [x] **1.2 Identity Restore** ✅ DONE (2025-11-09)
+  - [x] Validate BIP39 seed phrase (24 words)
+  - [x] Derive keys from seed phrase
+  - [x] Store restored identity
+  - [x] Publish to DHT
+  - **Reference:** `gui/RestoreIdentityDialog.cpp`
 
 - [x] **1.3 Identity Selection** ✅ DONE
   - [x] Load identities from `~/.dna/` directory
   - [x] Display with DHT name lookups
-  - [x] Initialize messenger context with selected identity (TODO)
+  - [x] Initialize messenger context with selected identity
   - **Reference:** `gui/IdentitySelectionDialog.cpp`
 
-### Phase 2: Contacts (HIGH PRIORITY)
-- [ ] **2.1 Contact Database**
-  - [ ] Integrate SQLite contacts DB (`contacts_db.h/c`)
-  - [ ] Load contacts for current identity
-  - [ ] Display real online/offline status
-  - [ ] **Reference:** `gui/MainWindow.cpp` (loadContacts)
+### Phase 2: Contacts (IN PROGRESS)
+- [x] **2.1 Contact Database** ✅ DONE (2025-11-09)
+  - [x] Integrate SQLite contacts DB (`contacts_db.h/c`)
+  - [x] Load contacts for current identity
+  - [ ] Display real online/offline status (presence system not integrated yet)
+  - **Reference:** `gui/MainWindow.cpp` (loadContacts)
 
-- [ ] **2.2 Add Contact**
+- [ ] **2.2 Add Contact** 🔄 IN PROGRESS (Task C - other agent)
   - [ ] Create "Add Contact" dialog
   - [ ] Validate contact identity format
   - [ ] Query DHT keyserver for public key
@@ -801,22 +804,24 @@ balance_task.start([](AsyncTask* task) {
 
 ---
 
-## 📈 Progress Summary (2025-11-09)
+## 📈 Progress Summary (2025-11-09 09:18 UTC)
 
 **Completed:**
-- ✅ Phase 1.1: Identity Creation with real crypto
+- ✅ Phase 1: Identity Management (create + restore + DHT publishing)
 - ✅ DHT Infrastructure (threaded, non-blocking, cached)
 - ✅ Loading UX (spinner, status messages, 60fps)
 - ✅ AsyncTask utility (reusable for all background ops)
+- ✅ Contact list loading (SQLite integration)
+- ✅ Identity selection modal fix (closes properly)
 
 **In Progress:**
-- ⚠️ Identity Restore (UI ready, needs backend)
-- ⚠️ DHT Key Publishing (keys created, not published)
+- 🔄 Task C: Add Contact Dialog (another agent)
 
-**Blocked:**
-- Contact list (needs identity selection complete)
-- Messaging (needs contacts)
-- Wallet (lower priority)
+**Next Priority:**
+- ❌ Task E: Message Loading (SQLite message history)
+- ❌ Task F: Send Message Integration (P2P + encryption)
+- ❌ Task G: Receive Message Polling (DHT offline queue)
+- ❌ Task H: Wallet Balance Loading (RPC integration)
 
 **Performance:**
 - ✅ 60fps smooth UI

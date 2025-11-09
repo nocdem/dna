@@ -1133,7 +1133,7 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
     // For now, message history will be empty
 
     state.identity_loaded = true;
-    // DON'T set show_identity_selection here - it's managed by async task completion
+    state.show_identity_selection = false; // Close identity selection modal
     state.current_identity = identity;
 
     printf("[Identity] Identity loaded successfully: %s (%zu contacts)\n",
