@@ -2004,8 +2004,13 @@ void DNAMessengerApp::renderChatView() {
                         
                         if (result == 0) {
                             printf("[Send] Message sent successfully to %s\n", recipient.c_str());
-                            // Set flag to reload messages (avoids duplicate)
-                            app->state.new_messages_received = true;
+                            // Append sent message directly to UI (don't reload all messages)
+                            Message msg;
+                            msg.sender = "You";
+                            msg.content = message_copy;
+                            msg.timestamp = "now";
+                            msg.is_outgoing = true;
+                            app->state.contact_messages[contact_idx].push_back(msg);
                         } else {
                             printf("[Send] ERROR: Failed to send message to %s\n", recipient.c_str());
                         }
@@ -2222,8 +2227,13 @@ void DNAMessengerApp::renderChatView() {
                         
                         if (result == 0) {
                             printf("[Send] Message sent successfully to %s\n", recipient.c_str());
-                            // Set flag to reload messages (avoids duplicate)
-                            app->state.new_messages_received = true;
+                            // Append sent message directly to UI (don't reload all messages)
+                            Message msg;
+                            msg.sender = "You";
+                            msg.content = message_copy;
+                            msg.timestamp = "now";
+                            msg.is_outgoing = true;
+                            app->state.contact_messages[contact_idx].push_back(msg);
                         } else {
                             printf("[Send] ERROR: Failed to send message to %s\n", recipient.c_str());
                         }
