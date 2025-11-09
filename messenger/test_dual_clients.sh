@@ -30,7 +30,11 @@ BINARY="$BUILD_DIR/dna_messenger_imgui"
 ALICE_HOME="/tmp/dna_alice_home"
 BOB_HOME="/tmp/dna_bob_home"
 
-# P2P ports (different for each client)
+# DHT ports (different for each client - DHT listens on this)
+ALICE_DHT_PORT=4000
+BOB_DHT_PORT=5000
+
+# P2P ports (different for each client - TCP messaging)
 ALICE_P2P_PORT=4001
 BOB_P2P_PORT=4002
 
@@ -73,13 +77,15 @@ function setup_home() {
 function launch_client() {
     local name=$1
     local home_dir=$2
-    local p2p_port=$3
-    local color=$4
+    local dht_port=$3
+    local p2p_port=$4
+    local color=$5
     
     echo -e "${color}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${color}  Launching $name's Client${NC}"
     echo -e "${color}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo -e "${YELLOW}Home: $home_dir${NC}"
+    echo -e "${YELLOW}DHT Port: $dht_port${NC}"
     echo -e "${YELLOW}P2P Port: $p2p_port${NC}"
     echo -e "${YELLOW}Data: $home_dir/.dna/${NC}"
     echo ""
@@ -89,6 +95,7 @@ function launch_client() {
     
     # Set environment variables
     export HOME="$home_dir"
+    export DNA_DHT_PORT="$dht_port"
     export DNA_P2P_PORT="$p2p_port"
     
     # Launch client
@@ -140,6 +147,7 @@ function show_help() {
     echo ""
     echo "Notes:"
     echo "  - Each client has isolated ~/.dna directory"
+    echo "  - DHT ports: Alice=4000, Bob=5000"
     echo "  - P2P ports: Alice=4001, Bob=4002"
     echo "  - Both connect to same DHT bootstrap nodes"
     echo "  - Messages are encrypted end-to-end"
@@ -153,14 +161,14 @@ echo ""
 case "${1:-both}" in
     alice)
         check_build
-        launch_client "Alice" "$ALICE_HOME" "$ALICE_P2P_PORT" "$GREEN"
+        launch_client "Alice" "$ALICE_HOME" "$ALICE_DHT_PORT" "$ALICE_P2P_PORT" "$GREEN"
         echo -e "${GREEN}Alice's client is running. Close the window to stop.${NC}"
         wait
         ;;
     
     bob)
         check_build
-        launch_client "Bob" "$BOB_HOME" "$BOB_P2P_PORT" "$BLUE"
+        launch_client "Bob" "$BOB_HOME" "$BOB_DHT_PORT" "$BOB_P2P_PORT" "$BLUE"
         echo -e "${BLUE}Bob's client is running. Close the window to stop.${NC}"
         wait
         ;;
@@ -173,10 +181,10 @@ case "${1:-both}" in
         check_build
         
         # Launch Alice
-        launch_client "Alice" "$ALICE_HOME" "$ALICE_P2P_PORT" "$GREEN"
+        launch_client "Alice" "$ALICE_HOME" "$ALICE_DHT_PORT" "$ALICE_P2P_PORT" "$GREEN"
         
         # Launch Bob
-        launch_client "Bob" "$BOB_HOME" "$BOB_P2P_PORT" "$BLUE"
+        launch_client "Bob" "$BOB_HOME" "$BOB_DHT_PORT" "$BOB_P2P_PORT" "$BLUE"
         
         echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
         echo -e "${GREEN}  Both clients are running!${NC}"
