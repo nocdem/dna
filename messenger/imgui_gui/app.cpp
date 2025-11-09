@@ -67,11 +67,10 @@ void DNAMessengerApp::render() {
         }
     }
 
-    // Show identity selection on first run
-    if (state.show_identity_selection) {
+    // Show identity selection on first run (but not during spinner operations)
+    if (state.show_identity_selection && !state.show_operation_spinner) {
         renderIdentitySelection();
-        // DON'T return yet - render spinner overlay if needed
-    } else {
+    } else if (!state.show_operation_spinner) {
         // Main window only shows when identity is selected
         // Detect screen size for responsive layout
         bool is_mobile = io.DisplaySize.x < 600.0f;
@@ -105,7 +104,12 @@ void DNAMessengerApp::render() {
     if (state.show_operation_spinner) {
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(io.DisplaySize);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0, 0, 0, 0.7f)); // Semi-transparent background
+        
+        // Use themed background
+        ImVec4 bg_color = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+        bg_color.w = 0.95f; // Slightly transparent
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, bg_color);
+        
         ImGui::Begin("##operation_spinner", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
@@ -138,8 +142,7 @@ void DNAMessengerApp::render() {
         // Check if async task completed
         if (dht_publish_task.isCompleted() && !dht_publish_task.isRunning()) {
             state.show_operation_spinner = false;
-            state.show_identity_selection = false; // Hide identity modal
-            state.create_identity_step = STEP_NAME; // Reset wizard for next use
+            // Identity selection is already hidden when Create button was clicked
         }
     }
 }
@@ -641,8 +644,10 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
 
     ImGui::BeginDisabled(!state.seed_confirmed);
     if (ButtonDark("Create", ImVec2(button_width, 40))) {
-        // Close the modal immediately
+        // Close all modals immediately
         ImGui::CloseCurrentPopup();
+        state.show_identity_selection = false; // Hide identity list modal immediately
+        state.create_identity_step = STEP_NAME; // Reset wizard
         
         // Show spinner overlay
         state.show_operation_spinner = true;
