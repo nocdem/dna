@@ -2212,15 +2212,19 @@ void DNAMessengerApp::renderChatView() {
         }  // End clipper loop
     }  // End clipper.Step()
 
-    // Auto-scroll to bottom
-    if (state.should_scroll_to_bottom) {
-        ImGui::SetScrollY(ImGui::GetScrollMaxY());  // Force scroll to absolute bottom
-        state.should_scroll_to_bottom = false;
-    } else if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
-        ImGui::SetScrollHereY(1.0f);  // Auto-scroll if already at bottom
-    }
-
     ImGui::EndChild();
+
+    // Delayed scroll (wait 2 frames for message to fully render)
+    if (state.scroll_to_bottom_frames > 0) {
+        state.scroll_to_bottom_frames--;
+        if (state.scroll_to_bottom_frames == 0) {
+            ImGui::SetScrollY(ImGui::GetScrollMaxY());
+        }
+    } else if (state.should_scroll_to_bottom) {
+        // Start delayed scroll
+        state.scroll_to_bottom_frames = 2;
+        state.should_scroll_to_bottom = false;
+    }
 
     // Message input area - Multiline with recipient bubble color
     ImGui::Spacing();

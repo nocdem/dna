@@ -86,6 +86,7 @@ public:
     bool new_messages_received;  // Flag to reload current conversation
     bool contacts_synced_from_dht;  // Flag to indicate DHT sync completed
     bool should_scroll_to_bottom;  // Flag to force scroll after sending message
+    int scroll_to_bottom_frames;  // Frames to wait before scrolling (0 = don't scroll)
 
     // Data
     std::vector<Contact> contacts;
