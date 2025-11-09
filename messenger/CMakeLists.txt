@@ -214,10 +214,40 @@ target_link_libraries(dna_lib
 # On Windows with static linking, link Windows system libs
 if(WIN32)
     # Windows system libraries (required by OpenSSL and DHT)
+    # IMPORTANT: Link order matters! Libraries must come AFTER libraries that depend on them
     target_link_libraries(dna_lib
+        # HTTP client library and dependencies
+        curl        # CURL for RPC calls
+        nghttp2     # HTTP/2 support for CURL
+        ssh2        # SSH support for CURL
+        psl         # Public suffix list for CURL
+        wldap32     # Windows LDAP support
+        iconv       # Character encoding conversion
+        charset     # Character set support
+        z           # zlib compression
+        # OpenDHT direct dependencies (MUST come before GnuTLS)
+        fmt         # Formatting library (required by OpenDHT)
+        jsoncpp     # JSON library (required by OpenDHT)
+        # GnuTLS and its dependencies
+        gnutls
+        nettle
+        hogweed
+        gmp
+        tasn1
+        idn2
+        unistring
+        brotlienc
+        brotlidec
+        zstd
+        argon2      # Required by OpenDHT
+        # Windows system libraries
         ws2_32      # Windows Sockets
         crypt32     # Cryptography
         secur32     # Security functions (SSPI)
+        advapi32    # Advanced Windows API
+        ncrypt      # Windows cryptography
+        bcrypt      # Windows cryptography
+        iphlpapi    # IP Helper API
     )
 endif()
 

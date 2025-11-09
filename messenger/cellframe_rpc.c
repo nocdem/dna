@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#define CURL_STATICLIB  // Required for static linking on Windows
+#endif
 #include <curl/curl.h>
 
 // Response buffer for curl
