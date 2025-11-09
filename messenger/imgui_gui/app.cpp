@@ -1144,6 +1144,62 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
     state.show_identity_selection = false; // Close identity selection modal
     state.current_identity = identity;
 
+    // Fetch contacts from DHT in background (sync from other devices)
+    DNAMessengerApp* app = this;
+    contact_sync_task.start([app, ctx](AsyncTask* task) {
+        printf("[Contacts] Syncing from DHT...\n");
+        
+        int result = messenger_sync_contacts_from_dht(ctx);
+        if (result == 0) {
+            printf("[Contacts] ✓ Synced from DHT successfully\n");
+            
+            // Reload contacts from database (DHT sync updates local DB)
+            char **identities = nullptr;
+            int contactCount = 0;
+            
+            if (messenger_get_contact_list(ctx, &identities, &contactCount) == 0) {
+                // Clear and rebuild contact list
+                app->state.contacts.clear();
+                
+                for (int i = 0; i < contactCount; i++) {
+                    std::string contact_identity = identities[i];
+                    
+                    // Get display name
+                    char displayName[256] = {0};
+                    if (messenger_get_display_name(ctx, identities[i], displayName) == 0) {
+                        // Success
+                    } else {
+                        strncpy(displayName, identities[i], sizeof(displayName) - 1);
+                    }
+                    
+                    bool is_online = false;
+                    
+                    app->state.contacts.push_back({
+                        displayName,
+                        contact_identity,
+                        is_online
+                    });
+                    
+                    free(identities[i]);
+                }
+                free(identities);
+                
+                // Sort contacts
+                std::sort(app->state.contacts.begin(), app->state.contacts.end(), 
+                    [](const Contact& a, const Contact& b) {
+                        if (a.is_online != b.is_online) {
+                            return a.is_online > b.is_online;
+                        }
+                        return strcmp(a.name.c_str(), b.name.c_str()) < 0;
+                    });
+                
+                printf("[Contacts] ✓ Reloaded %d contacts after DHT sync\n", contactCount);
+            }
+        } else {
+            printf("[Contacts] DHT sync failed or no data found\n");
+        }
+    });
+
     // Preload messages for all contacts (improves UX - instant switching)
     printf("[Identity] Preloading messages for %zu contacts...\n", state.contacts.size());
     for (size_t i = 0; i < state.contacts.size(); i++) {

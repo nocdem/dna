@@ -35,6 +35,7 @@ private:
     // Async tasks for DHT operations
     AsyncTask dht_publish_task;
     AsyncTask contact_lookup_task;
+    AsyncTask contact_sync_task;
     AsyncTask message_poll_task;
     AsyncTaskQueue message_send_queue;  // Queue for sending multiple messages rapidly
     AsyncTask message_load_task;
