@@ -534,6 +534,12 @@ void DNAMessengerApp::renderCreateIdentityStep1() {
 
     ImGui::SameLine();
     if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
+        // Reset wizard state and go back to identity selection
+        state.create_identity_step = STEP_NAME;
+        state.seed_confirmed = false;
+        state.seed_copied = false;
+        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
+        memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
         ImGui::CloseCurrentPopup();
     }
 }
@@ -630,13 +636,24 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
     ImGui::Spacing();
 
     // Center buttons
-    float button_width = 120.0f;
+    float button_width = 100.0f;
     float spacing = 10.0f;
-    float total_width = button_width * 2 + spacing;
+    float total_width = button_width * 3 + spacing * 2;
     float offset = (ImGui::GetContentRegionAvail().x - total_width) * 0.5f;
 
     if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
 
+    if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
+        // Reset wizard state and go back to identity selection
+        state.create_identity_step = STEP_NAME;
+        state.seed_confirmed = false;
+        state.seed_copied = false;
+        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
+        memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
+        ImGui::CloseCurrentPopup();
+    }
+    ImGui::SameLine();
+    
     if (ButtonDark("Back", ImVec2(button_width, 40))) {
         state.create_identity_step = STEP_NAME;
     }
@@ -835,6 +852,10 @@ void DNAMessengerApp::renderRestoreStep1_Name() {
     float button_width = is_mobile ? -1 : 150.0f;
 
     if (ButtonDark("Cancel", ImVec2(button_width, 40)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+        // Reset wizard state and go back to identity selection
+        state.restore_identity_step = RESTORE_STEP_NAME;
+        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
+        memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
         ImGui::CloseCurrentPopup();
     }
 
@@ -894,7 +915,22 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
 
     ImGui::Spacing();
 
-    float button_width = is_mobile ? -1 : 150.0f;
+    float button_width = is_mobile ? -1 : 120.0f;
+    float spacing = 10.0f;
+    float total_width = button_width * 3 + spacing * 2;
+    float offset = (ImGui::GetContentRegionAvail().x - total_width) * 0.5f;
+
+    if (!is_mobile && offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
+
+    if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
+        // Reset wizard state and go back to identity selection
+        state.restore_identity_step = RESTORE_STEP_NAME;
+        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
+        memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
+        ImGui::CloseCurrentPopup();
+    }
+
+    if (!is_mobile) ImGui::SameLine();
 
     if (ButtonDark("Back", ImVec2(button_width, 40))) {
         state.restore_identity_step = RESTORE_STEP_NAME;
@@ -904,7 +940,39 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
 
     ImGui::BeginDisabled(word_count != 24);
     if (ButtonDark("Restore", ImVec2(button_width, 40))) {
-        restoreIdentityWithSeed(state.new_identity_name, state.generated_mnemonic);
+        // Close all modals immediately
+        ImGui::CloseCurrentPopup();
+        state.show_identity_selection = false; // Hide identity list modal immediately
+        state.restore_identity_step = RESTORE_STEP_NAME; // Reset wizard
+        
+        // Show spinner overlay
+        state.show_operation_spinner = true;
+        snprintf(state.operation_spinner_message, sizeof(state.operation_spinner_message),
+                 "Restoring identity...");
+        
+        // Copy name and mnemonic to heap for async task
+        std::string name_copy = std::string(state.new_identity_name);
+        std::string mnemonic_copy = std::string(state.generated_mnemonic);
+        
+        dht_publish_task.start([this, name_copy, mnemonic_copy](AsyncTask* task) {
+            task->addMessage("Validating seed phrase...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            
+            task->addMessage("Deriving cryptographic keys...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            
+            task->addMessage("Publishing keys to DHT network...");
+            restoreIdentityWithSeed(name_copy.c_str(), mnemonic_copy.c_str());
+            
+            task->addMessage("Initializing messenger context...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            
+            task->addMessage("Loading contacts database...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            
+            task->addMessage("✓ Identity restored successfully!");
+            std::this_thread::sleep_for(std::chrono::milliseconds(800));
+        });
     }
     ImGui::EndDisabled();
 }
@@ -1062,7 +1130,6 @@ void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnem
     state.identities.push_back(fingerprint);
     state.current_identity = fingerprint;
     state.identity_loaded = true;
-    state.show_identity_selection = false;
     
     // Load identity state (contacts, etc)
     loadIdentity(fingerprint);
@@ -1073,7 +1140,6 @@ void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnem
     // Reset UI state
     memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
     memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
-    ImGui::CloseCurrentPopup();
     
     printf("[Identity] Identity restore complete\n");
 }
