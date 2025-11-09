@@ -7,6 +7,7 @@
 #include "font_awesome.h"
 #include "modal_helper.h"
 #include "async_task.h"
+#include "async_task_queue.h"
 #include "core/app_state.h"
 #include <algorithm>
 #include <cmath>
@@ -35,7 +36,7 @@ private:
     AsyncTask dht_publish_task;
     AsyncTask contact_lookup_task;
     AsyncTask message_poll_task;
-    AsyncTask message_send_task;
+    AsyncTaskQueue message_send_queue;  // Queue for sending multiple messages rapidly
     AsyncTask message_load_task;
     AsyncTask identity_scan_task;
 

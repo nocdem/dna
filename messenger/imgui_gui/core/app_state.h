@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <mutex>
 
 // View enumeration
 enum View {
@@ -87,6 +88,7 @@ public:
     // Data
     std::vector<Contact> contacts;
     std::map<int, std::vector<Message>> contact_messages;
+    mutable std::mutex messages_mutex;  // Protect contact_messages from concurrent access
     char message_input[16384]; // 16KB for long messages
 
     // Messenger backend context (opaque pointer, defined in messenger.h)

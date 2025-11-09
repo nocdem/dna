@@ -1312,15 +1312,9 @@ void DNAMessengerApp::retryMessage(int contact_idx, int msg_idx) {
         return;
     }
 
-    std::vector<Message>& messages = state.contact_messages[contact_idx];
-    if (msg_idx < 0 || msg_idx >= (int)messages.size()) {
-        printf("[Retry] ERROR: Invalid message index\n");
-        return;
-    }
-
-    Message& msg = messages[msg_idx];
-    if (msg.status != STATUS_FAILED) {
-        printf("[Retry] ERROR: Can only retry failed messages\n");
+    // Check queue limit before retrying
+    if (message_send_queue.size() >= 20) {
+        printf("[Retry] ERROR: Queue full, cannot retry\n");
         return;
     }
 
@@ -1330,33 +1324,55 @@ void DNAMessengerApp::retryMessage(int contact_idx, int msg_idx) {
         return;
     }
 
-    // Update status to pending
-    msg.status = STATUS_PENDING;
+    // Validate and copy message data (with mutex protection)
+    std::string message_copy;
+    std::string recipient;
+    {
+        std::lock_guard<std::mutex> lock(state.messages_mutex);
+        std::vector<Message>& messages = state.contact_messages[contact_idx];
 
-    // Copy data for async task
-    std::string message_copy = msg.content;
-    std::string recipient = state.contacts[contact_idx].address;
+        if (msg_idx < 0 || msg_idx >= (int)messages.size()) {
+            printf("[Retry] ERROR: Invalid message index\n");
+            return;
+        }
+
+        Message& msg = messages[msg_idx];
+        if (msg.status != STATUS_FAILED) {
+            printf("[Retry] ERROR: Can only retry failed messages\n");
+            return;
+        }
+
+        // Update status to pending
+        msg.status = STATUS_PENDING;
+
+        // Copy data for async task
+        message_copy = msg.content;
+        recipient = state.contacts[contact_idx].address;
+    }
+
     DNAMessengerApp* app = this;
-
     printf("[Retry] Retrying message to %s...\n", recipient.c_str());
 
-    // Send message asynchronously
-    message_send_task.start([app, ctx, message_copy, recipient, contact_idx, msg_idx](AsyncTask* task) {
+    // Enqueue retry task
+    message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
         const char* recipients[] = { recipient.c_str() };
         int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
 
-        // Update status based on result
-        std::vector<Message>& messages = app->state.contact_messages[contact_idx];
-        if (msg_idx >= 0 && msg_idx < (int)messages.size()) {
-            messages[msg_idx].status = (result == 0) ? STATUS_SENT : STATUS_FAILED;
-
-            if (result == 0) {
-                printf("[Retry] ✓ Message retry successful to %s\n", recipient.c_str());
-            } else {
-                printf("[Retry] ERROR: Message retry failed to %s\n", recipient.c_str());
+        // Update status with mutex protection
+        {
+            std::lock_guard<std::mutex> lock(app->state.messages_mutex);
+            if (msg_idx >= 0 && msg_idx < (int)app->state.contact_messages[contact_idx].size()) {
+                app->state.contact_messages[contact_idx][msg_idx].status =
+                    (result == 0) ? STATUS_SENT : STATUS_FAILED;
             }
         }
-    });
+
+        if (result == 0) {
+            printf("[Retry] ✓ Message retry successful to %s\n", recipient.c_str());
+        } else {
+            printf("[Retry] ERROR: Message retry failed to %s\n", recipient.c_str());
+        }
+    }, msg_idx);
 }
 
 void DNAMessengerApp::renderAddContactDialog() {
@@ -1884,13 +1900,16 @@ void DNAMessengerApp::renderChatView() {
     float input_height = is_mobile ? 100.0f : 80.0f;
     ImGui::BeginChild("MessageArea", ImVec2(0, -input_height), true);
 
+    // Lock mutex to safely read messages (protect from concurrent modification during send)
+    std::lock_guard<std::mutex> lock(state.messages_mutex);
+
     // Get messages for current contact
     std::vector<Message>& messages = state.contact_messages[state.selected_contact];
 
     // Virtual scrolling: only render visible messages
     ImGuiListClipper clipper;
     clipper.Begin((int)messages.size());
-    
+
     while (clipper.Step()) {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
             const auto& msg = messages[i];
@@ -2073,47 +2092,62 @@ void DNAMessengerApp::renderChatView() {
 
         // Send button with paper plane icon
         if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
-            if (strlen(state.message_input) > 0 && state.selected_contact >= 0 && !message_send_task.isRunning()) {
-                messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
-                if (ctx) {
-                    // Copy data for async task
-                    std::string message_copy = std::string(state.message_input);
-                    std::string recipient = state.contacts[state.selected_contact].address;
-                    int contact_idx = state.selected_contact;
-                    DNAMessengerApp* app = this;
+            if (strlen(state.message_input) > 0 && state.selected_contact >= 0) {
+                // Check queue limit
+                if (message_send_queue.size() >= 20) {
+                    ImGui::OpenPopup("Queue Full");
+                } else {
+                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                    if (ctx) {
+                        // Copy data for async task
+                        std::string message_copy = std::string(state.message_input);
+                        std::string recipient = state.contacts[state.selected_contact].address;
+                        int contact_idx = state.selected_contact;
+                        DNAMessengerApp* app = this;
 
-                    // Optimistic UI update: append pending message immediately
-                    Message pending_msg;
-                    pending_msg.sender = "You";
-                    pending_msg.content = message_copy;
-                    pending_msg.timestamp = "now";
-                    pending_msg.is_outgoing = true;
-                    pending_msg.status = STATUS_PENDING;
-                    state.contact_messages[contact_idx].push_back(pending_msg);
+                        // Get message index BEFORE appending (important for queue)
+                        int msg_idx;
+                        {
+                            std::lock_guard<std::mutex> lock(state.messages_mutex);
+                            msg_idx = state.contact_messages[contact_idx].size();
 
-                    // Clear input immediately for better UX
-                    state.message_input[0] = '\0';
-                    state.should_focus_input = true;
+                            // Optimistic UI update: append pending message immediately
+                            Message pending_msg;
+                            pending_msg.sender = "You";
+                            pending_msg.content = message_copy;
+                            pending_msg.timestamp = "now";
+                            pending_msg.is_outgoing = true;
+                            pending_msg.status = STATUS_PENDING;
+                            state.contact_messages[contact_idx].push_back(pending_msg);
+                        }
 
-                    // Send message asynchronously
-                    message_send_task.start([app, ctx, message_copy, recipient, contact_idx](AsyncTask* task) {
-                        const char* recipients[] = { recipient.c_str() };
-                        int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
+                        // Clear input immediately for better UX
+                        state.message_input[0] = '\0';
+                        state.should_focus_input = true;
 
-                        // Update status of last message (atomic update, no reload needed)
-                        std::vector<Message>& messages = app->state.contact_messages[contact_idx];
-                        if (!messages.empty()) {
-                            messages.back().status = (result == 0) ? STATUS_SENT : STATUS_FAILED;
+                        // Enqueue message send task
+                        message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
+                            const char* recipients[] = { recipient.c_str() };
+                            int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
+
+                            // Update status with mutex protection
+                            {
+                                std::lock_guard<std::mutex> lock(app->state.messages_mutex);
+                                if (msg_idx < (int)app->state.contact_messages[contact_idx].size()) {
+                                    app->state.contact_messages[contact_idx][msg_idx].status =
+                                        (result == 0) ? STATUS_SENT : STATUS_FAILED;
+                                }
+                            }
 
                             if (result == 0) {
-                                printf("[Send] Message sent successfully to %s (status updated)\n", recipient.c_str());
+                                printf("[Send] ✓ Message sent to %s (queue processed)\n", recipient.c_str());
                             } else {
-                                printf("[Send] ERROR: Failed to send message to %s (status=FAILED)\n", recipient.c_str());
+                                printf("[Send] ERROR: Failed to send to %s (status=FAILED)\n", recipient.c_str());
                             }
-                        }
-                    });
-                } else {
-                    printf("[Send] ERROR: No messenger context\n");
+                        }, msg_idx);
+                    } else {
+                        printf("[Send] ERROR: No messenger context\n");
+                    }
                 }
             }
         }
@@ -2304,53 +2338,79 @@ void DNAMessengerApp::renderChatView() {
         ImGui::PopStyleColor(4);
 
         if (icon_clicked || enter_pressed) {
-            if (strlen(state.message_input) > 0 && state.selected_contact >= 0 && !message_send_task.isRunning()) {
-                messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
-                if (ctx) {
-                    // Copy data for async task
-                    std::string message_copy = std::string(state.message_input);
-                    std::string recipient = state.contacts[state.selected_contact].address;
-                    int contact_idx = state.selected_contact;
-                    DNAMessengerApp* app = this;
+            if (strlen(state.message_input) > 0 && state.selected_contact >= 0) {
+                // Check queue limit
+                if (message_send_queue.size() >= 20) {
+                    ImGui::OpenPopup("Queue Full");
+                } else {
+                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                    if (ctx) {
+                        // Copy data for async task
+                        std::string message_copy = std::string(state.message_input);
+                        std::string recipient = state.contacts[state.selected_contact].address;
+                        int contact_idx = state.selected_contact;
+                        DNAMessengerApp* app = this;
 
-                    // Optimistic UI update: append pending message immediately
-                    Message pending_msg;
-                    pending_msg.sender = "You";
-                    pending_msg.content = message_copy;
-                    pending_msg.timestamp = "now";
-                    pending_msg.is_outgoing = true;
-                    pending_msg.status = STATUS_PENDING;
-                    state.contact_messages[contact_idx].push_back(pending_msg);
+                        // Get message index BEFORE appending (important for queue)
+                        int msg_idx;
+                        {
+                            std::lock_guard<std::mutex> lock(state.messages_mutex);
+                            msg_idx = state.contact_messages[contact_idx].size();
 
-                    // Clear input immediately for better UX
-                    state.message_input[0] = '\0';
-                    state.should_focus_input = true;
+                            // Optimistic UI update: append pending message immediately
+                            Message pending_msg;
+                            pending_msg.sender = "You";
+                            pending_msg.content = message_copy;
+                            pending_msg.timestamp = "now";
+                            pending_msg.is_outgoing = true;
+                            pending_msg.status = STATUS_PENDING;
+                            state.contact_messages[contact_idx].push_back(pending_msg);
+                        }
 
-                    // Send message asynchronously
-                    message_send_task.start([app, ctx, message_copy, recipient, contact_idx](AsyncTask* task) {
-                        const char* recipients[] = { recipient.c_str() };
-                        int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
+                        // Clear input immediately for better UX
+                        state.message_input[0] = '\0';
+                        state.should_focus_input = true;
 
-                        // Update status of last message (atomic update, no reload needed)
-                        std::vector<Message>& messages = app->state.contact_messages[contact_idx];
-                        if (!messages.empty()) {
-                            messages.back().status = (result == 0) ? STATUS_SENT : STATUS_FAILED;
+                        // Enqueue message send task
+                        message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
+                            const char* recipients[] = { recipient.c_str() };
+                            int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
+
+                            // Update status with mutex protection
+                            {
+                                std::lock_guard<std::mutex> lock(app->state.messages_mutex);
+                                if (msg_idx < (int)app->state.contact_messages[contact_idx].size()) {
+                                    app->state.contact_messages[contact_idx][msg_idx].status =
+                                        (result == 0) ? STATUS_SENT : STATUS_FAILED;
+                                }
+                            }
 
                             if (result == 0) {
-                                printf("[Send] Message sent successfully to %s (status updated)\n", recipient.c_str());
+                                printf("[Send] ✓ Message sent to %s (queue processed)\n", recipient.c_str());
                             } else {
-                                printf("[Send] ERROR: Failed to send message to %s (status=FAILED)\n", recipient.c_str());
+                                printf("[Send] ERROR: Failed to send to %s (status=FAILED)\n", recipient.c_str());
                             }
-                        }
-                    });
-                } else {
-                    printf("[Send] ERROR: No messenger context\n");
+                        }, msg_idx);
+                    } else {
+                        printf("[Send] ERROR: No messenger context\n");
+                    }
                 }
             }
         }
     }
 
     ImGui::PopStyleColor(); // FrameBg
+
+    // Queue Full modal
+    if (ImGui::BeginPopupModal("Queue Full", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::Text("Message queue is full (20 pending messages).");
+        ImGui::Text("Please wait for messages to send before adding more.");
+        ImGui::Spacing();
+        if (ImGui::Button("OK", ImVec2(120, 0))) {
+            ImGui::CloseCurrentPopup();
+        }
+        ImGui::EndPopup();
+    }
 }
 
 
