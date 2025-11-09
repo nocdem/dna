@@ -70,6 +70,14 @@ public:
     bool show_emoji_picker;
     ImVec2 emoji_picker_pos;
 
+    // Add Contact dialog state
+    bool show_add_contact_dialog;
+    char add_contact_input[256];  // Input buffer for fingerprint/name
+    bool add_contact_lookup_in_progress;
+    std::string add_contact_found_name;
+    std::string add_contact_found_fingerprint;
+    std::string add_contact_error_message;
+
     // Data
     std::vector<Contact> contacts;
     std::map<int, std::vector<Message>> contact_messages;

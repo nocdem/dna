@@ -19,6 +19,7 @@ extern "C" {
     #include "../dht/dht_keyserver.h"
     #include "../dht/dht_singleton.h"
     #include "../qgp_types.h"  // For qgp_key_load, qgp_key_free
+    #include "../contacts_db.h"  // For contacts_db_add, contacts_db_exists
 }
 
 // Forward declaration for ApplyTheme (defined in main.cpp)
@@ -144,6 +145,11 @@ void DNAMessengerApp::render() {
             state.show_operation_spinner = false;
             // Identity selection is already hidden when Create button was clicked
         }
+    }
+
+    // Add Contact dialog
+    if (state.show_add_contact_dialog) {
+        renderAddContactDialog();
     }
 }
 
@@ -1135,6 +1141,155 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
 }
 
 
+void DNAMessengerApp::renderAddContactDialog() {
+    if (!CenteredModal::Begin("Add Contact")) {
+        return;
+    }
+
+    ImGuiIO& io = ImGui::GetIO();
+    bool is_mobile = io.DisplaySize.x < 600.0f;
+
+    ImGui::Text("Enter contact fingerprint or name:");
+    ImGui::Spacing();
+
+    // Input field for fingerprint/name
+    ImGui::PushItemWidth(-1);
+    bool enter_pressed = ImGui::InputText("##contact_input", state.add_contact_input,
+                                          sizeof(state.add_contact_input),
+                                          ImGuiInputTextFlags_EnterReturnsTrue);
+    ImGui::PopItemWidth();
+    ImGui::Spacing();
+
+    // Show error message if any
+    if (!state.add_contact_error_message.empty()) {
+        ImVec4 error_color = g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning();
+        ImGui::PushStyleColor(ImGuiCol_Text, error_color);
+        ImGui::TextWrapped("%s", state.add_contact_error_message.c_str());
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+    }
+
+    // Show found contact info if lookup succeeded
+    if (!state.add_contact_found_name.empty()) {
+        ImVec4 success_color = g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess();
+        ImGui::PushStyleColor(ImGuiCol_Text, success_color);
+        ImGui::Text("Found: %s", state.add_contact_found_name.c_str());
+        ImGui::PopStyleColor();
+        ImGui::Text("Fingerprint: %.16s...%.16s",
+                    state.add_contact_found_fingerprint.c_str(),
+                    state.add_contact_found_fingerprint.c_str() + state.add_contact_found_fingerprint.length() - 16);
+        ImGui::Spacing();
+    }
+
+    // Buttons
+    float button_width = is_mobile ? -1 : 120.0f;
+
+    if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
+        state.show_add_contact_dialog = false;
+        CenteredModal::End();
+        return;
+    }
+
+    if (!is_mobile) ImGui::SameLine();
+
+    // Lookup button (disabled if input empty or lookup in progress)
+    ImGui::BeginDisabled(strlen(state.add_contact_input) == 0 || state.add_contact_lookup_in_progress);
+    if (ButtonDark("Lookup", ImVec2(button_width, 40)) || enter_pressed) {
+        // Start async DHT lookup
+        printf("[AddContact] Looking up: %s\n", state.add_contact_input);
+
+        state.add_contact_lookup_in_progress = true;
+        state.add_contact_error_message.clear();
+        state.add_contact_found_name.clear();
+        state.add_contact_found_fingerprint.clear();
+
+        std::string input_copy = std::string(state.add_contact_input);
+        messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+
+        contact_lookup_task.start([this, input_copy, ctx](AsyncTask* task) {
+            task->addMessage("Looking up contact in DHT...");
+
+            // Check if contact already exists
+            if (contacts_db_exists(input_copy.c_str())) {
+                state.add_contact_error_message = "Contact already exists in your list";
+                state.add_contact_lookup_in_progress = false;
+                return;
+            }
+
+            // Query DHT for public keys
+            uint8_t *signing_pubkey = NULL;
+            size_t signing_pubkey_len = 0;
+            uint8_t *encryption_pubkey = NULL;
+            size_t encryption_pubkey_len = 0;
+            char fingerprint[129] = {0};
+
+            int result = messenger_load_pubkey(
+                ctx,
+                input_copy.c_str(),
+                &signing_pubkey,
+                &signing_pubkey_len,
+                &encryption_pubkey,
+                &encryption_pubkey_len,
+                fingerprint
+            );
+
+            if (result != 0) {
+                state.add_contact_error_message = "Identity not found on DHT keyserver";
+                state.add_contact_lookup_in_progress = false;
+                task->addMessage("Not found");
+                return;
+            }
+
+            // Free public keys (already cached)
+            free(signing_pubkey);
+            free(encryption_pubkey);
+
+            // Success - store results
+            state.add_contact_found_fingerprint = std::string(fingerprint);
+            state.add_contact_found_name = input_copy;
+            state.add_contact_lookup_in_progress = false;
+
+            task->addMessage("Found!");
+            printf("[AddContact] Found: %s (fingerprint: %s)\n", input_copy.c_str(), fingerprint);
+        });
+    }
+    ImGui::EndDisabled();
+
+    // Show spinner if lookup in progress
+    if (state.add_contact_lookup_in_progress) {
+        ImGui::SameLine();
+        ThemedSpinner("##lookup_spinner", 15.0f, 3.0f);
+    }
+
+    if (!is_mobile) ImGui::SameLine();
+
+    // Save button (only enabled if contact found)
+    ImGui::BeginDisabled(state.add_contact_found_fingerprint.empty());
+    if (ButtonDark("Save", ImVec2(button_width, 40))) {
+        // Save contact to database using FINGERPRINT
+        const char* fingerprint = state.add_contact_found_fingerprint.c_str();
+        int result = contacts_db_add(fingerprint, NULL);
+
+        if (result == 0) {
+            printf("[AddContact] Contact '%s' added successfully (fingerprint: %s)\n",
+                   state.add_contact_found_name.c_str(), fingerprint);
+
+            // Reload contacts to update UI
+            loadIdentity(state.current_identity);
+
+            // Close dialog
+            state.show_add_contact_dialog = false;
+        } else {
+            printf("[AddContact] ERROR: Failed to save contact to database\n");
+            state.add_contact_error_message = "Failed to save contact to database";
+        }
+    }
+    ImGui::EndDisabled();
+
+    CenteredModal::End();
+}
+
+
 void DNAMessengerApp::renderMobileLayout() {
     ImGuiIO& io = ImGui::GetIO();
     float screen_height = io.DisplaySize.y;
@@ -1412,7 +1567,12 @@ void DNAMessengerApp::renderSidebar() {
     // Action buttons at bottom (40px each to match main buttons)
     float button_width = ImGui::GetContentRegionAvail().x;
     if (ThemedButton(ICON_FA_CIRCLE_PLUS " Add Contact", ImVec2(button_width, add_button_height), false)) {
-        // TODO: Open add contact dialog
+        state.show_add_contact_dialog = true;
+        state.add_contact_lookup_in_progress = false;
+        state.add_contact_error_message.clear();
+        state.add_contact_found_name.clear();
+        state.add_contact_found_fingerprint.clear();
+        memset(state.add_contact_input, 0, sizeof(state.add_contact_input));
     }
 
     if (ThemedButton(ICON_FA_USERS " Create Group", ImVec2(button_width, add_button_height), false)) {

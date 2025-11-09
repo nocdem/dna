@@ -27,9 +27,10 @@ public:
 private:
     // Centralized application state
     AppState state;
-    
-    // Async task for DHT operations
+
+    // Async tasks for DHT operations
     AsyncTask dht_publish_task;
+    AsyncTask contact_lookup_task;
 
     // Identity selection and management
     void renderIdentitySelection();
@@ -50,6 +51,9 @@ private:
 
     // Data loading
     void loadIdentity(const std::string& identity);
+
+    // Contact management
+    void renderAddContactDialog();
 
     // Layout managers
     void renderMobileLayout();
