@@ -6,9 +6,14 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdlib.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 
 #ifdef _WIN32
 #include <windows.h>
+#include <direct.h>
+#define mkdir(path, mode) _mkdir(path)
 #else
 #include <unistd.h>
 #endif
@@ -46,8 +51,11 @@ int dht_singleton_init(void)
     }
     dht_config.bootstrap_count = BOOTSTRAP_COUNT;
 
-    // Memory-only (no persistence file)
-    dht_config.persistence_path[0] = '\0';
+    // NO PERSISTENCE for client DHT (only bootstrap nodes need persistence)
+    // Client DHT is temporary and should not republish stored values
+    dht_config.persistence_path[0] = '\0';  // Empty = no persistence
+
+    printf("[DHT_SINGLETON] Client DHT mode (no persistence)\n");
 
     // Create DHT context
     g_dht_context = dht_context_new(&dht_config);

@@ -7,10 +7,31 @@
 #include "WalletDialog.h"
 #include "SendTokensDialog.h"
 #include "ThemeManager.h"
+#include "RegisterDNANameDialog.h"
+#include "ProfileEditorDialog.h"
+#include "MessageWallDialog.h"
 
 extern "C" {
     #include "../wallet.h"
     #include "../contacts_db.h"
+    #include "../dht/dht_keyserver.h"
+    #include "../dht/dna_profile.h"
+    #include "../p2p/p2p_transport.h"
+    #include "../qgp_sha3.h"
+    #include "../qgp_dilithium.h"  // For qgp_dsa87_sign
+    #ifdef _WIN32
+        #include <winsock2.h>
+        // Windows doesn't have htonll/ntohll
+        #define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
+        #define ntohll(x) htonll(x)
+    #else
+        #include <arpa/inet.h>
+        // Define htonll if not available
+        #ifndef htonll
+            #define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
+            #define ntohll(x) htonll(x)
+        #endif
+    #endif
 }
 
 #include <QApplication>
@@ -92,6 +113,43 @@ QString MainWindow::getLocalIdentity() {
 #endif
 }
 
+// Phase 7: Get display name for sender (registered name or shortened fingerprint)
+QString MainWindow::getDisplayNameForSender(const QString &senderFingerprint) {
+    if (!ctx || senderFingerprint.isEmpty()) {
+        return QString::fromUtf8("Unknown");
+    }
+
+    // Check if sender is in contacts first (fastest)
+    if (contactItems.contains(senderFingerprint)) {
+        return contactItems[senderFingerprint].name;
+    }
+
+    // Try DHT reverse lookup for registered name
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (dht_ctx) {
+        char *identity_result = nullptr;
+        int ret = dht_keyserver_reverse_lookup(dht_ctx,
+                                                senderFingerprint.toUtf8().constData(),
+                                                &identity_result);
+
+        if (ret == 0 && identity_result) {
+            // Found registered name
+            QString displayName = QString::fromUtf8(identity_result);
+            free(identity_result);
+
+            // Add verification indicator for registered names
+            return displayName + QString::fromUtf8(" ✓");
+        }
+    }
+
+    // No registered name, return shortened fingerprint (first 5 bytes + ... + last 5 bytes)
+    if (senderFingerprint.length() > 20) {
+        return senderFingerprint.left(10) + "..." + senderFingerprint.right(10);
+    }
+
+    return senderFingerprint;
+}
+
 MainWindow::MainWindow(const QString &identity, QWidget *parent)
     : QMainWindow(parent), ctx(nullptr), lastCheckedMessageId(0), currentGroupId(-1), currentContactType(TYPE_CONTACT), fontScale(1.5) {  // Changed default from 3.0 to 1.5
 
@@ -102,7 +160,9 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
     // Use identity provided by IdentitySelectionDialog
     currentIdentity = identity;
 
-    setWindowTitle(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(currentIdentity));
+    // Show shortened fingerprint in window title (first 5 chars ... last 5 chars)
+    QString shortIdentity = currentIdentity.left(5) + "..." + currentIdentity.right(5);
+    setWindowTitle(QString("DNA Messenger v%1 - %2").arg(PQSIGNUM_VERSION).arg(shortIdentity));
 
     // Initialize fullscreen state
     isFullscreen = false;
@@ -183,6 +243,9 @@ MainWindow::MainWindow(const QString &identity, QWidget *parent)
     pollTimer = new QTimer(this);
     connect(pollTimer, &QTimer::timeout, this, &MainWindow::checkForNewMessages);
     pollTimer->start(5000);
+
+    // Phase 7: Check DNA name expiration on startup (after 3 seconds delay)
+    QTimer::singleShot(3000, this, &MainWindow::checkNameExpiration);
 
     // Initialize status polling timer (10 seconds)
     statusPollTimer = new QTimer(this);
@@ -333,6 +396,18 @@ void MainWindow::setupUI() {
     // Sync Contacts action
     QAction *syncContactsAction = settingsMenu->addAction(QString::fromUtf8("🔄 Sync Contacts to DHT"));
     connect(syncContactsAction, &QAction::triggered, this, &MainWindow::onSyncContacts);
+
+    // Register DNA Name action (Phase 4)
+    QAction *registerNameAction = settingsMenu->addAction(QString::fromUtf8("🏷️ Register DNA Name"));
+    connect(registerNameAction, &QAction::triggered, this, &MainWindow::onRegisterDNAName);
+
+    // Edit Profile action (Phase 5)
+    QAction *editProfileAction = settingsMenu->addAction(QString::fromUtf8("✏️ Edit Profile"));
+    connect(editProfileAction, &QAction::triggered, this, &MainWindow::onEditProfile);
+
+    // View My Message Wall action (Phase 6)
+    QAction *viewMyWallAction = settingsMenu->addAction(QString::fromUtf8("📋 My Message Wall"));
+    connect(viewMyWallAction, &QAction::triggered, this, &MainWindow::onViewMyMessageWall);
     settingsMenu->addSeparator();
 
     // Theme submenu
@@ -404,11 +479,19 @@ void MainWindow::setupUI() {
         "padding: 10px;"
     );
 
-    // User menu button at very top
-    userMenuButton = new QPushButton(currentIdentity);
+    // User menu button at very top (show DNA name or shortened fingerprint)
+    char displayNameBuf[256] = {0};
+    QString displayName;
+    if (messenger_get_display_name(ctx, currentIdentity.toUtf8().constData(), displayNameBuf) == 0) {
+        displayName = QString::fromUtf8(displayNameBuf);
+    } else {
+        // Fallback to shortened fingerprint
+        displayName = currentIdentity.left(5) + "..." + currentIdentity.right(5);
+    }
+    userMenuButton = new QPushButton(displayName);
     userMenuButton->setIcon(QIcon(":/icons/user.svg"));
     userMenuButton->setIconSize(QSize(scaledIconSize(20), scaledIconSize(20)));
-    userMenuButton->setToolTip("User Menu");
+    userMenuButton->setToolTip(QString("User Menu\n\nFull fingerprint:\n%1").arg(currentIdentity));
     userMenuButton->setStyleSheet(
         "QPushButton {"
         "   background: rgba(0, 217, 255, 0.15);"
@@ -785,13 +868,41 @@ void MainWindow::loadContacts() {
     if (messenger_get_contact_list(ctx, &identities, &contactCount) == 0) {
         for (int i = 0; i < contactCount; i++) {
             QString identity = QString::fromUtf8(identities[i]);
-            QString displayText = QString::fromUtf8("") + identity;
-            contactList->addItem(displayText);
+
+            // Phase 4: Resolve display name and fingerprint
+            char displayName[256] = {0};
+            char fingerprint[129] = {0};
+
+            // Get display name (registered name or shortened fingerprint)
+            if (messenger_get_display_name(ctx, identities[i], displayName) == 0) {
+                // Success
+            } else {
+                // Fallback to raw identity
+                strncpy(displayName, identities[i], sizeof(displayName) - 1);
+            }
+
+            // Compute fingerprint
+            if (messenger_compute_identity_fingerprint(identities[i], fingerprint) != 0) {
+                // If computation fails, store the identity as-is
+                strncpy(fingerprint, identities[i], sizeof(fingerprint) - 1);
+            }
+
+            QString displayText = QString::fromUtf8("") + QString::fromUtf8(displayName);
+            QListWidgetItem *listItem = new QListWidgetItem(displayText);
+
+            // Set tooltip with full fingerprint
+            QString tooltipText = QString("Identity: %1\nFingerprint: %2")
+                .arg(QString::fromUtf8(displayName))
+                .arg(QString::fromUtf8(fingerprint));
+            listItem->setToolTip(tooltipText);
+
+            contactList->addItem(listItem);
 
             // Store contact metadata
             ContactItem item;
             item.type = TYPE_CONTACT;
-            item.name = identity;
+            item.name = QString::fromUtf8(displayName);
+            item.fingerprint = QString::fromUtf8(fingerprint);
             item.groupId = -1;
             contactItems[displayText] = item;
 
@@ -910,9 +1021,12 @@ void MainWindow::loadConversation(const QString &contact) {
             ).arg(messageFontSize).arg(QString::fromUtf8("💭 No messages yet. Start the conversation!")));
         } else {
             for (int i = 0; i < count; i++) {
-                QString sender = QString::fromUtf8(messages[i].sender);
+                QString senderFingerprint = QString::fromUtf8(messages[i].sender);
                 QString recipient = QString::fromUtf8(messages[i].recipient);
                 QString timestamp = QString::fromUtf8(messages[i].timestamp);
+
+                // Phase 7: Resolve sender display name (contacts + DHT registered names)
+                QString sender = getDisplayNameForSender(senderFingerprint);
 
                 // Format timestamp (extract time from "YYYY-MM-DD HH:MM:SS")
                 QString timeOnly = timestamp.mid(11, 5);  // Extract "HH:MM"
@@ -921,7 +1035,7 @@ void MainWindow::loadConversation(const QString &contact) {
                 // This includes: received messages (recipient == currentIdentity)
                 // AND sent messages (sender == currentIdentity, thanks to sender-as-first-recipient)
                 QString messageText = "[encrypted]";
-                if (recipient == currentIdentity || sender == currentIdentity) {
+                if (recipient == currentIdentity || senderFingerprint == currentIdentity) {
                     char *plaintext = NULL;
                     size_t plaintext_len = 0;
 
@@ -933,7 +1047,7 @@ void MainWindow::loadConversation(const QString &contact) {
                     }
                 }
 
-                if (sender == currentIdentity) {
+                if (senderFingerprint == currentIdentity) {
                     // Generate status checkmark
                     QString statusCheckmark;
                     QString status = messages[i].status ? QString::fromUtf8(messages[i].status) : "sent";
@@ -1076,8 +1190,11 @@ void MainWindow::loadGroupConversation(int groupId) {
             ).arg(messageFontSize).arg(QString::fromUtf8("💭 No messages yet. Start the conversation!")));
         } else {
             for (int i = 0; i < count; i++) {
-                QString sender = QString::fromUtf8(messages[i].sender);
+                QString senderFingerprint = QString::fromUtf8(messages[i].sender);
                 QString timestamp = QString::fromUtf8(messages[i].timestamp);
+
+                // Phase 7: Resolve sender display name (contacts + DHT registered names)
+                QString sender = getDisplayNameForSender(senderFingerprint);
 
                 // Format timestamp (extract time from "YYYY-MM-DD HH:MM:SS")
                 QString timeOnly = timestamp.mid(11, 5);  // Extract "HH:MM"
@@ -1094,7 +1211,7 @@ void MainWindow::loadGroupConversation(int groupId) {
                     messageText = QString::fromUtf8("🔒 [decryption failed]");
                 }
 
-                if (sender == currentIdentity) {
+                if (senderFingerprint == currentIdentity) {
                     // Sent messages by current user
                     QString statusCheckmark = QString::fromUtf8("<span style='color: #888888;'>✓</span>");
 
@@ -1288,6 +1405,7 @@ void MainWindow::onAddContact() {
     size_t signing_pubkey_len = 0;
     uint8_t *encryption_pubkey = NULL;
     size_t encryption_pubkey_len = 0;
+    char fingerprint[129] = {0};  // Buffer for fingerprint output
 
     int result = messenger_load_pubkey(
         ctx,
@@ -1295,7 +1413,8 @@ void MainWindow::onAddContact() {
         &signing_pubkey,
         &signing_pubkey_len,
         &encryption_pubkey,
-        &encryption_pubkey_len
+        &encryption_pubkey_len,
+        fingerprint  // Get fingerprint from DHT lookup
     );
 
     if (result != 0) {
@@ -1315,8 +1434,8 @@ void MainWindow::onAddContact() {
     free(signing_pubkey);
     free(encryption_pubkey);
 
-    // Add contact to database
-    result = contacts_db_add(identity.toUtf8().constData(), NULL);
+    // Add contact to database using FINGERPRINT (not name!)
+    result = contacts_db_add(fingerprint, NULL);
     if (result == 0) {
         QMessageBox::information(
             this,
@@ -2716,8 +2835,8 @@ void MainWindow::onPublishKeys() {
     QString dilithiumPath = homeDir + "/.dna/" + currentIdentity + ".dsa";
     QString kyberPath = homeDir + "/.dna/" + currentIdentity + ".kem";
 
-    // Load Dilithium public key (skip 276 byte header, then read 1952 bytes public key)
-    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 1952 bytes][PRIVATE_KEY: 4032 bytes]
+    // Load Dilithium5 public key (skip 276 byte header, then read 2592 bytes public key)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 2592 bytes][PRIVATE_KEY: 4896 bytes]
     QFile dilithiumFile(dilithiumPath);
     if (!dilithiumFile.open(QIODevice::ReadOnly)) {
         QMessageBox::critical(
@@ -2730,21 +2849,21 @@ void MainWindow::onPublishKeys() {
     }
 
     dilithiumFile.seek(276);  // Skip header (qgp_privkey_file_header_t = 276 bytes)
-    QByteArray dilithiumPubkey = dilithiumFile.read(1952);
+    QByteArray dilithiumPubkey = dilithiumFile.read(2592);  // Category 5
     dilithiumFile.close();
 
-    if (dilithiumPubkey.size() != 1952) {
+    if (dilithiumPubkey.size() != 2592) {
         QMessageBox::critical(
             this,
             QString::fromUtf8("Error"),
-            QString::fromUtf8("Invalid Dilithium key file (expected 1952 bytes public key)")
+            QString::fromUtf8("Invalid Dilithium key file (expected 2592 bytes public key for Category 5)")
         );
         statusLabel->setText(QString::fromUtf8("Failed to load keys"));
         return;
     }
 
-    // Load Kyber public key (skip 276 byte header, then read 800 bytes public key)
-    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 800 bytes][PRIVATE_KEY: 1632 bytes]
+    // Load Kyber1024 public key (skip 276 byte header, then read 1568 bytes public key)
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 1568 bytes][PRIVATE_KEY: 3168 bytes]
     QFile kyberFile(kyberPath);
     if (!kyberFile.open(QIODevice::ReadOnly)) {
         QMessageBox::critical(
@@ -2757,14 +2876,14 @@ void MainWindow::onPublishKeys() {
     }
 
     kyberFile.seek(276);  // Skip header (qgp_privkey_file_header_t = 276 bytes)
-    QByteArray kyberPubkey = kyberFile.read(800);
+    QByteArray kyberPubkey = kyberFile.read(1568);  // Category 5
     kyberFile.close();
 
-    if (kyberPubkey.size() != 800) {
+    if (kyberPubkey.size() != 1568) {
         QMessageBox::critical(
             this,
             QString::fromUtf8("Error"),
-            QString::fromUtf8("Invalid Kyber key file (expected 800 bytes public key)")
+            QString::fromUtf8("Invalid Kyber key file (expected 1568 bytes public key for Category 5)")
         );
         statusLabel->setText(QString::fromUtf8("Failed to load keys"));
         return;
@@ -2774,14 +2893,143 @@ void MainWindow::onPublishKeys() {
     statusLabel->setText(QString::fromUtf8("Publishing keys to DHT..."));
     QApplication::processEvents();
 
+    // Check if user has a registered name via reverse lookup
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    char *registered_name = NULL;
+    if (dht_ctx) {
+        dht_keyserver_reverse_lookup(dht_ctx, currentIdentity.toUtf8().constData(), &registered_name);
+    }
+
     int result = messenger_store_pubkey(
         ctx,
-        currentIdentity.toUtf8().constData(),
+        currentIdentity.toUtf8().constData(),  // fingerprint (128 hex chars)
+        registered_name,  // display name if registered
         (const uint8_t*)dilithiumPubkey.constData(),
         dilithiumPubkey.size(),
         (const uint8_t*)kyberPubkey.constData(),
         kyberPubkey.size()
     );
+
+    // If user has registered name, also publish identity profile
+    if (result == 0 && registered_name && dht_ctx) {
+        dna_unified_identity_t *identity = dna_identity_create();
+        if (identity) {
+            strncpy(identity->fingerprint, currentIdentity.toUtf8().constData(), sizeof(identity->fingerprint) - 1);
+
+            // Copy public keys for fingerprint verification
+            memcpy(identity->dilithium_pubkey, dilithiumPubkey.constData(), 2592);
+            memcpy(identity->kyber_pubkey, kyberPubkey.constData(), 1568);
+
+            identity->has_registered_name = true;
+            strncpy(identity->registered_name, registered_name, sizeof(identity->registered_name) - 1);
+            identity->name_registered_at = time(NULL);
+            identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
+            strncpy(identity->registration_tx_hash, "FREE_REGISTRATION", sizeof(identity->registration_tx_hash) - 1);
+            strncpy(identity->registration_network, "DNA_NETWORK", sizeof(identity->registration_network) - 1);
+            identity->name_version = 1;
+            identity->timestamp = time(NULL);
+            identity->version = 1;
+
+            // Load private key for signing
+            QFile dilithiumPrivFile(dilithiumPath);
+            if (dilithiumPrivFile.open(QIODevice::ReadOnly)) {
+                dilithiumPrivFile.seek(276 + 2592);  // Skip header + public key
+                QByteArray dilithiumPrivkey = dilithiumPrivFile.read(4896);  // Category 5 private key
+                dilithiumPrivFile.close();
+
+                if (dilithiumPrivkey.size() == 4896) {
+                    // Sign the identity profile (same as messenger.c)
+                    size_t msg_len = sizeof(identity->fingerprint) +
+                                   sizeof(identity->dilithium_pubkey) +
+                                   sizeof(identity->kyber_pubkey) +
+                                   sizeof(bool) +
+                                   sizeof(identity->registered_name) +
+                                   sizeof(uint64_t) * 2 +
+                                   sizeof(identity->registration_tx_hash) +
+                                   sizeof(identity->registration_network) +
+                                   sizeof(uint32_t) +
+                                   sizeof(identity->wallets) +
+                                   sizeof(identity->socials) +
+                                   sizeof(identity->bio) +
+                                   sizeof(identity->profile_picture_ipfs) +
+                                   sizeof(uint64_t) +
+                                   sizeof(uint32_t);
+
+                    uint8_t *msg = (uint8_t*)malloc(msg_len);
+                    if (msg) {
+                        size_t offset = 0;
+                        memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
+                        offset += sizeof(identity->fingerprint);
+                        memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
+                        offset += sizeof(identity->dilithium_pubkey);
+                        memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
+                        offset += sizeof(identity->kyber_pubkey);
+                        memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
+                        offset += sizeof(bool);
+                        memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
+                        offset += sizeof(identity->registered_name);
+
+                        uint64_t registered_at_net = htonll(identity->name_registered_at);
+                        uint64_t expires_at_net = htonll(identity->name_expires_at);
+                        uint32_t name_version_net = htonl(identity->name_version);
+                        uint64_t timestamp_net = htonll(identity->timestamp);
+                        uint32_t version_net = htonl(identity->version);
+
+                        memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
+                        offset += sizeof(uint64_t);
+                        memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
+                        offset += sizeof(uint64_t);
+                        memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+                        offset += sizeof(identity->registration_tx_hash);
+                        memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+                        offset += sizeof(identity->registration_network);
+                        memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
+                        offset += sizeof(uint32_t);
+                        memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
+                        offset += sizeof(identity->wallets);
+                        memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
+                        offset += sizeof(identity->socials);
+                        memcpy(msg + offset, identity->bio, sizeof(identity->bio));
+                        offset += sizeof(identity->bio);
+                        memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
+                        offset += sizeof(identity->profile_picture_ipfs);
+                        memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
+                        offset += sizeof(uint64_t);
+                        memcpy(msg + offset, &version_net, sizeof(uint32_t));
+
+                        size_t siglen = sizeof(identity->signature);
+                        qgp_dsa87_sign(identity->signature, &siglen, msg, msg_len, (const uint8_t*)dilithiumPrivkey.constData());
+
+                        free(msg);
+                    }
+                }
+            }
+
+            char *json = dna_identity_to_json(identity);
+            if (json) {
+                char key_input[256];
+                snprintf(key_input, sizeof(key_input), "%s:profile", currentIdentity.toUtf8().constData());
+
+                unsigned char hash[64];
+                if (qgp_sha3_512((unsigned char*)key_input, strlen(key_input), hash) == 0) {
+                    char dht_key[129];
+                    for (int i = 0; i < 64; i++) {
+                        sprintf(dht_key + (i * 2), "%02x", hash[i]);
+                    }
+                    dht_key[128] = '\0';
+
+                    dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                      (uint8_t*)json, strlen(json));
+                }
+                free(json);
+            }
+            dna_identity_free(identity);
+        }
+    }
+
+    if (registered_name) {
+        free(registered_name);
+    }
 
     if (result == 0) {
         QMessageBox::information(
@@ -2792,8 +3040,8 @@ void MainWindow::onPublishKeys() {
                 "Identity: %1\n"
                 "Your keys are now discoverable by other users.\n\n"
                 "Keys published:\n"
-                "• Dilithium signing key (1952 bytes)\n"
-                "• Kyber encryption key (800 bytes)"
+                "• Dilithium5 signing key (2592 bytes)\n"
+                "• Kyber1024 encryption key (1568 bytes)"
             ).arg(currentIdentity)
         );
         statusLabel->setText(QString::fromUtf8("Keys published to DHT"));
@@ -3195,6 +3443,161 @@ void MainWindow::onSyncContacts() {
     QTimer::singleShot(5000, this, [this]() {
         syncStatusLabel->setText(QString::fromUtf8("📇 Contacts: Local"));
     });
+}
+
+// Phase 4: Open DNA name registration dialog
+void MainWindow::onRegisterDNAName() {
+    RegisterDNANameDialog *dialog = new RegisterDNANameDialog(ctx, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
+}
+
+// Phase 5: Open profile editor dialog
+void MainWindow::onEditProfile() {
+    ProfileEditorDialog *dialog = new ProfileEditorDialog(ctx, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
+}
+
+// Phase 6: View own message wall
+void MainWindow::onViewMyMessageWall() {
+    if (!ctx) {
+        return;
+    }
+
+    // Get own fingerprint
+    QString fingerprint = getLocalIdentity();
+    if (fingerprint.isEmpty()) {
+        QMessageBox::warning(this, "Error", "Could not determine your identity fingerprint.");
+        return;
+    }
+
+    // Get display name (registered DNA name or shortened fingerprint)
+    char displayNameBuf[256] = {0};
+    QString displayName;
+    if (messenger_get_display_name(ctx, fingerprint.toUtf8().constData(), displayNameBuf) == 0) {
+        displayName = QString::fromUtf8(displayNameBuf);
+    } else {
+        // Fallback to shortened fingerprint
+        displayName = fingerprint.left(10) + "..." + fingerprint.right(10);
+    }
+
+    // Open message wall dialog (own wall, posting enabled)
+    MessageWallDialog *dialog = new MessageWallDialog(ctx, fingerprint, displayName, true, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
+}
+
+// Phase 6: View contact's message wall
+void MainWindow::onViewContactMessageWall() {
+    if (!ctx || currentContactType != TYPE_CONTACT) {
+        return;
+    }
+
+    // Get selected contact info
+    if (!contactItems.contains(currentContact)) {
+        return;
+    }
+
+    ContactItem item = contactItems[currentContact];
+
+    // Open message wall dialog (contact's wall, read-only)
+    MessageWallDialog *dialog = new MessageWallDialog(ctx, item.fingerprint, item.name, false, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->exec();
+}
+
+// Phase 7: Check DNA name expiration
+void MainWindow::checkNameExpiration() {
+    if (!ctx) {
+        return;
+    }
+
+    // Get DHT context
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        return;
+    }
+
+    // Load own identity from DHT
+    QString fingerprint = getLocalIdentity();
+    if (fingerprint.isEmpty()) {
+        return;
+    }
+
+    dna_unified_identity_t *identity = nullptr;
+    int ret = dna_load_identity(dht_ctx, fingerprint.toUtf8().constData(), &identity);
+
+    if (ret != 0 || !identity) {
+        // No full identity profile in DHT (this is expected - only keys + reverse mapping are published)
+        return;
+    }
+
+    // Check if name is registered
+    if (!identity->has_registered_name) {
+        dna_identity_free(identity);
+        return;  // No name registered
+    }
+
+    // Check expiration
+    uint64_t now = (uint64_t)time(NULL);
+    uint64_t expires_at = identity->name_expires_at;
+    int64_t seconds_until_expiry = (int64_t)(expires_at - now);
+
+    // Warn if expiring within 30 days (2,592,000 seconds)
+    const int64_t THIRTY_DAYS = 30 * 24 * 60 * 60;
+
+    if (seconds_until_expiry > 0 && seconds_until_expiry <= THIRTY_DAYS) {
+        int days_remaining = seconds_until_expiry / (24 * 60 * 60);
+
+        QString warningMessage = QString::fromUtf8(
+            "Your DNA name \"%1\" will expire in %2 days.\n\n"
+            "To keep your name, you need to renew it by paying 0.01 CPUNK.\n\n"
+            "Would you like to renew it now?"
+        ).arg(QString::fromUtf8(identity->registered_name)).arg(days_remaining);
+
+        QMessageBox::StandardButton reply = QMessageBox::warning(
+            this,
+            "DNA Name Expiring Soon",
+            warningMessage,
+            QMessageBox::Yes | QMessageBox::No
+        );
+
+        if (reply == QMessageBox::Yes) {
+            dna_identity_free(identity);
+            onRenewName();
+            return;
+        }
+    } else if (seconds_until_expiry <= 0) {
+        // Name has already expired
+        QString expiredMessage = QString::fromUtf8(
+            "Your DNA name \"%1\" has expired.\n\n"
+            "To reclaim it, you need to register it again by paying 0.01 CPUNK.\n\n"
+            "Would you like to register it now?"
+        ).arg(QString::fromUtf8(identity->registered_name));
+
+        QMessageBox::StandardButton reply = QMessageBox::critical(
+            this,
+            "DNA Name Expired",
+            expiredMessage,
+            QMessageBox::Yes | QMessageBox::No
+        );
+
+        if (reply == QMessageBox::Yes) {
+            dna_identity_free(identity);
+            onRegisterDNAName();
+            return;
+        }
+    }
+
+    dna_identity_free(identity);
+}
+
+// Phase 7: Renew DNA name registration
+void MainWindow::onRenewName() {
+    // Renewal is the same as registration - just re-register with the same name
+    // The RegisterDNANameDialog will handle pre-filling the current name
+    onRegisterDNAName();
 }
 
 // Automatic contact list sync (timer-based)

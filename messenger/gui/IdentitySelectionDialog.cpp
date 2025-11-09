@@ -8,6 +8,11 @@
 #include <QStandardPaths>
 #include <QDebug>
 
+extern "C" {
+    #include "../dht/dht_keyserver.h"
+    #include "../dht/dht_singleton.h"
+}
+
 IdentitySelectionDialog::IdentitySelectionDialog(QWidget *parent)
     : QDialog(parent)
     , identityList(nullptr)
@@ -112,25 +117,63 @@ void IdentitySelectionDialog::loadIdentities()
         return;
     }
 
-    // Extract identity names and verify both key files exist
+    // Extract fingerprints and verify both key files exist
     QStringList validIdentities;
     QStringList incompleteIdentities;
 
     for (const QFileInfo &fileInfo : files) {
         QString filename = fileInfo.fileName();
         // Remove ".dsa" suffix (4 characters)
-        QString identity = filename.left(filename.length() - 4);
+        QString fingerprint = filename.left(filename.length() - 4);
 
         // Verify both key files exist
-        QString dilithiumKey = dnaDir + "/" + identity + ".dsa";
-        QString kyberKey = dnaDir + "/" + identity + ".kem";
+        QString dilithiumKey = dnaDir + "/" + fingerprint + ".dsa";
+        QString kyberKey = dnaDir + "/" + fingerprint + ".kem";
 
         if (QFile::exists(dilithiumKey) && QFile::exists(kyberKey)) {
-            validIdentities << identity;
-            identityList->addItem(identity);
+            validIdentities << fingerprint;
+
+            // Phase 9.4: Try reverse lookup to get registered name
+            QString displayText;
+            char *registered_name = nullptr;
+
+            // Get global DHT singleton for reverse lookup
+            dht_context_t *dht_ctx = dht_singleton_get();
+            if (dht_ctx && fingerprint.length() == 128) {
+                QByteArray fpBytes = fingerprint.toUtf8();
+                int lookup_result = dht_keyserver_reverse_lookup(
+                    dht_ctx,
+                    fpBytes.constData(),
+                    &registered_name
+                );
+
+                if (lookup_result == 0 && registered_name != nullptr) {
+                    // Found registered name
+                    displayText = QString::fromUtf8(registered_name);
+                    free(registered_name);  // Caller must free
+                } else {
+                    // Not registered, show shortened fingerprint
+                    displayText = fingerprint.left(10) + "..." + fingerprint.right(10);
+                }
+            } else {
+                // No DHT or invalid fingerprint, show shortened version
+                if (fingerprint.length() == 128) {
+                    displayText = fingerprint.left(10) + "..." + fingerprint.right(10);
+                } else {
+                    displayText = fingerprint;
+                }
+            }
+
+            QListWidgetItem *item = new QListWidgetItem(displayText);
+            item->setData(Qt::UserRole, fingerprint);  // Store full fingerprint
+            item->setToolTip(QString("Fingerprint: %1").arg(fingerprint));  // Full fingerprint on hover
+            identityList->addItem(item);
         } else {
-            incompleteIdentities << identity;
-            qWarning() << "[Identity] Incomplete identity found:" << identity
+            incompleteIdentities << fingerprint;
+            QString shortFp = (fingerprint.length() == 128)
+                ? fingerprint.left(10) + "..." + fingerprint.right(10)
+                : fingerprint;
+            qWarning() << "[Identity] Incomplete identity found:" << shortFp
                       << "(missing" << (QFile::exists(kyberKey) ? ".dsa" : ".kem") << "key)";
         }
     }
@@ -171,7 +214,8 @@ void IdentitySelectionDialog::onSelectIdentity()
         return;
     }
 
-    selectedIdentity = item->text();
+    // Phase 4: Get full fingerprint from UserRole (item text may be registered name or shortened fingerprint)
+    selectedIdentity = item->data(Qt::UserRole).toString();
     accept();
 }
 
@@ -179,9 +223,9 @@ void IdentitySelectionDialog::onCreateNewIdentity()
 {
     CreateIdentityDialog dialog(this);
     if (dialog.exec() == QDialog::Accepted) {
-        QString newIdentity = dialog.getCreatedIdentity();
-        if (!newIdentity.isEmpty()) {
-            selectedIdentity = newIdentity;
+        QString newFingerprint = dialog.getCreatedFingerprint();
+        if (!newFingerprint.isEmpty()) {
+            selectedIdentity = newFingerprint;
             accept();
         }
     }
@@ -191,9 +235,9 @@ void IdentitySelectionDialog::onRestoreIdentity()
 {
     RestoreIdentityDialog dialog(this);
     if (dialog.exec() == QDialog::Accepted) {
-        QString restoredIdentity = dialog.getRestoredIdentity();
-        if (!restoredIdentity.isEmpty()) {
-            selectedIdentity = restoredIdentity;
+        QString restoredFingerprint = dialog.getRestoredFingerprint();
+        if (!restoredFingerprint.isEmpty()) {
+            selectedIdentity = restoredFingerprint;
             accept();
         }
     }

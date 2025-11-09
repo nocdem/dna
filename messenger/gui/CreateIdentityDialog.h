@@ -19,8 +19,8 @@ class CreateIdentityDialog : public QDialog
 public:
     explicit CreateIdentityDialog(QWidget *parent = nullptr);
 
-    // Get the created identity name
-    QString getCreatedIdentity() const;
+    // Get the created identity fingerprint
+    QString getCreatedFingerprint() const;
 
 private slots:
     void onNextPage();
@@ -30,61 +30,49 @@ private slots:
 
 private:
     void setupUI();
-    void createPage1_IdentityName();
-    void createPage2_SeedPhrase();
-    void createPage3_Confirmation();
-    void createPage4_Progress();
-    void createPage5_Success();
+    void createPage1_SeedPhrase();
+    void createPage2_Confirmation();
+    void createPage3_Progress();
+    void createPage4_Success();
 
-    void validateIdentityName();
     bool performKeyGeneration();
     void applyTheme();
 
     QStackedWidget *stackedWidget;
 
-    // Page 1: Identity Name
+    // Page 1: Seed Phrase
     QWidget *page1;
     QLabel *titleLabel1;
-    QLabel *instructionsLabel;
-    QLabel *inputLabel1;
-    QLineEdit *identityNameInput;
-    QPushButton *nextButton1;
-    QLabel *errorLabel1;
-
-    // Page 2: Seed Phrase
-    QWidget *page2;
-    QLabel *titleLabel2;
     SeedPhraseWidget *seedPhraseWidget;
     QCheckBox *confirmedCheckbox;
     QLineEdit *passphraseInput;
     QLabel *passphraseLabel;
-    QPushButton *previousButton2;
-    QPushButton *nextButton2;
+    QPushButton *nextButton1;
     QString generatedMnemonic;
 
-    // Page 3: Confirmation
-    QWidget *page3;
-    QLabel *titleLabel3;
+    // Page 2: Confirmation
+    QWidget *page2;
+    QLabel *titleLabel2;
     QLabel *confirmationLabel;
     QLabel *warningLabel;
     QLabel *reminderLabel;
     QCheckBox *understandCheckbox;
-    QPushButton *previousButton3;
+    QPushButton *previousButton2;
     QPushButton *createButton;
 
-    // Page 4: Progress
-    QWidget *page4;
-    QLabel *titleLabel4;
+    // Page 3: Progress
+    QWidget *page3;
+    QLabel *titleLabel3;
     QProgressBar *progressBar;
     QLabel *statusLabel;
 
-    // Page 5: Success
-    QWidget *page5;
-    QLabel *titleLabel5;
+    // Page 4: Success
+    QWidget *page4;
+    QLabel *titleLabel4;
     QLabel *successLabel;
     QPushButton *finishButton;
 
-    QString createdIdentity;
+    QString createdFingerprint;
 };
 
 #endif // CREATEIDENTITYDIALOG_H

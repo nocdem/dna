@@ -76,7 +76,37 @@ void dht_context_free(dht_context_t *ctx);
 bool dht_context_is_ready(dht_context_t *ctx);
 
 /**
- * Put value in DHT
+ * Put value in DHT with custom TTL
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param value Value to store
+ * @param value_len Value length
+ * @param ttl_seconds Time-to-live in seconds (0 = default 7 days, UINT_MAX = permanent)
+ * @return 0 on success, -1 on error
+ */
+int dht_put_ttl(dht_context_t *ctx,
+                const uint8_t *key, size_t key_len,
+                const uint8_t *value, size_t value_len,
+                unsigned int ttl_seconds);
+
+/**
+ * Put value in DHT permanently (never expires)
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param value Value to store
+ * @param value_len Value length
+ * @return 0 on success, -1 on error
+ */
+int dht_put_permanent(dht_context_t *ctx,
+                      const uint8_t *key, size_t key_len,
+                      const uint8_t *value, size_t value_len);
+
+/**
+ * Put value in DHT (default 7-day TTL)
  *
  * @param ctx DHT context
  * @param key Key (will be hashed to 160-bit infohash)
@@ -90,7 +120,7 @@ int dht_put(dht_context_t *ctx,
             const uint8_t *value, size_t value_len);
 
 /**
- * Get value from DHT
+ * Get value from DHT (returns first value only)
  *
  * @param ctx DHT context
  * @param key Key (will be hashed to 160-bit infohash)
@@ -102,6 +132,22 @@ int dht_put(dht_context_t *ctx,
 int dht_get(dht_context_t *ctx,
             const uint8_t *key, size_t key_len,
             uint8_t **value_out, size_t *value_len_out);
+
+/**
+ * Get all values from DHT for a given key
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param values_out Array of value buffers (caller must free each + array)
+ * @param values_len_out Array of value lengths
+ * @param count_out Number of values returned
+ * @return 0 on success, -1 on error (not found or error)
+ */
+int dht_get_all(dht_context_t *ctx,
+                const uint8_t *key, size_t key_len,
+                uint8_t ***values_out, size_t **values_len_out,
+                size_t *count_out);
 
 /**
  * Delete value from DHT
@@ -128,6 +174,17 @@ int dht_delete(dht_context_t *ctx,
 int dht_get_stats(dht_context_t *ctx,
                   size_t *node_count,
                   size_t *stored_values);
+
+/**
+ * Get storage pointer from DHT context
+ *
+ * Returns the value storage handle, or NULL if storage not enabled.
+ * Used by bootstrap monitoring to access storage statistics.
+ *
+ * @param ctx DHT context
+ * @return Storage handle, or NULL if not enabled
+ */
+struct dht_value_storage* dht_get_storage(dht_context_t *ctx);
 
 #ifdef __cplusplus
 }

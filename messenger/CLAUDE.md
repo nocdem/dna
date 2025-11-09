@@ -1,8 +1,14 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-05
+**Last Updated:** 2025-11-08
 **Project:** DNA Messenger (Post-Quantum Encrypted Messenger)
 **Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2, 9.3, 9.4, 9.5 Complete
+
+**Recent Updates (2025-11-08):**
+- Message wall now fetches newest version from DHT (uses `dht_get_all()` instead of `dht_get()`)
+- Added descriptive debug labels to all DHT GET/PUT operations for easier log analysis
+- Fixed MessageWallDialog to use fingerprint-based key filenames (.dsa)
+- Enhanced debug logging for message wall post/display operations
 
 ---
 
@@ -127,21 +133,71 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 - Always check return codes from SQLite operations
 - NO PostgreSQL dependencies (fully decentralized)
 
-### 4. GUI Development (Qt5)
+### 4. DHT Storage TTL Settings
+
+DNA Messenger uses OpenDHT for distributed storage with different TTL (Time-to-Live) settings based on data type:
+
+**Identity & Name System** (`dht/dht_keyserver.c`)
+- **Identity Keys** (fingerprint → Dilithium5 + Kyber1024 pubkeys): **PERMANENT** (never expires)
+  - Initial publish, updates, profile updates, renewals all use permanent storage
+  - DHT key: `SHA3-512(fingerprint + ":pubkey")`
+  - Rationale: Core cryptographic identity must persist indefinitely
+
+- **Name Registrations** (name → fingerprint): **365 days**
+  - Name alias mappings and lookups
+  - DHT key: `SHA3-512(name + ":lookup")`
+  - Rationale: Annual renewal prevents name squatting
+
+- **Reverse Mapping** (fingerprint → name): **365 days**
+  - Allows sender identification without pre-adding to contacts
+  - DHT key: `SHA3-512(fingerprint + ":reverse")`
+  - Rationale: Matches name registration period
+
+**Contact Lists** (`dht/dht_contactlist.c`)
+- **Encrypted Contact List**: **PERMANENT**
+  - Self-encrypted with Kyber1024 (only owner can decrypt)
+  - DHT key: `SHA3-512(identity + ":contactlist")`
+  - Rationale: User's private data should persist across devices indefinitely
+
+**Messaging** (`dht/dht_offline_queue.c`)
+- **Offline Message Queue**: **7 days**
+  - Temporary storage for messages when recipient offline
+  - DHT key: `SHA256(recipient + ":offline_queue")`
+  - Rationale: Messages are ephemeral, delivered to local SQLite when retrieved
+
+**Groups & Social** (`dht/dht_groups.c`, `dht/dna_message_wall.c`)
+- **Group Metadata**: **7 days**
+  - Group info, members, updates
+  - DHT key: `SHA256(group_uuid)`
+  - Rationale: Active groups need frequent updates, inactive groups expire naturally
+
+- **Social Posts**: **7 days**
+  - Message wall posts
+  - DHT key: `SHA256(post_id)`
+  - Rationale: Ephemeral social content
+
+**Implementation Details:**
+- `dht_put_permanent()` - Never expires (uses `time_point::max()` + `permanent=true`)
+- `dht_put_ttl(ctx, key, val, 365*24*3600)` - 365-day TTL (uses `DNA_TYPE_365DAY` ValueType)
+- `dht_put()` - Default 7-day TTL (uses `DNA_TYPE_7DAY` ValueType)
+- OpenDHT 2.4.12 uses ValueType.expiration for TTL control
+- Custom ValueTypes defined: `DNA_TYPE_7DAY` (0x1001), `DNA_TYPE_365DAY` (0x1002)
+
+### 5. GUI Development (Qt5)
 - Use Qt signals/slots for event handling
 - Apply themes via `ThemeManager::instance()`
 - All dialogs should be theme-aware
 - Use `setAttribute(Qt::WA_DeleteOnClose)` for modal dialogs
 - Handle window focus and activation properly
 
-### 5. Wallet Integration
+### 6. Wallet Integration
 - Read Cellframe wallet files from `~/.dna/` or system wallet dir
 - Use `cellframe_rpc.h` API for RPC calls
 - All token amounts are strings to preserve precision
 - Use smart decimal formatting (8 decimals for tiny amounts)
 - Transaction builder uses minimal serialization (no JSON-C in builder)
 
-### 6. Cross-Platform Support
+### 7. Cross-Platform Support
 - **Linux:** Primary development platform
 - **Windows:** Cross-compile using MXE (M cross environment)
 - Use CMake for build configuration
@@ -435,6 +491,49 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 - Per-identity database isolation
 - 7-day DHT TTL matches other DNA data structures
 - Automatic migration preserves existing contacts
+
+---
+
+### Phase 4: Fingerprint-First Identity Creation (COMPLETE)
+**Status:** ✅ Complete (2025-11-05)
+
+**Problem:** Phase 4 introduced fingerprint-based identity model, but identity creation still used human-readable filenames (e.g., `alice.dsa`), requiring migration to fingerprint-based filenames afterward. This was redundant and confusing.
+
+**Solution:** New identities now use fingerprint-based filenames from the start, eliminating the need to migrate newly created identities.
+
+**What Was Implemented:**
+1. **Core Identity Generation** (`messenger.c:365-474`)
+   - Compute SHA3-512 fingerprint immediately after Dilithium5 key generation
+   - Save keys with fingerprint filenames: `~/.dna/<fingerprint>.dsa` and `~/.dna/<fingerprint>.kem`
+   - Display fingerprint to user during creation
+   - Identity name still used for DHT registration (human-readable name → fingerprint mapping)
+   - Fixed outdated comments (Dilithium3→Dilithium5, Kyber512→Kyber1024)
+
+2. **CreateIdentityDialog** (`gui/CreateIdentityDialog.cpp:350-374`)
+   - Updated validation to check DHT keyserver instead of local files
+   - Can't check local files until after key generation (fingerprint unknown beforehand)
+   - DHT check prevents duplicate identity names at registration time
+
+3. **IdentitySelectionDialog** (`gui/IdentitySelectionDialog.cpp:115-220`)
+   - Scan for fingerprint-based `.dsa`/`.kem` files (128 hex chars)
+   - Use DHT reverse lookup (Phase 9.4) to display registered names
+   - Fall back to shortened fingerprints if not registered
+   - Display format: `"alice"` or `"a3f9e2d1c5...b4a7f89012"`
+   - Store full fingerprint in `Qt::UserRole` for key loading
+
+**Technical Details:**
+- **Fingerprint:** SHA3-512(Dilithium5 public key) = 128 hex characters (64 bytes)
+- **Files:** `~/.dna/<fingerprint>.dsa` and `~/.dna/<fingerprint>.kem`
+- **DHT forward mapping:** identity name → keys
+- **DHT reverse mapping:** fingerprint → identity name
+- **Shortened display:** First 10 + "..." + last 10 hex chars (23 chars total)
+
+**Migration:** The migration tool (`MigrateIdentityDialog`) is still needed for identities created before this change.
+
+**Files Modified:**
+- `messenger.c` - Fingerprint computation and filename generation
+- `gui/CreateIdentityDialog.cpp` - DHT-based validation
+- `gui/IdentitySelectionDialog.cpp` - Reverse lookup and shortened display
 
 ---
 

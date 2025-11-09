@@ -15,9 +15,19 @@
 #include <windows.h>
 #define popen _popen
 #define pclose _pclose
+// Windows doesn't have htonll/ntohll, define them
+#define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
+#define ntohll(x) htonll(x)
 #else
 #include <sys/time.h>
 #include <unistd.h>  // For unlink(), close()
+#include <dirent.h>  // For directory operations (migration detection)
+#include <arpa/inet.h>  // For htonl, htonll
+// Define htonll/ntohll if not available
+#ifndef htonll
+#define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
+#define ntohll(x) htonll(x)
+#endif
 #endif
 #include <json-c/json.h>
 #include <openssl/bio.h>
@@ -28,6 +38,7 @@
 #include "qgp_platform.h"
 #include "qgp_dilithium.h"
 #include "qgp_kyber.h"
+#include "qgp_sha3.h"  // For SHA3-512 fingerprint computation
 #include "dht/dht_singleton.h"  // Global DHT singleton
 #include "qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
@@ -50,6 +61,49 @@ static dna_config_t g_config;
 // INITIALIZATION
 // ============================================================================
 
+/**
+ * Resolve identity to fingerprint
+ *
+ * This function supports the transition to fingerprint-first identities:
+ * - If input is 128 hex chars → already a fingerprint, return as-is
+ * - If input is a name → check if key file exists, compute fingerprint
+ *
+ * @param identity_input: Name or fingerprint
+ * @param fingerprint_out: Output buffer (129 bytes)
+ * @return: 0 on success, -1 on error
+ */
+static int resolve_identity_to_fingerprint(const char *identity_input, char *fingerprint_out) {
+    if (!identity_input || !fingerprint_out) {
+        return -1;
+    }
+
+    // Check if input is already a fingerprint
+    if (messenger_is_fingerprint(identity_input)) {
+        strncpy(fingerprint_out, identity_input, 128);
+        fingerprint_out[128] = '\0';
+        return 0;
+    }
+
+    // Input is a name, compute fingerprint from key file
+    const char *home = qgp_platform_home_dir();
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, identity_input);
+
+    // Check if key file exists
+    if (!file_exists(key_path)) {
+        fprintf(stderr, "Error: Key file not found: %s\n", key_path);
+        return -1;
+    }
+
+    // Compute fingerprint from key file
+    if (messenger_compute_identity_fingerprint(identity_input, fingerprint_out) != 0) {
+        fprintf(stderr, "Error: Failed to compute fingerprint for '%s'\n", identity_input);
+        return -1;
+    }
+
+    return 0;
+}
+
 messenger_context_t* messenger_init(const char *identity) {
     if (!identity) {
         fprintf(stderr, "Error: Identity required\n");
@@ -61,11 +115,26 @@ messenger_context_t* messenger_init(const char *identity) {
         return NULL;
     }
 
-    // Set identity
+    // Set identity (input name or fingerprint)
     ctx->identity = strdup(identity);
     if (!ctx->identity) {
         free(ctx);
         return NULL;
+    }
+
+    // Compute canonical fingerprint (Phase 4: Fingerprint-First Identity)
+    char fingerprint[129];
+    if (resolve_identity_to_fingerprint(identity, fingerprint) == 0) {
+        ctx->fingerprint = strdup(fingerprint);
+        if (!ctx->fingerprint) {
+            free(ctx->identity);
+            free(ctx);
+            return NULL;
+        }
+    } else {
+        // Fingerprint resolution failed (key file not found or invalid)
+        // For backward compatibility, continue without fingerprint
+        ctx->fingerprint = NULL;
     }
 
     // Initialize SQLite local message storage
@@ -123,6 +192,11 @@ void messenger_free(messenger_context_t *ctx) {
         message_backup_close(ctx->backup_ctx);
     }
 
+    // Free fingerprint (Phase 4)
+    if (ctx->fingerprint) {
+        free(ctx->fingerprint);
+    }
+
     // Cleanup keyserver cache
     keyserver_cache_cleanup();
 
@@ -143,7 +217,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     uint8_t *existing_sign = NULL, *existing_enc = NULL;
     size_t sign_len = 0, enc_len = 0;
 
-    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
+    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len, NULL) == 0) {
         free(existing_sign);
         free(existing_enc);
         fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
@@ -213,43 +287,49 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     memcpy(dilithium_pk, pubkey_data + 20, sizeof(dilithium_pk));
     memcpy(kyber_pk, pubkey_data + 20 + sign_pubkey_size, sizeof(kyber_pk));
 
+    // Compute fingerprint from Dilithium5 public key
+    char fingerprint[129];
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    if (qgp_sha3_512(dilithium_pk, sizeof(dilithium_pk), hash) != 0) {
+        fprintf(stderr, "Error: Failed to compute fingerprint\n");
+        free(type);
+        free(pubkey_data);
+        for (size_t i = 0; i < header_count; i++) free(headers[i]);
+        free(headers);
+        return -1;
+    }
+
+    // Convert to hex string (128 chars)
+    for (int i = 0; i < 64; i++) {
+        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+    }
+    fingerprint[128] = '\0';
+
     // Cleanup
     free(type);
     free(pubkey_data);
     for (size_t i = 0; i < header_count; i++) free(headers[i]);
     free(headers);
 
-    // Upload public keys to keyserver
-    if (messenger_store_pubkey(ctx, identity, dilithium_pk, sizeof(dilithium_pk),
+    // Upload public keys to keyserver (FINGERPRINT-FIRST)
+    if (messenger_store_pubkey(ctx, fingerprint, identity, dilithium_pk, sizeof(dilithium_pk),
                                 kyber_pk, sizeof(kyber_pk)) != 0) {
         fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
         return -1;
     }
 
     printf("\n✓ Keys uploaded to keyserver\n");
-    printf("✓ Identity '%s' is now ready to use!\n\n", identity);
+    printf("✓ Identity '%s' (fingerprint: %s) is now ready to use!\n\n", identity, fingerprint);
     return 0;
 }
 
 int messenger_generate_keys_from_seeds(
     messenger_context_t *ctx,
-    const char *identity,
     const uint8_t *signing_seed,
-    const uint8_t *encryption_seed)
+    const uint8_t *encryption_seed,
+    char *fingerprint_out)
 {
-    if (!ctx || !identity || !signing_seed || !encryption_seed) {
-        return -1;
-    }
-
-    // Check if identity already exists in keyserver
-    uint8_t *existing_sign = NULL, *existing_enc = NULL;
-    size_t sign_len = 0, enc_len = 0;
-
-    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
-        free(existing_sign);
-        free(existing_enc);
-        fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
-        fprintf(stderr, "Please choose a different name.\n\n");
+    if (!ctx || !signing_seed || !encryption_seed || !fingerprint_out) {
         return -1;
     }
 
@@ -271,17 +351,12 @@ int messenger_generate_keys_from_seeds(
         }
     }
 
-    // Generate Dilithium3 signing key from seed
-    char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, identity);
-
+    // Generate Dilithium5 (ML-DSA-87) signing key from seed
     qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
     if (!sign_key) {
         fprintf(stderr, "Error: Memory allocation failed for signing key\n");
         return -1;
     }
-
-    strncpy(sign_key->name, identity, sizeof(sign_key->name) - 1);
 
     uint8_t *dilithium_pk = calloc(1, QGP_DSA87_PUBLICKEYBYTES);
     uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
@@ -307,31 +382,31 @@ int messenger_generate_keys_from_seeds(
     sign_key->private_key = dilithium_sk;
     sign_key->private_key_size = QGP_DSA87_SECRETKEYBYTES;
 
+    // Compute fingerprint from public key (SHA3-512 hash)
+    char fingerprint[129];
+    dna_compute_fingerprint(dilithium_pk, fingerprint);
+
+    printf("✓ ML-DSA-87 signing key generated from seed\n");
+    printf("  Fingerprint: %s\n", fingerprint);
+
+    // Save with fingerprint-based filename (Phase 4: fingerprint-first)
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, fingerprint);
+
     if (qgp_key_save(sign_key, dilithium_path) != 0) {
         fprintf(stderr, "Error: Failed to save signing key\n");
         qgp_key_free(sign_key);
         return -1;
     }
 
-    printf("✓ ML-DSA-87 signing key generated from seed\n");
-
-    // Copy dilithium public key for upload before freeing
-    uint8_t dilithium_pk_copy[2592];  // Dilithium5 public key size
-    memcpy(dilithium_pk_copy, dilithium_pk, sizeof(dilithium_pk_copy));
-
     qgp_key_free(sign_key);
 
-    // Generate Kyber512 encryption key from seed
-    char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, identity);
-
+    // Generate Kyber1024 (ML-KEM-1024) encryption key from seed
     qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
     if (!enc_key) {
         fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
         return -1;
     }
-
-    strncpy(enc_key->name, identity, sizeof(enc_key->name) - 1);
 
     uint8_t *kyber_pk = calloc(1, 1568);  // Kyber1024 public key size
     uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
@@ -357,6 +432,10 @@ int messenger_generate_keys_from_seeds(
     enc_key->private_key = kyber_sk;
     enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
+    // Save with fingerprint-based filename (Phase 4: fingerprint-first)
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, fingerprint);
+
     if (qgp_key_save(enc_key, kyber_path) != 0) {
         fprintf(stderr, "Error: Failed to save encryption key\n");
         qgp_key_free(enc_key);
@@ -365,21 +444,244 @@ int messenger_generate_keys_from_seeds(
 
     printf("✓ ML-KEM-1024 encryption key generated from seed\n");
 
-    // Copy kyber public key for upload before freeing
-    uint8_t kyber_pk_copy[1568];  // Kyber1024 public key size
-    memcpy(kyber_pk_copy, kyber_pk, sizeof(kyber_pk_copy));
-
     qgp_key_free(enc_key);
 
-    // Upload public keys to DHT keyserver
-    if (messenger_store_pubkey(ctx, identity, dilithium_pk_copy, sizeof(dilithium_pk_copy),
-                                kyber_pk_copy, sizeof(kyber_pk_copy)) != 0) {
-        fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
+    // Copy fingerprint to output parameter
+    strncpy(fingerprint_out, fingerprint, 128);
+    fingerprint_out[128] = '\0';
+
+    printf("✓ Identity created successfully!\n");
+    printf("✓ Fingerprint: %s\n", fingerprint);
+    printf("\nNote: Register a name via Settings menu to allow others to find you.\n");
+    return 0;
+}
+
+int messenger_register_name(
+    messenger_context_t *ctx,
+    const char *fingerprint,
+    const char *desired_name)
+{
+    if (!ctx || !fingerprint || !desired_name) {
+        fprintf(stderr, "Error: Invalid parameters\n");
         return -1;
     }
 
-    printf("✓ Keys uploaded to DHT keyserver\n");
-    printf("✓ Identity '%s' is now ready to use!\n", identity);
+    // Validate fingerprint length
+    if (strlen(fingerprint) != 128) {
+        fprintf(stderr, "Error: Invalid fingerprint length (must be 128 hex chars)\n");
+        return -1;
+    }
+
+    // Validate name format (3-20 chars, alphanumeric + underscore)
+    size_t name_len = strlen(desired_name);
+    if (name_len < 3 || name_len > 20) {
+        fprintf(stderr, "Error: Name must be 3-20 characters\n");
+        return -1;
+    }
+
+    for (size_t i = 0; i < name_len; i++) {
+        char c = desired_name[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '_')) {
+            fprintf(stderr, "Error: Name can only contain letters, numbers, and underscore\n");
+            return -1;
+        }
+    }
+
+    // Check if name already exists in keyserver
+    uint8_t *existing_sign = NULL, *existing_enc = NULL;
+    size_t sign_len = 0, enc_len = 0;
+
+    if (messenger_load_pubkey(ctx, desired_name, &existing_sign, &sign_len, &existing_enc, &enc_len, NULL) == 0) {
+        free(existing_sign);
+        free(existing_enc);
+        fprintf(stderr, "\nError: Name '%s' is already registered!\n", desired_name);
+        fprintf(stderr, "Please choose a different name.\n\n");
+        return -1;
+    }
+
+    // Load keys from fingerprint-based files
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        fprintf(stderr, "Error: Cannot get home directory\n");
+        return -1;
+    }
+
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    char dilithium_path[512];
+    char kyber_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, fingerprint);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, fingerprint);
+
+    // Load Dilithium key
+    qgp_key_t *sign_key = NULL;
+    if (qgp_key_load(dilithium_path, &sign_key) != 0 || !sign_key) {
+        fprintf(stderr, "Error: Failed to load signing key from %s\n", dilithium_path);
+        return -1;
+    }
+
+    // Load Kyber key
+    qgp_key_t *enc_key = NULL;
+    if (qgp_key_load(kyber_path, &enc_key) != 0 || !enc_key) {
+        fprintf(stderr, "Error: Failed to load encryption key from %s\n", kyber_path);
+        qgp_key_free(sign_key);
+        return -1;
+    }
+
+    // Upload public keys to DHT keyserver (FINGERPRINT-FIRST)
+    // This publishes keys with fingerprint as primary key and name as display name
+    if (messenger_store_pubkey(ctx, fingerprint, desired_name,
+                                sign_key->public_key, sign_key->public_key_size,
+                                enc_key->public_key, enc_key->public_key_size) != 0) {
+        fprintf(stderr, "Error: Failed to publish keys to DHT keyserver\n");
+        qgp_key_free(sign_key);
+        qgp_key_free(enc_key);
+        return -1;
+    }
+
+    // Publish name → fingerprint alias for name-based lookups
+    dht_context_t *dht_ctx = NULL;
+    if (ctx->p2p_transport) {
+        dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
+    } else {
+        dht_ctx = dht_singleton_get();
+    }
+
+    if (!dht_ctx) {
+        fprintf(stderr, "Warning: DHT not available, alias not published\n");
+    } else {
+        if (dht_keyserver_publish_alias(dht_ctx, desired_name, fingerprint) != 0) {
+            fprintf(stderr, "Warning: Failed to publish name alias (name lookups may not work)\n");
+        }
+
+        // Publish identity profile to DHT (for expiration checking)
+        dna_unified_identity_t *identity = dna_identity_create();
+        if (identity) {
+            strncpy(identity->fingerprint, fingerprint, sizeof(identity->fingerprint) - 1);
+
+            // Copy public keys for fingerprint verification
+            memcpy(identity->dilithium_pubkey, sign_key->public_key,
+                   sign_key->public_key_size < sizeof(identity->dilithium_pubkey) ?
+                   sign_key->public_key_size : sizeof(identity->dilithium_pubkey));
+            memcpy(identity->kyber_pubkey, enc_key->public_key,
+                   enc_key->public_key_size < sizeof(identity->kyber_pubkey) ?
+                   enc_key->public_key_size : sizeof(identity->kyber_pubkey));
+
+            identity->has_registered_name = true;
+            strncpy(identity->registered_name, desired_name, sizeof(identity->registered_name) - 1);
+            identity->name_registered_at = time(NULL);
+            identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
+            strncpy(identity->registration_tx_hash, "FREE_REGISTRATION", sizeof(identity->registration_tx_hash) - 1);
+            strncpy(identity->registration_network, "DNA_NETWORK", sizeof(identity->registration_network) - 1);
+            identity->name_version = 1;
+            identity->timestamp = time(NULL);
+            identity->version = 1;
+
+            // Sign the identity profile with Dilithium5
+            // Message includes all fields except signature
+            size_t msg_len = sizeof(identity->fingerprint) +
+                           sizeof(identity->dilithium_pubkey) +
+                           sizeof(identity->kyber_pubkey) +
+                           sizeof(bool) +  // has_registered_name
+                           sizeof(identity->registered_name) +
+                           sizeof(uint64_t) * 2 +  // name_registered_at, name_expires_at
+                           sizeof(identity->registration_tx_hash) +
+                           sizeof(identity->registration_network) +
+                           sizeof(uint32_t) +  // name_version
+                           sizeof(identity->wallets) +
+                           sizeof(identity->socials) +
+                           sizeof(identity->bio) +
+                           sizeof(identity->profile_picture_ipfs) +
+                           sizeof(uint64_t) +  // timestamp
+                           sizeof(uint32_t);   // version
+
+            uint8_t *msg = malloc(msg_len);
+            if (msg) {
+                size_t offset = 0;
+                memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
+                offset += sizeof(identity->fingerprint);
+                memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
+                offset += sizeof(identity->dilithium_pubkey);
+                memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
+                offset += sizeof(identity->kyber_pubkey);
+                memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
+                offset += sizeof(bool);
+                memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
+                offset += sizeof(identity->registered_name);
+
+                // Network byte order for integers
+                uint64_t registered_at_net = htonll(identity->name_registered_at);
+                uint64_t expires_at_net = htonll(identity->name_expires_at);
+                uint32_t name_version_net = htonl(identity->name_version);
+                uint64_t timestamp_net = htonll(identity->timestamp);
+                uint32_t version_net = htonl(identity->version);
+
+                memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
+                offset += sizeof(uint64_t);
+                memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
+                offset += sizeof(uint64_t);
+                memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+                offset += sizeof(identity->registration_tx_hash);
+                memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+                offset += sizeof(identity->registration_network);
+                memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
+                offset += sizeof(uint32_t);
+                memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
+                offset += sizeof(identity->wallets);
+                memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
+                offset += sizeof(identity->socials);
+                memcpy(msg + offset, identity->bio, sizeof(identity->bio));
+                offset += sizeof(identity->bio);
+                memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
+                offset += sizeof(identity->profile_picture_ipfs);
+                memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
+                offset += sizeof(uint64_t);
+                memcpy(msg + offset, &version_net, sizeof(uint32_t));
+
+                // Sign with private key
+                size_t siglen = sizeof(identity->signature);
+                if (qgp_dsa87_sign(identity->signature, &siglen, msg, msg_len, sign_key->private_key) == 0) {
+                    printf("[DNA] ✓ Identity profile signed with Dilithium5\n");
+                } else {
+                    fprintf(stderr, "[DNA] Warning: Failed to sign identity profile\n");
+                }
+
+                free(msg);
+            }
+
+            char *json = dna_identity_to_json(identity);
+            if (json) {
+                char key_input[256];
+                snprintf(key_input, sizeof(key_input), "%s:profile", fingerprint);
+
+                unsigned char hash[64];
+                if (qgp_sha3_512((unsigned char*)key_input, strlen(key_input), hash) == 0) {
+                    char dht_key[129];
+                    for (int i = 0; i < 64; i++) {
+                        sprintf(dht_key + (i * 2), "%02x", hash[i]);
+                    }
+                    dht_key[128] = '\0';
+
+                    if (dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                          (uint8_t*)json, strlen(json)) != 0) {
+                        fprintf(stderr, "Warning: Failed to publish identity profile to DHT\n");
+                    } else {
+                        printf("[DNA] ✓ Published identity profile to DHT\n");
+                    }
+                }
+                free(json);
+            }
+            dna_identity_free(identity);
+        }
+    }
+
+    qgp_key_free(sign_key);
+    qgp_key_free(enc_key);
+
+    printf("✓ Name '%s' registered successfully!\n", desired_name);
+    printf("✓ Others can now find you by searching for '%s' or by fingerprint\n", desired_name);
     return 0;
 }
 
@@ -392,7 +694,7 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     uint8_t *existing_sign = NULL, *existing_enc = NULL;
     size_t sign_len = 0, enc_len = 0;
 
-    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len) == 0) {
+    if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len, NULL) == 0) {
         free(existing_sign);
         free(existing_enc);
         fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
@@ -458,21 +760,39 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     memcpy(dilithium_pk, pubkey_data + 20, sizeof(dilithium_pk));
     memcpy(kyber_pk, pubkey_data + 20 + sign_pubkey_size, sizeof(kyber_pk));
 
+    // Compute fingerprint from Dilithium5 public key
+    char fingerprint[129];
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    if (qgp_sha3_512(dilithium_pk, sizeof(dilithium_pk), hash) != 0) {
+        fprintf(stderr, "Error: Failed to compute fingerprint\n");
+        free(type);
+        free(pubkey_data);
+        for (size_t i = 0; i < header_count; i++) free(headers[i]);
+        free(headers);
+        return -1;
+    }
+
+    // Convert to hex string (128 chars)
+    for (int i = 0; i < 64; i++) {
+        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+    }
+    fingerprint[128] = '\0';
+
     // Cleanup
     free(type);
     free(pubkey_data);
     for (size_t i = 0; i < header_count; i++) free(headers[i]);
     free(headers);
 
-    // Upload public keys to keyserver
-    if (messenger_store_pubkey(ctx, identity, dilithium_pk, sizeof(dilithium_pk),
+    // Upload public keys to keyserver (FINGERPRINT-FIRST)
+    if (messenger_store_pubkey(ctx, fingerprint, identity, dilithium_pk, sizeof(dilithium_pk),
                                 kyber_pk, sizeof(kyber_pk)) != 0) {
         fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
         return -1;
     }
 
     printf("\n✓ Keys restored and uploaded to keyserver\n");
-    printf("✓ Identity '%s' is now ready to use!\n\n", identity);
+    printf("✓ Identity '%s' (fingerprint: %s) is now ready to use!\n\n", identity, fingerprint);
     return 0;
 }
 
@@ -486,7 +806,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
     uint8_t *keyserver_sign = NULL, *keyserver_enc = NULL;
     size_t keyserver_sign_len = 0, keyserver_enc_len = 0;
 
-    if (messenger_load_pubkey(ctx, identity, &keyserver_sign, &keyserver_sign_len, &keyserver_enc, &keyserver_enc_len) != 0) {
+    if (messenger_load_pubkey(ctx, identity, &keyserver_sign, &keyserver_sign_len, &keyserver_enc, &keyserver_enc_len, NULL) != 0) {
         fprintf(stderr, "\nError: Identity '%s' not found in keyserver!\n", identity);
         fprintf(stderr, "Cannot restore - no keys to verify against.\n");
         fprintf(stderr, "Use 'Generate new identity' if this is a new identity.\n\n");
@@ -846,6 +1166,370 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 }
 
 // ============================================================================
+// FINGERPRINT UTILITIES (Phase 4: Fingerprint-First Identity)
+// ============================================================================
+
+/**
+ * Compute fingerprint from Dilithium5 public key in a key file
+ */
+int messenger_compute_identity_fingerprint(const char *identity, char *fingerprint_out) {
+    if (!identity || !fingerprint_out) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_compute_identity_fingerprint\n");
+        return -1;
+    }
+
+    // Load Dilithium key file
+    const char *home = qgp_platform_home_dir();
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, identity);
+
+    qgp_key_t *key = NULL;
+    if (qgp_key_load(key_path, &key) != 0 || !key) {
+        fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
+        return -1;
+    }
+
+    if (key->type != QGP_KEY_TYPE_DSA87 || !key->public_key) {
+        fprintf(stderr, "ERROR: Not a Dilithium5 key or missing public key\n");
+        qgp_key_free(key);
+        return -1;
+    }
+
+    // Compute fingerprint using DHT keyserver function
+    dna_compute_fingerprint(key->public_key, fingerprint_out);
+
+    qgp_key_free(key);
+    return 0;
+}
+
+/**
+ * Check if a string is a valid fingerprint (128 hex characters)
+ */
+bool messenger_is_fingerprint(const char *str) {
+    if (!str) return false;
+
+    size_t len = strlen(str);
+    if (len != 128) return false;
+
+    // Check all characters are hex
+    for (size_t i = 0; i < len; i++) {
+        char c = str[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+/**
+ * Get display name for an identity (fingerprint or name)
+ */
+int messenger_get_display_name(messenger_context_t *ctx, const char *identifier, char *display_name_out) {
+    if (!ctx || !identifier || !display_name_out) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_get_display_name\n");
+        return -1;
+    }
+
+    // Check if identifier is a fingerprint
+    if (messenger_is_fingerprint(identifier)) {
+        // Try to resolve to registered name via DHT (using reverse lookup, not full profile)
+        dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+        if (dht_ctx) {
+            char *registered_name = NULL;
+            int ret = dht_keyserver_reverse_lookup(dht_ctx, identifier, &registered_name);
+            if (ret == 0 && registered_name) {
+                strncpy(display_name_out, registered_name, 255);
+                display_name_out[255] = '\0';
+                free(registered_name);
+                return 0;
+            }
+        }
+
+        // No registered name found, return shortened fingerprint (first 5 bytes + ... + last 5 bytes)
+        // Fingerprint is 128 hex chars (64 bytes), show first 10 chars + "..." + last 10 chars
+        size_t len = strlen(identifier);
+        if (len == 128) {
+            snprintf(display_name_out, 256, "%.10s...%.10s", identifier, identifier + 118);
+        } else {
+            // Fallback for non-standard length
+            snprintf(display_name_out, 256, "%.10s...", identifier);
+        }
+        return 0;
+    }
+
+    // Not a fingerprint, assume it's already a name
+    strncpy(display_name_out, identifier, 255);
+    display_name_out[255] = '\0';
+    return 0;
+}
+
+// ============================================================================
+// IDENTITY MIGRATION (Phase 4: Old Names → Fingerprints)
+// ============================================================================
+
+/**
+ * Detect old-style identity files that need migration
+ */
+int messenger_detect_old_identities(char ***identities_out, int *count_out) {
+    if (!identities_out || !count_out) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_detect_old_identities\n");
+        return -1;
+    }
+
+    const char *home = qgp_platform_home_dir();
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    // Open directory
+    DIR *dir = opendir(dna_dir);
+    if (!dir) {
+        *identities_out = NULL;
+        *count_out = 0;
+        return 0;  // No .dna directory, no identities to migrate
+    }
+
+    // Scan for .dsa files
+    char **identities = NULL;
+    int count = 0;
+    int capacity = 10;
+
+    identities = malloc(capacity * sizeof(char*));
+    if (!identities) {
+        closedir(dir);
+        return -1;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        // Look for .dsa files
+        size_t len = strlen(entry->d_name);
+        if (len < 5 || strcmp(entry->d_name + len - 4, ".dsa") != 0) {
+            continue;
+        }
+
+        // Extract name (remove .dsa extension)
+        char name[256];
+        strncpy(name, entry->d_name, len - 4);
+        name[len - 4] = '\0';
+
+        // Skip if already a fingerprint (128 hex chars)
+        if (messenger_is_fingerprint(name)) {
+            continue;
+        }
+
+        // Skip backup directory
+        if (strstr(name, "backup") != NULL) {
+            continue;
+        }
+
+        // This is an old-style identity that needs migration
+        if (count >= capacity) {
+            capacity *= 2;
+            char **new_identities = realloc(identities, capacity * sizeof(char*));
+            if (!new_identities) {
+                for (int i = 0; i < count; i++) free(identities[i]);
+                free(identities);
+                closedir(dir);
+                return -1;
+            }
+            identities = new_identities;
+        }
+
+        identities[count] = strdup(name);
+        if (!identities[count]) {
+            for (int i = 0; i < count; i++) free(identities[i]);
+            free(identities);
+            closedir(dir);
+            return -1;
+        }
+        count++;
+    }
+
+    closedir(dir);
+
+    *identities_out = identities;
+    *count_out = count;
+    return 0;
+}
+
+/**
+ * Migrate identity files from old naming to fingerprint naming
+ */
+int messenger_migrate_identity_files(const char *old_name, char *fingerprint_out) {
+    if (!old_name || !fingerprint_out) {
+        fprintf(stderr, "ERROR: Invalid arguments to messenger_migrate_identity_files\n");
+        return -1;
+    }
+
+    const char *home = qgp_platform_home_dir();
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    printf("[MIGRATION] Migrating identity '%s' to fingerprint-based naming...\n", old_name);
+
+    // 1. Compute fingerprint from existing key file
+    if (messenger_compute_identity_fingerprint(old_name, fingerprint_out) != 0) {
+        fprintf(stderr, "[MIGRATION] Failed to compute fingerprint for '%s'\n", old_name);
+        return -1;
+    }
+
+    printf("[MIGRATION] Computed fingerprint: %s\n", fingerprint_out);
+
+    // 2. Create backup directory
+    char backup_dir[512];
+    snprintf(backup_dir, sizeof(backup_dir), "%s/backup_pre_migration", dna_dir);
+
+    if (qgp_platform_mkdir(backup_dir) != 0) {
+        // Directory might already exist, check if it's actually a directory
+        if (!qgp_platform_is_directory(backup_dir)) {
+            fprintf(stderr, "[MIGRATION] Failed to create backup directory\n");
+            return -1;
+        }
+    }
+
+    printf("[MIGRATION] Created backup directory: %s\n", backup_dir);
+
+    // 3. Define file paths
+    char old_dsa[512], old_kem[512], old_contacts[512];
+    char new_dsa[512], new_kem[512], new_contacts[512];
+    char backup_dsa[512], backup_kem[512], backup_contacts[512];
+
+    snprintf(old_dsa, sizeof(old_dsa), "%s/%s.dsa", dna_dir, old_name);
+    snprintf(old_kem, sizeof(old_kem), "%s/%s.kem", dna_dir, old_name);
+    snprintf(old_contacts, sizeof(old_contacts), "%s/%s_contacts.db", dna_dir, old_name);
+
+    snprintf(new_dsa, sizeof(new_dsa), "%s/%s.dsa", dna_dir, fingerprint_out);
+    snprintf(new_kem, sizeof(new_kem), "%s/%s.kem", dna_dir, fingerprint_out);
+    snprintf(new_contacts, sizeof(new_contacts), "%s/%s_contacts.db", dna_dir, fingerprint_out);
+
+    snprintf(backup_dsa, sizeof(backup_dsa), "%s/%s.dsa", backup_dir, old_name);
+    snprintf(backup_kem, sizeof(backup_kem), "%s/%s.kem", backup_dir, old_name);
+    snprintf(backup_contacts, sizeof(backup_contacts), "%s/%s_contacts.db", backup_dir, old_name);
+
+    // 4. Copy files to backup (before renaming)
+    bool has_errors = false;
+
+    if (file_exists(old_dsa)) {
+        FILE *src = fopen(old_dsa, "rb");
+        FILE *dst = fopen(backup_dsa, "wb");
+        if (src && dst) {
+            char buffer[8192];
+            size_t bytes;
+            while ((bytes = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+                fwrite(buffer, 1, bytes, dst);
+            }
+            fclose(src);
+            fclose(dst);
+            printf("[MIGRATION] Backed up: %s.dsa\n", old_name);
+        } else {
+            fprintf(stderr, "[MIGRATION] Warning: Failed to backup %s.dsa\n", old_name);
+            if (src) fclose(src);
+            if (dst) fclose(dst);
+            has_errors = true;
+        }
+    }
+
+    if (file_exists(old_kem)) {
+        FILE *src = fopen(old_kem, "rb");
+        FILE *dst = fopen(backup_kem, "wb");
+        if (src && dst) {
+            char buffer[8192];
+            size_t bytes;
+            while ((bytes = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+                fwrite(buffer, 1, bytes, dst);
+            }
+            fclose(src);
+            fclose(dst);
+            printf("[MIGRATION] Backed up: %s.kem\n", old_name);
+        } else {
+            fprintf(stderr, "[MIGRATION] Warning: Failed to backup %s.kem\n", old_name);
+            if (src) fclose(src);
+            if (dst) fclose(dst);
+            has_errors = true;
+        }
+    }
+
+    if (file_exists(old_contacts)) {
+        FILE *src = fopen(old_contacts, "rb");
+        FILE *dst = fopen(backup_contacts, "wb");
+        if (src && dst) {
+            char buffer[8192];
+            size_t bytes;
+            while ((bytes = fread(buffer, 1, sizeof(buffer), src)) > 0) {
+                fwrite(buffer, 1, bytes, dst);
+            }
+            fclose(src);
+            fclose(dst);
+            printf("[MIGRATION] Backed up: %s_contacts.db\n", old_name);
+        } else {
+            if (src) fclose(src);
+            if (dst) fclose(dst);
+            // Contacts DB is optional, not an error if missing
+        }
+    }
+
+    if (has_errors) {
+        fprintf(stderr, "[MIGRATION] Backup had errors, aborting migration\n");
+        return -1;
+    }
+
+    // 5. Rename files to use fingerprint
+    if (file_exists(old_dsa)) {
+        if (rename(old_dsa, new_dsa) != 0) {
+            fprintf(stderr, "[MIGRATION] Failed to rename %s.dsa\n", old_name);
+            return -1;
+        }
+        printf("[MIGRATION] Renamed: %s.dsa → %s.dsa\n", old_name, fingerprint_out);
+    }
+
+    if (file_exists(old_kem)) {
+        if (rename(old_kem, new_kem) != 0) {
+            fprintf(stderr, "[MIGRATION] Failed to rename %s.kem\n", old_name);
+            // Try to rollback .dsa
+            rename(new_dsa, old_dsa);
+            return -1;
+        }
+        printf("[MIGRATION] Renamed: %s.kem → %s.kem\n", old_name, fingerprint_out);
+    }
+
+    if (file_exists(old_contacts)) {
+        if (rename(old_contacts, new_contacts) != 0) {
+            fprintf(stderr, "[MIGRATION] Warning: Failed to rename %s_contacts.db (non-fatal)\n", old_name);
+            // Non-fatal, continue
+        } else {
+            printf("[MIGRATION] Renamed: %s_contacts.db → %s_contacts.db\n", old_name, fingerprint_out);
+        }
+    }
+
+    printf("[MIGRATION] ✓ Migration complete for '%s'\n", old_name);
+    printf("[MIGRATION] New fingerprint: %s\n", fingerprint_out);
+    printf("[MIGRATION] Backups stored in: %s/\n", backup_dir);
+
+    return 0;
+}
+
+/**
+ * Check if an identity has already been migrated
+ */
+bool messenger_is_identity_migrated(const char *name) {
+    if (!name) return false;
+
+    // Compute fingerprint
+    char fingerprint[129];
+    if (messenger_compute_identity_fingerprint(name, fingerprint) != 0) {
+        return false;
+    }
+
+    // Check if fingerprint-named files exist
+    const char *home = qgp_platform_home_dir();
+    char fingerprint_dsa[512];
+    snprintf(fingerprint_dsa, sizeof(fingerprint_dsa), "%s/.dna/%s.dsa", home, fingerprint);
+
+    return file_exists(fingerprint_dsa);
+}
+
+// ============================================================================
 // PUBLIC KEY MANAGEMENT
 // ============================================================================
 
@@ -888,19 +1572,24 @@ static char* base64_encode(const uint8_t *data, size_t len) {
 
 int messenger_store_pubkey(
     messenger_context_t *ctx,
-    const char *identity,
+    const char *fingerprint,
+    const char *display_name,
     const uint8_t *signing_pubkey,
     size_t signing_pubkey_len,
     const uint8_t *encryption_pubkey,
     size_t encryption_pubkey_len
 ) {
-    if (!ctx || !identity || !signing_pubkey || !encryption_pubkey) {
+    if (!ctx || !fingerprint || !signing_pubkey || !encryption_pubkey) {
         fprintf(stderr, "ERROR: Invalid arguments to messenger_store_pubkey\n");
         return -1;
     }
 
-    // Phase 9.4: Use DHT-based keyserver instead of HTTP
-    printf("⟳ Publishing public keys for '%s' to DHT keyserver...\n", identity);
+    // Fingerprint-first DHT publishing
+    if (display_name && strlen(display_name) > 0) {
+        printf("⟳ Publishing public keys for '%s' (fingerprint: %s) to DHT keyserver...\n", display_name, fingerprint);
+    } else {
+        printf("⟳ Publishing public keys for fingerprint '%s' to DHT keyserver...\n", fingerprint);
+    }
 
     // Use global DHT singleton (initialized at app startup)
     // This eliminates the need for temporary DHT contexts
@@ -933,9 +1622,9 @@ int messenger_store_pubkey(
     char dna_dir[512];
     snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
 
-    // Load private key for signing
+    // Load private key for signing (using fingerprint)
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s.dsa", dna_dir, identity);
+    snprintf(key_path, sizeof(key_path), "%s/%s.dsa", dna_dir, fingerprint);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
@@ -949,10 +1638,11 @@ int messenger_store_pubkey(
         return -1;
     }
 
-    // Publish to DHT
+    // Publish to DHT (FINGERPRINT-FIRST)
     int ret = dht_keyserver_publish(
         dht_ctx,
-        identity,
+        fingerprint,
+        display_name,  // Optional human-readable name
         signing_pubkey,
         encryption_pubkey,
         key->private_key
@@ -1006,7 +1696,8 @@ int messenger_load_pubkey(
     uint8_t **signing_pubkey_out,
     size_t *signing_pubkey_len_out,
     uint8_t **encryption_pubkey_out,
-    size_t *encryption_pubkey_len_out
+    size_t *encryption_pubkey_len_out,
+    char *fingerprint_out  // NEW: Output fingerprint (129 bytes), can be NULL
 ) {
     if (!ctx || !identity) {
         fprintf(stderr, "ERROR: Invalid arguments to messenger_load_pubkey\n");
@@ -1032,6 +1723,11 @@ int messenger_load_pubkey(
         memcpy(*encryption_pubkey_out, cached->kyber_pubkey, cached->kyber_pubkey_len);
         *signing_pubkey_len_out = cached->dilithium_pubkey_len;
         *encryption_pubkey_len_out = cached->kyber_pubkey_len;
+
+        // Return fingerprint from cache
+        if (fingerprint_out && strlen(cached->identity) == 128) {
+            strcpy(fingerprint_out, cached->identity);
+        }
 
         keyserver_cache_free_entry(cached);
         printf("✓ Loaded public keys for '%s' from cache\n", identity);
@@ -1086,11 +1782,16 @@ int messenger_load_pubkey(
     size_t dil_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
     size_t kyber_len = DHT_KEYSERVER_KYBER_PUBKEY_SIZE;
 
+    // Store in cache for future lookups (using fingerprint as key)
+    keyserver_cache_put(entry->fingerprint, dil_decoded, dil_len, kyber_decoded, kyber_len, 0);
+
+    // Return fingerprint if requested
+    if (fingerprint_out) {
+        strcpy(fingerprint_out, entry->fingerprint);
+    }
+
     // Free DHT entry
     dht_keyserver_free_entry(entry);
-
-    // Store in cache for future lookups
-    keyserver_cache_put(identity, dil_decoded, dil_len, kyber_decoded, kyber_len, 0);
 
     // Return keys
     *signing_pubkey_out = dil_decoded;
@@ -1559,7 +2260,7 @@ int messenger_send_message(
         size_t sign_len = 0, enc_len = 0;
         if (messenger_load_pubkey(ctx, all_recipients[i],
                                    &sign_pubkeys[i], &sign_len,
-                                   &enc_pubkeys[i], &enc_len) != 0) {
+                                   &enc_pubkeys[i], &enc_len, NULL) != 0) {
             fprintf(stderr, "Error: Cannot load public key for '%s' from keyserver\n", all_recipients[i]);
 
             // Cleanup on error
@@ -1850,7 +2551,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     size_t sender_sign_len_keyserver = 0, sender_enc_len_keyserver = 0;
 
     if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
-                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver) != 0) {
+                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver, NULL) != 0) {
         fprintf(stderr, "Warning: Could not verify sender '%s' against keyserver\n", sender);
         fprintf(stderr, "Message decrypted but sender identity NOT verified!\n");
     } else {
@@ -1971,7 +2672,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     size_t sender_sign_len_keyserver = 0, sender_enc_len_keyserver = 0;
 
     if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
-                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver) == 0) {
+                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver, NULL) == 0) {
         // Compare public keys
         if (sender_sign_len_keyserver != sender_sign_pubkey_len ||
             memcmp(sender_sign_pubkey_keyserver, sender_sign_pubkey_from_msg, sender_sign_pubkey_len) != 0) {

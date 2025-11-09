@@ -1,4 +1,5 @@
 #include "dht_context.h"
+#include "dht_value_storage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -62,12 +63,28 @@ int main(int argc, char **argv) {
     // Run forever
     while (1) {
         sleep(10);
-        
+
         // Print stats every 10 seconds
         size_t node_count = 0;
         size_t stored_values = 0;
         if (dht_get_stats(global_ctx, &node_count, &stored_values) == 0) {
-            printf("[Stats] Nodes: %zu, Values: %zu\n", node_count, stored_values);
+            printf("[Stats] Nodes: %zu, Values: %zu", node_count, stored_values);
+
+            // Print storage stats if available
+            dht_value_storage_t *storage = dht_get_storage(global_ctx);
+            if (storage) {
+                dht_storage_stats_t storage_stats;
+                if (dht_value_storage_get_stats(storage, &storage_stats) == 0) {
+                    printf(" | Persisted: %lu values (%.2f MB)",
+                           storage_stats.total_values,
+                           storage_stats.storage_size_bytes / (1024.0 * 1024.0));
+
+                    if (storage_stats.republish_in_progress) {
+                        printf(" | Republishing: %lu values...", storage_stats.republish_count);
+                    }
+                }
+            }
+            printf("\n");
         }
     }
 
