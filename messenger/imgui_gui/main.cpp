@@ -273,24 +273,33 @@ int main(int argc, char** argv) {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
         
-        // Initialize DHT on first frame after window is ready
-        if (!dht_init_attempted) {
-            dht_init_attempted = true;
-            dht_init_start_time = (float)glfwGetTime();
-            printf("[MAIN] Starting DHT bootstrap...\n");
-            
-            if (dht_singleton_init() != 0) {
-                fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
-                fprintf(stderr, "[MAIN] Continuing without DHT (offline mode)...\n");
-            } else {
-                printf("[MAIN] ✓ DHT ready!\n");
-            }
-            dht_initialized = true;
-        }
+        // Show loading spinner first, then init DHT
+        float elapsed = dht_init_attempted ? (float)glfwGetTime() - dht_init_start_time : 0.0f;
+        bool show_loading = !dht_initialized || elapsed < 0.5f;
         
-        // Show loading spinner until DHT is ready (at least 0.5 seconds for smooth UX)
-        float elapsed = (float)glfwGetTime() - dht_init_start_time;
-        if (!dht_initialized || elapsed < 0.5f) {
+        if (show_loading) {
+            // Initialize DHT on second frame (after spinner is visible)
+            if (!dht_init_attempted) {
+                // First frame: just show spinner, don't block
+                static int frame_count = 0;
+                frame_count++;
+                
+                if (frame_count >= 2) {  // Start DHT init on second frame
+                    dht_init_attempted = true;
+                    dht_init_start_time = (float)glfwGetTime();
+                    printf("[MAIN] Starting DHT bootstrap...\n");
+                    
+                    if (dht_singleton_init() != 0) {
+                        fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
+                        fprintf(stderr, "[MAIN] Continuing without DHT (offline mode)...\n");
+                    } else {
+                        printf("[MAIN] ✓ DHT ready!\n");
+                    }
+                    dht_initialized = true;
+                }
+            }
+            
+            // Show loading screen
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
             ImGui::NewFrame();
