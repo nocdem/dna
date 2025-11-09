@@ -2080,6 +2080,7 @@ void DNAMessengerApp::renderChatView() {
     ImGui::SetCursorPosY((header_height - wall_btn_height) * 0.5f);
 
     if (ButtonDark(ICON_FA_NEWSPAPER " Wall", ImVec2(wall_btn_width, wall_btn_height))) {
+        printf("[DEBUG] Wall button clicked for contact: %s! Setting show_message_wall = true\n", contact.name.c_str());
         // Open message wall for this contact
         state.wall_fingerprint = contact.address;  // Use address as fingerprint
         state.wall_display_name = contact.name;
@@ -2909,16 +2910,19 @@ void DNAMessengerApp::renderSettingsView() {
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_USER " Edit DNA Profile", ImVec2(-1, btn_height))) {
+            printf("[DEBUG] Edit Profile button clicked! Setting show_profile_editor = true\n");
             state.show_profile_editor = true;
         }
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_TAG " Register DNA Name", ImVec2(-1, btn_height))) {
+            printf("[DEBUG] Register Name button clicked! Setting show_register_name = true\n");
             state.show_register_name = true;
         }
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_NEWSPAPER " My Message Wall", ImVec2(-1, btn_height))) {
+            printf("[DEBUG] My Message Wall button clicked! Setting show_message_wall = true\n");
             // Open own message wall
             state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
             state.wall_display_name = "My Wall";
@@ -2937,16 +2941,19 @@ void DNAMessengerApp::renderSettingsView() {
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
+            printf("[DEBUG] Edit Profile button clicked (desktop)! Setting show_profile_editor = true\n");
             state.show_profile_editor = true;
         }
         ImGui::SameLine();
         if (ButtonDark(ICON_FA_TAG " Register Name", ImVec2(200, btn_height))) {
+            printf("[DEBUG] Register Name button clicked (desktop)! Setting show_register_name = true\n");
             state.show_register_name = true;
         }
 
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_NEWSPAPER " My Message Wall", ImVec2(-1, btn_height))) {
+            printf("[DEBUG] My Message Wall button clicked! Setting show_message_wall = true\n");
             // Open own message wall
             state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
             state.wall_display_name = "My Wall";
@@ -4182,6 +4189,8 @@ void DNAMessengerApp::postToMessageWall() {
 void DNAMessengerApp::renderMessageWallDialog() {
     if (!state.show_message_wall) return;
 
+    printf("[DEBUG] renderMessageWallDialog() called, show_message_wall = true\n");
+
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = (io.DisplaySize.x < 600);
 
@@ -4294,6 +4303,7 @@ void DNAMessengerApp::renderMessageWallDialog() {
 
     // Open popup on first show
     if (state.show_message_wall && !ImGui::IsPopupOpen("Message Wall")) {
+        printf("[DEBUG] Opening 'Message Wall' popup!\n");
         ImGui::OpenPopup("Message Wall");
         loadMessageWall();
     }
@@ -4445,6 +4455,8 @@ void DNAMessengerApp::saveProfile() {
 void DNAMessengerApp::renderProfileEditorDialog() {
     if (!state.show_profile_editor) return;
 
+    printf("[DEBUG] renderProfileEditorDialog() called, show_profile_editor = true\n");
+
     ImGuiIO& io = ImGui::GetIO();
 
     ImGui::SetNextWindowSize(ImVec2(800, 700), ImGuiCond_FirstUseEver);
@@ -4524,6 +4536,7 @@ void DNAMessengerApp::renderProfileEditorDialog() {
 
     // Open popup on first show
     if (state.show_profile_editor && !ImGui::IsPopupOpen("Edit DNA Profile")) {
+        printf("[DEBUG] Opening 'Edit DNA Profile' popup!\n");
         ImGui::OpenPopup("Edit DNA Profile");
         loadProfile();
     }
@@ -4627,6 +4640,8 @@ void DNAMessengerApp::registerName() {
 void DNAMessengerApp::renderRegisterNameDialog() {
     if (!state.show_register_name) return;
 
+    printf("[DEBUG] renderRegisterNameDialog() called, show_register_name = true\n");
+
     ImGuiIO& io = ImGui::GetIO();
 
     ImGui::SetNextWindowSize(ImVec2(600, 450), ImGuiCond_FirstUseEver);
@@ -4700,6 +4715,7 @@ void DNAMessengerApp::renderRegisterNameDialog() {
 
     // Open popup on first show
     if (state.show_register_name && !ImGui::IsPopupOpen("Register DNA Name")) {
+        printf("[DEBUG] Opening 'Register DNA Name' popup!\n");
         ImGui::OpenPopup("Register DNA Name");
     }
 }
