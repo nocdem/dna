@@ -1881,7 +1881,6 @@ void DNAMessengerApp::renderContactsList() {
 
     // Get full available width before any child windows
     float full_width = ImGui::GetContentRegionAvail().x;
-    printf("[DEBUG] ContactsList available width: %.1f, screen width: %.1f\n", full_width, io.DisplaySize.x);
 
     // Top bar with title and add button
     ImGui::BeginChild("ContactsHeader", ImVec2(full_width, 60), true, ImGuiWindowFlags_NoScrollbar);
@@ -1905,7 +1904,6 @@ void DNAMessengerApp::renderContactsList() {
         // Get button width
         float button_width = ImGui::GetContentRegionAvail().x;
         if (i == 0) {
-            printf("[DEBUG] Contact button width: %.1f\n", button_width);
         }
 
         // Large touch-friendly buttons (80px height)
@@ -2124,7 +2122,6 @@ void DNAMessengerApp::renderChatView() {
     ImGui::SetCursorPosY((header_height - wall_btn_height) * 0.5f);
 
     if (ButtonDark(ICON_FA_NEWSPAPER " Wall", ImVec2(wall_btn_width, wall_btn_height))) {
-        printf("[DEBUG] Wall button clicked for contact: %s! Setting show_message_wall = true\n", contact.name.c_str());
         // Open message wall for this contact
         state.wall_fingerprint = contact.address;  // Use address as fingerprint
         state.wall_display_name = contact.name;
@@ -2958,19 +2955,16 @@ void DNAMessengerApp::renderSettingsView() {
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_USER " Edit DNA Profile", ImVec2(-1, btn_height))) {
-            printf("[DEBUG] Edit Profile button clicked! Setting show_profile_editor = true\n");
             state.show_profile_editor = true;
         }
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_TAG " Register DNA Name", ImVec2(-1, btn_height))) {
-            printf("[DEBUG] Register Name button clicked! Setting show_register_name = true\n");
             state.show_register_name = true;
         }
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_NEWSPAPER " My Message Wall", ImVec2(-1, btn_height))) {
-            printf("[DEBUG] My Message Wall button clicked! Setting show_message_wall = true\n");
             // Open own message wall
             state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
             state.wall_display_name = "My Wall";
@@ -2989,19 +2983,16 @@ void DNAMessengerApp::renderSettingsView() {
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
-            printf("[DEBUG] Edit Profile button clicked (desktop)! Setting show_profile_editor = true\n");
             state.show_profile_editor = true;
         }
         ImGui::SameLine();
         if (ButtonDark(ICON_FA_TAG " Register Name", ImVec2(200, btn_height))) {
-            printf("[DEBUG] Register Name button clicked (desktop)! Setting show_register_name = true\n");
             state.show_register_name = true;
         }
 
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_NEWSPAPER " My Message Wall", ImVec2(-1, btn_height))) {
-            printf("[DEBUG] My Message Wall button clicked! Setting show_message_wall = true\n");
             // Open own message wall
             state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
             state.wall_display_name = "My Wall";
@@ -3075,10 +3066,6 @@ void DNAMessengerApp::refreshBalances() {
     cellframe_rpc_response_t *response = nullptr;
     if (cellframe_rpc_get_balance("Backbone", address, "CPUNK", &response) == 0 && response->result) {
         json_object *jresult = response->result;
-
-        // DEBUG: Print full RPC response
-        const char *json_str = json_object_to_json_string_ext(jresult, JSON_C_TO_STRING_PRETTY);
-        printf("[DEBUG RPC BALANCE RESPONSE]:\n%s\n", json_str);
 
         if (json_object_is_type(jresult, json_type_array) && json_object_array_length(jresult) > 0) {
             json_object *first = json_object_array_get_idx(jresult, 0);
@@ -3156,8 +3143,6 @@ std::string DNAMessengerApp::formatBalance(const std::string& coins) {
 }
 
 void DNAMessengerApp::buildAndSendTransaction() {
-    printf("[DEBUG] ========== Send Button Clicked - Starting Transaction Flow ==========\n");
-
     state.send_status = "Checking wallet...";
 
     // Get wallet
@@ -3168,8 +3153,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
     }
 
     cellframe_wallet_t *wallet = &wallets->wallets[state.current_wallet_index];
-    printf("[DEBUG] Wallet name: %s\n", wallet->name);
-    printf("[DEBUG] Wallet status: %d (0=unprotected, 1=protected)\n", wallet->status);
 
     // Check if address is available
     if (wallet->address[0] == '\0') {
@@ -3185,18 +3168,12 @@ void DNAMessengerApp::buildAndSendTransaction() {
     strncpy(address, wallet->address, WALLET_ADDRESS_MAX - 1);
     address[WALLET_ADDRESS_MAX - 1] = '\0';
 
-    printf("[DEBUG] Using wallet address: %s\n", address);
-
     state.send_status = "Querying UTXOs...";
 
     // Get parameters
     const char *amount_str = state.send_amount;
     const char *fee_str = state.send_fee;
     const char *recipient = state.send_recipient;
-
-    printf("[DEBUG] Amount string: '%s'\n", amount_str);
-    printf("[DEBUG] Fee string: '%s'\n", fee_str);
-    printf("[DEBUG] Recipient: '%s'\n", recipient);
 
     // Parse amounts
     uint256_t amount, fee;
@@ -3209,9 +3186,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
         state.send_status = "ERROR: Failed to parse fee";
         return;
     }
-
-    printf("[DEBUG] Parsed amount: %llu datoshi\n", (unsigned long long)amount.lo.lo);
-    printf("[DEBUG] Parsed fee: %llu datoshi\n", (unsigned long long)fee.lo.lo);
 
     // STEP 1: Query UTXOs
     utxo_t *selected_utxos = NULL;
@@ -3243,8 +3217,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
                             cellframe_rpc_response_free(utxo_resp);
                             return;
                         }
-
-                        printf("[DEBUG] Found %d UTXO%s\n", num_utxos, num_utxos > 1 ? "s" : "");
 
                         // Parse all UTXOs
                         utxo_t *all_utxos = (utxo_t*)malloc(sizeof(utxo_t) * num_utxos);
@@ -3306,8 +3278,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
                             return;
                         }
 
-                        printf("[DEBUG] Selected %d UTXO (total: %llu datoshi)\n", num_selected_utxos, (unsigned long long)total_input_u64);
-
                     } else {
                         state.send_status = "ERROR: Invalid UTXO response";
                         cellframe_rpc_response_free(utxo_resp);
@@ -3333,8 +3303,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
     // STEP 2: Build transaction
     state.send_status = "Building transaction...";
 
-    printf("[DEBUG] Step 2: Building transaction\n");
-
     cellframe_tx_builder_t *builder = cellframe_tx_builder_new();
     if (!builder) {
         state.send_status = "ERROR: Failed to create builder";
@@ -3345,7 +3313,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
     // Set timestamp
     uint64_t ts = (uint64_t)time(NULL);
     cellframe_tx_set_timestamp(builder, ts);
-    printf("[DEBUG] Timestamp: %lu\n", ts);
 
     // Parse recipient address from Base58
     cellframe_addr_t recipient_addr;
@@ -3385,13 +3352,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
     uint64_t change_u64 = total_input_u64 - amount.lo.lo - NETWORK_FEE_DATOSHI - fee.lo.lo;
     uint256_t change = {0};
     change.lo.lo = change_u64;
-
-    printf("[DEBUG] Transaction breakdown:\n");
-    printf("  Total input:     %llu datoshi\n", (unsigned long long)total_input_u64);
-    printf("  - Recipient:     %llu datoshi\n", (unsigned long long)amount.lo.lo);
-    printf("  - Network fee:   %llu datoshi\n", (unsigned long long)NETWORK_FEE_DATOSHI);
-    printf("  - Validator fee: %llu datoshi\n", (unsigned long long)fee.lo.lo);
-    printf("  = Change:        %llu datoshi\n", (unsigned long long)change_u64);
 
     // Add all IN items
     for (int i = 0; i < num_selected_utxos; i++) {
@@ -3443,7 +3403,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
     // STEP 3: Sign transaction
     state.send_status = "Signing transaction...";
 
-    printf("[DEBUG] Step 3: Signing transaction\n");
 
     // Get signing data
     size_t tx_size;
@@ -3454,7 +3413,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
         return;
     }
 
-    printf("[DEBUG] Transaction size: %zu bytes\n", tx_size);
 
     // Sign transaction
     uint8_t *dap_sign = NULL;
@@ -3472,7 +3430,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
     // Free temporary signing data
     free((void*)tx_data);
 
-    printf("[DEBUG] Signature size: %zu bytes\n", dap_sign_size);
 
     // Add signature to transaction
     if (cellframe_tx_add_signature(builder, dap_sign, dap_sign_size) != 0) {
@@ -3486,7 +3443,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
     // STEP 4: Convert to JSON
     state.send_status = "Converting to JSON...";
 
-    printf("[DEBUG] Step 4: Converting to JSON\n");
 
     // Get complete signed transaction
     const uint8_t *signed_tx = cellframe_tx_get_data(builder, &tx_size);
@@ -3504,13 +3460,10 @@ void DNAMessengerApp::buildAndSendTransaction() {
         return;
     }
 
-    printf("[DEBUG] JSON size: %zu bytes\n", strlen(json));
-    printf("[DEBUG] JSON:\n%s\n", json);
 
     // STEP 5: Submit to RPC
     state.send_status = "Submitting to RPC...";
 
-    printf("[DEBUG] Step 5: Submitting to RPC\n");
 
     cellframe_rpc_response_t *submit_resp = NULL;
     if (cellframe_rpc_submit_tx("Backbone", "main", json, &submit_resp) == 0 && submit_resp) {
@@ -3533,7 +3486,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
                     json_object *jtx_create = NULL;
                     if (json_object_object_get_ex(first_elem, "tx_create", &jtx_create)) {
                         txCreated = json_object_get_boolean(jtx_create);
-                        printf("[DEBUG] tx_create: %s\n", txCreated ? "true" : "false");
                     }
 
                     // Extract hash
@@ -3542,7 +3494,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
                         const char *tx_hash = json_object_get_string(jhash);
                         if (tx_hash) {
                             txHash = std::string(tx_hash);
-                            printf("[DEBUG] Extracted hash: %s\n", tx_hash);
                         }
                     }
                 }
@@ -3576,7 +3527,6 @@ void DNAMessengerApp::buildAndSendTransaction() {
     free(json);
     cellframe_tx_builder_free(builder);
 
-    printf("[DEBUG] ========== Transaction Flow Complete ==========\n");
 }
 
 void DNAMessengerApp::renderSendDialog() {
@@ -3842,7 +3792,6 @@ void DNAMessengerApp::loadTransactionHistory() {
 
         // DEBUG: Print full RPC response
         const char *json_str = json_object_to_json_string_ext(jresult, JSON_C_TO_STRING_PRETTY);
-        printf("[DEBUG RPC TX HISTORY RESPONSE]:\n%s\n", json_str);
 
         if (json_object_is_type(jresult, json_type_array)) {
             int result_len = json_object_array_length(jresult);
@@ -3859,11 +3808,9 @@ void DNAMessengerApp::loadTransactionHistory() {
 
                         // DEBUG: Print each transaction object
                         const char *tx_json = json_object_to_json_string_ext(tx_obj, JSON_C_TO_STRING_PRETTY);
-                        printf("[DEBUG TX #%d]:\n%s\n", i-2, tx_json);
 
                         json_object *status_obj = nullptr;
                         if (!json_object_object_get_ex(tx_obj, "status", &status_obj)) {
-                            printf("[DEBUG] TX #%d: No status field, skipping\n", i-2);
                             continue;
                         }
 
@@ -3911,17 +3858,14 @@ void DNAMessengerApp::loadTransactionHistory() {
 
                         if (data_obj && json_object_is_type(data_obj, json_type_array)) {
                             int data_count = json_object_array_length(data_obj);
-                            printf("[DEBUG] TX #%d: data array has %d items\n", i-2, data_count);
                             if (data_count > 0) {
                                 json_object *first_data = json_object_array_get_idx(data_obj, 0);
-                                printf("[DEBUG] TX #%d: first_data = %s\n", i-2, json_object_to_json_string(first_data));
 
                                 json_object *tx_type_obj = nullptr, *token_obj = nullptr;
                                 json_object *coins_obj = nullptr, *addr_obj = nullptr;
 
                                 if (json_object_object_get_ex(first_data, "tx_type", &tx_type_obj)) {
                                     const char *tx_type_str = json_object_get_string(tx_type_obj);
-                                    printf("[DEBUG] TX #%d: tx_type = %s\n", i-2, tx_type_str);
 
                                     if (strcmp(tx_type_str, "recv") == 0) {
                                         direction = "received";
@@ -3973,16 +3917,12 @@ void DNAMessengerApp::loadTransactionHistory() {
 
                                     if (json_object_object_get_ex(first_data, "token", &token_obj)) {
                                         token = json_object_get_string(token_obj);
-                                        printf("[DEBUG] TX #%d: token = %s\n", i-2, token.c_str());
                                     } else {
-                                        printf("[DEBUG] TX #%d: NO TOKEN FIELD FOUND! Will show as UNKNOWN\n", i-2);
                                     }
                                 } else {
-                                    printf("[DEBUG] TX #%d: NO tx_type field found\n", i-2);
                                 }
                             }
                         } else {
-                            printf("[DEBUG] TX #%d: NO data array or data is not array type\n", i-2);
                         }
 
                         // Add transaction to list
@@ -3995,7 +3935,6 @@ void DNAMessengerApp::loadTransactionHistory() {
                         tx.status = status;
                         tx.is_declined = (status.find("DECLINED") != std::string::npos);
 
-                        printf("[DEBUG] TX #%d PARSED: %s %s %s, addr=%s, status=%s, time=%s\n",
                                i-2, direction.c_str(), amount.c_str(), token.c_str(),
                                otherAddress.c_str(), status.c_str(), timeStr.c_str());
 
@@ -4277,11 +4216,9 @@ void DNAMessengerApp::postToMessageWall() {
 void DNAMessengerApp::renderMessageWallDialog() {
     if (!state.show_message_wall) return;
 
-    printf("[DEBUG] renderMessageWallDialog() called, show_message_wall = true\n");
 
     // Open popup on first show (MUST be before BeginPopupModal!)
     if (!ImGui::IsPopupOpen("Message Wall")) {
-        printf("[DEBUG] Opening 'Message Wall' popup!\n");
         ImGui::OpenPopup("Message Wall");
         loadMessageWall();
     }
@@ -4535,11 +4472,9 @@ void DNAMessengerApp::saveProfile() {
 void DNAMessengerApp::renderProfileEditorDialog() {
     if (!state.show_profile_editor) return;
 
-    printf("[DEBUG] renderProfileEditorDialog() called, show_profile_editor = true\n");
 
     // Open popup on first show (MUST be before BeginPopupModal!)
     if (!ImGui::IsPopupOpen("Edit DNA Profile")) {
-        printf("[DEBUG] Opening 'Edit DNA Profile' popup!\n");
         ImGui::OpenPopup("Edit DNA Profile");
         loadProfile();
     }
@@ -4721,11 +4656,9 @@ void DNAMessengerApp::registerName() {
 void DNAMessengerApp::renderRegisterNameDialog() {
     if (!state.show_register_name) return;
 
-    printf("[DEBUG] renderRegisterNameDialog() called, show_register_name = true\n");
 
     // Open popup on first show (MUST be before BeginPopupModal!)
     if (!ImGui::IsPopupOpen("Register DNA Name")) {
-        printf("[DEBUG] Opening 'Register DNA Name' popup!\n");
         ImGui::OpenPopup("Register DNA Name");
     }
 
