@@ -138,7 +138,8 @@ void DNAMessengerApp::render() {
         // Check if async task completed
         if (dht_publish_task.isCompleted() && !dht_publish_task.isRunning()) {
             state.show_operation_spinner = false;
-            state.show_identity_selection = false; // Now hide identity modal
+            state.show_identity_selection = false; // Hide identity modal
+            state.create_identity_step = STEP_NAME; // Reset wizard for next use
         }
     }
 }
@@ -641,35 +642,32 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
 
     ImGui::BeginDisabled(!state.seed_confirmed);
     if (ButtonDark("Create", ImVec2(button_width, 40))) {
-        // Close ALL modals immediately
-        ImGui::CloseCurrentPopup();
-        
-        // Keep identity selection visible (spinner will render on top)
-        // We'll hide it when the async task completes
-        
+        // Transition to Step 3 (spinner) - keep modal open
+        state.create_identity_step = STEP_CREATING;
+
         // Show spinner overlay
         state.show_operation_spinner = true;
-        snprintf(state.operation_spinner_message, sizeof(state.operation_spinner_message), 
+        snprintf(state.operation_spinner_message, sizeof(state.operation_spinner_message),
                  "Creating identity...");
-        
+
         // Copy name and mnemonic to heap for async task
         std::string name_copy = std::string(state.new_identity_name);
         std::string mnemonic_copy = std::string(state.generated_mnemonic);
-        
+
         // Start async DHT publishing task
         dht_publish_task.start([this, name_copy, mnemonic_copy](AsyncTask* task) {
             task->addMessage("Generating cryptographic keys...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            
+
             task->addMessage("Publishing keys to DHT network...");
             createIdentityWithSeed(name_copy.c_str(), mnemonic_copy.c_str());
-            
+
             task->addMessage("Initializing messenger context...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            
+
             task->addMessage("Loading contacts database...");
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
-            
+
             task->addMessage("✓ Identity created successfully!");
             std::this_thread::sleep_for(std::chrono::milliseconds(800));
         });
