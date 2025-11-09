@@ -44,6 +44,7 @@ private:
     // Identity selection and management
     void renderIdentitySelection();
     void scanIdentities();
+    void reloadContactsFromDatabase();
 
     // Create identity wizard
     void renderCreateIdentityStep1();

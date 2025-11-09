@@ -84,6 +84,7 @@ public:
     // Message polling state (check offline queue every 5 seconds)
     float last_poll_time;  // Last time we checked for offline messages
     bool new_messages_received;  // Flag to reload current conversation
+    bool contacts_synced_from_dht;  // Flag to indicate DHT sync completed
 
     // Data
     std::vector<Contact> contacts;
