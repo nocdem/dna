@@ -1900,19 +1900,20 @@ void DNAMessengerApp::renderChatView() {
     float input_height = is_mobile ? 100.0f : 80.0f;
     ImGui::BeginChild("MessageArea", ImVec2(0, -input_height), true);
 
-    // Lock mutex to safely read messages (protect from concurrent modification during send)
-    std::lock_guard<std::mutex> lock(state.messages_mutex);
-
-    // Get messages for current contact
-    std::vector<Message>& messages = state.contact_messages[state.selected_contact];
+    // Copy messages with mutex protection (minimal lock time)
+    std::vector<Message> messages_copy;
+    {
+        std::lock_guard<std::mutex> lock(state.messages_mutex);
+        messages_copy = state.contact_messages[state.selected_contact];
+    }
 
     // Virtual scrolling: only render visible messages
     ImGuiListClipper clipper;
-    clipper.Begin((int)messages.size());
+    clipper.Begin((int)messages_copy.size());
 
     while (clipper.Step()) {
         for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
-            const auto& msg = messages[i];
+            const auto& msg = messages_copy[i];
 
             // Calculate bubble width based on current window size
             float available_width = ImGui::GetContentRegionAvail().x;
