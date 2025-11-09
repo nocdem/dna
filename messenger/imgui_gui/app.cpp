@@ -2248,6 +2248,7 @@ void DNAMessengerApp::renderChatView() {
     bool should_autofocus = (state.prev_selected_contact != state.selected_contact) || state.should_focus_input;
     if (state.prev_selected_contact != state.selected_contact) {
         state.prev_selected_contact = state.selected_contact;
+        state.should_scroll_to_bottom = true;  // Scroll to bottom when switching contacts
     }
     state.should_focus_input = false; // Reset flag
 
