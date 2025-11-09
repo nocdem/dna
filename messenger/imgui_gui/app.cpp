@@ -1968,26 +1968,32 @@ void DNAMessengerApp::renderChatView() {
 
         // Send button with paper plane icon
         if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
-            if (strlen(state.message_input) > 0 && state.selected_contact >= 0) {
+            if (strlen(state.message_input) > 0 && state.selected_contact >= 0 && !message_send_task.isRunning()) {
                 messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
                 if (ctx) {
-                    // Get recipient (contact fingerprint/address)
-                    const char* recipient = state.contacts[state.selected_contact].address.c_str();
-                    const char* recipients[] = { recipient };
-
-                    // Send message via messenger API
-                    int result = messenger_send_message(ctx, recipients, 1, state.message_input);
-
-                    if (result == 0) {
-                        printf("[Send] Message sent successfully to %s\n", recipient);
-                        // Reload messages to show the sent message
-                        loadMessagesForContact(state.selected_contact);
-                        state.message_input[0] = '\0';
-                        state.should_focus_input = true; // Set flag to refocus next frame
-                    } else {
-                        printf("[Send] ERROR: Failed to send message to %s\n", recipient);
-                        // TODO: Show error to user
-                    }
+                    // Copy data for async task
+                    std::string message_copy = std::string(state.message_input);
+                    std::string recipient = state.contacts[state.selected_contact].address;
+                    int contact_idx = state.selected_contact;
+                    DNAMessengerApp* app = this;
+                    
+                    // Clear input immediately for better UX
+                    state.message_input[0] = '\0';
+                    state.should_focus_input = true;
+                    
+                    // Send message asynchronously
+                    message_send_task.start([app, ctx, message_copy, recipient, contact_idx](AsyncTask* task) {
+                        const char* recipients[] = { recipient.c_str() };
+                        int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
+                        
+                        if (result == 0) {
+                            printf("[Send] Message sent successfully to %s\n", recipient.c_str());
+                            // Reload messages to show the sent message
+                            app->loadMessagesForContact(contact_idx);
+                        } else {
+                            printf("[Send] ERROR: Failed to send message to %s\n", recipient.c_str());
+                        }
+                    });
                 } else {
                     printf("[Send] ERROR: No messenger context\n");
                 }
@@ -2180,26 +2186,32 @@ void DNAMessengerApp::renderChatView() {
         ImGui::PopStyleColor(4);
 
         if (icon_clicked || enter_pressed) {
-            if (strlen(state.message_input) > 0 && state.selected_contact >= 0) {
+            if (strlen(state.message_input) > 0 && state.selected_contact >= 0 && !message_send_task.isRunning()) {
                 messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
                 if (ctx) {
-                    // Get recipient (contact fingerprint/address)
-                    const char* recipient = state.contacts[state.selected_contact].address.c_str();
-                    const char* recipients[] = { recipient };
-
-                    // Send message via messenger API
-                    int result = messenger_send_message(ctx, recipients, 1, state.message_input);
-
-                    if (result == 0) {
-                        printf("[Send] Message sent successfully to %s\n", recipient);
-                        // Reload messages to show the sent message
-                        loadMessagesForContact(state.selected_contact);
-                        state.message_input[0] = '\0';
-                        state.should_focus_input = true; // Set flag to refocus next frame
-                    } else {
-                        printf("[Send] ERROR: Failed to send message to %s\n", recipient);
-                        // TODO: Show error to user
-                    }
+                    // Copy data for async task
+                    std::string message_copy = std::string(state.message_input);
+                    std::string recipient = state.contacts[state.selected_contact].address;
+                    int contact_idx = state.selected_contact;
+                    DNAMessengerApp* app = this;
+                    
+                    // Clear input immediately for better UX
+                    state.message_input[0] = '\0';
+                    state.should_focus_input = true;
+                    
+                    // Send message asynchronously
+                    message_send_task.start([app, ctx, message_copy, recipient, contact_idx](AsyncTask* task) {
+                        const char* recipients[] = { recipient.c_str() };
+                        int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
+                        
+                        if (result == 0) {
+                            printf("[Send] Message sent successfully to %s\n", recipient.c_str());
+                            // Reload messages to show the sent message
+                            app->loadMessagesForContact(contact_idx);
+                        } else {
+                            printf("[Send] ERROR: Failed to send message to %s\n", recipient.c_str());
+                        }
+                    });
                 } else {
                     printf("[Send] ERROR: No messenger context\n");
                 }

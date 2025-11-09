@@ -32,6 +32,7 @@ private:
     AsyncTask dht_publish_task;
     AsyncTask contact_lookup_task;
     AsyncTask message_poll_task;
+    AsyncTask message_send_task;
 
     // Identity selection and management
     void renderIdentitySelection();
