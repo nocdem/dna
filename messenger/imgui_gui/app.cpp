@@ -19,9 +19,34 @@ extern "C" {
     #include "../bip39.h"
     #include "../dht/dht_keyserver.h"
     #include "../dht/dht_singleton.h"
+    #include "../dht/dna_message_wall.h"  // For message wall functions
+    #include "../p2p/p2p_transport.h"  // For P2P transport DHT access
     #include "../qgp_types.h"  // For qgp_key_load, qgp_key_free
+    #include "../qgp_platform.h"  // For qgp_platform_home_dir
     #include "../contacts_db.h"  // For contacts_db_add, contacts_db_exists
+    #include "../wallet.h"  // For wallet functions
+    #include "../cellframe_rpc.h"  // For RPC calls
+    #include "../cellframe_tx_builder_minimal.h"  // Transaction builder
+    #include "../cellframe_sign_minimal.h"  // Transaction signing
+    #include "../cellframe_addr.h"  // Address utilities
+    #include "../cellframe_json_minimal.h"  // JSON conversion
+    #include "../cellframe_minimal.h"  // TSD types
+    #include "../base58.h"  // Base58 encoding
+    #include <time.h>
 }
+
+#include <json-c/json.h>  // For JSON parsing
+
+// Network fee constants
+#define NETWORK_FEE_COLLECTOR "Rj7J7MiX2bWy8sNyX38bB86KTFUnSn7sdKDsTFa2RJyQTDWFaebrj6BucT7Wa5CSq77zwRAwevbiKy1sv1RBGTonM83D3xPDwoyGasZ7"
+#define NETWORK_FEE_DATOSHI 2000000000000000ULL  // 0.002 CELL
+
+// UTXO structure for transaction building
+typedef struct {
+    cellframe_hash_t hash;
+    uint32_t idx;
+    uint256_t value;
+} utxo_t;
 
 // Forward declaration for ApplyTheme (defined in main.cpp)
 extern void ApplyTheme(int theme);
@@ -144,6 +169,24 @@ void DNAMessengerApp::render() {
         ImGui::OpenPopup("Add Contact");
         renderAddContactDialog();
     }
+
+    // Receive dialog
+    renderReceiveDialog();
+
+    // Send dialog
+    renderSendDialog();
+
+    // Transaction History dialog
+    renderTransactionHistoryDialog();
+
+    // Message Wall dialog
+    renderMessageWallDialog();
+
+    // Profile Editor dialog
+    renderProfileEditorDialog();
+
+    // Register DNA Name dialog
+    renderRegisterNameDialog();
 }
 
 
@@ -2595,58 +2638,83 @@ void DNAMessengerApp::renderWalletView() {
     ImGui::SetCursorPos(ImVec2(padding, padding));
     ImGui::BeginChild("WalletContent", ImVec2(-padding, -padding), false);
 
-    // ===== COMING SOON PLACEHOLDER =====
-    // TODO: Uncomment the wallet implementation below when ready
+    // Load wallet on first render
+    if (!state.wallet_loaded && !state.wallet_loading) {
+        loadWallet();
+    }
 
-    // Center the "Coming Soon" message
-    ImVec2 available_size = ImGui::GetContentRegionAvail();
-    ImVec2 center = ImVec2(available_size.x * 0.5f, available_size.y * 0.5f);
+    // Show error if wallet failed to load
+    if (!state.wallet_error.empty()) {
+        ImVec2 available_size = ImGui::GetContentRegionAvail();
+        ImVec2 center = ImVec2(available_size.x * 0.5f, available_size.y * 0.5f);
 
-    const char* coming_soon_text = ICON_FA_WALLET " Wallet";
-    ImVec2 text_size = ImGui::CalcTextSize(coming_soon_text);
-    ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y - 60));
-    ImGui::Text("%s", coming_soon_text);
+        const char* error_icon = ICON_FA_TRIANGLE_EXCLAMATION " Wallet Error";
+        ImVec2 text_size = ImGui::CalcTextSize(error_icon);
+        ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y - 60));
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", error_icon);
 
-    const char* subtitle = "COMING SOON";
-    ImVec2 subtitle_size = ImGui::CalcTextSize(subtitle);
-    ImGui::SetCursorPos(ImVec2(center.x - subtitle_size.x * 0.5f, center.y - 20));
-    ImGui::TextDisabled("%s", subtitle);
+        ImVec2 desc_size = ImGui::CalcTextSize(state.wallet_error.c_str());
+        ImGui::SetCursorPos(ImVec2(center.x - desc_size.x * 0.5f, center.y - 20));
+        ImGui::TextDisabled("%s", state.wallet_error.c_str());
 
-    const char* description = "Wallet integration is being developed";
-    ImVec2 desc_size = ImGui::CalcTextSize(description);
-    ImGui::SetCursorPos(ImVec2(center.x - desc_size.x * 0.5f, center.y + 20));
-    ImGui::TextDisabled("%s", description);
+        ImGui::EndChild();
+        return;
+    }
 
-    /* ===== WALLET IMPLEMENTATION (COMMENTED OUT - TODO: ENABLE WHEN READY) =====
+    // Show loading spinner while wallet is loading
+    if (state.wallet_loading) {
+        ImVec2 available_size = ImGui::GetContentRegionAvail();
+        ImVec2 center = ImVec2(available_size.x * 0.5f, available_size.y * 0.5f);
+        ImGui::SetCursorPos(ImVec2(center.x - 50, center.y - 50));
+        ThemedSpinner("##wallet_loading", 20.0f, 4.0f);
+        ImGui::SetCursorPos(ImVec2(center.x - 50, center.y));
+        ImGui::TextDisabled("Loading wallet...");
+        ImGui::EndChild();
+        return;
+    }
 
     // Header
-    ImGui::Text(ICON_FA_WALLET " cpunk Wallet");
+    ImGui::Text(ICON_FA_WALLET " %s", state.wallet_name.c_str());
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
 
+    // Refresh button
+    if (ImGui::Button(ICON_FA_ARROWS_ROTATE " Refresh")) {
+        refreshBalances();
+    }
+    ImGui::Spacing();
+
     // Token balance cards
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
-    const char* balances[] = {"1,234.56", "89.12", "456.78"};
+    const char* token_names[] = {"ChipPunk", "Cellframe", "KelVPN"};
+    const char* token_icons[] = {ICON_FA_COINS, ICON_FA_BOLT, ICON_FA_GEM};
 
     for (int i = 0; i < 3; i++) {
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.15f, 0.15f, 0.9f));
 
         float card_height = is_mobile ? 100.0f : 120.0f;
-        ImGui::BeginChild(tokens[i], ImVec2(-1, card_height), true);
+        char card_id[32];
+        snprintf(card_id, sizeof(card_id), "##card_%s", tokens[i]);
+        ImGui::BeginChild(card_id, ImVec2(-1, card_height), true);
 
+        // Token icon and name
         ImGui::SetCursorPos(ImVec2(20, 15));
-        ImGui::TextDisabled("%s", tokens[i]);
+        ImGui::Text("%s %s", token_icons[i], tokens[i]);
 
-        ImGui::SetCursorPos(ImVec2(20, is_mobile ? 45 : 50));
+        ImGui::SetCursorPos(ImVec2(20, 35));
+        ImGui::TextDisabled("%s", token_names[i]);
 
-        // Show spinner while loading (mockup - always show spinner)
-        float spinner_size = is_mobile ? 10.0f : 12.0f;
-        ThemedSpinner("##spinner", spinner_size, 2.0f);
-
-        ImGui::SameLine();
-        ImGui::Text("%s", balances[i]);
+        // Balance
+        ImGui::SetCursorPos(ImVec2(20, is_mobile ? 60 : 65));
+        auto it = state.token_balances.find(tokens[i]);
+        if (it != state.token_balances.end()) {
+            std::string formatted = formatBalance(it->second);
+            ImGui::Text("%s", formatted.c_str());
+        } else {
+            ImGui::TextDisabled("0.00");
+        }
 
         ImGui::EndChild();
         ImGui::PopStyleColor();
@@ -2665,17 +2733,25 @@ void DNAMessengerApp::renderWalletView() {
     if (is_mobile) {
         // Mobile: Stacked full-width buttons
         if (ButtonDark(ICON_FA_PAPER_PLANE " Send Tokens", ImVec2(-1, btn_height))) {
-            // TODO: Open send dialog
+            state.show_send_dialog = true;
+            state.send_status.clear();
         }
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_DOWNLOAD " Receive", ImVec2(-1, btn_height))) {
-            // TODO: Show receive address
+            state.show_receive_dialog = true;
+            // Get wallet address for Backbone network
+            wallet_list_t *wallets = (wallet_list_t*)state.wallet_list;
+            if (wallets && state.current_wallet_index >= 0) {
+                wallet_get_address(&wallets->wallets[state.current_wallet_index],
+                                  "Backbone", state.wallet_address);
+            }
         }
         ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_RECEIPT " Transaction History", ImVec2(-1, btn_height))) {
-            // TODO: Show transaction history
+            state.show_transaction_history = true;
+            loadTransactionHistory();
         }
     } else {
         // Desktop: Side-by-side buttons
@@ -2685,21 +2761,27 @@ void DNAMessengerApp::renderWalletView() {
         float btn_width = (available_width - spacing * 2) / 3.0f;
 
         if (ButtonDark(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, btn_height))) {
-            // TODO: Open send dialog
+            state.show_send_dialog = true;
+            state.send_status.clear();
         }
         ImGui::SameLine();
 
         if (ButtonDark(ICON_FA_DOWNLOAD " Receive", ImVec2(btn_width, btn_height))) {
-            // TODO: Show receive address
+            state.show_receive_dialog = true;
+            // Get wallet address for Backbone network
+            wallet_list_t *wallets = (wallet_list_t*)state.wallet_list;
+            if (wallets && state.current_wallet_index >= 0) {
+                wallet_get_address(&wallets->wallets[state.current_wallet_index],
+                                  "Backbone", state.wallet_address);
+            }
         }
         ImGui::SameLine();
 
         if (ButtonDark(ICON_FA_RECEIPT " History", ImVec2(btn_width, btn_height))) {
-            // TODO: Show transaction history
+            state.show_transaction_history = true;
+            loadTransactionHistory();
         }
     }
-
-    ===== END WALLET IMPLEMENTATION ===== */
 
     ImGui::EndChild();
 }
@@ -2830,6 +2912,1743 @@ void DNAMessengerApp::renderSettingsView() {
     ImGui::EndChild();
 }
 
+// ===== WALLET FUNCTIONS =====
+
+void DNAMessengerApp::loadWallet() {
+    if (state.wallet_loading) return;  // Already loading
+
+    state.wallet_loading = true;
+    state.wallet_error.clear();
+
+    wallet_list_t *wallets = nullptr;
+    int ret = wallet_list_cellframe(&wallets);
+
+    if (ret != 0 || !wallets || wallets->count == 0) {
+        state.wallet_error = "No wallets found. Create one with cellframe-node-cli.";
+        state.wallet_loaded = false;
+        state.wallet_loading = false;
+        return;
+    }
+
+    // Store wallet list and use first wallet
+    state.wallet_list = wallets;
+    state.current_wallet_index = 0;
+    state.wallet_name = std::string(wallets->wallets[0].name);
+    state.wallet_loaded = true;
+    state.wallet_loading = false;
+
+    printf("[Wallet] Loaded wallet: %s\n", state.wallet_name.c_str());
+
+    // Automatically refresh balances
+    refreshBalances();
+}
+
+void DNAMessengerApp::refreshBalances() {
+    if (!state.wallet_loaded || state.current_wallet_index < 0) {
+        return;
+    }
+
+    wallet_list_t *wallets = (wallet_list_t*)state.wallet_list;
+    if (!wallets) return;
+
+    cellframe_wallet_t *wallet = &wallets->wallets[state.current_wallet_index];
+
+    // Get wallet address for Backbone network
+    char address[WALLET_ADDRESS_MAX];
+    if (wallet_get_address(wallet, "Backbone", address) != 0) {
+        state.wallet_error = "Failed to get wallet address";
+        return;
+    }
+
+    printf("[Wallet] Querying balances for address: %s\n", address);
+
+    // Query balance for CPUNK token
+    cellframe_rpc_response_t *response = nullptr;
+    if (cellframe_rpc_get_balance("Backbone", address, "CPUNK", &response) == 0 && response->result) {
+        json_object *jresult = response->result;
+
+        if (json_object_is_type(jresult, json_type_array) && json_object_array_length(jresult) > 0) {
+            json_object *first = json_object_array_get_idx(jresult, 0);
+            if (json_object_is_type(first, json_type_array) && json_object_array_length(first) > 0) {
+                json_object *wallet_obj = json_object_array_get_idx(first, 0);
+                json_object *tokens_obj = nullptr;
+
+                if (json_object_object_get_ex(wallet_obj, "tokens", &tokens_obj)) {
+                    int token_count = json_object_array_length(tokens_obj);
+
+                    for (int i = 0; i < token_count; i++) {
+                        json_object *token = json_object_array_get_idx(tokens_obj, i);
+                        json_object *ticker_obj = nullptr;
+                        json_object *coins_obj = nullptr;
+
+                        if (json_object_object_get_ex(token, "ticker", &ticker_obj) &&
+                            json_object_object_get_ex(token, "coins", &coins_obj)) {
+                            const char *ticker = json_object_get_string(ticker_obj);
+                            const char *coins = json_object_get_string(coins_obj);
+
+                            state.token_balances[ticker] = coins;
+                            printf("[Wallet] %s: %s\n", ticker, coins);
+                        }
+                    }
+                }
+            }
+        }
+
+        if (response) {
+            cellframe_rpc_response_free(response);
+        }
+    }
+
+    // Also query CELL and KEL (on different networks if needed)
+    // For now, assume they're all on Backbone network
+}
+
+std::string DNAMessengerApp::formatBalance(const std::string& coins) {
+    if (coins.empty() || coins == "0") {
+        return "0.00";
+    }
+
+    // Try to parse as double
+    try {
+        double value = std::stod(coins);
+
+        // Format with 2 decimals for large amounts, 8 for small amounts
+        if (value >= 0.01) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%.2f", value);
+            return std::string(buf);
+        } else if (value > 0) {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%.8f", value);
+            return std::string(buf);
+        }
+        return "0.00";
+    } catch (...) {
+        return coins;  // Return as-is if parsing fails
+    }
+}
+
+void DNAMessengerApp::buildAndSendTransaction() {
+    printf("[DEBUG] ========== Send Button Clicked - Starting Transaction Flow ==========\n");
+
+    state.send_status = "Checking wallet...";
+
+    // Get wallet
+    wallet_list_t *wallets = (wallet_list_t*)state.wallet_list;
+    if (!wallets || state.current_wallet_index < 0) {
+        state.send_status = "ERROR: No wallet loaded";
+        return;
+    }
+
+    cellframe_wallet_t *wallet = &wallets->wallets[state.current_wallet_index];
+    printf("[DEBUG] Wallet name: %s\n", wallet->name);
+    printf("[DEBUG] Wallet status: %d (0=unprotected, 1=protected)\n", wallet->status);
+
+    // Check if address is available
+    if (wallet->address[0] == '\0') {
+        if (wallet->status == WALLET_STATUS_PROTECTED) {
+            state.send_status = "ERROR: Wallet is password-protected. Cannot send from protected wallet.";
+        } else {
+            state.send_status = "ERROR: Could not generate wallet address. Wallet may be corrupted.";
+        }
+        return;
+    }
+
+    char address[WALLET_ADDRESS_MAX];
+    strncpy(address, wallet->address, WALLET_ADDRESS_MAX - 1);
+    address[WALLET_ADDRESS_MAX - 1] = '\0';
+
+    printf("[DEBUG] Using wallet address: %s\n", address);
+
+    state.send_status = "Querying UTXOs...";
+
+    // Get parameters
+    const char *amount_str = state.send_amount;
+    const char *fee_str = state.send_fee;
+    const char *recipient = state.send_recipient;
+
+    printf("[DEBUG] Amount string: '%s'\n", amount_str);
+    printf("[DEBUG] Fee string: '%s'\n", fee_str);
+    printf("[DEBUG] Recipient: '%s'\n", recipient);
+
+    // Parse amounts
+    uint256_t amount, fee;
+    if (cellframe_uint256_from_str(amount_str, &amount) != 0) {
+        state.send_status = "ERROR: Failed to parse amount";
+        return;
+    }
+
+    if (cellframe_uint256_from_str(fee_str, &fee) != 0) {
+        state.send_status = "ERROR: Failed to parse fee";
+        return;
+    }
+
+    printf("[DEBUG] Parsed amount: %llu datoshi\n", (unsigned long long)amount.lo.lo);
+    printf("[DEBUG] Parsed fee: %llu datoshi\n", (unsigned long long)fee.lo.lo);
+
+    // STEP 1: Query UTXOs
+    utxo_t *selected_utxos = NULL;
+    int num_selected_utxos = 0;
+    uint64_t total_input_u64 = 0;
+
+    uint64_t required_u64 = amount.lo.lo + NETWORK_FEE_DATOSHI + fee.lo.lo;
+
+    cellframe_rpc_response_t *utxo_resp = NULL;
+    if (cellframe_rpc_get_utxo("Backbone", address, "CELL", &utxo_resp) == 0 && utxo_resp) {
+        if (utxo_resp->result) {
+            // Parse UTXO response: result[0][0]["outs"][]
+            if (json_object_is_type(utxo_resp->result, json_type_array) &&
+                json_object_array_length(utxo_resp->result) > 0) {
+
+                json_object *first_array = json_object_array_get_idx(utxo_resp->result, 0);
+                if (first_array && json_object_is_type(first_array, json_type_array) &&
+                    json_object_array_length(first_array) > 0) {
+
+                    json_object *first_item = json_object_array_get_idx(first_array, 0);
+                    json_object *outs_obj = NULL;
+
+                    if (first_item && json_object_object_get_ex(first_item, "outs", &outs_obj) &&
+                        json_object_is_type(outs_obj, json_type_array)) {
+
+                        int num_utxos = json_object_array_length(outs_obj);
+                        if (num_utxos == 0) {
+                            state.send_status = "ERROR: No UTXOs available";
+                            cellframe_rpc_response_free(utxo_resp);
+                            return;
+                        }
+
+                        printf("[DEBUG] Found %d UTXO%s\n", num_utxos, num_utxos > 1 ? "s" : "");
+
+                        // Parse all UTXOs
+                        utxo_t *all_utxos = (utxo_t*)malloc(sizeof(utxo_t) * num_utxos);
+                        int valid_utxos = 0;
+
+                        for (int i = 0; i < num_utxos; i++) {
+                            json_object *utxo_obj = json_object_array_get_idx(outs_obj, i);
+                            json_object *jhash = NULL, *jidx = NULL, *jvalue = NULL;
+
+                            if (utxo_obj &&
+                                json_object_object_get_ex(utxo_obj, "prev_hash", &jhash) &&
+                                json_object_object_get_ex(utxo_obj, "out_prev_idx", &jidx) &&
+                                json_object_object_get_ex(utxo_obj, "value_datoshi", &jvalue)) {
+
+                                const char *hash_str = json_object_get_string(jhash);
+                                const char *value_str = json_object_get_string(jvalue);
+
+                                // Parse hash
+                                if (hash_str && strlen(hash_str) >= 66 && hash_str[0] == '0' && hash_str[1] == 'x') {
+                                    for (int j = 0; j < 32; j++) {
+                                        sscanf(hash_str + 2 + (j * 2), "%2hhx", &all_utxos[valid_utxos].hash.raw[j]);
+                                    }
+                                    all_utxos[valid_utxos].idx = json_object_get_int(jidx);
+                                    cellframe_uint256_from_str(value_str, &all_utxos[valid_utxos].value);
+                                    valid_utxos++;
+                                }
+                            }
+                        }
+
+                        if (valid_utxos == 0) {
+                            state.send_status = "ERROR: No valid UTXOs";
+                            free(all_utxos);
+                            cellframe_rpc_response_free(utxo_resp);
+                            return;
+                        }
+
+                        // Select UTXOs (greedy selection)
+                        selected_utxos = (utxo_t*)malloc(sizeof(utxo_t) * valid_utxos);
+                        for (int i = 0; i < valid_utxos; i++) {
+                            selected_utxos[num_selected_utxos++] = all_utxos[i];
+                            total_input_u64 += all_utxos[i].value.lo.lo;
+
+                            if (total_input_u64 >= required_u64) {
+                                break;
+                            }
+                        }
+
+                        free(all_utxos);
+
+                        // Check if we have enough
+                        if (total_input_u64 < required_u64) {
+                            char error_msg[256];
+                            snprintf(error_msg, sizeof(error_msg),
+                                    "ERROR: Insufficient funds. Need: %.6f CELL, Have: %.6f CELL",
+                                    (double)required_u64 / 1e18, (double)total_input_u64 / 1e18);
+                            state.send_status = std::string(error_msg);
+                            free(selected_utxos);
+                            cellframe_rpc_response_free(utxo_resp);
+                            return;
+                        }
+
+                        printf("[DEBUG] Selected %d UTXO (total: %llu datoshi)\n", num_selected_utxos, (unsigned long long)total_input_u64);
+
+                    } else {
+                        state.send_status = "ERROR: Invalid UTXO response";
+                        cellframe_rpc_response_free(utxo_resp);
+                        return;
+                    }
+                } else {
+                    state.send_status = "ERROR: Invalid UTXO response";
+                    cellframe_rpc_response_free(utxo_resp);
+                    return;
+                }
+            } else {
+                state.send_status = "ERROR: Invalid UTXO response";
+                cellframe_rpc_response_free(utxo_resp);
+                return;
+            }
+        }
+        cellframe_rpc_response_free(utxo_resp);
+    } else {
+        state.send_status = "ERROR: Failed to query UTXOs from RPC";
+        return;
+    }
+
+    // STEP 2: Build transaction
+    state.send_status = "Building transaction...";
+
+    printf("[DEBUG] Step 2: Building transaction\n");
+
+    cellframe_tx_builder_t *builder = cellframe_tx_builder_new();
+    if (!builder) {
+        state.send_status = "ERROR: Failed to create builder";
+        free(selected_utxos);
+        return;
+    }
+
+    // Set timestamp
+    uint64_t ts = (uint64_t)time(NULL);
+    cellframe_tx_set_timestamp(builder, ts);
+    printf("[DEBUG] Timestamp: %lu\n", ts);
+
+    // Parse recipient address from Base58
+    cellframe_addr_t recipient_addr;
+    size_t decoded_size = base58_decode(recipient, &recipient_addr);
+    if (decoded_size != sizeof(cellframe_addr_t)) {
+        state.send_status = "ERROR: Invalid recipient address";
+        free(selected_utxos);
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    // Parse network collector address
+    cellframe_addr_t network_collector_addr;
+    decoded_size = base58_decode(NETWORK_FEE_COLLECTOR, &network_collector_addr);
+    if (decoded_size != sizeof(cellframe_addr_t)) {
+        state.send_status = "ERROR: Invalid network collector address";
+        free(selected_utxos);
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    // Parse sender address (for change)
+    cellframe_addr_t sender_addr;
+    decoded_size = base58_decode(address, &sender_addr);
+    if (decoded_size != sizeof(cellframe_addr_t)) {
+        state.send_status = "ERROR: Invalid sender address";
+        free(selected_utxos);
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    // Calculate network fee
+    uint256_t network_fee = {0};
+    network_fee.lo.lo = NETWORK_FEE_DATOSHI;
+
+    // Calculate change
+    uint64_t change_u64 = total_input_u64 - amount.lo.lo - NETWORK_FEE_DATOSHI - fee.lo.lo;
+    uint256_t change = {0};
+    change.lo.lo = change_u64;
+
+    printf("[DEBUG] Transaction breakdown:\n");
+    printf("  Total input:     %llu datoshi\n", (unsigned long long)total_input_u64);
+    printf("  - Recipient:     %llu datoshi\n", (unsigned long long)amount.lo.lo);
+    printf("  - Network fee:   %llu datoshi\n", (unsigned long long)NETWORK_FEE_DATOSHI);
+    printf("  - Validator fee: %llu datoshi\n", (unsigned long long)fee.lo.lo);
+    printf("  = Change:        %llu datoshi\n", (unsigned long long)change_u64);
+
+    // Add all IN items
+    for (int i = 0; i < num_selected_utxos; i++) {
+        if (cellframe_tx_add_in(builder, &selected_utxos[i].hash, selected_utxos[i].idx) != 0) {
+            state.send_status = "ERROR: Failed to add IN item";
+            free(selected_utxos);
+            cellframe_tx_builder_free(builder);
+            return;
+        }
+    }
+
+    // Add OUT item (recipient)
+    if (cellframe_tx_add_out(builder, &recipient_addr, amount) != 0) {
+        state.send_status = "ERROR: Failed to add recipient OUT";
+        free(selected_utxos);
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    // Add OUT item (network fee collector)
+    if (cellframe_tx_add_out(builder, &network_collector_addr, network_fee) != 0) {
+        state.send_status = "ERROR: Failed to add network fee OUT";
+        free(selected_utxos);
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    // Add OUT item (change) - only if change > 0
+    if (change.hi.hi != 0 || change.hi.lo != 0 || change.lo.hi != 0 || change.lo.lo != 0) {
+        if (cellframe_tx_add_out(builder, &sender_addr, change) != 0) {
+            state.send_status = "ERROR: Failed to add change OUT";
+            free(selected_utxos);
+            cellframe_tx_builder_free(builder);
+            return;
+        }
+    }
+
+    // Add OUT_COND item (validator fee)
+    if (cellframe_tx_add_fee(builder, fee) != 0) {
+        state.send_status = "ERROR: Failed to add validator fee";
+        free(selected_utxos);
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    // Free selected UTXOs
+    free(selected_utxos);
+
+    // STEP 3: Sign transaction
+    state.send_status = "Signing transaction...";
+
+    printf("[DEBUG] Step 3: Signing transaction\n");
+
+    // Get signing data
+    size_t tx_size;
+    const uint8_t *tx_data = cellframe_tx_get_signing_data(builder, &tx_size);
+    if (!tx_data) {
+        state.send_status = "ERROR: Failed to get transaction data";
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    printf("[DEBUG] Transaction size: %zu bytes\n", tx_size);
+
+    // Sign transaction
+    uint8_t *dap_sign = NULL;
+    size_t dap_sign_size = 0;
+    if (cellframe_sign_transaction(tx_data, tx_size,
+                                    wallet->private_key, wallet->private_key_size,
+                                    wallet->public_key, wallet->public_key_size,
+                                    &dap_sign, &dap_sign_size) != 0) {
+        state.send_status = "ERROR: Failed to sign transaction";
+        free((void*)tx_data);
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    // Free temporary signing data
+    free((void*)tx_data);
+
+    printf("[DEBUG] Signature size: %zu bytes\n", dap_sign_size);
+
+    // Add signature to transaction
+    if (cellframe_tx_add_signature(builder, dap_sign, dap_sign_size) != 0) {
+        state.send_status = "ERROR: Failed to add signature";
+        free(dap_sign);
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+    free(dap_sign);
+
+    // STEP 4: Convert to JSON
+    state.send_status = "Converting to JSON...";
+
+    printf("[DEBUG] Step 4: Converting to JSON\n");
+
+    // Get complete signed transaction
+    const uint8_t *signed_tx = cellframe_tx_get_data(builder, &tx_size);
+    if (!signed_tx) {
+        state.send_status = "ERROR: Failed to get signed transaction";
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    // Convert to JSON
+    char *json = NULL;
+    if (cellframe_tx_to_json(signed_tx, tx_size, &json) != 0) {
+        state.send_status = "ERROR: Failed to convert to JSON";
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    printf("[DEBUG] JSON size: %zu bytes\n", strlen(json));
+    printf("[DEBUG] JSON:\n%s\n", json);
+
+    // STEP 5: Submit to RPC
+    state.send_status = "Submitting to RPC...";
+
+    printf("[DEBUG] Step 5: Submitting to RPC\n");
+
+    cellframe_rpc_response_t *submit_resp = NULL;
+    if (cellframe_rpc_submit_tx("Backbone", "main", json, &submit_resp) == 0 && submit_resp) {
+        printf("      Transaction submitted successfully!\n\n");
+
+        std::string txHash = "N/A";
+        bool txCreated = false;
+
+        if (submit_resp->result) {
+            const char *result_str = json_object_to_json_string_ext(submit_resp->result, JSON_C_TO_STRING_PRETTY);
+            printf("=== RPC RESPONSE ===\n%s\n====================\n\n", result_str);
+
+            // Response format: [ { "tx_create": true, "hash": "0x...", "total_items": 7 } ]
+            if (json_object_is_type(submit_resp->result, json_type_array) &&
+                json_object_array_length(submit_resp->result) > 0) {
+
+                json_object *first_elem = json_object_array_get_idx(submit_resp->result, 0);
+                if (first_elem) {
+                    // Check tx_create status
+                    json_object *jtx_create = NULL;
+                    if (json_object_object_get_ex(first_elem, "tx_create", &jtx_create)) {
+                        txCreated = json_object_get_boolean(jtx_create);
+                        printf("[DEBUG] tx_create: %s\n", txCreated ? "true" : "false");
+                    }
+
+                    // Extract hash
+                    json_object *jhash = NULL;
+                    if (json_object_object_get_ex(first_elem, "hash", &jhash)) {
+                        const char *tx_hash = json_object_get_string(jhash);
+                        if (tx_hash) {
+                            txHash = std::string(tx_hash);
+                            printf("[DEBUG] Extracted hash: %s\n", tx_hash);
+                        }
+                    }
+                }
+            }
+        }
+
+        cellframe_rpc_response_free(submit_resp);
+
+        // Check if transaction was actually created
+        if (!txCreated) {
+            state.send_status = "ERROR: Transaction failed to create. May indicate insufficient balance or network issues.";
+            free(json);
+            cellframe_tx_builder_free(builder);
+            return;
+        }
+
+        // Success!
+        char success_msg[512];
+        snprintf(success_msg, sizeof(success_msg),
+                "SUCCESS! Transaction submitted!\nHash: %s\nAmount: %s CELL\nExplorer: https://scan.cellframe.net/datum-details/%s?net=Backbone",
+                txHash.c_str(), amount_str, txHash.c_str());
+        state.send_status = std::string(success_msg);
+
+    } else {
+        state.send_status = "ERROR: Failed to submit transaction to RPC";
+        free(json);
+        cellframe_tx_builder_free(builder);
+        return;
+    }
+
+    free(json);
+    cellframe_tx_builder_free(builder);
+
+    printf("[DEBUG] ========== Transaction Flow Complete ==========\n");
+}
+
+void DNAMessengerApp::renderSendDialog() {
+    if (!state.show_send_dialog) return;
+
+    // Center the modal
+    ImGuiIO& io = ImGui::GetIO();
+    ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(550, 500), ImGuiCond_Appearing);
+
+    if (ImGui::BeginPopupModal("Send Tokens", &state.show_send_dialog, ImGuiWindowFlags_NoResize)) {
+        // Wallet name
+        ImGui::Text(ICON_FA_WALLET " From: %s", state.wallet_name.c_str());
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Show balance
+        auto it = state.token_balances.find("CELL");
+        if (it != state.token_balances.end()) {
+            std::string formatted = formatBalance(it->second);
+            ImGui::TextDisabled("Available: %s CELL", formatted.c_str());
+        } else {
+            ImGui::TextDisabled("Available: 0.00 CELL");
+        }
+        ImGui::Spacing();
+
+        // Recipient address
+        ImGui::Text("To Address:");
+        ImGui::PushItemWidth(-1);
+        ImGui::InputText("##recipient", state.send_recipient, sizeof(state.send_recipient));
+        ImGui::PopItemWidth();
+        ImGui::Spacing();
+
+        // Amount
+        ImGui::Text("Amount:");
+        ImGui::PushItemWidth(-120);
+        ImGui::InputText("##amount", state.send_amount, sizeof(state.send_amount));
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        ImGui::TextDisabled("CELL");
+        ImGui::SameLine();
+        if (ImGui::Button("MAX", ImVec2(60, 0))) {
+            // Calculate max amount (balance - fees)
+            auto balance_it = state.token_balances.find("CELL");
+            if (balance_it != state.token_balances.end()) {
+                try {
+                    double balance = std::stod(balance_it->second);
+                    double fee = std::stod(state.send_fee);
+                    double network_fee = 0.002;
+                    double max_amount = balance - fee - network_fee;
+                    if (max_amount > 0) {
+                        snprintf(state.send_amount, sizeof(state.send_amount), "%.6f", max_amount);
+                    }
+                } catch (...) {}
+            }
+        }
+        ImGui::Spacing();
+
+        // Validator fee
+        ImGui::Text("Validator Fee:");
+        ImGui::PushItemWidth(-80);
+        ImGui::InputText("##fee", state.send_fee, sizeof(state.send_fee));
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        ImGui::TextDisabled("CELL");
+        ImGui::Spacing();
+
+        // Network fee (fixed, read-only)
+        ImGui::TextDisabled("Network Fee: 0.002 CELL (fixed)");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Total
+        try {
+            double amount = std::stod(state.send_amount);
+            double fee = std::stod(state.send_fee);
+            double network_fee = 0.002;
+            double total = amount + fee + network_fee;
+            ImGui::Text("Total: %.6f CELL", total);
+        } catch (...) {
+            ImGui::TextDisabled("Total: (invalid amount)");
+        }
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        // Status message
+        if (!state.send_status.empty()) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.3f, 1.0f));
+            ImGui::TextWrapped("%s", state.send_status.c_str());
+            ImGui::PopStyleColor();
+            ImGui::Spacing();
+        }
+
+        // Buttons
+        float btn_width = 120.0f;
+        float btn_spacing = (ImGui::GetContentRegionAvail().x - (btn_width * 2)) / 3.0f;
+
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + btn_spacing);
+        if (ButtonDark(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, 40))) {
+            buildAndSendTransaction();
+        }
+
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(btn_width, 40))) {
+            state.show_send_dialog = false;
+            state.send_status.clear();
+        }
+
+        ImGui::EndPopup();
+    }
+
+    // Open the modal if flag is set
+    if (state.show_send_dialog && !ImGui::IsPopupOpen("Send Tokens")) {
+        ImGui::OpenPopup("Send Tokens");
+    }
+}
+
+void DNAMessengerApp::renderReceiveDialog() {
+    if (!state.show_receive_dialog) return;
+
+    // Center the modal
+    ImGuiIO& io = ImGui::GetIO();
+    ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+    ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_Appearing);
+
+    if (ImGui::BeginPopupModal("Receive Tokens", &state.show_receive_dialog, ImGuiWindowFlags_NoResize)) {
+        // Wallet name
+        ImGui::Text(ICON_FA_WALLET " %s", state.wallet_name.c_str());
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Network (Backbone is the default)
+        ImGui::TextDisabled("Network: Backbone");
+        ImGui::Spacing();
+
+        // Address label
+        ImGui::Text("Your Wallet Address:");
+        ImGui::Spacing();
+
+        // Address input (read-only, monospace font)
+        ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);  // Use default font (monospace would be better)
+        ImGui::PushItemWidth(-1);
+        ImGui::InputText("##address", state.wallet_address, sizeof(state.wallet_address),
+                        ImGuiInputTextFlags_ReadOnly);
+        ImGui::PopItemWidth();
+        ImGui::PopFont();
+
+        ImGui::Spacing();
+
+        // Copy button
+        float btn_width = 200.0f;
+        float btn_x = (ImGui::GetContentRegionAvail().x - btn_width) * 0.5f;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + btn_x);
+
+        if (state.address_copied) {
+            // Show "Copied!" feedback
+            if (ButtonDark(ICON_FA_CHECK " Copied!", ImVec2(btn_width, 40))) {
+                // Button disabled
+            }
+
+            // Reset after 2 seconds
+            state.address_copied_timer += io.DeltaTime;
+            if (state.address_copied_timer >= 2.0f) {
+                state.address_copied = false;
+                state.address_copied_timer = 0.0f;
+            }
+        } else {
+            if (ButtonDark(ICON_FA_CLIPBOARD " Copy Address", ImVec2(btn_width, 40))) {
+                ImGui::SetClipboardText(state.wallet_address);
+                state.address_copied = true;
+                state.address_copied_timer = 0.0f;
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        // QR Code placeholder
+        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - 200) * 0.5f);
+        ImGui::BeginChild("##qr_placeholder", ImVec2(200, 200), true);
+        ImGui::SetCursorPos(ImVec2(70, 90));
+        ImGui::TextDisabled("QR Code");
+        ImGui::SetCursorPos(ImVec2(50, 105));
+        ImGui::TextDisabled("(Coming Soon)");
+        ImGui::EndChild();
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+
+        // Close button
+        float close_btn_width = 150.0f;
+        float close_btn_x = (ImGui::GetContentRegionAvail().x - close_btn_width) * 0.5f;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + close_btn_x);
+
+        if (ImGui::Button("Close", ImVec2(close_btn_width, 40))) {
+            state.show_receive_dialog = false;
+            state.address_copied = false;
+        }
+
+        ImGui::EndPopup();
+    }
+
+    // Open the modal if flag is set
+    if (state.show_receive_dialog && !ImGui::IsPopupOpen("Receive Tokens")) {
+        ImGui::OpenPopup("Receive Tokens");
+    }
+}
+
+
+// Load transaction history from Cellframe RPC
+void DNAMessengerApp::loadTransactionHistory() {
+    state.transaction_list.clear();
+    state.transaction_history_loading = true;
+    state.transaction_history_error.clear();
+
+    wallet_list_t *wallets = (wallet_list_t*)state.wallet_list;
+    if (!wallets || state.current_wallet_index < 0) {
+        state.transaction_history_error = "No wallet loaded";
+        state.transaction_history_loading = false;
+        return;
+    }
+
+    // Get wallet address
+    char address[WALLET_ADDRESS_MAX];
+    if (wallet_get_address(&wallets->wallets[state.current_wallet_index], "Backbone", address) != 0) {
+        state.transaction_history_error = "Failed to get wallet address";
+        state.transaction_history_loading = false;
+        return;
+    }
+
+    // Query transaction history via RPC
+    json_object *args = json_object_new_object();
+    json_object_object_add(args, "net", json_object_new_string("Backbone"));
+    json_object_object_add(args, "addr", json_object_new_string(address));
+    json_object_object_add(args, "chain", json_object_new_string("main"));
+
+    cellframe_rpc_request_t req = {
+        .method = "tx_history",
+        .subcommand = "",
+        .arguments = args,
+        .id = 1
+    };
+
+    cellframe_rpc_response_t *response = nullptr;
+    int ret = cellframe_rpc_call(&req, &response);
+    json_object_put(args);
+
+    if (ret == 0 && response && response->result) {
+        json_object *jresult = response->result;
+
+        if (json_object_is_type(jresult, json_type_array)) {
+            int result_len = json_object_array_length(jresult);
+
+            if (result_len > 0) {
+                json_object *tx_array = json_object_array_get_idx(jresult, 0);
+
+                if (json_object_is_type(tx_array, json_type_array)) {
+                    int array_len = json_object_array_length(tx_array);
+
+                    // Skip first 2 items (query parameters), show ALL transactions
+                    for (int i = 2; i < array_len; i++) {
+                        json_object *tx_obj = json_object_array_get_idx(tx_array, i);
+
+                        json_object *status_obj = nullptr;
+                        if (!json_object_object_get_ex(tx_obj, "status", &status_obj)) {
+                            continue;
+                        }
+
+                        json_object *hash_obj = nullptr, *timestamp_obj = nullptr, *data_obj = nullptr;
+                        json_object_object_get_ex(tx_obj, "hash", &hash_obj);
+                        json_object_object_get_ex(tx_obj, "tx_created", &timestamp_obj);
+                        json_object_object_get_ex(tx_obj, "data", &data_obj);
+
+                        std::string hash = hash_obj ? json_object_get_string(hash_obj) : "N/A";
+                        std::string shortHash = hash.substr(0, 12) + "...";
+                        std::string status = json_object_get_string(status_obj);
+
+                        // Parse timestamp (smart formatting from Qt lines 143-154)
+                        std::string timeStr = "Unknown";
+                        if (timestamp_obj) {
+                            const char *ts_str = json_object_get_string(timestamp_obj);
+                            // Parse RFC2822 format timestamp (e.g., "Mon, 15 Oct 2024 14:30:00 GMT")
+                            struct tm tm_time = {};
+                            if (strptime(ts_str, "%a, %d %b %Y %H:%M:%S", &tm_time) != nullptr) {
+                                time_t tx_time = mktime(&tm_time);
+                                time_t now = time(nullptr);
+                                int64_t diff = now - tx_time;
+
+                                if (diff < 60) {
+                                    timeStr = "Just now";
+                                } else if (diff < 3600) {
+                                    timeStr = std::to_string(diff / 60) + "m ago";
+                                } else if (diff < 86400) {
+                                    timeStr = std::to_string(diff / 3600) + "h ago";
+                                } else if (diff < 86400 * 30) {
+                                    timeStr = std::to_string(diff / 86400) + "d ago";
+                                } else {
+                                    char date_buf[64];
+                                    strftime(date_buf, sizeof(date_buf), "%b %d, %Y", &tm_time);
+                                    timeStr = date_buf;
+                                }
+                            }
+                        }
+
+                        // Parse transaction data (from Qt lines 158-217)
+                        std::string direction = "received";
+                        std::string amount = "0.00";
+                        std::string token = "UNKNOWN";
+                        std::string otherAddress = shortHash;
+
+                        if (data_obj && json_object_is_type(data_obj, json_type_array)) {
+                            int data_count = json_object_array_length(data_obj);
+                            if (data_count > 0) {
+                                json_object *first_data = json_object_array_get_idx(data_obj, 0);
+                                json_object *tx_type_obj = nullptr, *token_obj = nullptr;
+                                json_object *coins_obj = nullptr, *addr_obj = nullptr;
+
+                                if (json_object_object_get_ex(first_data, "tx_type", &tx_type_obj)) {
+                                    const char *tx_type_str = json_object_get_string(tx_type_obj);
+
+                                    if (strcmp(tx_type_str, "recv") == 0) {
+                                        direction = "received";
+                                        if (json_object_object_get_ex(first_data, "recv_coins", &coins_obj)) {
+                                            amount = json_object_get_string(coins_obj);
+                                            // Smart decimal formatting (Qt lines 177-188)
+                                            double amt = std::stod(amount);
+                                            char formatted[64];
+                                            if (amt < 0.01) {
+                                                snprintf(formatted, sizeof(formatted), "%.8f", amt);
+                                            } else if (amt < 1.0) {
+                                                snprintf(formatted, sizeof(formatted), "%.4f", amt);
+                                            } else {
+                                                snprintf(formatted, sizeof(formatted), "%.2f", amt);
+                                            }
+                                            amount = formatted;
+                                            // Remove trailing zeros
+                                            while (amount.back() == '0') amount.pop_back();
+                                            if (amount.back() == '.') amount.pop_back();
+                                        }
+                                        if (json_object_object_get_ex(first_data, "source_address", &addr_obj)) {
+                                            std::string full_addr = json_object_get_string(addr_obj);
+                                            otherAddress = full_addr.substr(0, 12) + "...";
+                                        }
+                                    } else if (strcmp(tx_type_str, "send") == 0) {
+                                        direction = "sent";
+                                        if (json_object_object_get_ex(first_data, "send_coins", &coins_obj)) {
+                                            amount = json_object_get_string(coins_obj);
+                                            // Smart decimal formatting (Qt lines 194-206)
+                                            double amt = std::stod(amount);
+                                            char formatted[64];
+                                            if (amt < 0.01) {
+                                                snprintf(formatted, sizeof(formatted), "%.8f", amt);
+                                            } else if (amt < 1.0) {
+                                                snprintf(formatted, sizeof(formatted), "%.4f", amt);
+                                            } else {
+                                                snprintf(formatted, sizeof(formatted), "%.2f", amt);
+                                            }
+                                            amount = formatted;
+                                            // Remove trailing zeros
+                                            while (amount.back() == '0') amount.pop_back();
+                                            if (amount.back() == '.') amount.pop_back();
+                                        }
+                                        if (json_object_object_get_ex(first_data, "destination_address", &addr_obj)) {
+                                            std::string full_addr = json_object_get_string(addr_obj);
+                                            otherAddress = full_addr.substr(0, 12) + "...";
+                                        }
+                                    }
+
+                                    if (json_object_object_get_ex(first_data, "token", &token_obj)) {
+                                        token = json_object_get_string(token_obj);
+                                    }
+                                }
+                            }
+                        }
+
+                        // Add transaction to list
+                        AppState::Transaction tx;
+                        tx.direction = direction;
+                        tx.amount = amount;
+                        tx.token = token;
+                        tx.address = otherAddress;
+                        tx.time = timeStr;
+                        tx.status = status;
+                        tx.is_declined = (status.find("DECLINED") != std::string::npos);
+                        state.transaction_list.push_back(tx);
+                    }
+                }
+            }
+        }
+
+        cellframe_rpc_response_free(response);
+    } else {
+        state.transaction_history_error = "Failed to load transaction history";
+    }
+
+    state.transaction_history_loading = false;
+}
+
+// Render transaction history dialog
+void DNAMessengerApp::renderTransactionHistoryDialog() {
+    if (!state.show_transaction_history) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    bool is_mobile = (io.DisplaySize.x < 600);
+
+    ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x : 700, is_mobile ? io.DisplaySize.y : 600), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::BeginPopupModal("Transaction History", &state.show_transaction_history, ImGuiWindowFlags_NoResize)) {
+        ImGui::PushFont(io.Fonts->Fonts[2]); // Title font
+        ImGui::Text("Transaction History - %s", state.wallet_name.c_str());
+        ImGui::PopFont();
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Scrollable transaction list
+        ImGui::BeginChild("TransactionList", ImVec2(0, -50), true);
+
+        if (state.transaction_history_loading) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Loading transactions...");
+        } else if (!state.transaction_history_error.empty()) {
+            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", state.transaction_history_error.c_str());
+        } else if (state.transaction_list.empty()) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No transactions found");
+        } else {
+            // Display all transactions
+            for (size_t i = 0; i < state.transaction_list.size(); i++) {
+                const auto& tx = state.transaction_list[i];
+
+                ImGui::PushID(i);
+                ImGui::BeginGroup();
+
+                // Transaction item (similar to Qt createTransactionItem)
+                float item_height = 60.0f;
+                ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+
+                // Background
+                ImU32 bg_color = IM_COL32(30, 30, 35, 255);
+                draw_list->AddRectFilled(cursor_pos, ImVec2(cursor_pos.x + ImGui::GetContentRegionAvail().x, cursor_pos.y + item_height), bg_color, 4.0f);
+
+                ImGui::Dummy(ImVec2(0, 5));
+                ImGui::Indent(10);
+
+                // Direction icon (Qt lines 252-259)
+                ImGui::PushFont(io.Fonts->Fonts[2]); // Large font for icon
+                if (tx.direction == "sent") {
+                    ImGui::TextColored(ImVec4(1.0f, 0.27f, 0.27f, 1.0f), ICON_FA_ARROW_UP); // Red arrow up
+                } else {
+                    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), ICON_FA_ARROW_DOWN); // Green arrow down
+                }
+                ImGui::PopFont();
+                ImGui::SameLine();
+
+                // Transaction info
+                ImGui::BeginGroup();
+                ImGui::PushFont(io.Fonts->Fonts[1]); // Bold font
+                ImGui::Text("%s %s", tx.amount.c_str(), tx.token.c_str());
+                ImGui::PopFont();
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", tx.address.c_str());
+                ImGui::EndGroup();
+
+                // Time and status (right-aligned)
+                ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120);
+                ImGui::BeginGroup();
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", tx.time.c_str());
+                if (tx.is_declined) {
+                    ImGui::TextColored(ImVec4(1.0f, 0.27f, 0.27f, 1.0f), "%s", tx.status.c_str()); // Red for DECLINED
+                } else {
+                    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s", tx.status.c_str()); // Green for ACCEPTED
+                }
+                ImGui::EndGroup();
+
+                ImGui::Unindent(10);
+                ImGui::Dummy(ImVec2(0, 5));
+
+                ImGui::EndGroup();
+                ImGui::PopID();
+
+                if (i < state.transaction_list.size() - 1) {
+                    ImGui::Spacing();
+                }
+            }
+        }
+
+        ImGui::EndChild();
+
+        ImGui::Spacing();
+
+        // Close button
+        if (ButtonDark("Close", ImVec2(-1, 40))) {
+            state.show_transaction_history = false;
+        }
+
+        ImGui::EndPopup();
+    }
+
+    // Open popup on first show
+    if (state.show_transaction_history && !ImGui::IsPopupOpen("Transaction History")) {
+        ImGui::OpenPopup("Transaction History");
+    }
+}
+
+
+// ===== MESSAGE WALL DIALOG =====
+
+// Format wall timestamp (from Qt MessageWallDialog.cpp lines 418-438)
+std::string DNAMessengerApp::formatWallTimestamp(uint64_t timestamp) {
+    time_t now = time(nullptr);
+    int64_t secondsAgo = now - (time_t)timestamp;
+
+    if (secondsAgo < 60) {
+        return "Just now";
+    } else if (secondsAgo < 3600) {
+        int minutes = secondsAgo / 60;
+        return std::to_string(minutes) + " min" + (minutes > 1 ? "s" : "") + " ago";
+    } else if (secondsAgo < 86400) {
+        int hours = secondsAgo / 3600;
+        return std::to_string(hours) + " hour" + (hours > 1 ? "s" : "") + " ago";
+    } else if (secondsAgo < 604800) {
+        int days = secondsAgo / 86400;
+        return std::to_string(days) + " day" + (days > 1 ? "s" : "") + " ago";
+    } else {
+        char buf[64];
+        struct tm *tm_info = localtime((time_t*)&timestamp);
+        strftime(buf, sizeof(buf), "%b %d, %Y", tm_info);
+        return std::string(buf);
+    }
+}
+
+// Load message wall from DHT (from Qt MessageWallDialog.cpp lines 129-174)
+void DNAMessengerApp::loadMessageWall() {
+    state.wall_status = "Loading wall from DHT...";
+    state.wall_loading = true;
+    state.wall_messages.clear();
+
+    // Get DHT context (SKETCH MODE - messenger_ctx not initialized)
+    // In real implementation, use: p2p_transport_get_dht_context(messenger_ctx->p2p_transport)
+    // For now, just show placeholder
+    state.wall_status = "[SKETCH MODE] Message wall not available (messenger context not initialized)";
+    state.wall_loading = false;
+
+    /* REAL IMPLEMENTATION (disabled for sketch mode):
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (!ctx || !ctx->p2p_transport) {
+        state.wall_status = "Error: DHT not available";
+        state.wall_loading = false;
+        return;
+    }
+
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        state.wall_status = "Error: DHT not available";
+        state.wall_loading = false;
+        return;
+    }
+
+    // Load wall from DHT
+    dna_message_wall_t *wall = nullptr;
+    int ret = dna_load_wall(dht_ctx, state.wall_fingerprint.c_str(), &wall);
+
+    if (ret == -2) {
+        state.wall_status = "No messages yet. Be the first to post!";
+        state.wall_loading = false;
+        return;
+    } else if (ret != 0) {
+        state.wall_status = "Error loading wall from DHT";
+        state.wall_loading = false;
+        return;
+    }
+
+    // Display messages
+    if (wall && wall->message_count > 0) {
+        for (size_t i = 0; i < wall->message_count; i++) {
+            const dna_wall_message_t *msg = &wall->messages[i];
+            AppState::WallMessage wall_msg;
+            wall_msg.timestamp = msg->timestamp;
+            wall_msg.text = msg->text;
+            wall_msg.verified = true;  // TODO: Implement signature verification
+            state.wall_messages.push_back(wall_msg);
+        }
+        state.wall_status = "Loaded " + std::to_string(wall->message_count) + " messages";
+    } else {
+        state.wall_status = "No messages yet. Be the first to post!";
+    }
+
+    if (wall) {
+        dna_message_wall_free(wall);
+    }
+
+    state.wall_loading = false;
+    */
+}
+
+// Post to message wall (from Qt MessageWallDialog.cpp lines 242-315)
+void DNAMessengerApp::postToMessageWall() {
+    std::string messageText = std::string(state.wall_message_input);
+
+    // Trim whitespace
+    while (!messageText.empty() && isspace(messageText.front())) messageText.erase(0, 1);
+    while (!messageText.empty() && isspace(messageText.back())) messageText.pop_back();
+
+    if (messageText.empty()) {
+        state.wall_status = "Error: Message is empty";
+        return;
+    }
+
+    if (messageText.length() > 1024) {
+        state.wall_status = "Error: Message exceeds 1024 characters";
+        return;
+    }
+
+    state.wall_status = "[SKETCH MODE] Posting not available (messenger context not initialized)";
+
+    /* REAL IMPLEMENTATION (disabled for sketch mode):
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (!ctx || !ctx->p2p_transport) {
+        state.wall_status = "Error: DHT not available";
+        return;
+    }
+
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        state.wall_status = "Error: DHT not available";
+        return;
+    }
+
+    // Load private key for signing
+    const char *home_dir = qgp_platform_home_dir();
+    if (!home_dir) {
+        state.wall_status = "Error: Failed to get home directory";
+        return;
+    }
+
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home_dir, ctx->identity);
+
+    qgp_key_t *key = nullptr;
+    int ret = qgp_key_load(key_path, &key);
+    if (ret != 0 || !key) {
+        state.wall_status = "Error: Failed to load private key for signing";
+        return;
+    }
+
+    // Post message to DHT
+    state.wall_status = "Posting message...";
+
+    ret = dna_post_to_wall(dht_ctx, state.wall_fingerprint.c_str(),
+                           messageText.c_str(), key->private_key);
+
+    qgp_key_free(key);
+
+    if (ret != 0) {
+        state.wall_status = "Error: Failed to post message to DHT";
+        return;
+    }
+
+    // Success
+    state.wall_status = "Message posted successfully!";
+    memset(state.wall_message_input, 0, sizeof(state.wall_message_input));
+
+    // Reload wall after 500ms
+    // (In real implementation, would use async task)
+    loadMessageWall();
+    */
+}
+
+// Render message wall dialog
+void DNAMessengerApp::renderMessageWallDialog() {
+    if (!state.show_message_wall) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+    bool is_mobile = (io.DisplaySize.x < 600);
+
+    ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x : 700, is_mobile ? io.DisplaySize.y : 600), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::BeginPopupModal("Message Wall", &state.show_message_wall, ImGuiWindowFlags_NoResize)) {
+        // Title
+        ImGui::PushFont(io.Fonts->Fonts[2]);
+        ImGui::Text(ICON_FA_CLIPBOARD " Message Wall: %s", state.wall_display_name.c_str());
+        ImGui::PopFont();
+
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 100);
+        if (ButtonDark(ICON_FA_ROTATE " Refresh", ImVec2(100, 30))) {
+            loadMessageWall();
+        }
+
+        ImGui::Spacing();
+
+        // Status label
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", state.wall_status.c_str());
+
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Message list
+        ImGui::BeginChild("WallMessages", ImVec2(0, state.wall_is_own ? -200 : -50), true);
+
+        if (state.wall_loading) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Loading messages...");
+        } else if (state.wall_messages.empty()) {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No messages yet. Be the first to post!");
+        } else {
+            for (size_t i = 0; i < state.wall_messages.size(); i++) {
+                const auto& msg = state.wall_messages[i];
+
+                ImGui::PushID(i);
+                ImGui::BeginGroup();
+
+                // Background
+                ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
+                ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                float item_height = 80.0f;
+                ImU32 bg_color = IM_COL32(30, 30, 35, 255);
+                draw_list->AddRectFilled(cursor_pos, ImVec2(cursor_pos.x + ImGui::GetContentRegionAvail().x, cursor_pos.y + item_height), bg_color, 4.0f);
+
+                ImGui::Dummy(ImVec2(0, 5));
+                ImGui::Indent(10);
+
+                // Header: timestamp + verification
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", formatWallTimestamp(msg.timestamp).c_str());
+                ImGui::SameLine();
+                if (msg.verified) {
+                    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), ICON_FA_CHECK " Signed");
+                }
+
+                ImGui::Spacing();
+
+                // Message text
+                ImGui::TextWrapped("%s", msg.text.c_str());
+
+                ImGui::Unindent(10);
+                ImGui::Dummy(ImVec2(0, 5));
+
+                ImGui::EndGroup();
+                ImGui::PopID();
+
+                if (i < state.wall_messages.size() - 1) {
+                    ImGui::Spacing();
+                }
+            }
+        }
+
+        ImGui::EndChild();
+
+        ImGui::Spacing();
+
+        // Post section (only if own wall)
+        if (state.wall_is_own) {
+            ImGui::Text(ICON_FA_PEN " Post New Message");
+            ImGui::Spacing();
+
+            // Message input
+            ImGui::InputTextMultiline("##WallInput", state.wall_message_input, sizeof(state.wall_message_input),
+                                     ImVec2(-1, 80), ImGuiInputTextFlags_None);
+
+            // Character counter
+            int len = strlen(state.wall_message_input);
+            ImGui::Text("%d / 1024", len);
+            ImGui::SameLine();
+
+            // Post button
+            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 150);
+            if (ButtonDark(ICON_FA_PAPER_PLANE " Post Message", ImVec2(150, 35))) {
+                postToMessageWall();
+            }
+        } else {
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), ICON_FA_CIRCLE_INFO " This is %s's public message wall (read-only)", state.wall_display_name.c_str());
+        }
+
+        ImGui::Spacing();
+
+        // Close button
+        if (ButtonDark("Close", ImVec2(-1, 40))) {
+            state.show_message_wall = false;
+        }
+
+        ImGui::EndPopup();
+    }
+
+    // Open popup on first show
+    if (state.show_message_wall && !ImGui::IsPopupOpen("Message Wall")) {
+        ImGui::OpenPopup("Message Wall");
+        loadMessageWall();
+    }
+}
+
+
+// ===== PROFILE EDITOR DIALOG =====
+
+// Load profile from DHT (from Qt ProfileEditorDialog.cpp lines 289-381)
+void DNAMessengerApp::loadProfile() {
+    state.profile_status = "Loading profile from DHT...";
+    state.profile_loading = true;
+
+    state.profile_status = "[SKETCH MODE] Profile editor not available (messenger context not initialized)";
+    state.profile_registered_name = "Not registered";
+    state.profile_loading = false;
+
+    /* REAL IMPLEMENTATION (disabled for sketch mode):
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (!ctx || !ctx->p2p_transport) {
+        state.profile_status = "P2P transport not initialized";
+        state.profile_registered_name = "N/A (DHT not connected)";
+        state.profile_loading = false;
+        return;
+    }
+
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        state.profile_status = "DHT not connected";
+        state.profile_registered_name = "N/A (DHT not connected)";
+        state.profile_loading = false;
+        return;
+    }
+
+    // Load profile from DHT
+    dna_unified_identity_t *profile = nullptr;
+    int ret = dna_load_identity(dht_ctx, ctx->fingerprint, &profile);
+
+    if (ret == 0 && profile) {
+        // Display registered name
+        if (profile->registered_name && strlen(profile->registered_name) > 0) {
+            state.profile_registered_name = std::string(profile->registered_name);
+        } else {
+            state.profile_registered_name = "Not registered";
+        }
+
+        // Load wallet addresses
+        if (profile->wallets.backbone[0] != '\0') strncpy(state.profile_backbone, profile->wallets.backbone, sizeof(state.profile_backbone) - 1);
+        if (profile->wallets.kelvpn[0] != '\0') strncpy(state.profile_kelvpn, profile->wallets.kelvpn, sizeof(state.profile_kelvpn) - 1);
+        if (profile->wallets.subzero[0] != '\0') strncpy(state.profile_subzero, profile->wallets.subzero, sizeof(state.profile_subzero) - 1);
+        if (profile->wallets.cpunk_testnet[0] != '\0') strncpy(state.profile_testnet, profile->wallets.cpunk_testnet, sizeof(state.profile_testnet) - 1);
+        if (profile->wallets.btc[0] != '\0') strncpy(state.profile_btc, profile->wallets.btc, sizeof(state.profile_btc) - 1);
+        if (profile->wallets.eth[0] != '\0') strncpy(state.profile_eth, profile->wallets.eth, sizeof(state.profile_eth) - 1);
+        if (profile->wallets.sol[0] != '\0') strncpy(state.profile_sol, profile->wallets.sol, sizeof(state.profile_sol) - 1);
+
+        // Load social links
+        if (profile->socials.telegram[0] != '\0') strncpy(state.profile_telegram, profile->socials.telegram, sizeof(state.profile_telegram) - 1);
+        if (profile->socials.x[0] != '\0') strncpy(state.profile_twitter, profile->socials.x, sizeof(state.profile_twitter) - 1);
+        if (profile->socials.github[0] != '\0') strncpy(state.profile_github, profile->socials.github, sizeof(state.profile_github) - 1);
+
+        // Load profile picture CID
+        if (profile->profile_picture_ipfs[0] != '\0') strncpy(state.profile_pic_cid, profile->profile_picture_ipfs, sizeof(state.profile_pic_cid) - 1);
+
+        // Load bio
+        if (profile->bio[0] != '\0') strncpy(state.profile_bio, profile->bio, sizeof(state.profile_bio) - 1);
+
+        state.profile_status = "Profile loaded from DHT";
+        dna_identity_free(profile);
+    } else if (ret == -2) {
+        state.profile_registered_name = "Not registered";
+        state.profile_status = "No profile found. Create your first profile!";
+    } else {
+        state.profile_status = "Failed to load profile from DHT";
+        state.profile_registered_name = "Error loading";
+    }
+
+    state.profile_loading = false;
+    */
+}
+
+// Save profile to DHT (from Qt ProfileEditorDialog.cpp lines 420-557)
+void DNAMessengerApp::saveProfile() {
+    state.profile_status = "Saving profile to DHT...";
+
+    state.profile_status = "[SKETCH MODE] Save not available (messenger context not initialized)";
+
+    /* REAL IMPLEMENTATION (disabled for sketch mode):
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (!ctx || !ctx->p2p_transport) {
+        state.profile_status = "P2P transport not initialized";
+        return;
+    }
+
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        state.profile_status = "DHT not connected";
+        return;
+    }
+
+    // Build profile data structure
+    dna_profile_data_t profile_data = {0};
+
+    // Wallet addresses
+    if (state.profile_backbone[0]) strncpy(profile_data.wallets.backbone, state.profile_backbone, sizeof(profile_data.wallets.backbone) - 1);
+    if (state.profile_kelvpn[0]) strncpy(profile_data.wallets.kelvpn, state.profile_kelvpn, sizeof(profile_data.wallets.kelvpn) - 1);
+    if (state.profile_subzero[0]) strncpy(profile_data.wallets.subzero, state.profile_subzero, sizeof(profile_data.wallets.subzero) - 1);
+    if (state.profile_testnet[0]) strncpy(profile_data.wallets.cpunk_testnet, state.profile_testnet, sizeof(profile_data.wallets.cpunk_testnet) - 1);
+    if (state.profile_btc[0]) strncpy(profile_data.wallets.btc, state.profile_btc, sizeof(profile_data.wallets.btc) - 1);
+    if (state.profile_eth[0]) strncpy(profile_data.wallets.eth, state.profile_eth, sizeof(profile_data.wallets.eth) - 1);
+    if (state.profile_sol[0]) strncpy(profile_data.wallets.sol, state.profile_sol, sizeof(profile_data.wallets.sol) - 1);
+
+    // Social links
+    if (state.profile_telegram[0]) strncpy(profile_data.socials.telegram, state.profile_telegram, sizeof(profile_data.socials.telegram) - 1);
+    if (state.profile_twitter[0]) strncpy(profile_data.socials.x, state.profile_twitter, sizeof(profile_data.socials.x) - 1);
+    if (state.profile_github[0]) strncpy(profile_data.socials.github, state.profile_github, sizeof(profile_data.socials.github) - 1);
+
+    // Profile picture CID
+    if (state.profile_pic_cid[0]) strncpy(profile_data.profile_picture_ipfs, state.profile_pic_cid, sizeof(profile_data.profile_picture_ipfs) - 1);
+
+    // Bio
+    if (state.profile_bio[0]) strncpy(profile_data.bio, state.profile_bio, sizeof(profile_data.bio) - 1);
+
+    // Load private key for signing
+    const char *home = qgp_platform_home_dir();
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, ctx->identity);
+
+    qgp_key_t *key = NULL;
+    if (qgp_key_load(key_path, &key) != 0 || !key) {
+        state.profile_status = "Failed to load private key for signing";
+        return;
+    }
+
+    // Update profile in DHT
+    int ret = dna_update_profile(dht_ctx, ctx->fingerprint, &profile_data, key->private_key);
+
+    qgp_key_free(key);
+
+    if (ret == 0) {
+        state.profile_status = "Profile saved to DHT successfully!";
+        state.show_profile_editor = false;
+    } else {
+        state.profile_status = "Failed to save profile to DHT";
+    }
+    */
+}
+
+// Render profile editor dialog
+void DNAMessengerApp::renderProfileEditorDialog() {
+    if (!state.show_profile_editor) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+
+    ImGui::SetNextWindowSize(ImVec2(800, 700), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::BeginPopupModal("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize)) {
+        ImGui::PushFont(io.Fonts->Fonts[2]);
+        ImGui::Text("DNA Profile Editor");
+        ImGui::PopFont();
+
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Edit your public DNA profile. All changes are stored in the DHT.");
+        ImGui::Spacing();
+
+        ImGui::Text("Registered Name: %s", state.profile_registered_name.c_str());
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Scrollable form
+        ImGui::BeginChild("ProfileForm", ImVec2(0, -80), true);
+
+        // Cellframe Network Addresses
+        if (ImGui::CollapsingHeader("Cellframe Network Addresses", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::InputText("Backbone", state.profile_backbone, sizeof(state.profile_backbone));
+            ImGui::InputText("KelVPN", state.profile_kelvpn, sizeof(state.profile_kelvpn));
+            ImGui::InputText("Subzero", state.profile_subzero, sizeof(state.profile_subzero));
+            ImGui::InputText("Millixt", state.profile_millixt, sizeof(state.profile_millixt));
+            ImGui::InputText("Testnet", state.profile_testnet, sizeof(state.profile_testnet));
+        }
+
+        // External Wallet Addresses
+        if (ImGui::CollapsingHeader("External Wallet Addresses")) {
+            ImGui::InputText("Bitcoin (BTC)", state.profile_btc, sizeof(state.profile_btc));
+            ImGui::InputText("Ethereum (ETH)", state.profile_eth, sizeof(state.profile_eth));
+            ImGui::InputText("Solana (SOL)", state.profile_sol, sizeof(state.profile_sol));
+            ImGui::InputText("Litecoin (LTC)", state.profile_ltc, sizeof(state.profile_ltc));
+            ImGui::InputText("Dogecoin (DOGE)", state.profile_doge, sizeof(state.profile_doge));
+        }
+
+        // Social Media Links
+        if (ImGui::CollapsingHeader("Social Media Links")) {
+            ImGui::InputText("Telegram", state.profile_telegram, sizeof(state.profile_telegram));
+            ImGui::InputText("X (Twitter)", state.profile_twitter, sizeof(state.profile_twitter));
+            ImGui::InputText("GitHub", state.profile_github, sizeof(state.profile_github));
+            ImGui::InputText("Discord", state.profile_discord, sizeof(state.profile_discord));
+            ImGui::InputText("Website", state.profile_website, sizeof(state.profile_website));
+        }
+
+        // Profile Picture
+        if (ImGui::CollapsingHeader("Profile Picture")) {
+            ImGui::InputText("IPFS CID", state.profile_pic_cid, sizeof(state.profile_pic_cid));
+            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Upload your profile picture to IPFS and paste the CID here.");
+        }
+
+        // Bio
+        if (ImGui::CollapsingHeader("Bio", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::InputTextMultiline("##Bio", state.profile_bio, sizeof(state.profile_bio), ImVec2(-1, 100));
+            ImGui::Text("%zu / 512", strlen(state.profile_bio));
+        }
+
+        ImGui::EndChild();
+
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", state.profile_status.c_str());
+        ImGui::Spacing();
+
+        // Buttons
+        if (ButtonDark("Cancel", ImVec2(100, 40))) {
+            state.show_profile_editor = false;
+        }
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 200);
+        if (ButtonDark(ICON_FA_FLOPPY_DISK " Save Profile to DHT", ImVec2(200, 40))) {
+            saveProfile();
+        }
+
+        ImGui::EndPopup();
+    }
+
+    // Open popup on first show
+    if (state.show_profile_editor && !ImGui::IsPopupOpen("Edit DNA Profile")) {
+        ImGui::OpenPopup("Edit DNA Profile");
+        loadProfile();
+    }
+}
+
+
+// ===== REGISTER DNA NAME DIALOG =====
+
+// Check name availability (from Qt RegisterDNANameDialog.cpp lines 212-249)
+void DNAMessengerApp::checkNameAvailability() {
+    std::string name = std::string(state.register_name_input);
+
+    // Trim
+    while (!name.empty() && isspace(name.front())) name.erase(0, 1);
+    while (!name.empty() && isspace(name.back())) name.pop_back();
+
+    // Convert to lowercase
+    std::transform(name.begin(), name.end(), name.begin(), ::tolower);
+
+    if (name.empty() || name.length() < 3 || name.length() > 20) {
+        state.register_name_availability = "Invalid name (3-20 chars, alphanumeric + underscore only)";
+        state.register_name_available = false;
+        return;
+    }
+
+    // Validate characters
+    for (char c : name) {
+        if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) {
+            state.register_name_availability = "Invalid name (3-20 chars, alphanumeric + underscore only)";
+            state.register_name_available = false;
+            return;
+        }
+    }
+
+    state.register_name_checking = true;
+    state.register_name_availability = "[SKETCH MODE] Availability check not available";
+    state.register_name_available = true;  // Assume available in sketch mode
+    state.register_name_checking = false;
+
+    /* REAL IMPLEMENTATION (disabled for sketch mode):
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (!ctx || !ctx->p2p_transport) {
+        state.register_name_availability = "P2P transport not initialized";
+        state.register_name_available = false;
+        state.register_name_checking = false;
+        return;
+    }
+
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        state.register_name_availability = "DHT not connected";
+        state.register_name_available = false;
+        state.register_name_checking = false;
+        return;
+    }
+
+    // Query DHT for name
+    dht_pubkey_entry_t *entry = NULL;
+    int result = dht_keyserver_lookup(dht_ctx, name.c_str(), &entry);
+
+    if (result == 0 && entry) {
+        state.register_name_availability = "Name already registered";
+        state.register_name_available = false;
+        dht_keyserver_free_entry(entry);
+    } else {
+        state.register_name_availability = "Name available!";
+        state.register_name_available = true;
+    }
+
+    state.register_name_checking = false;
+    */
+}
+
+// Register name (from Qt RegisterDNANameDialog.cpp lines 251-282)
+void DNAMessengerApp::registerName() {
+    std::string name = std::string(state.register_name_input);
+
+    if (!state.register_name_available || name.empty()) {
+        state.register_name_status = "Please enter a valid, available name.";
+        return;
+    }
+
+    state.register_name_status = "Registering name...";
+
+    state.register_name_status = "[SKETCH MODE] Registration not available (messenger context not initialized)";
+
+    /* REAL IMPLEMENTATION (disabled for sketch mode):
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    int result = messenger_register_name(ctx, ctx->fingerprint, name.c_str());
+
+    if (result == 0) {
+        state.register_name_status = "Name registered successfully!";
+        state.show_register_name = false;
+    } else {
+        state.register_name_status = "Registration failed. Please try again.";
+    }
+    */
+}
+
+// Render register name dialog
+void DNAMessengerApp::renderRegisterNameDialog() {
+    if (!state.show_register_name) return;
+
+    ImGuiIO& io = ImGui::GetIO();
+
+    ImGui::SetNextWindowSize(ImVec2(600, 450), ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
+
+    if (ImGui::BeginPopupModal("Register DNA Name", &state.show_register_name, ImGuiWindowFlags_NoResize)) {
+        ImGui::PushFont(io.Fonts->Fonts[2]);
+        ImGui::Text("Register DNA Name");
+        ImGui::PopFont();
+
+        ImGui::Spacing();
+        ImGui::TextWrapped("Register a human-readable name for your identity. Others can find you by searching for this name.");
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::Text("Desired Name:");
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::InputText("##NameInput", state.register_name_input, sizeof(state.register_name_input))) {
+            // Trigger availability check on text change
+            checkNameAvailability();
+        }
+
+        ImGui::Spacing();
+
+        // Availability status
+        if (state.register_name_checking) {
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.0f, 1.0f), ICON_FA_SPINNER " Checking availability...");
+        } else if (!state.register_name_availability.empty()) {
+            if (state.register_name_available) {
+                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), ICON_FA_CHECK " %s", state.register_name_availability.c_str());
+            } else {
+                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), ICON_FA_XMARK " %s", state.register_name_availability.c_str());
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        ImGui::PushFont(io.Fonts->Fonts[1]);
+        ImGui::Text(ICON_FA_COINS " Cost: 1 CPUNK");
+        ImGui::PopFont();
+        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.0f, 1.0f), ICON_FA_EXCLAMATION " Payment: Free for now (not yet implemented)");
+
+        ImGui::Spacing();
+        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", state.register_name_status.c_str());
+
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+
+        // Buttons
+        if (ButtonDark("Cancel", ImVec2(100, 40))) {
+            state.show_register_name = false;
+        }
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 200);
+        bool can_register = state.register_name_available && !state.register_name_checking && strlen(state.register_name_input) > 0;
+        if (!can_register) {
+            ImGui::BeginDisabled();
+        }
+        if (ButtonDark(ICON_FA_CHECK " Register Name (Free)", ImVec2(200, 40))) {
+            registerName();
+        }
+        if (!can_register) {
+            ImGui::EndDisabled();
+        }
+
+        ImGui::EndPopup();
+    }
+
+    // Open popup on first show
+    if (state.show_register_name && !ImGui::IsPopupOpen("Register DNA Name")) {
+        ImGui::OpenPopup("Register DNA Name");
+    }
+}
 
 
 // Static method: Input filter callback for identity name

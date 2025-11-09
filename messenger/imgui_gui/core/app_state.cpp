@@ -35,6 +35,61 @@ AppState::AppState() {
     memset(message_input, 0, sizeof(message_input));
     memset(add_contact_input, 0, sizeof(add_contact_input));
     messenger_ctx = nullptr;
+
+    // Initialize wallet state
+    wallet_loaded = false;
+    wallet_loading = false;
+    wallet_list = nullptr;
+    current_wallet_index = -1;
+
+    // Initialize receive dialog state
+    show_receive_dialog = false;
+    memset(wallet_address, 0, sizeof(wallet_address));
+    address_copied = false;
+    address_copied_timer = 0.0f;
+
+    // Initialize send dialog state
+    show_send_dialog = false;
+    memset(send_recipient, 0, sizeof(send_recipient));
+    strcpy(send_amount, "0.001");  // Default amount
+    strcpy(send_fee, "0.01");      // Default fee
+
+    // Initialize transaction history dialog state
+    show_transaction_history = false;
+    transaction_history_loading = false;
+
+    // Initialize message wall dialog state
+    show_message_wall = false;
+    wall_is_own = false;
+    wall_loading = false;
+    memset(wall_message_input, 0, sizeof(wall_message_input));
+
+    // Initialize profile editor dialog state
+    show_profile_editor = false;
+    profile_loading = false;
+    memset(profile_backbone, 0, sizeof(profile_backbone));
+    memset(profile_kelvpn, 0, sizeof(profile_kelvpn));
+    memset(profile_subzero, 0, sizeof(profile_subzero));
+    memset(profile_millixt, 0, sizeof(profile_millixt));
+    memset(profile_testnet, 0, sizeof(profile_testnet));
+    memset(profile_btc, 0, sizeof(profile_btc));
+    memset(profile_eth, 0, sizeof(profile_eth));
+    memset(profile_sol, 0, sizeof(profile_sol));
+    memset(profile_ltc, 0, sizeof(profile_ltc));
+    memset(profile_doge, 0, sizeof(profile_doge));
+    memset(profile_telegram, 0, sizeof(profile_telegram));
+    memset(profile_twitter, 0, sizeof(profile_twitter));
+    memset(profile_github, 0, sizeof(profile_github));
+    memset(profile_discord, 0, sizeof(profile_discord));
+    memset(profile_website, 0, sizeof(profile_website));
+    memset(profile_pic_cid, 0, sizeof(profile_pic_cid));
+    memset(profile_bio, 0, sizeof(profile_bio));
+
+    // Initialize register name dialog state
+    show_register_name = false;
+    register_name_available = false;
+    register_name_checking = false;
+    memset(register_name_input, 0, sizeof(register_name_input));
 }
 
 void AppState::scanIdentities() {

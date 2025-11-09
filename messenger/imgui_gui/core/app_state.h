@@ -94,6 +94,89 @@ public:
     mutable std::mutex messages_mutex;  // Protect contact_messages from concurrent access
     char message_input[16384]; // 16KB for long messages
 
+    // Wallet state
+    bool wallet_loaded;
+    bool wallet_loading;
+    std::string wallet_name;
+    std::map<std::string, std::string> token_balances;  // ticker -> balance (CPUNK, CELL, KEL)
+    std::string wallet_error;
+    void *wallet_list;  // wallet_list_t* (opaque pointer)
+    int current_wallet_index;
+
+    // Receive dialog state
+    bool show_receive_dialog;
+    char wallet_address[256];  // Current wallet address for selected network
+    bool address_copied;
+    float address_copied_timer;
+
+    // Send dialog state
+    bool show_send_dialog;
+    char send_recipient[256];
+    char send_amount[32];
+    char send_fee[32];
+    std::string send_status;
+
+    // Transaction History dialog state
+    bool show_transaction_history;
+    struct Transaction {
+        std::string direction;  // "sent" or "received"
+        std::string amount;     // Formatted amount
+        std::string token;      // CPUNK, CELL, KEL, etc.
+        std::string address;    // Other party's address (shortened)
+        std::string time;       // Formatted timestamp
+        std::string status;     // ACCEPTED, DECLINED, etc.
+        bool is_declined;       // For red coloring
+    };
+    std::vector<Transaction> transaction_list;
+    bool transaction_history_loading;
+    std::string transaction_history_error;
+
+    // Message Wall dialog state
+    bool show_message_wall;
+    std::string wall_fingerprint;
+    std::string wall_display_name;
+    bool wall_is_own;
+    char wall_message_input[1025];  // 1024 + null terminator
+    struct WallMessage {
+        uint64_t timestamp;
+        std::string text;
+        bool verified;
+    };
+    std::vector<WallMessage> wall_messages;
+    bool wall_loading;
+    std::string wall_status;
+
+    // Profile Editor dialog state
+    bool show_profile_editor;
+    char profile_backbone[256];
+    char profile_kelvpn[256];
+    char profile_subzero[256];
+    char profile_millixt[256];
+    char profile_testnet[256];
+    char profile_btc[256];
+    char profile_eth[256];
+    char profile_sol[256];
+    char profile_ltc[256];
+    char profile_doge[256];
+    char profile_telegram[256];
+    char profile_twitter[256];
+    char profile_github[256];
+    char profile_discord[256];
+    char profile_website[256];
+    char profile_pic_cid[256];
+    char profile_bio[513];  // 512 + null terminator
+    std::string profile_status;
+    std::string profile_registered_name;
+    bool profile_loading;
+
+    // Register DNA Name dialog state
+    bool show_register_name;
+    char register_name_input[21];  // 20 + null terminator
+    std::string register_name_availability;
+    bool register_name_available;
+    bool register_name_checking;
+    std::string register_name_status;
+
     // Messenger backend context (opaque pointer, defined in messenger.h)
     void *messenger_ctx;
 

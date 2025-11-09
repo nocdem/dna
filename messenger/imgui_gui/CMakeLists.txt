@@ -48,6 +48,7 @@ target_link_libraries(dna_messenger_imgui PRIVATE
     OpenGL::GL
     glfw
     dna_lib  # DNA Messenger core library
+    cellframe_minimal  # Transaction building and signing
 )
 
 # Platform-specific settings

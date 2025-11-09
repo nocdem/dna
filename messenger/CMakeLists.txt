@@ -190,6 +190,10 @@ add_library(dna_lib STATIC
     messenger_stubs.c  # DHT-based group functions (Phase 3)
     keyserver_cache.c  # Phase 4: SQLite keyserver cache
     contacts_db.c      # Phase 9.4: Local contacts database
+    wallet.c           # Phase 8: Cellframe wallet integration
+    cellframe_rpc.c    # Phase 8: Cellframe RPC client
+    cellframe_addr.c   # Phase 8: Cellframe address utilities
+    base58.c           # Phase 8: Base58 encoding for addresses
     ${COMMON_SOURCES}
 )
 
@@ -204,6 +208,7 @@ target_link_libraries(dna_lib
     stdc++         # C++ standard library (required by dht_lib and OpenDHT)
     ${JSONC_LIBRARIES}
     ${PLATFORM_LIBS}
+    CURL::libcurl  # Phase 8: CURL for RPC calls
 )
 
 # On Windows with static linking, link Windows system libs

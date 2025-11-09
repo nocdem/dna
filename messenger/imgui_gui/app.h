@@ -85,6 +85,32 @@ private:
     void renderChatView();
     void renderWalletView();
     void renderSettingsView();
+
+    // Wallet functions
+    void loadWallet();
+    void refreshBalances();
+    std::string formatBalance(const std::string& coins);
+    void renderReceiveDialog();
+    void renderSendDialog();
+    void buildAndSendTransaction();
+    void renderTransactionHistoryDialog();
+    void loadTransactionHistory();
+
+    // Message Wall functions
+    void renderMessageWallDialog();
+    void loadMessageWall();
+    void postToMessageWall();
+    std::string formatWallTimestamp(uint64_t timestamp);
+
+    // Profile Editor functions
+    void renderProfileEditorDialog();
+    void loadProfile();
+    void saveProfile();
+
+    // Register DNA Name functions
+    void renderRegisterNameDialog();
+    void checkNameAvailability();
+    void registerName();
 };
 
 #endif // APP_H
