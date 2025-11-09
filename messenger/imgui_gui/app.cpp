@@ -3918,6 +3918,12 @@ void DNAMessengerApp::loadTransactionHistory() {
 void DNAMessengerApp::renderTransactionHistoryDialog() {
     if (!state.show_transaction_history) return;
 
+    // Open popup on first show (MUST be before BeginPopupModal!)
+    if (!ImGui::IsPopupOpen("Transaction History")) {
+        ImGui::OpenPopup("Transaction History");
+        loadTransactionHistory();
+    }
+
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = (io.DisplaySize.x < 600);
 
@@ -4013,11 +4019,6 @@ void DNAMessengerApp::renderTransactionHistoryDialog() {
         }
 
         ImGui::EndPopup();
-    }
-
-    // Open popup on first show
-    if (state.show_transaction_history && !ImGui::IsPopupOpen("Transaction History")) {
-        ImGui::OpenPopup("Transaction History");
     }
 }
 
@@ -4191,6 +4192,13 @@ void DNAMessengerApp::renderMessageWallDialog() {
 
     printf("[DEBUG] renderMessageWallDialog() called, show_message_wall = true\n");
 
+    // Open popup on first show (MUST be before BeginPopupModal!)
+    if (!ImGui::IsPopupOpen("Message Wall")) {
+        printf("[DEBUG] Opening 'Message Wall' popup!\n");
+        ImGui::OpenPopup("Message Wall");
+        loadMessageWall();
+    }
+
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = (io.DisplaySize.x < 600);
 
@@ -4299,13 +4307,6 @@ void DNAMessengerApp::renderMessageWallDialog() {
         }
 
         ImGui::EndPopup();
-    }
-
-    // Open popup on first show
-    if (state.show_message_wall && !ImGui::IsPopupOpen("Message Wall")) {
-        printf("[DEBUG] Opening 'Message Wall' popup!\n");
-        ImGui::OpenPopup("Message Wall");
-        loadMessageWall();
     }
 }
 
@@ -4457,6 +4458,13 @@ void DNAMessengerApp::renderProfileEditorDialog() {
 
     printf("[DEBUG] renderProfileEditorDialog() called, show_profile_editor = true\n");
 
+    // Open popup on first show (MUST be before BeginPopupModal!)
+    if (!ImGui::IsPopupOpen("Edit DNA Profile")) {
+        printf("[DEBUG] Opening 'Edit DNA Profile' popup!\n");
+        ImGui::OpenPopup("Edit DNA Profile");
+        loadProfile();
+    }
+
     ImGuiIO& io = ImGui::GetIO();
 
     ImGui::SetNextWindowSize(ImVec2(800, 700), ImGuiCond_FirstUseEver);
@@ -4532,13 +4540,6 @@ void DNAMessengerApp::renderProfileEditorDialog() {
         }
 
         ImGui::EndPopup();
-    }
-
-    // Open popup on first show
-    if (state.show_profile_editor && !ImGui::IsPopupOpen("Edit DNA Profile")) {
-        printf("[DEBUG] Opening 'Edit DNA Profile' popup!\n");
-        ImGui::OpenPopup("Edit DNA Profile");
-        loadProfile();
     }
 }
 
@@ -4642,6 +4643,12 @@ void DNAMessengerApp::renderRegisterNameDialog() {
 
     printf("[DEBUG] renderRegisterNameDialog() called, show_register_name = true\n");
 
+    // Open popup on first show (MUST be before BeginPopupModal!)
+    if (!ImGui::IsPopupOpen("Register DNA Name")) {
+        printf("[DEBUG] Opening 'Register DNA Name' popup!\n");
+        ImGui::OpenPopup("Register DNA Name");
+    }
+
     ImGuiIO& io = ImGui::GetIO();
 
     ImGui::SetNextWindowSize(ImVec2(600, 450), ImGuiCond_FirstUseEver);
@@ -4711,12 +4718,6 @@ void DNAMessengerApp::renderRegisterNameDialog() {
         }
 
         ImGui::EndPopup();
-    }
-
-    // Open popup on first show
-    if (state.show_register_name && !ImGui::IsPopupOpen("Register DNA Name")) {
-        printf("[DEBUG] Opening 'Register DNA Name' popup!\n");
-        ImGui::OpenPopup("Register DNA Name");
     }
 }
 
