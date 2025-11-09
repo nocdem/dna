@@ -3028,6 +3028,10 @@ void DNAMessengerApp::refreshBalances() {
     if (cellframe_rpc_get_balance("Backbone", address, "CPUNK", &response) == 0 && response->result) {
         json_object *jresult = response->result;
 
+        // DEBUG: Print full RPC response
+        const char *json_str = json_object_to_json_string_ext(jresult, JSON_C_TO_STRING_PRETTY);
+        printf("[DEBUG RPC BALANCE RESPONSE]:\n%s\n", json_str);
+
         if (json_object_is_type(jresult, json_type_array) && json_object_array_length(jresult) > 0) {
             json_object *first = json_object_array_get_idx(jresult, 0);
             if (json_object_is_type(first, json_type_array) && json_object_array_length(first) > 0) {
@@ -3766,6 +3770,10 @@ void DNAMessengerApp::loadTransactionHistory() {
     if (ret == 0 && response && response->result) {
         json_object *jresult = response->result;
 
+        // DEBUG: Print full RPC response
+        const char *json_str = json_object_to_json_string_ext(jresult, JSON_C_TO_STRING_PRETTY);
+        printf("[DEBUG RPC TX HISTORY RESPONSE]:\n%s\n", json_str);
+
         if (json_object_is_type(jresult, json_type_array)) {
             int result_len = json_object_array_length(jresult);
 
@@ -3779,8 +3787,13 @@ void DNAMessengerApp::loadTransactionHistory() {
                     for (int i = 2; i < array_len; i++) {
                         json_object *tx_obj = json_object_array_get_idx(tx_array, i);
 
+                        // DEBUG: Print each transaction object
+                        const char *tx_json = json_object_to_json_string_ext(tx_obj, JSON_C_TO_STRING_PRETTY);
+                        printf("[DEBUG TX #%d]:\n%s\n", i-2, tx_json);
+
                         json_object *status_obj = nullptr;
                         if (!json_object_object_get_ex(tx_obj, "status", &status_obj)) {
+                            printf("[DEBUG] TX #%d: No status field, skipping\n", i-2);
                             continue;
                         }
 
@@ -3828,13 +3841,17 @@ void DNAMessengerApp::loadTransactionHistory() {
 
                         if (data_obj && json_object_is_type(data_obj, json_type_array)) {
                             int data_count = json_object_array_length(data_obj);
+                            printf("[DEBUG] TX #%d: data array has %d items\n", i-2, data_count);
                             if (data_count > 0) {
                                 json_object *first_data = json_object_array_get_idx(data_obj, 0);
+                                printf("[DEBUG] TX #%d: first_data = %s\n", i-2, json_object_to_json_string(first_data));
+
                                 json_object *tx_type_obj = nullptr, *token_obj = nullptr;
                                 json_object *coins_obj = nullptr, *addr_obj = nullptr;
 
                                 if (json_object_object_get_ex(first_data, "tx_type", &tx_type_obj)) {
                                     const char *tx_type_str = json_object_get_string(tx_type_obj);
+                                    printf("[DEBUG] TX #%d: tx_type = %s\n", i-2, tx_type_str);
 
                                     if (strcmp(tx_type_str, "recv") == 0) {
                                         direction = "received";
@@ -3886,9 +3903,16 @@ void DNAMessengerApp::loadTransactionHistory() {
 
                                     if (json_object_object_get_ex(first_data, "token", &token_obj)) {
                                         token = json_object_get_string(token_obj);
+                                        printf("[DEBUG] TX #%d: token = %s\n", i-2, token.c_str());
+                                    } else {
+                                        printf("[DEBUG] TX #%d: NO TOKEN FIELD FOUND! Will show as UNKNOWN\n", i-2);
                                     }
+                                } else {
+                                    printf("[DEBUG] TX #%d: NO tx_type field found\n", i-2);
                                 }
                             }
+                        } else {
+                            printf("[DEBUG] TX #%d: NO data array or data is not array type\n", i-2);
                         }
 
                         // Add transaction to list
@@ -3900,6 +3924,11 @@ void DNAMessengerApp::loadTransactionHistory() {
                         tx.time = timeStr;
                         tx.status = status;
                         tx.is_declined = (status.find("DECLINED") != std::string::npos);
+
+                        printf("[DEBUG] TX #%d PARSED: %s %s %s, addr=%s, status=%s, time=%s\n",
+                               i-2, direction.c_str(), amount.c_str(), token.c_str(),
+                               otherAddress.c_str(), status.c_str(), timeStr.c_str());
+
                         state.transaction_list.push_back(tx);
                     }
                 }
