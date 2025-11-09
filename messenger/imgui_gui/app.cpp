@@ -18,6 +18,7 @@ extern "C" {
     #include "../bip39.h"
     #include "../dht/dht_keyserver.h"
     #include "../dht/dht_singleton.h"
+    #include "../qgp_types.h"  // For qgp_key_load, qgp_key_free
 }
 
 // Forward declaration for ApplyTheme (defined in main.cpp)
@@ -644,16 +645,40 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
     if (dht_ctx && strlen(name) > 0) {
         printf("[Identity] Publishing public keys to DHT with name: %s\n", name);
         
-        // Load public and private keys from disk
+        // Load keys from disk
         std::string dsa_path = dna_dir + "/" + std::string(fingerprint) + ".dsa";
         std::string kem_path = dna_dir + "/" + std::string(fingerprint) + ".kem";
         
-        // We need access to qgp_key functions
-        // For now, skip DHT publish - will implement in next commit with proper key loading
-        printf("[Identity] DHT publish: Loading keys from:\n");
-        printf("[Identity]   - %s\n", dsa_path.c_str());
-        printf("[Identity]   - %s\n", kem_path.c_str());
-        printf("[Identity] TODO: Implement key loading and DHT publish\n");
+        qgp_key_t *sign_key = nullptr;
+        qgp_key_t *enc_key = nullptr;
+        
+        if (qgp_key_load(dsa_path.c_str(), &sign_key) != 0 || !sign_key) {
+            printf("[Identity] ERROR: Failed to load signing key from %s\n", dsa_path.c_str());
+        } else if (qgp_key_load(kem_path.c_str(), &enc_key) != 0 || !enc_key) {
+            printf("[Identity] ERROR: Failed to load encryption key from %s\n", kem_path.c_str());
+            qgp_key_free(sign_key);
+        } else {
+            // Publish to DHT
+            int ret = dht_keyserver_publish(
+                dht_ctx,
+                fingerprint,
+                name,  // Display name
+                sign_key->public_key,
+                enc_key->public_key,
+                sign_key->private_key
+            );
+            
+            qgp_key_free(sign_key);
+            qgp_key_free(enc_key);
+            
+            if (ret == 0) {
+                printf("[Identity] ✓ Keys published to DHT successfully!\n");
+                // Cache the name mapping
+                state.identity_name_cache[std::string(fingerprint)] = name;
+            } else {
+                printf("[Identity] ERROR: Failed to publish keys to DHT\n");
+            }
+        }
     }
     
     // Identity created successfully
