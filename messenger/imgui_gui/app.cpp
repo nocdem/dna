@@ -15,6 +15,8 @@
 extern "C" {
     #include "../messenger.h"
     #include "../bip39.h"
+    #include "../dht/dht_keyserver.h"
+    #include "../dht/dht_singleton.h"
 }
 
 // Forward declaration for ApplyTheme (defined in main.cpp)
@@ -182,9 +184,28 @@ void DNAMessengerApp::renderIdentitySelection() {
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10.0f);
             ImGui::PushStyleColor(ImGuiCol_Text, text_color);
             
-            // Shorten long fingerprints for display (first 10 + ... + last 10)
+            // Try DHT reverse lookup for registered name
             std::string display_name = state.identities[i];
-            if (display_name.length() > 25) {
+            dht_context_t *dht_ctx = dht_singleton_get();
+            
+            if (dht_ctx && display_name.length() == 128) {
+                char *registered_name = nullptr;
+                int lookup_result = dht_keyserver_reverse_lookup(
+                    dht_ctx,
+                    display_name.c_str(),
+                    &registered_name
+                );
+                
+                if (lookup_result == 0 && registered_name != nullptr) {
+                    // Found registered name
+                    display_name = registered_name;
+                    free(registered_name);
+                } else {
+                    // Not registered, show shortened fingerprint
+                    display_name = display_name.substr(0, 10) + "..." + display_name.substr(display_name.length() - 10);
+                }
+            } else if (display_name.length() > 25) {
+                // Fallback: shorten long names/fingerprints
                 display_name = display_name.substr(0, 10) + "..." + display_name.substr(display_name.length() - 10);
             }
             
@@ -606,6 +627,17 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
     }
     
     printf("[Identity] Generated keys with fingerprint: %.20s...\n", fingerprint);
+    
+    // Publish to DHT keyserver with name
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx && strlen(name) > 0) {
+        printf("[Identity] Publishing public keys to DHT with name: %s\n", name);
+        
+        // We need to load the keys to publish them
+        // For now, just log - we'll need to add messenger_load_identity or similar
+        // TODO: Load public keys from disk and publish to DHT
+        printf("[Identity] WARNING: DHT publish not yet implemented (need to load keys from disk)\n");
+    }
     
     // Identity created successfully
     state.identities.push_back(fingerprint);
