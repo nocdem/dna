@@ -448,11 +448,13 @@ void DNAMessengerApp::renderCreateIdentityStep1() {
 
     // Show validation feedback
     if (name_len > 0 && !name_valid) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f)); // Red
+        ImVec4 error_color = g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning();
+        ImGui::PushStyleColor(ImGuiCol_Text, error_color);
         ImGui::TextWrapped("✗ %s", error_msg.c_str());
         ImGui::PopStyleColor();
     } else if (name_len > 0 && name_valid) {
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f)); // Green
+        ImVec4 success_color = g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess();
+        ImGui::PushStyleColor(ImGuiCol_Text, success_color);
         ImGui::Text("✓ Valid identity name");
         ImGui::PopStyleColor();
     }
@@ -498,9 +500,16 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
     ImGui::Separator();
     ImGui::Spacing();
 
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f)); // Red warning
+    ImVec4 warning_color = g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning();
+    ImGui::PushStyleColor(ImGuiCol_Text, warning_color);
     ImGui::TextWrapped("IMPORTANT: Write down these 24 words in order!");
     ImGui::TextWrapped("This is the ONLY way to recover your identity.");
+    ImGui::PopStyleColor();
+    ImGui::Spacing();
+
+    ImVec4 hint_color = g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint();
+    ImGui::PushStyleColor(ImGuiCol_Text, hint_color);
+    ImGui::TextWrapped("TIP: If clipboard doesn't work (Wayland/Arch), check the terminal output - the seed phrase is printed there for manual copying.");
     ImGui::PopStyleColor();
     ImGui::Spacing();
 
@@ -509,6 +518,15 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
         ImGui::SetClipboardText(state.generated_mnemonic);
         state.seed_copied = true;
         state.seed_copied_timer = 3.0f; // Show message for 3 seconds
+
+        // Fallback: Also print to console for manual copying (Wayland/clipboard issues)
+        printf("\n");
+        printf("═══════════════════════════════════════════════════════════════\n");
+        printf("  SEED PHRASE (24 words) - SELECT AND COPY FROM TERMINAL:\n");
+        printf("═══════════════════════════════════════════════════════════════\n");
+        printf("%s\n", state.generated_mnemonic);
+        printf("═══════════════════════════════════════════════════════════════\n");
+        printf("\n");
     }
 
     ImGui::Spacing();
