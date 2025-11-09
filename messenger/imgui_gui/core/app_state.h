@@ -72,6 +72,9 @@ public:
     std::map<int, std::vector<Message>> contact_messages;
     char message_input[16384]; // 16KB for long messages
 
+    // Messenger backend context (opaque pointer, defined in messenger.h)
+    void *messenger_ctx;
+
     // Mock data loading functions
     void scanIdentities();
     void loadIdentity(const std::string& identity);

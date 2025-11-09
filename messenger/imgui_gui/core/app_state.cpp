@@ -27,6 +27,7 @@ AppState::AppState() {
     memset(new_identity_name, 0, sizeof(new_identity_name));
     memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
     memset(message_input, 0, sizeof(message_input));
+    messenger_ctx = nullptr;
 }
 
 void AppState::scanIdentities() {

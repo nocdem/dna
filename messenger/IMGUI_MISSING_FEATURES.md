@@ -147,20 +147,26 @@ if (dht) {
 
 **Commit:** 7b73864
 
-#### Task B: Contact List Loading (2-3 hours)
-**Location:** `imgui_gui/app.cpp` - `loadIdentity()` function
-**Qt Reference:** `gui/MainWindow.cpp` lines 180-250 (`loadContacts()` function)
-**Status:** Mock data, needs real SQLite integration
+#### Task B: Contact List Loading (2-3 hours) ✅ COMPLETE
+**Location:** `imgui_gui/app.cpp` - `loadIdentity()` function (lines 809-881)
+**Qt Reference:** `gui/MainWindow.cpp` lines 858-943 (`loadContacts()` function)
+**Status:** ✅ Complete - Real contact loading integrated
 
-**What to do:**
-1. Study Qt: How it loads contacts from `contacts_db_*` functions
-2. Replace mock data in `loadIdentity()` with `contacts_db_init()` and `contacts_db_list_contacts()`
-3. Update contact online/offline status (integrate presence system)
-4. Test: Contact list should match Qt GUI
+**What was done:**
+1. ✅ Added `messenger_context_t*` to AppState (stored as void* to avoid header conflicts)
+2. ✅ Replaced 100-line mock contact data with real `messenger_get_contact_list()` call
+3. ✅ Integrated `messenger_get_display_name()` for name resolution (DHT reverse lookup)
+4. ✅ Initialize messenger context on identity load
+5. ✅ Contacts now load from per-identity SQLite database
+6. ⚠️  Presence system not yet integrated (all contacts show offline)
 
-**Files to modify:**
-- `imgui_gui/app.cpp` - `loadIdentity()` function
-**Backend API:** `contacts_db.h` functions
+**Changes made:**
+- `imgui_gui/core/app_state.h` - Added `void *messenger_ctx` member
+- `imgui_gui/core/app_state.cpp` - Initialize messenger_ctx to nullptr
+- `imgui_gui/app.cpp` - Rewrote `loadIdentity()` to use messenger API (73 lines)
+
+**Backend API used:** `messenger_get_contact_list()`, `messenger_get_display_name()`
+**Build status:** ✅ Compiles successfully
 
 #### Task C: Add Contact Dialog (3-4 hours)
 **Location:** Need to create modal in `imgui_gui/app.cpp`

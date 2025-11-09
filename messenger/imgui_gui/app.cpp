@@ -899,63 +899,79 @@ void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnem
 
 
 void DNAMessengerApp::loadIdentity(const std::string& identity) {
-    printf("[SKETCH MODE] Loading identity: %s\n", identity.c_str());
+    printf("[Identity] Loading identity: %s\n", identity.c_str());
 
-    // UI SKETCH MODE - Load 100 mock state.contacts with random online/offline
+    // Clear existing data
     state.contacts.clear();
     state.contact_messages.clear();
 
-    const char* names[] = {
-        "Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry",
-        "Ivy", "Jack", "Kate", "Liam", "Mia", "Noah", "Olivia", "Peter",
-        "Quinn", "Ruby", "Sam", "Tara", "Uma", "Victor", "Wendy", "Xander",
-        "Yara", "Zack", "Aiden", "Bella", "Caleb", "Daisy", "Ethan", "Fiona",
-        "George", "Hannah", "Isaac", "Julia", "Kevin", "Luna", "Mason", "Nina",
-        "Oscar", "Penny", "Quincy", "Rose", "Seth", "Tina", "Ulysses", "Vera",
-        "Wade", "Xena", "Yasmin", "Zane", "Aaron", "Bianca", "Colin", "Daphne",
-        "Elijah", "Freya", "Gavin", "Hazel", "Ian", "Jade", "Kyle", "Leah",
-        "Marcus", "Nora", "Owen", "Piper", "Quentin", "Rachel", "Simon", "Thea",
-        "Upton", "Violet", "Walter", "Willow", "Xavier", "Yvonne", "Zachary", "Aria",
-        "Blake", "Chloe", "Dylan", "Emma", "Felix", "Gemma", "Hugo", "Iris",
-        "James", "Kylie", "Lucas", "Maya", "Nathan", "Olive", "Paul", "Qiana",
-        "Ryan", "Sage", "Thomas", "Unity"
-    };
-
-    // Generate 100 state.contacts with random online/offline (60% online, 40% offline)
-    srand(12345); // Fixed seed for consistent mock data
-    for (int i = 0; i < 100; i++) {
-        bool is_online = (rand() % 100) < 60; // 60% online
-        char address[64];
-        snprintf(address, sizeof(address), "%s@dna", names[i]);
-        state.contacts.push_back({names[i], address, is_online});
+    // Initialize messenger context if not already done
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (ctx == nullptr) {
+        ctx = messenger_init(identity.c_str());
+        state.messenger_ctx = ctx;
+        if (!ctx) {
+            printf("[Identity] ERROR: Failed to initialize messenger context\n");
+            return;
+        }
+        printf("[Identity] Messenger context initialized for: %s\n", identity.c_str());
     }
 
-    // Sort state.contacts: online first, then offline
-    std::sort(state.contacts.begin(), state.contacts.end(), [](const Contact& a, const Contact& b) {
-        if (a.is_online != b.is_online) {
-            return a.is_online > b.is_online; // Online first
+    // Load contacts from database using messenger API
+    char **identities = nullptr;
+    int contactCount = 0;
+
+    if (messenger_get_contact_list(ctx, &identities, &contactCount) == 0) {
+        printf("[Contacts] Loading %d contacts from database\n", contactCount);
+
+        for (int i = 0; i < contactCount; i++) {
+            std::string contact_identity = identities[i];
+
+            // Get display name (registered name or shortened fingerprint)
+            char displayName[256] = {0};
+            if (messenger_get_display_name(ctx, identities[i], displayName) == 0) {
+                // Success - use display name
+            } else {
+                // Fallback to raw identity
+                strncpy(displayName, identities[i], sizeof(displayName) - 1);
+            }
+
+            // For now, set all contacts as offline (TODO: integrate presence system)
+            bool is_online = false;
+
+            // Add contact to list
+            state.contacts.push_back({
+                displayName,           // name
+                contact_identity,      // address (fingerprint)
+                is_online              // online status
+            });
+
+            free(identities[i]);
         }
-        return strcmp(a.name.c_str(), b.name.c_str()) < 0; // Then alphabetically
-    });
+        free(identities);
 
-    // Mock message history for first contact
-    state.contact_messages[0].push_back({state.contacts[0].name, "Hey! How are you?", "Today 10:30 AM", false});
-    state.contact_messages[0].push_back({"Me", "I'm good! Working on DNA Messenger", "Today 10:32 AM", true});
-    state.contact_messages[0].push_back({state.contacts[0].name, "Nice! Post-quantum crypto is the future", "Today 10:33 AM", false});
-    state.contact_messages[0].push_back({"Me", "Absolutely! Kyber1024 + Dilithium5", "Today 10:35 AM", true});
-    state.contact_messages[0].push_back({state.contacts[0].name, "Can't wait to try it out!", "Today 10:36 AM", false});
+        // Sort contacts: online first, then alphabetically
+        std::sort(state.contacts.begin(), state.contacts.end(), [](const Contact& a, const Contact& b) {
+            if (a.is_online != b.is_online) {
+                return a.is_online > b.is_online; // Online first
+            }
+            return strcmp(a.name.c_str(), b.name.c_str()) < 0; // Then alphabetically
+        });
 
-    // Mock message history for second contact
-    state.contact_messages[1].push_back({state.contacts[1].name, "Are you available tomorrow?", "Yesterday 3:45 PM", false});
-    state.contact_messages[1].push_back({"Me", "Yes, what's up?", "Yesterday 4:12 PM", true});
-    state.contact_messages[1].push_back({state.contacts[1].name, "Let's discuss the new features", "Yesterday 4:15 PM", false});
+        printf("[Contacts] Loaded %d contacts\n", contactCount);
+    } else {
+        printf("[Contacts] No contacts found or error loading contacts\n");
+    }
 
-    printf("[SKETCH MODE] Loaded %zu mock state.contacts (sorted: online first)\n", state.contacts.size());
+    // TODO: Load message history for contacts from SQLite database
+    // For now, message history will be empty
 
     state.identity_loaded = true;
     state.show_identity_selection = false;
+    state.current_identity = identity;
 
-    printf("[SKETCH MODE] Identity loaded successfully!\n");
+    printf("[Identity] Identity loaded successfully: %s (%zu contacts)\n",
+           identity.c_str(), state.contacts.size());
 }
 
 
