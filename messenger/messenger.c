@@ -3847,6 +3847,9 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
         0  // Use default 7-day TTL
     );
 
+    // Save count before freeing list
+    size_t contact_count = list->count;
+    
     // Cleanup
     if (contacts) free(contacts);
     contacts_db_free_list(list);
@@ -3854,7 +3857,7 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
     qgp_key_free(dilithium_key);
 
     if (result == 0) {
-        printf("[MESSENGER] Successfully synced %zu contacts to DHT\n", list->count);
+        printf("[MESSENGER] Successfully synced %zu contacts to DHT\n", contact_count);
     } else {
         fprintf(stderr, "[MESSENGER] Failed to sync contacts to DHT\n");
     }
