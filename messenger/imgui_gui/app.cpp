@@ -785,16 +785,27 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
                 sign_key->private_key
             );
             
-            qgp_key_free(sign_key);
-            qgp_key_free(enc_key);
-            
             if (ret == 0) {
                 printf("[Identity] ✓ Keys published to DHT successfully!\n");
+                
+                // Also publish name → fingerprint alias for username lookups
+                if (name && strlen(name) > 0) {
+                    int alias_ret = dht_keyserver_publish_alias(dht_ctx, name, fingerprint);
+                    if (alias_ret == 0) {
+                        printf("[Identity] ✓ Username alias published to DHT\n");
+                    } else {
+                        printf("[Identity] Warning: Failed to publish username alias\n");
+                    }
+                }
+                
                 // Cache the name mapping
                 state.identity_name_cache[std::string(fingerprint)] = name;
             } else {
                 printf("[Identity] ERROR: Failed to publish keys to DHT\n");
             }
+            
+            qgp_key_free(sign_key);
+            qgp_key_free(enc_key);
         }
     }
     
