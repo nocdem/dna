@@ -23,6 +23,11 @@ public:
     void start(std::function<void(AsyncTask*)> task_func) {
         if (running) return;
         
+        // Join previous thread if it exists
+        if (worker.joinable()) {
+            worker.join();
+        }
+        
         running = true;
         completed = false;
         status_messages.clear();
