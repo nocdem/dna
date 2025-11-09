@@ -1700,8 +1700,8 @@ void DNAMessengerApp::renderSidebar() {
             draw_list->AddRectFilled(rect_min, rect_max, bg_color);
         }
 
-        // Format: "✓ Name" or "✗ Name" with colored icons
-        const char* icon = state.contacts[i].is_online ? ICON_FA_CIRCLE_CHECK : ICON_FA_CIRCLE_XMARK;
+        // Format: "✉ Name" with mail icon (theme-colored)
+        const char* icon = ICON_FA_ENVELOPE;
 
         char display_text[256];
         snprintf(display_text, sizeof(display_text), "%s   %s", icon, state.contacts[i].name.c_str());
@@ -1716,13 +1716,9 @@ void DNAMessengerApp::renderSidebar() {
             ImVec4 bg_col = (g_app_settings.theme == 0) ? DNATheme::Background() : ClubTheme::Background();
             text_color = IM_COL32((int)(bg_col.x * 255), (int)(bg_col.y * 255), (int)(bg_col.z * 255), 255);
         } else {
-            // Normal colors when not selected - use theme colors
-            if (state.contacts[i].is_online) {
-                ImVec4 text_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
-                text_color = IM_COL32((int)(text_col.x * 255), (int)(text_col.y * 255), (int)(text_col.z * 255), 255);
-            } else {
-                text_color = IM_COL32(100, 100, 100, 255);
-            }
+            // Normal theme text color
+            ImVec4 text_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+            text_color = IM_COL32((int)(text_col.x * 255), (int)(text_col.y * 255), (int)(text_col.z * 255), 255);
         }
         draw_list->AddText(text_pos, text_color, display_text);
 
@@ -1789,13 +1785,9 @@ void DNAMessengerApp::renderChatView() {
     }
 
     // Style contact name same as in contact list
-    const char* status_icon = contact.is_online ? ICON_FA_CHECK : ICON_FA_XMARK;
-    ImVec4 icon_color;
-    if (contact.is_online) {
-        icon_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
-    } else {
-        icon_color = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
-    }
+    // Use mail icon with theme colors
+    const char* status_icon = ICON_FA_ENVELOPE;
+    ImVec4 icon_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
 
     // Center text vertically in header
     float text_size_y = ImGui::CalcTextSize(contact.name.c_str()).y;
@@ -1806,9 +1798,6 @@ void DNAMessengerApp::renderChatView() {
     ImGui::SameLine();
 
     ImVec4 text_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
-    if (!contact.is_online) {
-        text_col = ImVec4(0.8f, 0.8f, 0.8f, 1.0f);
-    }
     ImGui::TextColored(text_col, "%s", contact.name.c_str());
 
     ImGui::EndChild();
