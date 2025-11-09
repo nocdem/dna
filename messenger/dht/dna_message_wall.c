@@ -10,7 +10,11 @@
 #include <json-c/json.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <arpa/inet.h>
+#endif
 
 // Dilithium5 functions (actual exported symbols from dsa library)
 extern int pqcrystals_dilithium5_ref_verify(const uint8_t *sig, size_t siglen,

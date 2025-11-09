@@ -10,7 +10,14 @@
 #include <cstdio>
 #include <algorithm>
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>  // For _mkdir
+#include "../win32/dirent.h"
+// Undefine Windows status macros that conflict with our enum
+#undef STATUS_PENDING
+#else
 #include <dirent.h>
+#endif
 
 // Backend includes
 extern "C" {
@@ -36,6 +43,38 @@ extern "C" {
 }
 
 #include <json-c/json.h>  // For JSON parsing
+
+#ifdef _WIN32
+// Simple strptime implementation for Windows
+static char* strptime(const char* s, const char* format, struct tm* tm) {
+    // Simple RFC2822 parser: "Mon, 15 Oct 2024 14:30:00"
+    const char* month_names[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    char day_name[4], month_name[4];
+    int day, year, hour, min, sec;
+
+    int parsed = sscanf(s, "%3s, %d %3s %d %d:%d:%d",
+                        day_name, &day, month_name, &year, &hour, &min, &sec);
+
+    if (parsed == 7) {
+        tm->tm_mday = day;
+        tm->tm_year = year - 1900;
+        tm->tm_hour = hour;
+        tm->tm_min = min;
+        tm->tm_sec = sec;
+
+        // Find month
+        for (int i = 0; i < 12; i++) {
+            if (strcmp(month_name, month_names[i]) == 0) {
+                tm->tm_mon = i;
+                break;
+            }
+        }
+        return (char*)s + strlen(s);
+    }
+    return nullptr;
+}
+#endif
 
 // Network fee constants
 #define NETWORK_FEE_COLLECTOR "Rj7J7MiX2bWy8sNyX38bB86KTFUnSn7sdKDsTFa2RJyQTDWFaebrj6BucT7Wa5CSq77zwRAwevbiKy1sv1RBGTonM83D3xPDwoyGasZ7"

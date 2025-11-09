@@ -1281,14 +1281,6 @@ int messenger_detect_old_identities(char ***identities_out, int *count_out) {
     char dna_dir[512];
     snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
 
-    // Open directory
-    DIR *dir = opendir(dna_dir);
-    if (!dir) {
-        *identities_out = NULL;
-        *count_out = 0;
-        return 0;  // No .dna directory, no identities to migrate
-    }
-
     // Scan for .dsa files
     char **identities = NULL;
     int count = 0;
@@ -1296,8 +1288,42 @@ int messenger_detect_old_identities(char ***identities_out, int *count_out) {
 
     identities = malloc(capacity * sizeof(char*));
     if (!identities) {
-        closedir(dir);
         return -1;
+    }
+
+#ifdef _WIN32
+    // Windows directory iteration
+    char search_path[512];
+    snprintf(search_path, sizeof(search_path), "%s\\*.dsa", dna_dir);
+
+    WIN32_FIND_DATAA find_data;
+    HANDLE handle = FindFirstFileA(search_path, &find_data);
+
+    if (handle == INVALID_HANDLE_VALUE) {
+        *identities_out = NULL;
+        *count_out = 0;
+        free(identities);
+        return 0;  // No .dsa files found
+    }
+
+    do {
+        const char *filename = find_data.cFileName;
+        size_t len = strlen(filename);
+
+        if (len < 5) continue;
+
+        // Extract name (remove .dsa extension)
+        char name[256];
+        strncpy(name, filename, len - 4);
+        name[len - 4] = '\0';
+#else
+    // POSIX directory iteration
+    DIR *dir = opendir(dna_dir);
+    if (!dir) {
+        *identities_out = NULL;
+        *count_out = 0;
+        free(identities);
+        return 0;  // No .dna directory, no identities to migrate
     }
 
     struct dirent *entry;
@@ -1312,6 +1338,7 @@ int messenger_detect_old_identities(char ***identities_out, int *count_out) {
         char name[256];
         strncpy(name, entry->d_name, len - 4);
         name[len - 4] = '\0';
+#endif
 
         // Skip if already a fingerprint (128 hex chars)
         if (messenger_is_fingerprint(name)) {
@@ -1330,7 +1357,11 @@ int messenger_detect_old_identities(char ***identities_out, int *count_out) {
             if (!new_identities) {
                 for (int i = 0; i < count; i++) free(identities[i]);
                 free(identities);
+#ifdef _WIN32
+                FindClose(handle);
+#else
                 closedir(dir);
+#endif
                 return -1;
             }
             identities = new_identities;
@@ -1340,13 +1371,23 @@ int messenger_detect_old_identities(char ***identities_out, int *count_out) {
         if (!identities[count]) {
             for (int i = 0; i < count; i++) free(identities[i]);
             free(identities);
+#ifdef _WIN32
+            FindClose(handle);
+#else
             closedir(dir);
+#endif
             return -1;
         }
         count++;
+#ifdef _WIN32
+    } while (FindNextFileA(handle, &find_data));
+
+    FindClose(handle);
+#else
     }
 
     closedir(dir);
+#endif
 
     *identities_out = identities;
     *count_out = count;
