@@ -70,34 +70,35 @@ void DNAMessengerApp::render() {
     // Show identity selection on first run
     if (state.show_identity_selection) {
         renderIdentitySelection();
-        return;
-    }
-
-    // Detect screen size for responsive layout
-    bool is_mobile = io.DisplaySize.x < 600.0f;
-
-    // Main window (fullscreen)
-    ImGui::SetNextWindowPos(ImVec2(0, 0));
-    ImGui::SetNextWindowSize(io.DisplaySize);
-
-    // Add global padding
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
-
-    ImGui::Begin("DNA Messenger", nullptr,
-        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoScrollbar);
-
-    // Mobile: Full-screen views with bottom navigation
-    // Desktop: Side-by-side layout
-    if (is_mobile) {
-        renderMobileLayout();
+        // DON'T return yet - render spinner overlay if needed
     } else {
-        renderDesktopLayout();
-    }
+        // Main window only shows when identity is selected
+        // Detect screen size for responsive layout
+        bool is_mobile = io.DisplaySize.x < 600.0f;
 
-    ImGui::End();
-    ImGui::PopStyleVar(); // Pop WindowPadding
+        // Main window (fullscreen)
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(io.DisplaySize);
+
+        // Add global padding
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
+
+        ImGui::Begin("DNA Messenger", nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoScrollbar);
+
+        // Mobile: Full-screen views with bottom navigation
+        // Desktop: Side-by-side layout
+        if (is_mobile) {
+            renderMobileLayout();
+        } else {
+            renderDesktopLayout();
+        }
+
+        ImGui::End();
+        ImGui::PopStyleVar(); // Pop WindowPadding
+    }
     
     // Render operation spinner overlay (for async DHT operations)
     // This must be AFTER all other windows/modals so it's on top
@@ -137,6 +138,7 @@ void DNAMessengerApp::render() {
         // Check if async task completed
         if (dht_publish_task.isCompleted() && !dht_publish_task.isRunning()) {
             state.show_operation_spinner = false;
+            state.show_identity_selection = false; // Now hide identity modal
         }
     }
 }
@@ -642,8 +644,8 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
         // Close ALL modals immediately
         ImGui::CloseCurrentPopup();
         
-        // Hide identity selection so we proceed to main window (where spinner renders)
-        state.show_identity_selection = false;
+        // Keep identity selection visible (spinner will render on top)
+        // We'll hide it when the async task completes
         
         // Show spinner overlay
         state.show_operation_spinner = true;
