@@ -2197,9 +2197,11 @@ void DNAMessengerApp::renderChatView() {
     }  // End clipper.Step()
 
     // Auto-scroll to bottom
-    if (state.should_scroll_to_bottom || ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
-        ImGui::SetScrollHereY(1.0f);
+    if (state.should_scroll_to_bottom) {
+        ImGui::SetScrollY(ImGui::GetScrollMaxY());  // Force scroll to absolute bottom
         state.should_scroll_to_bottom = false;
+    } else if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
+        ImGui::SetScrollHereY(1.0f);  // Auto-scroll if already at bottom
     }
 
     ImGui::EndChild();
