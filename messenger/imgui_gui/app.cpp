@@ -2034,6 +2034,30 @@ void DNAMessengerApp::renderWalletView() {
     ImGui::SetCursorPos(ImVec2(padding, padding));
     ImGui::BeginChild("WalletContent", ImVec2(-padding, -padding), false);
 
+    // ===== COMING SOON PLACEHOLDER =====
+    // TODO: Uncomment the wallet implementation below when ready
+
+    // Center the "Coming Soon" message
+    ImVec2 available_size = ImGui::GetContentRegionAvail();
+    ImVec2 center = ImVec2(available_size.x * 0.5f, available_size.y * 0.5f);
+
+    const char* coming_soon_text = ICON_FA_WALLET " Wallet";
+    ImVec2 text_size = ImGui::CalcTextSize(coming_soon_text);
+    ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y - 60));
+    ImGui::Text("%s", coming_soon_text);
+
+    const char* subtitle = "COMING SOON";
+    ImVec2 subtitle_size = ImGui::CalcTextSize(subtitle);
+    ImGui::SetCursorPos(ImVec2(center.x - subtitle_size.x * 0.5f, center.y - 20));
+    ImGui::TextDisabled("%s", subtitle);
+
+    const char* description = "Wallet integration is being developed";
+    ImVec2 desc_size = ImGui::CalcTextSize(description);
+    ImGui::SetCursorPos(ImVec2(center.x - desc_size.x * 0.5f, center.y + 20));
+    ImGui::TextDisabled("%s", description);
+
+    /* ===== WALLET IMPLEMENTATION (COMMENTED OUT - TODO: ENABLE WHEN READY) =====
+
     // Header
     ImGui::Text(ICON_FA_WALLET " cpunk Wallet");
     ImGui::Spacing();
@@ -2113,6 +2137,8 @@ void DNAMessengerApp::renderWalletView() {
             // TODO: Show transaction history
         }
     }
+
+    ===== END WALLET IMPLEMENTATION ===== */
 
     ImGui::EndChild();
 }
