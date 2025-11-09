@@ -226,19 +226,35 @@ if (dht) {
 
 ### 🎯 Medium Priority - Needs Phase 1 Complete
 
-#### Task E: Message Loading (3-4 hours)
-**Location:** `imgui_gui/app.cpp` - `renderChatView()` function
-**Qt Reference:** `gui/MainWindow.cpp` lines 700-900 (message loading)
-**Status:** Mock messages, needs SQLite integration
+#### Task E: Message Loading (3-4 hours) ✅ COMPLETE (2025-11-09)
+**Location:** `imgui_gui/app.cpp` - `loadMessagesForContact()` function
+**Qt Reference:** `gui/MainWindow.cpp` lines 991-1070 (`loadConversation()` function)
+**Status:** ✅ Complete - Real message loading integrated
 
-**What to do:**
-1. Study Qt: How it loads messages from `~/.dna/messages.db`
-2. Replace mock data with `messenger_list_messages()` calls
-3. Load real timestamps and sender info
-4. Test: Should see actual message history
+**Completed:**
+1. Created `loadMessagesForContact(int contact_index)` function
+2. Loads messages from SQLite using `messenger_get_conversation()`
+3. Decrypts messages using `messenger_decrypt_message()`
+4. Formats timestamps (extracts HH:MM from YYYY-MM-DD HH:MM:SS)
+5. Determines message direction (outgoing vs incoming)
+6. Resolves sender display names via `messenger_get_display_name()`
+7. Properly frees message arrays with `messenger_free_messages()`
+8. Called automatically when contact is selected
 
-**Files to modify:**
-- `imgui_gui/app.cpp` - `renderChatView()` function
+**Features:**
+- Real SQLite message history loading
+- Post-quantum message decryption (Kyber1024 + AES-256-GCM)
+- Timestamp formatting for display
+- Sender name resolution (contacts + DHT reverse lookup)
+- Proper memory management
+- Works for both desktop and mobile layouts
+
+**Files modified:**
+- `imgui_gui/app.h` - Added `loadMessagesForContact()` declaration
+- `imgui_gui/app.cpp` - Implemented message loading (100+ lines)
+- `imgui_gui/app.cpp` - Call on contact selection (line 1631)
+
+**Build status:** ✅ Compiles successfully
 
 #### Task F: Send Message Integration (4-5 hours)
 **Location:** `imgui_gui/app.cpp` - `renderChatView()` (send button handler)

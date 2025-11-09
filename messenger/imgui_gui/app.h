@@ -51,6 +51,7 @@ private:
 
     // Data loading
     void loadIdentity(const std::string& identity);
+    void loadMessagesForContact(int contact_index);
 
     // Contact management
     void renderAddContactDialog();
