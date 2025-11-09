@@ -1248,6 +1248,17 @@ void DNAMessengerApp::renderAddContactDialog() {
                 return;
             }
 
+            // Check if this is our own identity
+            if (state.current_identity == std::string(fingerprint)) {
+                state.add_contact_error_message = "Cannot add yourself as a contact";
+                state.add_contact_lookup_in_progress = false;
+                task->addMessage("That's you!");
+                // Free public keys
+                free(signing_pubkey);
+                free(encryption_pubkey);
+                return;
+            }
+
             // Free public keys (already cached)
             free(signing_pubkey);
             free(encryption_pubkey);
