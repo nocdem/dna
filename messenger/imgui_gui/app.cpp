@@ -1288,9 +1288,13 @@ void DNAMessengerApp::renderAddContactDialog() {
         ImGui::PushStyleColor(ImGuiCol_Text, success_color);
         ImGui::Text("Found: %s", state.add_contact_found_name.c_str());
         ImGui::PopStyleColor();
-        ImGui::Text("Fingerprint: %.16s...%.16s",
+        
+        // Show shortened fingerprint (first 12 and last 12 chars)
+        ImGui::Text("Fingerprint:");
+        ImGui::SameLine();
+        ImGui::TextDisabled("%.12s...%.12s",
                     state.add_contact_found_fingerprint.c_str(),
-                    state.add_contact_found_fingerprint.c_str() + state.add_contact_found_fingerprint.length() - 16);
+                    state.add_contact_found_fingerprint.c_str() + state.add_contact_found_fingerprint.length() - 12);
         ImGui::Spacing();
     }
 
