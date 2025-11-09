@@ -24,6 +24,9 @@ public:
     // Main render method
     void render();
 
+    // Check if identities are ready (scanned and DHT lookups done)
+    bool areIdentitiesReady() const { return state.identities_scanned; }
+
 private:
     // Centralized application state
     AppState state;
