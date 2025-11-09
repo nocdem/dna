@@ -3935,9 +3935,6 @@ void DNAMessengerApp::loadTransactionHistory() {
                         tx.status = status;
                         tx.is_declined = (status.find("DECLINED") != std::string::npos);
 
-                               i-2, direction.c_str(), amount.c_str(), token.c_str(),
-                               otherAddress.c_str(), status.c_str(), timeStr.c_str());
-
                         state.transaction_list.push_back(tx);
                     }
                 }
