@@ -1844,30 +1844,35 @@ void DNAMessengerApp::renderChatView() {
     // Get messages for current contact
     std::vector<Message>& messages = state.contact_messages[state.selected_contact];
 
-    for (size_t i = 0; i < messages.size(); i++) {
-        const auto& msg = messages[i];
+    // Virtual scrolling: only render visible messages
+    ImGuiListClipper clipper;
+    clipper.Begin((int)messages.size());
+    
+    while (clipper.Step()) {
+        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
+            const auto& msg = messages[i];
 
-        // Calculate bubble width based on current window size
-        float available_width = ImGui::GetContentRegionAvail().x;
-        float bubble_width = available_width;  // 100% of available width (padding inside bubble prevents overflow)
+            // Calculate bubble width based on current window size
+            float available_width = ImGui::GetContentRegionAvail().x;
+            float bubble_width = available_width;  // 100% of available width (padding inside bubble prevents overflow)
 
-        // All bubbles aligned left (Telegram-style)
+            // All bubbles aligned left (Telegram-style)
 
-        // Draw bubble background with proper padding (theme-aware)
-        ImVec4 base_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+            // Draw bubble background with proper padding (theme-aware)
+            ImVec4 base_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
 
-        // Recipient bubble: much lighter (0.12 opacity)
-        // Own bubble: normal opacity (0.25)
-        ImVec4 bg_color;
-        if (msg.is_outgoing) {
-            bg_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.25f);
-        } else {
-            bg_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.12f);
-        }
+            // Recipient bubble: much lighter (0.12 opacity)
+            // Own bubble: normal opacity (0.25)
+            ImVec4 bg_color;
+            if (msg.is_outgoing) {
+                bg_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.25f);
+            } else {
+                bg_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.12f);
+            }
 
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f); // Square corners
+            ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
+            ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
+            ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f); // Square corners
 
         char bubble_id[32];
         snprintf(bubble_id, sizeof(bubble_id), "bubble%zu", i);
@@ -1947,7 +1952,8 @@ void DNAMessengerApp::renderChatView() {
 
         ImGui::Spacing();
         ImGui::Spacing();
-    }
+        }  // End clipper loop
+    }  // End clipper.Step()
 
     // Auto-scroll to bottom
     if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
