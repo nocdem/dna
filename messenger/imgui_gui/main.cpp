@@ -47,17 +47,17 @@ void signal_handler(int signum) {
     g_should_quit = true;
 }
 
-// Comment out backend includes for UI sketch mode
-/*
+// Backend includes for full functionality
 extern "C" {
 #include "../dna_api.h"
 #include "../messenger_p2p.h"
 #include "../messenger.h"
 #include "../wallet.h"
-#include "../messenger/keyserver_register.h"
 #include "../bip39.h"
+#include "../dht/dna_message_wall.h"
+#include "../dht/dna_profile.h"
+#include "../p2p/p2p_transport.h"
 }
-*/
 
 // Global settings
 AppSettings g_app_settings;

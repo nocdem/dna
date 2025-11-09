@@ -4055,13 +4055,6 @@ void DNAMessengerApp::loadMessageWall() {
     state.wall_loading = true;
     state.wall_messages.clear();
 
-    // Get DHT context (SKETCH MODE - messenger_ctx not initialized)
-    // In real implementation, use: p2p_transport_get_dht_context(messenger_ctx->p2p_transport)
-    // For now, just show placeholder
-    state.wall_status = "[SKETCH MODE] Message wall not available (messenger context not initialized)";
-    state.wall_loading = false;
-
-    /* REAL IMPLEMENTATION (disabled for sketch mode):
     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
     if (!ctx || !ctx->p2p_transport) {
         state.wall_status = "Error: DHT not available";
@@ -4110,7 +4103,6 @@ void DNAMessengerApp::loadMessageWall() {
     }
 
     state.wall_loading = false;
-    */
 }
 
 // Post to message wall (from Qt MessageWallDialog.cpp lines 242-315)
@@ -4131,9 +4123,6 @@ void DNAMessengerApp::postToMessageWall() {
         return;
     }
 
-    state.wall_status = "[SKETCH MODE] Posting not available (messenger context not initialized)";
-
-    /* REAL IMPLEMENTATION (disabled for sketch mode):
     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
     if (!ctx || !ctx->p2p_transport) {
         state.wall_status = "Error: DHT not available";
@@ -4183,7 +4172,6 @@ void DNAMessengerApp::postToMessageWall() {
     // Reload wall after 500ms
     // (In real implementation, would use async task)
     loadMessageWall();
-    */
 }
 
 // Render message wall dialog
@@ -4318,11 +4306,6 @@ void DNAMessengerApp::loadProfile() {
     state.profile_status = "Loading profile from DHT...";
     state.profile_loading = true;
 
-    state.profile_status = "[SKETCH MODE] Profile editor not available (messenger context not initialized)";
-    state.profile_registered_name = "Not registered";
-    state.profile_loading = false;
-
-    /* REAL IMPLEMENTATION (disabled for sketch mode):
     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
     if (!ctx || !ctx->p2p_transport) {
         state.profile_status = "P2P transport not initialized";
@@ -4382,16 +4365,12 @@ void DNAMessengerApp::loadProfile() {
     }
 
     state.profile_loading = false;
-    */
 }
 
 // Save profile to DHT (from Qt ProfileEditorDialog.cpp lines 420-557)
 void DNAMessengerApp::saveProfile() {
     state.profile_status = "Saving profile to DHT...";
 
-    state.profile_status = "[SKETCH MODE] Save not available (messenger context not initialized)";
-
-    /* REAL IMPLEMENTATION (disabled for sketch mode):
     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
     if (!ctx || !ctx->p2p_transport) {
         state.profile_status = "P2P transport not initialized";
@@ -4449,7 +4428,6 @@ void DNAMessengerApp::saveProfile() {
     } else {
         state.profile_status = "Failed to save profile to DHT";
     }
-    */
 }
 
 // Render profile editor dialog
@@ -4573,11 +4551,7 @@ void DNAMessengerApp::checkNameAvailability() {
     }
 
     state.register_name_checking = true;
-    state.register_name_availability = "[SKETCH MODE] Availability check not available";
-    state.register_name_available = true;  // Assume available in sketch mode
-    state.register_name_checking = false;
 
-    /* REAL IMPLEMENTATION (disabled for sketch mode):
     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
     if (!ctx || !ctx->p2p_transport) {
         state.register_name_availability = "P2P transport not initialized";
@@ -4608,7 +4582,6 @@ void DNAMessengerApp::checkNameAvailability() {
     }
 
     state.register_name_checking = false;
-    */
 }
 
 // Register name (from Qt RegisterDNANameDialog.cpp lines 251-282)
@@ -4622,9 +4595,6 @@ void DNAMessengerApp::registerName() {
 
     state.register_name_status = "Registering name...";
 
-    state.register_name_status = "[SKETCH MODE] Registration not available (messenger context not initialized)";
-
-    /* REAL IMPLEMENTATION (disabled for sketch mode):
     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
     int result = messenger_register_name(ctx, ctx->fingerprint, name.c_str());
 
@@ -4634,7 +4604,6 @@ void DNAMessengerApp::registerName() {
     } else {
         state.register_name_status = "Registration failed. Please try again.";
     }
-    */
 }
 
 // Render register name dialog
