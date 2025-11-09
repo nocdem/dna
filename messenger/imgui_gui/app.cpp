@@ -8,6 +8,7 @@
 #include "helpers/identity_helpers.h"
 #include <cstring>
 #include <cstdio>
+#include <algorithm>
 #include <sys/stat.h>
 #include <dirent.h>
 
@@ -786,9 +787,48 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
 void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnemonic) {
     printf("[Identity] Restoring identity from seed phrase\n");
     
+    // Clean up mnemonic: trim, lowercase, normalize spaces
+    std::string cleaned_mnemonic = mnemonic;
+    
+    // Trim leading/trailing whitespace
+    size_t start = cleaned_mnemonic.find_first_not_of(" \n\r\t");
+    size_t end = cleaned_mnemonic.find_last_not_of(" \n\r\t");
+    if (start == std::string::npos) {
+        printf("[Identity] ERROR: Empty mnemonic\n");
+        return;
+    }
+    cleaned_mnemonic = cleaned_mnemonic.substr(start, end - start + 1);
+    
+    // Convert to lowercase
+    std::transform(cleaned_mnemonic.begin(), cleaned_mnemonic.end(), 
+                   cleaned_mnemonic.begin(), ::tolower);
+    
+    // Normalize multiple spaces/newlines to single spaces
+    std::string normalized;
+    bool prev_space = false;
+    for (char c : cleaned_mnemonic) {
+        if (c == ' ' || c == '\n' || c == '\r' || c == '\t') {
+            if (!prev_space) {
+                normalized += ' ';
+                prev_space = true;
+            }
+        } else {
+            normalized += c;
+            prev_space = false;
+        }
+    }
+    
+    // Trim trailing space if added
+    if (!normalized.empty() && normalized.back() == ' ') {
+        normalized.pop_back();
+    }
+    
+    printf("[Identity] Cleaned mnemonic: '%s'\n", normalized.c_str());
+    
     // Validate mnemonic using BIP39
-    if (bip39_validate_mnemonic(mnemonic) != 0) {
+    if (bip39_validate_mnemonic(normalized.c_str()) != 0) {
         printf("[Identity] ERROR: Invalid BIP39 mnemonic\n");
+        printf("[Identity] Please check that you have exactly 24 valid words\n");
         // TODO: Show error modal to user
         return;
     }
@@ -799,7 +839,7 @@ void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnem
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
     
-    if (qgp_derive_seeds_from_mnemonic(mnemonic, "", signing_seed, encryption_seed) != 0) {
+    if (qgp_derive_seeds_from_mnemonic(normalized.c_str(), "", signing_seed, encryption_seed) != 0) {
         printf("[Identity] ERROR: Failed to derive seeds from mnemonic\n");
         return;
     }
