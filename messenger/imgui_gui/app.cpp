@@ -136,8 +136,9 @@ void DNAMessengerApp::renderIdentitySelection() {
     ImGui::Spacing();
 
     // Load identities on first render
-    if (state.identities.empty()) {
+    if (!state.identities_scanned) {
         scanIdentities();
+        state.identities_scanned = true;  // Mark as scanned
         
         // Start async DHT lookups for names (don't block UI)
         static bool lookups_started = false;

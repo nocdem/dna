@@ -44,6 +44,7 @@ public:
     // Identity management state
     bool show_identity_selection;
     bool identity_loaded;
+    bool identities_scanned;  // Track if we've scanned at least once
     int selected_identity_idx;
     CreateIdentityStep create_identity_step;
     RestoreIdentityStep restore_identity_step;

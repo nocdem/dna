@@ -15,6 +15,7 @@ AppState::AppState() {
     is_first_frame = true;
     loading_start_time = 0.0f;
     identity_loaded = false;
+    identities_scanned = false;
     selected_identity_idx = -1;
     create_identity_step = STEP_NAME;
     restore_identity_step = RESTORE_STEP_NAME;
