@@ -18,6 +18,11 @@
 #include <string>
 #include <vector>
 #include <map>
+
+// Backend includes
+extern "C" {
+    #include "../dht/dht_singleton.h"
+}
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
@@ -185,6 +190,21 @@ int main(int argc, char** argv) {
     printf("[SKETCH MODE] Settings loaded: theme=%d, window=%dx%d\n",
            g_app_settings.theme, g_app_settings.window_width, g_app_settings.window_height);
 
+    // Initialize global DHT singleton at app startup
+    // This bootstraps DHT once for the entire application lifecycle
+    // Benefits:
+    // - Key publishing during identity creation works immediately
+    // - Messaging starts faster (DHT already bootstrapped)
+    // - Single DHT context shared by all operations
+    printf("[MAIN] Initializing global DHT singleton...\n");
+    if (dht_singleton_init() != 0) {
+        fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
+        fprintf(stderr, "[MAIN] Please check your internet connection\n");
+        fprintf(stderr, "[MAIN] Continuing without DHT (offline mode)...\n");
+    } else {
+        printf("[MAIN] ✓ Global DHT ready!\n");
+    }
+
     GLFWwindow* window = glfwCreateWindow(g_app_settings.window_width, g_app_settings.window_height, "DNA Messenger", nullptr, nullptr);
     if (window == nullptr)
         return 1;
@@ -308,6 +328,10 @@ int main(int argc, char** argv) {
     g_app_settings.window_width = width;
     g_app_settings.window_height = height;
     SettingsManager::Save(g_app_settings);
+
+    // Cleanup global DHT singleton on app shutdown
+    printf("[MAIN] Cleaning up DHT singleton...\n");
+    dht_singleton_cleanup();
 
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
