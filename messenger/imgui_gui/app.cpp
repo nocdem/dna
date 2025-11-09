@@ -224,13 +224,16 @@ void DNAMessengerApp::renderIdentitySelection() {
     // Show spinner while scanning
     if (identity_scan_task.isRunning()) {
         float spinner_radius = 30.0f;
-        ImVec2 center = ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, 100.0f);
+        float window_width = ImGui::GetWindowWidth();
+        float window_height = ImGui::GetWindowHeight();
+        ImVec2 center = ImVec2(window_width * 0.5f, window_height * 0.4f);
         ImGui::SetCursorPos(ImVec2(center.x - spinner_radius, center.y - spinner_radius));
         ThemedSpinner("##identity_scan", spinner_radius, 6.0f);
         
-        ImVec2 text_size = ImGui::CalcTextSize("Loading identities...");
+        const char* loading_text = "Loading identities...";
+        ImVec2 text_size = ImGui::CalcTextSize(loading_text);
         ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_radius + 20));
-        ImGui::Text("Loading identities...");
+        ImGui::Text("%s", loading_text);
     } else if (state.identities.empty()) {
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No identities found.");
         ImGui::TextWrapped("Create a new identity to get started.");
