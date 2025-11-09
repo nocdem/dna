@@ -297,6 +297,31 @@ int main(int argc, char** argv) {
             break;
         }
         
+        // F11 to toggle fullscreen (process BEFORE loading screen so it works immediately)
+        if (glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS) {
+            if (!f11_was_pressed) {
+                f11_was_pressed = true;
+                
+                if (!is_fullscreen) {
+                    // Save windowed position and size
+                    glfwGetWindowPos(window, &windowed_xpos, &windowed_ypos);
+                    glfwGetWindowSize(window, &windowed_width, &windowed_height);
+                    
+                    // Switch to fullscreen
+                    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
+                    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
+                    glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
+                    is_fullscreen = true;
+                } else {
+                    // Restore windowed mode
+                    glfwSetWindowMonitor(window, nullptr, windowed_xpos, windowed_ypos, windowed_width, windowed_height, 0);
+                    is_fullscreen = false;
+                }
+            }
+        } else {
+            f11_was_pressed = false;
+        }
+        
         // Start DHT init on first frame
         if (!dht_loading_started) {
             dht_loading_started = true;
@@ -357,31 +382,6 @@ int main(int argc, char** argv) {
             ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
             glfwSwapBuffers(window);
             continue;
-        }
-
-        // F11 to toggle fullscreen
-        if (glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS) {
-            if (!f11_was_pressed) {
-                f11_was_pressed = true;
-                
-                if (!is_fullscreen) {
-                    // Save windowed position and size
-                    glfwGetWindowPos(window, &windowed_xpos, &windowed_ypos);
-                    glfwGetWindowSize(window, &windowed_width, &windowed_height);
-                    
-                    // Switch to fullscreen
-                    GLFWmonitor* monitor = glfwGetPrimaryMonitor();
-                    const GLFWvidmode* mode = glfwGetVideoMode(monitor);
-                    glfwSetWindowMonitor(window, monitor, 0, 0, mode->width, mode->height, mode->refreshRate);
-                    is_fullscreen = true;
-                } else {
-                    // Restore windowed mode
-                    glfwSetWindowMonitor(window, nullptr, windowed_xpos, windowed_ypos, windowed_width, windowed_height, 0);
-                    is_fullscreen = false;
-                }
-            }
-        } else {
-            f11_was_pressed = false;
         }
 
         ImGui_ImplOpenGL3_NewFrame();
