@@ -314,10 +314,9 @@ int main(int argc, char** argv) {
             });
         }
         
-        // Show loading screen until DHT ready AND identities are scanned
+        // Show loading screen until DHT ready
         float elapsed = (float)glfwGetTime() - dht_loading_start_time;
-        bool identities_ready = app.areIdentitiesReady();  // Check if identity scanning is done
-        bool show_loading = dht_init_task.isRunning() || !identities_ready || elapsed < 0.5f;
+        bool show_loading = dht_init_task.isRunning() || elapsed < 0.5f;
         
         if (show_loading) {
             // Show loading screen
