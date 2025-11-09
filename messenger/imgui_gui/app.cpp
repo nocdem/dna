@@ -458,6 +458,7 @@ void DNAMessengerApp::renderCreateIdentityStep1() {
         } else {
             snprintf(state.generated_mnemonic, sizeof(state.generated_mnemonic), "%s", mnemonic);
             printf("[Identity] Generated 24-word BIP39 seed phrase\n");
+            printf("[Identity] SEED PHRASE (copy from here if clipboard fails):\n%s\n", mnemonic);
         }
         state.create_identity_step = STEP_SEED_PHRASE;
     }
@@ -825,6 +826,18 @@ void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnem
     }
     
     printf("[Identity] Cleaned mnemonic: '%s'\n", normalized.c_str());
+    printf("[Identity] Mnemonic length: %zu bytes\n", normalized.length());
+    
+    // Count words for debug
+    int word_count = 0;
+    std::string temp = normalized;
+    size_t pos = 0;
+    while ((pos = temp.find(' ')) != std::string::npos) {
+        word_count++;
+        temp = temp.substr(pos + 1);
+    }
+    if (!temp.empty()) word_count++; // Last word
+    printf("[Identity] Word count: %d\n", word_count);
     
     // Validate mnemonic using BIP39
     if (bip39_validate_mnemonic(normalized.c_str()) != 0) {
