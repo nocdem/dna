@@ -1975,24 +1975,21 @@ void DNAMessengerApp::renderChatView() {
         // Status indicator (bottom-right corner) for outgoing messages
         if (msg.is_outgoing) {
             const char* status_icon;
-            ImVec4 status_color;
+            ImVec4 status_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
 
             switch (msg.status) {
                 case STATUS_PENDING:
                     status_icon = ICON_FA_CLOCK;
-                    status_color = (g_app_settings.theme == 0) ? DNATheme::TextHint() : ClubTheme::TextHint();
                     break;
                 case STATUS_SENT:
                     status_icon = ICON_FA_CHECK;
-                    status_color = (g_app_settings.theme == 0) ? DNATheme::TextSuccess() : ClubTheme::TextSuccess();
                     break;
                 case STATUS_FAILED:
                     status_icon = ICON_FA_CIRCLE_EXCLAMATION;
-                    status_color = (g_app_settings.theme == 0) ? DNATheme::TextWarning() : ClubTheme::TextWarning();
                     break;
             }
 
-            status_color.w = 0.7f; // Subtle opacity
+            status_color.w = 0.6f; // Subtle opacity for all states
             float icon_size = 12.0f;
             ImVec2 status_pos = ImVec2(content_width - icon_size, bubble_height - padding_vertical - icon_size);
 
