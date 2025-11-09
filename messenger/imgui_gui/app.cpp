@@ -412,9 +412,15 @@ void DNAMessengerApp::renderCreateIdentityStep1() {
 
     ImGui::BeginDisabled(!name_valid || name_len == 0);
     if (ButtonDark("Next", ImVec2(button_width, 40)) || (enter_pressed && name_valid && name_len > 0)) {
-        // Generate mock seed phrase for UI sketch mode
-        snprintf(state.generated_mnemonic, sizeof(state.generated_mnemonic),
-            "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual");
+        // Generate real BIP39 24-word seed phrase
+        char mnemonic[BIP39_MAX_MNEMONIC_LENGTH];
+        if (bip39_generate_mnemonic(24, mnemonic, sizeof(mnemonic)) != 0) {
+            printf("[Identity] ERROR: Failed to generate BIP39 mnemonic\n");
+            snprintf(state.generated_mnemonic, sizeof(state.generated_mnemonic), "ERROR: Failed to generate seed");
+        } else {
+            snprintf(state.generated_mnemonic, sizeof(state.generated_mnemonic), "%s", mnemonic);
+            printf("[Identity] Generated 24-word BIP39 seed phrase\n");
+        }
         state.create_identity_step = STEP_SEED_PHRASE;
     }
     ImGui::EndDisabled();
@@ -543,26 +549,74 @@ void DNAMessengerApp::renderCreateIdentityStep3() {
 
 
 void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemonic) {
-    // UI SKETCH MODE - Mock identity creation
-    printf("[SKETCH MODE] Creating identity: %s\n", name);
-    printf("[SKETCH MODE] Mnemonic: %s\n", mnemonic);
-
-    // Simulate success
-    state.identities.push_back(name);
-    state.current_identity = name;
+    printf("[Identity] Creating identity: %s\n", name);
+    
+    // Derive cryptographic seeds from BIP39 mnemonic
+    uint8_t signing_seed[32];
+    uint8_t encryption_seed[32];
+    
+    if (qgp_derive_seeds_from_mnemonic(mnemonic, "", signing_seed, encryption_seed) != 0) {
+        printf("[Identity] ERROR: Failed to derive seeds from mnemonic\n");
+        return;
+    }
+    
+    printf("[Identity] Derived seeds from mnemonic\n");
+    
+    // Ensure ~/.dna directory exists
+    const char* home = getenv("HOME");
+    if (!home) {
+        printf("[Identity] ERROR: HOME environment variable not set\n");
+        return;
+    }
+    
+    std::string dna_dir = std::string(home) + "/.dna";
+    
+#ifdef _WIN32
+    _mkdir(dna_dir.c_str());
+#else
+    mkdir(dna_dir.c_str(), 0700);
+#endif
+    
+    // Create temporary messenger context for key generation
+    messenger_context_t *ctx = messenger_init("temp");
+    if (!ctx) {
+        printf("[Identity] ERROR: Failed to initialize messenger context\n");
+        return;
+    }
+    
+    // Generate keys from seeds (returns fingerprint)
+    char fingerprint[129];
+    int result = messenger_generate_keys_from_seeds(ctx, signing_seed, encryption_seed, fingerprint);
+    
+    // Securely wipe seeds from memory
+    memset(signing_seed, 0, sizeof(signing_seed));
+    memset(encryption_seed, 0, sizeof(encryption_seed));
+    
+    if (result != 0) {
+        printf("[Identity] ERROR: Failed to generate keys\n");
+        messenger_free(ctx);
+        return;
+    }
+    
+    printf("[Identity] Generated keys with fingerprint: %.20s...\n", fingerprint);
+    
+    // Identity created successfully
+    state.identities.push_back(fingerprint);
+    state.current_identity = fingerprint;
     state.identity_loaded = true;
     state.show_identity_selection = false;
-
-    // Load mock state.contacts for the new identity
-    loadIdentity(name);
-
+    
+    // Load contacts for the new identity
+    loadIdentity(fingerprint);
+    
     // Reset and close
     memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
     memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
     state.seed_confirmed = false;
     ImGui::CloseCurrentPopup();
-
-    printf("[SKETCH MODE] Identity created successfully\n");
+    
+    messenger_free(ctx);
+    printf("[Identity] Identity created successfully\n");
 }
 
 
