@@ -46,11 +46,11 @@ void DNAMessengerApp::render() {
                 ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
                 ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse);
 
-            // Center spinner
-            float spinner_size = 32.0f;
+            // Center spinner (same size as DHT loading spinner for consistency)
+            float spinner_size = 40.0f;
             ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
             ImGui::SetCursorPos(ImVec2(center.x - spinner_size, center.y - spinner_size));
-            ThemedSpinner("##loading", spinner_size, 4.0f);
+            ThemedSpinner("##loading", spinner_size, 6.0f);
 
             // Loading text below spinner
             const char* loading_text = "Loading DNA Messenger...";
