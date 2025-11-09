@@ -336,8 +336,8 @@ int dht_queue_message(
     printf("[DHT Queue] Queueing message from %s to %s (%zu bytes, TTL=%u)\n",
            sender, recipient, ciphertext_len, ttl_seconds);
 
-    // Generate queue key
-    uint8_t queue_key[32];
+    // Generate queue key (SHA3-512 = 64 bytes)
+    uint8_t queue_key[64];
     dht_generate_queue_key(recipient, queue_key);
 
     printf("[DHT Queue] Queue key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
@@ -351,7 +351,7 @@ int dht_queue_message(
     size_t existing_count = 0;
 
     printf("[DHT Queue] → DHT GET: Checking existing offline queue\n");
-    int get_result = dht_get(ctx, queue_key, 32, &existing_data, &existing_len);
+    int get_result = dht_get(ctx, queue_key, 64, &existing_data, &existing_len);
     if (get_result == 0 && existing_data && existing_len > 1) {
         // Queue exists, deserialize
         printf("[DHT Queue] Found existing queue (%zu bytes)\n", existing_len);
@@ -418,7 +418,7 @@ int dht_queue_message(
 
     // 5. Store in DHT
     printf("[DHT Queue] → DHT PUT: Queueing offline message (%zu total in queue)\n", new_count);
-    int put_result = dht_put(ctx, queue_key, 32, serialized, serialized_len);
+    int put_result = dht_put(ctx, queue_key, 64, serialized, serialized_len);
 
     free(serialized);
     dht_offline_messages_free(all_messages, new_count);
@@ -448,20 +448,20 @@ int dht_retrieve_queued_messages(
 
     printf("[DHT Queue] Retrieving queued messages for %s\n", recipient);
 
-    // Generate queue key
-    uint8_t queue_key[32];
+    // Generate queue key (SHA3-512 = 64 bytes)
+    uint8_t queue_key[64];
     dht_generate_queue_key(recipient, queue_key);
 
     printf("[DHT Queue] Queue key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
            queue_key[0], queue_key[1], queue_key[2], queue_key[3],
            queue_key[4], queue_key[5], queue_key[6], queue_key[7]);
 
-    // Query DHT
+    // Query DHT (use full 64-byte key)
     uint8_t *queue_data = NULL;
     size_t queue_len = 0;
 
     printf("[DHT Queue] → DHT GET: Retrieving offline messages\n");
-    int get_result = dht_get(ctx, queue_key, 32, &queue_data, &queue_len);
+    int get_result = dht_get(ctx, queue_key, 64, &queue_data, &queue_len);
     if (get_result != 0 || !queue_data || queue_len <= 1) {
         printf("[DHT Queue] No queued messages found\n");
         *messages_out = NULL;
@@ -550,17 +550,17 @@ int dht_clear_queue(
 
     printf("[DHT Queue] Clearing queue for %s\n", recipient);
 
-    // Generate queue key
-    uint8_t queue_key[32];
+    // Generate queue key (SHA3-512 = 64 bytes)
+    uint8_t queue_key[64];
     dht_generate_queue_key(recipient, queue_key);
 
-    // Store empty queue (since dht_delete doesn't work in OpenDHT)
+    // Store empty queue (since dht_delete doesn't work in OpenDHTT)
     uint8_t empty_queue[5];  // Just the count=0
     uint32_t zero = htonl(0);
     memcpy(empty_queue, &zero, sizeof(uint32_t));
 
     printf("[DHT Queue] → DHT PUT: Clearing offline queue\n");
-    int result = dht_put(ctx, queue_key, 32, empty_queue, sizeof(uint32_t));
+    int result = dht_put(ctx, queue_key, 64, empty_queue, sizeof(uint32_t));
     if (result != 0) {
         fprintf(stderr, "[DHT Queue] Failed to clear queue\n");
         return -1;
