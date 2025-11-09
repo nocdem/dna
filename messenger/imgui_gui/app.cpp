@@ -2197,8 +2197,10 @@ void DNAMessengerApp::renderChatView() {
     }  // End clipper.Step()
 
     // Auto-scroll to bottom
-    if (ImGui::GetScrollY() >= ImGui::GetScrollMaxY())
+    if (state.should_scroll_to_bottom || ImGui::GetScrollY() >= ImGui::GetScrollMaxY()) {
         ImGui::SetScrollHereY(1.0f);
+        state.should_scroll_to_bottom = false;
+    }
 
     ImGui::EndChild();
 
@@ -2263,6 +2265,7 @@ void DNAMessengerApp::renderChatView() {
                         // Clear input immediately for better UX
                         state.message_input[0] = '\0';
                         state.should_focus_input = true;
+                        state.should_scroll_to_bottom = true;  // Force scroll to bottom after sending
 
                         // Enqueue message send task
                         message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
@@ -2509,6 +2512,7 @@ void DNAMessengerApp::renderChatView() {
                         // Clear input immediately for better UX
                         state.message_input[0] = '\0';
                         state.should_focus_input = true;
+                        state.should_scroll_to_bottom = true;  // Force scroll to bottom after sending
 
                         // Enqueue message send task
                         message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
