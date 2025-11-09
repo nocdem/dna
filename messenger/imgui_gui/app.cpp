@@ -1645,15 +1645,14 @@ void DNAMessengerApp::renderAddContactDialog() {
             // Reload contacts from database (fast, no messenger reinit)
             reloadContactsFromDatabase();
             
-            // Auto-publish contacts to DHT (async via queue, non-blocking)
+            // Auto-publish contacts to DHT (async, non-blocking)
             messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
             if (ctx) {
-                DNAMessengerApp* app = this;
-                message_send_queue.enqueue([app, ctx]() {
+                dht_publish_task.start([ctx](AsyncTask* task) {
                     printf("[AddContact] Publishing contacts to DHT...\n");
                     messenger_sync_contacts_to_dht(ctx);
                     printf("[AddContact] ✓ Published to DHT\n");
-                }, -1);  // -1 = not a message send task
+                });
             }
 
             // Close dialog
