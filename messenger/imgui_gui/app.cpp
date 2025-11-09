@@ -2072,6 +2072,22 @@ void DNAMessengerApp::renderChatView() {
     ImVec4 text_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
     ImGui::TextColored(text_col, "%s", contact.name.c_str());
 
+    // Message Wall button (right side of header)
+    ImGui::SameLine();
+    float wall_btn_width = is_mobile ? 120.0f : 140.0f;
+    float wall_btn_height = is_mobile ? 40.0f : 30.0f;
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - wall_btn_width - 10);
+    ImGui::SetCursorPosY((header_height - wall_btn_height) * 0.5f);
+
+    if (ButtonDark(ICON_FA_NEWSPAPER " Wall", ImVec2(wall_btn_width, wall_btn_height))) {
+        // Open message wall for this contact
+        state.wall_fingerprint = contact.address;  // Use address as fingerprint
+        state.wall_display_name = contact.name;
+        state.wall_is_own = false;  // Viewing someone else's wall
+        state.show_message_wall = true;
+        loadMessageWall();  // Load wall messages
+    }
+
     ImGui::EndChild();
 
     // Message area
@@ -2891,6 +2907,27 @@ void DNAMessengerApp::renderSettingsView() {
         if (ButtonDark("📥 Import Identity", ImVec2(-1, btn_height))) {
             // TODO: Import identity dialog
         }
+        ImGui::Spacing();
+
+        if (ButtonDark(ICON_FA_USER " Edit DNA Profile", ImVec2(-1, btn_height))) {
+            state.show_profile_editor = true;
+            loadProfile();  // Load current profile data
+        }
+        ImGui::Spacing();
+
+        if (ButtonDark(ICON_FA_TAG " Register DNA Name", ImVec2(-1, btn_height))) {
+            state.show_register_name = true;
+        }
+        ImGui::Spacing();
+
+        if (ButtonDark(ICON_FA_NEWSPAPER " My Message Wall", ImVec2(-1, btn_height))) {
+            // Open own message wall
+            state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
+            state.wall_display_name = "My Wall";
+            state.wall_is_own = true;  // Can post to own wall
+            state.show_message_wall = true;
+            loadMessageWall();
+        }
     } else {
         if (ButtonDark("Create New Identity", ImVec2(200, btn_height))) {
             // TODO: Create identity dialog
@@ -2898,6 +2935,28 @@ void DNAMessengerApp::renderSettingsView() {
         ImGui::SameLine();
         if (ButtonDark("Import Identity", ImVec2(200, btn_height))) {
             // TODO: Import identity dialog
+        }
+
+        ImGui::Spacing();
+
+        if (ButtonDark(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
+            state.show_profile_editor = true;
+            loadProfile();  // Load current profile data
+        }
+        ImGui::SameLine();
+        if (ButtonDark(ICON_FA_TAG " Register Name", ImVec2(200, btn_height))) {
+            state.show_register_name = true;
+        }
+
+        ImGui::Spacing();
+
+        if (ButtonDark(ICON_FA_NEWSPAPER " My Message Wall", ImVec2(-1, btn_height))) {
+            // Open own message wall
+            state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
+            state.wall_display_name = "My Wall";
+            state.wall_is_own = true;  // Can post to own wall
+            state.show_message_wall = true;
+            loadMessageWall();
         }
     }
 
