@@ -1592,7 +1592,9 @@ void DNAMessengerApp::renderSidebar() {
         state.add_contact_error_message.clear();
         state.add_contact_found_name.clear();
         state.add_contact_found_fingerprint.clear();
+        state.add_contact_last_searched_input.clear();
         memset(state.add_contact_input, 0, sizeof(state.add_contact_input));
+        ImGui::OpenPopup("Add Contact");
     }
 
     if (ThemedButton(ICON_FA_USERS " Create Group", ImVec2(button_width, add_button_height), false)) {
