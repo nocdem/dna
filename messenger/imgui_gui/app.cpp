@@ -15,7 +15,6 @@
 // Backend includes
 extern "C" {
     #include "../messenger.h"
-    #include "../messenger_p2p.h"
     #include "../bip39.h"
     #include "../dht/dht_keyserver.h"
     #include "../dht/dht_singleton.h"
@@ -150,7 +149,6 @@ void DNAMessengerApp::render() {
 
     // Add Contact dialog
     if (state.show_add_contact_dialog) {
-        ImGui::OpenPopup("Add Contact");
         renderAddContactDialog();
     }
 }
@@ -448,7 +446,9 @@ void DNAMessengerApp::renderCreateIdentityStep1() {
     }
 
     // Style input like chat message input (recipient bubble color)
-    ImVec4 input_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
+    ImVec4 input_bg = g_app_settings.theme == 0
+        ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)  // DNA: slightly lighter than bg
+        : ImVec4(0.15f, 0.14f, 0.13f, 1.0f); // Club: slightly lighter
     ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
 
     bool enter_pressed = ImGui::InputText("##IdentityName", state.new_identity_name, sizeof(state.new_identity_name),
@@ -785,27 +785,16 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
                 sign_key->private_key
             );
             
+            qgp_key_free(sign_key);
+            qgp_key_free(enc_key);
+            
             if (ret == 0) {
                 printf("[Identity] ✓ Keys published to DHT successfully!\n");
-                
-                // Also publish name → fingerprint alias for username lookups
-                if (name && strlen(name) > 0) {
-                    int alias_ret = dht_keyserver_publish_alias(dht_ctx, name, fingerprint);
-                    if (alias_ret == 0) {
-                        printf("[Identity] ✓ Username alias published to DHT\n");
-                    } else {
-                        printf("[Identity] Warning: Failed to publish username alias\n");
-                    }
-                }
-                
                 // Cache the name mapping
                 state.identity_name_cache[std::string(fingerprint)] = name;
             } else {
                 printf("[Identity] ERROR: Failed to publish keys to DHT\n");
             }
-            
-            qgp_key_free(sign_key);
-            qgp_key_free(enc_key);
         }
     }
     
@@ -844,7 +833,9 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
     ImGui::Spacing();
 
     // Style input
-    ImVec4 input_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
+    ImVec4 input_bg = g_app_settings.theme == 0
+        ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)
+        : ImVec4(0.15f, 0.14f, 0.13f, 1.0f);
     ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
 
     ImGui::SetNextItemWidth(-1);
@@ -1090,15 +1081,6 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
             return;
         }
         printf("[Identity] Messenger context initialized for: %s\n", identity.c_str());
-        
-        // Initialize P2P transport for DHT and messaging
-        if (messenger_p2p_init(ctx) != 0) {
-            printf("[Identity] ERROR: Failed to initialize P2P transport\n");
-            messenger_free(ctx);
-            state.messenger_ctx = nullptr;
-            return;
-        }
-        printf("[Identity] P2P transport initialized\n");
     }
 
     // Load contacts from database using messenger API
@@ -1261,17 +1243,12 @@ void DNAMessengerApp::renderAddContactDialog() {
     ImGui::Text("Enter contact fingerprint or name:");
     ImGui::Spacing();
 
-    // Style input like other inputs (themed background)
-    ImVec4 input_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
-
     // Input field for fingerprint/name
     ImGui::PushItemWidth(-1);
     bool input_changed = ImGui::InputText("##contact_input", state.add_contact_input,
-                                          sizeof(state.add_contact_input));
+                                          sizeof(state.add_contact_input),
+                                          ImGuiInputTextFlags_CallbackAlways);
     ImGui::PopItemWidth();
-    
-    ImGui::PopStyleColor(); // FrameBg
     ImGui::Spacing();
 
     // Auto-search as user types (debounced)
@@ -1339,17 +1316,6 @@ void DNAMessengerApp::renderAddContactDialog() {
                 return;
             }
 
-            // Check if this is our own identity
-            if (state.current_identity == std::string(fingerprint)) {
-                state.add_contact_error_message = "Cannot add yourself as a contact";
-                state.add_contact_lookup_in_progress = false;
-                task->addMessage("That's you!");
-                // Free public keys
-                free(signing_pubkey);
-                free(encryption_pubkey);
-                return;
-            }
-
             // Free public keys (already cached)
             free(signing_pubkey);
             free(encryption_pubkey);
@@ -1379,13 +1345,9 @@ void DNAMessengerApp::renderAddContactDialog() {
         ImGui::PushStyleColor(ImGuiCol_Text, success_color);
         ImGui::Text("Found: %s", state.add_contact_found_name.c_str());
         ImGui::PopStyleColor();
-        
-        // Show shortened fingerprint (first 12 and last 12 chars)
-        ImGui::Text("Fingerprint:");
-        ImGui::SameLine();
-        ImGui::TextDisabled("%.12s...%.12s",
+        ImGui::Text("Fingerprint: %.16s...%.16s",
                     state.add_contact_found_fingerprint.c_str(),
-                    state.add_contact_found_fingerprint.c_str() + state.add_contact_found_fingerprint.length() - 12);
+                    state.add_contact_found_fingerprint.c_str() + state.add_contact_found_fingerprint.length() - 16);
         ImGui::Spacing();
     }
 
@@ -1406,7 +1368,8 @@ void DNAMessengerApp::renderAddContactDialog() {
 
     if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
         state.show_add_contact_dialog = false;
-        ImGui::CloseCurrentPopup();
+        CenteredModal::End();
+        return;
     }
 
     if (!is_mobile) ImGui::SameLine();
@@ -1427,7 +1390,6 @@ void DNAMessengerApp::renderAddContactDialog() {
 
             // Close dialog
             state.show_add_contact_dialog = false;
-            ImGui::CloseCurrentPopup();
         } else {
             printf("[AddContact] ERROR: Failed to save contact to database\n");
             state.add_contact_error_message = "Failed to save contact to database";
@@ -1725,6 +1687,7 @@ void DNAMessengerApp::renderSidebar() {
         state.add_contact_found_fingerprint.clear();
         state.add_contact_last_searched_input.clear();
         memset(state.add_contact_input, 0, sizeof(state.add_contact_input));
+        ImGui::OpenPopup("Add Contact");
     }
 
     if (ThemedButton(ICON_FA_USERS " Create Group", ImVec2(button_width, add_button_height), false)) {
@@ -1919,7 +1882,9 @@ void DNAMessengerApp::renderChatView() {
     ImGui::Spacing();
 
     // Recipient bubble background color
-    ImVec4 recipient_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
+    ImVec4 recipient_bg = g_app_settings.theme == 0
+        ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)  // DNA: slightly lighter than bg
+        : ImVec4(0.15f, 0.14f, 0.13f, 1.0f); // Club: slightly lighter
 
     ImGui::PushStyleColor(ImGuiCol_FrameBg, recipient_bg);
 
@@ -1941,38 +1906,28 @@ void DNAMessengerApp::renderChatView() {
 
         // Send button with paper plane icon
         if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
-            if (strlen(state.message_input) > 0) {
-                // Get current contact identity
-                if (state.selected_contact >= 0 && state.selected_contact < (int)state.contacts.size()) {
-                    const Contact& contact = state.contacts[state.selected_contact];
-                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
-                    
-                    if (ctx) {
-                        // Send message via P2P
-                        const char* recipients[1] = { contact.address.c_str() };
-                        int result = messenger_send_message(ctx, recipients, 1, state.message_input);
-                        
-                        if (result == 0) {
-                            printf("[Message] ✓ Sent message to %s\n", contact.name.c_str());
-                            
-                            // Add to UI immediately (will be in DB)
-                            Message msg;
-                            msg.content = state.message_input;
-                            msg.is_outgoing = true;
-                            msg.timestamp = "Now";
-                            messages.push_back(msg);
-                            
-                            // Clear input
-                            state.message_input[0] = '\0';
-                            state.should_focus_input = true;
-                        } else {
-                            printf("[Message] ERROR: Failed to send message\n");
-                        }
+            if (strlen(state.message_input) > 0 && state.selected_contact >= 0) {
+                messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                if (ctx) {
+                    // Get recipient (contact fingerprint/address)
+                    const char* recipient = state.contacts[state.selected_contact].address.c_str();
+                    const char* recipients[] = { recipient };
+
+                    // Send message via messenger API
+                    int result = messenger_send_message(ctx, recipients, 1, state.message_input);
+
+                    if (result == 0) {
+                        printf("[Send] Message sent successfully to %s\n", recipient);
+                        // Reload messages to show the sent message
+                        loadMessagesForContact(state.selected_contact);
+                        state.message_input[0] = '\0';
+                        state.should_focus_input = true; // Set flag to refocus next frame
                     } else {
-                        printf("[Message] ERROR: Messenger context not initialized\n");
+                        printf("[Send] ERROR: Failed to send message to %s\n", recipient);
+                        // TODO: Show error to user
                     }
                 } else {
-                    printf("[Message] ERROR: No contact selected\n");
+                    printf("[Send] ERROR: No messenger context\n");
                 }
             }
         }
@@ -2163,39 +2118,28 @@ void DNAMessengerApp::renderChatView() {
         ImGui::PopStyleColor(4);
 
         if (icon_clicked || enter_pressed) {
-            if (strlen(state.message_input) > 0) {
-                // Get current contact identity
-                if (state.selected_contact >= 0 && state.selected_contact < (int)state.contacts.size()) {
-                    const Contact& contact = state.contacts[state.selected_contact];
-                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
-                    
-                    if (ctx) {
-                        // Send message via P2P
-                        const char* recipients[1] = { contact.address.c_str() };
-                        int result = messenger_send_message(ctx, recipients, 1, state.message_input);
-                        
-                        if (result == 0) {
-                            printf("[Message] ✓ Sent message to %s\n", contact.name.c_str());
-                            
-                            // Add to UI immediately (will be in DB)
-                            Message msg;
-                            msg.content = state.message_input;
-                            msg.is_outgoing = true;
-                            msg.timestamp = "Now";
-                            messages.push_back(msg);
-                            
-                            // Clear input
-                            state.message_input[0] = '\0';
-                            state.should_focus_input = true;
-                        } else {
-                            printf("[Message] ERROR: Failed to send message\n");
-                            // TODO: Show error toast to user
-                        }
+            if (strlen(state.message_input) > 0 && state.selected_contact >= 0) {
+                messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                if (ctx) {
+                    // Get recipient (contact fingerprint/address)
+                    const char* recipient = state.contacts[state.selected_contact].address.c_str();
+                    const char* recipients[] = { recipient };
+
+                    // Send message via messenger API
+                    int result = messenger_send_message(ctx, recipients, 1, state.message_input);
+
+                    if (result == 0) {
+                        printf("[Send] Message sent successfully to %s\n", recipient);
+                        // Reload messages to show the sent message
+                        loadMessagesForContact(state.selected_contact);
+                        state.message_input[0] = '\0';
+                        state.should_focus_input = true; // Set flag to refocus next frame
                     } else {
-                        printf("[Message] ERROR: Messenger context not initialized\n");
+                        printf("[Send] ERROR: Failed to send message to %s\n", recipient);
+                        // TODO: Show error to user
                     }
                 } else {
-                    printf("[Message] ERROR: No contact selected\n");
+                    printf("[Send] ERROR: No messenger context\n");
                 }
             }
         }
