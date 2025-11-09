@@ -15,6 +15,7 @@
 // Backend includes
 extern "C" {
     #include "../messenger.h"
+    #include "../messenger_p2p.h"
     #include "../bip39.h"
     #include "../dht/dht_keyserver.h"
     #include "../dht/dht_singleton.h"
@@ -1078,6 +1079,15 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
             return;
         }
         printf("[Identity] Messenger context initialized for: %s\n", identity.c_str());
+        
+        // Initialize P2P transport for DHT and messaging
+        if (messenger_p2p_init(ctx) != 0) {
+            printf("[Identity] ERROR: Failed to initialize P2P transport\n");
+            messenger_free(ctx);
+            state.messenger_ctx = nullptr;
+            return;
+        }
+        printf("[Identity] P2P transport initialized\n");
     }
 
     // Load contacts from database using messenger API
