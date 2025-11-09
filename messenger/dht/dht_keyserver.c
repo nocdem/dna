@@ -655,21 +655,31 @@ int dht_keyserver_lookup(
         return -2;  // Not found
     }
 
-    // Parse JSON
+    // Parse JSON (need to null-terminate first as DHT data isn't)
+    char *json_str = (char*)malloc(data_len + 1);
+    if (!json_str) {
+        free(data);
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to allocate memory for JSON string\n");
+        return -1;
+    }
+    memcpy(json_str, data, data_len);
+    json_str[data_len] = '\0';
+    free(data);
+    
     dht_pubkey_entry_t *entry = malloc(sizeof(dht_pubkey_entry_t));
     if (!entry) {
-        free(data);
+        free(json_str);
         return -1;
     }
 
-    if (deserialize_entry((char*)data, entry) != 0) {
+    if (deserialize_entry(json_str, entry) != 0) {
         fprintf(stderr, "[DHT_KEYSERVER] Failed to parse entry\n");
-        free(data);
+        free(json_str);
         free(entry);
         return -1;
     }
 
-    free(data);
+    free(json_str);
 
     // Verify signature
     if (verify_entry(entry) != 0) {
