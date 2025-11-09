@@ -4312,9 +4312,11 @@ void DNAMessengerApp::renderMessageWallDialog() {
             ImGui::Text(ICON_FA_PEN " Post New Message");
             ImGui::Spacing();
 
-            // Message input
+            // Message input (white text for visibility)
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
             ImGui::InputTextMultiline("##WallInput", state.wall_message_input, sizeof(state.wall_message_input),
                                      ImVec2(-1, 80), ImGuiInputTextFlags_None);
+            ImGui::PopStyleColor();
 
             // Character counter
             int len = strlen(state.wall_message_input);
@@ -4508,40 +4510,50 @@ void DNAMessengerApp::renderProfileEditorDialog() {
 
         // Cellframe Network Addresses
         if (ImGui::CollapsingHeader("Cellframe Network Addresses", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
             ImGui::InputText("Backbone", state.profile_backbone, sizeof(state.profile_backbone));
             ImGui::InputText("KelVPN", state.profile_kelvpn, sizeof(state.profile_kelvpn));
             ImGui::InputText("Subzero", state.profile_subzero, sizeof(state.profile_subzero));
             ImGui::InputText("Millixt", state.profile_millixt, sizeof(state.profile_millixt));
             ImGui::InputText("Testnet", state.profile_testnet, sizeof(state.profile_testnet));
+            ImGui::PopStyleColor();
         }
 
         // External Wallet Addresses
         if (ImGui::CollapsingHeader("External Wallet Addresses")) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
             ImGui::InputText("Bitcoin (BTC)", state.profile_btc, sizeof(state.profile_btc));
             ImGui::InputText("Ethereum (ETH)", state.profile_eth, sizeof(state.profile_eth));
             ImGui::InputText("Solana (SOL)", state.profile_sol, sizeof(state.profile_sol));
             ImGui::InputText("Litecoin (LTC)", state.profile_ltc, sizeof(state.profile_ltc));
             ImGui::InputText("Dogecoin (DOGE)", state.profile_doge, sizeof(state.profile_doge));
+            ImGui::PopStyleColor();
         }
 
         // Social Media Links
         if (ImGui::CollapsingHeader("Social Media Links")) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
             ImGui::InputText("Telegram", state.profile_telegram, sizeof(state.profile_telegram));
             ImGui::InputText("X (Twitter)", state.profile_twitter, sizeof(state.profile_twitter));
             ImGui::InputText("GitHub", state.profile_github, sizeof(state.profile_github));
             ImGui::InputText("Discord", state.profile_discord, sizeof(state.profile_discord));
             ImGui::InputText("Website", state.profile_website, sizeof(state.profile_website));
+            ImGui::PopStyleColor();
         }
 
         // Profile Picture
         if (ImGui::CollapsingHeader("Profile Picture")) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
             ImGui::InputText("IPFS CID", state.profile_pic_cid, sizeof(state.profile_pic_cid));
+            ImGui::PopStyleColor();
             ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Upload your profile picture to IPFS and paste the CID here.");
         }
 
         // Bio
         if (ImGui::CollapsingHeader("Bio", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
             ImGui::InputTextMultiline("##Bio", state.profile_bio, sizeof(state.profile_bio), ImVec2(-1, 100));
+            ImGui::PopStyleColor();
             ImGui::Text("%zu / 512", strlen(state.profile_bio));
         }
 
@@ -4679,10 +4691,12 @@ void DNAMessengerApp::renderRegisterNameDialog() {
 
         ImGui::Text("Desired Name:");
         ImGui::SetNextItemWidth(-1);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
         if (ImGui::InputText("##NameInput", state.register_name_input, sizeof(state.register_name_input))) {
             // Trigger availability check on text change
             checkNameAvailability();
         }
+        ImGui::PopStyleColor();
 
         ImGui::Spacing();
 
