@@ -2064,13 +2064,9 @@ void DNAMessengerApp::renderChatView() {
         messages_copy = state.contact_messages[state.selected_contact];
     }
 
-    // Virtual scrolling: only render visible messages
-    ImGuiListClipper clipper;
-    clipper.Begin((int)messages_copy.size());
-
-    while (clipper.Step()) {
-        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; i++) {
-            const auto& msg = messages_copy[i];
+    // Render all messages (no clipper for variable-height items)
+    for (size_t i = 0; i < messages_copy.size(); i++) {
+        const auto& msg = messages_copy[i];
 
             // Calculate bubble width based on current window size
             float available_width = ImGui::GetContentRegionAvail().x;
@@ -2209,17 +2205,18 @@ void DNAMessengerApp::renderChatView() {
 
         ImGui::Spacing();
         ImGui::Spacing();
-        }  // End clipper loop
-    }  // End clipper.Step()
+    }  // End message loop
 
-    ImGui::EndChild();
+    // Handle scroll logic BEFORE EndChild() (operates on MessageArea window)
+    float current_scroll = ImGui::GetScrollY();
+    float max_scroll = ImGui::GetScrollMaxY();
+    bool is_at_bottom = (current_scroll >= max_scroll - 1.0f);
 
-    // Cancel auto-scroll if user manually scrolled away
-    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
-        // User is interacting with the scroll area
-        if (state.scroll_to_bottom_frames > 0) {
-            state.scroll_to_bottom_frames = 0; // Cancel auto-scroll
-        }
+    // Check if user actively scrolled UP (not just hovering)
+    bool user_scrolled_up = !is_at_bottom && ImGui::IsWindowFocused();
+
+    if (user_scrolled_up && state.scroll_to_bottom_frames > 0) {
+        state.scroll_to_bottom_frames = 0; // Cancel auto-scroll if user scrolled up
     }
 
     // Delayed scroll (wait 2 frames for message to fully render)
@@ -2233,6 +2230,8 @@ void DNAMessengerApp::renderChatView() {
         state.scroll_to_bottom_frames = 2;
         state.should_scroll_to_bottom = false;
     }
+
+    ImGui::EndChild();
 
     // Message input area - Multiline with recipient bubble color
     ImGui::Spacing();
