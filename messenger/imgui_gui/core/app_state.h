@@ -77,6 +77,8 @@ public:
     std::string add_contact_found_name;
     std::string add_contact_found_fingerprint;
     std::string add_contact_error_message;
+    float add_contact_last_input_time;  // Track when user last typed
+    std::string add_contact_last_searched_input;  // Track what we last searched
 
     // Data
     std::vector<Contact> contacts;

@@ -1154,56 +1154,41 @@ void DNAMessengerApp::renderAddContactDialog() {
 
     // Input field for fingerprint/name
     ImGui::PushItemWidth(-1);
-    bool enter_pressed = ImGui::InputText("##contact_input", state.add_contact_input,
+    bool input_changed = ImGui::InputText("##contact_input", state.add_contact_input,
                                           sizeof(state.add_contact_input),
-                                          ImGuiInputTextFlags_EnterReturnsTrue);
+                                          ImGuiInputTextFlags_CallbackAlways);
     ImGui::PopItemWidth();
     ImGui::Spacing();
 
-    // Show error message if any
-    if (!state.add_contact_error_message.empty()) {
-        ImVec4 error_color = g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning();
-        ImGui::PushStyleColor(ImGuiCol_Text, error_color);
-        ImGui::TextWrapped("%s", state.add_contact_error_message.c_str());
-        ImGui::PopStyleColor();
-        ImGui::Spacing();
+    // Auto-search as user types (debounced)
+    std::string current_input = std::string(state.add_contact_input);
+    size_t input_len = current_input.length();
+
+    // Update timer when input changes
+    if (input_changed) {
+        state.add_contact_last_input_time = (float)ImGui::GetTime();
     }
 
-    // Show found contact info if lookup succeeded
-    if (!state.add_contact_found_name.empty()) {
-        ImVec4 success_color = g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess();
-        ImGui::PushStyleColor(ImGuiCol_Text, success_color);
-        ImGui::Text("Found: %s", state.add_contact_found_name.c_str());
-        ImGui::PopStyleColor();
-        ImGui::Text("Fingerprint: %.16s...%.16s",
-                    state.add_contact_found_fingerprint.c_str(),
-                    state.add_contact_found_fingerprint.c_str() + state.add_contact_found_fingerprint.length() - 16);
-        ImGui::Spacing();
-    }
+    // Check if we should auto-trigger search
+    float time_since_last_input = (float)ImGui::GetTime() - state.add_contact_last_input_time;
+    bool should_auto_search = (
+        input_len >= 3 &&  // Minimum 3 characters
+        time_since_last_input >= 0.5f &&  // 500ms debounce
+        current_input != state.add_contact_last_searched_input &&  // Haven't searched this yet
+        !state.add_contact_lookup_in_progress  // Not already searching
+    );
 
-    // Buttons
-    float button_width = is_mobile ? -1 : 120.0f;
-
-    if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
-        state.show_add_contact_dialog = false;
-        CenteredModal::End();
-        return;
-    }
-
-    if (!is_mobile) ImGui::SameLine();
-
-    // Lookup button (disabled if input empty or lookup in progress)
-    ImGui::BeginDisabled(strlen(state.add_contact_input) == 0 || state.add_contact_lookup_in_progress);
-    if (ButtonDark("Lookup", ImVec2(button_width, 40)) || enter_pressed) {
-        // Start async DHT lookup
-        printf("[AddContact] Looking up: %s\n", state.add_contact_input);
+    if (should_auto_search) {
+        // Auto-trigger lookup
+        printf("[AddContact] Auto-searching: %s\n", state.add_contact_input);
 
         state.add_contact_lookup_in_progress = true;
         state.add_contact_error_message.clear();
         state.add_contact_found_name.clear();
         state.add_contact_found_fingerprint.clear();
+        state.add_contact_last_searched_input = current_input;
 
-        std::string input_copy = std::string(state.add_contact_input);
+        std::string input_copy = current_input;
         messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
 
         contact_lookup_task.start([this, input_copy, ctx](AsyncTask* task) {
@@ -1253,12 +1238,47 @@ void DNAMessengerApp::renderAddContactDialog() {
             printf("[AddContact] Found: %s (fingerprint: %s)\n", input_copy.c_str(), fingerprint);
         });
     }
-    ImGui::EndDisabled();
 
-    // Show spinner if lookup in progress
+    // Show error message if any
+    if (!state.add_contact_error_message.empty()) {
+        ImVec4 error_color = g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning();
+        ImGui::PushStyleColor(ImGuiCol_Text, error_color);
+        ImGui::TextWrapped("%s", state.add_contact_error_message.c_str());
+        ImGui::PopStyleColor();
+        ImGui::Spacing();
+    }
+
+    // Show found contact info if lookup succeeded
+    if (!state.add_contact_found_name.empty()) {
+        ImVec4 success_color = g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess();
+        ImGui::PushStyleColor(ImGuiCol_Text, success_color);
+        ImGui::Text("Found: %s", state.add_contact_found_name.c_str());
+        ImGui::PopStyleColor();
+        ImGui::Text("Fingerprint: %.16s...%.16s",
+                    state.add_contact_found_fingerprint.c_str(),
+                    state.add_contact_found_fingerprint.c_str() + state.add_contact_found_fingerprint.length() - 16);
+        ImGui::Spacing();
+    }
+
+    // Show spinner if lookup in progress (inline with search hint)
     if (state.add_contact_lookup_in_progress) {
         ImGui::SameLine();
         ThemedSpinner("##lookup_spinner", 15.0f, 3.0f);
+        ImGui::SameLine();
+        ImGui::TextDisabled("Searching...");
+    } else if (input_len > 0 && input_len < 3) {
+        ImGui::TextDisabled("Type at least 3 characters to search");
+    }
+
+    ImGui::Spacing();
+
+    // Buttons
+    float button_width = is_mobile ? -1 : 150.0f;
+
+    if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
+        state.show_add_contact_dialog = false;
+        CenteredModal::End();
+        return;
     }
 
     if (!is_mobile) ImGui::SameLine();

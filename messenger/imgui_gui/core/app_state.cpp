@@ -27,6 +27,7 @@ AppState::AppState() {
     emoji_picker_pos = ImVec2(0, 0);
     show_add_contact_dialog = false;
     add_contact_lookup_in_progress = false;
+    add_contact_last_input_time = 0.0f;
     memset(new_identity_name, 0, sizeof(new_identity_name));
     memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
     memset(message_input, 0, sizeof(message_input));
