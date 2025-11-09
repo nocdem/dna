@@ -1137,11 +1137,15 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
         printf("[Contacts] No contacts found or error loading contacts\n");
     }
 
-    // Message history is now loaded on-demand when contact is selected
-
     state.identity_loaded = true;
     state.show_identity_selection = false; // Close identity selection modal
     state.current_identity = identity;
+
+    // Preload messages for all contacts (improves UX - instant switching)
+    printf("[Identity] Preloading messages for %zu contacts...\n", state.contacts.size());
+    for (size_t i = 0; i < state.contacts.size(); i++) {
+        loadMessagesForContact(i);
+    }
 
     printf("[Identity] Identity loaded successfully: %s (%zu contacts)\n",
            identity.c_str(), state.contacts.size());
@@ -1982,16 +1986,11 @@ void DNAMessengerApp::renderChatView() {
                     message_send_task.start([app, ctx, message_copy, recipient, contact_idx](AsyncTask* task) {
                         const char* recipients[] = { recipient.c_str() };
                         int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
-                        
+
                         if (result == 0) {
                             printf("[Send] Message sent successfully to %s\n", recipient.c_str());
-                            // Append sent message directly to UI (don't reload all messages)
-                            Message msg;
-                            msg.sender = "You";
-                            msg.content = message_copy;
-                            msg.timestamp = "now";
-                            msg.is_outgoing = true;
-                            app->state.contact_messages[contact_idx].push_back(msg);
+                            // Reload messages from database (single source of truth, prevents duplicates)
+                            app->loadMessagesForContact(contact_idx);
                         } else {
                             printf("[Send] ERROR: Failed to send message to %s\n", recipient.c_str());
                         }
@@ -2205,16 +2204,11 @@ void DNAMessengerApp::renderChatView() {
                     message_send_task.start([app, ctx, message_copy, recipient, contact_idx](AsyncTask* task) {
                         const char* recipients[] = { recipient.c_str() };
                         int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
-                        
+
                         if (result == 0) {
                             printf("[Send] Message sent successfully to %s\n", recipient.c_str());
-                            // Append sent message directly to UI (don't reload all messages)
-                            Message msg;
-                            msg.sender = "You";
-                            msg.content = message_copy;
-                            msg.timestamp = "now";
-                            msg.is_outgoing = true;
-                            app->state.contact_messages[contact_idx].push_back(msg);
+                            // Reload messages from database (single source of truth, prevents duplicates)
+                            app->loadMessagesForContact(contact_idx);
                         } else {
                             printf("[Send] ERROR: Failed to send message to %s\n", recipient.c_str());
                         }
