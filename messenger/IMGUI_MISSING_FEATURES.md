@@ -1,11 +1,168 @@
-# ImGui UI - Current Status & Missing Features
+# ImGui GUI - Migration Progress Tracker
 
-**Last Updated:** 2025-11-07
+**Last Updated:** 2025-11-09
 **Branch:** feature/imgui-gui
+**Status:** Qt GUI removed from build - Ready for backend integration
 
 ---
 
-## ✅ Implemented Features
+## 🚀 Migration Status Overview
+
+**Qt GUI:** ❌ Removed from build system (code preserved in `gui/` for reference)  
+**ImGui GUI:** ✅ UI mockup complete - Backend integration in progress  
+**Main Branch:** ✅ Merged (2025-11-09) - All backend code available
+
+---
+
+## 📋 Backend Integration Checklist
+
+### Phase 1: Identity Management (HIGH PRIORITY)
+- [ ] **1.1 Identity Creation**
+  - [ ] Integrate BIP39 seed generation (`bip39.h`, `bip39_pbkdf2.c`)
+  - [ ] Connect to key generation (`qgp_key.c`, `kyber_deterministic.c`)
+  - [ ] Wire up identity storage to `~/.dna/<identity>.dsa` files
+  - [ ] Replace mock identity list with real filesystem scan
+  - [ ] **Reference:** `gui/CreateIdentityDialog.cpp` (Qt implementation)
+
+- [ ] **1.2 Identity Restore**
+  - [ ] Validate BIP39 seed phrase (24 words)
+  - [ ] Derive keys from seed phrase
+  - [ ] Store restored identity
+  - [ ] **Reference:** `gui/RestoreIdentityDialog.cpp`
+
+- [ ] **1.3 Identity Selection**
+  - [ ] Load identities from `~/.dna/` directory
+  - [ ] Load current identity from settings
+  - [ ] Initialize messenger context with selected identity
+  - [ ] **Reference:** `gui/IdentitySelectionDialog.cpp`
+
+### Phase 2: Contacts (HIGH PRIORITY)
+- [ ] **2.1 Contact Database**
+  - [ ] Integrate SQLite contacts DB (`contacts_db.h/c`)
+  - [ ] Load contacts for current identity
+  - [ ] Display real online/offline status
+  - [ ] **Reference:** `gui/MainWindow.cpp` (loadContacts)
+
+- [ ] **2.2 Add Contact**
+  - [ ] Create "Add Contact" dialog
+  - [ ] Validate contact identity format
+  - [ ] Query DHT keyserver for public key
+  - [ ] Save contact to SQLite
+  - [ ] **Reference:** `gui/MainWindow.cpp` (onAddContact)
+
+- [ ] **2.3 Contact List Sync**
+  - [ ] Integrate DHT contact list sync (`dht/dht_contactlist.h/c`)
+  - [ ] Auto-sync on startup
+  - [ ] Manual sync button in settings
+  - [ ] Show sync status indicator
+
+### Phase 3: Messaging (HIGH PRIORITY)
+- [ ] **3.1 Message Storage**
+  - [ ] Integrate SQLite message DB (`~/.dna/messages.db`)
+  - [ ] Load message history for selected contact
+  - [ ] Display real timestamps
+  - [ ] **Reference:** `messenger.h/c` (database functions)
+
+- [ ] **3.2 Send Messages**
+  - [ ] Integrate P2P transport (`messenger_p2p.h/c`)
+  - [ ] Encrypt messages (Kyber1024 + AES-256-GCM)
+  - [ ] Sign messages (Dilithium5)
+  - [ ] Store sent messages in DB
+  - [ ] **Reference:** `gui/MainWindow.cpp` (onSendMessage)
+
+- [ ] **3.3 Receive Messages**
+  - [ ] Set up P2P message listener
+  - [ ] Decrypt incoming messages
+  - [ ] Verify signatures
+  - [ ] Store in database
+  - [ ] Update UI in real-time
+  - [ ] **Reference:** `messenger_p2p.c` (message receive flow)
+
+- [ ] **3.4 Offline Message Queue**
+  - [ ] Check DHT offline queue on startup
+  - [ ] Poll queue periodically (2-minute timer)
+  - [ ] Display offline messages
+  - [ ] **Reference:** `dht/dht_offline_queue.h/c`
+
+### Phase 4: Groups (MEDIUM PRIORITY)
+- [ ] **4.1 Group Management**
+  - [ ] Integrate DHT-based groups (`dht/dht_groups.h/c`)
+  - [ ] Create group dialog
+  - [ ] Add/remove members
+  - [ ] Update group metadata
+  - [ ] **Reference:** `messenger_stubs.c` (group functions)
+
+- [ ] **4.2 Group Messaging**
+  - [ ] Multi-recipient encryption
+  - [ ] Group message display
+  - [ ] Member list view
+
+### Phase 5: Wallet (MEDIUM PRIORITY)
+- [ ] **5.1 Wallet Loading**
+  - [ ] Load Cellframe .dwallet files
+  - [ ] Parse wallet addresses per network
+  - [ ] **Reference:** `wallet.h/c`, `gui/WalletDialog.cpp`
+
+- [ ] **5.2 Balance Queries**
+  - [ ] Integrate Cellframe RPC (`cellframe_rpc.h/c`)
+  - [ ] Query balances (CPUNK, CELL, KEL)
+  - [ ] Replace mock balances with real data
+  - [ ] Add loading spinners during queries
+  - [ ] **Reference:** `gui/WalletDialog.cpp` (refreshBalances)
+
+- [ ] **5.3 Send Tokens**
+  - [ ] Create send dialog
+  - [ ] Transaction builder integration (`cellframe_tx_builder_minimal.h/c`)
+  - [ ] UTXO selection
+  - [ ] Fee calculation
+  - [ ] Sign and submit transaction
+  - [ ] **Reference:** `gui/SendTokensDialog.cpp`
+
+- [ ] **5.4 Receive Tokens**
+  - [ ] Display wallet addresses
+  - [ ] QR code generation
+  - [ ] Copy to clipboard
+  - [ ] **Reference:** `gui/ReceiveDialog.cpp`
+
+- [ ] **5.5 Transaction History**
+  - [ ] Query transaction history via RPC
+  - [ ] Display with status colors
+  - [ ] Pagination support
+  - [ ] **Reference:** `gui/TransactionHistoryDialog.cpp`
+
+### Phase 6: DHT Features (LOW PRIORITY)
+- [ ] **6.1 Keyserver Integration**
+  - [ ] Publish public keys to DHT
+  - [ ] Query keys from DHT
+  - [ ] Integrate keyserver cache (`keyserver_cache.h/c`)
+  - [ ] **Reference:** `dht/dht_keyserver.h/c`
+
+- [ ] **6.2 P2P Presence**
+  - [ ] Register presence in DHT
+  - [ ] Update presence periodically
+  - [ ] Display peer online status
+  - [ ] **Reference:** `p2p/p2p_transport.h/c`
+
+### Phase 7: Polish & Testing (LOW PRIORITY)
+- [ ] **7.1 Error Handling**
+  - [ ] Add toast notifications for errors
+  - [ ] Loading spinners for async operations
+  - [ ] Confirmation dialogs
+
+- [ ] **7.2 UI Refinements**
+  - [ ] Unread message indicators
+  - [ ] Typing indicators
+  - [ ] Message status icons (sent, delivered, read)
+  - [ ] File/image attachments
+
+- [ ] **7.3 Code Refactoring**
+  - [ ] Split main.cpp into modules
+  - [ ] Extract dialog classes
+  - [ ] Organize views into separate files
+
+---
+
+## ✅ Completed UI Features
 
 ### 1. Theme System (COMPLETE)
 - ✅ theme_colors.h with DNA/Club theme colors
@@ -81,13 +238,51 @@
 ### 8. Wallet View (COMPLETE)
 - ✅ Token balance cards (CPUNK, CELL, KEL)
 - ✅ Mock balances displayed
+- ✅ Loading spinners next to balances (ThemedSpinner utility)
 - ✅ Action buttons: Send, Receive, Transaction History
 - ✅ Responsive layout (stacked on mobile, side-by-side on desktop)
 - **Files:** main.cpp (renderWalletView)
 
+### 9. Loading Spinner (COMPLETE)
+- ✅ ThemedSpinner() utility function
+- ✅ Beautiful gradient arc animation with glowing endpoint
+- ✅ Theme-aware colors (cyan/orange)
+- ✅ Customizable radius and thickness
+- ✅ 2-second loading screen on app startup
+- ✅ Used in wallet balance display
+- ✅ Reusable across entire app
+- **Files:** main.cpp (ThemedSpinner function)
+
+### 10. Icon System (COMPLETE)
+- ✅ Font Awesome 6 icons embedded
+- ✅ ICON_FA_CIRCLE_PLUS for better visibility vs plain +
+- ✅ Consistent icon sizing across UI
+- **Files:** font_awesome.h, main.cpp
+
 ---
 
-## ❌ Missing Features (TODO)
+## 📁 File Organization
+
+### Core Files
+- **main.cpp** (2,100+ lines) - Main application, all views, dialogs
+- **settings_manager.cpp/h** - Settings persistence
+- **theme_colors.h** - Theme color definitions
+- **modal_helper.h** - Modal dialog helpers
+- **font_awesome.h** - Font Awesome 6 icon definitions
+
+### Reference Files (Qt GUI - preserved for migration)
+- **gui/MainWindow.cpp/h** - Main window (contact list, chat, messaging)
+- **gui/WalletDialog.cpp/h** - Wallet view
+- **gui/SendTokensDialog.cpp/h** - Send tokens
+- **gui/ReceiveDialog.cpp/h** - Receive tokens
+- **gui/TransactionHistoryDialog.cpp/h** - Transaction history
+- **gui/CreateIdentityDialog.cpp/h** - Identity creation wizard
+- **gui/RestoreIdentityDialog.cpp/h** - Restore from seed
+- **gui/IdentitySelectionDialog.cpp/h** - Identity selection
+
+---
+
+## ❌ Backend Integration TODO
 
 ### 1. Text Scaling UI (COMPLETE)
 - ✅ Settings page: "Normal" (1.1x) and "Large" (1.5x) radio buttons
@@ -196,3 +391,66 @@
 - Mock data: 100 contacts (60% online), pre-populated messages
 - Current mode: **UI SKETCH MODE** (backend disabled for UI development)
 - Theme colors: DNA = Cyan (#00FFCC), Club = Orange (#FF7A1A)
+
+---
+
+## 🎯 Current Sprint
+
+### Sprint Goal: Identity Management Integration
+**Target Date:** TBD  
+**Focus:** Replace mock identity system with real BIP39/key generation
+
+**Tasks:**
+1. Integrate BIP39 seed generation
+2. Connect key generation (Kyber1024, Dilithium5)
+3. Identity storage to filesystem
+4. Identity loading from `~/.dna/`
+5. Identity selection persistence
+
+---
+
+## 📊 Progress Metrics
+
+- **UI Mockup:** ✅ 100% Complete
+- **Backend Integration:** ⏳ 0% Complete
+- **Qt GUI Migration:** 🔄 In Progress (reference code available)
+- **Total Checklist Items:** 50
+- **Completed:** 0
+- **In Progress:** 0
+- **Remaining:** 50
+
+---
+
+## 📝 Migration Notes
+
+### Key Differences: Qt → ImGui
+1. **No Signals/Slots** - Use direct function calls and callbacks
+2. **Immediate Mode** - UI rebuilt every frame (state management critical)
+3. **No Qt Widgets** - All UI built with ImGui primitives
+4. **Manual Layout** - Explicit positioning vs Qt's layout managers
+5. **Single File** - main.cpp vs multiple Qt dialog classes (for now)
+
+### Backend Code Status
+- ✅ All backend code available (merged from main)
+- ✅ P2P transport layer complete
+- ✅ DHT integration complete  
+- ✅ Encryption/signing complete
+- ✅ SQLite databases complete
+- ✅ Wallet integration complete
+- ⏳ Just needs wiring to ImGui UI
+
+### Testing Strategy
+1. Test each feature in isolation as it's integrated
+2. Keep mock data alongside real data initially
+3. Use debug logging to verify backend calls
+4. Cross-reference Qt GUI behavior for expected results
+
+---
+
+## 🔗 Useful References
+
+- **Qt GUI Code:** `gui/` directory (preserved for reference)
+- **Backend Headers:** `messenger.h`, `messenger_p2p.h`, `wallet.h`, `cellframe_rpc.h`
+- **DHT Layer:** `dht/dht_*.h` files
+- **Encryption:** `dna_api.h`, `qgp_*.h` files
+- **Database:** `contacts_db.h`, `message_backup.h`, `keyserver_cache.h`
