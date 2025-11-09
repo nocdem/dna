@@ -1620,6 +1620,13 @@ void DNAMessengerApp::renderAddContactDialog() {
 
             // Reload contacts to update UI
             loadIdentity(state.current_identity);
+            
+            // Auto-publish contacts to DHT (async)
+            messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+            if (ctx) {
+                printf("[AddContact] Publishing contacts to DHT...\n");
+                messenger_sync_contacts_to_dht(ctx);
+            }
 
             // Close dialog
             state.show_add_contact_dialog = false;
