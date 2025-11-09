@@ -26,7 +26,7 @@ static void sha3_512_hash(const uint8_t *data, size_t len, uint8_t *hash_out) {
  * Uses SHA3-512 for 256-bit quantum security
  */
 void dht_generate_queue_key(const char *recipient, uint8_t *key_out) {
-    char key_input[512];
+    char key_input[1024];  // Increased from 512 for safety (fingerprint=128 + suffix=15 + margin)
     snprintf(key_input, sizeof(key_input), "%s:offline_queue", recipient);
     sha3_512_hash((const uint8_t*)key_input, strlen(key_input), key_out);
 }
