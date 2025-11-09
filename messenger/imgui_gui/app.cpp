@@ -165,6 +165,7 @@ void DNAMessengerApp::render() {
 
     // Add Contact dialog
     if (state.show_add_contact_dialog) {
+        ImGui::OpenPopup("Add Contact");
         renderAddContactDialog();
     }
 }
