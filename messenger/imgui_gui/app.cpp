@@ -502,11 +502,12 @@ void DNAMessengerApp::renderCreateIdentityStep1() {
         ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)  // DNA: slightly lighter than bg
         : ImVec4(0.15f, 0.14f, 0.13f, 1.0f); // Club: slightly lighter
     ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
 
     bool enter_pressed = ImGui::InputText("##IdentityName", state.new_identity_name, sizeof(state.new_identity_name),
                     ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue, IdentityNameInputFilter);
 
-    ImGui::PopStyleColor();
+    ImGui::PopStyleColor(2);
 
     // Validate identity name
     size_t name_len = strlen(state.new_identity_name);
@@ -891,8 +892,10 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
     ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
 
     ImGui::SetNextItemWidth(-1);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
     ImGui::InputTextMultiline("##RestoreSeedPhrase", state.generated_mnemonic, sizeof(state.generated_mnemonic),
                              ImVec2(-1, 200), ImGuiInputTextFlags_WordWrap);
+    ImGui::PopStyleColor();
 
     ImGui::PopStyleColor();
 
@@ -1536,10 +1539,12 @@ void DNAMessengerApp::renderAddContactDialog() {
         ImGui::SetKeyboardFocusHere();
         first_open = false;
     }
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
     bool input_changed = ImGui::InputText("##contact_input", state.add_contact_input,
                                           sizeof(state.add_contact_input));
+    ImGui::PopStyleColor();
     ImGui::PopItemWidth();
-    
+
     ImGui::PopStyleColor(); // FrameBg
     ImGui::Spacing();
 
@@ -2316,9 +2321,11 @@ void DNAMessengerApp::renderChatView() {
         if (should_autofocus) {
             ImGui::SetKeyboardFocusHere();
         }
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
         bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", state.message_input,
             sizeof(state.message_input), ImVec2(-1, 60),
             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
+        ImGui::PopStyleColor();
 
         // Send button with paper plane icon
         if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
@@ -2404,10 +2411,12 @@ void DNAMessengerApp::renderChatView() {
             return 0;
         };
 
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
         bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", state.message_input,
             sizeof(state.message_input), ImVec2(input_width, 60),
             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_CallbackAlways,
             input_callback, this);
+        ImGui::PopStyleColor();
 
         // Get input box position right after rendering it
         ImVec2 input_rect_min = ImGui::GetItemRectMin();
@@ -3560,14 +3569,18 @@ void DNAMessengerApp::renderSendDialog() {
         // Recipient address
         ImGui::Text("To Address:");
         ImGui::PushItemWidth(-1);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
         ImGui::InputText("##recipient", state.send_recipient, sizeof(state.send_recipient));
+        ImGui::PopStyleColor();
         ImGui::PopItemWidth();
         ImGui::Spacing();
 
         // Amount
         ImGui::Text("Amount:");
         ImGui::PushItemWidth(-120);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
         ImGui::InputText("##amount", state.send_amount, sizeof(state.send_amount));
+        ImGui::PopStyleColor();
         ImGui::PopItemWidth();
         ImGui::SameLine();
         ImGui::TextDisabled("CELL");
@@ -3592,7 +3605,9 @@ void DNAMessengerApp::renderSendDialog() {
         // Validator fee
         ImGui::Text("Validator Fee:");
         ImGui::PushItemWidth(-80);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
         ImGui::InputText("##fee", state.send_fee, sizeof(state.send_fee));
+        ImGui::PopStyleColor();
         ImGui::PopItemWidth();
         ImGui::SameLine();
         ImGui::TextDisabled("CELL");
@@ -3676,8 +3691,10 @@ void DNAMessengerApp::renderReceiveDialog() {
         // Address input (read-only, monospace font)
         ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);  // Use default font (monospace would be better)
         ImGui::PushItemWidth(-1);
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
         ImGui::InputText("##address", state.wallet_address, sizeof(state.wallet_address),
                         ImGuiInputTextFlags_ReadOnly);
+        ImGui::PopStyleColor();
         ImGui::PopItemWidth();
         ImGui::PopFont();
 
