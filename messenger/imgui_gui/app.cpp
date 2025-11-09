@@ -1203,8 +1203,9 @@ void DNAMessengerApp::loadMessagesForContact(int contact_index) {
         if (messenger_get_conversation(ctx, contact_address.c_str(), &messages, &count) == 0) {
             printf("[Messages] Loaded %d messages from database\n", count);
 
-            // Clear and rebuild message list
-            app->state.contact_messages[contact_index].clear();
+            // Build message vector in background thread (don't touch UI yet)
+            std::vector<Message> loaded_messages;
+            loaded_messages.reserve(count); // Pre-allocate for performance
 
             for (int i = 0; i < count; i++) {
                 // Decrypt message if possible
@@ -1253,18 +1254,21 @@ void DNAMessengerApp::loadMessagesForContact(int contact_index) {
                     }
                 }
 
-                // Add message to contact_messages
+                // Add message to temporary vector (not UI yet)
                 Message msg;
                 msg.sender = sender;
                 msg.content = messageText;
                 msg.timestamp = timestamp;
                 msg.is_outgoing = is_outgoing;
 
-                app->state.contact_messages[contact_index].push_back(msg);
+                loaded_messages.push_back(msg);
             }
 
             // Free messages array
             messenger_free_messages(messages, count);
+
+            // Atomic swap: replace UI vector in one operation (FAST!)
+            app->state.contact_messages[contact_index] = std::move(loaded_messages);
 
             printf("[Messages] Processed %d messages for display\n", count);
         } else {
