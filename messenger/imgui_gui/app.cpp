@@ -331,19 +331,14 @@ void DNAMessengerApp::renderIdentitySelection() {
 
     // Restore from seed button
     if (ButtonDark(ICON_FA_DOWNLOAD " Restore from Seed", ImVec2(-1, btn_height))) {
-        state.restore_identity_step = RESTORE_STEP_NAME;
-        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
+        state.restore_identity_step = RESTORE_STEP_SEED;
         memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
         ImGui::OpenPopup("Restore from Seed");
     }
 
-    // Restore from seed popup
+    // Restore from seed popup - single step (just seed phrase, username not required)
     if (CenteredModal::Begin("Restore from Seed")) {
-        if (state.restore_identity_step == RESTORE_STEP_NAME) {
-            renderRestoreStep1_Name();
-        } else if (state.restore_identity_step == RESTORE_STEP_SEED) {
-            renderRestoreStep2_Seed();
-        }
+        renderRestoreStep2_Seed();
         CenteredModal::End();
     }
 
@@ -817,7 +812,7 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
 }
 
 
-void DNAMessengerApp::renderRestoreStep1_Name() {
+void DNAMessengerApp::renderRestoreStep2_Seed() {
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = io.DisplaySize.x < 600.0f;
 
@@ -825,55 +820,10 @@ void DNAMessengerApp::renderRestoreStep1_Name() {
     ImGui::Spacing();
     ImGui::Spacing();
 
-    ImGui::TextWrapped("Enter the identity name you used when creating this identity.");
+    ImGui::TextWrapped("Enter your 24-word seed phrase to restore your identity.");
     ImGui::Spacing();
-    ImGui::TextWrapped("This should be the same name you used originally.");
+    ImGui::TextWrapped("Your cryptographic keys will be regenerated from the seed phrase.");
     ImGui::Spacing();
-    ImGui::Spacing();
-
-    ImGui::Text("Identity Name:");
-    ImGui::Spacing();
-
-    // Style input like chat message input
-    ImVec4 input_bg = g_app_settings.theme == 0
-        ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)
-        : ImVec4(0.15f, 0.14f, 0.13f, 1.0f);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
-
-    ImGui::SetNextItemWidth(-1);
-    bool enter_pressed = ImGui::InputText("##RestoreIdentityName", state.new_identity_name, sizeof(state.new_identity_name),
-                    ImGuiInputTextFlags_EnterReturnsTrue);
-
-    ImGui::PopStyleColor();
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    float button_width = is_mobile ? -1 : 150.0f;
-
-    if (ButtonDark("Cancel", ImVec2(button_width, 40)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-        // Reset wizard state and go back to identity selection
-        state.restore_identity_step = RESTORE_STEP_NAME;
-        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
-        memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
-        ImGui::CloseCurrentPopup();
-    }
-
-    if (!is_mobile) ImGui::SameLine();
-
-    ImGui::BeginDisabled(strlen(state.new_identity_name) == 0);
-    if (ButtonDark("Next", ImVec2(button_width, 40)) || enter_pressed) {
-        state.restore_identity_step = RESTORE_STEP_SEED;
-    }
-    ImGui::EndDisabled();
-}
-
-
-void DNAMessengerApp::renderRestoreStep2_Seed() {
-    ImGuiIO& io = ImGui::GetIO();
-    bool is_mobile = io.DisplaySize.x < 600.0f;
-
-    ImGui::TextWrapped("Enter Your 24-Word Seed Phrase");
     ImGui::Spacing();
 
     // Style input
@@ -915,25 +865,13 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
 
     ImGui::Spacing();
 
-    float button_width = is_mobile ? -1 : 120.0f;
-    float spacing = 10.0f;
-    float total_width = button_width * 3 + spacing * 2;
-    float offset = (ImGui::GetContentRegionAvail().x - total_width) * 0.5f;
+    float button_width = is_mobile ? -1 : 150.0f;
 
-    if (!is_mobile && offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
-
-    if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
+    if (ButtonDark("Cancel", ImVec2(button_width, 40)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         // Reset wizard state and go back to identity selection
-        state.restore_identity_step = RESTORE_STEP_NAME;
-        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
+        state.restore_identity_step = RESTORE_STEP_SEED;
         memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
         ImGui::CloseCurrentPopup();
-    }
-
-    if (!is_mobile) ImGui::SameLine();
-
-    if (ButtonDark("Back", ImVec2(button_width, 40))) {
-        state.restore_identity_step = RESTORE_STEP_NAME;
     }
 
     if (!is_mobile) ImGui::SameLine();
@@ -943,33 +881,32 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
         // Close all modals immediately
         ImGui::CloseCurrentPopup();
         state.show_identity_selection = false; // Hide identity list modal immediately
-        state.restore_identity_step = RESTORE_STEP_NAME; // Reset wizard
-        
+        state.restore_identity_step = RESTORE_STEP_SEED; // Reset wizard
+
         // Show spinner overlay
         state.show_operation_spinner = true;
         snprintf(state.operation_spinner_message, sizeof(state.operation_spinner_message),
                  "Restoring identity...");
-        
-        // Copy name and mnemonic to heap for async task
-        std::string name_copy = std::string(state.new_identity_name);
+
+        // Copy mnemonic to heap for async task
         std::string mnemonic_copy = std::string(state.generated_mnemonic);
-        
-        dht_publish_task.start([this, name_copy, mnemonic_copy](AsyncTask* task) {
+
+        dht_publish_task.start([this, mnemonic_copy](AsyncTask* task) {
             task->addMessage("Validating seed phrase...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            
+
             task->addMessage("Deriving cryptographic keys...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            
-            task->addMessage("Publishing keys to DHT network...");
-            restoreIdentityWithSeed(name_copy.c_str(), mnemonic_copy.c_str());
-            
+
+            task->addMessage("Regenerating identity from seed...");
+            restoreIdentityWithSeed(mnemonic_copy.c_str());
+
             task->addMessage("Initializing messenger context...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
-            
+
             task->addMessage("Loading contacts database...");
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
-            
+
             task->addMessage("✓ Identity restored successfully!");
             std::this_thread::sleep_for(std::chrono::milliseconds(800));
         });
@@ -978,9 +915,9 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
 }
 
 
-void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnemonic) {
+void DNAMessengerApp::restoreIdentityWithSeed(const char* mnemonic) {
     printf("[Identity] Restoring identity from seed phrase\n");
-    
+
     // Clean up mnemonic: trim, lowercase, normalize spaces
     std::string cleaned_mnemonic = mnemonic;
     
@@ -1080,67 +1017,43 @@ void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnem
     
     printf("✓ Identity restored successfully!\n");
     printf("✓ Fingerprint: %s\n", fingerprint);
-    
-    // Publish to DHT keyserver with name (if DHT is available)
+    printf("✓ Keys saved to: ~/.dna/%s.dsa and ~/.dna/%s.kem\n", fingerprint, fingerprint);
+
+    // Try to fetch registered name via DHT reverse lookup
     dht_context_t *dht_ctx = dht_singleton_get();
-    if (dht_ctx && strlen(name) > 0) {
-        printf("[Identity] Publishing restored identity to DHT with name: %s\n", name);
-        
-        const char* home = getenv("HOME");
-        if (home) {
-            std::string dna_dir = std::string(home) + "/.dna";
-            std::string dsa_path = dna_dir + "/" + std::string(fingerprint) + ".dsa";
-            std::string kem_path = dna_dir + "/" + std::string(fingerprint) + ".kem";
-            
-            qgp_key_t *sign_key = nullptr;
-            qgp_key_t *enc_key = nullptr;
-            
-            if (qgp_key_load(dsa_path.c_str(), &sign_key) != 0 || !sign_key) {
-                printf("[Identity] ERROR: Failed to load signing key from %s\n", dsa_path.c_str());
-            } else if (qgp_key_load(kem_path.c_str(), &enc_key) != 0 || !enc_key) {
-                printf("[Identity] ERROR: Failed to load encryption key from %s\n", kem_path.c_str());
-                qgp_key_free(sign_key);
-            } else {
-                // Publish to DHT
-                int ret = dht_keyserver_publish(
-                    dht_ctx,
-                    fingerprint,
-                    name,  // Display name
-                    sign_key->public_key,
-                    enc_key->public_key,
-                    sign_key->private_key
-                );
-                
-                qgp_key_free(sign_key);
-                qgp_key_free(enc_key);
-                
-                if (ret == 0) {
-                    printf("[Identity] ✓ Restored identity published to DHT successfully!\n");
-                    // Cache the name mapping
-                    state.identity_name_cache[std::string(fingerprint)] = name;
-                } else {
-                    printf("[Identity] ERROR: Failed to publish restored identity to DHT\n");
-                }
-            }
+    if (dht_ctx) {
+        printf("[Identity] Looking up registered name from DHT...\n");
+        char *registered_name = nullptr;
+        int lookup_result = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &registered_name);
+
+        if (lookup_result == 0 && registered_name && registered_name[0] != '\0') {
+            printf("✓ Found registered name: %s\n", registered_name);
+            state.identity_name_cache[fingerprint] = registered_name;
+            free(registered_name);
+        } else {
+            printf("  No registered name found for this identity\n");
+            printf("\n");
+            printf("TIP: You can register a human-readable name for this identity\n");
+            printf("     in Settings → Register Name\n");
+            printf("\n");
         }
     }
-    
+
     // Keys are saved to ~/.dna/<fingerprint>.{dsa,kem}
     // Add to identity list
     state.identities.push_back(fingerprint);
     state.current_identity = fingerprint;
     state.identity_loaded = true;
-    
+
     // Load identity state (contacts, etc)
     loadIdentity(fingerprint);
-    
+
     // Cleanup
     messenger_free(ctx);
-    
+
     // Reset UI state
-    memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
     memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
-    
+
     printf("[Identity] Identity restore complete\n");
 }
 

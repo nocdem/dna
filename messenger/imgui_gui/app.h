@@ -42,9 +42,8 @@ private:
     void createIdentityWithSeed(const char* name, const char* mnemonic);
 
     // Restore identity wizard
-    void renderRestoreStep1_Name();
     void renderRestoreStep2_Seed();
-    void restoreIdentityWithSeed(const char* name, const char* mnemonic);
+    void restoreIdentityWithSeed(const char* mnemonic);
 
     // Identity helper (was static, now regular method)
     static int IdentityNameInputFilter(ImGuiInputTextCallbackData* data);

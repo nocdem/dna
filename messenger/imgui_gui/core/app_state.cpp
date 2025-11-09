@@ -19,7 +19,7 @@ AppState::AppState() {
     identities_scanned = false;
     selected_identity_idx = -1;
     create_identity_step = STEP_NAME;
-    restore_identity_step = RESTORE_STEP_NAME;
+    restore_identity_step = RESTORE_STEP_SEED;
     seed_confirmed = false;
     seed_copied = false;
     seed_copied_timer = 0.0f;

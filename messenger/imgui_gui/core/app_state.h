@@ -24,8 +24,7 @@ enum CreateIdentityStep {
 
 // Identity restore wizard steps
 enum RestoreIdentityStep {
-    RESTORE_STEP_NAME,
-    RESTORE_STEP_SEED
+    RESTORE_STEP_SEED  // Single step: just seed phrase input (username not required)
 };
 
 // Centralized application state
