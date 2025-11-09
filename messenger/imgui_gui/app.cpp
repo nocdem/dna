@@ -350,9 +350,8 @@ void DNAMessengerApp::renderIdentitySelection() {
                 renderCreateIdentityStep1();
             } else if (state.create_identity_step == STEP_SEED_PHRASE) {
                 renderCreateIdentityStep2();
-            } else if (state.create_identity_step == STEP_CREATING) {
-                renderCreateIdentityStep3();
             }
+            // STEP_CREATING is handled by spinner overlay, no modal content needed
 
             CenteredModal::End();
         }
@@ -642,9 +641,9 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
 
     ImGui::BeginDisabled(!state.seed_confirmed);
     if (ButtonDark("Create", ImVec2(button_width, 40))) {
-        // Transition to Step 3 (spinner) - keep modal open
-        state.create_identity_step = STEP_CREATING;
-
+        // Close the modal immediately
+        ImGui::CloseCurrentPopup();
+        
         // Show spinner overlay
         state.show_operation_spinner = true;
         snprintf(state.operation_spinner_message, sizeof(state.operation_spinner_message),
@@ -677,23 +676,9 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
 
 
 void DNAMessengerApp::renderCreateIdentityStep3() {
-    // Step 3: Creating identity (progress)
-    ImGui::Text("Creating Your Identity...");
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
-    ImGui::TextWrapped("Generating cryptographic keys and registering to keyserver...");
-    ImGui::Spacing();
-
-    // Simple progress indicator (spinner would be better but this works)
-    static float progress = 0.0f;
-    progress += 0.01f;
-    if (progress > 1.0f) progress = 0.0f;
-
-    ImGui::ProgressBar(progress, ImVec2(-1, 0));
-
-    // This step auto-closes when createIdentityWithSeed completes
+    // Step 3: This step is now handled by the spinner overlay
+    // The modal will close and spinner will show until creation completes
+    // This function should never actually render since we trigger async task immediately
 }
 
 
