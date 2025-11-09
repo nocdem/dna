@@ -1907,6 +1907,28 @@ void DNAMessengerApp::renderChatView() {
     float input_height = is_mobile ? 100.0f : 80.0f;
     ImGui::BeginChild("MessageArea", ImVec2(0, -input_height), true);
 
+    // Show spinner while loading messages for the first time
+    if (message_load_task.isRunning()) {
+        float spinner_radius = 30.0f;
+        float window_width = ImGui::GetWindowWidth();
+        float window_height = ImGui::GetWindowHeight();
+        ImVec2 center = ImVec2(window_width * 0.5f, window_height * 0.4f);
+        ImGui::SetCursorPos(ImVec2(center.x - spinner_radius, center.y - spinner_radius));
+        ThemedSpinner("##message_load", spinner_radius, 6.0f);
+        
+        const char* loading_text = "Loading message history...";
+        ImVec2 text_size = ImGui::CalcTextSize(loading_text);
+        ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_radius + 20));
+        ImGui::Text("%s", loading_text);
+        
+        ImGui::EndChild();
+        
+        // Input area (disabled while loading)
+        ImGui::BeginChild("InputArea", ImVec2(0, 0), true);
+        ImGui::EndChild();
+        return;
+    }
+
     // Copy messages with mutex protection (minimal lock time)
     std::vector<Message> messages_copy;
     {
