@@ -43,25 +43,109 @@
 
 ---
 
+## 🛠️ Infrastructure Available for Use
+
+### AsyncTask Class (NEW - 2025-11-09)
+**Location:** `imgui_gui/async_task.h`  
+**Purpose:** Run background operations without blocking UI
+
+**How to use:**
+```cpp
+AsyncTask task;
+task.start([](AsyncTask* task) {
+    task->addMessage("Starting...");
+    // Do work here (runs in background thread)
+    task->addMessage("Complete!");
+});
+
+// In render loop:
+if (task.isRunning()) {
+    std::vector<std::string> messages = task.getMessages();
+    // Show messages to user
+}
+```
+
+**Features:**
+- Thread-safe message passing
+- Automatic thread lifecycle management
+- Can be reused for multiple operations
+- Used for DHT initialization (see main.cpp)
+
+**Use cases:**
+- DHT lookups (key queries, reverse lookups)
+- Wallet RPC calls (balance queries, transactions)
+- Message encryption/decryption (for large batches)
+- Contact list sync
+- Any operation that takes >100ms
+
+### ThemedSpinner Utility
+**Location:** `imgui_gui/ui_helpers.h`  
+**Purpose:** Show animated loading spinner
+
+```cpp
+ThemedSpinner("my_spinner", radius, thickness);
+```
+
+**Features:**
+- Automatically uses current theme colors
+- Beautiful gradient arc animation
+- Glowing endpoint
+- Used in wallet view and DHT loading screen
+
+### Name Caching System
+**Location:** `imgui_gui/core/app_state.h` - `identity_name_cache`  
+**Purpose:** Cache fingerprint → display name mappings
+
+**How to use:**
+```cpp
+// Check cache first
+auto cached = state.identity_name_cache.find(fingerprint);
+if (cached != state.identity_name_cache.end()) {
+    display_name = cached->second;
+} else {
+    // Do async DHT lookup, then store result:
+    // state.identity_name_cache[fingerprint] = result;
+}
+```
+
+**Why:** Prevents blocking DHT lookups on every frame (was causing 1fps UI!)
+
+### DHT Singleton
+**Location:** `dht/dht_singleton.h`  
+**Purpose:** Global DHT context for entire app
+
+**How to use:**
+```cpp
+dht_context_t *dht = dht_singleton_get();
+if (dht) {
+    // Use DHT functions
+    dht_keyserver_lookup(dht, ...);
+}
+```
+
+**Note:** Already initialized in main.cpp with threaded loading screen
+
+---
+
 ## 🔄 Parallel Work Opportunities
 
 **Other agents can work on these tasks simultaneously:**
 
 ### 🎯 High Priority - Can Start Now
 
-#### Task A: Identity Restore from Seed (2-3 hours)
+#### Task A: Identity Restore from Seed ✅ COMPLETE (2025-11-09)
 **Location:** `imgui_gui/app.cpp` - `renderRestoreStep2_Seed()` and `restoreIdentityWithSeed()`
 **Qt Reference:** `gui/RestoreIdentityDialog.cpp` lines 150-250
-**Status:** UI exists, needs backend integration
+**Status:** ✅ Done - Real BIP39 validation and key generation working
 
-**What to do:**
-1. Study Qt implementation: How it validates seed, derives keys
-2. Port `restoreIdentityWithSeed()` to call real `qgp_derive_seeds_from_mnemonic()`
-3. Call `messenger_generate_keys_from_seeds()` like in `createIdentityWithSeed()`
-4. Test: Restore should create same keys as original identity
+**Completed:**
+- Real BIP39 mnemonic validation
+- Seed derivation with qgp_derive_seeds_from_mnemonic()
+- Key generation from seeds (Kyber1024 + Dilithium5)
+- Secure memory wiping
+- Keys saved to disk
 
-**Files to modify:**
-- `imgui_gui/app.cpp` - `restoreIdentityWithSeed()` function
+**Commit:** 7b73864
 
 #### Task B: Contact List Loading (2-3 hours)
 **Location:** `imgui_gui/app.cpp` - `loadIdentity()` function
@@ -91,6 +175,16 @@
 5. Call `contacts_db_add_contact()` to save
 6. Test: Should be able to add contacts and see them in list
 
+**💡 TIP:** Use AsyncTask for DHT lookup to keep UI responsive:
+```cpp
+AsyncTask lookup_task;
+lookup_task.start([fingerprint](AsyncTask* task) {
+    task->addMessage("Looking up keys in DHT...");
+    // Do dht_keyserver_lookup() here
+    task->addMessage("Found!");
+});
+```
+
 **Files to modify:**
 - `imgui_gui/app.cpp` - Add new dialog function
 - `imgui_gui/core/app_state.h` - Add dialog state
@@ -105,6 +199,16 @@
 2. Call `dht_keyserver_publish()` with name and keys
 3. Handle success/failure
 4. Test: New identity should be findable via DHT reverse lookup
+
+**💡 TIP:** Publish in background to avoid blocking UI:
+```cpp
+AsyncTask publish_task;
+publish_task.start([](AsyncTask* task) {
+    task->addMessage("Publishing keys to DHT...");
+    // Do dht_keyserver_publish() here
+    task->addMessage("Published!");
+});
+```
 
 **Files to modify:**
 - `imgui_gui/app.cpp` - Complete DHT publish in `createIdentityWithSeed()`
@@ -168,6 +272,19 @@
 3. Show loading spinners during query (already have ThemedSpinner)
 4. Handle errors gracefully
 5. Test: Balances should match Cellframe CLI
+
+**💡 TIP:** Use AsyncTask for RPC calls (they can be slow):
+```cpp
+AsyncTask balance_task;
+balance_task.start([](AsyncTask* task) {
+    task->addMessage("Querying CPUNK balance...");
+    // Do cellframe_rpc_call() here
+    task->addMessage("Querying CELL balance...");
+    // More RPC calls
+});
+
+// In render loop, show ThemedSpinner while balance_task.isRunning()
+```
 
 **Files to modify:**
 - `imgui_gui/app.cpp` - `renderWalletView()` function
