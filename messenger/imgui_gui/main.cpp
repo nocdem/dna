@@ -304,18 +304,11 @@ int main(int argc, char** argv) {
             
             // Start DHT init in background thread
             dht_init_task.start([](AsyncTask* task) {
-                task->addMessage("Starting DHT bootstrap...");
-                printf("[MAIN] Starting DHT bootstrap (async)...\n");
-                
-                task->addMessage("Connecting to bootstrap nodes...");
-                task->addMessage("Bootstrapping distributed hash table...");
+                printf("[MAIN] DHT initialization will happen asynchronously...\n");
                 
                 if (dht_singleton_init() != 0) {
                     fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
-                    task->addMessage("ERROR: DHT initialization failed");
-                    task->addMessage("Continuing in offline mode...");
                 } else {
-                    task->addMessage("DHT ready!");
                     printf("[MAIN] ✓ DHT ready!\n");
                 }
             });
@@ -326,9 +319,6 @@ int main(int argc, char** argv) {
         bool show_loading = dht_init_task.isRunning() || elapsed < 0.5f;
         
         if (show_loading) {
-            // Get latest status messages
-            std::vector<std::string> status_messages = dht_init_task.getMessages();
-            
             // Show loading screen
             ImGui_ImplOpenGL3_NewFrame();
             ImGui_ImplGlfw_NewFrame();
@@ -343,36 +333,18 @@ int main(int argc, char** argv) {
                 ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse |
                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
             
-            // Center spinner at fixed position (won't move even if content below changes)
+            // Center spinner at fixed position
             float spinner_radius = 40.0f;
             ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
             ImGui::SetCursorScreenPos(ImVec2(center.x - spinner_radius, center.y - spinner_radius));
             ThemedSpinner("dht_loading", spinner_radius, 6.0f);
             
-            // Loading text below spinner at fixed position
-            const char* loading_text = "Initializing DHT Network...";
+            // Simple loading text below spinner
+            const char* loading_text = "Starting DNA Messenger...";
             ImVec2 text_size = ImGui::CalcTextSize(loading_text);
             float text_y = center.y + spinner_radius + 30.0f;
             ImGui::SetCursorScreenPos(ImVec2(center.x - text_size.x * 0.5f, text_y));
             ImGui::Text("%s", loading_text);
-            
-            // Status messages below at fixed positions (theme-aware, slightly dimmed)
-            ImVec4 status_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
-            status_color.w = 0.7f; // Slightly dimmed
-            
-            float msg_y = text_y + 30.0f; // Fixed offset from loading text
-            int max_messages = 5; // Show last 5 messages
-            int start_idx = (int)status_messages.size() > max_messages ? 
-                            (int)status_messages.size() - max_messages : 0;
-            for (int i = start_idx; i < (int)status_messages.size(); i++) {
-                const char* msg = status_messages[i].c_str();
-                ImVec2 msg_size = ImGui::CalcTextSize(msg);
-                ImGui::SetCursorScreenPos(ImVec2(center.x - msg_size.x * 0.5f, msg_y));
-                ImGui::PushStyleColor(ImGuiCol_Text, status_color);
-                ImGui::Text("%s", msg);
-                ImGui::PopStyleColor();
-                msg_y += 25.0f;
-            }
             
             ImGui::End();
             
