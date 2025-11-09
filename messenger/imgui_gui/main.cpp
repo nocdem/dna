@@ -12,6 +12,7 @@
 #include "settings_manager.h"
 #include "ui_helpers.h"
 #include "app.h"
+#include "async_task.h"
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <string.h>
@@ -257,14 +258,12 @@ int main(int argc, char** argv) {
 
     DNAMessengerApp app;
 
-    // Initialize global DHT singleton with loading screen
-    // Show spinner while bootstrapping DHT
-    bool dht_initialized = false;
-    bool dht_init_attempted = false;
-    float dht_init_start_time = 0.0f;
-    std::vector<std::string> dht_status_messages;
+    // Initialize global DHT singleton with loading screen (async)
+    AsyncTask dht_init_task;
+    float dht_loading_start_time = 0.0f;
+    bool dht_loading_started = false;
     
-    printf("[MAIN] DHT initialization will happen with loading screen...\n");
+    printf("[MAIN] DHT initialization will happen asynchronously...\n");
 
     // Track fullscreen state
     static bool is_fullscreen = false;
@@ -274,39 +273,37 @@ int main(int argc, char** argv) {
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
         
-        // Show loading spinner first, then init DHT
-        float elapsed = dht_init_attempted ? (float)glfwGetTime() - dht_init_start_time : 0.0f;
-        bool show_loading = !dht_initialized || elapsed < 0.5f;
+        // Start DHT init on first frame
+        if (!dht_loading_started) {
+            dht_loading_started = true;
+            dht_loading_start_time = (float)glfwGetTime();
+            
+            // Start DHT init in background thread
+            dht_init_task.start([](AsyncTask* task) {
+                task->addMessage("Starting DHT bootstrap...");
+                printf("[MAIN] Starting DHT bootstrap (async)...\n");
+                
+                task->addMessage("Connecting to bootstrap nodes...");
+                task->addMessage("Bootstrapping distributed hash table...");
+                
+                if (dht_singleton_init() != 0) {
+                    fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
+                    task->addMessage("ERROR: DHT initialization failed");
+                    task->addMessage("Continuing in offline mode...");
+                } else {
+                    task->addMessage("DHT ready!");
+                    printf("[MAIN] ✓ DHT ready!\n");
+                }
+            });
+        }
+        
+        // Show loading screen until DHT ready (min 0.5 seconds)
+        float elapsed = (float)glfwGetTime() - dht_loading_start_time;
+        bool show_loading = dht_init_task.isRunning() || elapsed < 0.5f;
         
         if (show_loading) {
-            // Initialize DHT on second frame (after spinner is visible)
-            if (!dht_init_attempted) {
-                // First frame: just show spinner, don't block
-                static int frame_count = 0;
-                frame_count++;
-                
-                if (frame_count >= 2) {  // Start DHT init on second frame
-                    dht_init_attempted = true;
-                    dht_init_start_time = (float)glfwGetTime();
-                    
-                    dht_status_messages.push_back("Starting DHT bootstrap...");
-                    printf("[MAIN] Starting DHT bootstrap...\n");
-                    
-                    dht_status_messages.push_back("Connecting to bootstrap nodes...");
-                    dht_status_messages.push_back("Bootstrapping distributed hash table...");
-                    
-                    if (dht_singleton_init() != 0) {
-                        fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
-                        dht_status_messages.push_back("ERROR: DHT initialization failed");
-                        dht_status_messages.push_back("Continuing in offline mode...");
-                        fprintf(stderr, "[MAIN] Continuing without DHT (offline mode)...\n");
-                    } else {
-                        dht_status_messages.push_back("DHT ready!");
-                        printf("[MAIN] ✓ DHT ready!\n");
-                    }
-                    dht_initialized = true;
-                }
-            }
+            // Get latest status messages
+            std::vector<std::string> status_messages = dht_init_task.getMessages();
             
             // Show loading screen
             ImGui_ImplOpenGL3_NewFrame();
@@ -341,11 +338,11 @@ int main(int argc, char** argv) {
             
             float msg_y = center.y + spinner_radius + 60.0f;
             int max_messages = 5; // Show last 5 messages
-            int start_idx = (int)dht_status_messages.size() > max_messages ? 
-                            (int)dht_status_messages.size() - max_messages : 0;
+            int start_idx = (int)status_messages.size() > max_messages ? 
+                            (int)status_messages.size() - max_messages : 0;
             
-            for (int i = start_idx; i < (int)dht_status_messages.size(); i++) {
-                const char* msg = dht_status_messages[i].c_str();
+            for (int i = start_idx; i < (int)status_messages.size(); i++) {
+                const char* msg = status_messages[i].c_str();
                 ImVec2 msg_size = ImGui::CalcTextSize(msg);
                 ImGui::SetCursorScreenPos(ImVec2(center.x - msg_size.x * 0.5f, msg_y));
                 ImGui::PushStyleColor(ImGuiCol_Text, status_color);
