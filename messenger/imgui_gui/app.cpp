@@ -141,17 +141,36 @@ void DNAMessengerApp::renderIdentitySelection() {
         scanIdentities();
         state.identities_scanned = true;  // Mark as scanned
         
-        // Start async DHT lookups for names (don't block UI)
-        static bool lookups_started = false;
-        if (!lookups_started) {
-            lookups_started = true;
+        // Do DHT reverse lookups for names (synchronous for now, async in future)
+        static bool lookups_done = false;
+        if (!lookups_done) {
+            lookups_done = true;
             
-            // Do lookups in background for each identity
-            for (const auto& fp : state.identities) {
-                if (fp.length() == 128 && state.identity_name_cache.find(fp) == state.identity_name_cache.end()) {
-                    // Not in cache, schedule async lookup
-                    // For now, just mark as checked (TODO: implement async lookup)
-                    // We'll improve this later with proper async tasks
+            dht_context_t *dht_ctx = dht_singleton_get();
+            if (dht_ctx) {
+                for (const auto& fp : state.identities) {
+                    if (fp.length() == 128 && state.identity_name_cache.find(fp) == state.identity_name_cache.end()) {
+                        // Try DHT reverse lookup to get registered name
+                        char *registered_name = nullptr;
+                        int ret = dht_keyserver_reverse_lookup(dht_ctx, fp.c_str(), &registered_name);
+                        
+                        if (ret == 0 && registered_name != nullptr) {
+                            // Found registered name, cache it
+                            printf("[Identity] DHT lookup: %s → %s\n", fp.substr(0, 16).c_str(), registered_name);
+                            state.identity_name_cache[fp] = std::string(registered_name);
+                            free(registered_name);
+                        } else {
+                            // Not registered or lookup failed, use shortened fingerprint
+                            state.identity_name_cache[fp] = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
+                        }
+                    }
+                }
+            } else {
+                // No DHT available, use shortened fingerprints
+                for (const auto& fp : state.identities) {
+                    if (fp.length() == 128 && state.identity_name_cache.find(fp) == state.identity_name_cache.end()) {
+                        state.identity_name_cache[fp] = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
+                    }
                 }
             }
         }
@@ -913,6 +932,50 @@ void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnem
     
     printf("✓ Identity restored successfully!\n");
     printf("✓ Fingerprint: %s\n", fingerprint);
+    
+    // Publish to DHT keyserver with name (if DHT is available)
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx && strlen(name) > 0) {
+        printf("[Identity] Publishing restored identity to DHT with name: %s\n", name);
+        
+        const char* home = getenv("HOME");
+        if (home) {
+            std::string dna_dir = std::string(home) + "/.dna";
+            std::string dsa_path = dna_dir + "/" + std::string(fingerprint) + ".dsa";
+            std::string kem_path = dna_dir + "/" + std::string(fingerprint) + ".kem";
+            
+            qgp_key_t *sign_key = nullptr;
+            qgp_key_t *enc_key = nullptr;
+            
+            if (qgp_key_load(dsa_path.c_str(), &sign_key) != 0 || !sign_key) {
+                printf("[Identity] ERROR: Failed to load signing key from %s\n", dsa_path.c_str());
+            } else if (qgp_key_load(kem_path.c_str(), &enc_key) != 0 || !enc_key) {
+                printf("[Identity] ERROR: Failed to load encryption key from %s\n", kem_path.c_str());
+                qgp_key_free(sign_key);
+            } else {
+                // Publish to DHT
+                int ret = dht_keyserver_publish(
+                    dht_ctx,
+                    fingerprint,
+                    name,  // Display name
+                    sign_key->public_key,
+                    enc_key->public_key,
+                    sign_key->private_key
+                );
+                
+                qgp_key_free(sign_key);
+                qgp_key_free(enc_key);
+                
+                if (ret == 0) {
+                    printf("[Identity] ✓ Restored identity published to DHT successfully!\n");
+                    // Cache the name mapping
+                    state.identity_name_cache[std::string(fingerprint)] = name;
+                } else {
+                    printf("[Identity] ERROR: Failed to publish restored identity to DHT\n");
+                }
+            }
+        }
+    }
     
     // Keys are saved to ~/.dna/<fingerprint>.{dsa,kem}
     // Add to identity list
