@@ -657,8 +657,19 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
         // Start async DHT publishing task
         dht_publish_task.start([this, name_copy, mnemonic_copy](AsyncTask* task) {
             task->addMessage("Generating cryptographic keys...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            
+            task->addMessage("Publishing keys to DHT network...");
             createIdentityWithSeed(name_copy.c_str(), mnemonic_copy.c_str());
+            
+            task->addMessage("Initializing messenger context...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            
+            task->addMessage("Loading contacts database...");
+            std::this_thread::sleep_for(std::chrono::milliseconds(300));
+            
             task->addMessage("✓ Identity created successfully!");
+            std::this_thread::sleep_for(std::chrono::milliseconds(800));
         });
     }
     ImGui::EndDisabled();
