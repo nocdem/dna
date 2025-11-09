@@ -24,12 +24,12 @@ public:
         ImGuiIO& io = ImGui::GetIO();
 
         // Show loading spinner for 2 seconds on first launch
-        if (state.is_first_frame) {
-            if (state.loading_start_time == 0.0f) {
-                state.loading_start_time = (float)ImGui::GetTime();
+        if (is_first_frame) {
+            if (loading_start_time == 0.0f) {
+                loading_start_time = (float)ImGui::GetTime();
             }
 
-            float elapsed = (float)ImGui::GetTime() - state.loading_start_time;
+            float elapsed = (float)ImGui::GetTime() - loading_start_time;
 
             if (elapsed < 2.0f) {
                 ImGui::SetNextWindowPos(ImVec2(0, 0));
@@ -55,12 +55,12 @@ public:
                 return;
             } else {
                 // 2 seconds elapsed, mark as done
-                state.is_first_frame = false;
+                is_first_frame = false;
             }
         }
 
         // Show identity selection on first run
-        if (state.show_identity_selection) {
+        if (show_identity_selection) {
             renderIdentitySelection();
             return;
         }
@@ -132,23 +132,23 @@ private:
         ImGui::Spacing();
 
         // Load identities on first render
-        if (state.identities.empty()) {
+        if (identities.empty()) {
             scanIdentities();
         }
 
         // Identity list (reduce reserved space for buttons to prevent scrollbar)
         ImGui::BeginChild("IdentityList", ImVec2(0, is_mobile ? -180 : -140), true);
 
-        if (state.identities.empty()) {
+        if (identities.empty()) {
             ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No identities found.");
             ImGui::TextWrapped("Create a new identity to get started.");
         } else {
-            for (size_t i = 0; i < state.identities.size(); i++) {
+            for (size_t i = 0; i < identities.size(); i++) {
                 ImGui::PushID(i);
-                bool selected = (state.selected_identity_idx == (int)i);
+                bool selected = (selected_identity_idx == (int)i);
 
                 float item_height = is_mobile ? 50 : 35;
-                ImVec2 text_size = ImGui::CalcTextSize(state.identities[i].c_str());
+                ImVec2 text_size = ImGui::CalcTextSize(identities[i].c_str());
                 float text_offset_y = (item_height - text_size.y) * 0.5f;
 
                 // Custom color handling for hover and selection
@@ -180,16 +180,16 @@ private:
                 ImGui::SetCursorPosY(ImGui::GetCursorPosY() + text_offset_y);
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10.0f);
                 ImGui::PushStyleColor(ImGuiCol_Text, text_color);
-                ImGui::Text("%s", state.identities[i].c_str());
+                ImGui::Text("%s", identities[i].c_str());
                 ImGui::PopStyleColor();
 
                 // Move cursor back and render invisible button for click detection
                 ImGui::SetCursorScreenPos(pos);
-                if (ImGui::InvisibleButton(state.identities[i].c_str(), size)) {
-                    if (state.selected_identity_idx == (int)i) {
-                        state.selected_identity_idx = -1;
+                if (ImGui::InvisibleButton(identities[i].c_str(), size)) {
+                    if (selected_identity_idx == (int)i) {
+                        selected_identity_idx = -1;
                     } else {
-                        state.selected_identity_idx = i;
+                        selected_identity_idx = i;
                     }
                 }
 
@@ -205,37 +205,37 @@ private:
         float btn_height = is_mobile ? 50.0f : 40.0f;
 
         // Select button (only if identity selected)
-        ImGui::BeginDisabled(state.selected_identity_idx < 0);
+        ImGui::BeginDisabled(selected_identity_idx < 0);
         if (ButtonDark(ICON_FA_USER " Select Identity", ImVec2(-1, btn_height))) {
-            if (state.selected_identity_idx >= 0 && state.selected_identity_idx < (int)state.identities.size()) {
-                state.current_identity = state.identities[state.selected_identity_idx];
-                loadIdentity(state.current_identity);
+            if (selected_identity_idx >= 0 && selected_identity_idx < (int)identities.size()) {
+                current_identity = identities[selected_identity_idx];
+                loadIdentity(current_identity);
             }
         }
         ImGui::EndDisabled();
 
         // Create new button
         if (ButtonDark(ICON_FA_CIRCLE_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
-            state.create_identity_step = STEP_NAME;
-            state.seed_confirmed = false;
-            memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
-            memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
+            create_identity_step = STEP_NAME;
+            seed_confirmed = false;
+            memset(new_identity_name, 0, sizeof(new_identity_name));
+            memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
             ImGui::OpenPopup("Create New Identity");
         }
 
         // Restore from seed button
         if (ButtonDark(ICON_FA_DOWNLOAD " Restore from Seed", ImVec2(-1, btn_height))) {
-            state.restore_identity_step = RESTORE_STEP_NAME;
-            memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
-            memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
+            restore_identity_step = RESTORE_STEP_NAME;
+            memset(new_identity_name, 0, sizeof(new_identity_name));
+            memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
             ImGui::OpenPopup("Restore from Seed");
         }
 
         // Restore from seed popup
         if (CenteredModal::Begin("Restore from Seed")) {
-            if (state.restore_identity_step == RESTORE_STEP_NAME) {
+            if (restore_identity_step == RESTORE_STEP_NAME) {
                 renderRestoreStep1_Name();
-            } else if (state.restore_identity_step == RESTORE_STEP_SEED) {
+            } else if (restore_identity_step == RESTORE_STEP_SEED) {
                 renderRestoreStep2_Seed();
             }
             CenteredModal::End();
@@ -243,11 +243,11 @@ private:
 
             // Create identity popup - multi-step wizard (using CenteredModal helper)
             if (CenteredModal::Begin("Create New Identity")) {
-                if (state.create_identity_step == STEP_NAME) {
+                if (create_identity_step == STEP_NAME) {
                     renderCreateIdentityStep1();
-                } else if (state.create_identity_step == STEP_SEED_PHRASE) {
+                } else if (create_identity_step == STEP_SEED_PHRASE) {
                     renderCreateIdentityStep2();
-                } else if (state.create_identity_step == STEP_CREATING) {
+                } else if (create_identity_step == STEP_CREATING) {
                     renderCreateIdentityStep3();
                 }
 
@@ -259,34 +259,34 @@ private:
     }
 
     void scanIdentities() {
-        state.identities.clear();
+        identities.clear();
 
         // UI SKETCH MODE - Add mock identities for testing
-        state.identities.push_back("alice");
-        state.identities.push_back("bob");
-        state.identities.push_back("charlie");
-        state.identities.push_back("david");
-        state.identities.push_back("emma");
-        state.identities.push_back("frank");
-        state.identities.push_back("grace");
-        state.identities.push_back("henry");
-        state.identities.push_back("isabella");
-        state.identities.push_back("jack");
-        state.identities.push_back("kate");
-        state.identities.push_back("liam");
-        state.identities.push_back("maria");
-        state.identities.push_back("noah");
-        state.identities.push_back("olivia");
-        state.identities.push_back("peter");
-        state.identities.push_back("quinn");
-        state.identities.push_back("rachel");
-        state.identities.push_back("steve");
-        state.identities.push_back("tina");
-        state.identities.push_back("ulysses");
-        state.identities.push_back("victoria");
-        state.identities.push_back("william");
+        identities.push_back("alice");
+        identities.push_back("bob");
+        identities.push_back("charlie");
+        identities.push_back("david");
+        identities.push_back("emma");
+        identities.push_back("frank");
+        identities.push_back("grace");
+        identities.push_back("henry");
+        identities.push_back("isabella");
+        identities.push_back("jack");
+        identities.push_back("kate");
+        identities.push_back("liam");
+        identities.push_back("maria");
+        identities.push_back("noah");
+        identities.push_back("olivia");
+        identities.push_back("peter");
+        identities.push_back("quinn");
+        identities.push_back("rachel");
+        identities.push_back("steve");
+        identities.push_back("tina");
+        identities.push_back("ulysses");
+        identities.push_back("victoria");
+        identities.push_back("william");
 
-        printf("[SKETCH MODE] Loaded %zu mock state.identities\n", state.identities.size());
+        printf("[SKETCH MODE] Loaded %zu mock identities\n", identities.size());
 
         /* DISABLED FOR SKETCH MODE - Real identity scanning
         // Scan ~/.dna for *-dilithium.pqkey files
@@ -305,7 +305,7 @@ private:
                 std::string filename = find_data.cFileName;
                 // Remove "-dilithium.pqkey" suffix (17 chars)
                 std::string identity = filename.substr(0, filename.length() - 17);
-                state.identities.push_back(identity);
+                identities.push_back(identity);
             } while (FindNextFileA(handle, &find_data));
             FindClose(handle);
         }
@@ -318,7 +318,7 @@ private:
                 if (filename.length() > 17 &&
                     filename.substr(filename.length() - 17) == "-dilithium.pqkey") {
                     std::string identity = filename.substr(0, filename.length() - 17);
-                    state.identities.push_back(identity);
+                    identities.push_back(identity);
                 }
             }
             closedir(dir);
@@ -353,7 +353,7 @@ private:
         ImGui::Spacing();
 
         // Auto-focus input when step 1 is active
-        if (state.create_identity_step == STEP_NAME && strlen(state.new_identity_name) == 0) {
+        if (create_identity_step == STEP_NAME && strlen(new_identity_name) == 0) {
             ImGui::SetKeyboardFocusHere();
         }
 
@@ -363,13 +363,13 @@ private:
             : ImVec4(0.15f, 0.14f, 0.13f, 1.0f); // Club: slightly lighter
         ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
 
-        bool enter_pressed = ImGui::InputText("##IdentityName", state.new_identity_name, sizeof(state.new_identity_name),
+        bool enter_pressed = ImGui::InputText("##IdentityName", new_identity_name, sizeof(new_identity_name),
                         ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue, IdentityNameInputFilter);
 
         ImGui::PopStyleColor();
 
         // Validate identity name
-        size_t name_len = strlen(state.new_identity_name);
+        size_t name_len = strlen(new_identity_name);
         bool name_valid = true;
         std::string error_msg;
 
@@ -377,7 +377,7 @@ private:
             // First check for invalid characters (highest priority)
             char invalid_char = '\0';
             for (size_t i = 0; i < name_len; i++) {
-                char c = state.new_identity_name[i];
+                char c = new_identity_name[i];
                 if (!((c >= 'a' && c <= 'z') ||
                       (c >= 'A' && c <= 'Z') ||
                       (c >= '0' && c <= '9') ||
@@ -430,9 +430,9 @@ private:
         ImGui::BeginDisabled(!name_valid || name_len == 0);
         if (ButtonDark("Next", ImVec2(button_width, 40)) || (enter_pressed && name_valid && name_len > 0)) {
             // Generate mock seed phrase for UI sketch mode
-            snprintf(state.generated_mnemonic, sizeof(state.generated_mnemonic),
+            snprintf(generated_mnemonic, sizeof(generated_mnemonic),
                 "abandon ability able about above absent absorb abstract absurd abuse access accident account accuse achieve acid acoustic acquire across act action actor actress actual");
-            state.create_identity_step = STEP_SEED_PHRASE;
+            create_identity_step = STEP_SEED_PHRASE;
         }
         ImGui::EndDisabled();
 
@@ -457,9 +457,9 @@ private:
 
         // Copy button - full width
         if (ButtonDark(ICON_FA_COPY " Copy All Words", ImVec2(-1, 40))) {
-            ImGui::SetClipboardText(state.generated_mnemonic);
-            state.seed_copied = true;
-            state.seed_copied_timer = 3.0f; // Show message for 3 seconds
+            ImGui::SetClipboardText(generated_mnemonic);
+            seed_copied = true;
+            seed_copied_timer = 3.0f; // Show message for 3 seconds
         }
 
         ImGui::Spacing();
@@ -468,7 +468,7 @@ private:
         ImGui::BeginChild("SeedPhraseDisplay", ImVec2(0, 250), true, ImGuiWindowFlags_NoScrollbar);
 
         // Split mnemonic into words
-        char* mnemonic_copy = strdup(state.generated_mnemonic);
+        char* mnemonic_copy = strdup(generated_mnemonic);
         char* words[24];
         int word_count = 0;
         char* token = strtok(mnemonic_copy, " ");
@@ -499,17 +499,17 @@ private:
         ImGui::EndChild();
 
         ImGui::Spacing();
-        ImGui::Checkbox("I have written down my 24-word seed phrase securely", &state.seed_confirmed);
+        ImGui::Checkbox("I have written down my 24-word seed phrase securely", &seed_confirmed);
         ImGui::Spacing();
 
         // Show success message if recently copied (above buttons)
-        if (state.seed_copied && state.seed_copied_timer > 0.0f) {
+        if (seed_copied && seed_copied_timer > 0.0f) {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f)); // Green
             ImGui::Text("✓ Words copied to clipboard!");
             ImGui::PopStyleColor();
-            state.seed_copied_timer -= ImGui::GetIO().DeltaTime;
-            if (state.seed_copied_timer <= 0.0f) {
-                state.seed_copied = false;
+            seed_copied_timer -= ImGui::GetIO().DeltaTime;
+            if (seed_copied_timer <= 0.0f) {
+                seed_copied = false;
             }
         }
 
@@ -524,14 +524,14 @@ private:
         if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
 
         if (ButtonDark("Back", ImVec2(button_width, 40))) {
-            state.create_identity_step = STEP_NAME;
+            create_identity_step = STEP_NAME;
         }
         ImGui::SameLine();
 
-        ImGui::BeginDisabled(!state.seed_confirmed);
+        ImGui::BeginDisabled(!seed_confirmed);
         if (ButtonDark("Create", ImVec2(button_width, 40))) {
-            state.create_identity_step = STEP_CREATING;
-            createIdentityWithSeed(state.new_identity_name, state.generated_mnemonic);
+            create_identity_step = STEP_CREATING;
+            createIdentityWithSeed(new_identity_name, generated_mnemonic);
         }
         ImGui::EndDisabled();
     }
@@ -562,18 +562,18 @@ private:
         printf("[SKETCH MODE] Mnemonic: %s\n", mnemonic);
 
         // Simulate success
-        state.identities.push_back(name);
-        state.current_identity = name;
-        state.identity_loaded = true;
-        state.show_identity_selection = false;
+        identities.push_back(name);
+        current_identity = name;
+        identity_loaded = true;
+        show_identity_selection = false;
 
-        // Load mock state.contacts for the new identity
+        // Load mock contacts for the new identity
         loadIdentity(name);
 
         // Reset and close
-        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
-        memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
-        state.seed_confirmed = false;
+        memset(new_identity_name, 0, sizeof(new_identity_name));
+        memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
+        seed_confirmed = false;
         ImGui::CloseCurrentPopup();
 
         printf("[SKETCH MODE] Identity created successfully\n");
@@ -603,7 +603,7 @@ private:
         ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
 
         ImGui::SetNextItemWidth(-1);
-        bool enter_pressed = ImGui::InputText("##RestoreIdentityName", state.new_identity_name, sizeof(state.new_identity_name),
+        bool enter_pressed = ImGui::InputText("##RestoreIdentityName", new_identity_name, sizeof(new_identity_name),
                         ImGuiInputTextFlags_EnterReturnsTrue);
 
         ImGui::PopStyleColor();
@@ -619,9 +619,9 @@ private:
 
         if (!is_mobile) ImGui::SameLine();
 
-        ImGui::BeginDisabled(strlen(state.new_identity_name) == 0);
+        ImGui::BeginDisabled(strlen(new_identity_name) == 0);
         if (ButtonDark("Next", ImVec2(button_width, 40)) || enter_pressed) {
-            state.restore_identity_step = RESTORE_STEP_SEED;
+            restore_identity_step = RESTORE_STEP_SEED;
         }
         ImGui::EndDisabled();
     }
@@ -640,7 +640,7 @@ private:
         ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
 
         ImGui::SetNextItemWidth(-1);
-        ImGui::InputTextMultiline("##RestoreSeedPhrase", state.generated_mnemonic, sizeof(state.generated_mnemonic),
+        ImGui::InputTextMultiline("##RestoreSeedPhrase", generated_mnemonic, sizeof(generated_mnemonic),
                                  ImVec2(-1, 200), ImGuiInputTextFlags_WordWrap);
 
         ImGui::PopStyleColor();
@@ -651,8 +651,8 @@ private:
 
         // Validate word count
         int word_count = 0;
-        if (strlen(state.generated_mnemonic) > 0) {
-            char* mnemonic_copy = strdup(state.generated_mnemonic);
+        if (strlen(generated_mnemonic) > 0) {
+            char* mnemonic_copy = strdup(generated_mnemonic);
             char* token = strtok(mnemonic_copy, " \n\r\t");
             while (token != nullptr) {
                 word_count++;
@@ -675,14 +675,14 @@ private:
         float button_width = is_mobile ? -1 : 150.0f;
 
         if (ButtonDark("Back", ImVec2(button_width, 40))) {
-            state.restore_identity_step = RESTORE_STEP_NAME;
+            restore_identity_step = RESTORE_STEP_NAME;
         }
 
         if (!is_mobile) ImGui::SameLine();
 
         ImGui::BeginDisabled(word_count != 24);
         if (ButtonDark("Restore", ImVec2(button_width, 40))) {
-            restoreIdentityWithSeed(state.new_identity_name, state.generated_mnemonic);
+            restoreIdentityWithSeed(new_identity_name, generated_mnemonic);
         }
         ImGui::EndDisabled();
     }
@@ -693,17 +693,17 @@ private:
         printf("[SKETCH MODE] Mnemonic: %s\n", mnemonic);
 
         // Simulate success
-        state.identities.push_back(name);
-        state.current_identity = name;
-        state.identity_loaded = true;
-        state.show_identity_selection = false;
+        identities.push_back(name);
+        current_identity = name;
+        identity_loaded = true;
+        show_identity_selection = false;
 
-        // Load mock state.contacts
+        // Load mock contacts
         loadIdentity(name);
 
         // Reset and close
-        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
-        memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
+        memset(new_identity_name, 0, sizeof(new_identity_name));
+        memset(generated_mnemonic, 0, sizeof(generated_mnemonic));
         ImGui::CloseCurrentPopup();
 
         printf("[SKETCH MODE] Identity restored successfully\n");
@@ -712,9 +712,9 @@ private:
     void loadIdentity(const std::string& identity) {
         printf("[SKETCH MODE] Loading identity: %s\n", identity.c_str());
 
-        // UI SKETCH MODE - Load 100 mock state.contacts with random online/offline
-        state.contacts.clear();
-        state.contact_messages.clear();
+        // UI SKETCH MODE - Load 100 mock contacts with random online/offline
+        contacts.clear();
+        contact_messages.clear();
 
         const char* names[] = {
             "Alice", "Bob", "Charlie", "Diana", "Eve", "Frank", "Grace", "Henry",
@@ -732,17 +732,17 @@ private:
             "Ryan", "Sage", "Thomas", "Unity"
         };
 
-        // Generate 100 state.contacts with random online/offline (60% online, 40% offline)
+        // Generate 100 contacts with random online/offline (60% online, 40% offline)
         srand(12345); // Fixed seed for consistent mock data
         for (int i = 0; i < 100; i++) {
             bool is_online = (rand() % 100) < 60; // 60% online
             char address[64];
             snprintf(address, sizeof(address), "%s@dna", names[i]);
-            state.contacts.push_back({names[i], address, is_online});
+            contacts.push_back({names[i], address, is_online});
         }
 
-        // Sort state.contacts: online first, then offline
-        std::sort(state.contacts.begin(), state.contacts.end(), [](const Contact& a, const Contact& b) {
+        // Sort contacts: online first, then offline
+        std::sort(contacts.begin(), contacts.end(), [](const Contact& a, const Contact& b) {
             if (a.is_online != b.is_online) {
                 return a.is_online > b.is_online; // Online first
             }
@@ -750,21 +750,21 @@ private:
         });
 
         // Mock message history for first contact
-        state.contact_messages[0].push_back({state.contacts[0].name, "Hey! How are you?", "Today 10:30 AM", false});
-        state.contact_messages[0].push_back({"Me", "I'm good! Working on DNA Messenger", "Today 10:32 AM", true});
-        state.contact_messages[0].push_back({state.contacts[0].name, "Nice! Post-quantum crypto is the future", "Today 10:33 AM", false});
-        state.contact_messages[0].push_back({"Me", "Absolutely! Kyber1024 + Dilithium5", "Today 10:35 AM", true});
-        state.contact_messages[0].push_back({state.contacts[0].name, "Can't wait to try it out!", "Today 10:36 AM", false});
+        contact_messages[0].push_back({contacts[0].name, "Hey! How are you?", "Today 10:30 AM", false});
+        contact_messages[0].push_back({"Me", "I'm good! Working on DNA Messenger", "Today 10:32 AM", true});
+        contact_messages[0].push_back({contacts[0].name, "Nice! Post-quantum crypto is the future", "Today 10:33 AM", false});
+        contact_messages[0].push_back({"Me", "Absolutely! Kyber1024 + Dilithium5", "Today 10:35 AM", true});
+        contact_messages[0].push_back({contacts[0].name, "Can't wait to try it out!", "Today 10:36 AM", false});
 
         // Mock message history for second contact
-        state.contact_messages[1].push_back({state.contacts[1].name, "Are you available tomorrow?", "Yesterday 3:45 PM", false});
-        state.contact_messages[1].push_back({"Me", "Yes, what's up?", "Yesterday 4:12 PM", true});
-        state.contact_messages[1].push_back({state.contacts[1].name, "Let's discuss the new features", "Yesterday 4:15 PM", false});
+        contact_messages[1].push_back({contacts[1].name, "Are you available tomorrow?", "Yesterday 3:45 PM", false});
+        contact_messages[1].push_back({"Me", "Yes, what's up?", "Yesterday 4:12 PM", true});
+        contact_messages[1].push_back({contacts[1].name, "Let's discuss the new features", "Yesterday 4:15 PM", false});
 
-        printf("[SKETCH MODE] Loaded %zu mock state.contacts (sorted: online first)\n", state.contacts.size());
+        printf("[SKETCH MODE] Loaded %zu mock contacts (sorted: online first)\n", contacts.size());
 
-        state.identity_loaded = true;
-        state.show_identity_selection = false;
+        identity_loaded = true;
+        show_identity_selection = false;
 
         printf("[SKETCH MODE] Identity loaded successfully!\n");
     }
@@ -778,16 +778,16 @@ private:
         static View prev_view = VIEW_CONTACTS;
         static int prev_contact = -1;
 
-        if (prev_view != state.current_view || prev_contact != state.selected_contact) {
-            state.show_emoji_picker = false;
+        if (prev_view != current_view || prev_contact != selected_contact) {
+            show_emoji_picker = false;
         }
-        prev_view = state.current_view;
-        prev_contact = state.selected_contact;
+        prev_view = current_view;
+        prev_contact = selected_contact;
 
         // Content area (full screen minus bottom nav) - use full width
         ImGui::BeginChild("MobileContent", ImVec2(-1, -bottom_nav_height), false, ImGuiWindowFlags_NoScrollbar);
 
-        switch(state.current_view) {
+        switch(current_view) {
             case VIEW_CONTACTS:
                 renderContactsList();
                 break;
@@ -809,7 +809,7 @@ private:
     }
 
     void renderDesktopLayout() {
-        // Sidebar (state.contacts + navigation)
+        // Sidebar (contacts + navigation)
         renderSidebar();
 
         ImGui::SameLine();
@@ -817,7 +817,7 @@ private:
         // Main content area
         ImGui::BeginChild("MainContent", ImVec2(0, 0), true);
 
-        switch(state.current_view) {
+        switch(current_view) {
             case VIEW_CONTACTS:
             case VIEW_CHAT:
                 renderChatView();
@@ -841,24 +841,24 @@ private:
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
 
         // Contacts button
-        if (ThemedButton(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60), state.current_view == VIEW_CONTACTS)) {
-            state.current_view = VIEW_CONTACTS;
+        if (ThemedButton(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60), current_view == VIEW_CONTACTS)) {
+            current_view = VIEW_CONTACTS;
         }
 
         ImGui::SameLine();
 
         // Wallet button
-        if (ThemedButton(ICON_FA_WALLET "\nWallet", ImVec2(btn_width, 60), state.current_view == VIEW_WALLET)) {
-            state.current_view = VIEW_WALLET;
-            state.selected_contact = -1;
+        if (ThemedButton(ICON_FA_WALLET "\nWallet", ImVec2(btn_width, 60), current_view == VIEW_WALLET)) {
+            current_view = VIEW_WALLET;
+            selected_contact = -1;
         }
 
         ImGui::SameLine();
 
         // Settings button
-        if (ThemedButton(ICON_FA_GEAR "\nSettings", ImVec2(btn_width, 60), state.current_view == VIEW_SETTINGS)) {
-            state.current_view = VIEW_SETTINGS;
-            state.selected_contact = -1;
+        if (ThemedButton(ICON_FA_GEAR "\nSettings", ImVec2(btn_width, 60), current_view == VIEW_SETTINGS)) {
+            current_view = VIEW_SETTINGS;
+            selected_contact = -1;
         }
 
         ImGui::SameLine();
@@ -894,7 +894,7 @@ private:
         // Contact list (large touch targets)
         ImGui::BeginChild("ContactsScrollArea", ImVec2(full_width, 0), false);
 
-        for (size_t i = 0; i < state.contacts.size(); i++) {
+        for (size_t i = 0; i < contacts.size(); i++) {
             ImGui::PushID(i);
 
             // Get button width
@@ -904,14 +904,14 @@ private:
             }
 
             // Large touch-friendly buttons (80px height)
-            bool selected = (int)i == state.selected_contact;
+            bool selected = (int)i == selected_contact;
             if (selected) {
                 ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.3f));
             }
 
             if (ButtonDark("##contact", ImVec2(button_width, 80))) {
-                state.selected_contact = i;
-                state.current_view = VIEW_CHAT;
+                selected_contact = i;
+                current_view = VIEW_CHAT;
             }
 
             if (selected) {
@@ -925,17 +925,17 @@ private:
 
             // Online indicator (circle)
             ImVec2 circle_center = ImVec2(button_min.x + 30, button_min.y + 40);
-            ImU32 status_color = state.contacts[i].is_online ?
+            ImU32 status_color = contacts[i].is_online ?
                 IM_COL32(0, 255, 0, 255) : IM_COL32(128, 128, 128, 255);
             draw_list->AddCircleFilled(circle_center, 8.0f, status_color);
 
             // Contact name
             ImVec2 text_pos = ImVec2(button_min.x + 50, button_min.y + 20);
             draw_list->AddText(ImGui::GetFont(), 20.0f, text_pos,
-                IM_COL32(255, 255, 255, 255), state.contacts[i].name.c_str());
+                IM_COL32(255, 255, 255, 255), contacts[i].name.c_str());
 
             // Status text
-            const char* status = state.contacts[i].is_online ? "Online" : "Offline";
+            const char* status = contacts[i].is_online ? "Online" : "Offline";
             ImVec2 status_pos = ImVec2(button_min.x + 50, button_min.y + 45);
             draw_list->AddText(ImGui::GetFont(), 14.0f, status_pos,
                 IM_COL32(180, 180, 180, 255), status);
@@ -954,14 +954,14 @@ private:
         ImGui::BeginChild("Sidebar", ImVec2(250, 0), true, ImGuiWindowFlags_NoScrollbar);
 
         // Navigation buttons (40px each)
-        if (ThemedButton(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40), state.current_view == VIEW_CONTACTS || state.current_view == VIEW_CHAT)) {
-            state.current_view = VIEW_CONTACTS;
+        if (ThemedButton(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40), current_view == VIEW_CONTACTS || current_view == VIEW_CHAT)) {
+            current_view = VIEW_CONTACTS;
         }
-        if (ThemedButton(ICON_FA_WALLET " Wallet", ImVec2(-1, 40), state.current_view == VIEW_WALLET)) {
-            state.current_view = VIEW_WALLET;
+        if (ThemedButton(ICON_FA_WALLET " Wallet", ImVec2(-1, 40), current_view == VIEW_WALLET)) {
+            current_view = VIEW_WALLET;
         }
-        if (ThemedButton(ICON_FA_GEAR " Settings", ImVec2(-1, 40), state.current_view == VIEW_SETTINGS)) {
-            state.current_view = VIEW_SETTINGS;
+        if (ThemedButton(ICON_FA_GEAR " Settings", ImVec2(-1, 40), current_view == VIEW_SETTINGS)) {
+            current_view = VIEW_SETTINGS;
         }
 
         ImGui::Spacing();
@@ -977,11 +977,11 @@ private:
         ImGui::BeginChild("ContactList", ImVec2(0, available_height), false);
 
         float list_width = ImGui::GetContentRegionAvail().x;
-        for (size_t i = 0; i < state.contacts.size(); i++) {
+        for (size_t i = 0; i < contacts.size(); i++) {
             ImGui::PushID(i);
 
             float item_height = 30;
-            bool selected = (state.selected_contact == (int)i);
+            bool selected = (selected_contact == (int)i);
 
             // Use invisible button for interaction
             ImVec2 cursor_screen_pos = ImGui::GetCursorScreenPos();
@@ -989,8 +989,8 @@ private:
             bool hovered = ImGui::IsItemHovered();
 
             if (clicked) {
-                state.selected_contact = i;
-                state.current_view = VIEW_CHAT;
+                selected_contact = i;
+                current_view = VIEW_CHAT;
             }
 
             // Draw background
@@ -1009,10 +1009,10 @@ private:
             }
 
             // Format: "✓ Name" or "✗ Name" with colored icons
-            const char* icon = state.contacts[i].is_online ? ICON_FA_CIRCLE_CHECK : ICON_FA_CIRCLE_XMARK;
+            const char* icon = contacts[i].is_online ? ICON_FA_CIRCLE_CHECK : ICON_FA_CIRCLE_XMARK;
 
             char display_text[256];
-            snprintf(display_text, sizeof(display_text), "%s   %s", icon, state.contacts[i].name.c_str());
+            snprintf(display_text, sizeof(display_text), "%s   %s", icon, contacts[i].name.c_str());
 
             // Center text vertically
             ImVec2 text_size = ImGui::CalcTextSize(display_text);
@@ -1025,7 +1025,7 @@ private:
                 text_color = IM_COL32((int)(bg_col.x * 255), (int)(bg_col.y * 255), (int)(bg_col.z * 255), 255);
             } else {
                 // Normal colors when not selected - use theme colors
-                if (state.contacts[i].is_online) {
+                if (contacts[i].is_online) {
                     ImVec4 text_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
                     text_color = IM_COL32((int)(text_col.x * 255), (int)(text_col.y * 255), (int)(text_col.z * 255), 255);
                 } else {
@@ -1062,10 +1062,10 @@ private:
         ImGuiIO& io = ImGui::GetIO();
         bool is_mobile = io.DisplaySize.x < 600.0f;
 
-        if (state.selected_contact < 0 || state.selected_contact >= (int)state.contacts.size()) {
+        if (selected_contact < 0 || selected_contact >= (int)contacts.size()) {
             if (is_mobile) {
-                // On mobile, show state.contacts list
-                state.current_view = VIEW_CONTACTS;
+                // On mobile, show contacts list
+                current_view = VIEW_CONTACTS;
                 return;
             } else {
                 ImGui::Text("Select a contact to start chatting");
@@ -1073,7 +1073,7 @@ private:
             }
         }
 
-        Contact& contact = state.contacts[state.selected_contact];
+        Contact& contact = contacts[selected_contact];
 
         // Top bar (mobile: with back button)
         float header_height = is_mobile ? 60.0f : 40.0f;
@@ -1082,8 +1082,8 @@ private:
         if (is_mobile) {
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
             if (ButtonDark(ICON_FA_ARROW_LEFT " Back", ImVec2(100, 40))) {
-                state.current_view = VIEW_CONTACTS;
-                state.selected_contact = -1;
+                current_view = VIEW_CONTACTS;
+                selected_contact = -1;
             }
             ImGui::SameLine();
         }
@@ -1118,7 +1118,7 @@ private:
         ImGui::BeginChild("MessageArea", ImVec2(0, -input_height), true);
 
         // Get messages for current contact
-        std::vector<Message>& messages = state.contact_messages[state.selected_contact];
+        std::vector<Message>& messages = contact_messages[selected_contact];
 
         for (size_t i = 0; i < messages.size(); i++) {
             const auto& msg = messages[i];
@@ -1243,31 +1243,31 @@ private:
         ImGui::PushStyleColor(ImGuiCol_FrameBg, recipient_bg);
 
         // Check if we need to autofocus (contact changed or message sent)
-        bool should_autofocus = (state.prev_selected_contact != state.selected_contact) || state.should_focus_input;
-        if (state.prev_selected_contact != state.selected_contact) {
-            state.prev_selected_contact = state.selected_contact;
+        bool should_autofocus = (prev_selected_contact != selected_contact) || should_focus_input;
+        if (prev_selected_contact != selected_contact) {
+            prev_selected_contact = selected_contact;
         }
-        state.should_focus_input = false; // Reset flag
+        should_focus_input = false; // Reset flag
 
         if (is_mobile) {
             // Mobile: stacked layout
             if (should_autofocus) {
                 ImGui::SetKeyboardFocusHere();
             }
-            bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", state.message_input,
-                sizeof(state.message_input), ImVec2(-1, 60),
+            bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", message_input,
+                sizeof(message_input), ImVec2(-1, 60),
                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
 
             // Send button with paper plane icon
             if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
-                if (strlen(state.message_input) > 0) {
+                if (strlen(message_input) > 0) {
                     Message msg;
-                    msg.content = state.message_input;
+                    msg.content = message_input;
                     msg.is_outgoing = true;
                     msg.timestamp = "Now";
                     messages.push_back(msg);
-                    state.message_input[0] = '\0';
-                    state.should_focus_input = true; // Set flag to refocus next frame
+                    message_input[0] = '\0';
+                    should_focus_input = true; // Set flag to refocus next frame
                 }
             }
         } else {
@@ -1284,16 +1284,16 @@ private:
             // Callback to set cursor position if needed
             auto input_callback = [](ImGuiInputTextCallbackData* data) -> int {
                 DNAMessengerApp* app = (DNAMessengerApp*)data->UserData;
-                if (app->state.input_cursor_pos >= 0) {
-                    data->CursorPos = app->state.input_cursor_pos;
+                if (app->input_cursor_pos >= 0) {
+                    data->CursorPos = app->input_cursor_pos;
                     data->SelectionStart = data->SelectionEnd = data->CursorPos;
-                    app->state.input_cursor_pos = -1; // Reset
+                    app->input_cursor_pos = -1; // Reset
                 }
                 return 0;
             };
 
-            bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", state.message_input,
-                sizeof(state.message_input), ImVec2(input_width, 60),
+            bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", message_input,
+                sizeof(message_input), ImVec2(input_width, 60),
                 ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_CallbackAlways,
                 input_callback, this);
 
@@ -1305,24 +1305,24 @@ private:
             static bool already_triggered_for_current = false;
             static ImVec2 prev_window_size = ImVec2(0, 0);
             ImVec2 current_window_size = ImGui::GetIO().DisplaySize;
-            size_t len = strlen(state.message_input);
-            bool message_changed = (strcmp(state.message_input, prev_message) != 0);
+            size_t len = strlen(message_input);
+            bool message_changed = (strcmp(message_input, prev_message) != 0);
 
             // Close emoji picker if window was resized
-            if (state.show_emoji_picker && (prev_window_size.x != current_window_size.x || prev_window_size.y != current_window_size.y)) {
-                state.show_emoji_picker = false;
+            if (show_emoji_picker && (prev_window_size.x != current_window_size.x || prev_window_size.y != current_window_size.y)) {
+                show_emoji_picker = false;
             }
             prev_window_size = current_window_size;
 
             // Reset trigger flag if message changed
             if (message_changed) {
                 already_triggered_for_current = false;
-                strcpy(prev_message, state.message_input);
+                strcpy(prev_message, message_input);
             }
 
             // Detect if ':' was just typed - calculate text cursor position
-            if (!already_triggered_for_current && len > 0 && state.message_input[len-1] == ':' && ImGui::IsItemActive()) {
-                state.show_emoji_picker = true;
+            if (!already_triggered_for_current && len > 0 && message_input[len-1] == ':' && ImGui::IsItemActive()) {
+                show_emoji_picker = true;
 
                 // Calculate approximate cursor position based on text
                 ImFont* font = ImGui::GetFont();
@@ -1332,14 +1332,14 @@ private:
                 int line_num = 0;
                 int last_newline_pos = -1;
                 for (size_t i = 0; i < len; i++) {
-                    if (state.message_input[i] == '\n') {
+                    if (message_input[i] == '\n') {
                         line_num++;
                         last_newline_pos = i;
                     }
                 }
 
                 // Calculate text width from last newline (or start) to cursor
-                const char* line_start = (last_newline_pos >= 0) ? &state.message_input[last_newline_pos + 1] : state.message_input;
+                const char* line_start = (last_newline_pos >= 0) ? &message_input[last_newline_pos + 1] : message_input;
                 size_t chars_in_line = len - (last_newline_pos + 1);
                 ImVec2 text_size = font->CalcTextSizeA(font_size, FLT_MAX, 0.0f, line_start, line_start + chars_in_line);
 
@@ -1360,26 +1360,26 @@ private:
                     if (cursor_x < 0) cursor_x = 10.0f;
                 }
 
-                state.emoji_picker_pos = ImVec2(cursor_x, cursor_y - 210);
+                emoji_picker_pos = ImVec2(cursor_x, cursor_y - 210);
                 already_triggered_for_current = true;
             }
 
             // Emoji picker popup
-            if (state.show_emoji_picker) {
-                ImGui::SetNextWindowPos(state.emoji_picker_pos, ImGuiCond_Always);
+            if (show_emoji_picker) {
+                ImGui::SetNextWindowPos(emoji_picker_pos, ImGuiCond_Always);
                 ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_Always);
                 ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
 
-                if (ImGui::Begin("##EmojiPicker", &state.show_emoji_picker, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
+                if (ImGui::Begin("##EmojiPicker", &show_emoji_picker, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
                     // ESC to close
                     if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                        state.show_emoji_picker = false;
-                        state.should_focus_input = true; // Refocus message input
+                        show_emoji_picker = false;
+                        should_focus_input = true; // Refocus message input
                     }
 
                     // Close if clicked outside
                     if (ImGui::IsMouseClicked(0) && !ImGui::IsWindowHovered(ImGuiHoveredFlags_RootAndChildWindows)) {
-                        state.show_emoji_picker = false;
+                        show_emoji_picker = false;
                     }
 
                     // Font Awesome emoji icons in a single flat array
@@ -1415,11 +1415,11 @@ private:
                     // Display emojis in a grid (9 per row)
                     for (int i = 0; i < emoji_count; i++) {
                         if (ImGui::Button(emojis[i], ImVec2(35, 35))) {
-                            if (len > 0) state.message_input[len-1] = '\0'; // Remove the ':'
-                            strcat(state.message_input, emojis[i]);
-                            state.input_cursor_pos = strlen(state.message_input); // Set cursor to end
-                            state.show_emoji_picker = false;
-                            state.should_focus_input = true;
+                            if (len > 0) message_input[len-1] = '\0'; // Remove the ':'
+                            strcat(message_input, emojis[i]);
+                            input_cursor_pos = strlen(message_input); // Set cursor to end
+                            show_emoji_picker = false;
+                            should_focus_input = true;
                         }
                         if ((i + 1) % emojis_per_row != 0 && i < emoji_count - 1) ImGui::SameLine();
                     }
@@ -1457,14 +1457,14 @@ private:
             ImGui::PopStyleColor(4);
 
             if (icon_clicked || enter_pressed) {
-                if (strlen(state.message_input) > 0) {
+                if (strlen(message_input) > 0) {
                     Message msg;
-                    msg.content = state.message_input;
+                    msg.content = message_input;
                     msg.is_outgoing = true;
                     msg.timestamp = "Now";
                     messages.push_back(msg);
-                    state.message_input[0] = '\0';
-                    state.should_focus_input = true; // Set flag to refocus next frame
+                    message_input[0] = '\0';
+                    should_focus_input = true; // Set flag to refocus next frame
                 }
             }
         }

@@ -457,27 +457,36 @@
 
 ---
 
-## 📦 Code Organization Status (2025-11-09)
+## 📦 Code Organization Status (2025-11-09) - ✅ MAJOR REFACTORING IN PROGRESS
 
-### Current Structure:
-- **main.cpp** - 2,066 lines (reduced from 2,185)
-  - DNAMessengerApp class (1,734 lines)
-  - Main loop and font setup
-  - ApplyTheme() function
-  
+### ✅ Phase 1 Complete: Core Data Structures
+- **core/data_types.h** - 22 lines ✅ EXTRACTED
+  - Message struct
+  - Contact struct
+
+- **core/app_state.h** - 78 lines ✅ EXTRACTED
+  - All enums (View, CreateIdentityStep, RestoreIdentityStep)
+  - AppState class with all member variables
+
+- **core/app_state.cpp** - 171 lines ✅ EXTRACTED
+  - AppState constructor
+  - scanIdentities() - mock data loading
+  - loadIdentity() - mock contact loading
+
+- **app.h** - 1,691 lines ✅ REFACTORED
+  - Removed all member variables (now in AppState)
+  - Added single `AppState state;` member
+  - All references updated to use `state.` prefix
+
+### 🔄 Phase 2-6 In Progress: Modularization
+- Extracting dialogs, components, views, layouts
+- See `REFACTORING_STATUS.md` for detailed progress
+
+### Existing Helpers:
 - **ui_helpers.h/cpp** - 150 lines ✅ EXTRACTED
-  - ButtonDark()
-  - ThemedButton()
-  - ThemedSpinner()
-  
 - **settings_manager.h/cpp** - 100 lines ✅ SEPARATE
 - **theme_colors.h** - 32 lines ✅ SEPARATE
+- **helpers/identity_helpers.h** - 20 lines ✅ NEW
 
-### Future Refactoring (Optional, Post-Integration):
-Once backend integration is complete, consider:
-- Extract view methods to views.cpp (renderChatView, renderWalletView, etc.)
-- Extract dialog methods to dialogs.cpp (renderIdentitySelection, etc.)
-- Move DNAMessengerApp class declaration to app.h
-
-**Decision: Proceed with backend integration now.** Further code organization can wait until after integration is complete and stable.
+**Status: Major modular refactoring underway. Backend integration will follow completion.**
 

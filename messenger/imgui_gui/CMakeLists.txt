@@ -34,6 +34,7 @@ add_executable(dna_messenger_imgui
     app.cpp
     settings_manager.cpp
     ui_helpers.cpp
+    core/app_state.cpp
     ${IMGUI_SOURCES}
 )
 
