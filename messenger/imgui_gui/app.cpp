@@ -779,7 +779,7 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
     state.identities.push_back(fingerprint);
     state.current_identity = fingerprint;
     state.identity_loaded = true;
-    state.show_identity_selection = false;
+    // DON'T set show_identity_selection here - it's set in render() when task completes
     
     // Load contacts for the new identity
     loadIdentity(fingerprint);
@@ -788,13 +788,10 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
     memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
     memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
     state.seed_confirmed = false;
-    // Modal already closed before async task started
+    // Modal will be closed when async task completes (in render())
     
     messenger_free(ctx);
     printf("[Identity] Identity created successfully\n");
-    
-    // Hide spinner (async task will finish)
-    state.show_operation_spinner = false;
 }
 
 
@@ -1146,7 +1143,7 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
     // For now, message history will be empty
 
     state.identity_loaded = true;
-    state.show_identity_selection = false;
+    // DON'T set show_identity_selection here - it's managed by async task completion
     state.current_identity = identity;
 
     printf("[Identity] Identity loaded successfully: %s (%zu contacts)\n",
