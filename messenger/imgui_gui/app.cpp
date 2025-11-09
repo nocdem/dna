@@ -8,6 +8,14 @@
 #include "helpers/identity_helpers.h"
 #include <cstring>
 #include <cstdio>
+#include <sys/stat.h>
+#include <dirent.h>
+
+// Backend includes
+extern "C" {
+    #include "../messenger.h"
+    #include "../bip39.h"
+}
 
 // Forward declaration for ApplyTheme (defined in main.cpp)
 extern void ApplyTheme(int theme);
@@ -255,51 +263,36 @@ void DNAMessengerApp::renderIdentitySelection() {
 void DNAMessengerApp::scanIdentities() {
     state.identities.clear();
 
-    // UI SKETCH MODE - Add mock identities for testing
-    state.identities.push_back("alice");
-    state.identities.push_back("bob");
-    state.identities.push_back("charlie");
-    state.identities.push_back("david");
-    state.identities.push_back("emma");
-    state.identities.push_back("frank");
-    state.identities.push_back("grace");
-    state.identities.push_back("henry");
-    state.identities.push_back("isabella");
-    state.identities.push_back("jack");
-    state.identities.push_back("kate");
-    state.identities.push_back("liam");
-    state.identities.push_back("maria");
-    state.identities.push_back("noah");
-    state.identities.push_back("olivia");
-    state.identities.push_back("peter");
-    state.identities.push_back("quinn");
-    state.identities.push_back("rachel");
-    state.identities.push_back("steve");
-    state.identities.push_back("tina");
-    state.identities.push_back("ulysses");
-    state.identities.push_back("victoria");
-    state.identities.push_back("william");
-
-    printf("[SKETCH MODE] Loaded %zu mock state.identities\n", state.identities.size());
-
-    /* DISABLED FOR SKETCH MODE - Real identity scanning
-    // Scan ~/.dna for *-dilithium.pqkey files
+    // Scan ~/.dna for *.dsa files (Dilithium signature keys)
     const char* home = getenv("HOME");
-    if (!home) return;
+    if (!home) {
+        printf("[Identity] HOME environment variable not set\n");
+        return;
+    }
 
     std::string dna_dir = std::string(home) + "/.dna";
 
 #ifdef _WIN32
-    std::string search_path = dna_dir + "\\*-dilithium.pqkey";
+    std::string search_path = dna_dir + "\\*.dsa";
     WIN32_FIND_DATAA find_data;
     HANDLE handle = FindFirstFileA(search_path.c_str(), &find_data);
 
     if (handle != INVALID_HANDLE_VALUE) {
         do {
             std::string filename = find_data.cFileName;
-            // Remove "-dilithium.pqkey" suffix (17 chars)
-            std::string identity = filename.substr(0, filename.length() - 17);
-            state.identities.push_back(identity);
+            // Remove ".dsa" suffix (4 chars)
+            if (filename.length() > 4) {
+                std::string fingerprint = filename.substr(0, filename.length() - 4);
+                
+                // Verify both key files exist (.dsa and .kem)
+                std::string dsa_path = dna_dir + "\\" + fingerprint + ".dsa";
+                std::string kem_path = dna_dir + "\\" + fingerprint + ".kem";
+                
+                struct stat dsa_stat, kem_stat;
+                if (stat(dsa_path.c_str(), &dsa_stat) == 0 && stat(kem_path.c_str(), &kem_stat) == 0) {
+                    state.identities.push_back(fingerprint);
+                }
+            }
         } while (FindNextFileA(handle, &find_data));
         FindClose(handle);
     }
@@ -309,16 +302,25 @@ void DNAMessengerApp::scanIdentities() {
         struct dirent* entry;
         while ((entry = readdir(dir)) != nullptr) {
             std::string filename = entry->d_name;
-            if (filename.length() > 17 &&
-                filename.substr(filename.length() - 17) == "-dilithium.pqkey") {
-                std::string identity = filename.substr(0, filename.length() - 17);
-                state.identities.push_back(identity);
+            // Check if filename ends with ".dsa"
+            if (filename.length() > 4 && filename.substr(filename.length() - 4) == ".dsa") {
+                std::string fingerprint = filename.substr(0, filename.length() - 4);
+                
+                // Verify both key files exist (.dsa and .kem)
+                std::string dsa_path = dna_dir + "/" + fingerprint + ".dsa";
+                std::string kem_path = dna_dir + "/" + fingerprint + ".kem";
+                
+                struct stat dsa_stat, kem_stat;
+                if (stat(dsa_path.c_str(), &dsa_stat) == 0 && stat(kem_path.c_str(), &kem_stat) == 0) {
+                    state.identities.push_back(fingerprint);
+                }
             }
         }
         closedir(dir);
     }
 #endif
-    */
+
+    printf("[Identity] Scanned ~/.dna: found %zu identities\n", state.identities.size());
 }
 
 
