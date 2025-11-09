@@ -1814,13 +1814,38 @@ void DNAMessengerApp::renderChatView() {
         // Send button with paper plane icon
         if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
             if (strlen(state.message_input) > 0) {
-                Message msg;
-                msg.content = state.message_input;
-                msg.is_outgoing = true;
-                msg.timestamp = "Now";
-                messages.push_back(msg);
-                state.message_input[0] = '\0';
-                state.should_focus_input = true; // Set flag to refocus next frame
+                // Get current contact identity
+                if (state.selected_contact >= 0 && state.selected_contact < (int)state.contacts.size()) {
+                    const Contact& contact = state.contacts[state.selected_contact];
+                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                    
+                    if (ctx) {
+                        // Send message via P2P
+                        const char* recipients[1] = { contact.address.c_str() };
+                        int result = messenger_send_message(ctx, recipients, 1, state.message_input);
+                        
+                        if (result == 0) {
+                            printf("[Message] ✓ Sent message to %s\n", contact.name.c_str());
+                            
+                            // Add to UI immediately (will be in DB)
+                            Message msg;
+                            msg.content = state.message_input;
+                            msg.is_outgoing = true;
+                            msg.timestamp = "Now";
+                            messages.push_back(msg);
+                            
+                            // Clear input
+                            state.message_input[0] = '\0';
+                            state.should_focus_input = true;
+                        } else {
+                            printf("[Message] ERROR: Failed to send message\n");
+                        }
+                    } else {
+                        printf("[Message] ERROR: Messenger context not initialized\n");
+                    }
+                } else {
+                    printf("[Message] ERROR: No contact selected\n");
+                }
             }
         }
     } else {
@@ -2011,13 +2036,39 @@ void DNAMessengerApp::renderChatView() {
 
         if (icon_clicked || enter_pressed) {
             if (strlen(state.message_input) > 0) {
-                Message msg;
-                msg.content = state.message_input;
-                msg.is_outgoing = true;
-                msg.timestamp = "Now";
-                messages.push_back(msg);
-                state.message_input[0] = '\0';
-                state.should_focus_input = true; // Set flag to refocus next frame
+                // Get current contact identity
+                if (state.selected_contact >= 0 && state.selected_contact < (int)state.contacts.size()) {
+                    const Contact& contact = state.contacts[state.selected_contact];
+                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                    
+                    if (ctx) {
+                        // Send message via P2P
+                        const char* recipients[1] = { contact.address.c_str() };
+                        int result = messenger_send_message(ctx, recipients, 1, state.message_input);
+                        
+                        if (result == 0) {
+                            printf("[Message] ✓ Sent message to %s\n", contact.name.c_str());
+                            
+                            // Add to UI immediately (will be in DB)
+                            Message msg;
+                            msg.content = state.message_input;
+                            msg.is_outgoing = true;
+                            msg.timestamp = "Now";
+                            messages.push_back(msg);
+                            
+                            // Clear input
+                            state.message_input[0] = '\0';
+                            state.should_focus_input = true;
+                        } else {
+                            printf("[Message] ERROR: Failed to send message\n");
+                            // TODO: Show error toast to user
+                        }
+                    } else {
+                        printf("[Message] ERROR: Messenger context not initialized\n");
+                    }
+                } else {
+                    printf("[Message] ERROR: No contact selected\n");
+                }
             }
         }
     }
