@@ -262,6 +262,7 @@ int main(int argc, char** argv) {
     bool dht_initialized = false;
     bool dht_init_attempted = false;
     float dht_init_start_time = 0.0f;
+    std::vector<std::string> dht_status_messages;
     
     printf("[MAIN] DHT initialization will happen with loading screen...\n");
 
@@ -287,12 +288,20 @@ int main(int argc, char** argv) {
                 if (frame_count >= 2) {  // Start DHT init on second frame
                     dht_init_attempted = true;
                     dht_init_start_time = (float)glfwGetTime();
+                    
+                    dht_status_messages.push_back("Starting DHT bootstrap...");
                     printf("[MAIN] Starting DHT bootstrap...\n");
+                    
+                    dht_status_messages.push_back("Connecting to bootstrap nodes...");
+                    dht_status_messages.push_back("Bootstrapping distributed hash table...");
                     
                     if (dht_singleton_init() != 0) {
                         fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
+                        dht_status_messages.push_back("ERROR: DHT initialization failed");
+                        dht_status_messages.push_back("Continuing in offline mode...");
                         fprintf(stderr, "[MAIN] Continuing without DHT (offline mode)...\n");
                     } else {
+                        dht_status_messages.push_back("DHT ready!");
                         printf("[MAIN] ✓ DHT ready!\n");
                     }
                     dht_initialized = true;
@@ -325,6 +334,25 @@ int main(int argc, char** argv) {
             ImVec2 text_size = ImGui::CalcTextSize(loading_text);
             ImGui::SetCursorScreenPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_radius + 30.0f));
             ImGui::Text("%s", loading_text);
+            
+            // Status messages below (theme-aware, slightly dimmed)
+            ImVec4 status_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+            status_color.w = 0.7f; // Slightly dimmed
+            
+            float msg_y = center.y + spinner_radius + 60.0f;
+            int max_messages = 5; // Show last 5 messages
+            int start_idx = (int)dht_status_messages.size() > max_messages ? 
+                            (int)dht_status_messages.size() - max_messages : 0;
+            
+            for (int i = start_idx; i < (int)dht_status_messages.size(); i++) {
+                const char* msg = dht_status_messages[i].c_str();
+                ImVec2 msg_size = ImGui::CalcTextSize(msg);
+                ImGui::SetCursorScreenPos(ImVec2(center.x - msg_size.x * 0.5f, msg_y));
+                ImGui::PushStyleColor(ImGuiCol_Text, status_color);
+                ImGui::Text("%s", msg);
+                ImGui::PopStyleColor();
+                msg_y += 25.0f;
+            }
             
             ImGui::End();
             
