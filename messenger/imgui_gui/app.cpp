@@ -638,8 +638,11 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
 
     ImGui::BeginDisabled(!state.seed_confirmed);
     if (ButtonDark("Create", ImVec2(button_width, 40))) {
-        // Close modal immediately
+        // Close ALL modals immediately
         ImGui::CloseCurrentPopup();
+        
+        // Hide identity selection so we proceed to main window (where spinner renders)
+        state.show_identity_selection = false;
         
         // Show spinner overlay
         state.show_operation_spinner = true;
