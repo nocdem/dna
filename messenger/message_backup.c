@@ -23,7 +23,7 @@ struct message_backup_context {
 };
 
 /**
- * Database Schema (v1) - ENCRYPTED STORAGE
+ * Database Schema (v2) - ENCRYPTED STORAGE with Status
  *
  * SECURITY: Messages stored as encrypted BLOB for data sovereignty.
  * If database is stolen, messages remain unreadable.
@@ -38,7 +38,8 @@ static const char *SCHEMA_SQL =
     "  timestamp INTEGER NOT NULL,"
     "  delivered INTEGER DEFAULT 1,"
     "  read INTEGER DEFAULT 0,"
-    "  is_outgoing INTEGER DEFAULT 0"
+    "  is_outgoing INTEGER DEFAULT 0,"
+    "  status INTEGER DEFAULT 1"          // 0=PENDING, 1=SENT, 2=FAILED
     ");"
     ""
     "CREATE INDEX IF NOT EXISTS idx_sender ON messages(sender);"
@@ -50,7 +51,7 @@ static const char *SCHEMA_SQL =
     "  value TEXT"
     ");"
     ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '1');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '2');";
 
 /**
  * Get database path
@@ -133,6 +134,19 @@ message_backup_context_t* message_backup_init(const char *identity) {
         return NULL;
     }
 
+    // Migration: Add status column if it doesn't exist (v1 -> v2)
+    const char *migration_sql = "ALTER TABLE messages ADD COLUMN status INTEGER DEFAULT 1;";
+    rc = sqlite3_exec(ctx->db, migration_sql, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        // Column might already exist (not an error)
+        if (strstr(err_msg, "duplicate column") == NULL) {
+            fprintf(stderr, "[Backup] Migration warning: %s\n", err_msg);
+        }
+        sqlite3_free(err_msg);
+    } else {
+        printf("[Backup] Migrated database schema to v2 (added status column)\n");
+    }
+
     printf("[Backup] Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
     return ctx;
 }
@@ -151,8 +165,8 @@ int message_backup_save(message_backup_context_t *ctx,
     if (!sender || !recipient || !encrypted_message) return -1;
 
     const char *sql =
-        "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read) "
-        "VALUES (?, ?, ?, ?, ?, ?, 1, 0)";
+        "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read, status) "
+        "VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?)";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -167,6 +181,7 @@ int message_backup_save(message_backup_context_t *ctx,
     sqlite3_bind_int(stmt, 4, (int)encrypted_len);
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)timestamp);
     sqlite3_bind_int(stmt, 6, is_outgoing ? 1 : 0);
+    sqlite3_bind_int(stmt, 7, 0);  // status = 0 (PENDING) - will be updated after send
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -176,7 +191,7 @@ int message_backup_save(message_backup_context_t *ctx,
         return -1;
     }
 
-    printf("[Backup] Saved ENCRYPTED message: %s → %s (%zu bytes ciphertext)\n",
+    printf("[Backup] Saved ENCRYPTED message: %s → %s (%zu bytes ciphertext, status=PENDING)\n",
            sender, recipient, encrypted_len);
     return 0;
 }
@@ -229,7 +244,7 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
     if (!ctx || !ctx->db || !contact_identity) return -1;
 
     const char *sql =
-        "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read "
+        "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read, status "
         "FROM messages "
         "WHERE (sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?) "
         "ORDER BY timestamp ASC";
@@ -286,6 +301,7 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
         messages[idx].timestamp = (time_t)sqlite3_column_int64(stmt, 5);
         messages[idx].delivered = sqlite3_column_int(stmt, 6) != 0;
         messages[idx].read = sqlite3_column_int(stmt, 7) != 0;
+        messages[idx].status = sqlite3_column_int(stmt, 8);  // Read status column (default 1 for old messages)
         idx++;
     }
 
@@ -296,6 +312,31 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
 
     printf("[Backup] Retrieved %d ENCRYPTED messages for conversation with %s\n", count, contact_identity);
     return 0;
+}
+
+/**
+ * Update message status (PENDING/SENT/FAILED)
+ */
+int message_backup_update_status(message_backup_context_t *ctx, int message_id, int status) {
+    if (!ctx || !ctx->db) return -1;
+
+    const char *sql = "UPDATE messages SET status = ? WHERE id = ?";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int(stmt, 1, status);
+    sqlite3_bind_int(stmt, 2, message_id);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc == SQLITE_DONE) {
+        printf("[Backup] Updated message %d status to %d\n", message_id, status);
+        return 0;
+    }
+
+    return -1;
 }
 
 /**

@@ -40,6 +40,7 @@ typedef struct {
     time_t timestamp;
     bool delivered;
     bool read;
+    int status;  // 0=PENDING, 1=SENT, 2=FAILED
 } backup_message_t;
 
 /**
@@ -93,6 +94,16 @@ int message_backup_mark_delivered(message_backup_context_t *ctx, int message_id)
  * @return 0 on success, -1 on error
  */
 int message_backup_mark_read(message_backup_context_t *ctx, int message_id);
+
+/**
+ * Update message status
+ *
+ * @param ctx Backup context
+ * @param message_id Message ID from database
+ * @param status New status (0=PENDING, 1=SENT, 2=FAILED)
+ * @return 0 on success, -1 on error
+ */
+int message_backup_update_status(message_backup_context_t *ctx, int message_id, int status);
 
 /**
  * Get conversation history

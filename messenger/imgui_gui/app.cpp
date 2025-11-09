@@ -1240,12 +1240,24 @@ void DNAMessengerApp::loadMessagesForContact(int contact_index) {
                     }
                 }
 
+                // Initialize status from database (default to SENT for loaded messages)
+                MessageStatus msg_status = STATUS_SENT;  // Default for historical messages
+                if (messages[i].status) {
+                    // Parse string status (old format compatibility)
+                    if (strcmp(messages[i].status, "pending") == 0) {
+                        msg_status = STATUS_PENDING;
+                    } else if (strcmp(messages[i].status, "failed") == 0) {
+                        msg_status = STATUS_FAILED;
+                    }
+                }
+
                 // Add message to temporary vector (not UI yet)
                 Message msg;
                 msg.sender = sender;
                 msg.content = messageText;
                 msg.timestamp = timestamp;
                 msg.is_outgoing = is_outgoing;
+                msg.status = msg_status;
 
                 loaded_messages.push_back(msg);
             }
@@ -1294,6 +1306,58 @@ void DNAMessengerApp::checkForNewMessages() {
     });
 }
 
+void DNAMessengerApp::retryMessage(int contact_idx, int msg_idx) {
+    if (contact_idx < 0 || contact_idx >= (int)state.contacts.size()) {
+        printf("[Retry] ERROR: Invalid contact index\n");
+        return;
+    }
+
+    std::vector<Message>& messages = state.contact_messages[contact_idx];
+    if (msg_idx < 0 || msg_idx >= (int)messages.size()) {
+        printf("[Retry] ERROR: Invalid message index\n");
+        return;
+    }
+
+    Message& msg = messages[msg_idx];
+    if (msg.status != STATUS_FAILED) {
+        printf("[Retry] ERROR: Can only retry failed messages\n");
+        return;
+    }
+
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (!ctx) {
+        printf("[Retry] ERROR: No messenger context\n");
+        return;
+    }
+
+    // Update status to pending
+    msg.status = STATUS_PENDING;
+
+    // Copy data for async task
+    std::string message_copy = msg.content;
+    std::string recipient = state.contacts[contact_idx].address;
+    DNAMessengerApp* app = this;
+
+    printf("[Retry] Retrying message to %s...\n", recipient.c_str());
+
+    // Send message asynchronously
+    message_send_task.start([app, ctx, message_copy, recipient, contact_idx, msg_idx](AsyncTask* task) {
+        const char* recipients[] = { recipient.c_str() };
+        int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
+
+        // Update status based on result
+        std::vector<Message>& messages = app->state.contact_messages[contact_idx];
+        if (msg_idx >= 0 && msg_idx < (int)messages.size()) {
+            messages[msg_idx].status = (result == 0) ? STATUS_SENT : STATUS_FAILED;
+
+            if (result == 0) {
+                printf("[Retry] ✓ Message retry successful to %s\n", recipient.c_str());
+            } else {
+                printf("[Retry] ERROR: Message retry failed to %s\n", recipient.c_str());
+            }
+        }
+    });
+}
 
 void DNAMessengerApp::renderAddContactDialog() {
     if (!CenteredModal::Begin("Add Contact")) {
@@ -1889,6 +1953,46 @@ void DNAMessengerApp::renderChatView() {
         ImGui::TextWrapped("%s", msg.content.c_str());
         ImGui::PopTextWrapPos();
 
+        // Status indicator (bottom-right corner) for outgoing messages
+        if (msg.is_outgoing) {
+            const char* status_icon;
+            ImVec4 status_color;
+
+            switch (msg.status) {
+                case STATUS_PENDING:
+                    status_icon = ICON_FA_CLOCK;
+                    status_color = (g_app_settings.theme == 0) ? DNATheme::TextHint() : ClubTheme::TextHint();
+                    break;
+                case STATUS_SENT:
+                    status_icon = ICON_FA_CHECK;
+                    status_color = (g_app_settings.theme == 0) ? DNATheme::TextSuccess() : ClubTheme::TextSuccess();
+                    break;
+                case STATUS_FAILED:
+                    status_icon = ICON_FA_CIRCLE_EXCLAMATION;
+                    status_color = (g_app_settings.theme == 0) ? DNATheme::TextWarning() : ClubTheme::TextWarning();
+                    break;
+            }
+
+            status_color.w = 0.7f; // Subtle opacity
+            float icon_size = 12.0f;
+            ImVec2 status_pos = ImVec2(content_width - icon_size, bubble_height - padding_vertical - icon_size);
+
+            ImGui::SetCursorPos(status_pos);
+            ImGui::PushStyleColor(ImGuiCol_Text, status_color);
+            ImGui::Text("%s", status_icon);
+            ImGui::PopStyleColor();
+
+            // Add retry hover tooltip and click handler for failed messages
+            if (msg.status == STATUS_FAILED) {
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Send failed - click to retry");
+                }
+                if (ImGui::IsItemClicked()) {
+                    retryMessage(state.selected_contact, i);
+                }
+            }
+        }
+
         ImGui::EndChild();
 
         // Get bubble position for arrow (AFTER EndChild)
@@ -1977,22 +2081,35 @@ void DNAMessengerApp::renderChatView() {
                     std::string recipient = state.contacts[state.selected_contact].address;
                     int contact_idx = state.selected_contact;
                     DNAMessengerApp* app = this;
-                    
+
+                    // Optimistic UI update: append pending message immediately
+                    Message pending_msg;
+                    pending_msg.sender = "You";
+                    pending_msg.content = message_copy;
+                    pending_msg.timestamp = "now";
+                    pending_msg.is_outgoing = true;
+                    pending_msg.status = STATUS_PENDING;
+                    state.contact_messages[contact_idx].push_back(pending_msg);
+
                     // Clear input immediately for better UX
                     state.message_input[0] = '\0';
                     state.should_focus_input = true;
-                    
+
                     // Send message asynchronously
                     message_send_task.start([app, ctx, message_copy, recipient, contact_idx](AsyncTask* task) {
                         const char* recipients[] = { recipient.c_str() };
                         int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
 
-                        if (result == 0) {
-                            printf("[Send] Message sent successfully to %s\n", recipient.c_str());
-                            // Reload messages from database (single source of truth, prevents duplicates)
-                            app->loadMessagesForContact(contact_idx);
-                        } else {
-                            printf("[Send] ERROR: Failed to send message to %s\n", recipient.c_str());
+                        // Update status of last message (atomic update, no reload needed)
+                        std::vector<Message>& messages = app->state.contact_messages[contact_idx];
+                        if (!messages.empty()) {
+                            messages.back().status = (result == 0) ? STATUS_SENT : STATUS_FAILED;
+
+                            if (result == 0) {
+                                printf("[Send] Message sent successfully to %s (status updated)\n", recipient.c_str());
+                            } else {
+                                printf("[Send] ERROR: Failed to send message to %s (status=FAILED)\n", recipient.c_str());
+                            }
                         }
                     });
                 } else {
@@ -2195,22 +2312,35 @@ void DNAMessengerApp::renderChatView() {
                     std::string recipient = state.contacts[state.selected_contact].address;
                     int contact_idx = state.selected_contact;
                     DNAMessengerApp* app = this;
-                    
+
+                    // Optimistic UI update: append pending message immediately
+                    Message pending_msg;
+                    pending_msg.sender = "You";
+                    pending_msg.content = message_copy;
+                    pending_msg.timestamp = "now";
+                    pending_msg.is_outgoing = true;
+                    pending_msg.status = STATUS_PENDING;
+                    state.contact_messages[contact_idx].push_back(pending_msg);
+
                     // Clear input immediately for better UX
                     state.message_input[0] = '\0';
                     state.should_focus_input = true;
-                    
+
                     // Send message asynchronously
                     message_send_task.start([app, ctx, message_copy, recipient, contact_idx](AsyncTask* task) {
                         const char* recipients[] = { recipient.c_str() };
                         int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
 
-                        if (result == 0) {
-                            printf("[Send] Message sent successfully to %s\n", recipient.c_str());
-                            // Reload messages from database (single source of truth, prevents duplicates)
-                            app->loadMessagesForContact(contact_idx);
-                        } else {
-                            printf("[Send] ERROR: Failed to send message to %s\n", recipient.c_str());
+                        // Update status of last message (atomic update, no reload needed)
+                        std::vector<Message>& messages = app->state.contact_messages[contact_idx];
+                        if (!messages.empty()) {
+                            messages.back().status = (result == 0) ? STATUS_SENT : STATUS_FAILED;
+
+                            if (result == 0) {
+                                printf("[Send] Message sent successfully to %s (status updated)\n", recipient.c_str());
+                            } else {
+                                printf("[Send] ERROR: Failed to send message to %s (status=FAILED)\n", recipient.c_str());
+                            }
                         }
                     });
                 } else {

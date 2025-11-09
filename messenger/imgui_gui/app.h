@@ -66,6 +66,9 @@ private:
     // Contact management
     void renderAddContactDialog();
 
+    // Message management
+    void retryMessage(int contact_idx, int msg_idx);
+
     // Layout managers
     void renderMobileLayout();
     void renderDesktopLayout();
