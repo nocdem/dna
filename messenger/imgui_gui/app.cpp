@@ -149,6 +149,7 @@ void DNAMessengerApp::render() {
 
     // Add Contact dialog
     if (state.show_add_contact_dialog) {
+        ImGui::OpenPopup("Add Contact");
         renderAddContactDialog();
     }
 }
@@ -1277,8 +1278,7 @@ void DNAMessengerApp::renderAddContactDialog() {
 
     if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
         state.show_add_contact_dialog = false;
-        CenteredModal::End();
-        return;
+        ImGui::CloseCurrentPopup();
     }
 
     if (!is_mobile) ImGui::SameLine();
@@ -1299,6 +1299,7 @@ void DNAMessengerApp::renderAddContactDialog() {
 
             // Close dialog
             state.show_add_contact_dialog = false;
+            ImGui::CloseCurrentPopup();
         } else {
             printf("[AddContact] ERROR: Failed to save contact to database\n");
             state.add_contact_error_message = "Failed to save contact to database";
@@ -1594,7 +1595,6 @@ void DNAMessengerApp::renderSidebar() {
         state.add_contact_found_fingerprint.clear();
         state.add_contact_last_searched_input.clear();
         memset(state.add_contact_input, 0, sizeof(state.add_contact_input));
-        ImGui::OpenPopup("Add Contact");
     }
 
     if (ThemedButton(ICON_FA_USERS " Create Group", ImVec2(button_width, add_button_height), false)) {
