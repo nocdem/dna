@@ -1169,6 +1169,10 @@ void DNAMessengerApp::loadMessagesForContact(int contact_index) {
     if (contact_index < 0 || contact_index >= (int)state.contacts.size()) {
         return;
     }
+    
+    if (message_load_task.isRunning()) {
+        return; // Already loading
+    }
 
     const Contact& contact = state.contacts[contact_index];
     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
@@ -1177,84 +1181,96 @@ void DNAMessengerApp::loadMessagesForContact(int contact_index) {
         return;
     }
 
-    // Clear existing messages for this contact
+    // Clear existing messages for this contact immediately
     state.contact_messages[contact_index].clear();
 
-    printf("[Messages] Loading messages for contact: %s (%s)\n",
-           contact.name.c_str(), contact.address.c_str());
+    // Copy data for async task
+    std::string contact_address = contact.address;
+    std::string contact_name = contact.name;
+    std::string current_identity = state.current_identity;
+    DNAMessengerApp* app = this;
 
-    // Load conversation from database
-    message_info_t *messages = nullptr;
-    int count = 0;
+    // Load messages asynchronously
+    message_load_task.start([app, ctx, contact_index, contact_address, contact_name, current_identity](AsyncTask* task) {
+        printf("[Messages] Loading messages for contact: %s (%s)\n",
+               contact_name.c_str(), contact_address.c_str());
 
-    // Use contact.address which contains the fingerprint
-    if (messenger_get_conversation(ctx, contact.address.c_str(), &messages, &count) == 0) {
-        printf("[Messages] Loaded %d messages from database\n", count);
+        // Load conversation from database
+        message_info_t *messages = nullptr;
+        int count = 0;
 
-        for (int i = 0; i < count; i++) {
-            // Decrypt message if possible
-            char *plaintext = nullptr;
-            size_t plaintext_len = 0;
+        // Use contact.address which contains the fingerprint
+        if (messenger_get_conversation(ctx, contact_address.c_str(), &messages, &count) == 0) {
+            printf("[Messages] Loaded %d messages from database\n", count);
 
-            std::string messageText = "[encrypted]";
-            if (messenger_decrypt_message(ctx, messages[i].id, &plaintext, &plaintext_len) == 0) {
-                messageText = std::string(plaintext, plaintext_len);
-                free(plaintext);
-            } else {
-                printf("[Messages] Warning: Could not decrypt message ID %d\n", messages[i].id);
-            }
+            // Clear and rebuild message list
+            app->state.contact_messages[contact_index].clear();
 
-            // Format timestamp (extract time from "YYYY-MM-DD HH:MM:SS")
-            std::string timestamp = messages[i].timestamp ? messages[i].timestamp : "Unknown";
-            if (timestamp.length() >= 16) {
-                // Extract "HH:MM" from "YYYY-MM-DD HH:MM:SS"
-                timestamp = timestamp.substr(11, 5);
-            }
+            for (int i = 0; i < count; i++) {
+                // Decrypt message if possible
+                char *plaintext = nullptr;
+                size_t plaintext_len = 0;
 
-            // Determine if message is outgoing (sent by current user)
-            bool is_outgoing = false;
-            if (messages[i].sender && state.current_identity.length() > 0) {
-                // Compare fingerprints
-                is_outgoing = (strcmp(messages[i].sender, state.current_identity.c_str()) == 0);
-            }
-
-            // Get sender display name
-            std::string sender = contact.name; // Default to contact name for incoming
-            if (is_outgoing) {
-                sender = "You";
-            } else if (messages[i].sender) {
-                // Try to get display name for sender
-                char displayName[256] = {0};
-                if (messenger_get_display_name(ctx, messages[i].sender, displayName) == 0) {
-                    sender = displayName;
+                std::string messageText = "[encrypted]";
+                if (messenger_decrypt_message(ctx, messages[i].id, &plaintext, &plaintext_len) == 0) {
+                    messageText = std::string(plaintext, plaintext_len);
+                    free(plaintext);
                 } else {
-                    // Fallback to shortened fingerprint
-                    std::string fingerprint = messages[i].sender;
-                    if (fingerprint.length() > 32) {
-                        sender = fingerprint.substr(0, 16) + "..." + fingerprint.substr(fingerprint.length() - 16);
+                    printf("[Messages] Warning: Could not decrypt message ID %d\n", messages[i].id);
+                }
+
+                // Format timestamp (extract time from "YYYY-MM-DD HH:MM:SS")
+                std::string timestamp = messages[i].timestamp ? messages[i].timestamp : "Unknown";
+                if (timestamp.length() >= 16) {
+                    // Extract "HH:MM" from "YYYY-MM-DD HH:MM:SS"
+                    timestamp = timestamp.substr(11, 5);
+                }
+
+                // Determine if message is outgoing (sent by current user)
+                bool is_outgoing = false;
+                if (messages[i].sender && current_identity.length() > 0) {
+                    // Compare fingerprints
+                    is_outgoing = (strcmp(messages[i].sender, current_identity.c_str()) == 0);
+                }
+
+                // Get sender display name
+                std::string sender = contact_name; // Default to contact name for incoming
+                if (is_outgoing) {
+                    sender = "You";
+                } else if (messages[i].sender) {
+                    // Try to get display name for sender
+                    char displayName[256] = {0};
+                    if (messenger_get_display_name(ctx, messages[i].sender, displayName) == 0) {
+                        sender = displayName;
                     } else {
-                        sender = fingerprint;
+                        // Fallback to shortened fingerprint
+                        std::string fingerprint = messages[i].sender;
+                        if (fingerprint.length() > 32) {
+                            sender = fingerprint.substr(0, 16) + "..." + fingerprint.substr(fingerprint.length() - 16);
+                        } else {
+                            sender = fingerprint;
+                        }
                     }
                 }
+
+                // Add message to contact_messages
+                Message msg;
+                msg.sender = sender;
+                msg.content = messageText;
+                msg.timestamp = timestamp;
+                msg.is_outgoing = is_outgoing;
+
+                app->state.contact_messages[contact_index].push_back(msg);
             }
 
-            // Add message to contact_messages
-            Message msg;
-            msg.sender = sender;
-            msg.content = messageText;
-            msg.timestamp = timestamp;
-            msg.is_outgoing = is_outgoing;
+            // Free messages array
+            messenger_free_messages(messages, count);
 
-            state.contact_messages[contact_index].push_back(msg);
+            printf("[Messages] Processed %d messages for display\n", count);
+        } else {
+            printf("[Messages] No messages found or error loading conversation\n");
         }
-
-        // Free messages array
-        messenger_free_messages(messages, count);
-
-        printf("[Messages] Processed %d messages for display\n", count);
-    } else {
-        printf("[Messages] No messages found or error loading conversation\n");
-    }
+    });
 }
 
 void DNAMessengerApp::checkForNewMessages() {
@@ -1988,8 +2004,8 @@ void DNAMessengerApp::renderChatView() {
                         
                         if (result == 0) {
                             printf("[Send] Message sent successfully to %s\n", recipient.c_str());
-                            // Reload messages to show the sent message
-                            app->loadMessagesForContact(contact_idx);
+                            // Set flag to reload messages (avoids duplicate)
+                            app->state.new_messages_received = true;
                         } else {
                             printf("[Send] ERROR: Failed to send message to %s\n", recipient.c_str());
                         }
@@ -2206,8 +2222,8 @@ void DNAMessengerApp::renderChatView() {
                         
                         if (result == 0) {
                             printf("[Send] Message sent successfully to %s\n", recipient.c_str());
-                            // Reload messages to show the sent message
-                            app->loadMessagesForContact(contact_idx);
+                            // Set flag to reload messages (avoids duplicate)
+                            app->state.new_messages_received = true;
                         } else {
                             printf("[Send] ERROR: Failed to send message to %s\n", recipient.c_str());
                         }

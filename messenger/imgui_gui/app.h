@@ -33,6 +33,7 @@ private:
     AsyncTask contact_lookup_task;
     AsyncTask message_poll_task;
     AsyncTask message_send_task;
+    AsyncTask message_load_task;
 
     // Identity selection and management
     void renderIdentitySelection();
