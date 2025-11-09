@@ -181,7 +181,14 @@ void DNAMessengerApp::renderIdentitySelection() {
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + text_offset_y);
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10.0f);
             ImGui::PushStyleColor(ImGuiCol_Text, text_color);
-            ImGui::Text("%s", state.identities[i].c_str());
+            
+            // Shorten long fingerprints for display (first 10 + ... + last 10)
+            std::string display_name = state.identities[i];
+            if (display_name.length() > 25) {
+                display_name = display_name.substr(0, 10) + "..." + display_name.substr(display_name.length() - 10);
+            }
+            
+            ImGui::Text("%s", display_name.c_str());
             ImGui::PopStyleColor();
 
             // Move cursor back and render invisible button for click detection
