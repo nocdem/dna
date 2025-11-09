@@ -314,9 +314,9 @@ int main(int argc, char** argv) {
             });
         }
         
-        // Show loading screen until DHT ready (min 0.5 seconds)
+        // Show loading screen until DHT ready (keep spinner for min 1.5 seconds to ensure smooth transition)
         float elapsed = (float)glfwGetTime() - dht_loading_start_time;
-        bool show_loading = dht_init_task.isRunning() || elapsed < 0.5f;
+        bool show_loading = dht_init_task.isRunning() || elapsed < 1.5f;
         
         if (show_loading) {
             // Show loading screen
