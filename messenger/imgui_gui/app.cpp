@@ -1513,9 +1513,10 @@ void DNAMessengerApp::renderAddContactDialog() {
         state.add_contact_last_searched_input = current_input;
 
         std::string input_copy = current_input;
+        std::string current_identity = state.current_identity;
         messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
 
-        contact_lookup_task.start([this, input_copy, ctx](AsyncTask* task) {
+        contact_lookup_task.start([this, input_copy, current_identity, ctx](AsyncTask* task) {
             task->addMessage("Looking up contact in DHT...");
 
             // Check if contact already exists
@@ -1553,6 +1554,16 @@ void DNAMessengerApp::renderAddContactDialog() {
             free(signing_pubkey);
             free(encryption_pubkey);
 
+            // Check if user is trying to add themselves
+            if (strcmp(fingerprint, current_identity.c_str()) == 0) {
+                state.add_contact_error_message = "You cannot add yourself as a contact";
+                state.add_contact_lookup_in_progress = false;
+                state.add_contact_found_name.clear();
+                state.add_contact_found_fingerprint.clear();
+                task->addMessage("Cannot add self");
+                return;
+            }
+
             // Success - store results
             state.add_contact_found_fingerprint = std::string(fingerprint);
             state.add_contact_found_name = input_copy;
@@ -1578,9 +1589,12 @@ void DNAMessengerApp::renderAddContactDialog() {
         ImGui::PushStyleColor(ImGuiCol_Text, success_color);
         ImGui::Text("Found: %s", state.add_contact_found_name.c_str());
         ImGui::PopStyleColor();
-        ImGui::Text("Fingerprint: %.16s...%.16s",
-                    state.add_contact_found_fingerprint.c_str(),
-                    state.add_contact_found_fingerprint.c_str() + state.add_contact_found_fingerprint.length() - 16);
+        
+        // Display fingerprint with wrapping to prevent modal widening
+        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 420.0f); // Limit width
+        ImGui::TextDisabled("Fingerprint:");
+        ImGui::TextWrapped("%s", state.add_contact_found_fingerprint.c_str());
+        ImGui::PopTextWrapPos();
         ImGui::Spacing();
     }
 
