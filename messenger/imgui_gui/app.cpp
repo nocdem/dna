@@ -137,6 +137,21 @@ void DNAMessengerApp::renderIdentitySelection() {
     // Load identities on first render
     if (state.identities.empty()) {
         scanIdentities();
+        
+        // Start async DHT lookups for names (don't block UI)
+        static bool lookups_started = false;
+        if (!lookups_started) {
+            lookups_started = true;
+            
+            // Do lookups in background for each identity
+            for (const auto& fp : state.identities) {
+                if (fp.length() == 128 && state.identity_name_cache.find(fp) == state.identity_name_cache.end()) {
+                    // Not in cache, schedule async lookup
+                    // For now, just mark as checked (TODO: implement async lookup)
+                    // We'll improve this later with proper async tasks
+                }
+            }
+        }
     }
 
     // Identity list (reduce reserved space for buttons to prevent scrollbar)
@@ -184,29 +199,22 @@ void DNAMessengerApp::renderIdentitySelection() {
             ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10.0f);
             ImGui::PushStyleColor(ImGuiCol_Text, text_color);
             
-            // Try DHT reverse lookup for registered name
-            std::string display_name = state.identities[i];
-            dht_context_t *dht_ctx = dht_singleton_get();
+            // Get display name (use cache to avoid blocking DHT lookups)
+            std::string fingerprint = state.identities[i];
+            std::string display_name;
             
-            if (dht_ctx && display_name.length() == 128) {
-                char *registered_name = nullptr;
-                int lookup_result = dht_keyserver_reverse_lookup(
-                    dht_ctx,
-                    display_name.c_str(),
-                    &registered_name
-                );
-                
-                if (lookup_result == 0 && registered_name != nullptr) {
-                    // Found registered name
-                    display_name = registered_name;
-                    free(registered_name);
-                } else {
-                    // Not registered, show shortened fingerprint
-                    display_name = display_name.substr(0, 10) + "..." + display_name.substr(display_name.length() - 10);
-                }
-            } else if (display_name.length() > 25) {
-                // Fallback: shorten long names/fingerprints
-                display_name = display_name.substr(0, 10) + "..." + display_name.substr(display_name.length() - 10);
+            // Check cache first
+            auto cached = state.identity_name_cache.find(fingerprint);
+            if (cached != state.identity_name_cache.end()) {
+                // Use cached name
+                display_name = cached->second;
+            } else if (fingerprint.length() == 128) {
+                // Not in cache and looks like a fingerprint - show shortened version for now
+                // DHT lookup will happen async later
+                display_name = fingerprint.substr(0, 10) + "..." + fingerprint.substr(fingerprint.length() - 10);
+            } else {
+                // Short name (legacy), use as-is
+                display_name = fingerprint;
             }
             
             ImGui::Text("%s", display_name.c_str());

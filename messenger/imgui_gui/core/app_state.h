@@ -54,6 +54,9 @@ public:
     char new_identity_name[128];
     std::vector<std::string> identities;
     std::string current_identity;
+    
+    // DHT name cache (fingerprint -> display name)
+    std::map<std::string, std::string> identity_name_cache;
 
     // Loading screen state
     bool is_first_frame;
