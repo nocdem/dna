@@ -172,32 +172,34 @@ if (dht) {
 **Backend API used:** `messenger_get_contact_list()`, `messenger_get_display_name()`
 **Build status:** ✅ Compiles successfully
 
-#### Task C: Add Contact Dialog (3-4 hours)
-**Location:** Need to create modal in `imgui_gui/app.cpp`
-**Qt Reference:** `gui/MainWindow.cpp` lines 500-600 (`onAddContact()` function)
-**Status:** Not started
+#### Task C: Add Contact Dialog (3-4 hours) ✅ COMPLETE (2025-11-09)
+**Location:** `imgui_gui/app.cpp` - `renderAddContactDialog()` function
+**Qt Reference:** `gui/MainWindow.cpp` lines 1373-1450 (`onAddContact()` function)
+**Status:** ✅ Done - Full implementation with auto-search-as-you-type
 
-**What to do:**
-1. Study Qt: Add contact flow (query DHT, save to DB)
-2. Create `renderAddContactDialog()` function
-3. Input field for fingerprint/name
-4. Call `dht_keyserver_lookup()` to find public keys
-5. Call `contacts_db_add_contact()` to save
-6. Test: Should be able to add contacts and see them in list
+**Completed:**
+1. Add Contact dialog with auto-search functionality
+2. Debounced DHT lookup (500ms delay, 3+ character minimum)
+3. Real-time search hints and loading spinner
+4. AsyncTask integration for non-blocking DHT queries
+5. Duplicate detection and error handling
+6. Automatic contact list refresh after adding
+7. Fingerprint-first architecture (stores fingerprint, not name)
 
-**💡 TIP:** Use AsyncTask for DHT lookup to keep UI responsive:
-```cpp
-AsyncTask lookup_task;
-lookup_task.start([fingerprint](AsyncTask* task) {
-    task->addMessage("Looking up keys in DHT...");
-    // Do dht_keyserver_lookup() here
-    task->addMessage("Found!");
-});
-```
+**Features:**
+- Auto-search as user types (no manual Lookup button)
+- ThemedSpinner during DHT queries
+- Success/error messages with theme-aware colors
+- Shortened fingerprint display (first 16 + ... + last 16 chars)
+- Per-identity SQLite storage via `contacts_db_add()`
 
-**Files to modify:**
-- `imgui_gui/app.cpp` - Add new dialog function
-- `imgui_gui/core/app_state.h` - Add dialog state
+**Files modified:**
+- `imgui_gui/core/app_state.h` - Dialog state + timing variables
+- `imgui_gui/core/app_state.cpp` - State initialization
+- `imgui_gui/app.h` - Added `contact_lookup_task` + function declaration
+- `imgui_gui/app.cpp` - Full dialog implementation (150+ lines)
+
+**Commits:** a8a3790, 3b69f50
 
 #### Task D: DHT Key Publishing ✅ COMPLETE (2025-11-09)
 **Location:** `imgui_gui/app.cpp` - `createIdentityWithSeed()` function (lines 773-791)
