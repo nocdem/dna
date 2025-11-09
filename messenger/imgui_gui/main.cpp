@@ -190,21 +190,6 @@ int main(int argc, char** argv) {
     printf("[SKETCH MODE] Settings loaded: theme=%d, window=%dx%d\n",
            g_app_settings.theme, g_app_settings.window_width, g_app_settings.window_height);
 
-    // Initialize global DHT singleton at app startup
-    // This bootstraps DHT once for the entire application lifecycle
-    // Benefits:
-    // - Key publishing during identity creation works immediately
-    // - Messaging starts faster (DHT already bootstrapped)
-    // - Single DHT context shared by all operations
-    printf("[MAIN] Initializing global DHT singleton...\n");
-    if (dht_singleton_init() != 0) {
-        fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
-        fprintf(stderr, "[MAIN] Please check your internet connection\n");
-        fprintf(stderr, "[MAIN] Continuing without DHT (offline mode)...\n");
-    } else {
-        printf("[MAIN] ✓ Global DHT ready!\n");
-    }
-
     GLFWwindow* window = glfwCreateWindow(g_app_settings.window_width, g_app_settings.window_height, "DNA Messenger", nullptr, nullptr);
     if (window == nullptr)
         return 1;
@@ -272,6 +257,14 @@ int main(int argc, char** argv) {
 
     DNAMessengerApp app;
 
+    // Initialize global DHT singleton with loading screen
+    // Show spinner while bootstrapping DHT
+    bool dht_initialized = false;
+    bool dht_init_attempted = false;
+    float dht_init_start_time = 0.0f;
+    
+    printf("[MAIN] DHT initialization will happen with loading screen...\n");
+
     // Track fullscreen state
     static bool is_fullscreen = false;
     static int windowed_xpos, windowed_ypos, windowed_width, windowed_height;
@@ -279,6 +272,63 @@ int main(int argc, char** argv) {
 
     while (!glfwWindowShouldClose(window)) {
         glfwPollEvents();
+        
+        // Initialize DHT on first frame after window is ready
+        if (!dht_init_attempted) {
+            dht_init_attempted = true;
+            dht_init_start_time = (float)glfwGetTime();
+            printf("[MAIN] Starting DHT bootstrap...\n");
+            
+            if (dht_singleton_init() != 0) {
+                fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
+                fprintf(stderr, "[MAIN] Continuing without DHT (offline mode)...\n");
+            } else {
+                printf("[MAIN] ✓ DHT ready!\n");
+            }
+            dht_initialized = true;
+        }
+        
+        // Show loading spinner until DHT is ready (at least 0.5 seconds for smooth UX)
+        float elapsed = (float)glfwGetTime() - dht_init_start_time;
+        if (!dht_initialized || elapsed < 0.5f) {
+            ImGui_ImplOpenGL3_NewFrame();
+            ImGui_ImplGlfw_NewFrame();
+            ImGui::NewFrame();
+            
+            // Full-screen loading spinner
+            ImGui::SetNextWindowPos(ImVec2(0, 0));
+            ImGui::SetNextWindowSize(io.DisplaySize);
+            ImGui::Begin("Loading", nullptr, 
+                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | 
+                ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse |
+                ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
+            
+            // Center spinner
+            float spinner_radius = 40.0f;
+            ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+            ImGui::SetCursorScreenPos(ImVec2(center.x - spinner_radius, center.y - spinner_radius));
+            
+            ThemedSpinner("dht_loading", spinner_radius, 6.0f);
+            
+            // Loading text below spinner
+            const char* loading_text = "Initializing DHT Network...";
+            ImVec2 text_size = ImGui::CalcTextSize(loading_text);
+            ImGui::SetCursorScreenPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_radius + 30.0f));
+            ImGui::Text("%s", loading_text);
+            
+            ImGui::End();
+            
+            ImGui::Render();
+            int display_w, display_h;
+            glfwGetFramebufferSize(window, &display_w, &display_h);
+            glViewport(0, 0, display_w, display_h);
+            glClearColor(0x15/255.0f, 0x17/255.0f, 0x19/255.0f, 1.0f);
+            glClear(GL_COLOR_BUFFER_BIT);
+            ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+            glfwSwapBuffers(window);
+            continue;
+        }
 
         // F11 to toggle fullscreen
         if (glfwGetKey(window, GLFW_KEY_F11) == GLFW_PRESS) {
