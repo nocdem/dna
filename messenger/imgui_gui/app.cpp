@@ -548,11 +548,7 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
     ImGui::PopStyleColor();
     ImGui::Spacing();
 
-    ImVec4 hint_color = g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint();
-    ImGui::PushStyleColor(ImGuiCol_Text, hint_color);
-    ImGui::TextWrapped("TIP: If clipboard doesn't work (Wayland/Arch), check the terminal output - the seed phrase is printed there for manual copying.");
-    ImGui::PopStyleColor();
-    ImGui::Spacing();
+
 
     // Copy button - full width
     if (ButtonDark(ICON_FA_COPY " Copy All Words", ImVec2(-1, 40))) {
@@ -610,10 +606,15 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
     ImGui::Checkbox("I have written down my 24-word seed phrase securely", &state.seed_confirmed);
     ImGui::Spacing();
 
-    // Show success message if recently copied (above buttons)
+    // Show success message if recently copied (centered above buttons)
     if (state.seed_copied && state.seed_copied_timer > 0.0f) {
+        const char* msg = "✓ Words copied to clipboard!";
+        ImVec2 text_size = ImGui::CalcTextSize(msg);
+        float center_offset = (ImGui::GetContentRegionAvail().x - text_size.x) * 0.5f;
+        if (center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + center_offset);
+        
         ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f)); // Green
-        ImGui::Text("✓ Words copied to clipboard!");
+        ImGui::Text("%s", msg);
         ImGui::PopStyleColor();
         state.seed_copied_timer -= ImGui::GetIO().DeltaTime;
         if (state.seed_copied_timer <= 0.0f) {
