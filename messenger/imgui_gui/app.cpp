@@ -1467,6 +1467,12 @@ void DNAMessengerApp::renderAddContactDialog() {
 
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = io.DisplaySize.x < 600.0f;
+    
+    // Autofocus on input when dialog first opens
+    static bool first_open = false;
+    if (ImGui::IsWindowAppearing()) {
+        first_open = true;
+    }
 
     ImGui::Text("Enter contact fingerprint or name:");
     ImGui::Spacing();
@@ -1477,6 +1483,10 @@ void DNAMessengerApp::renderAddContactDialog() {
 
     // Input field for fingerprint/name
     ImGui::PushItemWidth(-1);
+    if (first_open) {
+        ImGui::SetKeyboardFocusHere();
+        first_open = false;
+    }
     bool input_changed = ImGui::InputText("##contact_input", state.add_contact_input,
                                           sizeof(state.add_contact_input));
     ImGui::PopItemWidth();
@@ -1632,14 +1642,18 @@ void DNAMessengerApp::renderAddContactDialog() {
             printf("[AddContact] Contact '%s' added successfully (fingerprint: %s)\n",
                    state.add_contact_found_name.c_str(), fingerprint);
 
-            // Reload contacts to update UI
-            loadIdentity(state.current_identity);
+            // Reload contacts from database (fast, no messenger reinit)
+            reloadContactsFromDatabase();
             
-            // Auto-publish contacts to DHT (async)
+            // Auto-publish contacts to DHT (async via queue, non-blocking)
             messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
             if (ctx) {
-                printf("[AddContact] Publishing contacts to DHT...\n");
-                messenger_sync_contacts_to_dht(ctx);
+                DNAMessengerApp* app = this;
+                message_send_queue.enqueue([app, ctx]() {
+                    printf("[AddContact] Publishing contacts to DHT...\n");
+                    messenger_sync_contacts_to_dht(ctx);
+                    printf("[AddContact] ✓ Published to DHT\n");
+                }, -1);  // -1 = not a message send task
             }
 
             // Close dialog
