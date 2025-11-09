@@ -2214,6 +2214,14 @@ void DNAMessengerApp::renderChatView() {
 
     ImGui::EndChild();
 
+    // Cancel auto-scroll if user manually scrolled away
+    if (ImGui::IsItemActive() || ImGui::IsItemHovered()) {
+        // User is interacting with the scroll area
+        if (state.scroll_to_bottom_frames > 0) {
+            state.scroll_to_bottom_frames = 0; // Cancel auto-scroll
+        }
+    }
+
     // Delayed scroll (wait 2 frames for message to fully render)
     if (state.scroll_to_bottom_frames > 0) {
         state.scroll_to_bottom_frames--;
