@@ -74,9 +74,9 @@ void ApplyTheme(int theme) {
         style.Colors[ImGuiCol_PopupBg] = DNATheme::Background();
         style.Colors[ImGuiCol_Border] = DNATheme::Border();
         style.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
-        style.Colors[ImGuiCol_FrameBg] = DNATheme::ButtonHover();
-        style.Colors[ImGuiCol_FrameBgHovered] = DNATheme::ButtonHover();
-        style.Colors[ImGuiCol_FrameBgActive] = DNATheme::ButtonActive();
+        style.Colors[ImGuiCol_FrameBg] = ImVec4(0.12f, 0.14f, 0.16f, 1.0f); // Dark grey for input contrast
+        style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.14f, 0.16f, 0.18f, 1.0f);
+        style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.16f, 0.18f, 0.20f, 1.0f);
         style.Colors[ImGuiCol_TitleBg] = DNATheme::Background();
         style.Colors[ImGuiCol_TitleBgActive] = DNATheme::Background();
         style.Colors[ImGuiCol_TitleBgCollapsed] = DNATheme::Background();
@@ -130,9 +130,9 @@ void ApplyTheme(int theme) {
         style.Colors[ImGuiCol_PopupBg] = ClubTheme::Background();
         style.Colors[ImGuiCol_Border] = ClubTheme::Border();
         style.Colors[ImGuiCol_BorderShadow] = ImVec4(0, 0, 0, 0);
-        style.Colors[ImGuiCol_FrameBg] = ClubTheme::ButtonHover();
-        style.Colors[ImGuiCol_FrameBgHovered] = ClubTheme::ButtonHover();
-        style.Colors[ImGuiCol_FrameBgActive] = ClubTheme::ButtonActive();
+        style.Colors[ImGuiCol_FrameBg] = ImVec4(0.15f, 0.14f, 0.13f, 1.0f); // Dark grey for input contrast
+        style.Colors[ImGuiCol_FrameBgHovered] = ImVec4(0.17f, 0.16f, 0.15f, 1.0f);
+        style.Colors[ImGuiCol_FrameBgActive] = ImVec4(0.19f, 0.18f, 0.17f, 1.0f);
         style.Colors[ImGuiCol_TitleBg] = ClubTheme::Background();
         style.Colors[ImGuiCol_TitleBgActive] = ClubTheme::Background();
         style.Colors[ImGuiCol_TitleBgCollapsed] = ClubTheme::Background();
