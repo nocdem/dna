@@ -221,7 +221,17 @@ void DNAMessengerApp::renderIdentitySelection() {
     // Identity list (reduce reserved space for buttons to prevent scrollbar)
     ImGui::BeginChild("IdentityList", ImVec2(0, is_mobile ? -180 : -140), true);
 
-    if (state.identities.empty()) {
+    // Show spinner while scanning
+    if (identity_scan_task.isRunning()) {
+        float spinner_radius = 30.0f;
+        ImVec2 center = ImVec2(ImGui::GetContentRegionAvail().x * 0.5f, 100.0f);
+        ImGui::SetCursorPos(ImVec2(center.x - spinner_radius, center.y - spinner_radius));
+        ThemedSpinner("##identity_scan", spinner_radius, 6.0f);
+        
+        ImVec2 text_size = ImGui::CalcTextSize("Loading identities...");
+        ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_radius + 20));
+        ImGui::Text("Loading identities...");
+    } else if (state.identities.empty()) {
         ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No identities found.");
         ImGui::TextWrapped("Create a new identity to get started.");
     } else {
