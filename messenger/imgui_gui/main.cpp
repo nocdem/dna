@@ -19,6 +19,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <signal.h>
 
 // Backend includes
 extern "C" {
@@ -36,6 +37,15 @@ extern "C" {
 #include <windows.h>
 #include <direct.h>
 #endif
+
+// Global flag for clean shutdown
+static volatile bool g_should_quit = false;
+
+// Signal handler for Ctrl+C and other termination signals
+void signal_handler(int signum) {
+    printf("\n[MAIN] Received signal %d, shutting down gracefully...\n", signum);
+    g_should_quit = true;
+}
 
 // Comment out backend includes for UI sketch mode
 /*
@@ -178,6 +188,14 @@ static void glfw_error_callback(int error, const char* description) {
 }
 
 int main(int argc, char** argv) {
+    // Register signal handlers for clean shutdown
+    signal(SIGINT, signal_handler);   // Ctrl+C
+    signal(SIGTERM, signal_handler);  // Termination request
+#ifndef _WIN32
+    signal(SIGHUP, signal_handler);   // Terminal closed (Unix)
+#endif
+    printf("[MAIN] Signal handlers registered (Ctrl+C for clean exit)\n");
+
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
         return 1;
@@ -270,8 +288,14 @@ int main(int argc, char** argv) {
     static int windowed_xpos, windowed_ypos, windowed_width, windowed_height;
     static bool f11_was_pressed = false;
 
-    while (!glfwWindowShouldClose(window)) {
+    while (!glfwWindowShouldClose(window) && !g_should_quit) {
         glfwPollEvents();
+        
+        // Check if signal was received
+        if (g_should_quit) {
+            printf("[MAIN] Shutdown signal received, breaking main loop...\n");
+            break;
+        }
         
         // Start DHT init on first frame
         if (!dht_loading_started) {
@@ -416,12 +440,15 @@ int main(int argc, char** argv) {
     printf("[MAIN] Cleaning up DHT singleton...\n");
     dht_singleton_cleanup();
 
+    printf("[MAIN] Shutting down ImGui...\n");
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
+    printf("[MAIN] Destroying window...\n");
     glfwDestroyWindow(window);
     glfwTerminate();
 
+    printf("[MAIN] ✓ Clean shutdown complete\n");
     return 0;
 }
