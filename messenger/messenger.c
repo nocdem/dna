@@ -3941,27 +3941,19 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
 
     printf("[MESSENGER] Fetched %zu contacts from DHT\n", count);
 
-    // DHT is source of truth: Clear local database and repopulate
-    // Close current database
-    contacts_db_close();
-
-    // Delete local database file
-    char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/.dna/%s_contacts.db", home, ctx->identity);
-    unlink(db_path);
-
-    // Reinitialize
-    if (contacts_db_init(ctx->identity) != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to reinitialize contacts database\n");
-        dht_contactlist_free_contacts(contacts, count);
-        return -1;
-    }
-
-    // Add all contacts from DHT
+    // Merge DHT contacts with local (don't delete local additions)
+    // Only add contacts from DHT that don't exist locally
     size_t added = 0;
+    size_t skipped = 0;
     for (size_t i = 0; i < count; i++) {
+        if (contacts_db_exists(contacts[i])) {
+            skipped++;
+            continue;  // Contact already exists locally
+        }
+        
         if (contacts_db_add(contacts[i], NULL) == 0) {
             added++;
+            printf("[MESSENGER] Added contact from DHT: %s\n", contacts[i]);
         } else {
             fprintf(stderr, "[MESSENGER] Warning: Failed to add contact '%s'\n", contacts[i]);
         }
@@ -3969,7 +3961,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
 
     dht_contactlist_free_contacts(contacts, count);
 
-    printf("[MESSENGER] Successfully synced %zu/%zu contacts from DHT (DHT is source of truth)\n", added, count);
+    printf("[MESSENGER] DHT sync complete: %zu new, %zu existing (merge mode)\n", added, skipped);
     return 0;
 }
 
