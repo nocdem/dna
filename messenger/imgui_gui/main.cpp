@@ -319,28 +319,27 @@ int main(int argc, char** argv) {
                 ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse |
                 ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
             
-            // Center spinner
+            // Center spinner at fixed position (won't move even if content below changes)
             float spinner_radius = 40.0f;
             ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
             ImGui::SetCursorScreenPos(ImVec2(center.x - spinner_radius, center.y - spinner_radius));
-            
             ThemedSpinner("dht_loading", spinner_radius, 6.0f);
             
-            // Loading text below spinner
+            // Loading text below spinner at fixed position
             const char* loading_text = "Initializing DHT Network...";
             ImVec2 text_size = ImGui::CalcTextSize(loading_text);
-            ImGui::SetCursorScreenPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_radius + 30.0f));
+            float text_y = center.y + spinner_radius + 30.0f;
+            ImGui::SetCursorScreenPos(ImVec2(center.x - text_size.x * 0.5f, text_y));
             ImGui::Text("%s", loading_text);
             
-            // Status messages below (theme-aware, slightly dimmed)
+            // Status messages below at fixed positions (theme-aware, slightly dimmed)
             ImVec4 status_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
             status_color.w = 0.7f; // Slightly dimmed
             
-            float msg_y = center.y + spinner_radius + 60.0f;
+            float msg_y = text_y + 30.0f; // Fixed offset from loading text
             int max_messages = 5; // Show last 5 messages
             int start_idx = (int)status_messages.size() > max_messages ? 
                             (int)status_messages.size() - max_messages : 0;
-            
             for (int i = start_idx; i < (int)status_messages.size(); i++) {
                 const char* msg = status_messages[i].c_str();
                 ImVec2 msg_size = ImGui::CalcTextSize(msg);
