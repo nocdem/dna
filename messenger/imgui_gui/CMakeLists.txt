@@ -45,6 +45,7 @@ target_include_directories(dna_messenger_imgui PRIVATE
 target_link_libraries(dna_messenger_imgui PRIVATE
     OpenGL::GL
     glfw
+    dna_lib  # DNA Messenger core library
 )
 
 # Platform-specific settings
