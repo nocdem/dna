@@ -96,7 +96,11 @@ void DNAMessengerApp::render() {
         renderDesktopLayout();
     }
 
+    ImGui::End();
+    ImGui::PopStyleVar(); // Pop WindowPadding
+    
     // Render operation spinner overlay (for async DHT operations)
+    // This must be AFTER all other windows/modals so it's on top
     if (state.show_operation_spinner) {
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(io.DisplaySize);
@@ -135,9 +139,6 @@ void DNAMessengerApp::render() {
             state.show_operation_spinner = false;
         }
     }
-
-    ImGui::End();
-    ImGui::PopStyleVar(); // Pop WindowPadding
 }
 
 
