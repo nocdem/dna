@@ -979,7 +979,7 @@ void DNAMessengerApp::restoreIdentityWithSeed(const char* name, const char* mnem
     printf("[Identity] Word count: %d\n", word_count);
     
     // Validate mnemonic using BIP39
-    if (bip39_validate_mnemonic(normalized.c_str()) != 0) {
+    if (!bip39_validate_mnemonic(normalized.c_str())) {
         printf("[Identity] ERROR: Invalid BIP39 mnemonic\n");
         printf("[Identity] Please check that you have exactly 24 valid words\n");
         // TODO: Show error modal to user
