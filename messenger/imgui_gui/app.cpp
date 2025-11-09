@@ -3042,17 +3042,31 @@ void DNAMessengerApp::refreshBalances() {
                     int token_count = json_object_array_length(tokens_obj);
 
                     for (int i = 0; i < token_count; i++) {
-                        json_object *token = json_object_array_get_idx(tokens_obj, i);
-                        json_object *ticker_obj = nullptr;
+                        json_object *token_entry = json_object_array_get_idx(tokens_obj, i);
+                        json_object *token_info_obj = nullptr;
                         json_object *coins_obj = nullptr;
 
-                        if (json_object_object_get_ex(token, "ticker", &ticker_obj) &&
-                            json_object_object_get_ex(token, "coins", &coins_obj)) {
+                        // Get coins from top level
+                        if (!json_object_object_get_ex(token_entry, "coins", &coins_obj)) {
+                            printf("[Wallet] Token %d: No 'coins' field, skipping\n", i);
+                            continue;
+                        }
+
+                        // Get ticker from nested "token" object
+                        if (!json_object_object_get_ex(token_entry, "token", &token_info_obj)) {
+                            printf("[Wallet] Token %d: No 'token' object, skipping\n", i);
+                            continue;
+                        }
+
+                        json_object *ticker_obj = nullptr;
+                        if (json_object_object_get_ex(token_info_obj, "ticker", &ticker_obj)) {
                             const char *ticker = json_object_get_string(ticker_obj);
                             const char *coins = json_object_get_string(coins_obj);
 
                             state.token_balances[ticker] = coins;
                             printf("[Wallet] %s: %s\n", ticker, coins);
+                        } else {
+                            printf("[Wallet] Token %d: No 'ticker' field in token object\n", i);
                         }
                     }
                 }
