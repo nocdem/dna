@@ -447,9 +447,7 @@ void DNAMessengerApp::renderCreateIdentityStep1() {
     }
 
     // Style input like chat message input (recipient bubble color)
-    ImVec4 input_bg = g_app_settings.theme == 0
-        ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)  // DNA: slightly lighter than bg
-        : ImVec4(0.15f, 0.14f, 0.13f, 1.0f); // Club: slightly lighter
+    ImVec4 input_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
     ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
 
     bool enter_pressed = ImGui::InputText("##IdentityName", state.new_identity_name, sizeof(state.new_identity_name),
@@ -834,9 +832,7 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
     ImGui::Spacing();
 
     // Style input
-    ImVec4 input_bg = g_app_settings.theme == 0
-        ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)
-        : ImVec4(0.15f, 0.14f, 0.13f, 1.0f);
+    ImVec4 input_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
     ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
 
     ImGui::SetNextItemWidth(-1);
@@ -1153,12 +1149,17 @@ void DNAMessengerApp::renderAddContactDialog() {
     ImGui::Text("Enter contact fingerprint or name:");
     ImGui::Spacing();
 
+    // Style input like other inputs (themed background)
+    ImVec4 input_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
+
     // Input field for fingerprint/name
     ImGui::PushItemWidth(-1);
     bool input_changed = ImGui::InputText("##contact_input", state.add_contact_input,
-                                          sizeof(state.add_contact_input),
-                                          ImGuiInputTextFlags_CallbackAlways);
+                                          sizeof(state.add_contact_input));
     ImGui::PopItemWidth();
+    
+    ImGui::PopStyleColor(); // FrameBg
     ImGui::Spacing();
 
     // Auto-search as user types (debounced)
@@ -1789,9 +1790,7 @@ void DNAMessengerApp::renderChatView() {
     ImGui::Spacing();
 
     // Recipient bubble background color
-    ImVec4 recipient_bg = g_app_settings.theme == 0
-        ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)  // DNA: slightly lighter than bg
-        : ImVec4(0.15f, 0.14f, 0.13f, 1.0f); // Club: slightly lighter
+    ImVec4 recipient_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
 
     ImGui::PushStyleColor(ImGuiCol_FrameBg, recipient_bg);
 

@@ -17,6 +17,7 @@ namespace DNATheme {
     inline ImVec4 SelectedText() { return ImVec4(0.098f, 0.114f, 0.129f, 1.0f); }// Same as background
     inline ImVec4 Separator() { return ImVec4(0.0f, 1.0f, 0.8f, 0.3f); }        // #00FFCC with alpha
     inline ImVec4 Border() { return ImVec4(0.0f, 1.0f, 0.8f, 0.3f); }           // #00FFCC with alpha
+    inline ImVec4 InputBackground() { return ImVec4(0.12f, 0.14f, 0.16f, 1.0f); }// Slightly lighter than bg
 }
 
 // Club Theme (cpunk.club)
@@ -33,6 +34,7 @@ namespace ClubTheme {
     inline ImVec4 SelectedText() { return ImVec4(0.125f, 0.114f, 0.110f, 1.0f); }// Same as background
     inline ImVec4 Separator() { return ImVec4(0.976f, 0.471f, 0.204f, 0.3f); }  // #F97834 with alpha
     inline ImVec4 Border() { return ImVec4(0.976f, 0.471f, 0.204f, 0.3f); }     // #F97834 with alpha
+    inline ImVec4 InputBackground() { return ImVec4(0.15f, 0.14f, 0.13f, 1.0f); }// Slightly lighter than bg
 }
 
 #endif // THEME_COLORS_H
