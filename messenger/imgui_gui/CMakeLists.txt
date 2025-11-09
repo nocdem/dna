@@ -16,7 +16,7 @@ find_package(glfw3 REQUIRED)
 find_package(Freetype REQUIRED)
 
 # ImGui source files
-set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+set(IMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/imgui)
 set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_demo.cpp
