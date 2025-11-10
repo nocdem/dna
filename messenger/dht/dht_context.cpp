@@ -646,6 +646,73 @@ extern "C" int dht_get(dht_context_t *ctx,
 }
 
 /**
+ * Get value from DHT asynchronously with callback
+ * This is non-blocking and calls the callback when data arrives
+ */
+extern "C" void dht_get_async(dht_context_t *ctx,
+                              const uint8_t *key, size_t key_len,
+                              void (*callback)(uint8_t *value, size_t value_len, void *userdata),
+                              void *userdata) {
+    if (!ctx || !key || !callback) {
+        std::cerr << "[DHT] ERROR: NULL parameter in dht_get_async" << std::endl;
+        if (callback) callback(nullptr, 0, userdata);  // Call with error
+        return;
+    }
+
+    if (!ctx->running) {
+        std::cerr << "[DHT] ERROR: Node not running" << std::endl;
+        callback(nullptr, 0, userdata);  // Call with error
+        return;
+    }
+
+    try {
+        // Hash the key
+        auto hash = dht::InfoHash::get(key, key_len);
+        std::cout << "[DHT] GET_ASYNC: " << hash << std::endl;
+
+        // Use OpenDHT's async get with callback (GetCallbackSimple)
+        // GetCallbackSimple signature: bool(std::shared_ptr<Value>)
+        ctx->runner.get(hash,
+            // GetCallback - called for each value
+            [callback, userdata, hash](const std::shared_ptr<dht::Value>& val) {
+                if (!val || val->data.empty()) {
+                    std::cout << "[DHT] GET_ASYNC: Value empty for " << hash << std::endl;
+                    callback(nullptr, 0, userdata);
+                    return false;  // Stop listening
+                }
+
+                // Allocate C buffer and copy data
+                uint8_t *value_copy = (uint8_t*)malloc(val->data.size());
+                if (!value_copy) {
+                    std::cerr << "[DHT] ERROR: malloc failed in async callback" << std::endl;
+                    callback(nullptr, 0, userdata);
+                    return false;  // Stop listening
+                }
+
+                memcpy(value_copy, val->data.data(), val->data.size());
+                std::cout << "[DHT] GET_ASYNC successful: " << val->data.size() << " bytes" << std::endl;
+
+                // Call the user callback with data
+                callback(value_copy, val->data.size(), userdata);
+
+                return false;  // Stop listening after first value
+            },
+            // DoneCallback - called when query completes
+            [callback, userdata, hash](bool success) {
+                if (!success) {
+                    std::cout << "[DHT] GET_ASYNC: Query failed for " << hash << std::endl;
+                    callback(nullptr, 0, userdata);
+                }
+            }
+        );
+
+    } catch (const std::exception& e) {
+        std::cerr << "[DHT] Exception in dht_get_async: " << e.what() << std::endl;
+        callback(nullptr, 0, userdata);
+    }
+}
+
+/**
  * Get all values from DHT for a given key
  */
 extern "C" int dht_get_all(dht_context_t *ctx,
