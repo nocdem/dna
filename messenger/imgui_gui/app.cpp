@@ -124,6 +124,64 @@ void DNAMessengerApp::render() {
         }
     }
 
+    // Process pending DHT registration (identity created before DHT was ready)
+    if (!state.pending_registration_fingerprint.empty()) {
+        dht_context_t *dht_ctx = dht_singleton_get();
+        if (dht_ctx) {
+            printf("[Identity] DHT now ready - processing pending registration for: %s\n",
+                   state.pending_registration_name.c_str());
+
+            // Get home directory
+            const char* home = qgp_platform_home_dir();
+            if (home) {
+#ifdef _WIN32
+                std::string dna_dir = std::string(home) + "\\.dna";
+#else
+                std::string dna_dir = std::string(home) + "/.dna";
+#endif
+
+                // Load keys from disk
+                std::string dsa_path = dna_dir + "/" + state.pending_registration_fingerprint + ".dsa";
+                std::string kem_path = dna_dir + "/" + state.pending_registration_fingerprint + ".kem";
+
+                qgp_key_t *sign_key = nullptr;
+                qgp_key_t *enc_key = nullptr;
+
+                if (qgp_key_load(dsa_path.c_str(), &sign_key) == 0 && sign_key &&
+                    qgp_key_load(kem_path.c_str(), &enc_key) == 0 && enc_key) {
+
+                    // Publish to DHT
+                    int ret = dht_keyserver_publish(
+                        dht_ctx,
+                        state.pending_registration_fingerprint.c_str(),
+                        state.pending_registration_name.c_str(),
+                        sign_key->public_key,
+                        enc_key->public_key,
+                        sign_key->private_key
+                    );
+
+                    qgp_key_free(sign_key);
+                    qgp_key_free(enc_key);
+
+                    if (ret == 0) {
+                        printf("[Identity] ✓ Pending registration completed successfully!\n");
+                        state.identity_name_cache[state.pending_registration_fingerprint] = state.pending_registration_name;
+                    } else {
+                        printf("[Identity] ERROR: Pending registration failed\n");
+                    }
+                } else {
+                    printf("[Identity] ERROR: Failed to load keys for pending registration\n");
+                    if (sign_key) qgp_key_free(sign_key);
+                    if (enc_key) qgp_key_free(enc_key);
+                }
+            }
+
+            // Clear pending registration (whether success or failure)
+            state.pending_registration_fingerprint.clear();
+            state.pending_registration_name.clear();
+        }
+    }
+
     // Show identity selection on first run (but not during spinner operations)
     if (state.show_identity_selection && !state.show_operation_spinner) {
         renderIdentitySelection();
@@ -419,11 +477,15 @@ void DNAMessengerApp::renderIdentitySelection() {
 
     // Create new button
     if (ButtonDark(ICON_FA_CIRCLE_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
-        state.create_identity_step = STEP_NAME;
-        state.seed_confirmed = false;
-        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
-        memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
-        ImGui::OpenPopup("Create New Identity");
+        // Generate mnemonic immediately (skip name step)
+        if (bip39_generate_mnemonic(24, state.generated_mnemonic, sizeof(state.generated_mnemonic)) == 0) {
+            state.create_identity_step = STEP_SEED_PHRASE;
+            state.seed_confirmed = false;
+            state.seed_copied = false;
+            ImGui::OpenPopup("Create New Identity");
+        } else {
+            printf("[Identity] ERROR: Failed to generate mnemonic\n");
+        }
     }
 
     // Restore from seed button
@@ -439,11 +501,9 @@ void DNAMessengerApp::renderIdentitySelection() {
         CenteredModal::End();
     }
 
-        // Create identity popup - multi-step wizard (using CenteredModal helper)
+        // Create identity popup - show seed phrase (name step removed)
         if (CenteredModal::Begin("Create New Identity")) {
-            if (state.create_identity_step == STEP_NAME) {
-                renderCreateIdentityStep1();
-            } else if (state.create_identity_step == STEP_SEED_PHRASE) {
+            if (state.create_identity_step == STEP_SEED_PHRASE) {
                 renderCreateIdentityStep2();
             }
             // STEP_CREATING is handled by spinner overlay, no modal content needed
@@ -643,8 +703,8 @@ void DNAMessengerApp::renderCreateIdentityStep1() {
 
 
 void DNAMessengerApp::renderCreateIdentityStep2() {
-    // Step 2: Display and confirm seed phrase
-    ImGui::Text("Step 2: Your Recovery Seed Phrase");
+    // Display and confirm seed phrase
+    ImGui::Text("Your Recovery Seed Phrase");
     ImGui::Spacing();
     ImGui::Separator();
     ImGui::Spacing();
@@ -733,26 +793,19 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
     ImGui::Spacing();
 
     // Center buttons
-    float button_width = 100.0f;
+    float button_width = 120.0f;
     float spacing = 10.0f;
-    float total_width = button_width * 3 + spacing * 2;
+    float total_width = button_width * 2 + spacing;
     float offset = (ImGui::GetContentRegionAvail().x - total_width) * 0.5f;
 
     if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
 
     if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
         // Reset wizard state and go back to identity selection
-        state.create_identity_step = STEP_NAME;
         state.seed_confirmed = false;
         state.seed_copied = false;
-        memset(state.new_identity_name, 0, sizeof(state.new_identity_name));
         memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
         ImGui::CloseCurrentPopup();
-    }
-    ImGui::SameLine();
-    
-    if (ButtonDark("Back", ImVec2(button_width, 40))) {
-        state.create_identity_step = STEP_NAME;
     }
     ImGui::SameLine();
 
@@ -761,24 +814,22 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
         // Close all modals immediately
         ImGui::CloseCurrentPopup();
         state.show_identity_selection = false; // Hide identity list modal immediately
-        state.create_identity_step = STEP_NAME; // Reset wizard
-        
+
         // Show spinner overlay
         state.show_operation_spinner = true;
         snprintf(state.operation_spinner_message, sizeof(state.operation_spinner_message),
                  "Creating identity...");
 
-        // Copy name and mnemonic to heap for async task
-        std::string name_copy = std::string(state.new_identity_name);
+        // Copy mnemonic to heap for async task (no name needed)
         std::string mnemonic_copy = std::string(state.generated_mnemonic);
 
-        // Start async DHT publishing task
-        dht_publish_task.start([this, name_copy, mnemonic_copy](AsyncTask* task) {
+        // Start async identity creation task
+        dht_publish_task.start([this, mnemonic_copy](AsyncTask* task) {
             task->addMessage("Generating cryptographic keys...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-            task->addMessage("Publishing keys to DHT network...");
-            createIdentityWithSeed(name_copy.c_str(), mnemonic_copy.c_str());
+            task->addMessage("Saving keys...");
+            createIdentityWithSeed(mnemonic_copy.c_str());
 
             task->addMessage("Initializing messenger context...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
@@ -801,8 +852,8 @@ void DNAMessengerApp::renderCreateIdentityStep3() {
 }
 
 
-void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemonic) {
-    printf("[Identity] Creating identity: %s\n", name);
+void DNAMessengerApp::createIdentityWithSeed(const char* mnemonic) {
+    printf("[Identity] Creating identity (fingerprint-only, no name registration)\n");
     
     // Derive cryptographic seeds from BIP39 mnemonic
     uint8_t signing_seed[32];
@@ -856,48 +907,9 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
     }
     
     printf("[Identity] Generated keys with fingerprint: %.20s...\n", fingerprint);
-    
-    // Publish to DHT keyserver with name
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (dht_ctx && strlen(name) > 0) {
-        printf("[Identity] Publishing public keys to DHT with name: %s\n", name);
-        
-        // Load keys from disk
-        std::string dsa_path = dna_dir + "/" + std::string(fingerprint) + ".dsa";
-        std::string kem_path = dna_dir + "/" + std::string(fingerprint) + ".kem";
-        
-        qgp_key_t *sign_key = nullptr;
-        qgp_key_t *enc_key = nullptr;
-        
-        if (qgp_key_load(dsa_path.c_str(), &sign_key) != 0 || !sign_key) {
-            printf("[Identity] ERROR: Failed to load signing key from %s\n", dsa_path.c_str());
-        } else if (qgp_key_load(kem_path.c_str(), &enc_key) != 0 || !enc_key) {
-            printf("[Identity] ERROR: Failed to load encryption key from %s\n", kem_path.c_str());
-            qgp_key_free(sign_key);
-        } else {
-            // Publish to DHT
-            int ret = dht_keyserver_publish(
-                dht_ctx,
-                fingerprint,
-                name,  // Display name
-                sign_key->public_key,
-                enc_key->public_key,
-                sign_key->private_key
-            );
-            
-            qgp_key_free(sign_key);
-            qgp_key_free(enc_key);
-            
-            if (ret == 0) {
-                printf("[Identity] ✓ Keys published to DHT successfully!\n");
-                // Cache the name mapping
-                state.identity_name_cache[std::string(fingerprint)] = name;
-            } else {
-                printf("[Identity] ERROR: Failed to publish keys to DHT\n");
-            }
-        }
-    }
-    
+    printf("[Identity] ✓ Identity created successfully (no name registered)\n");
+    printf("[Identity] TIP: You can register a human-readable name later in Settings\n");
+
     // Identity created successfully
     state.identities.push_back(fingerprint);
     state.current_identity = fingerprint;
@@ -1925,6 +1937,55 @@ void DNAMessengerApp::renderContactsList() {
             state.current_view = VIEW_CHAT;
         }
 
+        // Right-click context menu
+        if (ImGui::BeginPopupContextItem("mobile_contact_context_menu")) {
+            ImGui::Text("%s", state.contacts[i].name.c_str());
+            ImGui::Separator();
+
+            if (ImGui::MenuItem(ICON_FA_BROOM " Clear messages")) {
+                {
+                    std::lock_guard<std::mutex> lock(state.messages_mutex);
+                    state.contact_messages[i].clear();
+                }
+                printf("[Context Menu] Cleared messages for contact: %s\n",
+                       state.contacts[i].name.c_str());
+            }
+
+            if (ImGui::MenuItem(ICON_FA_TRASH " Delete contact")) {
+                if (contacts_db_remove(state.contacts[i].address.c_str()) == 0) {
+                    printf("[Context Menu] Deleted contact: %s\n",
+                           state.contacts[i].name.c_str());
+                    {
+                        std::lock_guard<std::mutex> lock(state.messages_mutex);
+                        state.contact_messages.erase(i);
+                    }
+                    state.contacts.erase(state.contacts.begin() + i);
+                    if (state.selected_contact == (int)i) {
+                        state.selected_contact = -1;
+                        state.current_view = VIEW_CONTACTS;
+                    }
+                    // Sync deletion to DHT for multi-device support
+                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                    if (ctx) {
+                        messenger_sync_contacts_to_dht(ctx);
+                        printf("[Context Menu] Synced contact deletion to DHT\n");
+                    }
+                } else {
+                    printf("[Context Menu] Failed to delete contact: %s\n",
+                           state.contacts[i].name.c_str());
+                }
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " View details")) {
+                printf("[Context Menu] View details for: %s\n",
+                       state.contacts[i].name.c_str());
+            }
+
+            ImGui::EndPopup();
+        }
+
         if (selected) {
             ImGui::PopStyleColor();
         }
@@ -2005,6 +2066,60 @@ void DNAMessengerApp::renderSidebar() {
             state.current_view = VIEW_CHAT;
             // Load messages for this contact from database
             loadMessagesForContact(i);
+        }
+
+        // Right-click context menu
+        if (ImGui::BeginPopupContextItem("contact_context_menu")) {
+            ImGui::Text("%s", state.contacts[i].name.c_str());
+            ImGui::Separator();
+
+            if (ImGui::MenuItem(ICON_FA_BROOM " Clear messages")) {
+                // Clear messages for this contact from memory
+                {
+                    std::lock_guard<std::mutex> lock(state.messages_mutex);
+                    state.contact_messages[i].clear();
+                }
+                printf("[Context Menu] Cleared messages for contact: %s\n",
+                       state.contacts[i].name.c_str());
+            }
+
+            if (ImGui::MenuItem(ICON_FA_TRASH " Delete contact")) {
+                if (contacts_db_remove(state.contacts[i].address.c_str()) == 0) {
+                    printf("[Context Menu] Deleted contact: %s\n",
+                           state.contacts[i].name.c_str());
+                    // Clear messages from memory
+                    {
+                        std::lock_guard<std::mutex> lock(state.messages_mutex);
+                        state.contact_messages.erase(i);
+                    }
+                    // Remove from contacts list
+                    state.contacts.erase(state.contacts.begin() + i);
+                    // Deselect if this was selected
+                    if (state.selected_contact == (int)i) {
+                        state.selected_contact = -1;
+                        state.current_view = VIEW_CONTACTS;
+                    }
+                    // Sync deletion to DHT for multi-device support
+                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                    if (ctx) {
+                        messenger_sync_contacts_to_dht(ctx);
+                        printf("[Context Menu] Synced contact deletion to DHT\n");
+                    }
+                } else {
+                    printf("[Context Menu] Failed to delete contact: %s\n",
+                           state.contacts[i].name.c_str());
+                }
+            }
+
+            ImGui::Separator();
+
+            if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " View details")) {
+                // TODO: Show contact details dialog
+                printf("[Context Menu] View details for: %s\n",
+                       state.contacts[i].name.c_str());
+            }
+
+            ImGui::EndPopup();
         }
 
         // Draw background

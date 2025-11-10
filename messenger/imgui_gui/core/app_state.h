@@ -59,6 +59,10 @@ public:
     // DHT name cache (fingerprint -> display name)
     std::map<std::string, std::string> identity_name_cache;
 
+    // Pending DHT registration (when identity created before DHT ready)
+    std::string pending_registration_fingerprint;
+    std::string pending_registration_name;
+
     // Loading screen state
     bool is_first_frame;
     float loading_start_time;

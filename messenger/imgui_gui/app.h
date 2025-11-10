@@ -50,7 +50,7 @@ private:
     void renderCreateIdentityStep1();
     void renderCreateIdentityStep2();
     void renderCreateIdentityStep3();
-    void createIdentityWithSeed(const char* name, const char* mnemonic);
+    void createIdentityWithSeed(const char* mnemonic);
 
     // Restore identity wizard
     void renderRestoreStep2_Seed();
