@@ -460,13 +460,17 @@ void DNAMessengerApp::scanIdentities() {
     state.identities.clear();
 
     // Scan ~/.dna for *.dsa files (Dilithium signature keys)
-    const char* home = getenv("HOME");
+    const char* home = qgp_platform_home_dir();
     if (!home) {
-        printf("[Identity] HOME environment variable not set\n");
+        printf("[Identity] ERROR: Failed to get home directory\n");
         return;
     }
 
+#ifdef _WIN32
+    std::string dna_dir = std::string(home) + "\\.dna";
+#else
     std::string dna_dir = std::string(home) + "/.dna";
+#endif
 
 #ifdef _WIN32
     std::string search_path = dna_dir + "\\*.dsa";
@@ -810,16 +814,20 @@ void DNAMessengerApp::createIdentityWithSeed(const char* name, const char* mnemo
     }
     
     printf("[Identity] Derived seeds from mnemonic\n");
-    
+
     // Ensure ~/.dna directory exists
-    const char* home = getenv("HOME");
+    const char* home = qgp_platform_home_dir();
     if (!home) {
-        printf("[Identity] ERROR: HOME environment variable not set\n");
+        printf("[Identity] ERROR: Failed to get home directory\n");
         return;
     }
-    
+
+#ifdef _WIN32
+    std::string dna_dir = std::string(home) + "\\.dna";
+#else
     std::string dna_dir = std::string(home) + "/.dna";
-    
+#endif
+
 #ifdef _WIN32
     _mkdir(dna_dir.c_str());
 #else
