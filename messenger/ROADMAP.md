@@ -1,8 +1,8 @@
 # DNA Messenger - Development Roadmap
 
 **Version:** 0.1.120+
-**Last Updated:** 2025-11-03
-**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4, 8, 9.1, 9.2, PostgreSQL Migration Complete
+**Last Updated:** 2025-11-10
+**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4, 8, 9.1-9.5 Complete, ImGui GUI Active
 
 ---
 
@@ -378,7 +378,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [ ] NAT traversal using libnice (ICE/STUN/TURN) - **Deferred to Phase 9.2**
 
 #### Phase 9.2: Offline Message Queueing ✅ COMPLETE
-**Completed:** 2025-11-02
+**Completed:** 2025-11-02 | **Bug Fix:** 2025-11-10
 
 - [x] Integrate OpenDHT for offline message storage
 - [x] Binary message serialization (magic bytes, timestamps, expiry)
@@ -391,6 +391,10 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [x] Single-queue-per-recipient architecture
 - [x] Cross-platform support (Windows/Linux network byte order)
 - [x] Hybrid delivery: P2P direct → DHT queue → ~~PostgreSQL~~ SQLite fallback
+- [x] **CRITICAL BUG FIX (2025-11-10):** Fixed offline queue key mismatch
+  - Problem: Messages sent to display names couldn't be retrieved by fingerprints
+  - Solution: Added `resolve_identity_to_fingerprint()` in `messenger_p2p.c`
+  - Impact: Offline messages now work reliably across all scenarios
 
 #### Phase 9.3: PostgreSQL → SQLite Migration ✅ COMPLETE
 **Completed:** 2025-11-03
@@ -890,6 +894,17 @@ DNA Messenger is in active development. Contributions welcome!
 **Current Version:** 0.1.120+
 **Next Milestone:** Web Messenger (Phase 5)
 **Recent Achievements:**
+- ✅ **GUI Migration: Qt → ImGui!** (2025-11-10)
+  - Migrated from Qt5 to ImGui for active development
+  - Modern immediate-mode rendering (OpenGL3 + GLFW3)
+  - Cross-platform support (Linux, Windows, future mobile)
+  - Async task system for non-blocking operations
+  - Qt code preserved in `gui/` for reference
+- ✅ **CRITICAL BUG FIX: Offline Message Queue Key Mismatch!** (2025-11-10)
+  - Fixed bug where messages sent to display names couldn't be retrieved
+  - Added `resolve_identity_to_fingerprint()` function
+  - All DHT queue operations now use fingerprints consistently
+  - Offline messages work reliably across all scenarios
 - ✅ **Per-Identity Contact Lists with DHT Sync!** (Phase 9.5 - 2025-11-05)
   - Isolated contact databases per identity
   - Kyber1024 self-encryption for DHT storage

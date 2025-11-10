@@ -1,14 +1,18 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-08
+**Last Updated:** 2025-11-10
 **Project:** DNA Messenger (Post-Quantum Encrypted Messenger)
 **Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2, 9.3, 9.4, 9.5 Complete
 
-**Recent Updates (2025-11-08):**
-- Message wall now fetches newest version from DHT (uses `dht_get_all()` instead of `dht_get()`)
-- Added descriptive debug labels to all DHT GET/PUT operations for easier log analysis
-- Fixed MessageWallDialog to use fingerprint-based key filenames (.dsa)
-- Enhanced debug logging for message wall post/display operations
+**Recent Updates (2025-11-10):**
+- **CRITICAL FIX:** Fixed offline message queue key mismatch bug
+  - Issue: Messages sent to display names ("deus") couldn't be retrieved by fingerprints
+  - Fix: Added `resolve_identity_to_fingerprint()` to ensure DHT queue keys always use fingerprints
+  - Impact: Offline messages now work reliably across all scenarios
+- **GUI Migration:** Qt5 GUI deprecated, fully migrated to ImGui
+  - Qt code preserved in `gui/` for reference only
+  - Active development on `imgui_gui/` (dna_messenger_imgui binary)
+  - ImGui correctly uses fingerprints for all message routing
 
 ---
 
@@ -22,11 +26,11 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 - Per-identity contact lists with DHT sync (multi-device support via BIP39)
 - cpunk wallet integration (CPUNK, CELL, KEL tokens)
 - P2P messaging with DHT-based peer discovery (OpenDHT)
-- Offline message queueing (7-day DHT storage)
+- Offline message queueing (7-day DHT storage, **now fixed!**)
 - Local SQLite storage (NO centralized database dependencies)
 - Keyserver cache (7-day TTL, local SQLite)
 - Cross-platform (Linux, Windows)
-- Qt5 GUI with theme support
+- ImGui desktop application (replaces Qt5)
 - BIP39 recovery phrases
 
 ---
@@ -40,12 +44,14 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
    - Multi-recipient support
    - Keyserver cache (SQLite with 7-day TTL)
 
-2. **GUI Client** (`dna_messenger_gui`)
-   - Qt5 desktop application
-   - Modern card-based UI
-   - Theme system (cpunk.io cyan, cpunk.club orange)
+2. **GUI Client** (`dna_messenger_imgui`)
+   - ImGui desktop application (OpenGL3 + GLFW3)
+   - Modern responsive UI with mobile support
+   - Theme system (DNA cyan, Club orange)
    - Integrated wallet with transaction history
    - Local SQLite message storage (`~/.dna/messages.db`)
+   - Async task system for non-blocking operations
+   - **Note:** Qt5 GUI (`gui/`) is deprecated, preserved for reference only
 
 3. **Wallet Integration**
    - Cellframe wallet file support (.dwallet format)
@@ -81,13 +87,12 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 ├── p2p/                     # P2P transport layer (Phase 9.1)
 │   ├── p2p_transport.*     # TCP connections + DHT
 │   └── test_p2p_basic.c    # P2P transport tests
-├── gui/                     # Qt5 GUI application
-│   ├── MainWindow.*        # Main chat window
-│   ├── WalletDialog.*      # Wallet balance & transactions
-│   ├── SendTokensDialog.*  # Send tokens form
-│   ├── ReceiveDialog.*     # Receive with QR codes
-│   ├── TransactionHistoryDialog.* # Full transaction list
-│   └── ThemeManager.*      # Global theme management
+├── gui/                     # Qt5 GUI application (DEPRECATED - reference only)
+│   └── [MainWindow, Dialogs, ThemeManager] - Preserved for reference
+├── imgui_gui/               # ImGui GUI application (ACTIVE)
+│   ├── app.cpp             # Main application and UI rendering
+│   ├── core/               # Core data structures and state management
+│   └── imgui/              # ImGui library (v1.90+)
 ├── wallet.c/h              # Cellframe wallet integration
 ├── cellframe_rpc.c/h       # Cellframe RPC client
 ├── cellframe_tx_builder_minimal.c/h # Transaction builder
@@ -104,7 +109,8 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpu
 
 ### 1. Code Style
 - **C Code:** Follow existing style (K&R-ish with 4-space indentation)
-- **C++ Code (Qt):** Qt coding conventions, camelCase for methods
+- **C++ Code (ImGui):** Modern C++17, camelCase for methods, STL containers
+- **C++ Code (Qt - deprecated):** Qt coding conventions (reference only)
 - **Comments:** Use clear, concise comments for complex logic
 - **Memory Management:** Always free allocated memory, check for NULL
 
@@ -183,12 +189,20 @@ DNA Messenger uses OpenDHT for distributed storage with different TTL (Time-to-L
 - OpenDHT 2.4.12 uses ValueType.expiration for TTL control
 - Custom ValueTypes defined: `DNA_TYPE_7DAY` (0x1001), `DNA_TYPE_365DAY` (0x1002)
 
-### 5. GUI Development (Qt5)
+### 5. GUI Development
+
+**ImGui (Active Development):**
+- Use immediate mode paradigm (render UI every frame)
+- State stored in `AppState` struct (`imgui_gui/core/data_types.h`)
+- Async tasks via `task_queue` for non-blocking operations
+- Theme switching via `apply_theme()` function
+- Cross-platform (Linux, Windows via MinGW, mobile via OpenGL ES)
+
+**Qt5 (Deprecated - Reference Only):**
 - Use Qt signals/slots for event handling
 - Apply themes via `ThemeManager::instance()`
 - All dialogs should be theme-aware
-- Use `setAttribute(Qt::WA_DeleteOnClose)` for modal dialogs
-- Handle window focus and activation properly
+- Code preserved in `gui/` for reference only
 
 ### 6. Wallet Integration
 - Read Cellframe wallet files from `~/.dna/` or system wallet dir
@@ -285,15 +299,27 @@ DNA Messenger uses OpenDHT for distributed storage with different TTL (Time-to-L
    - Cross-platform support (Windows/Linux)
 
 3. **Automatic Retrieval**
-   - 2-minute polling timer in GUI (`MainWindow.cpp`)
+   - 2-minute polling timer in GUI (Qt: `MainWindow.cpp`, ImGui: `app.cpp`)
    - Automatic delivery to local SQLite when retrieved
    - Queue clearing after successful delivery
    - Message expiry handling
 
 4. **Integration**
    - `p2p_transport.c` - Queue/retrieve API
-   - `messenger_p2p.c` - Hybrid send flow
-   - `gui/MainWindow.cpp` - Automatic polling
+   - `messenger_p2p.c` - Hybrid send flow + identity resolution (bug fix 2025-11-10)
+   - GUI - Automatic polling (Qt deprecated, ImGui active)
+
+5. **Critical Bug Fix (2025-11-10)**
+   - **Problem:** Messages sent to display names ("deus") couldn't be retrieved by fingerprints
+   - **Root Cause:** Queue key = SHA3-512(recipient + ":offline_queue") was inconsistent
+     - Sender queued with display name: SHA3-512("alice:offline_queue")
+     - Receiver retrieved with fingerprint: SHA3-512("<128-hex-fingerprint>:offline_queue")
+     - Keys didn't match → messages never delivered
+   - **Solution:** Added `resolve_identity_to_fingerprint()` in `messenger_p2p.c:155-178`
+     - Leverages existing `messenger_load_pubkey()` with fingerprint_out parameter
+     - DHT keyserver resolves name → fingerprint via alias lookup
+     - All queue operations now use fingerprints consistently
+   - **Impact:** Offline messages now work reliably across all scenarios
 
 ### Phase 9.3: PostgreSQL → SQLite Migration (COMPLETE)
 **Status:** ✅ Complete (2025-11-03)
@@ -459,12 +485,11 @@ DNA Messenger uses OpenDHT for distributed storage with different TTL (Time-to-L
    - Uses DNA encryption API: `dna_encrypt_message_raw()` and `dna_decrypt_message_raw()`
    - 240+ lines of sync logic
 
-5. **GUI Sync Controls** (`gui/MainWindow.cpp`)
-   - Manual sync button in Settings menu: "🔄 Sync Contacts to DHT"
-   - Status bar indicator: "📇 Contacts: Local" / "📇 Syncing..." / "📇 Synced ✓"
+5. **GUI Sync Controls**
+   - **Qt** (`gui/MainWindow.cpp` - deprecated): Manual sync button, status indicators
+   - **ImGui** (`imgui_gui/app.cpp` - active): Integrated sync UI in settings
    - 10-minute auto-sync timer (silent operation)
-   - Success/failure dialogs for manual sync
-   - 93 lines of GUI integration
+   - Success/failure notifications
 
 **Security Features:**
 - Kyber1024 self-encryption (only owner can decrypt)
@@ -544,16 +569,17 @@ DNA Messenger uses OpenDHT for distributed storage with different TTL (Time-to-L
 - **2-minute polling:** Balance between responsiveness and DHT load
 - **Hybrid delivery:** Ensures no message loss across all failure scenarios
 
-### Files Modified/Created
+### Files Modified/Created (Phase 9.1 & 9.2)
 - `dht/dht_offline_queue.h` (NEW - 170 lines)
 - `dht/dht_offline_queue.c` (NEW - 650 lines)
 - `dht/CMakeLists.txt` (MODIFIED)
 - `p2p/p2p_transport.h` (MODIFIED - added queue API)
 - `p2p/p2p_transport.c` (MODIFIED - implemented queue/retrieve)
 - `messenger_p2p.h` (MODIFIED - added check API)
-- `messenger_p2p.c` (MODIFIED - hybrid send flow)
-- `gui/MainWindow.h` (MODIFIED - added timer)
-- `gui/MainWindow.cpp` (MODIFIED - polling callback)
+- `messenger_p2p.c` (MODIFIED - hybrid send flow + bug fix 2025-11-10)
+- `gui/MainWindow.h` (MODIFIED - Qt, deprecated)
+- `gui/MainWindow.cpp` (MODIFIED - Qt, deprecated)
+- `imgui_gui/app.cpp` (MODIFIED - ImGui, active)
 
 ---
 
@@ -802,7 +828,10 @@ make -j$(nproc)
 
 ### Running Tests
 ```bash
-# GUI messenger
+# ImGui messenger (active)
+./build/imgui_gui/dna_messenger_imgui
+
+# Qt GUI (deprecated - reference only)
 ./build/gui/dna_messenger_gui
 ```
 
@@ -964,6 +993,77 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 3. Remove debug output
 4. Update documentation if needed
 5. Check for memory leaks (valgrind)
+
+### Pushing Changes (MANDATORY)
+
+⚠️ **CRITICAL REQUIREMENT:** All commits MUST be pushed to BOTH repositories:
+
+**Step 1: Commit your changes**
+```bash
+git add .
+git commit -m "Your commit message"
+```
+
+**Step 2: Push to BOTH repositories (REQUIRED)**
+```bash
+# Push to GitLab (primary)
+git push gitlab main
+
+# Push to GitHub (mirror) - MANDATORY
+git push origin main
+```
+
+**Verify remotes are configured:**
+```bash
+git remote -v
+# Should show:
+# gitlab    ssh://git@gitlab.cpunk.io:10000/cpunk/dna-messenger.git (GitLab - primary)
+# origin    git@github.com:nocdem/dna-messenger.git (GitHub - mirror)
+```
+
+**Setting up remotes (if needed):**
+```bash
+# Add GitLab remote if not configured
+git remote add gitlab ssh://git@gitlab.cpunk.io:10000/cpunk/dna-messenger.git
+
+# Add GitHub remote if not configured
+git remote add origin git@github.com:nocdem/dna-messenger.git
+```
+
+**Why Both Repositories?**
+- **GitLab (Primary):** Main development, CI/CD, official builds
+- **GitHub (Mirror):** Public visibility, community access, backup
+
+**Failure to push to both repositories will result in:**
+- Desynchronized codebases
+- Missing commits on public mirror
+- Confusion for external contributors
+- CI/CD failures
+
+**Automated Push Script (Recommended):**
+
+The repository includes `push_both.sh` script that automatically pushes to both remotes:
+
+```bash
+# Script already exists in repository root: /opt/dna-messenger/push_both.sh
+# Features:
+# - Checks for uncommitted changes
+# - Verifies remotes are configured
+# - Pushes to GitLab first (primary)
+# - Pushes to GitHub second (mirror)
+# - Color-coded output
+# - Error handling with helpful messages
+
+# Usage:
+./push_both.sh
+
+# The script will:
+# 1. Check you're in a git repository
+# 2. Verify no uncommitted changes
+# 3. Push to gitlab remote (GitLab primary)
+# 4. Push to origin remote (GitHub mirror)
+# 5. Display success/failure for each step
+```
 
 ---
 

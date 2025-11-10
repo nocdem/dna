@@ -961,6 +961,7 @@ void MainWindow::onContactSelected(QListWidgetItem *item) {
     if (contactItem.type == TYPE_CONTACT) {
         // Handle contact selection
         currentContact = contactItem.name;
+        currentContactFingerprint = contactItem.fingerprint;  // Store fingerprint for message routing
         currentGroupId = -1;
 
         // Hide Group Settings button for contacts
@@ -976,6 +977,7 @@ void MainWindow::onContactSelected(QListWidgetItem *item) {
     } else if (contactItem.type == TYPE_GROUP) {
         // Handle group selection
         currentContact.clear();
+        currentContactFingerprint.clear();  // Clear fingerprint when selecting group
         currentGroupId = contactItem.groupId;
 
         // Show Group Settings button for groups
@@ -1296,14 +1298,14 @@ void MainWindow::onSendMessage() {
         // Send to group
         QByteArray messageBytes = message.toUtf8();
         result = messenger_send_group_message(ctx, currentGroupId, messageBytes.constData());
-    } else if (currentContactType == TYPE_CONTACT && !currentContact.isEmpty()) {
+    } else if (currentContactType == TYPE_CONTACT && !currentContactFingerprint.isEmpty()) {
         // Send to contact(s)
-        // Build recipient list: currentContact + additionalRecipients
+        // Build recipient list: currentContactFingerprint + additionalRecipients
         QVector<QByteArray> recipientBytes;  // Store QByteArray to keep data alive
         QVector<const char*> recipients;
 
-        // Add primary recipient
-        recipientBytes.append(currentContact.toUtf8());
+        // Add primary recipient (use fingerprint for offline queue key consistency)
+        recipientBytes.append(currentContactFingerprint.toUtf8());
         recipients.append(recipientBytes.last().constData());
 
         // Add additional recipients
@@ -1553,7 +1555,8 @@ void MainWindow::checkForNewMessages() {
         }
 
         // If viewing this contact, refresh conversation and mark as read
-        if (currentContact == sender) {
+        // Compare using fingerprint (sender could be fingerprint or name from DB)
+        if (currentContactFingerprint == sender || currentContact == sender) {
             loadConversation(currentContact);
             messenger_mark_conversation_read(ctx, sender.toUtf8().constData());
             printf("[READ] Conversation with %s marked as read\n", sender.toUtf8().constData());
@@ -2082,8 +2085,8 @@ void MainWindow::onAddRecipients() {
     if (messenger_get_contact_list(ctx, &identities, &count) == 0) {
         for (int i = 0; i < count; i++) {
             QString contact = QString::fromUtf8(identities[i]);
-            // Don't include current contact or sender
-            if (contact != currentContact && contact != currentIdentity) {
+            // Don't include current contact or sender (compare fingerprints)
+            if (contact != currentContactFingerprint && contact != currentIdentity) {
                 QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8("") + contact);
                 listWidget->addItem(item);
 
@@ -3369,12 +3372,12 @@ void MainWindow::onRefreshP2PPresence() {
 }
 
 void MainWindow::onCheckPeerStatus() {
-    if (!ctx || !ctx->p2p_enabled || currentContact.isEmpty()) {
+    if (!ctx || !ctx->p2p_enabled || currentContactFingerprint.isEmpty()) {
         return;
     }
 
-    // Check if current contact is online via P2P
-    bool online = messenger_p2p_peer_online(ctx, currentContact.toUtf8().constData());
+    // Check if current contact is online via P2P (use fingerprint for P2P lookup)
+    bool online = messenger_p2p_peer_online(ctx, currentContactFingerprint.toUtf8().constData());
 
     if (online) {
         printf("[P2P] %s is ONLINE (P2P available)\n", currentContact.toUtf8().constData());

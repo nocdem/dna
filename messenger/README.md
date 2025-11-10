@@ -14,7 +14,9 @@ Secure messaging using **post-quantum cryptography** (Kyber1024 + Dilithium5 - N
 - **Patch:** Auto-incremented with each commit
 
 **Primary Application:**
-- **GUI:** Qt5 graphical interface with theme support, wallet integration, and auto-updates
+- **GUI:** ImGui desktop application (OpenGL3 + GLFW3) with theme support, wallet integration, and async operations
+  - **Active:** `dna_messenger_imgui` (ImGui - modern immediate-mode rendering)
+  - **Deprecated:** `dna_messenger_gui` (Qt5 - preserved for reference only)
 
 _Note: CLI messenger is no longer supported. The GUI application provides all functionality._
 
@@ -31,9 +33,9 @@ Binaries from the latest builds are available on GitLab CI/CD artifacts:
 - **Download:** https://gitlab.cpunk.io/cpunk/dna-messenger/-/artifacts
 
 Available platforms:
-- **Linux x86_64:** GUI binary (dna_messenger_gui), DHT bootstrap server (persistent_bootstrap)
-- **Linux ARM64:** GUI binary (dna_messenger_gui), DHT bootstrap server (persistent_bootstrap)
-- **Windows x64:** GUI executable (dna_messenger_gui.exe, statically linked)
+- **Linux x86_64:** ImGui GUI (dna_messenger_imgui), Qt GUI (dna_messenger_gui - deprecated), DHT bootstrap (persistent_bootstrap)
+- **Linux ARM64:** ImGui GUI (dna_messenger_imgui), Qt GUI (dna_messenger_gui - deprecated), DHT bootstrap (persistent_bootstrap)
+- **Windows x64:** ImGui GUI (dna_messenger_imgui.exe), Qt GUI (dna_messenger_gui.exe - deprecated)
 
 Note: Builds are generated on every push to main branch.
 
@@ -80,7 +82,14 @@ git clone https://github.com/mxe/mxe.git ~/.cache/mxe
 
 ```bash
 # Install dependencies (no PostgreSQL required - uses local SQLite)
-sudo apt install cmake gcc libssl-dev libsqlite3-dev libcurl4-openssl-dev qtbase5-dev qtmultimedia5-dev libopendht-dev
+# Core dependencies:
+sudo apt install cmake gcc libssl-dev libsqlite3-dev libcurl4-openssl-dev libopendht-dev
+
+# ImGui dependencies (active GUI):
+sudo apt install libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev
+
+# Qt5 dependencies (deprecated GUI, optional):
+sudo apt install qtbase5-dev qtmultimedia5-dev
 
 # Build
 git clone https://github.com/nocdem/dna-messenger.git
@@ -89,7 +98,10 @@ mkdir build && cd build
 cmake ..
 make
 
-# Run GUI
+# Run ImGui GUI (active)
+./imgui_gui/dna_messenger_imgui
+
+# Run Qt GUI (deprecated, reference only)
 ./gui/dna_messenger_gui
 
 # Optional: Run DHT bootstrap server (for running your own bootstrap node)
@@ -178,8 +190,12 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 ### ❌ Phase 3: CLI Messenger Client (Removed - 2025-11-05)
 _CLI messenger was removed as unmaintained. All functionality is available in the GUI application._
 
-### ✅ Phase 4: Qt Desktop App (Complete)
-- Qt5 GUI with contact list and chat area
+### ✅ Phase 4: Desktop GUI (Complete)
+
+**Note:** Originally implemented with Qt5. Now migrated to ImGui (2025-11-10). Qt code preserved in `gui/` for reference.
+
+**Features (Implemented):**
+- GUI with contact list and chat area (ImGui active, Qt deprecated)
 - Message send/receive functionality
 - Real contacts from keyserver
 - Real conversations from database
@@ -190,7 +206,7 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 - Auto-detect local identity
 - Delivery/read receipts
 - Desktop notifications
-- Theme system (2 themes)
+- Theme system (2 themes: DNA cyan, Club orange)
 - Font scaling (1x-4x)
 - **Group messaging with full UI**
 - **cpunk Wallet integration (COMPLETE)**
@@ -243,11 +259,12 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
   - 3 public bootstrap nodes (US/EU)
   - `persistent_bootstrap` binary (Linux only) for running your own DHT bootstrap node
 
-- ✅ **Phase 9.2:** Offline Message Queueing (COMPLETE)
+- ✅ **Phase 9.2:** Offline Message Queueing (COMPLETE - Bug Fix: 2025-11-10)
   - DHT-based message storage for offline recipients
   - 7-day message TTL with automatic retrieval
   - Binary serialization with SHA256 keys
   - 2-minute automatic polling in GUI
+  - **Critical Bug Fix (2025-11-10):** Fixed queue key mismatch (display names vs fingerprints)
 
 - ✅ **Phase 9.3:** PostgreSQL → SQLite Migration (COMPLETE)
   - Local SQLite message storage (no centralized DB)

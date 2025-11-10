@@ -129,18 +129,49 @@ static int load_pubkey_for_identity(
     uint8_t *encryption_pubkey = NULL;
     size_t encryption_len = 0;
 
-    // Load public keys from keyserver
+    // Load public keys from keyserver (don't need fingerprint here)
     if (messenger_load_pubkey(ctx, identity, &signing_pubkey, &signing_len,
                               &encryption_pubkey, &encryption_len, NULL) != 0) {
         fprintf(stderr, "[P2P] Failed to load public key for identity: %s\n", identity);
         return -1;
     }
 
-    // We only need the signing key (Dilithium3) for P2P transport
+    // We only need the signing key (Dilithium5) for P2P transport
     *pubkey_out = signing_pubkey;
     *pubkey_len_out = signing_len;
 
     // Free encryption key (not needed for P2P layer)
+    free(encryption_pubkey);
+
+    return 0;
+}
+
+/**
+ * Resolve identity (name or fingerprint) to fingerprint
+ * Uses keyserver lookup to ensure consistent fingerprint for DHT keys
+ *
+ * @return: 0 on success, -1 on error
+ */
+static int resolve_identity_to_fingerprint(
+    messenger_context_t *ctx,
+    const char *identity,
+    char fingerprint_out[129]
+)
+{
+    uint8_t *signing_pubkey = NULL;
+    size_t signing_len = 0;
+    uint8_t *encryption_pubkey = NULL;
+    size_t encryption_len = 0;
+
+    // Load public keys and get fingerprint
+    if (messenger_load_pubkey(ctx, identity, &signing_pubkey, &signing_len,
+                              &encryption_pubkey, &encryption_len, fingerprint_out) != 0) {
+        fprintf(stderr, "[P2P] Failed to resolve identity to fingerprint: %s\n", identity);
+        return -1;
+    }
+
+    // Free keys (we only needed the fingerprint)
+    free(signing_pubkey);
     free(encryption_pubkey);
 
     return 0;
@@ -644,16 +675,29 @@ int messenger_send_p2p(
 
     // Try to queue in DHT
     if (ctx->p2p_transport) {
+        // CRITICAL: Resolve recipient to fingerprint for consistent DHT key
+        // Queue key = SHA3-512(recipient_fingerprint + ":offline_queue")
+        // Retrieval key = SHA3-512(ctx->identity + ":offline_queue")
+        // Both must use fingerprints, not display names!
+        char recipient_fingerprint[129];
+        if (resolve_identity_to_fingerprint(ctx, recipient, recipient_fingerprint) != 0) {
+            fprintf(stderr, "[P2P] Failed to resolve recipient '%s' to fingerprint for DHT queue\n", recipient);
+            return -1;
+        }
+
+        printf("[P2P] Resolved '%s' → fingerprint for DHT queue\n", recipient);
+
         int queue_result = p2p_queue_offline_message(
             ctx->p2p_transport,
-            ctx->identity,      // sender
-            recipient,          // recipient
+            ctx->identity,      // sender (should already be fingerprint)
+            recipient_fingerprint,  // recipient (NOW using fingerprint!)
             encrypted_message,
             encrypted_len
         );
 
         if (queue_result == 0) {
-            printf("[P2P] ✓ Message queued in DHT for %s\n", recipient);
+            printf("[P2P] ✓ Message queued in DHT for %s (fingerprint: %.20s...)\n",
+                   recipient, recipient_fingerprint);
             return 0;  // Success via DHT queue
         } else {
             fprintf(stderr, "[P2P] Failed to queue in DHT, using PostgreSQL fallback\n");

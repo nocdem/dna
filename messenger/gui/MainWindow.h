@@ -108,7 +108,8 @@ private:
     // Messenger context
     messenger_context_t *ctx;
     QString currentIdentity;
-    QString currentContact;
+    QString currentContact;  // Display name for UI
+    QString currentContactFingerprint;  // Fingerprint for message routing (offline queue key)
     int currentGroupId;
     ContactType currentContactType;
 
