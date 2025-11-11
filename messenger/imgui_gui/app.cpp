@@ -1223,6 +1223,14 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
             return;
         }
         printf("[Identity] P2P transport initialized\n");
+
+        // Register presence in DHT (announce we're online)
+        printf("[Identity] Registering presence in DHT...\n");
+        if (messenger_p2p_refresh_presence(ctx) == 0) {
+            printf("[Identity] ✓ Presence registered successfully\n");
+        } else {
+            printf("[Identity] Warning: Failed to register presence\n");
+        }
     }
 
     // Load contacts from database using messenger API
@@ -1244,8 +1252,8 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
                 strncpy(displayName, identities[i], sizeof(displayName) - 1);
             }
 
-            // For now, set all contacts as offline (TODO: integrate presence system)
-            bool is_online = false;
+            // Check P2P presence system for online status
+            bool is_online = messenger_p2p_peer_online(ctx, contact_identity.c_str());
 
             // Add contact to list
             state.contacts.push_back({
@@ -1521,7 +1529,11 @@ void DNAMessengerApp::checkForNewMessages() {
     message_poll_task.start([app, ctx](AsyncTask* task) {
         size_t messages_received = 0;
 
-        // Check DHT offline queue for new messages
+        // 1. Refresh our presence in DHT (announce we're online)
+        printf("[Poll] Refreshing presence in DHT...\n");
+        messenger_p2p_refresh_presence(ctx);
+
+        // 2. Check DHT offline queue for new messages
         int result = messenger_p2p_check_offline_messages(ctx, &messages_received);
 
         if (result == 0 && messages_received > 0) {
@@ -1531,6 +1543,9 @@ void DNAMessengerApp::checkForNewMessages() {
         } else if (result != 0) {
             printf("[Poll] Warning: Error checking offline messages\n");
         }
+
+        // 3. Note: Contact presence update happens in main thread when reloading contacts
+        // (loadContactsForIdentity calls messenger_p2p_peer_online for each contact)
     });
 }
 

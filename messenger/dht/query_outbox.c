@@ -67,36 +67,47 @@ int main(int argc, char *argv[]) {
     }
     printf("\n\n");
 
-    // Query DHT
-    printf("[4] Querying DHT...\n");
-    uint8_t *data = NULL;
-    size_t len = 0;
+    // Query DHT (get ALL versions)
+    printf("[4] Querying DHT for ALL versions...\n");
+    uint8_t **all_values = NULL;
+    size_t *all_lengths = NULL;
+    size_t version_count = 0;
 
-    int result = dht_get(ctx, outbox_key, 64, &data, &len);
+    int result = dht_get_all(ctx, outbox_key, 64, &all_values, &all_lengths, &version_count);
 
-    if (result == 0 && data && len > 0) {
-        printf("✓ Found outbox data: %zu bytes\n\n", len);
+    if (result == 0 && version_count > 0) {
+        printf("✓ Found %zu version(s) in DHT\n\n", version_count);
 
-        // Try to deserialize
-        dht_offline_message_t *messages = NULL;
-        size_t count = 0;
+        // Process each version
+        for (size_t v = 0; v < version_count; v++) {
+            printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
+            printf("VERSION %zu/%zu (%zu bytes)\n", v+1, version_count, all_lengths[v]);
+            printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n");
 
-        if (dht_deserialize_messages(data, len, &messages, &count) == 0) {
-            printf("Deserialized %zu message(s):\n", count);
-            for (size_t i = 0; i < count; i++) {
-                printf("  [%zu] From: %s\n", i+1, messages[i].sender);
-                printf("       To: %s\n", messages[i].recipient);
-                printf("       Timestamp: %lu\n", messages[i].timestamp);
-                printf("       Expiry: %lu\n", messages[i].expiry);
-                printf("       Size: %zu bytes\n", messages[i].ciphertext_len);
-                printf("\n");
+            // Try to deserialize
+            dht_offline_message_t *messages = NULL;
+            size_t count = 0;
+
+            if (dht_deserialize_messages(all_values[v], all_lengths[v], &messages, &count) == 0) {
+                printf("Deserialized %zu message(s):\n", count);
+                for (size_t i = 0; i < count; i++) {
+                    printf("  [%zu] From: %s\n", i+1, messages[i].sender);
+                    printf("       To: %s\n", messages[i].recipient);
+                    printf("       Timestamp: %lu\n", messages[i].timestamp);
+                    printf("       Expiry: %lu\n", messages[i].expiry);
+                    printf("       Size: %zu bytes\n", messages[i].ciphertext_len);
+                    printf("\n");
+                }
+                dht_offline_messages_free(messages, count);
+            } else {
+                printf("Failed to deserialize version %zu\n", v+1);
             }
-            dht_offline_messages_free(messages, count);
-        } else {
-            printf("Failed to deserialize messages\n");
+
+            free(all_values[v]);
         }
 
-        free(data);
+        free(all_values);
+        free(all_lengths);
     } else {
         printf("✗ No messages in this outbox (empty or not found)\n");
     }
