@@ -152,6 +152,39 @@ message_backup_context_t* message_backup_init(const char *identity) {
 }
 
 /**
+ * Check if message already exists (duplicate check by ciphertext)
+ */
+bool message_backup_exists_ciphertext(message_backup_context_t *ctx,
+                                       const uint8_t *encrypted_message,
+                                       size_t encrypted_len) {
+    if (!ctx || !ctx->db || !encrypted_message || encrypted_len == 0) {
+        return false;
+    }
+
+    // Check if this exact ciphertext already exists in database
+    const char *sql = "SELECT COUNT(*) FROM messages WHERE encrypted_message = ? AND encrypted_len = ?";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[Backup] Failed to prepare duplicate check: %s\n", sqlite3_errmsg(ctx->db));
+        return false;
+    }
+
+    sqlite3_bind_blob(stmt, 1, encrypted_message, encrypted_len, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 2, (int)encrypted_len);
+
+    bool exists = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        int count = sqlite3_column_int(stmt, 0);
+        exists = (count > 0);
+    }
+
+    sqlite3_finalize(stmt);
+    return exists;
+}
+
+/**
  * Save encrypted message to backup
  */
 int message_backup_save(message_backup_context_t *ctx,
@@ -163,6 +196,13 @@ int message_backup_save(message_backup_context_t *ctx,
                         bool is_outgoing) {
     if (!ctx || !ctx->db) return -1;
     if (!sender || !recipient || !encrypted_message) return -1;
+
+    // Check for duplicate (Model E: same message may be in multiple contacts' outboxes)
+    if (message_backup_exists_ciphertext(ctx, encrypted_message, encrypted_len)) {
+        printf("[Backup] Skipping duplicate message: %s → %s (%zu bytes, already exists)\n",
+               sender, recipient, encrypted_len);
+        return 1;  // Return 1 to indicate duplicate (not an error)
+    }
 
     const char *sql =
         "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read, status) "

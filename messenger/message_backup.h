@@ -55,6 +55,20 @@ typedef struct {
 message_backup_context_t* message_backup_init(const char *identity);
 
 /**
+ * Check if message already exists in database (by ciphertext hash)
+ *
+ * Prevents duplicate messages from being stored (e.g., when polling DHT offline queue).
+ *
+ * @param ctx Backup context
+ * @param encrypted_message Encrypted message ciphertext (binary)
+ * @param encrypted_len Length of encrypted message
+ * @return true if message exists, false otherwise
+ */
+bool message_backup_exists_ciphertext(message_backup_context_t *ctx,
+                                       const uint8_t *encrypted_message,
+                                       size_t encrypted_len);
+
+/**
  * Save a message to local backup (ENCRYPTED)
  *
  * Stores the encrypted ciphertext for security. Messages remain encrypted at rest.
@@ -67,7 +81,7 @@ message_backup_context_t* message_backup_init(const char *identity);
  * @param encrypted_len Length of encrypted message
  * @param timestamp Message timestamp
  * @param is_outgoing true if we sent it, false if we received it
- * @return 0 on success, -1 on error
+ * @return 0 on success, -1 on error, 1 if already exists (duplicate skipped)
  */
 int message_backup_save(message_backup_context_t *ctx,
                         const char *sender,
