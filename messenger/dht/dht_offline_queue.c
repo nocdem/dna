@@ -412,28 +412,23 @@ int dht_queue_message(
 
     memcpy(new_msg.ciphertext, ciphertext, ciphertext_len);
 
-    // 3. Combine existing + new message
-    size_t new_count = existing_count + 1;
+    // 3. REPLACE (Model E): Only store the NEW message, discard old ones
+    // Note: Each sender's outbox to a recipient should only contain the LATEST message
+    printf("[DHT Queue] Model E: Replacing outbox (discarding %zu old message(s))\n", existing_count);
+    dht_offline_messages_free(existing_messages, existing_count);  // Free old messages
+    existing_messages = NULL;
+    existing_count = 0;
+
+    size_t new_count = 1;  // Only the new message
     dht_offline_message_t *all_messages = (dht_offline_message_t*)calloc(new_count, sizeof(dht_offline_message_t));
     if (!all_messages) {
-        fprintf(stderr, "[DHT Queue] Failed to allocate combined message array\n");
+        fprintf(stderr, "[DHT Queue] Failed to allocate message array\n");
         dht_offline_message_free(&new_msg);
-        dht_offline_messages_free(existing_messages, existing_count);
         return -1;
     }
 
-    // Copy existing messages
-    for (size_t i = 0; i < existing_count; i++) {
-        all_messages[i] = existing_messages[i];
-    }
-
-    // Add new message at end
-    all_messages[existing_count] = new_msg;
-
-    // Free old array (but not the message contents, they're now in all_messages)
-    if (existing_messages) {
-        free(existing_messages);
-    }
+    // Store only the new message
+    all_messages[0] = new_msg;
 
     // 4. Serialize combined queue
     uint8_t *serialized = NULL;
