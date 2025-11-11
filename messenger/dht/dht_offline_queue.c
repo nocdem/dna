@@ -344,21 +344,48 @@ int dht_queue_message(
            queue_key[0], queue_key[1], queue_key[2], queue_key[3],
            queue_key[4], queue_key[5], queue_key[6], queue_key[7]);
 
-    // 1. Try to retrieve existing queue
+    // 1. Try to retrieve existing queue (use dht_get_all to get latest version)
     uint8_t *existing_data = NULL;
     size_t existing_len = 0;
     dht_offline_message_t *existing_messages = NULL;
     size_t existing_count = 0;
 
-    printf("[DHT Queue] → DHT GET: Checking existing offline queue\n");
-    int get_result = dht_get(ctx, queue_key, 64, &existing_data, &existing_len);
-    if (get_result == 0 && existing_data && existing_len > 1) {
-        // Queue exists, deserialize
-        printf("[DHT Queue] Found existing queue (%zu bytes)\n", existing_len);
+    printf("[DHT Queue] → DHT GET_ALL: Checking existing offline queue\n");
+    uint8_t **all_values = NULL;
+    size_t *all_lengths = NULL;
+    size_t value_count = 0;
+
+    int get_result = dht_get_all(ctx, queue_key, 64, &all_values, &all_lengths, &value_count);
+    if (get_result == 0 && value_count > 0) {
+        // Multiple values found - pick the largest one (most recent with most messages)
+        printf("[DHT Queue] Found %zu queue version(s), selecting largest\n", value_count);
+        size_t largest_idx = 0;
+        size_t largest_size = all_lengths[0];
+        for (size_t i = 1; i < value_count; i++) {
+            if (all_lengths[i] > largest_size) {
+                largest_size = all_lengths[i];
+                largest_idx = i;
+            }
+        }
+
+        existing_data = all_values[largest_idx];
+        existing_len = all_lengths[largest_idx];
+
+        printf("[DHT Queue] Selected version %zu/%zu (%zu bytes)\n", largest_idx + 1, value_count, existing_len);
+
         if (dht_deserialize_messages(existing_data, existing_len, &existing_messages, &existing_count) == 0) {
             printf("[DHT Queue] Existing queue has %zu messages\n", existing_count);
         }
-        free(existing_data);
+
+        // Free all values except the one we're using
+        for (size_t i = 0; i < value_count; i++) {
+            if (i != largest_idx) {
+                free(all_values[i]);
+            }
+        }
+        free(all_values);
+        free(all_lengths);
+        free(existing_data);  // Free after deserialize
     } else {
         printf("[DHT Queue] No existing queue found, creating new\n");
     }
@@ -416,9 +443,10 @@ int dht_queue_message(
 
     printf("[DHT Queue] Serialized queue: %zu messages, %zu bytes\n", new_count, serialized_len);
 
-    // 5. Store in DHT
-    printf("[DHT Queue] → DHT PUT: Queueing offline message (%zu total in queue)\n", new_count);
-    int put_result = dht_put(ctx, queue_key, 64, serialized, serialized_len);
+    // 5. Store in DHT using SIGNED put with fixed value ID
+    // Using value_id=1 ensures old queue versions are REPLACED (not accumulated)
+    printf("[DHT Queue] → DHT PUT_SIGNED: Queueing offline message (%zu total in queue)\n", new_count);
+    int put_result = dht_put_signed(ctx, queue_key, 64, serialized, serialized_len, 1, 0);
 
     free(serialized);
     dht_offline_messages_free(all_messages, new_count);
@@ -456,21 +484,48 @@ int dht_retrieve_queued_messages(
            queue_key[0], queue_key[1], queue_key[2], queue_key[3],
            queue_key[4], queue_key[5], queue_key[6], queue_key[7]);
 
-    // Query DHT (use full 64-byte key)
+    // Query DHT (use full 64-byte key, get all versions)
     uint8_t *queue_data = NULL;
     size_t queue_len = 0;
 
-    printf("[DHT Queue] → DHT GET: Retrieving offline messages\n");
-    int get_result = dht_get(ctx, queue_key, 64, &queue_data, &queue_len);
-    if (get_result != 0 || !queue_data || queue_len <= 1) {
+    printf("[DHT Queue] → DHT GET_ALL: Retrieving offline messages\n");
+    uint8_t **all_values = NULL;
+    size_t *all_lengths = NULL;
+    size_t value_count = 0;
+
+    int get_result = dht_get_all(ctx, queue_key, 64, &all_values, &all_lengths, &value_count);
+    if (get_result != 0 || value_count == 0) {
         printf("[DHT Queue] No queued messages found\n");
         *messages_out = NULL;
         *count_out = 0;
-        if (queue_data) free(queue_data);
         return 0;  // Not an error, just empty queue
     }
 
+    // Multiple values found - pick the largest one (most recent with most messages)
+    printf("[DHT Queue] Found %zu queue version(s), selecting largest\n", value_count);
+    size_t largest_idx = 0;
+    size_t largest_size = all_lengths[0];
+    for (size_t i = 1; i < value_count; i++) {
+        if (all_lengths[i] > largest_size) {
+            largest_size = all_lengths[i];
+            largest_idx = i;
+        }
+    }
+
+    queue_data = all_values[largest_idx];
+    queue_len = all_lengths[largest_idx];
+
+    printf("[DHT Queue] Selected version %zu/%zu (%zu bytes)\n", largest_idx + 1, value_count, queue_len);
     printf("[DHT Queue] Retrieved queue data: %zu bytes\n", queue_len);
+
+    // Free all values except the one we're using
+    for (size_t i = 0; i < value_count; i++) {
+        if (i != largest_idx) {
+            free(all_values[i]);
+        }
+    }
+    free(all_values);
+    free(all_lengths);
 
     // Deserialize messages
     dht_offline_message_t *all_messages = NULL;
@@ -554,13 +609,14 @@ int dht_clear_queue(
     uint8_t queue_key[64];
     dht_generate_queue_key(recipient, queue_key);
 
-    // Store empty queue (since dht_delete doesn't work in OpenDHTT)
+    // Store empty queue (since dht_delete doesn't work in OpenDHT)
+    // Using same value_id=1 as queueing to replace the old queue
     uint8_t empty_queue[5];  // Just the count=0
     uint32_t zero = htonl(0);
     memcpy(empty_queue, &zero, sizeof(uint32_t));
 
-    printf("[DHT Queue] → DHT PUT: Clearing offline queue\n");
-    int result = dht_put(ctx, queue_key, 64, empty_queue, sizeof(uint32_t));
+    printf("[DHT Queue] → DHT PUT_SIGNED: Clearing offline queue\n");
+    int result = dht_put_signed(ctx, queue_key, 64, empty_queue, sizeof(uint32_t), 1, 0);
     if (result != 0) {
         fprintf(stderr, "[DHT Queue] Failed to clear queue\n");
         return -1;

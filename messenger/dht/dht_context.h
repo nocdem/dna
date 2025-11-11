@@ -120,6 +120,35 @@ int dht_put(dht_context_t *ctx,
             const uint8_t *value, size_t value_len);
 
 /**
+ * Put SIGNED value in DHT with fixed value ID (enables editing/replacement)
+ *
+ * This function uses OpenDHT's putSigned() with a fixed value ID, which
+ * allows subsequent PUTs with the same ID to REPLACE the old value instead
+ * of accumulating. This solves the value accumulation problem where multiple
+ * unsigned values with different IDs would pile up at the same key.
+ *
+ * Key differences from dht_put():
+ * - Uses putSigned() instead of put()
+ * - Sets fixed value ID (not auto-generated)
+ * - Old values with same ID are replaced (not accumulated)
+ * - Sequence numbers auto-increment for versioning
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param value Value to store
+ * @param value_len Value length
+ * @param value_id Fixed value ID (e.g., 1 for offline queue slot)
+ * @param ttl_seconds Time-to-live in seconds (0 = default 7 days)
+ * @return 0 on success, -1 on error
+ */
+int dht_put_signed(dht_context_t *ctx,
+                   const uint8_t *key, size_t key_len,
+                   const uint8_t *value, size_t value_len,
+                   uint64_t value_id,
+                   unsigned int ttl_seconds);
+
+/**
  * Get value from DHT (returns first value only)
  *
  * @param ctx DHT context

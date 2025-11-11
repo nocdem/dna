@@ -1,6 +1,7 @@
 #include "dht_context.h"
 #include "dht_keyserver.h"
 #include "dna_profile.h"
+#include "dht_offline_queue.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -98,6 +99,58 @@ int main(int argc, char **argv) {
             printf("========================================\n");
             dna_identity_free(id);
         }
+
+        // Check for offline messages
+        printf("\n--- Offline Messages ---\n");
+        dht_offline_message_t *messages = NULL;
+        size_t msg_count = 0;
+        int ret = dht_retrieve_queued_messages(ctx, fp, &messages, &msg_count);
+
+        if (ret == 0 && msg_count > 0) {
+            printf("📬 Found %zu offline message(s):\n\n", msg_count);
+            for (size_t i = 0; i < msg_count; i++) {
+                printf("  Message #%zu:\n", i + 1);
+
+                // Try to resolve sender identity
+                char *sender_name = NULL;
+                if (strlen(messages[i].sender) == 128) {
+                    // It's a fingerprint, try reverse lookup
+                    dna_unified_identity_t *sender_id = NULL;
+                    if (dna_load_identity(ctx, messages[i].sender, &sender_id) == 0 && sender_id) {
+                        if (sender_id->has_registered_name) {
+                            sender_name = strdup(sender_id->registered_name);
+                        }
+                        dna_identity_free(sender_id);
+                    }
+                }
+
+                if (sender_name) {
+                    printf("    From: %s (%s...%s)\n", sender_name,
+                           messages[i].sender, messages[i].sender + 118);
+                    free(sender_name);
+                } else {
+                    printf("    From: %s\n", messages[i].sender);
+                }
+
+                printf("    To: %s\n", messages[i].recipient);
+                printf("    Timestamp: %lu\n", messages[i].timestamp);
+                printf("    Expires: %lu\n", messages[i].expiry);
+                printf("    Ciphertext size: %zu bytes\n", messages[i].ciphertext_len);
+                printf("    Ciphertext (first 32 bytes): ");
+                size_t display_len = messages[i].ciphertext_len < 32 ? messages[i].ciphertext_len : 32;
+                for (size_t j = 0; j < display_len; j++) {
+                    printf("%02x", messages[i].ciphertext[j]);
+                }
+                if (messages[i].ciphertext_len > 32) printf("...");
+                printf("\n\n");
+            }
+            dht_offline_messages_free(messages, msg_count);
+        } else if (ret == 0 && msg_count == 0) {
+            printf("✓ No offline messages\n");
+        } else {
+            printf("✗ Failed to retrieve offline messages (error %d)\n", ret);
+        }
+
         free(fp);
     }
 

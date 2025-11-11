@@ -589,6 +589,114 @@ extern "C" int dht_put_permanent(dht_context_t *ctx,
 }
 
 /**
+ * Put SIGNED value in DHT with fixed value ID (enables editing/replacement)
+ *
+ * This function uses OpenDHT's putSigned() with a fixed value ID, which allows
+ * subsequent PUTs with the same ID to REPLACE the old value instead of accumulating.
+ * This solves the value accumulation problem where multiple unsigned values with
+ * different IDs would pile up at the same key.
+ *
+ * Implementation details:
+ * - Creates a shared Value with the provided data
+ * - Sets fixed value ID (not auto-generated)
+ * - Uses putSigned() which enables editing via EditPolicy
+ * - Sequence numbers auto-increment for versioning
+ * - Old values with same ID are replaced (not accumulated)
+ */
+extern "C" int dht_put_signed(dht_context_t *ctx,
+                              const uint8_t *key, size_t key_len,
+                              const uint8_t *value, size_t value_len,
+                              uint64_t value_id,
+                              unsigned int ttl_seconds) {
+    if (!ctx || !key || !value) {
+        std::cerr << "[DHT] ERROR: NULL parameter in dht_put_signed" << std::endl;
+        return -1;
+    }
+
+    if (!ctx->running) {
+        std::cerr << "[DHT] ERROR: Node not running" << std::endl;
+        return -1;
+    }
+
+    try {
+        // Hash the key to get infohash
+        auto hash = dht::InfoHash::get(key, key_len);
+
+        // Create value blob
+        std::vector<uint8_t> data(value, value + value_len);
+        auto dht_value = std::make_shared<dht::Value>(data);
+
+        // Set TTL (0 = use default 7 days)
+        if (ttl_seconds == 0) {
+            ttl_seconds = 7 * 24 * 3600;  // 7 days
+        }
+
+        // Choose ValueType based on TTL (365 days vs 7 days)
+        if (ttl_seconds >= 365 * 24 * 3600) {
+            dht_value->type = DNA_TYPE_365DAY.id;
+        } else {
+            dht_value->type = DNA_TYPE_7DAY.id;
+        }
+
+        // CRITICAL: Set fixed value ID (not auto-generated)
+        // This allows subsequent PUTs with same ID to replace old values
+        dht_value->id = value_id;
+
+        std::cout << "[DHT] PUT_SIGNED: " << hash
+                  << " (" << value_len << " bytes"
+                  << ", TTL=" << ttl_seconds << "s"
+                  << ", type=0x" << std::hex << dht_value->type << std::dec
+                  << ", id=" << value_id << ")" << std::endl;
+
+        // Use putSigned() instead of put() to enable editing/replacement
+        // Note: putSigned() doesn't support creation_time parameter (uses current time)
+        // Permanent flag controls whether value expires based on ValueType
+        ctx->runner.putSigned(hash, dht_value,
+                             [](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                                 if (success) {
+                                     std::cout << "[DHT] PUT_SIGNED: ✓ Stored/updated on "
+                                               << nodes.size() << " remote node(s)" << std::endl;
+                                 } else {
+                                     std::cout << "[DHT] PUT_SIGNED: ✗ Failed to store on any node" << std::endl;
+                                 }
+                             },
+                             false);  // permanent=false to use ValueType's expiration
+
+        // Store value to persistent storage (if enabled)
+        if (ctx->storage) {
+            uint64_t expires_at = 0;  // 0 = permanent
+            if (ttl_seconds != UINT_MAX) {
+                expires_at = time(NULL) + ttl_seconds;
+            }
+
+            // Convert InfoHash to bytes
+            std::string hash_str = hash.toString();
+            const uint8_t *hash_bytes = (const uint8_t*)hash_str.data();
+
+            dht_value_metadata_t metadata;
+            metadata.key_hash = hash_bytes;
+            metadata.key_hash_len = hash_str.size();
+            metadata.value_data = value;
+            metadata.value_data_len = value_len;
+            metadata.value_type = dht_value->type;
+            metadata.created_at = time(NULL);
+            metadata.expires_at = expires_at;
+
+            if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
+                if (dht_value_storage_should_persist(metadata.value_type, metadata.expires_at)) {
+                    std::cout << "[Storage] ✓ Value persisted to disk" << std::endl;
+                }
+            }
+        }
+
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[DHT] Exception in dht_put_signed: " << e.what() << std::endl;
+        return -1;
+    }
+}
+
+/**
  * Get value from DHT (returns first value only)
  */
 extern "C" int dht_get(dht_context_t *ctx,
