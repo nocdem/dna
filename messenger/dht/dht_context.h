@@ -163,6 +163,21 @@ int dht_get(dht_context_t *ctx,
             uint8_t **value_out, size_t *value_len_out);
 
 /**
+ * Get value from DHT asynchronously (non-blocking)
+ * Callback is invoked when value is retrieved (or on error)
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param callback Function called with (value, value_len, userdata). Value is NULL on error. Caller must free value.
+ * @param userdata User data passed to callback
+ */
+void dht_get_async(dht_context_t *ctx,
+                   const uint8_t *key, size_t key_len,
+                   void (*callback)(uint8_t *value, size_t value_len, void *userdata),
+                   void *userdata);
+
+/**
  * Get all values from DHT for a given key
  *
  * @param ctx DHT context

@@ -330,26 +330,51 @@ void DNAMessengerApp::renderIdentitySelection() {
             // Scan for identity files
             app->scanIdentities();
             
-            // Do DHT reverse lookups for names (in background)
+            // Do async DHT reverse lookups for names (all in parallel!)
             dht_context_t *dht_ctx = dht_singleton_get();
             if (dht_ctx) {
+                // Track how many lookups we started
+                size_t pending_lookups = 0;
+                
                 for (const auto& fp : app->state.identities) {
                     if (fp.length() == 128 && app->state.identity_name_cache.find(fp) == app->state.identity_name_cache.end()) {
-                        // Try DHT reverse lookup to get registered name
-                        char *registered_name = nullptr;
-                        int ret = dht_keyserver_reverse_lookup(dht_ctx, fp.c_str(), &registered_name);
+                        // Initialize with shortened fingerprint (fallback)
+                        app->state.identity_name_cache[fp] = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
                         
-                        if (ret == 0 && registered_name != nullptr) {
-                            // Found registered name, cache it
-                            printf("[Identity] DHT lookup: %s → %s\n", fp.substr(0, 16).c_str(), registered_name);
-                            app->state.identity_name_cache[fp] = std::string(registered_name);
-                            free(registered_name);
-                        } else {
-                            // Not registered or lookup failed, use shortened fingerprint
-                            app->state.identity_name_cache[fp] = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
-                        }
+                        // Start async DHT reverse lookup
+                        pending_lookups++;
+                        
+                        // Create userdata structure with app pointer and fingerprint
+                        struct lookup_ctx {
+                            DNAMessengerApp *app;
+                            char fingerprint[129];
+                        };
+                        
+                        lookup_ctx *ctx = new lookup_ctx;
+                        ctx->app = app;
+                        strncpy(ctx->fingerprint, fp.c_str(), 128);
+                        ctx->fingerprint[128] = '\0';
+                        
+                        dht_keyserver_reverse_lookup_async(dht_ctx, fp.c_str(),
+                            [](char *registered_name, void *userdata) {
+                                lookup_ctx *ctx = (lookup_ctx*)userdata;
+                                
+                                if (registered_name) {
+                                    // Found registered name, update cache
+                                    std::string fp_str(ctx->fingerprint);
+                                    printf("[Identity] DHT lookup: %s → %s\n", fp_str.substr(0, 16).c_str(), registered_name);
+                                    ctx->app->state.identity_name_cache[fp_str] = std::string(registered_name);
+                                    free(registered_name);
+                                }
+                                // If NULL, fallback already set above
+                                
+                                delete ctx;
+                            },
+                            ctx);
                     }
                 }
+                
+                printf("[Identity] Started %zu async DHT lookups\n", pending_lookups);
             } else {
                 // No DHT available, use shortened fingerprints
                 for (const auto& fp : app->state.identities) {
@@ -359,7 +384,7 @@ void DNAMessengerApp::renderIdentitySelection() {
                 }
             }
             
-            // Mark as complete
+            // Mark as complete immediately (lookups continue in background)
             app->state.identities_scanned = true;
         });
     }
