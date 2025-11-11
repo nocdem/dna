@@ -85,8 +85,7 @@ public:
     float add_contact_last_input_time;  // Track when user last typed
     std::string add_contact_last_searched_input;  // Track what we last searched
 
-    // Message polling state (check offline queue every 5 seconds)
-    float last_poll_time;  // Last time we checked for offline messages
+    // Message and sync state (Model E: no continuous polling, check once on login)
     bool new_messages_received;  // Flag to reload current conversation
     bool contacts_synced_from_dht;  // Flag to indicate DHT sync completed
     bool should_scroll_to_bottom;  // Flag to force scroll after sending message

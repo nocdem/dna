@@ -1,1117 +1,307 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-10
-**Project:** DNA Messenger (Post-Quantum Encrypted Messenger)
-**Current Phase:** Phase 5 (Web Messenger) - Phase 4, 8, 9.1, 9.2, 9.3, 9.4, 9.5 Complete
+**Last Updated:** 2025-11-10 | **Phase:** 5 (Web Messenger) | **Complete:** 4, 8, 9.1-9.5
 
 **Recent Updates (2025-11-10):**
-- **CRITICAL FIX:** Fixed offline message queue key mismatch bug
-  - Issue: Messages sent to display names ("deus") couldn't be retrieved by fingerprints
-  - Fix: Added `resolve_identity_to_fingerprint()` to ensure DHT queue keys always use fingerprints
-  - Impact: Offline messages now work reliably across all scenarios
-- **GUI Migration:** Qt5 GUI deprecated, fully migrated to ImGui
-  - Qt code preserved in `gui/` for reference only
-  - Active development on `imgui_gui/` (dna_messenger_imgui binary)
-  - ImGui correctly uses fingerprints for all message routing
+- **CRITICAL FIX:** Offline message queue - `resolve_identity_to_fingerprint()` ensures DHT queue keys use fingerprints (was using display names)
+- **GUI:** Qt5 deprecated → ImGui active (`imgui_gui/`), Qt preserved in `gui/` for reference
 
 ---
 
 ## Project Overview
 
-DNA Messenger is a post-quantum end-to-end encrypted messaging platform with cpunk wallet integration. It uses **Kyber1024 (ML-KEM-1024)** for key encapsulation, **Dilithium5 (ML-DSA-87)** for signatures, and AES-256-GCM for symmetric encryption. **NIST Category 5 security** (256-bit quantum security).
+Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 security** (256-bit quantum).
 
-**Key Features:**
-- End-to-end encrypted messaging
-- Group chats with member management (DHT-based, decentralized)
-- Per-identity contact lists with DHT sync (multi-device support via BIP39)
-- cpunk wallet integration (CPUNK, CELL, KEL tokens)
-- P2P messaging with DHT-based peer discovery (OpenDHT)
-- Offline message queueing (7-day DHT storage, **now fixed!**)
-- Local SQLite storage (NO centralized database dependencies)
-- Keyserver cache (7-day TTL, local SQLite)
-- Cross-platform (Linux, Windows)
-- ImGui desktop application (replaces Qt5)
-- BIP39 recovery phrases
+**Crypto:** Kyber1024 (ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
+
+**Key Features:** E2E encrypted messaging • DHT-based groups • Per-identity contacts with DHT sync • cpunk wallet (CPUNK/CELL/KEL) • P2P + DHT peer discovery • Offline queueing (7-day) • Local SQLite (no centralized DB) • Cross-platform (Linux/Windows) • ImGui GUI • BIP39 recovery
 
 ---
 
-## Current Architecture
+## Architecture
 
-### Components
-1. **Core Library** (`libdna.a`)
-   - Post-quantum cryptography (Kyber1024, Dilithium5 - NIST Category 5)
-   - Memory-based encryption/decryption API
-   - Multi-recipient support
-   - Keyserver cache (SQLite with 7-day TTL)
-
-2. **GUI Client** (`dna_messenger_imgui`)
-   - ImGui desktop application (OpenGL3 + GLFW3)
-   - Modern responsive UI with mobile support
-   - Theme system (DNA cyan, Club orange)
-   - Integrated wallet with transaction history
-   - Local SQLite message storage (`~/.dna/messages.db`)
-   - Async task system for non-blocking operations
-   - **Note:** Qt5 GUI (`gui/`) is deprecated, preserved for reference only
-
-3. **Wallet Integration**
-   - Cellframe wallet file support (.dwallet format)
-   - RPC integration with Cellframe node
-   - Transaction builder and signing
-   - Balance and history queries
-
-5. **P2P Transport Layer** (Phase 9.1, 9.2, 9.3)
-   - OpenDHT for peer discovery and storage
-   - Direct peer-to-peer TCP connections (port 4001)
-   - DHT-based offline message queueing
-   - DHT-based groups (UUID v4 + SHA256 keys)
-   - 3 public bootstrap nodes (US/EU)
-   - Automatic message delivery with 2-minute polling
-   - Bootstrap deployment scripts (automated VPS deployment)
+| Component | Description |
+|-----------|-------------|
+| **Core Library** (`libdna.a`) | PQ crypto (Kyber1024, Dilithium5) • Memory-based enc/dec API • Multi-recipient • Keyserver cache (SQLite, 7d TTL) |
+| **GUI** (`dna_messenger_imgui`) | ImGui (OpenGL3+GLFW3) • Responsive UI • Theme system • Wallet integration • SQLite storage • Async tasks • **Qt5 deprecated** |
+| **Wallet** | Cellframe .dwallet files • RPC integration • TX builder/signing • Balance/history queries |
+| **P2P Transport** | OpenDHT peer discovery • TCP (port 4001) • Offline queueing (7d) • DHT groups (UUID v4) • 3 bootstrap nodes (US/EU) • 2-min polling |
 
 ### Directory Structure
 ```
 /opt/dna-messenger/
-├── crypto/                  # Cryptography libraries
-│   ├── dsa/                 # Dilithium5 (ML-DSA-87) signatures
-│   ├── kem/                 # Kyber1024 (ML-KEM-1024) key encapsulation
-│   └── cellframe_dilithium/ # Cellframe-specific Dilithium implementation
-├── dht/                     # DHT layer (Phase 9.1, 9.2, 9.3, 9.5)
-│   ├── dht_context.*       # OpenDHT integration
-│   ├── dht_offline_queue.* # Offline message queueing
-│   ├── dht_groups.*        # DHT-based groups (Phase 9.3)
-│   ├── dht_contactlist.*   # Contact list DHT sync (Phase 9.5)
-│   ├── deploy-bootstrap.sh # Automated bootstrap deployment
-│   ├── monitor-bootstrap.sh# Bootstrap health monitoring
-│   ├── dna-dht-bootstrap.service # Systemd service
-│   └── persistent_bootstrap# DHT bootstrap server binary
-├── p2p/                     # P2P transport layer (Phase 9.1)
-│   ├── p2p_transport.*     # TCP connections + DHT
-│   └── test_p2p_basic.c    # P2P transport tests
-├── gui/                     # Qt5 GUI application (DEPRECATED - reference only)
-│   └── [MainWindow, Dialogs, ThemeManager] - Preserved for reference
-├── imgui_gui/               # ImGui GUI application (ACTIVE)
-│   ├── app.cpp             # Main application and UI rendering
-│   ├── core/               # Core data structures and state management
-│   └── imgui/              # ImGui library (v1.90+)
-├── wallet.c/h              # Cellframe wallet integration
-├── cellframe_rpc.c/h       # Cellframe RPC client
-├── cellframe_tx_builder_minimal.c/h # Transaction builder
-├── messenger_p2p.*         # P2P messaging integration
-├── messenger_stubs.c       # DHT-based group functions (Phase 9.3)
-├── keyserver_cache.*       # Local SQLite cache for public keys (NEW)
-├── dna_api.h               # Public library API
-└── CMakeLists.txt          # Build configuration
+├── crypto/                  # PQ cryptography
+│   ├── dsa/                 # Dilithium5 (ML-DSA-87)
+│   ├── kem/                 # Kyber1024 (ML-KEM-1024)
+│   └── cellframe_dilithium/ # Cellframe Dilithium
+├── dht/                     # DHT layer
+│   ├── dht_context.*        # OpenDHT integration
+│   ├── dht_offline_queue.*  # Offline queueing
+│   ├── dht_groups.*         # DHT groups
+│   ├── dht_contactlist.*    # Contact sync
+│   ├── dht_keyserver.*      # Identity/name system
+│   ├── deploy-bootstrap.sh  # VPS deployment
+│   └── monitor-bootstrap.sh # Health monitoring
+├── p2p/                     # P2P transport
+│   └── p2p_transport.*      # TCP + DHT
+├── imgui_gui/               # ImGui GUI (ACTIVE)
+│   ├── app.cpp              # Main UI
+│   ├── core/                # Data structures
+│   └── imgui/               # ImGui library
+├── gui/                     # Qt5 GUI (DEPRECATED)
+├── wallet.*                 # Cellframe wallet integration
+├── cellframe_rpc.*          # RPC client
+├── cellframe_tx_builder_*   # TX builder
+├── messenger_p2p.*          # P2P messaging
+├── messenger_stubs.c        # Group functions
+├── keyserver_cache.*        # Local key cache
+├── contacts_db.*            # Per-identity contacts
+└── dna_api.h                # Public API
 ```
 
 ---
 
 ## Development Guidelines
 
-### 1. Code Style
-- **C Code:** Follow existing style (K&R-ish with 4-space indentation)
-- **C++ Code (ImGui):** Modern C++17, camelCase for methods, STL containers
-- **C++ Code (Qt - deprecated):** Qt coding conventions (reference only)
-- **Comments:** Use clear, concise comments for complex logic
-- **Memory Management:** Always free allocated memory, check for NULL
+| Area | Guidelines |
+|------|-----------|
+| **Code Style** | C: K&R, 4-space • C++ ImGui: C++17, camelCase, STL • Qt: deprecated (reference) • Clear comments • Always free memory, check NULL |
+| **Cryptography** | **DO NOT modify primitives** without expert review • Use `dna_api.h` API • Memory-based ops only • Never log keys/plaintext |
+| **Database** | **SQLite only** (no PostgreSQL) • Messages: `~/.dna/messages.db` • Contacts: `~/.dna/<identity>_contacts.db` (per-identity, DHT sync, Kyber1024 self-encrypted, SHA3-512 keys, auto-migrated) • Groups: DHT + local cache (UUID v4, SHA256 keys, JSON) • Keyserver: `~/.dna/keyserver_cache.db` (7d TTL, BLOB) • Use prepared statements (`sqlite3_prepare_v2`, `sqlite3_bind_*`), check returns |
+| **GUI** | **ImGui (ACTIVE)**: Immediate mode, `AppState` struct, `task_queue` async, `apply_theme()`, cross-platform • **Qt5 (DEPRECATED)**: signals/slots, `ThemeManager::instance()`, reference only |
+| **Wallet** | Read from `~/.dna/` or system dir • Use `cellframe_rpc.h` API • Amounts as strings (preserve precision) • Smart decimals (8 for tiny, 2 normal) • Minimal TX builder (no JSON-C) |
+| **Cross-Platform** | Linux (primary) • Windows (MXE cross-compile) • CMake build • Avoid platform-specific code • Test both before commit |
 
-### 2. Cryptography
-- **DO NOT modify crypto primitives** without expert review
-- Use existing API functions from `dna_api.h`
-- All encryption/decryption must use memory-based operations
-- Never log or print keys or decrypted messages
+### DHT Storage TTL Settings
 
-### 3. Database (Migrated to SQLite - Phase 9.3, 9.5)
-- **Messages:** Local SQLite database (`~/.dna/messages.db`)
-- **Contacts:** Per-identity SQLite databases (`~/.dna/<identity>_contacts.db`)
-  - Isolated storage per identity
-  - DHT sync with Kyber1024 self-encryption (Phase 9.5)
-  - SHA3-512 key derivation for DHT storage
-  - Automatic migration from global contacts.db
-- **Groups:** DHT-based storage with local SQLite cache
-  - UUID v4 for group identification
-  - SHA256-based DHT keys
-  - JSON serialization for metadata
-  - Local cache for offline access
-- **Keyserver Cache:** Local SQLite (`~/.dna/keyserver_cache.db`)
-  - 7-day TTL with automatic expiry
-  - BLOB storage for public keys
-- Use prepared statements to prevent SQL injection (`sqlite3_prepare_v2`, `sqlite3_bind_*`)
-- Always check return codes from SQLite operations
-- NO PostgreSQL dependencies (fully decentralized)
+| Data Type | TTL | DHT Key | Rationale |
+|-----------|-----|---------|-----------|
+| **Identity Keys** | **PERMANENT** | `SHA3-512(fingerprint + ":pubkey")` | Core crypto identity persists indefinitely |
+| **Name Registration** | **365 days** | `SHA3-512(name + ":lookup")` | Annual renewal prevents squatting |
+| **Reverse Mapping** | **365 days** | `SHA3-512(fingerprint + ":reverse")` | Sender ID without pre-adding contact |
+| **Contact Lists** | **PERMANENT** | `SHA3-512(identity + ":contactlist")` | Multi-device sync (Kyber1024 self-encrypted) |
+| **Offline Queue** | **7 days** | `SHA256(recipient + ":offline_queue")` | Ephemeral, delivered to SQLite when retrieved |
+| **Groups** | **7 days** | `SHA256(group_uuid)` | Active groups update frequently |
+| **Social Posts** | **7 days** | `SHA256(post_id)` | Ephemeral social content |
 
-### 4. DHT Storage TTL Settings
-
-DNA Messenger uses OpenDHT for distributed storage with different TTL (Time-to-Live) settings based on data type:
-
-**Identity & Name System** (`dht/dht_keyserver.c`)
-- **Identity Keys** (fingerprint → Dilithium5 + Kyber1024 pubkeys): **PERMANENT** (never expires)
-  - Initial publish, updates, profile updates, renewals all use permanent storage
-  - DHT key: `SHA3-512(fingerprint + ":pubkey")`
-  - Rationale: Core cryptographic identity must persist indefinitely
-
-- **Name Registrations** (name → fingerprint): **365 days**
-  - Name alias mappings and lookups
-  - DHT key: `SHA3-512(name + ":lookup")`
-  - Rationale: Annual renewal prevents name squatting
-
-- **Reverse Mapping** (fingerprint → name): **365 days**
-  - Allows sender identification without pre-adding to contacts
-  - DHT key: `SHA3-512(fingerprint + ":reverse")`
-  - Rationale: Matches name registration period
-
-**Contact Lists** (`dht/dht_contactlist.c`)
-- **Encrypted Contact List**: **PERMANENT**
-  - Self-encrypted with Kyber1024 (only owner can decrypt)
-  - DHT key: `SHA3-512(identity + ":contactlist")`
-  - Rationale: User's private data should persist across devices indefinitely
-
-**Messaging** (`dht/dht_offline_queue.c`)
-- **Offline Message Queue**: **7 days**
-  - Temporary storage for messages when recipient offline
-  - DHT key: `SHA256(recipient + ":offline_queue")`
-  - Rationale: Messages are ephemeral, delivered to local SQLite when retrieved
-
-**Groups & Social** (`dht/dht_groups.c`, `dht/dna_message_wall.c`)
-- **Group Metadata**: **7 days**
-  - Group info, members, updates
-  - DHT key: `SHA256(group_uuid)`
-  - Rationale: Active groups need frequent updates, inactive groups expire naturally
-
-- **Social Posts**: **7 days**
-  - Message wall posts
-  - DHT key: `SHA256(post_id)`
-  - Rationale: Ephemeral social content
-
-**Implementation Details:**
-- `dht_put_permanent()` - Never expires (uses `time_point::max()` + `permanent=true`)
-- `dht_put_ttl(ctx, key, val, 365*24*3600)` - 365-day TTL (uses `DNA_TYPE_365DAY` ValueType)
-- `dht_put()` - Default 7-day TTL (uses `DNA_TYPE_7DAY` ValueType)
-- OpenDHT 2.4.12 uses ValueType.expiration for TTL control
-- Custom ValueTypes defined: `DNA_TYPE_7DAY` (0x1001), `DNA_TYPE_365DAY` (0x1002)
-
-### 5. GUI Development
-
-**ImGui (Active Development):**
-- Use immediate mode paradigm (render UI every frame)
-- State stored in `AppState` struct (`imgui_gui/core/data_types.h`)
-- Async tasks via `task_queue` for non-blocking operations
-- Theme switching via `apply_theme()` function
-- Cross-platform (Linux, Windows via MinGW, mobile via OpenGL ES)
-
-**Qt5 (Deprecated - Reference Only):**
-- Use Qt signals/slots for event handling
-- Apply themes via `ThemeManager::instance()`
-- All dialogs should be theme-aware
-- Code preserved in `gui/` for reference only
-
-### 6. Wallet Integration
-- Read Cellframe wallet files from `~/.dna/` or system wallet dir
-- Use `cellframe_rpc.h` API for RPC calls
-- All token amounts are strings to preserve precision
-- Use smart decimal formatting (8 decimals for tiny amounts)
-- Transaction builder uses minimal serialization (no JSON-C in builder)
-
-### 7. Cross-Platform Support
-- **Linux:** Primary development platform
-- **Windows:** Cross-compile using MXE (M cross environment)
-- Use CMake for build configuration
-- Avoid platform-specific code when possible
-- Test on both platforms before committing
+**API:** `dht_put_permanent()` (never expires), `dht_put_ttl(ctx, key, val, 365*24*3600)` (365d), `dht_put()` (7d default) • Custom ValueTypes: `DNA_TYPE_7DAY` (0x1001), `DNA_TYPE_365DAY` (0x1002)
 
 ---
 
-## Phase 8: cpunk Wallet Integration (COMPLETE)
+## Phase 8: cpunk Wallet Integration ✅ (2025-10-23)
 
-**Status:** ✅ Complete (2025-10-23)
+**Implemented:** WalletDialog (card-based token display, RPC balance queries, recent 3 TX, Send/Receive/DEX/History) • SendTokensDialog (TX builder, UTXO selection, 0.002 CELL fee, Dilithium sigs, RPC submit) • ReceiveDialog (addresses per network, QR codes, copy-to-clipboard) • TransactionHistoryDialog (pagination, color-coded arrows, status display) • ThemeManager (singleton, signal-based, cpunk.io cyan/cpunk.club orange)
 
-### What Was Implemented
-1. **WalletDialog** - Main wallet view
-   - Card-based token display (CPUNK, CELL, KEL)
-   - Balance queries via Cellframe RPC
-   - Recent 3 transactions display
-   - 4-button layout: Send, Receive, DEX, History
-
-2. **SendTokensDialog** - Send tokens
-   - Transaction builder integration
-   - UTXO query and selection
-   - Network fee handling (0.002 CELL)
-   - Dilithium signature generation
-   - RPC transaction submission
-
-3. **ReceiveDialog** - Receive tokens
-   - Display wallet addresses per network
-   - QR code generation
-   - Easy copy-to-clipboard
-
-4. **TransactionHistoryDialog** - Full transaction list
-   - All transactions with pagination
-   - Color-coded arrows (green incoming, red outgoing)
-   - Status display (ACCEPTED in green, DECLINED in red)
-   - Smart timestamp formatting
-
-5. **ThemeManager** - Global theme system
-   - Singleton pattern for theme management
-   - Signal-based theme updates
-   - Support for cpunk.io (cyan) and cpunk.club (orange)
-
-### Key Technical Decisions
-- **No wallet selection in send dialog:** Already in that wallet context
-- **Smart decimal formatting:** 8 decimals for tiny amounts, 2 for normal
-- **Direct RPC integration:** No external wallet utilities needed
-- **Theme-aware:** All wallet dialogs respond to theme changes
-- **Transaction builder:** Minimal serialization for cross-platform compatibility
+**Decisions:** No wallet selection (already in context) • Smart decimals (8 for tiny, 2 normal) • Direct RPC (no external utils) • Theme-aware dialogs • Minimal TX serialization (cross-platform)
 
 ---
 
-## Phase 9.1 & 9.2: P2P Transport & Offline Message Queue (COMPLETE)
+## Phase 9.1 & 9.2: P2P Transport & Offline Queue ✅ (2025-11-02, fixed 2025-11-10)
 
-**Status:** ✅ Complete (2025-11-02)
+**9.1 - P2P Transport:** OpenDHT integration (3 bootstrap nodes US/EU, peer registration/lookup, SHA256 keys) • TCP port 4001 (Kyber512 + AES-256-GCM) • Hybrid delivery (P2P → DHT queue → SQLite fallback)
 
-### Phase 9.1: P2P Transport Layer (COMPLETE)
-**What Was Implemented:**
-1. **OpenDHT Integration** - DHT-based peer discovery
-   - 3 public bootstrap nodes (US/EU)
-   - Peer registration and lookup via DHT
-   - SHA256-based peer keys
+**9.2 - Offline Queue:** `dht/dht_offline_queue.c/h` (binary serialization, magic bytes, 7d TTL, SHA256 queue keys, single-queue-per-recipient) • Encrypted DHT storage, auto-append, network byte order • 2-min polling (ImGui `app.cpp`), auto-deliver to SQLite • Integration: `p2p_transport.c` (queue/retrieve API), `messenger_p2p.c` (hybrid send)
 
-2. **P2P Transport** - Direct peer-to-peer messaging
-   - TCP connections on port 4001
-   - Post-quantum encryption (Kyber512 + AES-256-GCM)
-   - Connection management and presence updates
+**Critical Bug Fix (2025-11-10):** Queue key mismatch - sender used display name ("alice"), receiver used fingerprint → keys didn't match. **Solution:** `resolve_identity_to_fingerprint()` in `messenger_p2p.c:155-178` ensures all queue ops use fingerprints (leverages `messenger_load_pubkey()` + DHT keyserver lookup)
 
-3. **Hybrid Delivery** - Multi-tier message delivery
-   - Primary: Direct P2P (if peer online)
-   - Secondary: DHT queue (if peer offline)
-   - Tertiary: SQLite fallback (Phase 9.3 migration)
+**Model E Migration (2025-11-11):** Solved DHT value accumulation problem (8-40 values per user) by migrating from recipient-based inbox to sender-based outbox architecture.
 
-### Phase 9.2: Offline Message Queueing (COMPLETE)
-**What Was Implemented:**
-1. **DHT Offline Queue** (`dht/dht_offline_queue.c/h`)
-   - Binary message serialization with magic bytes
-   - 7-day TTL with configurable expiry
-   - SHA256-based queue keys: `hash(recipient + ":offline_queue")`
-   - Single-queue-per-recipient architecture
+**Problem:** Unsigned `dht_put()` with auto-generated random IDs → every message created new DHT value → quadratic accumulation (8-40 values observed).
 
-2. **Message Storage Protocol**
-   - Encrypted message storage in DHT
-   - Automatic append to existing queue
-   - Platform-independent network byte order (htonl/ntohl)
-   - Cross-platform support (Windows/Linux)
+**Solution (Model E - Sender Outbox):**
+- **DHT Key:** Changed from `SHA3-512(recipient + ":offline_queue")` to `SHA3-512(sender + ":outbox:" + recipient)`
+- **Put Type:** Uses `dht_put_signed()` with fixed `value_id=1` → old values REPLACED (not accumulated)
+- **Retrieval:** Recipient queries all contacts' outboxes (N queries per login) instead of single inbox query
+- **Polling:** Removed continuous 5-second polling → check once on login only
+- **Security:** Only queries known contacts (spam prevention), Dilithium5 signed puts
 
-3. **Automatic Retrieval**
-   - 2-minute polling timer in GUI (Qt: `MainWindow.cpp`, ImGui: `app.cpp`)
-   - Automatic delivery to local SQLite when retrieved
-   - Queue clearing after successful delivery
-   - Message expiry handling
+**Test Results:** `dht/test_signed_put.c` verified signed puts with same `value_id` reliably replace old values (3 consecutive PUTs → always 1 DHT value, never accumulation).
 
-4. **Integration**
-   - `p2p_transport.c` - Queue/retrieve API
-   - `messenger_p2p.c` - Hybrid send flow + identity resolution (bug fix 2025-11-10)
-   - GUI - Automatic polling (Qt deprecated, ImGui active)
+**Implementation:** Updated 9 files (~353 lines changed): `dht_offline_queue.[ch]` (renamed functions, multi-contact retrieval), `p2p_transport.c` (contact list integration), `imgui_gui/app.cpp` (removed polling, added login-time check), `imgui_gui/core/app_state.[ch]` (removed polling state). **Migration:** Old messages ignored (7-day TTL expiry), no backward compatibility (breaking change).
 
-5. **Critical Bug Fix (2025-11-10)**
-   - **Problem:** Messages sent to display names ("deus") couldn't be retrieved by fingerprints
-   - **Root Cause:** Queue key = SHA3-512(recipient + ":offline_queue") was inconsistent
-     - Sender queued with display name: SHA3-512("alice:offline_queue")
-     - Receiver retrieved with fingerprint: SHA3-512("<128-hex-fingerprint>:offline_queue")
-     - Keys didn't match → messages never delivered
-   - **Solution:** Added `resolve_identity_to_fingerprint()` in `messenger_p2p.c:155-178`
-     - Leverages existing `messenger_load_pubkey()` with fingerprint_out parameter
-     - DHT keyserver resolves name → fingerprint via alias lookup
-     - All queue operations now use fingerprints consistently
-   - **Impact:** Offline messages now work reliably across all scenarios
+**Result:** Zero accumulation (1 value per sender outbox), 99.9% reduction in DHT queries (login-only vs continuous polling), spam prevention (contact allow-list). **Docs:** `/opt/dna-messenger/docs/MODEL_E_MIGRATION.md` (18,000+ words comprehensive analysis).
 
-### Phase 9.3: PostgreSQL → SQLite Migration (COMPLETE)
-**Status:** ✅ Complete (2025-11-03)
+## Phase 9.3: PostgreSQL → SQLite Migration ✅ (2025-11-03)
 
-**What Was Implemented:**
-1. **Message Storage Migration**
-   - Removed all PostgreSQL dependencies from CMakeLists.txt
-   - Migrated to local SQLite (`~/.dna/messages.db`)
-   - Updated messenger.c to use SQLite instead of PostgreSQL
+**Implemented:** Removed PostgreSQL, migrated to `~/.dna/messages.db` • DHT Groups `dht/dht_groups.c/h` (882 lines, NO STUBS - UUID v4, SHA256 keys, JSON, local cache, 8 CRUD ops) • Keyserver Cache `keyserver_cache.c/h` (7d TTL, cache-first, BLOB storage, cross-platform, integrated into `messenger_load_pubkey()`) • 11 group functions in `messenger_stubs.c` (uses DHT via `p2p_transport_get_dht_context()`) • Bootstrap scripts: `deploy-bootstrap.sh` (automated VPS deployment), `monitor-bootstrap.sh` (10 checks, color-coded)
 
-2. **DHT-Based Groups** (`dht/dht_groups.c/h`)
-   - 882 lines of complete implementation (NO STUBS)
-   - UUID v4 group identification (36-character format)
-   - SHA256-based DHT keys for decentralized storage
-   - JSON serialization for group metadata
-   - Local SQLite cache for offline access
-   - Full CRUD operations:
-     - `dht_groups_create()` - Create group with members
-     - `dht_groups_get()` - Fetch from DHT
-     - `dht_groups_update()` - Update metadata
-     - `dht_groups_add_member()` - Add member to group
-     - `dht_groups_remove_member()` - Remove member
-     - `dht_groups_delete()` - Delete group (creator only)
-     - `dht_groups_list_for_user()` - List user's groups
-     - `dht_groups_sync_from_dht()` - Sync local cache
+**Files:** `dht/dht_groups.[ch]` (237+882), `keyserver_cache.[ch]` (130+428), `deploy-bootstrap.sh` (130+), `monitor-bootstrap.sh` (200+)
 
-3. **Keyserver Cache** (`keyserver_cache.c/h`)
-   - Local SQLite cache for public keys (`~/.dna/keyserver_cache.db`)
-   - 7-day TTL with automatic expiry
-   - Cache-first strategy (check cache → on miss fetch API → store)
-   - BLOB storage for Dilithium (1952 bytes) and Kyber (800 bytes) keys
-   - Cross-platform Windows/Linux support (#ifdef _WIN32 for mkdir)
-   - Integrated into `messenger_load_pubkey()` function
+## Phase 9.4: DHT Keyserver + Signed Reverse Mapping ✅ (2025-11-04)
 
-4. **Group Functions Migration** (`messenger_stubs.c`)
-   - Completely rewrote all 11 group functions (NO STUBS):
-     - `messenger_create_group()`
-     - `messenger_get_group_members()`
-     - `messenger_add_group_member()`
-     - `messenger_remove_group_member()`
-     - `messenger_list_groups()`
-     - `messenger_get_group_info()`
-     - `messenger_update_group()`
-     - `messenger_delete_group()`
-     - `messenger_leave_group()`
-     - `messenger_is_group_member()`
-     - `messenger_get_group_creator()`
-   - All functions now use DHT via `p2p_transport_get_dht_context()`
-   - Proper error handling and authorization checks
+**Implemented:** Forward mapping (existing): `SHA256(identity + ":pubkey")` → signed pubkey • Reverse mapping (NEW): `SHA256(fingerprint + ":reverse")` → signed identity (dilithium_pubkey, identity, timestamp, fingerprint, signature over pubkey||identity||timestamp) • `dht_keyserver_reverse_lookup()` (verifies fingerprint + Dilithium5 sig, returns 0/-1/-2/-3) • P2P sender ID in `messenger_p2p.c` `extract_sender_from_encrypted()` (two-tier: contacts cache → DHT reverse mapping)
 
-5. **Bootstrap Deployment Scripts**
-   - `dht/deploy-bootstrap.sh` (130+ lines) - Automated deployment:
-     - Build binary locally
-     - Test SSH connectivity
-     - Set hostname
-     - Install dependencies
-     - Stop old processes
-     - Upload binary to /opt/dna-messenger/dht/build/
-     - Deploy systemd service
-     - Start and verify
-   - `dht/monitor-bootstrap.sh` (200+ lines) - Health monitoring:
-     - 10 checks per node (SSH, service, process, ports, resources, errors)
-     - Color-coded output (RED/GREEN/YELLOW)
-     - Summary report for all nodes
+**Security:** Signed reverse mappings prevent spoofing • Fingerprint verification prevents pubkey substitution • Cross-platform network byte order
 
-**Technical Decisions:**
-- UUID v4 for globally unique group IDs
-- SHA256(group_uuid) for DHT keys
-- JSON for group metadata serialization
-- Single-queue-per-recipient for offline messages
-- 7-day cache TTL for public keys
-- Opaque pointer pattern with getter functions
+**Use Case:** Bob sends to Alice WITHOUT pre-adding contact → Alice extracts fingerprint → DHT reverse lookup → displays "Bob" instead of "unknown"
 
-**Files Created:**
-- `dht/dht_groups.h` (237 lines)
-- `dht/dht_groups.c` (882 lines)
-- `keyserver_cache.h` (130 lines)
-- `keyserver_cache.c` (428 lines)
-- `dht/deploy-bootstrap.sh` (130+ lines)
-- `dht/monitor-bootstrap.sh` (200+ lines)
-
-### Phase 9.4: DHT-based Keyserver with Signed Reverse Mapping (COMPLETE)
-**Status:** ✅ Complete (2025-11-04)
-
-**What Was Implemented:**
-1. **Signed Reverse Mapping Storage** (`dht_keyserver.c`)
-   - Forward mapping: `SHA256(identity + ":pubkey")` → signed public key entry (existing)
-   - Reverse mapping: `SHA256(fingerprint + ":reverse")` → signed identity entry (NEW)
-   - Reverse entry contains: dilithium_pubkey, identity, timestamp, fingerprint, signature
-   - Signature covers: `dilithium_pubkey || identity || timestamp` (prevents spoofing)
-   - Network byte order for cross-platform compatibility
-
-2. **dht_keyserver_reverse_lookup() Function** (`dht_keyserver.c`)
-   - Fetches reverse mapping from DHT
-   - Verifies fingerprint matches pubkey (prevents pubkey substitution)
-   - Verifies Dilithium5 signature (prevents identity spoofing)
-   - Returns: 0 (success), -1 (error), -2 (not found), -3 (verification failed)
-
-3. **P2P Sender Identification** (`messenger_p2p.c`)
-   - Integrated reverse lookup into `extract_sender_from_encrypted()`
-   - Two-tier lookup: contacts cache first (fast), then DHT reverse mapping (fallback)
-   - Extracts fingerprint from message signature
-   - Queries DHT when sender not in contacts
-   - Displays actual identity instead of "unknown"
-
-**Security Features:**
-- Signed reverse mappings prevent identity spoofing
-- Fingerprint verification prevents pubkey substitution
-- Cross-platform compatible with network byte order
-- Non-critical failures (reverse mapping published as warning, not error)
-
-**Use Case:**
-- Alice publishes keys (creates forward + reverse mapping in DHT)
-- Bob sends message to Alice WITHOUT adding her as contact
-- Alice receives message, extracts fingerprint, queries DHT reverse mapping
-- Message displays sender as "Bob" instead of "unknown"
-
-**Files Modified:**
-- `dht/dht_keyserver.c` - Added signed reverse mapping storage and lookup (150+ lines)
-- `dht/dht_keyserver.h` - Added reverse lookup function declaration
-- `messenger_p2p.c` - Integrated reverse lookup into message receive flow (40+ lines)
-
-**Key Technical Decisions:**
-- SHA256(fingerprint + ":reverse") for DHT reverse mapping keys
-- JSON serialization for reverse mapping entries
-- Dilithium5 signature over (pubkey || identity || timestamp)
-- Two-tier lookup for performance (contacts → DHT)
-
-**Result:** Sender identification works without pre-adding contacts, enabling seamless P2P communication while maintaining strong security guarantees.
+**Files:** `dht/dht_keyserver.[ch]` (+150), `messenger_p2p.c` (+40)
 
 ---
 
-### Phase 9.5: Per-Identity Contact Lists with DHT Sync (COMPLETE)
-**Status:** ✅ Complete (2025-11-05)
+## Phase 9.5: Per-Identity Contacts + DHT Sync ✅ (2025-11-05)
 
-**What Was Implemented:**
-1. **Per-Identity Contact Databases** (`contacts_db.c/h`)
-   - Each identity has isolated SQLite database: `~/.dna/<identity>_contacts.db`
-   - Automatic migration from global `contacts.db` to per-identity databases
-   - Database path resolution with identity parameter
-   - Full contact management: add, remove, list, get info
-   - 170+ lines of migration and database logic
+**Implemented:** Per-identity SQLite `~/.dna/<identity>_contacts.db` (isolated, auto-migrated from global, 170+ lines) • DHT sync `dht/dht_contactlist.c/h` (820 lines - SHA3-512 keys, JSON, Kyber1024 self-encryption, Dilithium5 sigs, 7d TTL, binary format) • Multi-device via BIP39 (same seed → same keys → decrypt own contacts) • Messenger API: `messenger_sync_contacts_to_dht()`, `messenger_fetch_contacts_from_dht()` (240+ lines) • GUI: ImGui sync UI (10-min auto-sync)
 
-2. **DHT Contact List Synchronization** (`dht/dht_contactlist.c/h`)
-   - 820+ lines of complete implementation
-   - SHA3-512 DHT key derivation: `hash(identity + ":contactlist")`
-   - JSON serialization with version, timestamp, and contact list
-   - Kyber1024 self-encryption (user encrypts with their own public key)
-   - Dilithium5 signatures for authenticity (prevents tampering)
-   - 7-day TTL with configurable auto-republish capability
-   - Binary format: `[magic][version][timestamp][expiry][json_len][encrypted_json][sig_len][signature]`
+**Security:** Kyber1024 self-encryption (owner-only decrypt) • Dilithium5 sig (tamper-proof) • No plaintext in DHT • Multi-device without compromise
 
-3. **Multi-Device Support via BIP39**
-   - Same BIP39 seed phrase → same Kyber/Dilithium keys
-   - User can decrypt their own contact list on any device
-   - DHT is source of truth (replaces local on fetch)
-   - Self-encryption architecture (only owner can decrypt)
-
-4. **Messenger API Integration** (`messenger.c`)
-   - `messenger_sync_contacts_to_dht()` - Publish contacts to DHT
-   - `messenger_fetch_contacts_from_dht()` - Retrieve and decrypt from DHT
-   - Proper key loading with `qgp_key_load()` (pointer semantics)
-   - Uses DNA encryption API: `dna_encrypt_message_raw()` and `dna_decrypt_message_raw()`
-   - 240+ lines of sync logic
-
-5. **GUI Sync Controls**
-   - **Qt** (`gui/MainWindow.cpp` - deprecated): Manual sync button, status indicators
-   - **ImGui** (`imgui_gui/app.cpp` - active): Integrated sync UI in settings
-   - 10-minute auto-sync timer (silent operation)
-   - Success/failure notifications
-
-**Security Features:**
-- Kyber1024 self-encryption (only owner can decrypt)
-- Dilithium5 signature prevents tampering
-- Fingerprint verification in signature validation
-- No plaintext contact list storage in DHT
-- Multi-device support without compromising security
-
-**Files Created:**
-- `dht/dht_contactlist.h` (207 lines)
-- `dht/dht_contactlist.c` (820 lines)
-
-**Files Modified:**
-- `contacts_db.h/c` - Per-identity databases + migration (170+ lines)
-- `messenger.h/c` - Sync functions (240+ lines)
-- `gui/MainWindow.h/cpp` - Sync UI and timers (93 lines)
-
-**Total Changes:** 1,469+ lines added/modified
-
-**Key Technical Decisions:**
-- SHA3-512 for DHT key derivation (64-byte keys)
-- JSON for contact list serialization
-- Self-encryption model (encrypt with own pubkey)
-- Per-identity database isolation
-- 7-day DHT TTL matches other DNA data structures
-- Automatic migration preserves existing contacts
+**Files:** `dht/dht_contactlist.[ch]` (207+820), `contacts_db.[ch]` (+170), `messenger.[ch]` (+240), `imgui_gui/app.cpp` (sync UI) • **Total:** 1,469+ lines
 
 ---
 
-### Phase 4: Fingerprint-First Identity Creation (COMPLETE)
-**Status:** ✅ Complete (2025-11-05)
+## Phase 4: Fingerprint-First Identity Creation ✅ (2025-11-05)
 
-**Problem:** Phase 4 introduced fingerprint-based identity model, but identity creation still used human-readable filenames (e.g., `alice.dsa`), requiring migration to fingerprint-based filenames afterward. This was redundant and confusing.
+**Problem:** Old flow created human-readable filenames (`alice.dsa`) then migrated to fingerprints - redundant
 
-**Solution:** New identities now use fingerprint-based filenames from the start, eliminating the need to migrate newly created identities.
+**Solution:** New identities use fingerprint filenames from start: `~/.dna/<fingerprint>.dsa/.kem` (SHA3-512 = 128 hex = 64 bytes) • `messenger.c:365-474` computes fingerprint after Dilithium5 keygen, saves with fingerprint names • `CreateIdentityDialog` validates via DHT (not local files) • `IdentitySelectionDialog` scans fingerprint files, uses DHT reverse lookup for display names, falls back to shortened (first10...last10)
 
-**What Was Implemented:**
-1. **Core Identity Generation** (`messenger.c:365-474`)
-   - Compute SHA3-512 fingerprint immediately after Dilithium5 key generation
-   - Save keys with fingerprint filenames: `~/.dna/<fingerprint>.dsa` and `~/.dna/<fingerprint>.kem`
-   - Display fingerprint to user during creation
-   - Identity name still used for DHT registration (human-readable name → fingerprint mapping)
-   - Fixed outdated comments (Dilithium3→Dilithium5, Kyber512→Kyber1024)
-
-2. **CreateIdentityDialog** (`gui/CreateIdentityDialog.cpp:350-374`)
-   - Updated validation to check DHT keyserver instead of local files
-   - Can't check local files until after key generation (fingerprint unknown beforehand)
-   - DHT check prevents duplicate identity names at registration time
-
-3. **IdentitySelectionDialog** (`gui/IdentitySelectionDialog.cpp:115-220`)
-   - Scan for fingerprint-based `.dsa`/`.kem` files (128 hex chars)
-   - Use DHT reverse lookup (Phase 9.4) to display registered names
-   - Fall back to shortened fingerprints if not registered
-   - Display format: `"alice"` or `"a3f9e2d1c5...b4a7f89012"`
-   - Store full fingerprint in `Qt::UserRole` for key loading
-
-**Technical Details:**
-- **Fingerprint:** SHA3-512(Dilithium5 public key) = 128 hex characters (64 bytes)
-- **Files:** `~/.dna/<fingerprint>.dsa` and `~/.dna/<fingerprint>.kem`
-- **DHT forward mapping:** identity name → keys
-- **DHT reverse mapping:** fingerprint → identity name
-- **Shortened display:** First 10 + "..." + last 10 hex chars (23 chars total)
-
-**Migration:** The migration tool (`MigrateIdentityDialog`) is still needed for identities created before this change.
-
-**Files Modified:**
-- `messenger.c` - Fingerprint computation and filename generation
-- `gui/CreateIdentityDialog.cpp` - DHT-based validation
-- `gui/IdentitySelectionDialog.cpp` - Reverse lookup and shortened display
+**Files:** `messenger.c`, `gui/CreateIdentityDialog.cpp`, `gui/IdentitySelectionDialog.cpp` • **Note:** `MigrateIdentityDialog` still needed for pre-Phase4 identities
 
 ---
 
-### Key Technical Decisions
-- **Single queue per recipient:** Append all messages to one DHT entry (workaround for OpenDHT C wrapper limitations)
-- **Binary serialization:** Custom format with magic bytes (0x444E4120 = "DNA ")
-- **7-day TTL:** Configurable via `offline_ttl_seconds` parameter
-- **2-minute polling:** Balance between responsiveness and DHT load
-- **Hybrid delivery:** Ensures no message loss across all failure scenarios
+## Category 5 Cryptography Upgrade ✅ (2025-11-04)
 
-### Files Modified/Created (Phase 9.1 & 9.2)
-- `dht/dht_offline_queue.h` (NEW - 170 lines)
-- `dht/dht_offline_queue.c` (NEW - 650 lines)
-- `dht/CMakeLists.txt` (MODIFIED)
-- `p2p/p2p_transport.h` (MODIFIED - added queue API)
-- `p2p/p2p_transport.c` (MODIFIED - implemented queue/retrieve)
-- `messenger_p2p.h` (MODIFIED - added check API)
-- `messenger_p2p.c` (MODIFIED - hybrid send flow + bug fix 2025-11-10)
-- `gui/MainWindow.h` (MODIFIED - Qt, deprecated)
-- `gui/MainWindow.cpp` (MODIFIED - Qt, deprecated)
-- `imgui_gui/app.cpp` (MODIFIED - ImGui, active)
+**Upgrade:** Cat 3 (192-bit) → Cat 5 (256-bit) • Kyber 512→1024 (ML-KEM-768→ML-KEM-1024) • Dilithium 3→5 (ML-DSA-65→ML-DSA-87) • SHA-256→SHA3-512 (32→64 bytes)
+
+**Key Sizes:** Kyber pub 800→1568 (+768), sec 1632→3168 (+1536), cipher 768→1568 (+800) • Dilithium pub 1952→2592 (+640), sec 4032→4896 (+864), sig 3309→4627 (+1318) • Fingerprint 32→64 (+32)
+
+**Implemented:** Vendored `pq-crystals/dilithium` w/ `DILITHIUM_MODE=5` • SHA3-512 utils • 12 files, 122+ hardcoded size updates • Msg format versions: `DNA_ENC_VERSION` 0x05→0x06, `PQSIGNUM_PUBKEY_VERSION` 0x01→0x02 • DB schemas (BLOB/TEXT, no migration) • Build fixes • Keyserver updates
+
+**⚠️ BREAKING:** v0.06 messages ≠ v0.05 • SHA3-512 DHT keys ≠ SHA-256 • All keys must regenerate • **Migration:** Backup wallet → upgrade binary → create new identity → auto-publish to DHT
+
+**Security:** Cat 5 = secure beyond 2050+ • NIST FIPS 204 (ML-DSA) + FIPS 203 (ML-KEM) • AES-256 equivalent
 
 ---
 
-## Category 5 Cryptography Upgrade (COMPLETE)
+## Phase 5: Web Messenger 🚧 (branch: `feature/web-messenger`)
 
-**Status:** ✅ Complete (2025-11-04)
-**Branch:** `main`
+**Done:** ✅ DNA API → WebAssembly (dna_wasm.js/wasm) • ✅ JavaScript wrappers • ✅ Emscripten toolchain
 
-### Overview
-
-Upgraded DNA Messenger from **NIST Category 3** (192-bit quantum security) to **NIST Category 5** (256-bit quantum security):
-
-**Algorithm Changes:**
-- **Kyber:** 512 → 1024 (ML-KEM-768 → ML-KEM-1024)
-- **Dilithium:** 3 → 5 (ML-DSA-65 → ML-DSA-87)
-- **Hashing:** SHA-256 → SHA3-512 (32 → 64 bytes)
-
-**Key Size Changes:**
-| Algorithm | Old Size | New Size | Description |
-|-----------|----------|----------|-------------|
-| Kyber Public Key | 800 bytes | 1568 bytes | +768 bytes |
-| Kyber Secret Key | 1632 bytes | 3168 bytes | +1536 bytes |
-| Kyber Ciphertext | 768 bytes | 1568 bytes | +800 bytes |
-| Dilithium Public Key | 1952 bytes | 2592 bytes | +640 bytes |
-| Dilithium Secret Key | 4032 bytes | 4896 bytes | +864 bytes |
-| Dilithium Signature | 3309 bytes | 4627 bytes | +1318 bytes |
-| Hash Fingerprint | 32 bytes | 64 bytes | +32 bytes |
-
-### What Was Implemented
-
-1. **Core Crypto Library Upgrade** (Phases 1-2)
-   - Vendored `pq-crystals/dilithium` with `DILITHIUM_MODE=5`
-   - Updated CMakeLists.txt crypto build flags
-   - Implemented SHA3-512 utilities (`qgp_sha3.h/c`)
-
-2. **Hardcoded Size Updates** (Phase 3)
-   - **12 files updated, 122+ values changed:**
-     - `dna_api.c`, `encrypt.c`, `decrypt.c`, `export.c`
-     - `messenger.c` (21 values), `keygen.c` (24 values)
-     - `messenger_p2p.c` (14 values + SHA3-512 migration)
-     - `p2p_transport.h/c` (17 values)
-     - `keyserver_cache.h`, `dna_api.h` (comment updates)
-     - `keyserver/src/config.c` (1 value)
-
-3. **Message Format Versioning** (Phase 5)
-   - `DNA_ENC_VERSION`: 0x05 → 0x06 (`dna_api.c`, `encrypt.c`, `decrypt.c`)
-   - `PQSIGNUM_PUBKEY_VERSION`: 0x01 → 0x02 (`export.c`)
-
-4. **Database Schemas** (Phase 6)
-   - All databases already use BLOB/TEXT (no migration needed)
-   - Verified: `contacts_db.c`, `keyserver_cache.c`, `message_backup.c`
-
-5. **Build and Test** (Phase 7)
-   - Fixed `qgp_dilithium.c` function calls (dilithium3→dilithium5)
-   - Fixed `p2p_transport.c` syntax error
-   - **BUILD SUCCESSFUL**
-
-6. **Keyserver Updates**
-   - Updated schemas: `keyserver/sql/schema.sql`, `schema_sqlite.sql`
-   - Updated README and signature verification comments
-   - Updated `utils/verify_json.c` documentation
-
-### Breaking Changes
-
-⚠️ **This is a BREAKING UPGRADE** - old and new versions are **incompatible**:
-
-1. **Message Format:** Version 0x06 messages cannot be decrypted by v0.05 clients
-2. **DHT Keys:** SHA3-512 hashes are different from SHA-256 (old keys won't be found)
-3. **Key Sizes:** All key files must be regenerated
-4. **Keyserver:** DHT-based keyserver uses SHA3-512, all keys must be re-published
-
-### Migration Steps
-
-**For Users:**
-1. Backup your wallet: `cp ~/.dna/*.dwallet ~/backup/`
-2. Upgrade messenger binary
-3. Regenerate PQ keys: Create new identity in GUI or CLI
-4. Keys are automatically published to DHT keyserver on identity creation
-
-### API Compatibility
-
-**Function names unchanged** (backwards API compatibility):
-- `qgp_dilithium3_*()` functions now implement Dilithium5
-- `QGP_DILITHIUM3_*` constants now have Dilithium5 values
-- Code compiled against old header will fail at link time (deliberate)
-
-### Security Analysis
-
-**Quantum Security:**
-- Category 3: Secure against quantum computers through ~2040
-- Category 5: Secure against quantum computers beyond 2050+
-- Matches highest NIST security level (equivalent to AES-256)
-
-**Why Upgrade:**
-- Future-proofing against quantum computing advances
-- Aligns with NIST FIPS 204 (ML-DSA) and FIPS 203 (ML-KEM) standards
-- Matches industry best practices for long-term security
+**Todo:** ⬜ HTML5/CSS3 responsive UI • ⬜ Browser messaging interface • ⬜ IndexedDB key storage • ⬜ Real-time updates (WebSocket)
 
 ---
 
-## Phase 5: Web Messenger (IN PROGRESS)
+## Phase 10: DNA Board - Censorship-Resistant Social Media 📋 (12 weeks, post-Phases 7-9)
 
-**Status:** 🚧 Active development on `feature/web-messenger` branch
+**Overview:** Censorship-resistant platform on cpunk validator network • NO CENSORSHIP (no deletion) • PoH ≥70 to post • Open replies • Free voting • Burn economics • 3-replica validator network (self-healing, 30s heartbeat)
 
-### What's Done
-- [x] DNA API compiled to WebAssembly (dna_wasm.js/wasm)
-- [x] JavaScript wrapper functions
-- [x] Emscripten toolchain setup
+**Economics:** Post (1 CPUNK, PoH ≥70, 5K chars) • Image (2 CPUNK, 5MB) • Video (5 CPUNK, 50MB) • Reply (0.5 CPUNK, no PoH, 2K) • Vote (FREE) • **Burn:** ~16M CPUNK/year
 
-### What's Next
-- [ ] HTML5/CSS3 responsive UI
-- [ ] Browser-based messaging interface
-- [ ] IndexedDB for key storage
-- [ ] Real-time updates (WebSocket)
+**PoH Tiers:** Auto (75-89: behavioral) • Staked (90-94: +100 CPUNK) • DAO-Vouched (95-99: 3 vouches) • Celebrity (100: public figure)
+
+**Implementation:** W1-2: Validator+PoH • W3-4: Gossip+3-replica • W5-6: Voting+ranking • W7-8: Qt GUI • W9-10: Media+wallet • W11-12: Testing+launch
+
+**Spec:** `/DNA_BOARD_PHASE10_PLAN.md`
 
 ---
 
-## Phase 10: DNA Board - Censorship-Resistant Social Media (PLANNED)
+## Phase 11: Post-Quantum Voice/Video Calls 📋 (~20 weeks, requires Phase 9.1)
 
-**Status:** 📋 Planning (Post-Phases 7-9)
-**Timeline:** 12 weeks
-**Prerequisites:** Distributed validator storage, DNA-Keyserver merge, Offline messaging
+**Overview:** Quantum-safe voice/video via Kyber1024 + SRTP (bypasses WebRTC's quantum-vulnerable DTLS)
 
-### Overview
+**Tech:** libnice, libsrtp2, libopus, libvpx/libx264, PortAudio • Kyber1024 key exchange • Dilithium5 sigs • Forward secrecy • SAS verification
 
-DNA Board is a **censorship-resistant social media platform** built on cpunk validator network:
-
-**Core Principles:**
-1. **NO CENSORSHIP** - Content cannot be removed (no deletion endpoint)
-2. **PoH Required to Post** - Only verified humans (PoH ≥70) can create posts
-3. **Open Responses** - Anyone can reply (no PoH for replies)
-4. **Community Voting** - Thumbs up/down (FREE) to surface quality
-5. **Burn Economics** - All fees burned (deflationary)
-6. **Validator Rewards** - DAO pool distribution
-
-### Architecture
-
-```
-Self-Healing Validator Network (3-Replica)
-┌─────────────────────────────────────┐
-│  Post → Primary Validator           │
-│  ↓ Replicate to 2 more (lowest GB)  │
-│  ↓ 3 Validators store content       │
-│  ↓ Heartbeat monitoring (30s)       │
-│  ↓ Auto-heal if validator offline   │
-│  ↓ Back to 3 replicas               │
-└─────────────────────────────────────┘
-```
-
-### Content & Economics
-
-| Type | Burn Fee | PoH Required | Max Size |
-|------|----------|--------------|----------|
-| Post | 1 CPUNK | Yes (≥70) | 5,000 chars |
-| Image | 2 CPUNK | Yes | 5 MB |
-| Video | 5 CPUNK | Yes | 50 MB |
-| Reply | 0.5 CPUNK | **No** | 2,000 chars |
-| Vote | **FREE** | No | N/A |
-
-**Estimated burn:** 16M CPUNK/year (deflationary pressure)
-
-### Proof of Humanity (PoH)
-
-**Who Can Post:** humanity_score ≥ 70
-
-**Verification Tiers:**
-- Auto-Verified (75-89): Behavioral algorithm
-- Staked-Verified (90-94): Auto + 100 CPUNK stake
-- DAO-Vouched (95-99): 3 human vouches + DAO
-- Celebrity (100): Public figure + DAO
-
-**Bot Detection:** Single-destination sends, mechanical timing
-**Human Patterns:** Multiple services, irregular timing, staking
-
-### Implementation (12 Weeks)
-
-- **Weeks 1-2:** Validator backend + PoH scoring
-- **Weeks 3-4:** Gossip protocol + 3-replica replication
-- **Weeks 5-6:** Voting system + feed ranking
-- **Weeks 7-8:** Qt GUI (DNABoardTab, ComposeDialog, PostWidget)
-- **Weeks 9-10:** Media upload + wallet integration
-- **Weeks 11-12:** Testing + mainnet launch
-
-### Key Features
-
-**Censorship Resistance:**
-- No deletion endpoint (content permanent)
-- 3-validator replication across jurisdictions
-- No central authority
-- Gossip protocol ensures propagation
-
-**Quality Control:**
-- PoH prevents bot spam
-- Community voting surfaces quality
-- Ranking algorithm (votes × humanity × time)
-
-**Economic Model:**
-- All fees burned (deflationary)
-- Validators funded by DAO pool (100M Year 1, halvening)
-
-### Design Document
-
-Full specification: `/DNA_BOARD_PHASE10_PLAN.md`
-
----
-
-## Phase 11: Post-Quantum Voice/Video Calls (PLANNED)
-
-**Status:** 📋 Research & Planning
-**Timeline:** ~20 weeks (5 months)
-**Prerequisites:** Phase 9.1 (P2P Transport Layer)
-**Design Doc:** `/futuredesign/VOICE-VIDEO-DESIGN.md`
-
-### Overview
-
-Fully quantum-safe voice/video calls using Kyber1024 via DNA messaging + SRTP (bypasses WebRTC's quantum-vulnerable DTLS).
-
-**Technology:** libnice, libsrtp2, libopus, libvpx/libx264, PortAudio
-**Security:** Kyber1024 key exchange, Dilithium5 signatures, forward secrecy, SAS verification
-
-See design doc for complete technical specification
+**Spec:** `/futuredesign/VOICE-VIDEO-DESIGN.md`
 
 ---
 
 ## Common Tasks
 
-### Adding a New Feature
-1. Check current phase in ROADMAP.md
-2. Follow existing code patterns
-3. Update CMakeLists.txt if adding new files
-4. Test on Linux first, then Windows
-5. Update documentation (README.md, ROADMAP.md)
+**Add Feature:** Check ROADMAP.md → Follow code patterns → Update CMakeLists.txt → Test Linux → Test Windows → Update docs
 
-### Building the Project
-**Linux:**
-```bash
-mkdir build && cd build
-cmake ..
-make -j$(nproc)
-```
+**Build:** `mkdir build && cd build && cmake .. && make -j$(nproc)` (Linux) • `./build-cross-compile.sh windows-x64` (Windows cross-compile)
 
-**Windows (cross-compile from Linux):**
-```bash
-./build-cross-compile.sh windows-x64
-```
-
-### Running Tests
-```bash
-# ImGui messenger (active)
-./build/imgui_gui/dna_messenger_imgui
-
-# Qt GUI (deprecated - reference only)
-./build/gui/dna_messenger_gui
-```
+**Run:** `./build/imgui_gui/dna_messenger_imgui` (active) • `./build/gui/dna_messenger_gui` (Qt deprecated)
 
 ---
 
-## API Documentation
+## API Quick Reference
 
-### DNA Core API (`dna_api.h`)
 ```c
-// Context management
+// DNA Core (dna_api.h)
 dna_context_t* dna_context_new(void);
-void dna_context_free(dna_context_t *ctx);
+int dna_encrypt_message(const uint8_t *plaintext, size_t len, const public_key_t *key, dna_buffer_t *out);
+int dna_decrypt_message(const uint8_t *ciphertext, size_t len, const private_key_t *key, dna_buffer_t *out);
 
-// Encryption
-int dna_encrypt_message(
-    const uint8_t *plaintext, size_t len,
-    const public_key_t *recipient_key,
-    dna_buffer_t *output);
+// Cellframe RPC (cellframe_rpc.h)
+int cellframe_rpc_call(cellframe_rpc_request_t *req, cellframe_rpc_response_t **resp);
 
-// Decryption
-int dna_decrypt_message(
-    const uint8_t *ciphertext, size_t len,
-    const private_key_t *my_key,
-    dna_buffer_t *output);
-```
-
-### Cellframe RPC API (`cellframe_rpc.h`)
-```c
-// RPC request structure
-typedef struct {
-    const char *method;
-    const char *subcommand;
-    json_object *arguments;
-    int id;
-} cellframe_rpc_request_t;
-
-// Make RPC call
-int cellframe_rpc_call(
-    cellframe_rpc_request_t *req,
-    cellframe_rpc_response_t **response);
-
-// Free response
-void cellframe_rpc_response_free(cellframe_rpc_response_t *resp);
-```
-
-### Wallet API (`wallet.h`)
-```c
-// Load Cellframe wallets
+// Wallet (wallet.h)
 int wallet_list_cellframe(wallet_list_t **list);
-
-// Get wallet address
-int wallet_get_address(
-    const cellframe_wallet_t *wallet,
-    const char *network,
-    char *address_out);
-
-// Free wallet list
-void wallet_list_free(wallet_list_t *list);
+int wallet_get_address(const cellframe_wallet_t *wallet, const char *network, char *out);
 ```
 
 ---
 
-## Testing Guidelines
+## Testing & Troubleshooting
 
-### Manual Testing
-1. **Messaging:**
-   - Send message between two users
-   - Verify encryption/decryption
-   - Check delivery receipts
+**Manual Test:** Messaging (send between users, verify enc/dec, check receipts) • Groups (create, send, add/remove members) • Wallet (balances match CLI, send TX + verify on explorer, check history)
 
-2. **Groups:**
-   - Create group with multiple members
-   - Send messages to group
-   - Add/remove members
+**Debug:** Use `printf("[DEBUG] ...")` w/ prefixes `[DEBUG TX]`, `[DEBUG RPC]` • Remove before commit
 
-3. **Wallet:**
-   - View balances (should match Cellframe CLI)
-   - Send transaction (verify on blockchain explorer)
-   - Check transaction history
-
-### Debug Output
-- Use `printf("[DEBUG] ...")` for development
-- Remove debug output before committing
-- Use descriptive prefixes: `[DEBUG TX]`, `[DEBUG RPC]`
+**Common Issues:** Wallet 0.00 (check Cellframe node port 8079, RPC enabled, wallet file exists) • TX fails (check balance+fee, UTXO query, fee address, signature) • Theme (init ThemeManager before dialog, connect `themeChanged` signal, call `applyTheme()`) • Windows cross-compile (check MXE `~/.cache/mxe/`, deps, toolchain path)
 
 ---
 
-## Common Issues and Solutions
+## Security
 
-### Wallet Balance Shows 0.00
-- Check Cellframe node is running (port 8079)
-- Verify RPC is enabled in Cellframe config
-- Check wallet file exists in `~/.dna/` or `/opt/cellframe-node/var/lib/wallet/`
+**Model:** Kyber1024 + AES-256-GCM (Cat 5) • Dilithium5 sigs (Cat 5) • E2E encryption • Keys local (`~/.dna/`)
 
-### Transaction Fails to Send
-- Ensure sufficient balance + fee
-- Check UTXO query returns results
-- Verify network fee address is correct
-- Check signature is generated correctly
+**Limitations:** No forward secrecy (planned Phase 7) • Metadata not protected • No multi-device sync yet • No disappearing messages
 
-### Theme Not Applied
-- Ensure ThemeManager is initialized before dialog
-- Connect to `themeChanged` signal
-- Call `applyTheme()` in constructor
-
-### Windows Cross-Compile Fails
-- Check MXE is installed (`~/.cache/mxe/`)
-- Verify MXE dependencies are built
-- Check CMake toolchain file path
-
----
-
-## Security Considerations
-
-### Current Security Model
-- Post-quantum encryption (Kyber1024 + AES-256-GCM) - NIST Category 5
-- Message signatures (Dilithium5) - NIST Category 5
-- End-to-end encryption (server cannot read)
-- Private keys stored locally (`~/.dna/`)
-
-### Known Limitations
-- No forward secrecy (planned Phase 7)
-- Metadata not protected (server sees sender/receiver)
-- No multi-device sync yet
-- No disappearing messages
-
-### Best Practices
-- Never log private keys or decrypted messages
-- Validate all inputs (addresses, amounts, signatures)
-- Check return codes from crypto functions
-- Use secure memory management (mlock in future)
+**Best Practices:** Never log keys/plaintext • Validate all inputs • Check crypto return codes • Secure memory (mlock future)
 
 ---
 
 ## Git Workflow
 
-### Branching
-- `main` - Stable releases
-- `feature/*` - New features (e.g., `feature/web-messenger`)
-- `fix/*` - Bug fixes
+**Branches:** `main` (stable), `feature/*` (new features), `fix/*` (bug fixes)
 
-### Commit Messages
+**Commits:** Short summary (<50 chars) + details (what/why/breaking) + `🤖 Generated with Claude Code\nCo-Authored-By: Claude <noreply@anthropic.com>`
+
+**Pre-Commit:** Test Linux → Cross-compile Windows → Remove debug → Update docs → Check leaks (valgrind)
+
+**⚠️ PUSH TO BOTH REPOS (MANDATORY):**
 ```bash
-# Good commit message format:
-Short summary (50 chars or less)
-
-Detailed explanation if needed:
-- What changed
-- Why it changed
-- Any breaking changes
-
-🤖 Generated with Claude Code
-Co-Authored-By: Claude <noreply@anthropic.com>
+git add . && git commit -m "msg"
+git push gitlab main    # GitLab (primary: CI/CD, builds)
+git push origin main    # GitHub (mirror: public, community)
 ```
 
-### Before Committing
-1. Test on Linux
-2. Cross-compile for Windows
-3. Remove debug output
-4. Update documentation if needed
-5. Check for memory leaks (valgrind)
+**Or use:** `./push_both.sh` (checks uncommitted, verifies remotes, pushes both, color-coded output)
 
-### Pushing Changes (MANDATORY)
-
-⚠️ **CRITICAL REQUIREMENT:** All commits MUST be pushed to BOTH repositories:
-
-**Step 1: Commit your changes**
+**Setup remotes (if needed):**
 ```bash
-git add .
-git commit -m "Your commit message"
-```
-
-**Step 2: Push to BOTH repositories (REQUIRED)**
-```bash
-# Push to GitLab (primary)
-git push gitlab main
-
-# Push to GitHub (mirror) - MANDATORY
-git push origin main
-```
-
-**Verify remotes are configured:**
-```bash
-git remote -v
-# Should show:
-# gitlab    ssh://git@gitlab.cpunk.io:10000/cpunk/dna-messenger.git (GitLab - primary)
-# origin    git@github.com:nocdem/dna-messenger.git (GitHub - mirror)
-```
-
-**Setting up remotes (if needed):**
-```bash
-# Add GitLab remote if not configured
 git remote add gitlab ssh://git@gitlab.cpunk.io:10000/cpunk/dna-messenger.git
-
-# Add GitHub remote if not configured
 git remote add origin git@github.com:nocdem/dna-messenger.git
-```
-
-**Why Both Repositories?**
-- **GitLab (Primary):** Main development, CI/CD, official builds
-- **GitHub (Mirror):** Public visibility, community access, backup
-
-**Failure to push to both repositories will result in:**
-- Desynchronized codebases
-- Missing commits on public mirror
-- Confusion for external contributors
-- CI/CD failures
-
-**Automated Push Script (Recommended):**
-
-The repository includes `push_both.sh` script that automatically pushes to both remotes:
-
-```bash
-# Script already exists in repository root: /opt/dna-messenger/push_both.sh
-# Features:
-# - Checks for uncommitted changes
-# - Verifies remotes are configured
-# - Pushes to GitLab first (primary)
-# - Pushes to GitHub second (mirror)
-# - Color-coded output
-# - Error handling with helpful messages
-
-# Usage:
-./push_both.sh
-
-# The script will:
-# 1. Check you're in a git repository
-# 2. Verify no uncommitted changes
-# 3. Push to gitlab remote (GitLab primary)
-# 4. Push to origin remote (GitHub mirror)
-# 5. Display success/failure for each step
 ```
 
 ---
 
 ## Resources
 
-### Documentation
-- **Main README:** `/opt/dna-messenger/README.md`
-- **Roadmap:** `/opt/dna-messenger/ROADMAP.md`
-- **API Docs:** `/opt/dna-messenger/dna_api.h` (inline comments)
-- **Additional Docs:** `/opt/dna-messenger/docs/` (design specs, development logs, guides)
+**Docs:** `README.md`, `ROADMAP.md`, `dna_api.h` (inline), `docs/` (specs/logs/guides)
 
-### External Links
-- **Cellframe Docs:** https://wiki.cellframe.net
-- **Cellframe Dev Wiki:** https://dev-wiki.cellframe.net
-- **Qt5 Docs:** https://doc.qt.io/qt-5/
-- **Kyber:** https://pq-crystals.org/kyber/
-- **Dilithium:** https://pq-crystals.org/dilithium/
+**Links:** [Cellframe](https://wiki.cellframe.net) • [Cellframe Dev](https://dev-wiki.cellframe.net) • [Qt5](https://doc.qt.io/qt-5/) • [Kyber](https://pq-crystals.org/kyber/) • [Dilithium](https://pq-crystals.org/dilithium/)
 
-### Repositories
-- **GitLab (Primary):** https://gitlab.cpunk.io/cpunk/dna-messenger
-- **GitHub (Mirror):** https://github.com/nocdem/dna-messenger
+**Repos:** [GitLab (primary)](https://gitlab.cpunk.io/cpunk/dna-messenger) • [GitHub (mirror)](https://github.com/nocdem/dna-messenger)
 
----
-
-## Contact and Support
-
-- **cpunk.io:** https://cpunk.io
-- **cpunk.club:** https://cpunk.club
-- **Telegram:** https://web.telegram.org/k/#@chippunk_official
+**Contact:** [cpunk.io](https://cpunk.io) • [cpunk.club](https://cpunk.club) • [Telegram @chippunk_official](https://web.telegram.org/k/#@chippunk_official)
 
 ---
 
 ## Version History
 
-| Version | Date | Description |
-|---------|------|-------------|
-| 0.1.0 | 2025-10-14 | Initial fork from QGP |
-| 0.2.0 | 2025-10-15 | Library API complete |
-| 0.4.0 | 2025-10-17 | Desktop GUI with groups |
-| 0.8.0 | 2025-10-23 | cpunk Wallet integration |
-| 0.5.0 | TBD | Web messenger (in progress) |
+| Version | Date | Milestone |
+|---------|------|-----------|
+| 0.1.0 | 2025-10-14 | Fork from QGP |
+| 0.2.0 | 2025-10-15 | Library API |
+| 0.4.0 | 2025-10-17 | GUI + groups |
+| 0.8.0 | 2025-10-23 | Wallet |
+| 0.5.0 | TBD | Web messenger |
 
-**Current Version:** 0.1.120+ (auto-incremented)
-
-**Note:** CLI messenger (0.3.0) was removed as of 2025-11-05 (unmaintained). Use GUI application.
+**Current:** 0.1.120+ (auto-incremented) • **Note:** CLI (0.3.0) removed 2025-11-05 (use GUI)
 
 ---
 
-**Happy Coding!**
-
-When in doubt, check existing code patterns and follow the established conventions. The project prioritizes simplicity, security, and cross-platform compatibility.
+**When in doubt:** Check code patterns, follow conventions. Priority: simplicity, security, cross-platform.

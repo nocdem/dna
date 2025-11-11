@@ -102,14 +102,8 @@ void DNAMessengerApp::render() {
         state.is_first_frame = false;
     }
 
-    // Periodic message polling (every 5 seconds)
+    // Model E: No continuous polling - offline messages checked once on login
     if (state.identity_loaded) {
-        float current_time = (float)ImGui::GetTime();
-        if (current_time - state.last_poll_time >= 5.0f) {
-            checkForNewMessages();
-            state.last_poll_time = current_time;
-        }
-
         // Reload current conversation if new messages arrived
         if (state.new_messages_received && state.selected_contact >= 0) {
             loadMessagesForContact(state.selected_contact);
@@ -1280,6 +1274,19 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
     state.identity_loaded = true;
     state.show_identity_selection = false; // Close identity selection modal
     state.current_identity = identity;
+
+    // Model E: Check for offline messages ONCE on login
+    printf("[Identity] Checking for offline messages (one-time on login)...\n");
+    size_t messages_received = 0;
+    int offline_check_result = messenger_p2p_check_offline_messages(ctx, &messages_received);
+    if (offline_check_result == 0 && messages_received > 0) {
+        printf("[Identity] ✓ Received %zu offline messages on login\n", messages_received);
+        state.new_messages_received = true;  // Trigger conversation reload if in a chat
+    } else if (offline_check_result == 0) {
+        printf("[Identity] No offline messages found\n");
+    } else {
+        printf("[Identity] Warning: Failed to check offline messages\n");
+    }
 
     // Fetch contacts from DHT in background (sync from other devices)
     DNAMessengerApp* app = this;

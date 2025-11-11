@@ -22,12 +22,15 @@ static void sha3_512_hash(const uint8_t *data, size_t len, uint8_t *hash_out) {
 }
 
 /**
- * Generate DHT storage key for recipient's offline queue
+ * Generate DHT storage key for sender's outbox to recipient (Model E)
  * Uses SHA3-512 for 256-bit quantum security
+ *
+ * Key format: SHA3-512(sender + ":outbox:" + recipient)
+ * Example: SHA3-512("alice_fp:outbox:bob_fp")
  */
-void dht_generate_queue_key(const char *recipient, uint8_t *key_out) {
-    char key_input[1024];  // Increased from 512 for safety (fingerprint=128 + suffix=15 + margin)
-    snprintf(key_input, sizeof(key_input), "%s:offline_queue", recipient);
+void dht_generate_outbox_key(const char *sender, const char *recipient, uint8_t *key_out) {
+    char key_input[2048];  // sender(128) + ":outbox:" + recipient(128) + margin
+    snprintf(key_input, sizeof(key_input), "%s:outbox:%s", sender, recipient);
     sha3_512_hash((const uint8_t*)key_input, strlen(key_input), key_out);
 }
 
@@ -336,11 +339,11 @@ int dht_queue_message(
     printf("[DHT Queue] Queueing message from %s to %s (%zu bytes, TTL=%u)\n",
            sender, recipient, ciphertext_len, ttl_seconds);
 
-    // Generate queue key (SHA3-512 = 64 bytes)
+    // Generate sender's outbox key (Model E): SHA3-512(sender + ":outbox:" + recipient) = 64 bytes
     uint8_t queue_key[64];
-    dht_generate_queue_key(recipient, queue_key);
+    dht_generate_outbox_key(sender, recipient, queue_key);
 
-    printf("[DHT Queue] Queue key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
+    printf("[DHT Queue] Outbox key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
            queue_key[0], queue_key[1], queue_key[2], queue_key[3],
            queue_key[4], queue_key[5], queue_key[6], queue_key[7]);
 
@@ -461,167 +464,116 @@ int dht_queue_message(
 }
 
 /**
- * Retrieve all queued messages for recipient
+ * Retrieve all queued messages for recipient from all contacts' outboxes (Model E)
+ *
+ * Queries each sender's outbox (SHA3-512(sender + ":outbox:" + recipient))
+ * and accumulates all messages from all senders.
  */
-int dht_retrieve_queued_messages(
+int dht_retrieve_queued_messages_from_contacts(
     dht_context_t *ctx,
     const char *recipient,
+    const char **sender_list,
+    size_t sender_count,
     dht_offline_message_t **messages_out,
     size_t *count_out)
 {
-    if (!ctx || !recipient || !messages_out || !count_out) {
+    if (!ctx || !recipient || !sender_list || sender_count == 0 || !messages_out || !count_out) {
         fprintf(stderr, "[DHT Queue] Invalid parameters for retrieval\n");
         return -1;
     }
 
-    printf("[DHT Queue] Retrieving queued messages for %s\n", recipient);
+    printf("[DHT Queue] Retrieving queued messages for %s from %zu contacts\n", recipient, sender_count);
 
-    // Generate queue key (SHA3-512 = 64 bytes)
-    uint8_t queue_key[64];
-    dht_generate_queue_key(recipient, queue_key);
-
-    printf("[DHT Queue] Queue key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
-           queue_key[0], queue_key[1], queue_key[2], queue_key[3],
-           queue_key[4], queue_key[5], queue_key[6], queue_key[7]);
-
-    // Query DHT (use full 64-byte key, get all versions)
-    uint8_t *queue_data = NULL;
-    size_t queue_len = 0;
-
-    printf("[DHT Queue] → DHT GET_ALL: Retrieving offline messages\n");
-    uint8_t **all_values = NULL;
-    size_t *all_lengths = NULL;
-    size_t value_count = 0;
-
-    int get_result = dht_get_all(ctx, queue_key, 64, &all_values, &all_lengths, &value_count);
-    if (get_result != 0 || value_count == 0) {
-        printf("[DHT Queue] No queued messages found\n");
-        *messages_out = NULL;
-        *count_out = 0;
-        return 0;  // Not an error, just empty queue
-    }
-
-    // Multiple values found - pick the largest one (most recent with most messages)
-    printf("[DHT Queue] Found %zu queue version(s), selecting largest\n", value_count);
-    size_t largest_idx = 0;
-    size_t largest_size = all_lengths[0];
-    for (size_t i = 1; i < value_count; i++) {
-        if (all_lengths[i] > largest_size) {
-            largest_size = all_lengths[i];
-            largest_idx = i;
-        }
-    }
-
-    queue_data = all_values[largest_idx];
-    queue_len = all_lengths[largest_idx];
-
-    printf("[DHT Queue] Selected version %zu/%zu (%zu bytes)\n", largest_idx + 1, value_count, queue_len);
-    printf("[DHT Queue] Retrieved queue data: %zu bytes\n", queue_len);
-
-    // Free all values except the one we're using
-    for (size_t i = 0; i < value_count; i++) {
-        if (i != largest_idx) {
-            free(all_values[i]);
-        }
-    }
-    free(all_values);
-    free(all_lengths);
-
-    // Deserialize messages
+    // Allocate temporary array to accumulate messages from all senders
     dht_offline_message_t *all_messages = NULL;
     size_t all_count = 0;
+    size_t all_capacity = 0;
 
-    if (dht_deserialize_messages(queue_data, queue_len, &all_messages, &all_count) != 0) {
-        fprintf(stderr, "[DHT Queue] Failed to deserialize queue\n");
-        free(queue_data);
-        return -1;
-    }
-
-    free(queue_data);
-
-    printf("[DHT Queue] Deserialized %zu messages\n", all_count);
-
-    // Filter out expired messages
     uint64_t now = (uint64_t)time(NULL);
-    size_t valid_count = 0;
 
-    for (size_t i = 0; i < all_count; i++) {
-        if (all_messages[i].expiry >= now) {
-            valid_count++;
-        } else {
-            printf("[DHT Queue] Message %zu expired (expiry=%lu, now=%lu)\n",
-                   i, all_messages[i].expiry, now);
+    // Iterate through all senders (contacts)
+    for (size_t contact_idx = 0; contact_idx < sender_count; contact_idx++) {
+        const char *sender = sender_list[contact_idx];
+
+        // Generate sender's outbox key to us: SHA3-512(sender + ":outbox:" + recipient)
+        uint8_t outbox_key[64];
+        dht_generate_outbox_key(sender, recipient, outbox_key);
+
+        printf("[DHT Queue] [%zu/%zu] Checking sender %.20s... outbox\n",
+               contact_idx + 1, sender_count, sender);
+
+        // Query DHT for this sender's outbox (use dht_get to get single value)
+        uint8_t *outbox_data = NULL;
+        size_t outbox_len = 0;
+
+        int get_result = dht_get(ctx, outbox_key, 64, &outbox_data, &outbox_len);
+        if (get_result != 0 || !outbox_data || outbox_len == 0) {
+            // No messages from this sender (outbox empty or doesn't exist)
+            continue;
         }
-    }
 
-    if (valid_count == 0) {
-        printf("[DHT Queue] All messages expired\n");
-        dht_offline_messages_free(all_messages, all_count);
-        *messages_out = NULL;
-        *count_out = 0;
-        return 0;
-    }
+        printf("[DHT Queue]   ✓ Found outbox (%zu bytes)\n", outbox_len);
 
-    // Allocate array for valid messages only
-    dht_offline_message_t *valid_messages = (dht_offline_message_t*)calloc(valid_count, sizeof(dht_offline_message_t));
-    if (!valid_messages) {
-        fprintf(stderr, "[DHT Queue] Failed to allocate valid message array\n");
-        dht_offline_messages_free(all_messages, all_count);
-        return -1;
-    }
+        // Deserialize messages from this sender's outbox
+        dht_offline_message_t *sender_messages = NULL;
+        size_t sender_count_msgs = 0;
 
-    // Copy valid messages
-    size_t j = 0;
-    for (size_t i = 0; i < all_count; i++) {
-        if (all_messages[i].expiry >= now) {
-            valid_messages[j++] = all_messages[i];
-        } else {
-            // Free expired message
-            dht_offline_message_free(&all_messages[i]);
+        if (dht_deserialize_messages(outbox_data, outbox_len, &sender_messages, &sender_count_msgs) != 0) {
+            fprintf(stderr, "[DHT Queue]   ✗ Failed to deserialize sender's outbox\n");
+            free(outbox_data);
+            continue;
         }
+
+        free(outbox_data);
+
+        printf("[DHT Queue]   Deserialized %zu message(s) from this sender\n", sender_count_msgs);
+
+        // Filter out expired messages and append valid ones to all_messages
+        for (size_t i = 0; i < sender_count_msgs; i++) {
+            if (sender_messages[i].expiry >= now) {
+                // Valid message - add to combined array
+                if (all_count >= all_capacity) {
+                    // Grow array (double capacity, min 16)
+                    size_t new_capacity = (all_capacity == 0) ? 16 : (all_capacity * 2);
+                    dht_offline_message_t *new_array = (dht_offline_message_t*)realloc(
+                        all_messages, new_capacity * sizeof(dht_offline_message_t));
+                    if (!new_array) {
+                        fprintf(stderr, "[DHT Queue] Failed to grow message array\n");
+                        dht_offline_messages_free(all_messages, all_count);
+                        dht_offline_messages_free(sender_messages, sender_count_msgs);
+                        return -1;
+                    }
+                    all_messages = new_array;
+                    all_capacity = new_capacity;
+                }
+
+                // Copy message to combined array (transfer ownership)
+                all_messages[all_count++] = sender_messages[i];
+            } else {
+                // Expired message - free it
+                printf("[DHT Queue]   Message %zu expired (expiry=%lu, now=%lu)\n",
+                       i, sender_messages[i].expiry, now);
+                dht_offline_message_free(&sender_messages[i]);
+            }
+        }
+
+        // Free sender_messages array (contents transferred or freed)
+        free(sender_messages);
     }
 
-    // Free old array (contents moved to valid_messages)
-    free(all_messages);
+    printf("[DHT Queue] ✓ Retrieved %zu valid messages from %zu contacts\n", all_count, sender_count);
 
-    printf("[DHT Queue] ✓ Retrieved %zu valid messages\n", valid_count);
-
-    *messages_out = valid_messages;
-    *count_out = valid_count;
+    *messages_out = all_messages;
+    *count_out = all_count;
     return 0;
 }
 
 /**
- * Clear offline message queue for recipient
+ * REMOVED: dht_clear_queue() - No longer needed in Model E
+ *
+ * In sender-based outbox model:
+ * - Recipients don't control sender outboxes (can't clear them)
+ * - Senders manage their own outboxes
+ * - Recipients only retrieve messages (read-only operation)
+ * - No need for recipient-side clearing
  */
-int dht_clear_queue(
-    dht_context_t *ctx,
-    const char *recipient)
-{
-    if (!ctx || !recipient) {
-        fprintf(stderr, "[DHT Queue] Invalid parameters for clearing queue\n");
-        return -1;
-    }
-
-    printf("[DHT Queue] Clearing queue for %s\n", recipient);
-
-    // Generate queue key (SHA3-512 = 64 bytes)
-    uint8_t queue_key[64];
-    dht_generate_queue_key(recipient, queue_key);
-
-    // Store empty queue (since dht_delete doesn't work in OpenDHT)
-    // Using same value_id=1 as queueing to replace the old queue
-    uint8_t empty_queue[5];  // Just the count=0
-    uint32_t zero = htonl(0);
-    memcpy(empty_queue, &zero, sizeof(uint32_t));
-
-    printf("[DHT Queue] → DHT PUT_SIGNED: Clearing offline queue\n");
-    int result = dht_put_signed(ctx, queue_key, 64, empty_queue, sizeof(uint32_t), 1, 0);
-    if (result != 0) {
-        fprintf(stderr, "[DHT Queue] Failed to clear queue\n");
-        return -1;
-    }
-
-    printf("[DHT Queue] ✓ Queue cleared\n");
-    return 0;
-}
