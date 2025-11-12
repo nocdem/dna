@@ -1238,8 +1238,8 @@ int dna_register_name(
     }
     dht_key[128] = '\0';
 
-    ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                            (uint8_t*)json, strlen(json));
+    ret = dht_put_signed_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                    (uint8_t*)json, strlen(json), 1);
     free(json);
 
     if (ret != 0) {
@@ -1551,8 +1551,8 @@ int dna_renew_name(
     }
     dht_key[128] = '\0';
 
-    int ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                                (uint8_t*)json, strlen(json));
+    int ret = dht_put_signed_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                        (uint8_t*)json, strlen(json), 1);
     free(json);
 
     if (ret != 0) {
