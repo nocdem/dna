@@ -537,16 +537,16 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
         uint8_t key_bytes[256];
         size_t key_len = hex_to_bytes(key_hex, key_bytes, sizeof(key_bytes));
 
-        // CRITICAL: Detect old format (infohash) and skip to prevent double-hashing
-        // Old format: 40-char hex (20-byte infohash) - stored before 2025-11-12 fix
+        // CRITICAL: Detect old format and skip to prevent double-hashing
+        // Old formats: 40-char hex (20-byte) OR 80-char hex (40-byte) - stored before 2025-11-12 fix
         // New format: 128-char hex (64-byte SHA3-512 original key)
         size_t hex_len = strlen(key_hex);
-        if (hex_len == 40) {
-            // Old infohash format detected - DO NOT republish (would hash again → wrong key)
-            std::cout << "[Storage] Skipping old-format entry (40-char infohash) - prevents double-hash bug" << std::endl;
+        if (hex_len == 40 || hex_len == 80) {
+            // Old format detected - DO NOT republish (would hash again → wrong key)
+            std::cout << "[Storage] Skipping old-format entry (" << hex_len << "-char hex) - prevents double-hash bug" << std::endl;
             free(value_copy);
             continue;  // Skip this value
-        } else if (hex_len < 64) {
+        } else if (hex_len < 128) {
             // Unknown short format - skip for safety
             std::cerr << "[Storage] Skipping unknown format entry (hex_len=" << hex_len << ")" << std::endl;
             free(value_copy);
