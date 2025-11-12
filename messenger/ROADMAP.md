@@ -537,14 +537,30 @@ Implemented per-identity contact lists with DHT synchronization for multi-device
 
 ---
 
-## Phase 10: DNA Board - Censorship-Resistant Social Media 📋 PLANNED
+## Phase 10: DNA Board - Censorship-Resistant Social Media 🚧 IN PROGRESS (Alpha)
 
-**Timeline:** 12 weeks
-**Status:** Planning (Post-Phases 7-9)
+**Timeline:** 12 weeks (full features) | 2-4 weeks (alpha)
+**Status:** Phase 10.1 ✅ Complete | Phase 10.2 🚧 In Progress (Alpha - Simplified)
 **Prerequisites:** Distributed validator storage, DNA-Keyserver merge, Offline messaging system
 **Design Document:** `/DNA_BOARD_PHASE10_PLAN.md`
 
-### Overview
+### Alpha Implementation (Current)
+
+**Phase 10.1 ✅ Complete (2025-11-12):**
+- User profiles with DHT storage (display name, bio, location, website)
+- Profile cache system (7-day TTL, cache-first architecture)
+- Auto-integration (contact add, message receive, app startup)
+
+**Phase 10.2 🚧 In Progress (Alpha - Simplified):**
+- Using existing legacy wall system (`dna_message_wall.c` - working)
+- Wall viewing from message window (button exists, functional)
+- Pending: Contact profile viewing, social links, comment threading
+
+**Alpha Approach:** FREE posting (no CPUNK costs), no validators, no PoH requirements. Using DHT storage with 7-day TTL. Full features (below) planned for v1.0 post-alpha.
+
+---
+
+### Full Features (v1.0 - Planned)
 
 DNA Board is a **censorship-resistant social media platform** built on cpunk validator network. Content cannot be removed once posted, creating a true free speech platform with built-in spam protection.
 

@@ -205,13 +205,45 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 
 **Overview:** Censorship-resistant wall posts • NO DELETION (7-day TTL auto-expire) • FREE posting (no CPUNK costs in alpha) • No PoH requirements (alpha) • Dilithium5 signatures for authenticity
 
-**Alpha Features:** Text posts (5K chars) • Comment threading (parent_hash) • DHT storage (7-day TTL) • Free posting/commenting • No validators (DHT-only)
+**Alpha Features:** Text posts (5K chars) • Comment threading (reply_to) • DHT storage (7-day TTL) • Free posting/commenting • No validators (DHT-only)
 
-**Implemented:** `dht/dht_wall.h` (API design)
+**Status:**
+- ✅ Wall posting system (legacy `dna_message_wall.c` - 18,717 lines, working)
+- ✅ Wall viewing from message window ("Wall" button exists, fully functional)
+- ✅ Profile editor (edit own profile: display name, bio, location, website)
+- ✅ API design (`dht/dht_wall.h` - new alpha architecture, not yet implemented)
 
-**Todo:** `dht/dht_wall.c` (storage) • ImGui profile editor • ImGui wall viewer/composer • Comment thread builder
+**Pending Implementation:**
 
-**Note:** Validators, PoH, payments, media uploads will be added post-alpha. Current focus: core functionality and UX.
+1. **Profile Viewing** (view others' profiles):
+   - Add "Profile" button next to "Wall" button in message window header (`app.cpp:2320`)
+   - Implement `renderContactProfileDialog()` to display contact profiles
+   - Show: display name, bio, location, website, social links, crypto addresses
+   - "Refresh" button to force DHT fetch (ignore cache)
+
+2. **Profile Schema Extensions**:
+   - Add social links: Telegram, Twitter, GitHub, Discord handles (`dht_profile.h`)
+   - Add crypto address field: CPUNK/CELL addresses for tipping
+   - Update profile editor with new input fields
+   - Update JSON serialization (`dht_profile.c`)
+
+3. **Comment Threading**:
+   - Add `reply_to` field to wall posts (`dna_message_wall.c`)
+   - Build thread tree client-side (no parent post updates - avoids DHT conflicts)
+   - Add "Reply" button below wall posts
+   - Implement nested comment UI with indentation
+   - Show "Replying to: [parent text]" above input when replying
+
+**Implementation Strategy:** Keep simple for alpha - use existing legacy wall system (`dna_message_wall.c`), add profile viewing and basic comment threading. Full social features (feed aggregation, avatars, voting) planned post-alpha.
+
+**Future Enhancements:**
+- Social feed window (aggregated contacts' posts)
+- Avatar display (IPFS/DHT storage)
+- Migration to new `dht_wall.c` system (individual posts vs aggregated array)
+- Post voting/reactions
+- Media uploads (images, videos)
+
+**Note:** Validators, PoH, payments, media uploads will be added post-alpha (v1.0). Current focus: core functionality and UX.
 
 **Spec:** `/DNA_BOARD_PHASE10_PLAN.md` (original plan - full features planned for v1.0)
 
