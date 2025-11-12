@@ -1446,15 +1446,30 @@ int dna_update_profile(
     ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
                             (uint8_t*)json, strlen(json));
 
-    free(json);
-    dna_identity_free(identity);
-
     if (ret != 0) {
         fprintf(stderr, "[DNA] Failed to store in DHT\n");
+        free(json);
+        dna_identity_free(identity);
         return -1;
     }
 
+    // Debug: Show what was stored (BEFORE freeing identity!)
     printf("[DNA] ✓ Profile updated successfully\n");
+    printf("[DNA] DEBUG Profile Storage:\n");
+    printf("[DNA]   Fingerprint: %s\n", fingerprint);
+    printf("[DNA]   DHT Key: %s\n", dht_key);
+    printf("[DNA]   Registered Name: %s\n", identity->has_registered_name ? identity->registered_name : "(none)");
+    printf("[DNA]   Bio: %s\n", identity->bio[0] ? identity->bio : "(empty)");
+    printf("[DNA]   Telegram: %s\n", identity->socials.telegram[0] ? identity->socials.telegram : "(empty)");
+    printf("[DNA]   Twitter/X: %s\n", identity->socials.x[0] ? identity->socials.x : "(empty)");
+    printf("[DNA]   GitHub: %s\n", identity->socials.github[0] ? identity->socials.github : "(empty)");
+    printf("[DNA]   Backbone: %s\n", identity->wallets.backbone[0] ? identity->wallets.backbone : "(empty)");
+    printf("[DNA]   Version: %u\n", identity->version);
+    printf("[DNA]   Timestamp: %lu\n", (unsigned long)identity->timestamp);
+
+    free(json);
+    dna_identity_free(identity);
+
     return 0;
 }
 
