@@ -349,8 +349,9 @@ int dht_contactlist_publish(
         return -1;
     }
 
-    // Step 6: Store in DHT (permanent storage)
-    int result = dht_put_permanent(dht_ctx, dht_key, 64, blob, blob_size);
+    // Step 6: Store in DHT (permanent storage with replacement support)
+    // Use signed put with value_id=1 to enable replacement (no accumulation)
+    int result = dht_put_signed_permanent(dht_ctx, dht_key, 64, blob, blob_size, 1);
     free(blob);
 
     if (result != 0) {
@@ -358,7 +359,7 @@ int dht_contactlist_publish(
         return -1;
     }
 
-    printf("[DHT_CONTACTLIST] Successfully published contact list to DHT\n");
+    printf("[DHT_CONTACTLIST] Successfully published contact list to DHT (signed, value_id=1)\n");
     return 0;
 }
 
@@ -561,7 +562,14 @@ int dht_contactlist_fetch(
 }
 
 /**
- * Clear contact list from DHT
+ * Clear contact list from DHT (best-effort, not guaranteed)
+ *
+ * DEPRECATED: With signed puts (value_id=1), this function is no longer necessary.
+ * Use dht_contactlist_publish() with an empty contact array instead, which will
+ * replace the old contact list with an empty one via the signed put mechanism.
+ *
+ * This function uses dht_delete() which is best-effort in DHT networks - not guaranteed
+ * to succeed. For reliable clearing, use: dht_contactlist_publish(ctx, identity, NULL, 0, ...)
  */
 int dht_contactlist_clear(dht_context_t *dht_ctx, const char *identity) {
     if (!dht_ctx || !identity) {
@@ -574,9 +582,11 @@ int dht_contactlist_clear(dht_context_t *dht_ctx, const char *identity) {
     }
 
     // Note: DHT deletion is best-effort (not guaranteed)
+    // With signed puts, prefer publishing empty list via dht_contactlist_publish()
     dht_delete(dht_ctx, dht_key, 64);
 
-    printf("[DHT_CONTACTLIST] Cleared contact list for '%s' (best-effort)\n", identity);
+    printf("[DHT_CONTACTLIST] Attempted to clear contact list for '%s' (best-effort, deprecated)\n", identity);
+    printf("[DHT_CONTACTLIST] Recommend using dht_contactlist_publish() with empty array for reliable clearing\n");
     return 0;
 }
 

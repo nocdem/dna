@@ -393,6 +393,27 @@ int contacts_db_count(void) {
     return count;
 }
 
+// Clear all contacts from database
+int contacts_db_clear_all(void) {
+    if (!g_db) {
+        fprintf(stderr, "[CONTACTS_DB] Database not initialized\n");
+        return -1;
+    }
+
+    const char *sql = "DELETE FROM contacts;";
+    char *err_msg = NULL;
+
+    int rc = sqlite3_exec(g_db, sql, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[CONTACTS_DB] Failed to clear contacts: %s\n", err_msg);
+        sqlite3_free(err_msg);
+        return -1;
+    }
+
+    printf("[CONTACTS_DB] Cleared all contacts\n");
+    return 0;
+}
+
 // Free contact list
 void contacts_db_free_list(contact_list_t *list) {
     if (list) {

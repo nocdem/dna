@@ -13,6 +13,9 @@
 #include "keyserver_cache.h"
 #include "contacts_db.h"
 #include "qgp_sha3.h"
+#include "presence_cache.h"
+#include "profile_manager.h"
+#include "profile_cache.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -599,6 +602,14 @@ int messenger_p2p_init(messenger_context_t *ctx)
     }
 
     ctx->p2p_enabled = true;
+
+    // Initialize presence cache for fast online/offline status
+    if (presence_cache_init() != 0) {
+        fprintf(stderr, "[P2P] Warning: Failed to initialize presence cache\n");
+    } else {
+        printf("[P2P] Presence cache initialized\n");
+    }
+
     printf("[P2P] P2P transport initialized successfully\n");
     printf("[P2P] Listening on TCP port 4001\n");
     printf("[P2P] DHT port 4000\n");
@@ -770,6 +781,9 @@ static void p2p_message_received_internal(
 
     if (sender_identity) {
         printf("[P2P] ✓ Received P2P message from %s (%zu bytes)\n", sender_identity, message_len);
+
+        // Passive presence detection: message received = sender online
+        presence_cache_update(sender_identity, true, time(NULL));
     } else {
         printf("[P2P] ✓ Received P2P message from unknown peer (%zu bytes)\n", message_len);
         printf("[P2P] Hint: Add sender as contact to see their identity\n");
@@ -796,6 +810,20 @@ static void p2p_message_received_internal(
         printf("[P2P] ✓ Message from %s stored in SQLite\n", sender_identity);
     }
 
+    // Fetch sender profile for caching (only if expired or missing)
+    dht_profile_t profile;
+    if (profile_cache_is_expired(sender_identity)) {
+        printf("[P2P] Fetching profile for sender: %s\n", sender_identity);
+        int profile_result = profile_manager_get_profile(sender_identity, &profile);
+        if (profile_result == 0) {
+            printf("[P2P] ✓ Profile cached: %s\n", profile.display_name);
+        } else if (profile_result == -2) {
+            printf("[P2P] Profile not found for sender: %s\n", sender_identity);
+        } else {
+            fprintf(stderr, "[P2P] Failed to fetch profile for sender: %s\n", sender_identity);
+        }
+    }
+
     free(sender_identity);
 }
 
@@ -812,6 +840,10 @@ static void p2p_connection_state_changed(
     char *peer_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 2592);  // Dilithium5 public key size
     if (peer_identity) {
         printf("[P2P] %s %s\n", peer_identity, is_connected ? "CONNECTED" : "DISCONNECTED");
+
+        // Update presence cache on connection state change
+        presence_cache_update(peer_identity, is_connected, time(NULL));
+
         free(peer_identity);
     } else {
         printf("[P2P] Unknown peer %s\n", is_connected ? "CONNECTED" : "DISCONNECTED");
@@ -836,24 +868,17 @@ void messenger_p2p_message_callback(
 
 bool messenger_p2p_peer_online(messenger_context_t *ctx, const char *identity)
 {
-    if (!ctx || !identity || !ctx->p2p_enabled || !ctx->p2p_transport) {
+    if (!ctx || !identity) {
         return false;
     }
 
-    // Load peer's public key
-    uint8_t *peer_pubkey = NULL;
-    size_t peer_pubkey_len = 0;
-
-    if (load_pubkey_for_identity(ctx, identity, &peer_pubkey, &peer_pubkey_len) != 0) {
-        return false;
-    }
-
-    // Lookup peer in DHT
-    peer_info_t peer_info;
-    int result = p2p_lookup_peer(ctx->p2p_transport, peer_pubkey, &peer_info);
-    free(peer_pubkey);
-
-    return (result == 0 && peer_info.is_online);
+    // Use presence cache for fast O(1) lookup (no DHT query!)
+    // Cache is passively updated when:
+    // - Message received from peer (online)
+    // - P2P connection established (online)
+    // - P2P connection lost (offline)
+    // - Cache entry expires after 5 minutes (assume offline)
+    return presence_cache_get(identity);
 }
 
 int messenger_p2p_list_online_peers(

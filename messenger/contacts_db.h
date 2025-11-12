@@ -104,6 +104,14 @@ int contacts_db_list(contact_list_t **list_out);
 int contacts_db_count(void);
 
 /**
+ * Clear all contacts from database
+ * Used for REPLACE sync mode when syncing from DHT
+ *
+ * @return: 0 on success, -1 on error
+ */
+int contacts_db_clear_all(void);
+
+/**
  * Free contact list
  *
  * @param list: Contact list to free
