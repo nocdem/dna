@@ -149,10 +149,12 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 ## Features
 
 **Current:**
-- ✅ End-to-end encryption with post-quantum algorithms
+- ✅ End-to-end encryption with post-quantum algorithms (Kyber1024 + Dilithium5 - NIST Category 5)
 - ✅ Multi-recipient messaging (broadcast to multiple users)
 - ✅ Persistent group chats with member management
 - ✅ Per-identity contact lists with DHT sync (multi-device support via BIP39)
+- ✅ User profiles with DHT storage (display name, bio, avatar, location, website)
+- ✅ Profile cache system (7-day TTL, cache-first architecture)
 - ✅ 24-word BIP39 recovery phrases
 - ✅ Cross-platform (Linux & Windows)
 - ✅ Local SQLite storage (no server required for messages)
@@ -166,10 +168,12 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ cpunk Wallet integration (view balances, send/receive CPUNK/CELL/KEL tokens)
 - ✅ P2P messaging with DHT-based peer discovery (3 bootstrap nodes)
 - ✅ Offline message queueing (messages stored in DHT for 7 days)
-- ✅ Public message walls (post signed messages to user's public DHT wall)
+- ✅ Free DNA name registration (no costs in alpha)
 
 **Coming Soon:**
-- 🚧 Web-based messenger (Phase 5 - in progress)
+- 🚧 Wall posts and comments (censorship-resistant social media - FREE in alpha)
+- 🚧 ImGui profile editor dialog
+- 🚧 Web-based messenger (Phase 5)
 - 📋 Mobile applications (Flutter)
 - 📋 Forward secrecy (ephemeral session keys)
 - 📋 Post-quantum voice/video calls

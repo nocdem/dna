@@ -1,9 +1,12 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-10 | **Phase:** 5 (Web Messenger) | **Complete:** 4, 8, 9.1-9.5
+**Last Updated:** 2025-11-12 | **Phase:** 10 (DNA Board Alpha) | **Complete:** 4, 8, 9.1-9.5, 10.1
 
-**Recent Updates (2025-11-10):**
-- **CRITICAL FIX:** Offline message queue - `resolve_identity_to_fingerprint()` ensures DHT queue keys use fingerprints (was using display names)
+**Recent Updates (2025-11-12):**
+- **Phase 10.1 COMPLETE:** Profile system with DHT storage + 7-day cache (dht_profile.c, profile_cache.c, profile_manager.c)
+- **Phase 10.2 IN PROGRESS:** Wall posts (censorship-resistant social media) - Alpha version (free, no validators)
+- **Contact sync migrated:** Unsigned puts → signed puts (dht_put_signed_permanent) for proper deletion
+- **CRITICAL FIX (2025-11-10):** Offline message queue - `resolve_identity_to_fingerprint()` ensures DHT queue keys use fingerprints
 - **GUI:** Qt5 deprecated → ImGui active (`imgui_gui/`), Qt preserved in `gui/` for reference
 
 ---
@@ -14,7 +17,7 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 
 **Crypto:** Kyber1024 (ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
 
-**Key Features:** E2E encrypted messaging • DHT-based groups • Per-identity contacts with DHT sync • cpunk wallet (CPUNK/CELL/KEL) • P2P + DHT peer discovery • Offline queueing (7-day) • Local SQLite (no centralized DB) • Cross-platform (Linux/Windows) • ImGui GUI • BIP39 recovery
+**Key Features:** E2E encrypted messaging • DHT-based groups • Per-identity contacts with DHT sync • User profiles (display name, bio, avatar) with 7-day cache • Wall posts (censorship-resistant social media) • cpunk wallet (CPUNK/CELL/KEL) • P2P + DHT peer discovery • Offline queueing (7-day) • Local SQLite (no centralized DB) • Cross-platform (Linux/Windows) • ImGui GUI • BIP39 recovery
 
 ---
 
@@ -40,6 +43,8 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 │   ├── dht_groups.*         # DHT groups
 │   ├── dht_contactlist.*    # Contact sync
 │   ├── dht_keyserver.*      # Identity/name system
+│   ├── dht_profile.*        # User profiles (DHT storage)
+│   ├── dht_wall.*           # Wall posts (social media)
 │   ├── deploy-bootstrap.sh  # VPS deployment
 │   └── monitor-bootstrap.sh # Health monitoring
 ├── p2p/                     # P2P transport
@@ -56,6 +61,8 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 ├── messenger_stubs.c        # Group functions
 ├── keyserver_cache.*        # Local key cache
 ├── contacts_db.*            # Per-identity contacts
+├── profile_cache.*          # Profile cache (7-day TTL)
+├── profile_manager.*        # Smart profile fetching
 └── dna_api.h                # Public API
 ```
 
@@ -67,7 +74,7 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 |------|-----------|
 | **Code Style** | C: K&R, 4-space • C++ ImGui: C++17, camelCase, STL • Qt: deprecated (reference) • Clear comments • Always free memory, check NULL |
 | **Cryptography** | **DO NOT modify primitives** without expert review • Use `dna_api.h` API • Memory-based ops only • Never log keys/plaintext |
-| **Database** | **SQLite only** (no PostgreSQL) • Messages: `~/.dna/messages.db` • Contacts: `~/.dna/<identity>_contacts.db` (per-identity, DHT sync, Kyber1024 self-encrypted, SHA3-512 keys, auto-migrated) • Groups: DHT + local cache (UUID v4, SHA256 keys, JSON) • Keyserver: `~/.dna/keyserver_cache.db` (7d TTL, BLOB) • Use prepared statements (`sqlite3_prepare_v2`, `sqlite3_bind_*`), check returns |
+| **Database** | **SQLite only** (no PostgreSQL) • Messages: `~/.dna/messages.db` • Contacts: `~/.dna/<identity>_contacts.db` (per-identity, DHT sync, Kyber1024 self-encrypted, SHA3-512 keys, auto-migrated) • Profiles: `~/.dna/<identity>_profiles.db` (per-identity, 7d TTL, cache-first) • Groups: DHT + local cache (UUID v4, SHA256 keys, JSON) • Keyserver: `~/.dna/keyserver_cache.db` (7d TTL, BLOB) • Use prepared statements (`sqlite3_prepare_v2`, `sqlite3_bind_*`), check returns |
 | **GUI** | **ImGui (ACTIVE)**: Immediate mode, `AppState` struct, `task_queue` async, `apply_theme()`, cross-platform • **Qt5 (DEPRECATED)**: signals/slots, `ThemeManager::instance()`, reference only |
 | **Wallet** | Read from `~/.dna/` or system dir • Use `cellframe_rpc.h` API • Amounts as strings (preserve precision) • Smart decimals (8 for tiny, 2 normal) • Minimal TX builder (no JSON-C) |
 | **Cross-Platform** | Linux (primary) • Windows (MXE cross-compile) • CMake build • Avoid platform-specific code • Test both before commit |
@@ -77,14 +84,15 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 | Data Type | TTL | DHT Key | Rationale |
 |-----------|-----|---------|-----------|
 | **Identity Keys** | **PERMANENT** | `SHA3-512(fingerprint + ":pubkey")` | Core crypto identity persists indefinitely |
-| **Name Registration** | **365 days** | `SHA3-512(name + ":lookup")` | Annual renewal prevents squatting |
+| **Name Registration** | **365 days** | `SHA3-512(name + ":lookup")` | Annual renewal prevents squatting (FREE in alpha) |
 | **Reverse Mapping** | **365 days** | `SHA3-512(fingerprint + ":reverse")` | Sender ID without pre-adding contact |
-| **Contact Lists** | **PERMANENT** | `SHA3-512(identity + ":contactlist")` | Multi-device sync (Kyber1024 self-encrypted) |
-| **Offline Queue** | **7 days** | `SHA256(recipient + ":offline_queue")` | Ephemeral, delivered to SQLite when retrieved |
+| **Contact Lists** | **PERMANENT** | `SHA3-512(identity + ":contactlist")` | Multi-device sync (Kyber1024 self-encrypted, signed) |
+| **User Profiles** | **7 days** | `SHA3-512(fingerprint + ":profile")` | Display name, bio, avatar (cached locally) |
+| **Offline Queue** | **7 days** | `SHA256(sender + ":outbox:" + recipient)` | Sender outbox model (Model E), signed |
 | **Groups** | **7 days** | `SHA256(group_uuid)` | Active groups update frequently |
-| **Social Posts** | **7 days** | `SHA256(post_id)` | Ephemeral social content |
+| **Wall Posts** | **7 days** | `SHA3-512(post_id)` | Social media posts (FREE in alpha) |
 
-**API:** `dht_put_permanent()` (never expires), `dht_put_ttl(ctx, key, val, 365*24*3600)` (365d), `dht_put()` (7d default) • Custom ValueTypes: `DNA_TYPE_7DAY` (0x1001), `DNA_TYPE_365DAY` (0x1002)
+**API:** `dht_put_permanent()` (never expires), `dht_put_signed_permanent()` (signed+permanent), `dht_put_ttl(ctx, key, val, 365*24*3600)` (365d), `dht_put()` (7d default) • Custom ValueTypes: `DNA_TYPE_7DAY` (0x1001), `DNA_TYPE_365DAY` (0x1002)
 
 ---
 
@@ -181,17 +189,31 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 
 ---
 
-## Phase 10: DNA Board - Censorship-Resistant Social Media 📋 (12 weeks, post-Phases 7-9)
+## Phase 10.1: User Profiles ✅ (2025-11-12)
 
-**Overview:** Censorship-resistant platform on cpunk validator network • NO CENSORSHIP (no deletion) • PoH ≥70 to post • Open replies • Free voting • Burn economics • 3-replica validator network (self-healing, 30s heartbeat)
+**Implemented:** DHT profile storage (`dht_profile.c`, 470 lines) • Profile cache database (`profile_cache.c`, 550 lines) • Smart fetch manager (`profile_manager.c`, 235 lines) • Auto-integration (contact add, message receive, app startup) • 7-day TTL with stale fallback
 
-**Economics:** Post (1 CPUNK, PoH ≥70, 5K chars) • Image (2 CPUNK, 5MB) • Video (5 CPUNK, 50MB) • Reply (0.5 CPUNK, no PoH, 2K) • Vote (FREE) • **Burn:** ~16M CPUNK/year
+**Profile Fields:** Display name (64 chars) • Bio (512 chars) • Avatar hash (SHA3-512) • Location (64 chars) • Website (256 chars) • Timestamps (created_at, updated_at)
 
-**PoH Tiers:** Auto (75-89: behavioral) • Staked (90-94: +100 CPUNK) • DAO-Vouched (95-99: 3 vouches) • Celebrity (100: public figure)
+**Architecture:** Cache-first (instant) → DHT fallback (if expired) → Stale fallback (if DHT fails) • Per-identity SQLite (`~/.dna/<identity>_profiles.db`) • Dilithium5 signatures • Background refresh on startup
 
-**Implementation:** W1-2: Validator+PoH • W3-4: Gossip+3-replica • W5-6: Voting+ranking • W7-8: Qt GUI • W9-10: Media+wallet • W11-12: Testing+launch
+**Files:** `dht/dht_profile.[ch]` (140+470), `profile_cache.[ch]` (165+550), `profile_manager.[ch]` (100+235), integration in `app.cpp` + `messenger_p2p.c`
 
-**Spec:** `/DNA_BOARD_PHASE10_PLAN.md`
+---
+
+## Phase 10.2: DNA Board Alpha - Censorship-Resistant Social Media 🚧 (2025-11-12)
+
+**Overview:** Censorship-resistant wall posts • NO DELETION (7-day TTL auto-expire) • FREE posting (no CPUNK costs in alpha) • No PoH requirements (alpha) • Dilithium5 signatures for authenticity
+
+**Alpha Features:** Text posts (5K chars) • Comment threading (parent_hash) • DHT storage (7-day TTL) • Free posting/commenting • No validators (DHT-only)
+
+**Implemented:** `dht/dht_wall.h` (API design)
+
+**Todo:** `dht/dht_wall.c` (storage) • ImGui profile editor • ImGui wall viewer/composer • Comment thread builder
+
+**Note:** Validators, PoH, payments, media uploads will be added post-alpha. Current focus: core functionality and UX.
+
+**Spec:** `/DNA_BOARD_PHASE10_PLAN.md` (original plan - full features planned for v1.0)
 
 ---
 
