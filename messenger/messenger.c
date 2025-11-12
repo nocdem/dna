@@ -40,6 +40,7 @@
 #include "qgp_kyber.h"
 #include "qgp_sha3.h"  // For SHA3-512 fingerprint computation
 #include "dht/dht_singleton.h"  // Global DHT singleton
+#include "dht/dht_identity_backup.h"  // DHT identity encrypted backup
 #include "qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
 #include "bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
@@ -202,6 +203,97 @@ void messenger_free(messenger_context_t *ctx) {
 
     free(ctx->identity);
     free(ctx);
+}
+
+/**
+ * Load DHT identity and reinitialize DHT singleton with permanent identity
+ *
+ * This function:
+ * 1. Loads Kyber private key (for decryption)
+ * 2. Tries to load DHT identity from local encrypted file
+ * 3. If local fails, tries to fetch from DHT (recovery on new device)
+ * 4. If loaded, reinitializes DHT singleton with permanent identity
+ *
+ * @param fingerprint User fingerprint (128 hex chars)
+ * @return 0 on success, -1 on error (non-fatal, messenger can work without)
+ */
+int messenger_load_dht_identity(const char *fingerprint) {
+    if (!fingerprint || strlen(fingerprint) != 128) {
+        fprintf(stderr, "[DHT Identity] Invalid fingerprint\n");
+        return -1;
+    }
+
+    printf("[DHT Identity] Loading DHT identity for %s...\n", fingerprint);
+
+    // Load Kyber1024 private key (for decryption)
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        fprintf(stderr, "[DHT Identity] Cannot get home directory\n");
+        return -1;
+    }
+
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, fingerprint);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
+        fprintf(stderr, "[DHT Identity] Failed to load Kyber key from %s\n", kyber_path);
+        return -1;
+    }
+
+    if (kyber_key->private_key_size != 3168) {
+        fprintf(stderr, "[DHT Identity] Invalid Kyber private key size: %zu (expected 3168)\n",
+                kyber_key->private_key_size);
+        qgp_key_free(kyber_key);
+        return -1;
+    }
+
+    // Try to load from local file first
+    dht_identity_t *dht_identity = NULL;
+    if (dht_identity_load_from_local(fingerprint, kyber_key->private_key, &dht_identity) == 0) {
+        printf("[DHT Identity] ✓ Loaded from local file\n");
+    } else {
+        printf("[DHT Identity] Local file not found, fetching from DHT...\n");
+
+        // Get DHT context (for fetching)
+        dht_context_t *dht_ctx = dht_singleton_get();
+        if (!dht_ctx) {
+            fprintf(stderr, "[DHT Identity] DHT not initialized, cannot fetch from DHT\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+
+        // Try to fetch from DHT
+        if (dht_identity_fetch_from_dht(fingerprint, kyber_key->private_key, dht_ctx, &dht_identity) != 0) {
+            fprintf(stderr, "[DHT Identity] Failed to fetch from DHT\n");
+            fprintf(stderr, "[DHT Identity] No DHT identity found (local or DHT)\n");
+            fprintf(stderr, "[DHT Identity] Warning: DHT operations may accumulate values\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+
+        printf("[DHT Identity] ✓ Fetched from DHT and saved locally\n");
+    }
+
+    qgp_key_free(kyber_key);
+
+    // Reinitialize DHT singleton with permanent identity
+    printf("[DHT Identity] Reinitializing DHT with permanent identity...\n");
+
+    // Cleanup old DHT (ephemeral identity)
+    dht_singleton_cleanup();
+
+    // Init with permanent identity
+    if (dht_singleton_init_with_identity(dht_identity) != 0) {
+        fprintf(stderr, "[DHT Identity] Failed to reinitialize DHT singleton\n");
+        dht_identity_free(dht_identity);
+        return -1;
+    }
+
+    // Don't free dht_identity here - it's owned by DHT singleton now
+    printf("[DHT Identity] ✓ DHT reinitialized with permanent identity\n");
+
+    return 0;
 }
 
 // ============================================================================
@@ -443,6 +535,29 @@ int messenger_generate_keys_from_seeds(
     }
 
     printf("✓ ML-KEM-1024 encryption key generated from seed\n");
+
+    // Create DHT identity backup (for BIP39 recovery)
+    printf("[DHT Identity] Creating random DHT identity for signing...\n");
+
+    // Get DHT context (global singleton)
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        fprintf(stderr, "Warning: DHT not initialized, skipping DHT identity backup\n");
+        fprintf(stderr, "         You can retry DHT identity creation after connecting to DHT\n");
+    } else {
+        // Create random DHT identity + encrypted backup (local + DHT)
+        dht_identity_t *dht_identity = NULL;
+        if (dht_identity_create_and_backup(fingerprint, kyber_pk, dht_ctx, &dht_identity) != 0) {
+            fprintf(stderr, "Warning: Failed to create DHT identity backup\n");
+            fprintf(stderr, "         Your messenger will still work, but DHT operations may accumulate values\n");
+        } else {
+            printf("[DHT Identity] ✓ Random DHT identity created and backed up\n");
+            printf("[DHT Identity] ✓ Encrypted backup saved locally and published to DHT\n");
+
+            // Free the identity (will be loaded later on login)
+            dht_identity_free(dht_identity);
+        }
+    }
 
     qgp_key_free(enc_key);
 
@@ -3982,19 +4097,55 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
 
     printf("[MESSENGER] Fetched %zu contacts from DHT\n", count);
 
-    // Merge DHT contacts with local (don't delete local additions)
-    // Only add contacts from DHT that don't exist locally
+    // REPLACE mode: DHT is source of truth (deletions propagate)
+    // With safety checks to prevent data loss from DHT failures
+
+    // SAFETY CHECK 1: Verify DHT is actually connected
+    if (!dht_context_is_ready(dht_ctx)) {
+        fprintf(stderr, "[MESSENGER] SAFETY: DHT not ready, keeping local contacts\n");
+        dht_contactlist_free_contacts(contacts, count);
+        return -1;
+    }
+
+    // SAFETY CHECK 2: Get local contact count for comparison
+    int local_count = contacts_db_count();
+    if (local_count < 0) {
+        fprintf(stderr, "[MESSENGER] Failed to get local contact count\n");
+        dht_contactlist_free_contacts(contacts, count);
+        return -1;
+    }
+
+    // SAFETY CHECK 3: Prevent deletion of all contacts
+    // If local has ANY contacts but DHT has 0, abort (likely DHT failure)
+    // No "clear all" feature exists, so empty DHT is always suspicious
+    if (local_count > 0 && count == 0) {
+        fprintf(stderr, "[MESSENGER] SAFETY: Local has %d contacts but DHT has 0\n", local_count);
+        fprintf(stderr, "[MESSENGER] SAFETY: This indicates DHT failure - keeping local contacts\n");
+        fprintf(stderr, "[MESSENGER] SAFETY: No 'clear all' feature exists\n");
+        dht_contactlist_free_contacts(contacts, count);
+        return -1;
+    }
+
+    // SAFETY CHECK 4: Log normal replacements
+    if (local_count > 0 && (size_t)local_count != count) {
+        printf("[MESSENGER] INFO: Replacing %d local contacts with %zu from DHT\n",
+               local_count, count);
+    }
+
+    // All safety checks passed - proceed with REPLACE
+    printf("[MESSENGER] REPLACE sync: Clearing local contacts...\n");
+
+    if (contacts_db_clear_all() != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to clear local contacts\n");
+        dht_contactlist_free_contacts(contacts, count);
+        return -1;
+    }
+
+    // Add contacts from DHT
     size_t added = 0;
-    size_t skipped = 0;
     for (size_t i = 0; i < count; i++) {
-        if (contacts_db_exists(contacts[i])) {
-            skipped++;
-            continue;  // Contact already exists locally
-        }
-        
         if (contacts_db_add(contacts[i], NULL) == 0) {
             added++;
-            printf("[MESSENGER] Added contact from DHT: %s\n", contacts[i]);
         } else {
             fprintf(stderr, "[MESSENGER] Warning: Failed to add contact '%s'\n", contacts[i]);
         }
@@ -4002,7 +4153,8 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
 
     dht_contactlist_free_contacts(contacts, count);
 
-    printf("[MESSENGER] DHT sync complete: %zu new, %zu existing (merge mode)\n", added, skipped);
+    printf("[MESSENGER] REPLACE sync complete: %zu contacts from DHT (was %d local)\n",
+           added, local_count);
     return 0;
 }
 

@@ -40,7 +40,10 @@ extern "C" {
 #endif
 
 /**
- * Initialize global DHT singleton
+ * Initialize global DHT singleton (with ephemeral identity)
+ *
+ * DEPRECATED: This creates DHT with ephemeral identity. Use dht_singleton_init_with_identity()
+ * for encrypted backup system.
  *
  * Creates and bootstraps a single DHT context for the entire application.
  * This should be called once at application startup (in main.cpp).
@@ -53,6 +56,17 @@ extern "C" {
  * @return: 0 on success, -1 on error
  */
 int dht_singleton_init(void);
+
+/**
+ * Initialize global DHT singleton with user identity
+ *
+ * Creates and bootstraps DHT context using user's permanent DHT identity
+ * (loaded from encrypted backup). This should be called after user login.
+ *
+ * @param user_identity: User's DHT identity (from dht_identity_backup system)
+ * @return: 0 on success, -1 on error
+ */
+int dht_singleton_init_with_identity(dht_identity_t *user_identity);
 
 /**
  * Get global DHT singleton instance

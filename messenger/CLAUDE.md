@@ -1,8 +1,9 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-12 | **Phase:** 10 (DNA Board Alpha) | **Complete:** 4, 8, 9.1-9.5, 10.1
+**Last Updated:** 2025-11-13 | **Phase:** 10 (DNA Board Alpha) | **Complete:** 4, 8, 9.1-9.6, 10.1
 
-**Recent Updates (2025-11-12):**
+**Recent Updates (2025-11-13):**
+- **Phase 9.6 COMPLETE:** Encrypted DHT identity backup system (Kyber1024 + AES-256-GCM, BIP39 recovery, permanent DHT storage)
 - **Phase 10.1 COMPLETE:** Profile system with DHT storage + 7-day cache (dht_profile.c, profile_cache.c, profile_manager.c)
 - **Phase 10.2 IN PROGRESS:** Wall posts (censorship-resistant social media) - Alpha version (free, no validators)
 - **Contact sync migrated:** Unsigned puts → signed puts (dht_put_signed_permanent) for proper deletion
@@ -17,7 +18,7 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 
 **Crypto:** Kyber1024 (ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
 
-**Key Features:** E2E encrypted messaging • DHT-based groups • Per-identity contacts with DHT sync • User profiles (display name, bio, avatar) with 7-day cache • Wall posts (censorship-resistant social media) • cpunk wallet (CPUNK/CELL/KEL) • P2P + DHT peer discovery • Offline queueing (7-day) • Local SQLite (no centralized DB) • Cross-platform (Linux/Windows) • ImGui GUI • BIP39 recovery
+**Key Features:** E2E encrypted messaging • DHT-based groups • Per-identity contacts with DHT sync • User profiles (display name, bio, avatar) with 7-day cache • Wall posts (censorship-resistant social media) • cpunk wallet (CPUNK/CELL/KEL) • P2P + DHT peer discovery • Offline queueing (7-day) • Encrypted DHT identity backup (BIP39 recovery) • Local SQLite (no centralized DB) • Cross-platform (Linux/Windows) • ImGui GUI
 
 ---
 
@@ -45,6 +46,7 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 │   ├── dht_keyserver.*      # Identity/name system
 │   ├── dht_profile.*        # User profiles (DHT storage)
 │   ├── dht_wall.*           # Wall posts (social media)
+│   ├── dht_identity_backup.* # Encrypted DHT identity backup (Kyber1024 + AES-256-GCM)
 │   ├── deploy-bootstrap.sh  # VPS deployment
 │   └── monitor-bootstrap.sh # Health monitoring
 ├── p2p/                     # P2P transport
@@ -154,6 +156,86 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 **Security:** Kyber1024 self-encryption (owner-only decrypt) • Dilithium5 sig (tamper-proof) • No plaintext in DHT • Multi-device without compromise
 
 **Files:** `dht/dht_contactlist.[ch]` (207+820), `contacts_db.[ch]` (+170), `messenger.[ch]` (+240), `imgui_gui/app.cpp` (sync UI) • **Total:** 1,469+ lines
+
+---
+
+## Phase 9.6: Encrypted DHT Identity Backup ✅ (2025-11-13)
+
+**Problem:** OpenDHT requires permanent RSA-2048 identity for signing DHT operations. Ephemeral identities cause DHT value accumulation (can't replace old values). BIP39 seed recovery needs to restore DHT identity across devices.
+
+**Solution:** Encrypted DHT identity backup system using Kyber1024 + AES-256-GCM. Random RSA-2048 identity is generated once, encrypted with user's Kyber1024 public key, stored locally and in DHT with PERMANENT TTL. BIP39 seed recovery restores Kyber1024 keys → decrypts DHT identity → seamless cross-device sync.
+
+**Implementation:**
+
+**1. Encrypted Backup System** (`dht/dht_identity_backup.[ch]` - 595 lines):
+- `dht_identity_create_and_backup()`: Generate random RSA-2048, encrypt with Kyber1024+AES-256-GCM
+- `dht_identity_load_from_local()`: Load from `~/.dna/<fingerprint>_dht_identity.enc`
+- `dht_identity_fetch_from_dht()`: Fetch from DHT (recovery on new device)
+- `dht_identity_publish_backup()`: Publish encrypted backup to DHT
+- Encryption format: `[kyber_ct(1568)][iv(12)][tag(16)][encrypted_pem]`
+
+**2. DHT Integration** (`dht_context.cpp` +327 lines):
+- `dht_context_start_with_identity()`: Start DHT with user-provided permanent identity
+- `dht_identity_generate_random()`: Generate random RSA-2048 OpenDHT identity
+- `dht_identity_export_to_buffer()`: Export identity to PEM format (key + cert)
+- `dht_identity_import_from_buffer()`: Import identity from PEM buffer
+- Opaque handle pattern: C wrapper for C++ `dht::crypto::Identity`
+
+**3. Singleton Pattern** (`dht_singleton.[ch]` +61 lines):
+- `dht_singleton_init_with_identity()`: Initialize DHT singleton with permanent identity
+- Replaces ephemeral identity with user's permanent identity on login
+
+**4. Messenger Integration**:
+- **First-time user** (`messenger.c:541-562`): Auto-create DHT identity after Kyber1024+Dilithium5 key generation
+- **Subsequent logins** (`messenger.c:220-299`): `messenger_load_dht_identity()` loads from local file or DHT
+- **ImGui integration** (`app.cpp:1219-1230`): Load DHT identity after messenger init, reinitialize DHT singleton
+
+**Storage:**
+- **Local:** `~/.dna/<fingerprint>_dht_identity.enc` (6770 bytes)
+- **DHT Key:** `SHA3-512(fingerprint + ":dht_identity")`
+- **DHT TTL:** PERMANENT (never expires)
+
+**Security:**
+- Kyber1024 KEM (Category 5 post-quantum)
+- AES-256-GCM authenticated encryption
+- Only user with Kyber1024 private key can decrypt
+- Permanent DHT identity prevents value accumulation bug
+
+**Workflow:**
+
+**First-time user (create identity):**
+1. User enters BIP39 seed → generates Kyber1024 + Dilithium5 keys
+2. System generates random RSA-2048 DHT identity
+3. Encrypts identity with Kyber1024 public key
+4. Saves to `~/.dna/<fingerprint>_dht_identity.enc`
+5. Publishes encrypted backup to DHT (PERMANENT TTL)
+
+**Subsequent login (same device):**
+1. Load Kyber1024 private key from `~/.dna/<fingerprint>.kem`
+2. Load encrypted DHT identity from local file
+3. Decrypt with Kyber1024 private key
+4. Reinitialize DHT singleton with permanent identity
+
+**Recovery (new device with BIP39 seed):**
+1. Restore Kyber1024 + Dilithium5 keys from BIP39 seed
+2. Fetch encrypted DHT identity from DHT
+3. Decrypt with restored Kyber1024 private key
+4. Reinitialize DHT with recovered identity
+
+**Testing:**
+- `test_identity_backup.c` (300 lines): 4 comprehensive tests
+- ✅ Test 1: Create DHT identity and backup
+- ✅ Test 2: Load from local file
+- ✅ Test 3: Reinitialize DHT with permanent identity
+- ✅ Test 4: Check local file existence
+- **All tests passed** with zero errors/warnings
+
+**Files:**
+- **Created:** `dht/dht_identity_backup.[ch]` (130+465), `test_identity_backup.c` (300)
+- **Modified:** `dht_context.[ch]` (+327), `dht_singleton.[ch]` (+61), `messenger.[ch]` (+89), `imgui_gui/app.cpp` (+12), `dht/CMakeLists.txt` (added platform/AES sources), `CMakeLists.txt` (test target)
+- **Total:** 1,484+ new lines
+
+**Result:** Seamless BIP39 recovery with permanent DHT identity. Zero DHT value accumulation. Multi-device sync without centralized server.
 
 ---
 

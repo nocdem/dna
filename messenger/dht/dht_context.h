@@ -38,6 +38,12 @@ typedef struct {
 typedef struct dht_context dht_context_t;
 
 /**
+ * DHT Identity (Opaque pointer - for encrypted backup system)
+ * Forward declaration for use in dht_context_start_with_identity()
+ */
+typedef struct dht_identity dht_identity_t;
+
+/**
  * Initialize DHT context
  *
  * @param config DHT configuration
@@ -52,6 +58,18 @@ dht_context_t* dht_context_new(const dht_config_t *config);
  * @return 0 on success, -1 on error
  */
 int dht_context_start(dht_context_t *ctx);
+
+/**
+ * Start DHT node with user-provided identity
+ *
+ * Uses the provided DHT identity instead of generating/loading one.
+ * This is used for encrypted backup system where identity is managed externally.
+ *
+ * @param ctx DHT context
+ * @param identity User-provided DHT identity (for signing DHT operations)
+ * @return 0 on success, -1 on error
+ */
+int dht_context_start_with_identity(dht_context_t *ctx, dht_identity_t *identity);
 
 /**
  * Stop DHT node
@@ -149,6 +167,30 @@ int dht_put_signed(dht_context_t *ctx,
                    unsigned int ttl_seconds);
 
 /**
+ * Put SIGNED value in DHT permanently with fixed value ID
+ *
+ * This is a convenience wrapper around dht_put_signed() that sets TTL to
+ * permanent (never expires). Use this for data that should persist indefinitely
+ * but still needs the replacement behavior (e.g., contact lists, profiles).
+ *
+ * Combines benefits of:
+ * - dht_put_signed(): Replacement via fixed value_id (no accumulation)
+ * - dht_put_permanent(): Never expires (TTL = UINT_MAX)
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param value Value to store
+ * @param value_len Value length
+ * @param value_id Fixed value ID (e.g., 1 for contact list)
+ * @return 0 on success, -1 on error
+ */
+int dht_put_signed_permanent(dht_context_t *ctx,
+                              const uint8_t *key, size_t key_len,
+                              const uint8_t *value, size_t value_len,
+                              uint64_t value_id);
+
+/**
  * Get value from DHT (returns first value only)
  *
  * @param ctx DHT context
@@ -229,6 +271,55 @@ int dht_get_stats(dht_context_t *ctx,
  * @return Storage handle, or NULL if not enabled
  */
 struct dht_value_storage* dht_get_storage(dht_context_t *ctx);
+
+/**
+ * DHT Identity Management (for encrypted backup system)
+ * These functions are exposed from dht_context.cpp to enable C code
+ * to work with OpenDHT's C++ Identity type.
+ */
+
+/**
+ * Generate random DHT identity (RSA-2048)
+ *
+ * @param identity_out Output identity handle (caller must free with dht_identity_free)
+ * @return 0 on success, -1 on error
+ */
+int dht_identity_generate_random(dht_identity_t **identity_out);
+
+/**
+ * Export identity to buffer (PEM format)
+ *
+ * Format: [key_pem_size(4)][key_pem][cert_pem_size(4)][cert_pem]
+ *
+ * @param identity Identity handle
+ * @param buffer_out Output buffer (caller must free)
+ * @param buffer_size_out Output buffer size
+ * @return 0 on success, -1 on error
+ */
+int dht_identity_export_to_buffer(
+    dht_identity_t *identity,
+    uint8_t **buffer_out,
+    size_t *buffer_size_out);
+
+/**
+ * Import identity from buffer (PEM format)
+ *
+ * @param buffer Input buffer
+ * @param buffer_size Buffer size
+ * @param identity_out Output identity handle (caller must free with dht_identity_free)
+ * @return 0 on success, -1 on error
+ */
+int dht_identity_import_from_buffer(
+    const uint8_t *buffer,
+    size_t buffer_size,
+    dht_identity_t **identity_out);
+
+/**
+ * Free DHT identity
+ *
+ * @param identity Identity handle
+ */
+void dht_identity_free(dht_identity_t *identity);
 
 #ifdef __cplusplus
 }

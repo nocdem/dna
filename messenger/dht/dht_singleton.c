@@ -98,6 +98,68 @@ bool dht_singleton_is_initialized(void)
     return (g_dht_context != NULL);
 }
 
+int dht_singleton_init_with_identity(dht_identity_t *user_identity)
+{
+    if (!user_identity) {
+        fprintf(stderr, "[DHT_SINGLETON] ERROR: NULL identity\n");
+        return -1;
+    }
+
+    if (g_dht_context != NULL) {
+        fprintf(stderr, "[DHT_SINGLETON] Already initialized\n");
+        return 0;  // Already initialized, not an error
+    }
+
+    printf("[DHT_SINGLETON] Initializing global DHT with user identity...\n");
+
+    // Configure DHT
+    dht_config_t dht_config = {0};
+    dht_config.port = 4000;  // DHT port
+    dht_config.is_bootstrap = false;
+    strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
+
+    // Add bootstrap nodes
+    for (size_t i = 0; i < BOOTSTRAP_COUNT; i++) {
+        strncpy(dht_config.bootstrap_nodes[i], BOOTSTRAP_NODES[i],
+                sizeof(dht_config.bootstrap_nodes[i]) - 1);
+    }
+    dht_config.bootstrap_count = BOOTSTRAP_COUNT;
+
+    // NO PERSISTENCE for client DHT
+    dht_config.persistence_path[0] = '\0';
+
+    printf("[DHT_SINGLETON] Client DHT mode (no persistence)\n");
+
+    // Create DHT context
+    g_dht_context = dht_context_new(&dht_config);
+    if (!g_dht_context) {
+        fprintf(stderr, "[DHT_SINGLETON] ERROR: Failed to create DHT context\n");
+        return -1;
+    }
+
+    // Start DHT with user-provided identity
+    if (dht_context_start_with_identity(g_dht_context, user_identity) != 0) {
+        fprintf(stderr, "[DHT_SINGLETON] ERROR: Failed to start DHT with identity\n");
+        dht_context_free(g_dht_context);
+        g_dht_context = NULL;
+        return -1;
+    }
+
+    printf("[DHT_SINGLETON] DHT started, bootstrapping to network...\n");
+
+    // Wait for DHT to bootstrap
+    printf("[DHT_SINGLETON] Waiting 5 seconds for DHT bootstrap...\n");
+
+    #ifdef _WIN32
+    Sleep(5000);
+    #else
+    sleep(5);
+    #endif
+
+    printf("[DHT_SINGLETON] ✓ Global DHT ready with user identity!\n");
+    return 0;
+}
+
 void dht_singleton_cleanup(void)
 {
     if (g_dht_context) {

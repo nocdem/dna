@@ -187,9 +187,12 @@ add_library(dna_lib STATIC
     dna_api.c
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
+    presence_cache.c  # Phase 9.1c: Fast presence cache (O(1) lookup, no DHT queries)
     messenger_stubs.c  # DHT-based group functions (Phase 3)
     keyserver_cache.c  # Phase 4: SQLite keyserver cache
-    contacts_db.c      # Phase 9.4: Local contacts database
+    contacts_db.c      # Phase 9.5: Local contacts database
+    profile_cache.c    # Phase 10.1: Profile cache database (7-day TTL)
+    profile_manager.c  # Phase 10.1: Smart profile fetching (cache + DHT)
     wallet.c           # Phase 8: Cellframe wallet integration
     cellframe_rpc.c    # Phase 8: Cellframe RPC client
     cellframe_addr.c   # Phase 8: Cellframe address utilities
@@ -433,7 +436,32 @@ if(BUILD_TESTS)
         ${OPENDHT_INCLUDE_DIRS}
     )
 
-    message(STATUS "Building unit tests: test_dna_profile, test_simple")
+    # DHT Identity Backup Test
+    add_executable(test_identity_backup
+        test_identity_backup.c
+    )
+
+    target_link_libraries(test_identity_backup
+        dna_lib        # Main DNA library with platform and AES functions
+        dht_lib        # DHT library (first time - for dna_lib dependencies)
+        p2p_transport  # P2P transport layer
+        dht_lib        # DHT library (second time - for circular deps)
+        kem            # Kyber1024 KEM
+        dsa            # Dilithium5 DSA
+        stdc++         # C++ standard library (required by OpenDHT)
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+        ${OPENSSL_LIBRARIES}
+        m              # Math library (Linux)
+        pthread        # POSIX threads (Linux)
+    )
+
+    target_include_directories(test_identity_backup PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${OPENDHT_INCLUDE_DIRS}
+    )
+
+    message(STATUS "Building unit tests: test_dna_profile, test_simple, test_identity_backup")
 endif()
 
 # ImGui GUI (Phase 11: Modern GUI)

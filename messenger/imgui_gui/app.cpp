@@ -31,6 +31,7 @@ extern "C" {
     #include "../qgp_types.h"  // For qgp_key_load, qgp_key_free
     #include "../qgp_platform.h"  // For qgp_platform_home_dir
     #include "../contacts_db.h"  // For contacts_db_add, contacts_db_exists
+    #include "../profile_manager.h"  // For profile caching and fetching
     #include "../wallet.h"  // For wallet functions
     #include "../cellframe_rpc.h"  // For RPC calls
     #include "../cellframe_tx_builder_minimal.h"  // Transaction builder
@@ -1214,7 +1215,20 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
             return;
         }
         printf("[Identity] Messenger context initialized for: %s\n", identity.c_str());
-        
+
+        // Load DHT identity and reinitialize DHT with permanent identity
+        if (ctx->fingerprint) {
+            printf("[Identity] Loading DHT identity...\n");
+            if (messenger_load_dht_identity(ctx->fingerprint) == 0) {
+                printf("[Identity] ✓ DHT identity loaded successfully\n");
+            } else {
+                printf("[Identity] Warning: Failed to load DHT identity (DHT operations may accumulate values)\n");
+                // Non-fatal - continue without permanent DHT identity
+            }
+        } else {
+            printf("[Identity] Warning: No fingerprint available, skipping DHT identity loading\n");
+        }
+
         // Initialize P2P transport for DHT and messaging
         if (messenger_p2p_init(ctx) != 0) {
             printf("[Identity] ERROR: Failed to initialize P2P transport\n");
@@ -1230,6 +1244,17 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
             printf("[Identity] ✓ Presence registered successfully\n");
         } else {
             printf("[Identity] Warning: Failed to register presence\n");
+        }
+
+        // Initialize profile manager for profile caching
+        dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+        if (dht_ctx) {
+            printf("[Identity] Initializing profile manager...\n");
+            if (profile_manager_init(dht_ctx, ctx->fingerprint) == 0) {
+                printf("[Identity] ✓ Profile manager initialized\n");
+            } else {
+                printf("[Identity] Warning: Failed to initialize profile manager\n");
+            }
         }
     }
 
@@ -1316,6 +1341,15 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
         printf("[Contacts] Publishing local contacts to DHT...\n");
         messenger_sync_contacts_to_dht(ctx);
         printf("[Contacts] ✓ Local contacts published to DHT\n");
+
+        // Third: Refresh expired profiles in background (7-day TTL)
+        printf("[Profiles] Refreshing expired profiles from DHT...\n");
+        int refreshed = profile_manager_refresh_all_expired();
+        if (refreshed > 0) {
+            printf("[Profiles] ✓ Refreshed %d expired profiles\n", refreshed);
+        } else if (refreshed == 0) {
+            printf("[Profiles] No expired profiles to refresh\n");
+        }
     });
 
     // Preload messages for all contacts (improves UX - instant switching)
@@ -1818,10 +1852,22 @@ void DNAMessengerApp::renderAddContactDialog() {
             // Auto-publish contacts to DHT (async, non-blocking)
             messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
             if (ctx) {
-                dht_publish_task.start([ctx](AsyncTask* task) {
+                dht_publish_task.start([ctx, fingerprint](AsyncTask* task) {
                     printf("[AddContact] Publishing contacts to DHT...\n");
                     messenger_sync_contacts_to_dht(ctx);
                     printf("[AddContact] ✓ Published to DHT\n");
+
+                    // Fetch profile for new contact (cache for future use)
+                    printf("[AddContact] Fetching profile for new contact...\n");
+                    dht_profile_t profile;
+                    int result = profile_manager_get_profile(fingerprint, &profile);
+                    if (result == 0) {
+                        printf("[AddContact] ✓ Profile cached: %s\n", profile.display_name);
+                    } else if (result == -2) {
+                        printf("[AddContact] No profile found in DHT (user hasn't published yet)\n");
+                    } else {
+                        printf("[AddContact] Warning: Failed to fetch profile\n");
+                    }
                 });
             }
 

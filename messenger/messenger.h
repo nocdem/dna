@@ -96,6 +96,17 @@ messenger_context_t* messenger_init(const char *identity);
  */
 void messenger_free(messenger_context_t *ctx);
 
+/**
+ * Load DHT identity and reinitialize DHT singleton with permanent identity
+ *
+ * This function loads the user's permanent DHT identity (RSA-2048) from
+ * encrypted backup (local file or DHT) and reinitializes the DHT singleton.
+ *
+ * @param fingerprint: User's fingerprint (128 hex chars)
+ * @return: 0 on success, -1 on error (non-fatal)
+ */
+int messenger_load_dht_identity(const char *fingerprint);
+
 // ============================================================================
 // KEY GENERATION
 // ============================================================================
