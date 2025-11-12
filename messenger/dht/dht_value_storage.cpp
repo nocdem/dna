@@ -537,6 +537,22 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
         uint8_t key_bytes[256];
         size_t key_len = hex_to_bytes(key_hex, key_bytes, sizeof(key_bytes));
 
+        // CRITICAL: Detect old format (infohash) and skip to prevent double-hashing
+        // Old format: 40-char hex (20-byte infohash) - stored before 2025-11-12 fix
+        // New format: 128-char hex (64-byte SHA3-512 original key)
+        size_t hex_len = strlen(key_hex);
+        if (hex_len == 40) {
+            // Old infohash format detected - DO NOT republish (would hash again → wrong key)
+            std::cout << "[Storage] Skipping old-format entry (40-char infohash) - prevents double-hash bug" << std::endl;
+            free(value_copy);
+            continue;  // Skip this value
+        } else if (hex_len < 64) {
+            // Unknown short format - skip for safety
+            std::cerr << "[Storage] Skipping unknown format entry (hex_len=" << hex_len << ")" << std::endl;
+            free(value_copy);
+            continue;
+        }
+
         // Calculate TTL
         unsigned int ttl_seconds = UINT_MAX;  // Default: permanent
         if (expires_at > 0) {
@@ -550,7 +566,7 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
             }
         }
 
-        // Republish to DHT
+        // Republish to DHT (only new format 64+ byte keys reach here)
         int put_result = dht_put_ttl(ctx, key_bytes, key_len, value_copy, value_len, ttl_seconds);
 
         free(value_copy);

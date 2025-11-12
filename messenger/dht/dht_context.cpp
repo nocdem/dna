@@ -543,13 +543,12 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
                 expires_at = time(NULL) + ttl_seconds;
             }
 
-            // Convert InfoHash to bytes
-            std::string hash_str = hash.toString();
-            const uint8_t *hash_bytes = (const uint8_t*)hash_str.data();
-
+            // CRITICAL FIX (2025-11-12): Store ORIGINAL key, not derived infohash
+            // This prevents double-hashing bug on republish after bootstrap restart
+            // Old bug: stored infohash → republish hashed infohash → wrong DHT key
             dht_value_metadata_t metadata;
-            metadata.key_hash = hash_bytes;
-            metadata.key_hash_len = hash_str.size();
+            metadata.key_hash = key;           // Original 64-byte SHA3-512 input
+            metadata.key_hash_len = key_len;   // 64 bytes (not 40-char hex infohash)
             metadata.value_data = value;
             metadata.value_data_len = value_len;
             metadata.value_type = dht_value->type;
@@ -558,7 +557,7 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
 
             if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
                 if (dht_value_storage_should_persist(metadata.value_type, metadata.expires_at)) {
-                    std::cout << "[Storage] ✓ Value persisted to disk" << std::endl;
+                    std::cout << "[Storage] ✓ Value persisted to disk (key: " << key_len << " bytes)" << std::endl;
                 }
             }
         }
@@ -669,13 +668,12 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
                 expires_at = time(NULL) + ttl_seconds;
             }
 
-            // Convert InfoHash to bytes
-            std::string hash_str = hash.toString();
-            const uint8_t *hash_bytes = (const uint8_t*)hash_str.data();
-
+            // CRITICAL FIX (2025-11-12): Store ORIGINAL key, not derived infohash
+            // This prevents double-hashing bug on republish after bootstrap restart
+            // Old bug: stored infohash → republish hashed infohash → wrong DHT key
             dht_value_metadata_t metadata;
-            metadata.key_hash = hash_bytes;
-            metadata.key_hash_len = hash_str.size();
+            metadata.key_hash = key;           // Original 64-byte SHA3-512 input
+            metadata.key_hash_len = key_len;   // 64 bytes (not 40-char hex infohash)
             metadata.value_data = value;
             metadata.value_data_len = value_len;
             metadata.value_type = dht_value->type;
@@ -684,7 +682,7 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
 
             if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
                 if (dht_value_storage_should_persist(metadata.value_type, metadata.expires_at)) {
-                    std::cout << "[Storage] ✓ Value persisted to disk" << std::endl;
+                    std::cout << "[Storage] ✓ Value persisted to disk (key: " << key_len << " bytes)" << std::endl;
                 }
             }
         }
