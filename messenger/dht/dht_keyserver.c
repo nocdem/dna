@@ -414,15 +414,15 @@ int dht_keyserver_publish(
     char dht_key[129];
     compute_dht_key_by_fingerprint(fingerprint, dht_key);
 
-    // Store in DHT (permanent, no expiry)
+    // Store in DHT (permanent, signed with fixed value_id=1 to prevent accumulation)
     printf("[DHT_KEYSERVER] Publishing keys for fingerprint '%s' to DHT\n", fingerprint);
     if (display_name && strlen(display_name) > 0) {
         printf("[DHT_KEYSERVER] Display name: %s\n", display_name);
     }
     printf("[DHT_KEYSERVER] DHT key: %s\n", dht_key);
 
-    int ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                                (uint8_t*)json, strlen(json));
+    int ret = dht_put_signed_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                        (uint8_t*)json, strlen(json), 1);
 
     free(json);
 
@@ -1075,12 +1075,12 @@ int dht_keyserver_update(
     char dht_key[129];
     compute_dht_key_by_fingerprint(entry.fingerprint, dht_key);
 
-    // Store in DHT (overwrites old entry)
+    // Store in DHT (signed with fixed value_id=1 to replace old entry)
     printf("[DHT_KEYSERVER] Updating keys for fingerprint: %s\n", entry.fingerprint);
     printf("[DHT_KEYSERVER] New version: %u\n", new_version);
 
-    ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                            (uint8_t*)json, strlen(json));
+    ret = dht_put_signed_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                    (uint8_t*)json, strlen(json), 1);
 
     free(json);
 
