@@ -1442,9 +1442,9 @@ int dna_update_profile(
     printf("[DNA] Updating profile for fingerprint %.16s...\n", fingerprint);
     printf("[DNA] DHT key: %.32s...\n", dht_key);
 
-    // Store in DHT (permanent storage)
-    ret = dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                            (uint8_t*)json, strlen(json));
+    // Store in DHT (permanent storage, signed with fixed value_id=1 to prevent accumulation)
+    ret = dht_put_signed_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                                    (uint8_t*)json, strlen(json), 1);
 
     if (ret != 0) {
         fprintf(stderr, "[DNA] Failed to store in DHT\n");
