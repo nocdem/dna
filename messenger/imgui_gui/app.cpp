@@ -109,11 +109,60 @@ extern AppSettings g_app_settings;
 void DNAMessengerApp::render() {
     ImGuiIO& io = ImGui::GetIO();
 
-    // First frame initialization (removed unnecessary loading spinner)
+    // First frame initialization
     if (state.is_first_frame) {
         state.is_first_frame = false;
     }
 
+    // Handle post-login events (new messages, contact sync)
+    handlePostLoginEvents();
+
+    // Process pending DHT registration (identity created before DHT was ready)
+    processPendingRegistration();
+
+    // Show identity selection on first run (but not during spinner operations)
+    if (state.show_identity_selection && !state.show_operation_spinner) {
+        renderIdentitySelection();
+    } else if (!state.show_operation_spinner) {
+        // Main window only shows when identity is selected
+        // Detect screen size for responsive layout
+        bool is_mobile = io.DisplaySize.x < 600.0f;
+
+        // Main window (fullscreen)
+        ImGui::SetNextWindowPos(ImVec2(0, 0));
+        ImGui::SetNextWindowSize(io.DisplaySize);
+
+        // Add global padding
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
+
+        ImGui::Begin("DNA Messenger", nullptr,
+            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoScrollbar);
+
+        // Mobile: Full-screen views with bottom navigation
+        // Desktop: Side-by-side layout
+        if (is_mobile) {
+            LayoutManager::renderMobileLayout(state, [this]() { renderChatView(); });
+        } else {
+            LayoutManager::renderDesktopLayout(state,
+                [this](int contact_idx) { DataLoader::loadMessagesForContact(state, contact_idx); },
+                [this]() { renderChatView(); });
+        }
+
+        ImGui::End();
+        ImGui::PopStyleVar(); // Pop WindowPadding
+    }
+
+    // Render operation spinner overlay (must be after all windows/modals)
+    renderOperationSpinner();
+
+    // Render all dialogs
+    renderDialogs();
+}
+
+
+void DNAMessengerApp::handlePostLoginEvents() {
     // Model E: No continuous polling - offline messages checked once on login
     if (state.identity_loaded) {
         // Reload current conversation if new messages arrived
@@ -129,7 +178,10 @@ void DNAMessengerApp::render() {
             state.contacts_synced_from_dht = false;
         }
     }
+}
 
+
+void DNAMessengerApp::processPendingRegistration() {
     // Process pending DHT registration (identity created before DHT was ready)
     if (!state.pending_registration_fingerprint.empty()) {
         dht_context_t *dht_ctx = dht_singleton_get();
@@ -187,64 +239,34 @@ void DNAMessengerApp::render() {
             state.pending_registration_name.clear();
         }
     }
+}
 
-    // Show identity selection on first run (but not during spinner operations)
-    if (state.show_identity_selection && !state.show_operation_spinner) {
-        renderIdentitySelection();
-    } else if (!state.show_operation_spinner) {
-        // Main window only shows when identity is selected
-        // Detect screen size for responsive layout
-        bool is_mobile = io.DisplaySize.x < 600.0f;
 
-        // Main window (fullscreen)
-        ImGui::SetNextWindowPos(ImVec2(0, 0));
-        ImGui::SetNextWindowSize(io.DisplaySize);
-
-        // Add global padding
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
-
-        ImGui::Begin("DNA Messenger", nullptr,
-            ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-            ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
-            ImGuiWindowFlags_NoScrollbar);
-
-        // Mobile: Full-screen views with bottom navigation
-        // Desktop: Side-by-side layout
-        if (is_mobile) {
-            LayoutManager::renderMobileLayout(state, [this]() { renderChatView(); });
-        } else {
-            LayoutManager::renderDesktopLayout(state,
-                [this](int contact_idx) { DataLoader::loadMessagesForContact(state, contact_idx); },
-                [this]() { renderChatView(); });
-        }
-
-        ImGui::End();
-        ImGui::PopStyleVar(); // Pop WindowPadding
-    }
-    
+void DNAMessengerApp::renderOperationSpinner() {
     // Render operation spinner overlay (for async DHT operations)
     // This must be AFTER all other windows/modals so it's on top
     if (state.show_operation_spinner) {
+        ImGuiIO& io = ImGui::GetIO();
         ImGui::SetNextWindowPos(ImVec2(0, 0));
         ImGui::SetNextWindowSize(io.DisplaySize);
-        
+
         // Use themed background
         ImVec4 bg_color = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
         bg_color.w = 0.95f; // Slightly transparent
         ImGui::PushStyleColor(ImGuiCol_WindowBg, bg_color);
-        
+
         ImGui::Begin("##operation_spinner", nullptr,
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
             ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoCollapse |
             ImGuiWindowFlags_NoInputs);
-        
+
         // Center spinner
         float spinner_size = 40.0f;
         ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
         ImGui::SetCursorPos(ImVec2(center.x - spinner_size, center.y - spinner_size * 2));
         ThemedSpinner("##op_spinner", spinner_size, 6.0f);
-        
+
         // Show latest message from async task
         auto messages = state.dht_publish_task.getMessages();
         if (!messages.empty()) {
@@ -258,17 +280,20 @@ void DNAMessengerApp::render() {
             ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_size));
             ImGui::Text("%s", state.operation_spinner_message);
         }
-        
+
         ImGui::End();
         ImGui::PopStyleColor();
-        
+
         // Check if async task completed
         if (state.dht_publish_task.isCompleted() && !state.dht_publish_task.isRunning()) {
             state.show_operation_spinner = false;
             // Identity selection is already hidden when Create button was clicked
         }
     }
+}
 
+
+void DNAMessengerApp::renderDialogs() {
     // Add Contact dialog
     if (state.show_add_contact_dialog) {
         ImGui::OpenPopup("Add Contact");

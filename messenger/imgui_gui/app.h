@@ -49,6 +49,12 @@ private:
     // Message management
     void retryMessage(int contact_idx, int msg_idx);
 
+    // Render loop helpers
+    void handlePostLoginEvents();
+    void processPendingRegistration();
+    void renderOperationSpinner();
+    void renderDialogs();
+
     // UI Components (no public layout managers - extracted to LayoutManager namespace)
 
     // Main views
