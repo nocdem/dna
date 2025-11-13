@@ -240,7 +240,7 @@ void DNAMessengerApp::render() {
         ThemedSpinner("##op_spinner", spinner_size, 6.0f);
         
         // Show latest message from async task
-        auto messages = dht_publish_task.getMessages();
+        auto messages = state.dht_publish_task.getMessages();
         if (!messages.empty()) {
             const char* msg = messages.back().c_str();
             ImVec2 text_size = ImGui::CalcTextSize(msg);
@@ -257,7 +257,7 @@ void DNAMessengerApp::render() {
         ImGui::PopStyleColor();
         
         // Check if async task completed
-        if (dht_publish_task.isCompleted() && !dht_publish_task.isRunning()) {
+        if (state.dht_publish_task.isCompleted() && !state.dht_publish_task.isRunning()) {
             state.show_operation_spinner = false;
             // Identity selection is already hidden when Create button was clicked
         }
@@ -325,10 +325,10 @@ void DNAMessengerApp::renderIdentitySelection() {
     ImGui::Spacing();
 
     // Load identities on first render (async)
-    if (!state.identities_scanned && !identity_scan_task.isRunning()) {
+    if (!state.identities_scanned && !state.identity_scan_task.isRunning()) {
         DNAMessengerApp* app = this;
         
-        identity_scan_task.start([app](AsyncTask* task) {
+        state.identity_scan_task.start([app](AsyncTask* task) {
             // Scan for identity files
             app->scanIdentities();
             
@@ -396,7 +396,7 @@ void DNAMessengerApp::renderIdentitySelection() {
     ImGui::BeginChild("IdentityList", ImVec2(0, is_mobile ? -180 : -140), true);
 
     // Show spinner while scanning
-    if (identity_scan_task.isRunning()) {
+    if (state.identity_scan_task.isRunning()) {
         float spinner_radius = 30.0f;
         float window_width = ImGui::GetWindowWidth();
         float window_height = ImGui::GetWindowHeight();
@@ -851,7 +851,7 @@ void DNAMessengerApp::renderCreateIdentityStep2() {
         std::string mnemonic_copy = std::string(state.generated_mnemonic);
 
         // Start async identity creation task
-        dht_publish_task.start([this, mnemonic_copy](AsyncTask* task) {
+        state.dht_publish_task.start([this, mnemonic_copy](AsyncTask* task) {
             task->addMessage("Generating cryptographic keys...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
@@ -1038,7 +1038,7 @@ void DNAMessengerApp::renderRestoreStep2_Seed() {
         // Copy mnemonic to heap for async task
         std::string mnemonic_copy = std::string(state.generated_mnemonic);
 
-        dht_publish_task.start([this, mnemonic_copy](AsyncTask* task) {
+        state.dht_publish_task.start([this, mnemonic_copy](AsyncTask* task) {
             task->addMessage("Validating seed phrase...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
@@ -1332,7 +1332,7 @@ void DNAMessengerApp::loadIdentity(const std::string& identity) {
     DNAMessengerApp* app = this;
     state.contacts_synced_from_dht = false;
     
-    contact_sync_task.start([app, ctx](AsyncTask* task) {
+    state.contact_sync_task.start([app, ctx](AsyncTask* task) {
         printf("[Contacts] Syncing from DHT...\n");
         
         // First: Fetch contacts from DHT (merge with local)
@@ -1429,7 +1429,7 @@ void DNAMessengerApp::loadMessagesForContact(int contact_index) {
         return;
     }
     
-    if (message_load_task.isRunning()) {
+    if (state.message_load_task.isRunning()) {
         return; // Already loading
     }
 
@@ -1454,7 +1454,7 @@ void DNAMessengerApp::loadMessagesForContact(int contact_index) {
     DNAMessengerApp* app = this;
 
     // Load messages asynchronously
-    message_load_task.start([app, ctx, contact_index, contact_address, contact_name, current_identity](AsyncTask* task) {
+    state.message_load_task.start([app, ctx, contact_index, contact_address, contact_name, current_identity](AsyncTask* task) {
         printf("[Messages] Loading messages for contact: %s (%s)\n",
                contact_name.c_str(), contact_address.c_str());
 
@@ -1559,7 +1559,7 @@ void DNAMessengerApp::checkForNewMessages() {
     }
 
     // Don't start a new poll if one is already running
-    if (message_poll_task.isRunning()) {
+    if (state.message_poll_task.isRunning()) {
         return;
     }
 
@@ -1567,7 +1567,7 @@ void DNAMessengerApp::checkForNewMessages() {
     DNAMessengerApp* app = this;
 
     // Start async poll task
-    message_poll_task.start([app, ctx](AsyncTask* task) {
+    state.message_poll_task.start([app, ctx](AsyncTask* task) {
         size_t messages_received = 0;
 
         // 1. Refresh our presence in DHT (announce we're online)
@@ -1597,7 +1597,7 @@ void DNAMessengerApp::retryMessage(int contact_idx, int msg_idx) {
     }
 
     // Check queue limit before retrying
-    if (message_send_queue.size() >= 20) {
+    if (state.message_send_queue.size() >= 20) {
         printf("[Retry] ERROR: Queue full, cannot retry\n");
         return;
     }
@@ -1638,7 +1638,7 @@ void DNAMessengerApp::retryMessage(int contact_idx, int msg_idx) {
     printf("[Retry] Retrying message to %s...\n", recipient.c_str());
 
     // Enqueue retry task
-    message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
+    state.message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
         const char* recipients[] = { recipient.c_str() };
         int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
 
@@ -1727,7 +1727,7 @@ void DNAMessengerApp::renderAddContactDialog() {
         std::string current_identity = state.current_identity;
         messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
 
-        contact_lookup_task.start([this, input_copy, current_identity, ctx](AsyncTask* task) {
+        state.contact_lookup_task.start([this, input_copy, current_identity, ctx](AsyncTask* task) {
             task->addMessage("Looking up contact in DHT...");
 
             // Check if contact already exists
@@ -1859,7 +1859,7 @@ void DNAMessengerApp::renderAddContactDialog() {
             // Auto-publish contacts to DHT (async, non-blocking)
             messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
             if (ctx) {
-                dht_publish_task.start([ctx, fingerprint](AsyncTask* task) {
+                state.dht_publish_task.start([ctx, fingerprint](AsyncTask* task) {
                     printf("[AddContact] Publishing contacts to DHT...\n");
                     messenger_sync_contacts_to_dht(ctx);
                     printf("[AddContact] ✓ Published to DHT\n");
@@ -2359,7 +2359,7 @@ void DNAMessengerApp::renderChatView() {
     ImGui::BeginChild("MessageArea", ImVec2(0, -input_height), true);
 
     // Show spinner while loading messages for the first time
-    if (message_load_task.isRunning()) {
+    if (state.message_load_task.isRunning()) {
         float spinner_radius = 30.0f;
         float window_width = ImGui::GetWindowWidth();
         float window_height = ImGui::GetWindowHeight();
@@ -2590,7 +2590,7 @@ void DNAMessengerApp::renderChatView() {
         if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
             if (strlen(state.message_input) > 0 && state.selected_contact >= 0) {
                 // Check queue limit
-                if (message_send_queue.size() >= 20) {
+                if (state.message_send_queue.size() >= 20) {
                     ImGui::OpenPopup("Queue Full");
                 } else {
                     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
@@ -2623,7 +2623,7 @@ void DNAMessengerApp::renderChatView() {
                         state.should_scroll_to_bottom = true;  // Force scroll to bottom after sending
 
                         // Enqueue message send task
-                        message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
+                        state.message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
                             const char* recipients[] = { recipient.c_str() };
                             int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
 
@@ -2839,7 +2839,7 @@ void DNAMessengerApp::renderChatView() {
         if (icon_clicked || enter_pressed) {
             if (strlen(state.message_input) > 0 && state.selected_contact >= 0) {
                 // Check queue limit
-                if (message_send_queue.size() >= 20) {
+                if (state.message_send_queue.size() >= 20) {
                     ImGui::OpenPopup("Queue Full");
                 } else {
                     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
@@ -2872,7 +2872,7 @@ void DNAMessengerApp::renderChatView() {
                         state.should_scroll_to_bottom = true;  // Force scroll to bottom after sending
 
                         // Enqueue message send task
-                        message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
+                        state.message_send_queue.enqueue([app, ctx, message_copy, recipient, contact_idx, msg_idx]() {
                             const char* recipients[] = { recipient.c_str() };
                             int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
 

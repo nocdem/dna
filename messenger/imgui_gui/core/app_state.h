@@ -3,6 +3,8 @@
 
 #include "data_types.h"
 #include "imgui.h"
+#include "../async_task.h"
+#include "../async_task_queue.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -179,6 +181,15 @@ public:
     bool register_name_available;
     bool register_name_checking;
     std::string register_name_status;
+
+    // Async tasks for DHT operations
+    AsyncTask dht_publish_task;
+    AsyncTask contact_lookup_task;
+    AsyncTask contact_sync_task;
+    AsyncTask message_poll_task;
+    AsyncTaskQueue message_send_queue;  // Queue for sending multiple messages rapidly
+    AsyncTask message_load_task;
+    AsyncTask identity_scan_task;
 
     // Messenger backend context (opaque pointer, defined in messenger.h)
     void *messenger_ctx;

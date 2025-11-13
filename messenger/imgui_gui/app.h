@@ -6,8 +6,6 @@
 #include "ui_helpers.h"
 #include "font_awesome.h"
 #include "modal_helper.h"
-#include "async_task.h"
-#include "async_task_queue.h"
 #include "core/app_state.h"
 #include <algorithm>
 #include <cmath>
@@ -31,15 +29,6 @@ public:
 private:
     // Centralized application state
     AppState state;
-
-    // Async tasks for DHT operations
-    AsyncTask dht_publish_task;
-    AsyncTask contact_lookup_task;
-    AsyncTask contact_sync_task;
-    AsyncTask message_poll_task;
-    AsyncTaskQueue message_send_queue;  // Queue for sending multiple messages rapidly
-    AsyncTask message_load_task;
-    AsyncTask identity_scan_task;
 
     // Identity selection and management
     void renderIdentitySelection();
