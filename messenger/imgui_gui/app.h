@@ -83,12 +83,8 @@ private:
 
     // Main views
     void renderChatView();
-    void renderWalletView();
 
     // Wallet functions
-    void loadWallet();
-    void refreshBalances();
-    std::string formatBalance(const std::string& coins);
     void renderSendDialog();
     void buildAndSendTransaction();
 };
