@@ -44,6 +44,7 @@ add_executable(dna_messenger_imgui
     screens/wallet_transaction_history_dialog.cpp
     screens/wallet_screen.cpp
     screens/add_contact_dialog.cpp
+    screens/chat_screen.cpp
     screens/contacts_sidebar.cpp
     screens/layout_manager.cpp
     ${IMGUI_SOURCES}

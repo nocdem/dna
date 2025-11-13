@@ -46,19 +46,11 @@ private:
     // Identity helper (was static, now regular method)
     static int IdentityNameInputFilter(ImGuiInputTextCallbackData* data);
 
-    // Message management
-    void retryMessage(int contact_idx, int msg_idx);
-
     // Render loop helpers
     void handlePostLoginEvents();
     void processPendingRegistration();
     void renderOperationSpinner();
     void renderDialogs();
-
-    // UI Components (no public layout managers - extracted to LayoutManager namespace)
-
-    // Main views
-    void renderChatView();
 };
 
 #endif // APP_H

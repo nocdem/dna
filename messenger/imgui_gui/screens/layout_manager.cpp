@@ -1,5 +1,6 @@
 #include "layout_manager.h"
 #include "contacts_sidebar.h"
+#include "chat_screen.h"
 #include "wallet_screen.h"
 #include "settings_screen.h"
 #include "../ui_helpers.h"
@@ -8,7 +9,7 @@
 
 namespace LayoutManager {
 
-void renderMobileLayout(AppState& state, std::function<void()> render_chat_view) {
+void renderMobileLayout(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
     float screen_height = io.DisplaySize.y;
     float bottom_nav_height = 60.0f;
@@ -31,7 +32,7 @@ void renderMobileLayout(AppState& state, std::function<void()> render_chat_view)
             ContactsSidebar::renderContactsList(state);
             break;
         case VIEW_CHAT:
-            render_chat_view();
+            ChatScreen::render(state);
             break;
         case VIEW_WALLET:
             WalletScreen::render(state);
@@ -49,8 +50,7 @@ void renderMobileLayout(AppState& state, std::function<void()> render_chat_view)
 
 
 void renderDesktopLayout(AppState& state,
-                         std::function<void(int)> load_messages_callback,
-                         std::function<void()> render_chat_view) {
+                         std::function<void(int)> load_messages_callback) {
     // Sidebar (state.contacts + navigation)
     ContactsSidebar::renderSidebar(state, load_messages_callback);
 
@@ -62,7 +62,7 @@ void renderDesktopLayout(AppState& state,
     switch(state.current_view) {
         case VIEW_CONTACTS:
         case VIEW_CHAT:
-            render_chat_view();
+            ChatScreen::render(state);
             break;
         case VIEW_WALLET:
             WalletScreen::render(state);
