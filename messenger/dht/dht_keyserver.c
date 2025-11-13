@@ -525,8 +525,8 @@ int dht_keyserver_publish(
             printf("[DHT_KEYSERVER] Reverse key: %s\n", reverse_dht_key);
 
             unsigned int ttl_365_days = 365 * 24 * 3600;
-            ret = dht_put_ttl(dht_ctx, (uint8_t*)reverse_dht_key, strlen(reverse_dht_key),
-                              (uint8_t*)reverse_json, strlen(reverse_json), ttl_365_days);
+            ret = dht_put_signed(dht_ctx, (uint8_t*)reverse_dht_key, strlen(reverse_dht_key),
+                                 (uint8_t*)reverse_json, strlen(reverse_json), 1, ttl_365_days);
 
             free(reverse_json);
 
@@ -570,14 +570,14 @@ int dht_keyserver_publish_alias(
     char alias_key[129];
     compute_dht_key_by_name(name, alias_key);
 
-    // Store fingerprint as plain text (simple mapping)
+    // Store fingerprint as plain text (signed with fixed value_id=1 to prevent accumulation)
     // Use 365-day TTL for name registrations (persistent identity)
     printf("[DHT_KEYSERVER] Publishing alias: '%s' → %s\n", name, fingerprint);
     printf("[DHT_KEYSERVER] Alias DHT key: %s\n", alias_key);
 
     unsigned int ttl_365_days = 365 * 24 * 3600;  // 365 days in seconds
-    int ret = dht_put_ttl(dht_ctx, (uint8_t*)alias_key, strlen(alias_key),
-                          (uint8_t*)fingerprint, 128, ttl_365_days);
+    int ret = dht_put_signed(dht_ctx, (uint8_t*)alias_key, strlen(alias_key),
+                             (uint8_t*)fingerprint, 128, 1, ttl_365_days);
 
     if (ret != 0) {
         fprintf(stderr, "[DHT_KEYSERVER] Failed to publish alias\n");
@@ -1269,8 +1269,8 @@ int dna_register_name(
     dht_key[128] = '\0';
 
     unsigned int ttl_365_days = 365 * 24 * 3600;
-    ret = dht_put_ttl(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                      (uint8_t*)fingerprint, 128, ttl_365_days);  // Store fingerprint (128 hex chars)
+    ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                         (uint8_t*)fingerprint, 128, 1, ttl_365_days);  // Store fingerprint (128 hex chars, signed)
 
     if (ret != 0) {
         fprintf(stderr, "[DNA] Failed to store name mapping in DHT\n");
