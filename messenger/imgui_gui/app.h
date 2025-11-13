@@ -55,9 +55,6 @@ private:
     // Message polling
     void checkForNewMessages();
 
-    // Contact management
-    void renderAddContactDialog();
-
     // Message management
     void retryMessage(int contact_idx, int msg_idx);
 
