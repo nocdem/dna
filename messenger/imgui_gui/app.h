@@ -64,8 +64,6 @@ private:
 
     // UI Components
     void renderBottomNavBar();
-    void renderContactsList();
-    void renderSidebar();
 
     // Main views
     void renderChatView();
