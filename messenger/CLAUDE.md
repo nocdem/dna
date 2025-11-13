@@ -182,36 +182,15 @@ DNA Messenger underwent comprehensive modularization to improve maintainability,
 
 ### Module Categories
 
-**1. DHT Keyserver Modules** (`dht/keyserver/` - 6 modules)
-- **Before:** Single 1,967-line `dht_keyserver.c` with all DHT operations
-- **After:** 6 focused modules (publish, lookup, names, profiles, addresses, helpers)
-- **Pattern:** C modules with shared `keyserver_core.h` header
-- **Integration:** All modules use DHT context via `dht_context_get()`
+All modularizations created focused, single-responsibility modules from monolithic files:
 
-**2. P2P Transport Modules** (`p2p/transport/` - 4 modules)
-- **Before:** Single 992-line `p2p_transport.c` with all P2P logic
-- **After:** 4 focused modules (tcp, discovery, offline, helpers)
-- **Pattern:** C modules with shared `transport_core.h` header
-- **Integration:** High-level `p2p_transport.*` facade (165 LOC)
+1. **DHT Keyserver** → 6 modules (keyserver/): publish, lookup, names, profiles, addresses, helpers
+2. **P2P Transport** → 4 modules (transport/): tcp, discovery, offline, helpers
+3. **Messenger Core** → 7 modules (messenger/): identity, init, status, keys, contacts, keygen, messages
+4. **ImGui GUI** → 17 modules (screens/ + helpers/): 16 screens + data loader
+5. **Directory Org** → 5 subdirs: crypto/utils/ (24), crypto/bip39/ (5), blockchain/ (13), database/ (10), legacy-tools/ (9)
 
-**3. Messenger Core Modules** (`messenger/` - 7 modules)
-- **Before:** Single 3,703-line `messenger.c` with all messenger operations
-- **After:** 7 focused modules (identity, init, status, keys, contacts, keygen, messages)
-- **Pattern:** C API with `messenger_context_t` first parameter
-- **Integration:** High-level `messenger.c` facade (473 LOC)
-
-**4. ImGui Screen Modules** (`imgui_gui/screens/` + `helpers/` - 17 modules)
-- **Before:** Single 4,424-line `app.cpp` with all UI logic
-- **After:** 16 screen modules + 1 helper module
-- **Pattern:** C++ namespaces with `AppState&` parameter
-- **Integration:** Main `app.cpp` (324 LOC) calls `Screen::render(state)`
-
-**5. Directory Organization** (5 subdirectories)
-- **crypto/utils/** (24 files) - Crypto utilities and wrappers
-- **crypto/bip39/** (5 files) - BIP39 mnemonic implementation
-- **blockchain/** (13 files) - Wallet, RPC, TX builder (renamed from cellframe)
-- **database/** (10 files) - SQLite storage (contacts, keyserver, profiles)
-- **legacy-tools/** (9 files) - CLI utilities (keygen, sign, verify, encrypt, decrypt)
+*See detailed breakdown in sections below.*
 
 ### Common Patterns Across All Modules
 
