@@ -3,6 +3,7 @@
 **Last Updated:** 2025-11-13 | **Phase:** 10 (DNA Board Alpha) | **Complete:** 4, 8, 9.1-9.6, 10.1
 
 **Recent Updates (2025-11-13):**
+- **ImGui GUI Modularization COMPLETE:** Extracted 4,100+ LOC from monolithic `app.cpp` into 16 focused screen modules (screens/ and helpers/ directories)
 - **Phase 9.6 COMPLETE:** Encrypted DHT identity backup system (Kyber1024 + AES-256-GCM, BIP39 recovery, permanent DHT storage)
 - **Phase 10.1 COMPLETE:** Profile system with DHT storage + 7-day cache (dht_profile.c, profile_cache.c, profile_manager.c)
 - **Phase 10.2 IN PROGRESS:** Wall posts (censorship-resistant social media) - Alpha version (free, no validators)
@@ -51,10 +52,27 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 │   └── monitor-bootstrap.sh # Health monitoring
 ├── p2p/                     # P2P transport
 │   └── p2p_transport.*      # TCP + DHT
-├── imgui_gui/               # ImGui GUI (ACTIVE)
-│   ├── app.cpp              # Main UI
-│   ├── core/                # Data structures
-│   └── imgui/               # ImGui library
+├── imgui_gui/               # ImGui GUI (ACTIVE) - Modular architecture
+│   ├── app.cpp              # Main application (simplified to 324 LOC)
+│   ├── core/                # Core data structures
+│   │   └── app_state.*      # Centralized application state
+│   ├── screens/             # Screen modules (16 modules)
+│   │   ├── identity_selection_screen.*  # Identity wizard (849 LOC)
+│   │   ├── chat_screen.*                # Chat UI + emoji picker (690 LOC)
+│   │   ├── wallet_send_dialog.*         # TX building (509 LOC)
+│   │   ├── wallet_screen.*              # Wallet overview (282 LOC)
+│   │   ├── contacts_sidebar.*           # Contact list (291 LOC)
+│   │   ├── layout_manager.*             # Mobile/desktop layouts (260 LOC)
+│   │   ├── message_wall_screen.*        # Wall posts (324 LOC)
+│   │   ├── wallet_transaction_history_dialog.*  # TX history (304 LOC)
+│   │   ├── add_contact_dialog.*         # Add contact (232 LOC)
+│   │   ├── profile_editor_screen.*      # Profile editor (229 LOC)
+│   │   ├── register_name_screen.*       # DHT name registration (184 LOC)
+│   │   ├── settings_screen.*            # Settings (164 LOC)
+│   │   └── wallet_receive_dialog.*      # Receive UI (94 LOC)
+│   ├── helpers/             # Helper modules
+│   │   └── data_loader.*    # Async data loading (447 LOC)
+│   └── vendor/imgui/        # ImGui library
 ├── gui/                     # Qt5 GUI (DEPRECATED)
 ├── wallet.*                 # Cellframe wallet integration
 ├── cellframe_rpc.*          # RPC client
@@ -70,6 +88,69 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 
 ---
 
+## ImGui GUI Modular Architecture
+
+**Completed:** 2025-11-13 | **Total Reduction:** 4,100+ LOC from monolithic app.cpp
+
+### Module Pattern
+
+All screen modules follow a consistent namespace-based pattern:
+
+```cpp
+// screen_name.h
+#ifndef SCREEN_NAME_H
+#define SCREEN_NAME_H
+#include "../core/app_state.h"
+
+namespace ScreenName {
+    void render(AppState& state);
+    // Additional helper functions...
+}
+#endif
+```
+
+**Key principles:**
+- **Centralized state:** All UI state lives in `AppState` struct (no class members)
+- **Namespace modules:** Use C++ namespaces (not classes) for screen logic
+- **Stateless functions:** All functions accept `AppState&` as first parameter
+- **No circular dependencies:** Screens never include other screens
+- **Async tasks:** Use `state.task_queue` for background operations
+- **Theme-aware:** Use `g_app_settings.theme` with `DNATheme::` / `ClubTheme::` helpers
+
+### Module Categories
+
+**1. Screen Modules** (`imgui_gui/screens/`)
+- Identity Selection (849 LOC) - Multi-step wizard with async DHT lookups
+- Chat Screen (690 LOC) - Message UI with emoji picker and retry logic
+- Wallet Send Dialog (509 LOC) - TX builder with UTXO selection
+- Wallet Screen (282 LOC) - Token cards with RPC balance queries
+- Contacts Sidebar (291 LOC) - Contact list with add/sync controls
+- Layout Manager (260 LOC) - Mobile/desktop responsive layouts
+- Message Wall Screen (324 LOC) - Wall post viewing/posting
+- Transaction History Dialog (304 LOC) - Paginated TX history
+- Add Contact Dialog (232 LOC) - Contact adding with DHT validation
+- Profile Editor (229 LOC) - Profile editing with DHT sync
+- Register Name (184 LOC) - DHT name registration wizard
+- Settings Screen (164 LOC) - Theme and sync settings
+- Wallet Receive (94 LOC) - QR codes and address display
+
+**2. Helper Modules** (`imgui_gui/helpers/`)
+- Data Loader (447 LOC) - Async database loading with callbacks
+
+**3. Core** (`imgui_gui/core/`)
+- App State - Centralized state structure with all UI data
+
+### Adding New Screens
+
+1. Create `screens/new_screen.{h,cpp}` following namespace pattern
+2. Include `../core/app_state.h` and required UI helpers
+3. Add `render(AppState& state)` as primary entry point
+4. Use `AppState&` captures in lambdas (not `DNAMessengerApp*`)
+5. Add to `CMakeLists.txt` in `add_executable()` sources
+6. Call from `app.cpp` via `NewScreen::render(state)`
+
+---
+
 ## Development Guidelines
 
 | Area | Guidelines |
@@ -77,7 +158,7 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 | **Code Style** | C: K&R, 4-space • C++ ImGui: C++17, camelCase, STL • Qt: deprecated (reference) • Clear comments • Always free memory, check NULL |
 | **Cryptography** | **DO NOT modify primitives** without expert review • Use `dna_api.h` API • Memory-based ops only • Never log keys/plaintext |
 | **Database** | **SQLite only** (no PostgreSQL) • Messages: `~/.dna/messages.db` • Contacts: `~/.dna/<identity>_contacts.db` (per-identity, DHT sync, Kyber1024 self-encrypted, SHA3-512 keys, auto-migrated) • Profiles: `~/.dna/<identity>_profiles.db` (per-identity, 7d TTL, cache-first) • Groups: DHT + local cache (UUID v4, SHA256 keys, JSON) • Keyserver: `~/.dna/keyserver_cache.db` (7d TTL, BLOB) • Use prepared statements (`sqlite3_prepare_v2`, `sqlite3_bind_*`), check returns |
-| **GUI** | **ImGui (ACTIVE)**: Immediate mode, `AppState` struct, `task_queue` async, `apply_theme()`, cross-platform • **Qt5 (DEPRECATED)**: signals/slots, `ThemeManager::instance()`, reference only |
+| **GUI** | **ImGui (ACTIVE)**: Modular namespace-based screens (`screens/` + `helpers/`), centralized `AppState` struct, async tasks via `state.task_queue`, theme-aware colors, mobile-responsive • **Qt5 (DEPRECATED)**: signals/slots, reference only |
 | **Wallet** | Read from `~/.dna/` or system dir • Use `cellframe_rpc.h` API • Amounts as strings (preserve precision) • Smart decimals (8 for tiny, 2 normal) • Minimal TX builder (no JSON-C) |
 | **Cross-Platform** | Linux (primary) • Windows (MXE cross-compile) • CMake build • Avoid platform-specific code • Test both before commit |
 
