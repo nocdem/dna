@@ -96,12 +96,6 @@ private:
     void renderTransactionHistoryDialog();
     void loadTransactionHistory();
 
-    // Message Wall functions
-    void renderMessageWallDialog();
-    void loadMessageWall();
-    void postToMessageWall();
-    std::string formatWallTimestamp(uint64_t timestamp);
-
     // Profile Editor functions
     void renderProfileEditorDialog();
     void loadProfile();
