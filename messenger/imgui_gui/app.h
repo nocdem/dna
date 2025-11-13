@@ -59,10 +59,6 @@ private:
 
     // Main views
     void renderChatView();
-
-    // Wallet functions
-    void renderSendDialog();
-    void buildAndSendTransaction();
 };
 
 #endif // APP_H
