@@ -198,8 +198,9 @@ void messenger_free(messenger_context_t *ctx) {
         free(ctx->fingerprint);
     }
 
-    // Cleanup keyserver cache
-    keyserver_cache_cleanup();
+    // DON'T cleanup global keyserver cache - it's shared across all contexts
+    // Only cleanup on app shutdown, not on temporary context free
+    // keyserver_cache_cleanup();
 
     free(ctx->identity);
     free(ctx);
