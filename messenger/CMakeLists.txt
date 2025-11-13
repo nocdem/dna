@@ -192,6 +192,7 @@ add_library(dna_lib STATIC
     messenger/keys.c
     messenger/contacts.c
     messenger/keygen.c
+    messenger/messages.c
     # Legacy monolithic messenger (TODO: Remove after full modularization)
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
