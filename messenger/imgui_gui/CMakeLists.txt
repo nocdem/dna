@@ -37,6 +37,7 @@ add_executable(dna_messenger_imgui
     screens/register_name_screen.cpp
     screens/message_wall_screen.cpp
     screens/profile_editor_screen.cpp
+    screens/settings_screen.cpp
     ${IMGUI_SOURCES}
 )
 

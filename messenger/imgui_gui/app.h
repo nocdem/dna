@@ -84,7 +84,6 @@ private:
     // Main views
     void renderChatView();
     void renderWalletView();
-    void renderSettingsView();
 
     // Wallet functions
     void loadWallet();
