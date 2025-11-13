@@ -49,12 +49,7 @@ private:
     // Message management
     void retryMessage(int contact_idx, int msg_idx);
 
-    // Layout managers
-    void renderMobileLayout();
-    void renderDesktopLayout();
-
-    // UI Components
-    void renderBottomNavBar();
+    // UI Components (no public layout managers - extracted to LayoutManager namespace)
 
     // Main views
     void renderChatView();

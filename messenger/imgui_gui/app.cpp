@@ -15,6 +15,7 @@
 #include "screens/wallet_screen.h"
 #include "screens/add_contact_dialog.h"
 #include "screens/contacts_sidebar.h"
+#include "screens/layout_manager.h"
 #include "helpers/data_loader.h"
 #include <cstring>
 #include <cstdio>
@@ -210,9 +211,11 @@ void DNAMessengerApp::render() {
         // Mobile: Full-screen views with bottom navigation
         // Desktop: Side-by-side layout
         if (is_mobile) {
-            renderMobileLayout();
+            LayoutManager::renderMobileLayout(state, [this]() { renderChatView(); });
         } else {
-            renderDesktopLayout();
+            LayoutManager::renderDesktopLayout(state,
+                [this](int contact_idx) { DataLoader::loadMessagesForContact(state, contact_idx); },
+                [this]() { renderChatView(); });
         }
 
         ImGui::End();
@@ -1208,109 +1211,6 @@ void DNAMessengerApp::retryMessage(int contact_idx, int msg_idx) {
             printf("[Retry] ERROR: Message retry failed to %s\n", recipient.c_str());
         }
     }, msg_idx);
-}
-
-void DNAMessengerApp::renderMobileLayout() {
-    ImGuiIO& io = ImGui::GetIO();
-    float screen_height = io.DisplaySize.y;
-    float bottom_nav_height = 60.0f;
-
-    // Track view changes to close emoji picker
-    static View prev_view = VIEW_CONTACTS;
-    static int prev_contact = -1;
-
-    if (prev_view != state.current_view || prev_contact != state.selected_contact) {
-        state.show_emoji_picker = false;
-    }
-    prev_view = state.current_view;
-    prev_contact = state.selected_contact;
-
-    // Content area (full screen minus bottom nav) - use full width
-    ImGui::BeginChild("MobileContent", ImVec2(-1, -bottom_nav_height), false, ImGuiWindowFlags_NoScrollbar);
-
-    switch(state.current_view) {
-        case VIEW_CONTACTS:
-            ContactsSidebar::renderContactsList(state);
-            break;
-        case VIEW_CHAT:
-            renderChatView();
-            break;
-        case VIEW_WALLET:
-            WalletScreen::render(state);
-            break;
-        case VIEW_SETTINGS:
-            SettingsScreen::render(state);
-            break;
-    }
-
-    ImGui::EndChild();
-
-    // Bottom navigation bar
-    renderBottomNavBar();
-}
-
-
-void DNAMessengerApp::renderDesktopLayout() {
-    // Sidebar (state.contacts + navigation)
-    ContactsSidebar::renderSidebar(state, [this](int contact_idx) { DataLoader::loadMessagesForContact(state, contact_idx); });
-
-    ImGui::SameLine();
-
-    // Main content area
-    ImGui::BeginChild("MainContent", ImVec2(0, 0), true);
-
-    switch(state.current_view) {
-        case VIEW_CONTACTS:
-        case VIEW_CHAT:
-            renderChatView();
-            break;
-        case VIEW_WALLET:
-            WalletScreen::render(state);
-            break;
-        case VIEW_SETTINGS:
-            SettingsScreen::render(state);
-            break;
-    }
-
-    ImGui::EndChild();
-}
-
-
-void DNAMessengerApp::renderBottomNavBar() {
-    ImGuiIO& io = ImGui::GetIO();
-    float btn_width = io.DisplaySize.x / 4.0f;
-
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
-    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
-
-    // Contacts button
-    if (ThemedButton(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60), state.current_view == VIEW_CONTACTS)) {
-        state.current_view = VIEW_CONTACTS;
-    }
-
-    ImGui::SameLine();
-
-    // Wallet button
-    if (ThemedButton(ICON_FA_WALLET "\nWallet", ImVec2(btn_width, 60), state.current_view == VIEW_WALLET)) {
-        state.current_view = VIEW_WALLET;
-        state.selected_contact = -1;
-    }
-
-    ImGui::SameLine();
-
-    // Settings button
-    if (ThemedButton(ICON_FA_GEAR "\nSettings", ImVec2(btn_width, 60), state.current_view == VIEW_SETTINGS)) {
-        state.current_view = VIEW_SETTINGS;
-        state.selected_contact = -1;
-    }
-
-    ImGui::SameLine();
-
-    // Profile button (placeholder)
-    if (ThemedButton(ICON_FA_USER "\nProfile", ImVec2(btn_width, 60), false)) {
-        // TODO: Profile view
-    }
-
     ImGui::PopStyleVar(2);
 }
 

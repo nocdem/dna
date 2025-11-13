@@ -1,0 +1,117 @@
+#include "layout_manager.h"
+#include "contacts_sidebar.h"
+#include "wallet_screen.h"
+#include "settings_screen.h"
+#include "../ui_helpers.h"
+#include "../font_awesome.h"
+#include "imgui.h"
+
+namespace LayoutManager {
+
+void renderMobileLayout(AppState& state, std::function<void()> render_chat_view) {
+    ImGuiIO& io = ImGui::GetIO();
+    float screen_height = io.DisplaySize.y;
+    float bottom_nav_height = 60.0f;
+
+    // Track view changes to close emoji picker
+    static View prev_view = VIEW_CONTACTS;
+    static int prev_contact = -1;
+
+    if (prev_view != state.current_view || prev_contact != state.selected_contact) {
+        state.show_emoji_picker = false;
+    }
+    prev_view = state.current_view;
+    prev_contact = state.selected_contact;
+
+    // Content area (full screen minus bottom nav) - use full width
+    ImGui::BeginChild("MobileContent", ImVec2(-1, -bottom_nav_height), false, ImGuiWindowFlags_NoScrollbar);
+
+    switch(state.current_view) {
+        case VIEW_CONTACTS:
+            ContactsSidebar::renderContactsList(state);
+            break;
+        case VIEW_CHAT:
+            render_chat_view();
+            break;
+        case VIEW_WALLET:
+            WalletScreen::render(state);
+            break;
+        case VIEW_SETTINGS:
+            SettingsScreen::render(state);
+            break;
+    }
+
+    ImGui::EndChild();
+
+    // Bottom navigation bar
+    renderBottomNavBar(state);
+}
+
+
+void renderDesktopLayout(AppState& state,
+                         std::function<void(int)> load_messages_callback,
+                         std::function<void()> render_chat_view) {
+    // Sidebar (state.contacts + navigation)
+    ContactsSidebar::renderSidebar(state, load_messages_callback);
+
+    ImGui::SameLine();
+
+    // Main content area
+    ImGui::BeginChild("MainContent", ImVec2(0, 0), true);
+
+    switch(state.current_view) {
+        case VIEW_CONTACTS:
+        case VIEW_CHAT:
+            render_chat_view();
+            break;
+        case VIEW_WALLET:
+            WalletScreen::render(state);
+            break;
+        case VIEW_SETTINGS:
+            SettingsScreen::render(state);
+            break;
+    }
+
+    ImGui::EndChild();
+}
+
+
+void renderBottomNavBar(AppState& state) {
+    ImGuiIO& io = ImGui::GetIO();
+    float btn_width = io.DisplaySize.x / 4.0f;
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
+
+    // Contacts button
+    if (ThemedButton(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60), state.current_view == VIEW_CONTACTS)) {
+        state.current_view = VIEW_CONTACTS;
+    }
+
+    ImGui::SameLine();
+
+    // Wallet button
+    if (ThemedButton(ICON_FA_WALLET "\nWallet", ImVec2(btn_width, 60), state.current_view == VIEW_WALLET)) {
+        state.current_view = VIEW_WALLET;
+        state.selected_contact = -1;
+    }
+
+    ImGui::SameLine();
+
+    // Settings button
+    if (ThemedButton(ICON_FA_GEAR "\nSettings", ImVec2(btn_width, 60), state.current_view == VIEW_SETTINGS)) {
+        state.current_view = VIEW_SETTINGS;
+        state.selected_contact = -1;
+    }
+
+    ImGui::SameLine();
+
+    // Profile button (placeholder)
+    if (ThemedButton(ICON_FA_USER "\nProfile", ImVec2(btn_width, 60), false)) {
+        // TODO: Profile view
+    }
+
+    ImGui::PopStyleVar(2);
+}
+
+} // namespace LayoutManager
