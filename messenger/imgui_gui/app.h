@@ -30,19 +30,6 @@ private:
     // Centralized application state
     AppState state;
 
-    // Identity selection and management
-    void renderIdentitySelection();
-
-    // Create identity wizard
-    void renderCreateIdentityStep1();
-    void renderCreateIdentityStep2();
-    void renderCreateIdentityStep3();
-    void createIdentityWithSeed(const char* mnemonic);
-
-    // Restore identity wizard
-    void renderRestoreStep2_Seed();
-    void restoreIdentityWithSeed(const char* mnemonic);
-
     // Identity helper (was static, now regular method)
     static int IdentityNameInputFilter(ImGuiInputTextCallbackData* data);
 

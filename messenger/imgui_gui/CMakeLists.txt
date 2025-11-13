@@ -46,6 +46,7 @@ add_executable(dna_messenger_imgui
     screens/add_contact_dialog.cpp
     screens/chat_screen.cpp
     screens/contacts_sidebar.cpp
+    screens/identity_selection_screen.cpp
     screens/layout_manager.cpp
     ${IMGUI_SOURCES}
 )
