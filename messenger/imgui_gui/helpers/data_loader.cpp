@@ -1,13 +1,13 @@
 #include "data_loader.h"
 #include "../../messenger.h"
 #include "../../messenger_p2p.h"
-#include "../../contacts_db.h"
-#include "../../profile_manager.h"
+#include "../../database/contacts_db.h"
+#include "../../database/profile_manager.h"
 #include "../../dht/dht_singleton.h"
 #include "../../p2p/p2p_transport.h"
 
 extern "C" {
-#include "../../qgp_platform.h"
+#include "../../crypto/utils/qgp_platform.h"
 }
 
 #include <cstring>

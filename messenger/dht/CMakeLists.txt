@@ -39,9 +39,56 @@ endif()
 
 # DHT library
 if(WIN32)
-    add_library(dht_lib STATIC dht_context.cpp dht_value_storage.cpp dht_offline_queue.c dht_groups.c dht_keyserver.c dht_contactlist.c dht_profile.c dht_singleton.c dht_identity_backup.c dna_profile.c dna_message_wall.c gnutls_stubs_win.c ../qgp_sha3.c ../qgp_dilithium.c ../cellframe_rpc.c ../qgp_random.c ../qgp_platform_windows.c ../qgp_aes.c)
+    add_library(dht_lib STATIC
+        dht_context.cpp
+        dht_value_storage.cpp
+        dht_offline_queue.c
+        dht_groups.c
+        dht_keyserver.c
+        keyserver/keyserver_helpers.c
+        keyserver/keyserver_publish.c
+        keyserver/keyserver_lookup.c
+        keyserver/keyserver_names.c
+        keyserver/keyserver_profiles.c
+        keyserver/keyserver_addresses.c
+        dht_contactlist.c
+        dht_profile.c
+        dht_singleton.c
+        dht_identity_backup.c
+        dna_profile.c
+        dna_message_wall.c
+        gnutls_stubs_win.c
+        ../crypto/utils/qgp_sha3.c
+        ../crypto/utils/qgp_dilithium.c
+        ../blockchain/blockchain_rpc.c
+        ../crypto/utils/qgp_random.c
+        ../crypto/utils/qgp_platform_windows.c
+        ../crypto/utils/qgp_aes.c)
 else()
-    add_library(dht_lib STATIC dht_context.cpp dht_value_storage.cpp dht_offline_queue.c dht_groups.c dht_keyserver.c dht_contactlist.c dht_profile.c dht_singleton.c dht_identity_backup.c dna_profile.c dna_message_wall.c ../qgp_sha3.c ../qgp_dilithium.c ../cellframe_rpc.c ../qgp_random.c ../qgp_platform_linux.c ../qgp_aes.c)
+    add_library(dht_lib STATIC
+        dht_context.cpp
+        dht_value_storage.cpp
+        dht_offline_queue.c
+        dht_groups.c
+        dht_keyserver.c
+        keyserver/keyserver_helpers.c
+        keyserver/keyserver_publish.c
+        keyserver/keyserver_lookup.c
+        keyserver/keyserver_names.c
+        keyserver/keyserver_profiles.c
+        keyserver/keyserver_addresses.c
+        dht_contactlist.c
+        dht_profile.c
+        dht_singleton.c
+        dht_identity_backup.c
+        dna_profile.c
+        dna_message_wall.c
+        ../crypto/utils/qgp_sha3.c
+        ../crypto/utils/qgp_dilithium.c
+        ../blockchain/blockchain_rpc.c
+        ../crypto/utils/qgp_random.c
+        ../crypto/utils/qgp_platform_linux.c
+        ../crypto/utils/qgp_aes.c)
 endif()
 target_include_directories(dht_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/.. ${CMAKE_CURRENT_SOURCE_DIR}/../crypto)
 target_link_libraries(dht_lib crypto dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} gnutls json-c curl)

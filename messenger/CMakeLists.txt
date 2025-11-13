@@ -67,14 +67,14 @@ if(WIN32)
     add_definitions(-D_WIN32)
     message(STATUS "Platform: Windows")
     set(PLATFORM_SOURCES
-        qgp_platform_windows.c
+        crypto/utils/qgp_platform_windows.c
         win32/getopt.c      # POSIX getopt for Windows
         win32/dirent.c      # POSIX dirent for Windows
     )
     set(PLATFORM_LIBS bcrypt)  # Windows CNG for random number generation
 else()
     message(STATUS "Platform: Linux/Unix")
-    set(PLATFORM_SOURCES qgp_platform_linux.c)
+    set(PLATFORM_SOURCES crypto/utils/qgp_platform_linux.c)
     set(PLATFORM_LIBS)  # No extra libs needed on Linux
 endif()
 
@@ -151,31 +151,31 @@ add_subdirectory(p2p)               # P2P transport layer
 
 # Common source files (shared between CLI and library)
 set(COMMON_SOURCES
-    keygen.c
-    sign.c
-    verify.c
-    export.c
-    encrypt.c
-    decrypt.c
-    keyring.c
-    utils.c
-    armor.c
-    aes_keywrap.c
-    bip39.c
-    bip39_pbkdf2.c
-    seed_derivation.c
-    kyber_deterministic.c
+    legacy-tools/keygen.c
+    legacy-tools/sign.c
+    legacy-tools/verify.c
+    legacy-tools/export.c
+    legacy-tools/encrypt.c
+    legacy-tools/decrypt.c
+    legacy-tools/keyring.c
+    legacy-tools/utils.c
+    crypto/utils/armor.c
+    crypto/utils/aes_keywrap.c
+    crypto/bip39/bip39.c
+    crypto/bip39/bip39_pbkdf2.c
+    crypto/bip39/seed_derivation.c
+    crypto/utils/kyber_deterministic.c
     dna_config.c
     # SDK Independence: New crypto modules
-    qgp_random.c
-    qgp_aes.c
-    qgp_kyber.c
-    qgp_dilithium.c
-    qgp_sha3.c         # Phase 10: SHA3-512 for Category 5 security
+    crypto/utils/qgp_random.c
+    crypto/utils/qgp_aes.c
+    crypto/utils/qgp_kyber.c
+    crypto/utils/qgp_dilithium.c
+    crypto/utils/qgp_sha3.c         # Phase 10: SHA3-512 for Category 5 security
     # SDK Independence: Infrastructure modules
-    qgp_key.c
-    qgp_signature.c
-    qgp_utils_standalone.c
+    crypto/utils/qgp_key.c
+    crypto/utils/qgp_signature.c
+    crypto/utils/qgp_utils_standalone.c
     # Cross-platform abstraction layer
     ${PLATFORM_SOURCES}
     # Phase 9.3: Local message backup (SQLite)
@@ -196,16 +196,16 @@ add_library(dna_lib STATIC
     # Legacy monolithic messenger (TODO: Remove after full modularization)
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
-    presence_cache.c  # Phase 9.1c: Fast presence cache (O(1) lookup, no DHT queries)
+    database/presence_cache.c  # Phase 9.1c: Fast presence cache (O(1) lookup, no DHT queries)
     messenger_stubs.c  # DHT-based group functions (Phase 3)
-    keyserver_cache.c  # Phase 4: SQLite keyserver cache
-    contacts_db.c      # Phase 9.5: Local contacts database
-    profile_cache.c    # Phase 10.1: Profile cache database (7-day TTL)
-    profile_manager.c  # Phase 10.1: Smart profile fetching (cache + DHT)
-    wallet.c           # Phase 8: Cellframe wallet integration
-    cellframe_rpc.c    # Phase 8: Cellframe RPC client
-    cellframe_addr.c   # Phase 8: Cellframe address utilities
-    base58.c           # Phase 8: Base58 encoding for addresses
+    database/keyserver_cache.c  # Phase 4: SQLite keyserver cache
+    database/contacts_db.c      # Phase 9.5: Local contacts database
+    database/profile_cache.c    # Phase 10.1: Profile cache database (7-day TTL)
+    database/profile_manager.c  # Phase 10.1: Smart profile fetching (cache + DHT)
+    blockchain/wallet.c           # Phase 8: Cellframe wallet integration
+    blockchain/blockchain_rpc.c    # Phase 8: Blockchain RPC client
+    blockchain/blockchain_addr.c   # Phase 8: Blockchain address utilities
+    crypto/utils/base58.c           # Phase 8: Base58 encoding for addresses
     ${COMMON_SOURCES}
 )
 
@@ -294,13 +294,13 @@ endif()
 # CLI messenger has been removed (unmaintained).
 # Use GUI application (dna_messenger_gui) for all functionality.
 
-# Cellframe minimal library (transaction building and signing)
+# Blockchain minimal library (transaction building and signing)
 # MUST be defined BEFORE GUI subdirectories that depend on it
 add_library(cellframe_minimal STATIC
-    cellframe_tx_builder_minimal.c
-    cellframe_sign_minimal.c
-    cellframe_json_minimal.c
-    base58.c
+    blockchain/blockchain_tx_builder_minimal.c
+    blockchain/blockchain_sign_minimal.c
+    blockchain/blockchain_json_minimal.c
+    crypto/utils/base58.c
 )
 target_link_libraries(cellframe_minimal
     cellframe_dilithium
@@ -342,11 +342,11 @@ endif()
 option(BUILD_DNA_SEND "Build dna-send CLI tool" OFF)
 if(BUILD_DNA_SEND)
     add_executable(dna-send
-        dna-send.c
-        wallet.c
-        cellframe_addr.c
-        cellframe_rpc.c
-        base58.c
+        blockchain/dna-send.c
+        blockchain/wallet.c
+        blockchain/blockchain_addr.c
+        blockchain/blockchain_rpc.c
+        crypto/utils/base58.c
     )
 
     # For static CURL on Windows, define CURL_STATICLIB

@@ -7,12 +7,12 @@
 
 #include "dna_api.h"
 #include "qgp.h"
-#include "qgp_types.h"
-#include "qgp_random.h"
-#include "qgp_aes.h"
-#include "qgp_kyber.h"
-#include "qgp_dilithium.h"
-#include "aes_keywrap.h"
+#include "crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_random.h"
+#include "crypto/utils/qgp_aes.h"
+#include "crypto/utils/qgp_kyber.h"
+#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/aes_keywrap.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

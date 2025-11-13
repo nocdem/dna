@@ -6,11 +6,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../qgp_platform.h"
-#include "../qgp_types.h"
+#include "../crypto/utils/qgp_platform.h"
+#include "../crypto/utils/qgp_types.h"
 #include "../dht/dht_contactlist.h"
 #include "../dht/dht_context.h"
-#include "../contacts_db.h"
+#include "../database/contacts_db.h"
 #include "../p2p/p2p_transport.h"
 
 // ============================================================================

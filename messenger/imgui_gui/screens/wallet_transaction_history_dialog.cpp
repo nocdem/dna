@@ -2,8 +2,8 @@
 #include "../imgui.h"
 #include "../ui_helpers.h"
 #include "../font_awesome.h"
-#include "../../wallet.h"
-#include "../../cellframe_rpc.h"
+#include "../../blockchain/wallet.h"
+#include "../../blockchain/blockchain_rpc.h"
 
 #include <ctime>
 #include <cstring>

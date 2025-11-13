@@ -9,12 +9,12 @@
 #include <json-c/json.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
-#include "../qgp_platform.h"
-#include "../qgp_types.h"
+#include "../crypto/utils/qgp_platform.h"
+#include "../crypto/utils/qgp_types.h"
 #include "../dht/dht_keyserver.h"
 #include "../dht/dht_singleton.h"
-#include "../keyserver_cache.h"
-#include "../contacts_db.h"
+#include "../database/keyserver_cache.h"
+#include "../database/contacts_db.h"
 #include "../p2p/p2p_transport.h"
 
 // ============================================================================

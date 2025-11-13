@@ -1,5 +1,5 @@
 #include "dht_offline_queue.h"
-#include "../qgp_sha3.h"
+#include "../crypto/utils/qgp_sha3.h"
 #include <openssl/evp.h>
 #include <string.h>
 #include <stdlib.h>

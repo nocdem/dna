@@ -16,7 +16,7 @@
 #include "dht/dht_singleton.h"
 #include "dht/dht_context.h"
 #include "crypto/kem/kem.h"
-#include "qgp_sha3.h"
+#include "crypto/utils/qgp_sha3.h"
 
 // Test fingerprint (simulated - SHA3-512 = 128 hex characters = 64 bytes)
 static const char *TEST_FINGERPRINT =

@@ -5,12 +5,12 @@
 #include "imgui.h"
 
 extern "C" {
-#include "../../wallet.h"
-#include "../../cellframe_rpc.h"
-#include "../../cellframe_tx_builder_minimal.h"
-#include "../../cellframe_sign_minimal.h"
-#include "../../cellframe_json_minimal.h"
-#include "../../base58.h"
+#include "../../blockchain/wallet.h"
+#include "../../blockchain/blockchain_rpc.h"
+#include "../../blockchain/blockchain_tx_builder_minimal.h"
+#include "../../blockchain/blockchain_sign_minimal.h"
+#include "../../blockchain/blockchain_json_minimal.h"
+#include "../../crypto/utils/base58.h"
 #include <string.h>
 #include <time.h>
 #include <stdlib.h>

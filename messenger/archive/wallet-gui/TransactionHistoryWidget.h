@@ -15,7 +15,7 @@
 
 extern "C" {
     #include "../wallet.h"
-    #include "../cellframe_rpc.h"
+    #include "../blockchain_rpc.h"
 }
 
 class TransactionHistoryWidget : public QWidget {

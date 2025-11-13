@@ -25,9 +25,13 @@ get_filename_component(DHT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../dht" ABSOLUTE)
 # We reference it as a target, not as a file path
 set(DHT_LIB dht_lib)
 
-# P2P Transport library
+# P2P Transport library (modular architecture)
 add_library(p2p_transport STATIC
     p2p_transport.c
+    transport/transport_helpers.c
+    transport/transport_tcp.c
+    transport/transport_discovery.c
+    transport/transport_offline.c
 )
 
 target_include_directories(p2p_transport PUBLIC

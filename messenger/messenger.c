@@ -35,25 +35,25 @@
 #include "messenger.h"
 #include "messenger_p2p.h"  // Phase 9.1b: P2P delivery integration
 #include "dna_config.h"
-#include "qgp_platform.h"
-#include "qgp_dilithium.h"
-#include "qgp_kyber.h"
-#include "qgp_sha3.h"  // For SHA3-512 fingerprint computation
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/qgp_kyber.h"
+#include "crypto/utils/qgp_sha3.h"  // For SHA3-512 fingerprint computation
 #include "dht/dht_singleton.h"  // Global DHT singleton
 #include "dht/dht_identity_backup.h"  // DHT identity encrypted backup
-#include "qgp_types.h"  // For qgp_key_load, qgp_key_free
+#include "crypto/utils/qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
-#include "bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
-#include "kyber_deterministic.h"  // For crypto_kem_keypair_derand
-#include "qgp_aes.h"  // For qgp_aes256_encrypt
-#include "aes_keywrap.h"  // For aes256_wrap_key
-#include "qgp_random.h"  // For qgp_randombytes
-#include "keyserver_cache.h"  // Phase 4: Keyserver cache
+#include "crypto/bip39/bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic
+#include "crypto/utils/kyber_deterministic.h"  // For crypto_kem_keypair_derand
+#include "crypto/utils/qgp_aes.h"  // For qgp_aes256_encrypt
+#include "crypto/utils/aes_keywrap.h"  // For aes256_wrap_key
+#include "crypto/utils/qgp_random.h"  // For qgp_randombytes
+#include "database/keyserver_cache.h"  // Phase 4: Keyserver cache
 #include "dht/dht_keyserver.h"   // Phase 9.4: DHT-based keyserver
 #include "dht/dht_context.h"     // Phase 9.4: DHT context management
 #include "dht/dht_contactlist.h" // DHT contact list sync
 #include "p2p/p2p_transport.h"   // For getting DHT context
-#include "contacts_db.h"         // Phase 9.4: Local contacts database
+#include "database/contacts_db.h"         // Phase 9.4: Local contacts database
 #include "messenger/identity.h"  // Phase: Modularization - Identity utilities
 #include "messenger/init.h"      // Phase: Modularization - Context management
 #include "messenger/status.h"    // Phase: Modularization - Message status

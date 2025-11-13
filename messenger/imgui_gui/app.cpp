@@ -37,23 +37,23 @@
 extern "C" {
     #include "../messenger.h"
     #include "../messenger_p2p.h"  // For messenger_p2p_check_offline_messages
-    #include "../bip39.h"
+    #include "../crypto/bip39/bip39.h"
     #include "../dht/dht_keyserver.h"
     #include "../dht/dht_singleton.h"
     #include "../dht/dna_message_wall.h"  // For message wall functions
     #include "../p2p/p2p_transport.h"  // For P2P transport DHT access
-    #include "../qgp_types.h"  // For qgp_key_load, qgp_key_free
-    #include "../qgp_platform.h"  // For qgp_platform_home_dir
-    #include "../contacts_db.h"  // For contacts_db_add, contacts_db_exists
-    #include "../profile_manager.h"  // For profile caching and fetching
-    #include "../wallet.h"  // For wallet functions
-    #include "../cellframe_rpc.h"  // For RPC calls
-    #include "../cellframe_tx_builder_minimal.h"  // Transaction builder
-    #include "../cellframe_sign_minimal.h"  // Transaction signing
-    #include "../cellframe_addr.h"  // Address utilities
-    #include "../cellframe_json_minimal.h"  // JSON conversion
-    #include "../cellframe_minimal.h"  // TSD types
-    #include "../base58.h"  // Base58 encoding
+    #include "../crypto/utils/qgp_types.h"  // For qgp_key_load, qgp_key_free
+    #include "../crypto/utils/qgp_platform.h"  // For qgp_platform_home_dir
+    #include "../database/contacts_db.h"  // For contacts_db_add, contacts_db_exists
+    #include "../database/profile_manager.h"  // For profile caching and fetching
+    #include "../blockchain/wallet.h"  // For wallet functions
+    #include "../blockchain/blockchain_rpc.h"  // For RPC calls
+    #include "../blockchain/blockchain_tx_builder_minimal.h"  // Transaction builder
+    #include "../blockchain/blockchain_sign_minimal.h"  // Transaction signing
+    #include "../blockchain/blockchain_addr.h"  // Address utilities
+    #include "../blockchain/blockchain_json_minimal.h"  // JSON conversion
+    #include "../blockchain/blockchain_minimal.h"  // TSD types
+    #include "../crypto/utils/base58.h"  // Base58 encoding
     #include <time.h>
 }
 

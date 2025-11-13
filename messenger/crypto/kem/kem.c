@@ -2,7 +2,7 @@
 #include <stdint.h>
 #include "kem.h"
 #include "params.h"
-#include "../../qgp_random.h"
+#include "crypto/utils/qgp_random.h"
 #include "symmetric.h"
 #include "verify.h"
 #include "indcpa.h"

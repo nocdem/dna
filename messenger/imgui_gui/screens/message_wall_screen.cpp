@@ -7,8 +7,8 @@ extern "C" {
     #include "../../messenger.h"
     #include "../../dht/dna_message_wall.h"
     #include "../../p2p/p2p_transport.h"
-    #include "../../qgp_types.h"
-    #include "../../qgp_platform.h"
+    #include "../../crypto/utils/qgp_types.h"
+    #include "../../crypto/utils/qgp_platform.h"
     #include <time.h>
 }
 

@@ -5,7 +5,7 @@
 #include <stdint.h>
 
 // SDK Independence: Use our qgp_randombytes
-#include "../../qgp_random.h"
+#include "crypto/utils/qgp_random.h"
 #define randombytes qgp_randombytes
 
 #endif

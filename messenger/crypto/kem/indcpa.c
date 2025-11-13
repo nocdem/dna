@@ -4,7 +4,7 @@
 #include "indcpa.h"
 #include "poly_kyber.h"
 #include "polyvec.h"
-#include "../../qgp_random.h"
+#include "crypto/utils/qgp_random.h"
 #include "ntt_kyber.h"
 #include "symmetric.h"
 

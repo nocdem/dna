@@ -43,8 +43,8 @@ set(GUI_SOURCES
     MessageWallDialog.cpp
     MessageWallDialog.h
     ../wallet.c
-    ../cellframe_rpc.c
-    ../cellframe_addr.c
+    ../blockchain_rpc.c
+    ../blockchain_addr.c
     ../base58.c
     ../bip39.c
     ../bip39_pbkdf2.c

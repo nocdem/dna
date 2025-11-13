@@ -8,8 +8,8 @@
  */
 
 #include "dht_profile.h"
-#include "../qgp_sha3.h"
-#include "../qgp_dilithium.h"
+#include "../crypto/utils/qgp_sha3.h"
+#include "../crypto/utils/qgp_dilithium.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

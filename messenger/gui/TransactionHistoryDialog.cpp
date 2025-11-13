@@ -13,7 +13,7 @@
 #include <json-c/json.h>
 
 extern "C" {
-#include "../cellframe_rpc.h"
+#include "../blockchain_rpc.h"
 }
 
 TransactionHistoryDialog::TransactionHistoryDialog(const cellframe_wallet_t *wallet, QWidget *parent)

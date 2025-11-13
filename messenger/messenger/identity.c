@@ -6,8 +6,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../qgp_platform.h"
-#include "../qgp_types.h"
+#include "../crypto/utils/qgp_platform.h"
+#include "../crypto/utils/qgp_types.h"
 #include "../dht/dht_keyserver.h"
 #include "../p2p/p2p_transport.h"
 

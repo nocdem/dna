@@ -24,8 +24,8 @@ set(WALLET_GUI_SOURCES
     TransactionHistoryWidget.h
     cpunk_themes.h
     ../wallet.c
-    ../cellframe_rpc.c
-    ../cellframe_addr.c
+    ../blockchain_rpc.c
+    ../blockchain_addr.c
     ../base58.c
 )
 

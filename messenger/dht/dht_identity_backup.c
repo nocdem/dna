@@ -8,10 +8,10 @@
  */
 
 #include "dht_identity_backup.h"
-#include "../qgp_sha3.h"
-#include "../qgp_platform.h"
-#include "../qgp_aes.h"
-#include "../qgp_random.h"
+#include "../crypto/utils/qgp_sha3.h"
+#include "../crypto/utils/qgp_platform.h"
+#include "../crypto/utils/qgp_aes.h"
+#include "../crypto/utils/qgp_random.h"
 #include "../crypto/kem/kem.h"
 #include <stdio.h>
 #include <stdlib.h>

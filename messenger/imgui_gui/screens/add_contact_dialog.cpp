@@ -5,8 +5,8 @@
 #include "../theme_colors.h"
 #include "../settings_manager.h"
 #include "../../messenger.h"
-#include "../../contacts_db.h"
-#include "../../profile_manager.h"
+#include "../../database/contacts_db.h"
+#include "../../database/profile_manager.h"
 
 #include <cstring>
 #include <cstdio>

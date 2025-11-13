@@ -16,7 +16,7 @@
 #include <string.h>
 
 
-#include "qgp_types.h"
+#include "crypto/utils/qgp_types.h"
 
 // Version info
 #ifndef PQSIGNUM_VERSION

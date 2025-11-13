@@ -21,10 +21,10 @@ extern "C" {
     #include "../wallet.h"
     #include "../cellframe_tx_builder_minimal.h"
     #include "../cellframe_sign_minimal.h"
-    #include "../cellframe_rpc.h"
-    #include "../cellframe_addr.h"
+    #include "../blockchain_rpc.h"
+    #include "../blockchain_addr.h"
     #include "../cellframe_json_minimal.h"
-    #include "../cellframe_minimal.h"
+    #include "../blockchain_minimal.h"
     #include "../base58.h"
     #include <time.h>
 }

@@ -4,9 +4,9 @@
  */
 
 #include "dht_contactlist.h"
-#include "../qgp_sha3.h"
-#include "../qgp_dilithium.h"
-#include "../qgp_kyber.h"
+#include "../crypto/utils/qgp_sha3.h"
+#include "../crypto/utils/qgp_dilithium.h"
+#include "../crypto/utils/qgp_kyber.h"
 #include "../dna_api.h"
 #include <stdio.h>
 #include <stdlib.h>

@@ -4,7 +4,7 @@
 #include "../font_awesome.h"
 #include "../theme_colors.h"
 #include "../settings_manager.h"
-#include "../../contacts_db.h"
+#include "../../database/contacts_db.h"
 #include "../../messenger.h"
 
 #include <cstring>

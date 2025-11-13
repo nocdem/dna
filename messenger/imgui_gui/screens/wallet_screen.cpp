@@ -3,8 +3,8 @@
 #include "../ui_helpers.h"
 #include "../font_awesome.h"
 #include "wallet_transaction_history_dialog.h"
-#include "../../wallet.h"
-#include "../../cellframe_rpc.h"
+#include "../../blockchain/wallet.h"
+#include "../../blockchain/blockchain_rpc.h"
 
 #include <cstdio>
 
