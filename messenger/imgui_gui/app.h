@@ -106,11 +106,6 @@ private:
     void renderProfileEditorDialog();
     void loadProfile();
     void saveProfile();
-
-    // Register DNA Name functions
-    void renderRegisterNameDialog();
-    void checkNameAvailability();
-    void registerName();
 };
 
 #endif // APP_H
