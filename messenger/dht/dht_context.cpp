@@ -741,16 +741,34 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
         // Permanent flag controls whether value expires based on ValueType
+        // WAIT for the callback to complete (synchronous PUT)
+        std::promise<bool> put_promise;
+        auto put_future = put_promise.get_future();
+
         ctx->runner.putSigned(hash, dht_value,
-                             [](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                             [&put_promise](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
                                      std::cout << "[DHT] PUT_SIGNED: ✓ Stored/updated on "
                                                << nodes.size() << " remote node(s)" << std::endl;
                                  } else {
                                      std::cout << "[DHT] PUT_SIGNED: ✗ Failed to store on any node" << std::endl;
                                  }
+                                 put_promise.set_value(success);
                              },
                              false);  // permanent=false to use ValueType's expiration
+
+        // Wait for PUT to complete (with 10 second timeout)
+        auto status = put_future.wait_for(std::chrono::seconds(10));
+        if (status == std::future_status::timeout) {
+            std::cerr << "[DHT] PUT_SIGNED: Timeout waiting for DHT propagation" << std::endl;
+            return -1;
+        }
+
+        bool put_success = put_future.get();
+        if (!put_success) {
+            std::cerr << "[DHT] PUT_SIGNED: Failed to store value" << std::endl;
+            return -1;
+        }
 
         // Store value to persistent storage (if enabled)
         if (ctx->storage) {
