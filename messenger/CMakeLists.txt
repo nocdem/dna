@@ -185,6 +185,13 @@ set(COMMON_SOURCES
 # DNA Messenger Library (libdna)
 add_library(dna_lib STATIC
     dna_api.c
+    # Modular messenger components (Phase: Modularization)
+    messenger/identity.c
+    messenger/init.c
+    messenger/status.c
+    messenger/keys.c
+    messenger/contacts.c
+    # Legacy monolithic messenger (TODO: Remove after full modularization)
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
     presence_cache.c  # Phase 9.1c: Fast presence cache (O(1) lookup, no DHT queries)

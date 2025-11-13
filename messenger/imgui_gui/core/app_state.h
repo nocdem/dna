@@ -153,6 +153,11 @@ public:
 
     // Profile Editor dialog state
     bool show_profile_editor;
+
+    // Contact Profile Viewer dialog state
+    bool show_contact_profile;
+    std::string viewed_profile_fingerprint;
+    std::string viewed_profile_name;
     char profile_backbone[256];
     char profile_kelvpn[256];
     char profile_subzero[256];
