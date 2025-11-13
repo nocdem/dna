@@ -126,16 +126,21 @@ int keyserver_cache_init(const char *db_path) {
 // Cleanup keyserver cache
 void keyserver_cache_cleanup(void) {
     if (g_cache_db) {
+        printf("[CACHE] !!! CLEANING UP DATABASE !!! (g_cache_db=%p)\n", g_cache_db);
         sqlite3_close(g_cache_db);
         g_cache_db = NULL;
-        printf("[CACHE] Cleanup complete\n");
+        printf("[CACHE] Cleanup complete (g_cache_db now NULL)\n");
+    } else {
+        printf("[CACHE] Cleanup called but g_cache_db already NULL\n");
     }
 }
 
 // Get cached public key
 int keyserver_cache_get(const char *identity, keyserver_cache_entry_t **entry_out) {
     if (!g_cache_db || !identity || !entry_out) {
-        fprintf(stderr, "[CACHE] Invalid arguments to get\n");
+        fprintf(stderr, "[CACHE] Invalid arguments to get: g_cache_db=%p, identity=%p, entry_out=%p\n",
+                g_cache_db, (void*)identity, (void*)entry_out);
+        if (identity) fprintf(stderr, "[CACHE] identity=%.32s...\n", identity);
         return -1;
     }
 
@@ -226,7 +231,9 @@ int keyserver_cache_put(
     uint64_t ttl_seconds
 ) {
     if (!g_cache_db || !identity || !dilithium_pubkey || !kyber_pubkey) {
-        fprintf(stderr, "[CACHE] Invalid arguments to put\n");
+        fprintf(stderr, "[CACHE] Invalid arguments to put: g_cache_db=%p, identity=%p, dil=%p, kyber=%p\n",
+                g_cache_db, (void*)identity, (void*)dilithium_pubkey, (void*)kyber_pubkey);
+        if (identity) fprintf(stderr, "[CACHE] identity=%.32s...\n", identity);
         return -1;
     }
 
