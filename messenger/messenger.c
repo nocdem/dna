@@ -491,6 +491,21 @@ int messenger_generate_keys_from_seeds(
         return -1;
     }
 
+    // Keep copies of keys for DHT publishing (before freeing)
+    uint8_t *dilithium_pubkey_copy = malloc(sign_key->public_key_size);
+    uint8_t *dilithium_privkey_copy = malloc(sign_key->private_key_size);
+    if (!dilithium_pubkey_copy || !dilithium_privkey_copy) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        free(dilithium_pubkey_copy);
+        free(dilithium_privkey_copy);
+        qgp_key_free(sign_key);
+        return -1;
+    }
+    memcpy(dilithium_pubkey_copy, sign_key->public_key, sign_key->public_key_size);
+    memcpy(dilithium_privkey_copy, sign_key->private_key, sign_key->private_key_size);
+    size_t dilithium_pubkey_size = sign_key->public_key_size;
+    size_t dilithium_privkey_size = sign_key->private_key_size;
+
     qgp_key_free(sign_key);
 
     // Generate Kyber1024 (ML-KEM-1024) encryption key from seed
@@ -531,10 +546,24 @@ int messenger_generate_keys_from_seeds(
     if (qgp_key_save(enc_key, kyber_path) != 0) {
         fprintf(stderr, "Error: Failed to save encryption key\n");
         qgp_key_free(enc_key);
+        free(dilithium_pubkey_copy);
+        free(dilithium_privkey_copy);
         return -1;
     }
 
     printf("✓ ML-KEM-1024 encryption key generated from seed\n");
+
+    // Keep copies of public keys for DHT publishing (before freeing)
+    uint8_t *kyber_pubkey_copy = malloc(enc_key->public_key_size);
+    if (!kyber_pubkey_copy) {
+        fprintf(stderr, "Error: Memory allocation failed\n");
+        qgp_key_free(enc_key);
+        free(dilithium_pubkey_copy);
+        free(dilithium_privkey_copy);
+        return -1;
+    }
+    memcpy(kyber_pubkey_copy, enc_key->public_key, enc_key->public_key_size);
+    size_t kyber_pubkey_size = enc_key->public_key_size;
 
     // Create DHT identity backup (for BIP39 recovery)
     printf("[DHT Identity] Creating random DHT identity for signing...\n");
@@ -557,9 +586,28 @@ int messenger_generate_keys_from_seeds(
             // Free the identity (will be loaded later on login)
             dht_identity_free(dht_identity);
         }
+
+        // Publish public keys to DHT keyserver (even without a registered name)
+        printf("[DHT_KEYSERVER] Publishing public keys to DHT (fingerprint-only, no name)...\n");
+        if (dht_keyserver_publish(dht_ctx, fingerprint, NULL,
+                                  dilithium_pubkey_copy, kyber_pubkey_copy,
+                                  dilithium_privkey_copy) != 0) {
+            fprintf(stderr, "Warning: Failed to publish public keys to DHT\n");
+            fprintf(stderr, "         You may not be able to receive messages until you register a name\n");
+        } else {
+            printf("[DHT_KEYSERVER] ✓ Public keys published to DHT successfully\n");
+        }
     }
 
     qgp_key_free(enc_key);
+
+    // Securely wipe and free key copies
+    if (dilithium_privkey_copy) {
+        memset(dilithium_privkey_copy, 0, dilithium_privkey_size);
+        free(dilithium_privkey_copy);
+    }
+    free(dilithium_pubkey_copy);
+    free(kyber_pubkey_copy);
 
     // Copy fingerprint to output parameter
     strncpy(fingerprint_out, fingerprint, 128);
