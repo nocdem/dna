@@ -32,8 +32,6 @@ private:
 
     // Identity selection and management
     void renderIdentitySelection();
-    void scanIdentities();
-    void reloadContactsFromDatabase();
 
     // Create identity wizard
     void renderCreateIdentityStep1();
@@ -47,13 +45,6 @@ private:
 
     // Identity helper (was static, now regular method)
     static int IdentityNameInputFilter(ImGuiInputTextCallbackData* data);
-
-    // Data loading
-    void loadIdentity(const std::string& identity);
-    void loadMessagesForContact(int contact_index);
-
-    // Message polling
-    void checkForNewMessages();
 
     // Message management
     void retryMessage(int contact_idx, int msg_idx);
