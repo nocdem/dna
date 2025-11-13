@@ -89,7 +89,6 @@ private:
     void loadWallet();
     void refreshBalances();
     std::string formatBalance(const std::string& coins);
-    void renderReceiveDialog();
     void renderSendDialog();
     void buildAndSendTransaction();
     void renderTransactionHistoryDialog();

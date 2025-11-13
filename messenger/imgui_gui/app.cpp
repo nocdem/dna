@@ -10,6 +10,7 @@
 #include "screens/message_wall_screen.h"
 #include "screens/profile_editor_screen.h"
 #include "screens/settings_screen.h"
+#include "screens/wallet_receive_dialog.h"
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
@@ -267,7 +268,7 @@ void DNAMessengerApp::render() {
     }
 
     // Receive dialog
-    renderReceiveDialog();
+    WalletReceiveDialog::render(state);
 
     // Send dialog
     renderSendDialog();
@@ -3706,101 +3707,6 @@ void DNAMessengerApp::renderSendDialog() {
     // Open the modal if flag is set
     if (state.show_send_dialog && !ImGui::IsPopupOpen("Send Tokens")) {
         ImGui::OpenPopup("Send Tokens");
-    }
-}
-
-void DNAMessengerApp::renderReceiveDialog() {
-    if (!state.show_receive_dialog) return;
-
-    // Center the modal
-    ImGuiIO& io = ImGui::GetIO();
-    ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_Appearing);
-
-    if (ImGui::BeginPopupModal("Receive Tokens", &state.show_receive_dialog, ImGuiWindowFlags_NoResize)) {
-        // Wallet name
-        ImGui::Text(ICON_FA_WALLET " %s", state.wallet_name.c_str());
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
-
-        // Network (Backbone is the default)
-        ImGui::TextDisabled("Network: Backbone");
-        ImGui::Spacing();
-
-        // Address label
-        ImGui::Text("Your Wallet Address:");
-        ImGui::Spacing();
-
-        // Address input (read-only, monospace font)
-        ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);  // Use default font (monospace would be better)
-        ImGui::PushItemWidth(-1);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
-        ImGui::InputText("##address", state.wallet_address, sizeof(state.wallet_address),
-                        ImGuiInputTextFlags_ReadOnly);
-        ImGui::PopStyleColor();
-        ImGui::PopItemWidth();
-        ImGui::PopFont();
-
-        ImGui::Spacing();
-
-        // Copy button
-        float btn_width = 200.0f;
-        float btn_x = (ImGui::GetContentRegionAvail().x - btn_width) * 0.5f;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + btn_x);
-
-        if (state.address_copied) {
-            // Show "Copied!" feedback
-            if (ButtonDark(ICON_FA_CHECK " Copied!", ImVec2(btn_width, 40))) {
-                // Button disabled
-            }
-
-            // Reset after 2 seconds
-            state.address_copied_timer += io.DeltaTime;
-            if (state.address_copied_timer >= 2.0f) {
-                state.address_copied = false;
-                state.address_copied_timer = 0.0f;
-            }
-        } else {
-            if (ButtonDark(ICON_FA_CLIPBOARD " Copy Address", ImVec2(btn_width, 40))) {
-                ImGui::SetClipboardText(state.wallet_address);
-                state.address_copied = true;
-                state.address_copied_timer = 0.0f;
-            }
-        }
-
-        ImGui::Spacing();
-        ImGui::Spacing();
-
-        // QR Code placeholder
-        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - 200) * 0.5f);
-        ImGui::BeginChild("##qr_placeholder", ImVec2(200, 200), true);
-        ImGui::SetCursorPos(ImVec2(70, 90));
-        ImGui::TextDisabled("QR Code");
-        ImGui::SetCursorPos(ImVec2(50, 105));
-        ImGui::TextDisabled("(Coming Soon)");
-        ImGui::EndChild();
-
-        ImGui::Spacing();
-        ImGui::Spacing();
-
-        // Close button
-        float close_btn_width = 150.0f;
-        float close_btn_x = (ImGui::GetContentRegionAvail().x - close_btn_width) * 0.5f;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + close_btn_x);
-
-        if (ImGui::Button("Close", ImVec2(close_btn_width, 40))) {
-            state.show_receive_dialog = false;
-            state.address_copied = false;
-        }
-
-        ImGui::EndPopup();
-    }
-
-    // Open the modal if flag is set
-    if (state.show_receive_dialog && !ImGui::IsPopupOpen("Receive Tokens")) {
-        ImGui::OpenPopup("Receive Tokens");
     }
 }
 

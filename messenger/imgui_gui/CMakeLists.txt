@@ -38,6 +38,7 @@ add_executable(dna_messenger_imgui
     screens/message_wall_screen.cpp
     screens/profile_editor_screen.cpp
     screens/settings_screen.cpp
+    screens/wallet_receive_dialog.cpp
     ${IMGUI_SOURCES}
 )
 
