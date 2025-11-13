@@ -596,6 +596,15 @@ int messenger_generate_keys_from_seeds(
             fprintf(stderr, "         You may not be able to receive messages until you register a name\n");
         } else {
             printf("[DHT_KEYSERVER] ✓ Public keys published to DHT successfully\n");
+
+            // Add to local cache immediately (avoid DHT propagation delay)
+            printf("[DHT_KEYSERVER] Caching own public keys locally...\n");
+            if (keyserver_cache_put(fingerprint, dilithium_pubkey_copy, dilithium_pubkey_size,
+                                   kyber_pubkey_copy, kyber_pubkey_size, 365*24*60*60) == 0) {
+                printf("[DHT_KEYSERVER] ✓ Public keys cached locally\n");
+            } else {
+                fprintf(stderr, "Warning: Failed to cache public keys locally\n");
+            }
         }
     }
 
