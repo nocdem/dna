@@ -1,8 +1,9 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-13 | **Phase:** 10 (DNA Board Alpha) | **Complete:** 4, 8, 9.1-9.6, 10.1
+**Last Updated:** 2025-11-13 | **Phase:** 10 (DNA Board Alpha) | **Complete:** 4, 8, 9.1-9.6, 10.1, **Messenger Core Modularization**
 
 **Recent Updates (2025-11-13):**
+- **Messenger Core Modularization COMPLETE:** Extracted 3,352 LOC from monolithic `messenger.c` (4,248 LOC) into 7 focused modules. Reduced messenger.c by 85.4% (3,230 → 473 lines). Enables parallel team development.
 - **ImGui GUI Modularization COMPLETE:** Extracted 4,100+ LOC from monolithic `app.cpp` into 16 focused screen modules (screens/ and helpers/ directories)
 - **Phase 9.6 COMPLETE:** Encrypted DHT identity backup system (Kyber1024 + AES-256-GCM, BIP39 recovery, permanent DHT storage)
 - **Phase 10.1 COMPLETE:** Profile system with DHT storage + 7-day cache (dht_profile.c, profile_cache.c, profile_manager.c)
@@ -52,6 +53,15 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 │   └── monitor-bootstrap.sh # Health monitoring
 ├── p2p/                     # P2P transport
 │   └── p2p_transport.*      # TCP + DHT
+├── messenger/               # Messenger Core (MODULAR) - 7 focused modules
+│   ├── messenger_core.h     # Shared type definitions
+│   ├── identity.*           # Fingerprint utilities (111 LOC)
+│   ├── init.*               # Context management (255 LOC)
+│   ├── status.*             # Message status tracking (58 LOC)
+│   ├── keys.*               # Public key management (443 LOC)
+│   ├── contacts.*           # DHT contact sync (288 LOC)
+│   ├── keygen.*             # Key generation (1,078 LOC)
+│   └── messages.*           # Message operations (1,119 LOC)
 ├── imgui_gui/               # ImGui GUI (ACTIVE) - Modular architecture
 │   ├── app.cpp              # Main application (simplified to 324 LOC)
 │   ├── core/                # Core data structures
@@ -74,16 +84,127 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 │   │   └── data_loader.*    # Async data loading (447 LOC)
 │   └── vendor/imgui/        # ImGui library
 ├── gui/                     # Qt5 GUI (DEPRECATED)
+├── messenger.c              # Messenger facade (473 LOC, was 3,230)
 ├── wallet.*                 # Cellframe wallet integration
 ├── cellframe_rpc.*          # RPC client
 ├── cellframe_tx_builder_*   # TX builder
 ├── messenger_p2p.*          # P2P messaging
-├── messenger_stubs.c        # Group functions
+├── messenger_stubs.c        # DHT group functions
 ├── keyserver_cache.*        # Local key cache
 ├── contacts_db.*            # Per-identity contacts
 ├── profile_cache.*          # Profile cache (7-day TTL)
 ├── profile_manager.*        # Smart profile fetching
 └── dna_api.h                # Public API
+```
+
+---
+
+## Messenger Core Modular Architecture
+
+**Completed:** 2025-11-13 | **Total Reduction:** 2,757 LOC from monolithic messenger.c (85.4% reduction)
+
+### Module Pattern
+
+All messenger modules follow a consistent C API pattern:
+
+```c
+// messenger/module_name.h
+#ifndef MESSENGER_MODULE_NAME_H
+#define MESSENGER_MODULE_NAME_H
+#include "messenger_core.h"
+
+/**
+ * Function description
+ * @param ctx: Messenger context
+ * @return: 0 on success, -1 on error
+ */
+int messenger_function_name(messenger_context_t *ctx, ...);
+
+#endif
+```
+
+**Key principles:**
+- **C API:** Pure C with `messenger_context_t` first parameter pattern
+- **Focused responsibilities:** Each module handles one core domain (identity, keys, messages, etc.)
+- **Zero compiler warnings:** Especially critical for cryptographic code - all includes must be explicit
+- **SQLite storage:** Local databases in `~/.dna/` (per-identity isolation)
+- **DHT integration:** All modules use DHT via `p2p_transport_get_dht_context()`
+- **Error propagation:** Return 0 on success, -1 on error with stderr logging
+
+### Messenger Modules
+
+**Core modules** (`messenger/`)
+
+1. **identity** (111 LOC) - Identity creation and validation
+   - `messenger_create_identity()` - Generate fingerprint-first identity from BIP39
+   - `messenger_load_identity()` - Load existing identity from disk
+   - Fingerprint computation (SHA3-512 of Dilithium5 pubkey)
+   - Display name fallback (first10...last10 of fingerprint)
+
+2. **init** (255 LOC) - Messenger context initialization
+   - `messenger_init()` - Initialize messenger context with identity
+   - Database initialization (messages.db, contacts.db, profiles.db)
+   - DHT identity recovery (encrypted backup with Kyber1024)
+   - P2P transport startup
+
+3. **status** (58 LOC) - Status and info queries
+   - `messenger_show_status()` - Display current identity and contact count
+   - `messenger_get_current_identity()` - Get active identity string
+
+4. **keys** (443 LOC) - Public key management
+   - `messenger_load_pubkey()` - Load key from DHT keyserver (7d cache)
+   - `messenger_load_pubkey_raw()` - Return raw Kyber1024 pubkey bytes
+   - `messenger_publish_pubkey()` - Publish to DHT with Dilithium5 signature
+   - Cache-first with DHT fallback, BLOB storage in keyserver_cache.db
+
+5. **contacts** (288 LOC) - Contact list management
+   - `messenger_add_contact()` / `messenger_remove_contact()` - Local CRUD
+   - `messenger_list_contacts()` - Display contacts with profile info
+   - `messenger_sync_contacts_to_dht()` / `messenger_fetch_contacts_from_dht()` - Multi-device sync
+   - Per-identity SQLite (`~/.dna/<identity>_contacts.db`), Kyber1024 self-encrypted DHT sync
+
+6. **keygen** (1,078 LOC) - Key generation and restoration
+   - `messenger_generate_keys()` - Generate BIP39 + derive Dilithium5 + Kyber1024
+   - `messenger_generate_keys_from_seeds()` - Restore from existing seeds
+   - `messenger_register_name()` - DHT name registration (365d TTL)
+   - `messenger_restore_keys()` / `messenger_restore_keys_from_file()` - BIP39 recovery
+   - Encrypted DHT identity backup (permanent storage)
+
+7. **messages** (1,119 LOC) - Message operations
+   - `messenger_send_message()` - Multi-recipient E2E encryption (Kyber1024 + AES-256-GCM)
+   - `messenger_list_messages()` / `messenger_list_sent_messages()` - Message listing
+   - `messenger_decrypt_message()` - Decrypt with Kyber1024
+   - `messenger_get_conversation()` - Threaded conversation API (for GUI)
+   - `messenger_search_by_sender()` / `messenger_search_by_date()` - Search queries
+   - P2P delivery with DHT offline queue fallback (7d TTL)
+
+**Total extracted:** 3,352 LOC across 7 modules
+**Remaining messenger.c:** 473 LOC (high-level orchestration only)
+
+### Adding New Messenger Features
+
+1. **Determine scope:** Does it fit existing module or need new one?
+2. **Create module files:** `messenger/new_module.{h,c}` following pattern above
+3. **Add to build:** Update `CMakeLists.txt` with new .c file in `dna_lib` sources
+4. **Include in messenger.c:** Add `#include "messenger/new_module.h"`
+5. **Zero warnings:** Explicitly include ALL dependency headers (crypto, platform, SQLite)
+6. **Test cryptographic code:** Any crypto function MUST have proper declarations (no implicit)
+7. **Document API:** Add detailed comments to .h file (parameters, return values, behavior)
+
+**Example: Adding message search by keyword**
+
+```c
+// 1. Add to messenger/messages.h
+int messenger_search_by_keyword(messenger_context_t *ctx, const char *keyword);
+
+// 2. Implement in messenger/messages.c
+int messenger_search_by_keyword(messenger_context_t *ctx, const char *keyword) {
+    // SQLite query with LIKE pattern
+    // ...
+}
+
+// 3. No CMakeLists.txt change (already in build)
+// 4. Already included in messenger.c
 ```
 
 ---
