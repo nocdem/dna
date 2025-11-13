@@ -13,6 +13,7 @@
 #include "../qgp_dilithium.h"
 #include "../qgp_kyber.h"
 #include "../qgp_aes.h"
+#include "../qgp_random.h"
 #include "../aes_keywrap.h"
 #include "../message_backup.h"
 #include "../messenger_p2p.h"
