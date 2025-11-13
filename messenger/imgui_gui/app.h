@@ -95,11 +95,6 @@ private:
     void buildAndSendTransaction();
     void renderTransactionHistoryDialog();
     void loadTransactionHistory();
-
-    // Profile Editor functions
-    void renderProfileEditorDialog();
-    void loadProfile();
-    void saveProfile();
 };
 
 #endif // APP_H
