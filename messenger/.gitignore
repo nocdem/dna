@@ -66,18 +66,12 @@ temp/
 # OS
 Thumbs.db
 
-# Internal development docs (not for public repo)
-CLAUDE.md
-PROJECT_STATUS.md
-docs/
-
-# Note: dev.md is now tracked to maintain development history across team
+# Note: CLAUDE.md and docs/ are now tracked for team collaboration
 
 # Planning docs (completed, not needed in repo)
 *_PLAN.md
 *_ANALYSIS.md
 *_ARCHITECTURE.md
-*_STATUS.md
 *_SUMMARY.md
 *_DECISIONS.md
 *_DISCOVERIES.md
