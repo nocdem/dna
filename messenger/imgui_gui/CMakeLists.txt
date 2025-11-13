@@ -39,6 +39,7 @@ add_executable(dna_messenger_imgui
     screens/profile_editor_screen.cpp
     screens/settings_screen.cpp
     screens/wallet_receive_dialog.cpp
+    screens/wallet_transaction_history_dialog.cpp
     ${IMGUI_SOURCES}
 )
 

@@ -91,8 +91,6 @@ private:
     std::string formatBalance(const std::string& coins);
     void renderSendDialog();
     void buildAndSendTransaction();
-    void renderTransactionHistoryDialog();
-    void loadTransactionHistory();
 };
 
 #endif // APP_H
