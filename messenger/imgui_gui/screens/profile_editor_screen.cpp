@@ -1,4 +1,5 @@
 #include "profile_editor_screen.h"
+#include "../modal_helper.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
 #include "../theme_colors.h"
@@ -159,10 +160,8 @@ void render(AppState& state) {
 
     ImGuiIO& io = ImGui::GetIO();
 
-    ImGui::SetNextWindowSize(ImVec2(800, 700), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
-    if (ImGui::BeginPopupModal("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize)) {
 
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Edit your public DNA profile. All changes are stored in the DHT.");
         ImGui::Spacing();
@@ -238,7 +237,7 @@ void render(AppState& state) {
             saveProfile(state);
         }
 
-        ImGui::EndPopup();
+        CenteredModal::End();
     }
 }
 

@@ -1,4 +1,5 @@
 #include "register_name_screen.h"
+#include "../modal_helper.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
 #include "../theme_colors.h"
@@ -116,10 +117,8 @@ void render(AppState& state) {
 
     ImGuiIO& io = ImGui::GetIO();
 
-    ImGui::SetNextWindowSize(ImVec2(600, 450), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
-    if (ImGui::BeginPopupModal("Register DNA", &state.show_register_name, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Register DNA", &state.show_register_name, ImGuiWindowFlags_NoResize)) {
 
         ImGui::Spacing();
         ImGui::TextWrapped("Register a human-readable name for your identity. Others can find you by searching for this name.");
@@ -179,7 +178,7 @@ void render(AppState& state) {
             ImGui::EndDisabled();
         }
 
-        ImGui::EndPopup();
+        CenteredModal::End();
     }
 }
 

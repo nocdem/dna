@@ -1,4 +1,5 @@
 #include "wallet_receive_dialog.h"
+#include "../modal_helper.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
 #include "../theme_colors.h"
@@ -13,10 +14,8 @@ void render(AppState& state) {
     // Center the modal
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(500, 400), ImGuiCond_Appearing);
 
-    if (ImGui::BeginPopupModal("Receive Tokens", &state.show_receive_dialog, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Receive Tokens", &state.show_receive_dialog, ImGuiWindowFlags_NoResize)) {
         // Wallet name
         ImGui::Text(ICON_FA_WALLET " %s", state.wallet_name.c_str());
         ImGui::Spacing();
@@ -93,7 +92,7 @@ void render(AppState& state) {
             state.address_copied = false;
         }
 
-        ImGui::EndPopup();
+        CenteredModal::End();
     }
 
     // Open the modal if flag is set

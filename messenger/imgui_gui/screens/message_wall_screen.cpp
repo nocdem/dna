@@ -1,4 +1,5 @@
 #include "message_wall_screen.h"
+#include "../modal_helper.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
 #include "../theme_colors.h"
@@ -182,10 +183,8 @@ void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = (io.DisplaySize.x < 600);
 
-    ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x : 700, is_mobile ? io.DisplaySize.y : 600), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
-    if (ImGui::BeginPopupModal("Message Wall", &state.show_message_wall, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Message Wall", &state.show_message_wall, ImGuiWindowFlags_NoResize)) {
         // Title
 
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 100);
@@ -285,7 +284,7 @@ void render(AppState& state) {
             state.show_message_wall = false;
         }
 
-        ImGui::EndPopup();
+        CenteredModal::End();
     }
 }
 

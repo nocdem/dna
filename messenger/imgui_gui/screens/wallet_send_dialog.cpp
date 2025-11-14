@@ -5,6 +5,7 @@
 #include "../settings_manager.h"
 #include "../font_awesome.h"
 #include "imgui.h"
+#include "../modal_helper.h"
 
 extern "C" {
 #include "../../blockchain/wallet.h"
@@ -425,10 +426,8 @@ void render(AppState& state) {
     // Center the modal
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
-    ImGui::SetNextWindowPos(center, ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
-    ImGui::SetNextWindowSize(ImVec2(550, 500), ImGuiCond_Appearing);
 
-    if (ImGui::BeginPopupModal("Send Tokens", &state.show_send_dialog, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Send Tokens", &state.show_send_dialog, ImGuiWindowFlags_NoResize)) {
         // Wallet name
         ImGui::Text(ICON_FA_WALLET " From: %s", state.wallet_name.c_str());
         ImGui::Spacing();
@@ -534,7 +533,7 @@ void render(AppState& state) {
             state.send_status.clear();
         }
 
-        ImGui::EndPopup();
+        CenteredModal::End();
     }
 
     // Open the modal if flag is set

@@ -1,4 +1,5 @@
 #include "contact_profile_viewer.h"
+#include "../modal_helper.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
 #include "../theme_colors.h"
@@ -106,10 +107,8 @@ void render(AppState& state) {
     }
 
     ImGuiIO& io = ImGui::GetIO();
-    ImGui::SetNextWindowSize(ImVec2(700, 600), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
-    if (ImGui::BeginPopupModal("Contact Profile", &state.show_contact_profile, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Contact Profile", &state.show_contact_profile, ImGuiWindowFlags_NoResize)) {
         // Header
 
         ImGui::Spacing();
@@ -237,7 +236,7 @@ void render(AppState& state) {
             state.show_contact_profile = false;
         }
 
-        ImGui::EndPopup();
+        CenteredModal::End();
     }
 }
 

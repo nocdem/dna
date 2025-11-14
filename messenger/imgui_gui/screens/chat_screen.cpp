@@ -241,7 +241,7 @@ void render(AppState& state) {
             if (ImGui::MenuItem(ICON_FA_COPY " Copy")) {
                 ImGui::SetClipboardText(msg.content.c_str());
             }
-            ImGui::EndPopup();
+            CenteredModal::End();
         }
 
         ImGui::PopStyleVar(2);
@@ -551,7 +551,6 @@ void render(AppState& state) {
         // Emoji picker popup
         if (state.show_emoji_picker) {
             ImGui::SetNextWindowPos(state.emoji_picker_pos, ImGuiCond_Always);
-            ImGui::SetNextWindowSize(ImVec2(400, 200), ImGuiCond_Always);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
 
             if (ImGui::Begin("##EmojiPicker", &state.show_emoji_picker, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
@@ -706,14 +705,14 @@ void render(AppState& state) {
     ImGui::PopStyleColor(); // FrameBg
 
     // Queue Full modal
-    if (ImGui::BeginPopupModal("Queue Full", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (CenteredModal::Begin("Queue Full", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
         ImGui::Text("Message queue is full (20 pending messages).");
         ImGui::Text("Please wait for messages to send before adding more.");
         ImGui::Spacing();
         if (ImGui::Button("OK", ImVec2(120, 0))) {
             ImGui::CloseCurrentPopup();
         }
-        ImGui::EndPopup();
+        CenteredModal::End();
     }
 }
 

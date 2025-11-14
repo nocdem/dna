@@ -1,4 +1,5 @@
 #include "wallet_transaction_history_dialog.h"
+#include "../modal_helper.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
 #include "../theme_colors.h"
@@ -241,10 +242,8 @@ void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = (io.DisplaySize.x < 600);
 
-    ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x : 700, is_mobile ? io.DisplaySize.y : 600), ImGuiCond_FirstUseEver);
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
-    if (ImGui::BeginPopupModal("Transaction History", &state.show_transaction_history, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Transaction History", &state.show_transaction_history, ImGuiWindowFlags_NoResize)) {
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -320,7 +319,7 @@ void render(AppState& state) {
             state.show_transaction_history = false;
         }
 
-        ImGui::EndPopup();
+        CenteredModal::End();
     }
 }
 
