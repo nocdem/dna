@@ -11,7 +11,7 @@ extern AppSettings g_app_settings;
 // Helper to create centered modal windows that stay centered on resize
 class CenteredModal {
 public:
-    static bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0) {
+    static bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0, bool allow_esc_close = true) {
         // Center modal before opening
         ImGuiIO& io = ImGui::GetIO();
         ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
@@ -39,11 +39,9 @@ public:
             ImGui::PopStyleColor();
             ImGui::Spacing();
             
-            // Handle ESC key to close modal
-            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                if (p_open) {
-                    *p_open = false;
-                }
+            // Handle ESC key to close modal (only if allowed and p_open is provided)
+            if (allow_esc_close && p_open && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                *p_open = false;
                 ImGui::CloseCurrentPopup();
             }
         } else {

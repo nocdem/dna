@@ -46,7 +46,7 @@ void render(AppState& state) {
     // Set size before modal
     ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x * 0.9f : 500, is_mobile ? io.DisplaySize.y * 0.9f : 500));
 
-    if (CenteredModal::Begin("DNA Messenger - Select Identity", nullptr, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("DNA Messenger - Select Identity", nullptr, ImGuiWindowFlags_NoResize, false)) {  // false = disable ESC
         // Add padding at top
         ImGui::Spacing();
         ImGui::Spacing();
