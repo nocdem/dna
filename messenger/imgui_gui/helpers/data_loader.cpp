@@ -115,7 +115,7 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
         if (ctx->fingerprint) {
             printf("[Identity] Loading DHT identity...\n");
             if (messenger_load_dht_identity(ctx->fingerprint) == 0) {
-                printf("[Identity] ✓ DHT identity loaded successfully\n");
+                printf("[Identity] [OK] DHT identity loaded successfully\n");
             } else {
                 printf("[Identity] Warning: Failed to load DHT identity (DHT operations may accumulate values)\n");
                 // Non-fatal - continue without permanent DHT identity
@@ -136,7 +136,7 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
         // Register presence in DHT (announce we're online)
         printf("[Identity] Registering presence in DHT...\n");
         if (messenger_p2p_refresh_presence(ctx) == 0) {
-            printf("[Identity] ✓ Presence registered successfully\n");
+            printf("[Identity] [OK] Presence registered successfully\n");
         } else {
             printf("[Identity] Warning: Failed to register presence\n");
         }
@@ -146,7 +146,7 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
         if (dht_ctx) {
             printf("[Identity] Initializing profile manager...\n");
             if (profile_manager_init(dht_ctx, ctx->fingerprint) == 0) {
-                printf("[Identity] ✓ Profile manager initialized\n");
+                printf("[Identity] [OK] Profile manager initialized\n");
             } else {
                 printf("[Identity] Warning: Failed to initialize profile manager\n");
             }
@@ -212,7 +212,7 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
     size_t messages_received = 0;
     int offline_check_result = messenger_p2p_check_offline_messages(ctx, &messages_received);
     if (offline_check_result == 0 && messages_received > 0) {
-        printf("[Identity] ✓ Received %zu offline messages on login\n", messages_received);
+        printf("[Identity] [OK] Received %zu offline messages on login\n", messages_received);
         state.new_messages_received = true;  // Trigger conversation reload if in a chat
     } else if (offline_check_result == 0) {
         printf("[Identity] No offline messages found\n");
@@ -229,7 +229,7 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
         // First: Fetch contacts from DHT (merge with local)
         int result = messenger_sync_contacts_from_dht(ctx);
         if (result == 0) {
-            printf("[Contacts] ✓ Synced from DHT successfully\n");
+            printf("[Contacts] [OK] Synced from DHT successfully\n");
             state.contacts_synced_from_dht = true;
         } else {
             printf("[Contacts] DHT sync failed or no data found\n");
@@ -238,13 +238,13 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
         // Second: Push local contacts back to DHT (ensure DHT is up-to-date)
         printf("[Contacts] Publishing local contacts to DHT...\n");
         messenger_sync_contacts_to_dht(ctx);
-        printf("[Contacts] ✓ Local contacts published to DHT\n");
+        printf("[Contacts] [OK] Local contacts published to DHT\n");
 
         // Third: Refresh expired profiles in background (7-day TTL)
         printf("[Profiles] Refreshing expired profiles from DHT...\n");
         int refreshed = profile_manager_refresh_all_expired();
         if (refreshed > 0) {
-            printf("[Profiles] ✓ Refreshed %d expired profiles\n", refreshed);
+            printf("[Profiles] [OK] Refreshed %d expired profiles\n", refreshed);
         } else if (refreshed == 0) {
             printf("[Profiles] No expired profiles to refresh\n");
         }
@@ -309,7 +309,7 @@ void reloadContactsFromDatabase(AppState& state) {
             return strcmp(a.name.c_str(), b.name.c_str()) < 0;
         });
 
-        printf("[Contacts] ✓ Reloaded %d contacts\n", contactCount);
+        printf("[Contacts] [OK] Reloaded %d contacts\n", contactCount);
     } else {
         printf("[Contacts] Failed to reload contacts from database\n");
     }
@@ -465,7 +465,7 @@ void checkForNewMessages(AppState& state) {
         int result = messenger_p2p_check_offline_messages(ctx, &messages_received);
 
         if (result == 0 && messages_received > 0) {
-            printf("[Poll] ✓ Received %zu new message(s) from DHT offline queue\n", messages_received);
+            printf("[Poll] [OK] Received %zu new message(s) from DHT offline queue\n", messages_received);
             // Set flag for main thread to reload messages
             state.new_messages_received = true;
         } else if (result != 0) {

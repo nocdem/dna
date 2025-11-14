@@ -73,7 +73,7 @@ void retryMessage(AppState& state, int contact_idx, int msg_idx) {
         }
 
         if (result == 0) {
-            printf("[Retry] ✓ Message retry successful to %s\n", recipient.c_str());
+            printf("[Retry] [OK] Message retry successful to %s\n", recipient.c_str());
         } else {
             printf("[Retry] ERROR: Message retry failed to %s\n", recipient.c_str());
         }
@@ -441,7 +441,7 @@ void render(AppState& state) {
                             }
 
                             if (result == 0) {
-                                printf("[Send] ✓ Message sent to %s (queue processed)\n", recipient.c_str());
+                                printf("[Send] [OK] Message sent to %s (queue processed)\n", recipient.c_str());
                             } else {
                                 printf("[Send] ERROR: Failed to send to %s (status=FAILED)\n", recipient.c_str());
                             }
@@ -689,7 +689,7 @@ void render(AppState& state) {
                             }
 
                             if (result == 0) {
-                                printf("[Send] ✓ Message sent to %s (queue processed)\n", recipient.c_str());
+                                printf("[Send] [OK] Message sent to %s (queue processed)\n", recipient.c_str());
                             } else {
                                 printf("[Send] ERROR: Failed to send to %s (status=FAILED)\n", recipient.c_str());
                             }

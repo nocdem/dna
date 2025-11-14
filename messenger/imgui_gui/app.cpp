@@ -226,7 +226,7 @@ void DNAMessengerApp::processPendingRegistration() {
                     qgp_key_free(enc_key);
 
                     if (ret == 0) {
-                        printf("[Identity] ✓ Pending registration completed successfully!\n");
+                        printf("[Identity] [OK] Pending registration completed successfully!\n");
                         state.identity_name_cache[state.pending_registration_fingerprint] = state.pending_registration_name;
                     } else {
                         printf("[Identity] ERROR: Pending registration failed\n");

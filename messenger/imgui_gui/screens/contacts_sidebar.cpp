@@ -256,7 +256,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             draw_list->AddRectFilled(rect_min, rect_max, bg_color);
         }
 
-        // Format: "✉ Name" with mail icon (theme-colored)
+        // Format: "ICON Name" with mail icon (theme-colored)
         const char* icon = ICON_FA_ENVELOPE;
 
         char display_text[256];

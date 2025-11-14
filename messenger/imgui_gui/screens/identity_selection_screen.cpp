@@ -254,7 +254,7 @@ void render(AppState& state) {
                 task->addMessage("Connecting...");
                 DataLoader::loadIdentity(state, state.current_identity, [&state](int i) { DataLoader::loadMessagesForContact(state, i); });
 
-                task->addMessage("✓ Connected successfully!");
+                task->addMessage(ICON_FA_CIRCLE_CHECK " Connected successfully!");
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
             });
         }
@@ -373,12 +373,12 @@ void renderCreateIdentityStep1(AppState& state) {
     if (name_len > 0 && !name_valid) {
         ImVec4 error_color = g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning();
         ImGui::PushStyleColor(ImGuiCol_Text, error_color);
-        ImGui::TextWrapped("✗ %s", error_msg.c_str());
+        ImGui::TextWrapped(ICON_FA_CIRCLE_XMARK " %s", error_msg.c_str());
         ImGui::PopStyleColor();
     } else if (name_len > 0 && name_valid) {
         ImVec4 success_color = g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess();
         ImGui::PushStyleColor(ImGuiCol_Text, success_color);
-        ImGui::Text("✓ Valid identity name");
+        ImGui::Text(ICON_FA_CIRCLE_CHECK " Valid identity name");
         ImGui::PopStyleColor();
     }
 
@@ -496,7 +496,7 @@ void renderCreateIdentityStep2(AppState& state) {
 
     // Show success message if recently copied (centered above buttons)
     if (state.seed_copied && state.seed_copied_timer > 0.0f) {
-        const char* msg = "✓ Words copied to clipboard!";
+        const char* msg = ICON_FA_CIRCLE_CHECK " Words copied to clipboard!";
         ImVec2 text_size = ImGui::CalcTextSize(msg);
         float center_offset = (ImGui::GetContentRegionAvail().x - text_size.x) * 0.5f;
         if (center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + center_offset);
@@ -557,7 +557,7 @@ void renderCreateIdentityStep2(AppState& state) {
             task->addMessage("Connecting...");
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
-            task->addMessage("✓ Identity created successfully!");
+            task->addMessage(ICON_FA_CIRCLE_CHECK " Identity created successfully!");
             std::this_thread::sleep_for(std::chrono::milliseconds(800));
         });
     }
@@ -627,7 +627,7 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
     }
 
     printf("[Identity] Generated keys with fingerprint: %.20s...\n", fingerprint);
-    printf("[Identity] ✓ Identity created successfully (no name registered)\n");
+    printf("[Identity] [OK] Identity created successfully (no name registered)\n");
     printf("[Identity] TIP: You can register a human-readable name later in Settings\n");
 
     // Identity created successfully
@@ -699,7 +699,7 @@ void renderRestoreStep2_Seed(AppState& state) {
                               "Invalid: Found %d words, need exactly 24 words", word_count);
             ImGui::PopTextWrapPos();
         } else {
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), "✓ Valid: 24 words");
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), ICON_FA_CIRCLE_CHECK " Valid: 24 words");
         }
     }
 
@@ -747,7 +747,7 @@ void renderRestoreStep2_Seed(AppState& state) {
             task->addMessage("Connecting...");
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
-            task->addMessage("✓ Identity restored successfully!");
+            task->addMessage(ICON_FA_CIRCLE_CHECK " Identity restored successfully!");
             std::this_thread::sleep_for(std::chrono::milliseconds(800));
         });
     }
@@ -855,9 +855,9 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
         return;
     }
 
-    printf("✓ Identity restored successfully!\n");
-    printf("✓ Fingerprint: %s\n", fingerprint);
-    printf("✓ Keys saved to: ~/.dna/%s.dsa and ~/.dna/%s.kem\n", fingerprint, fingerprint);
+    printf("[OK] Identity restored successfully!\n");
+    printf("[OK] Fingerprint: %s\n", fingerprint);
+    printf("[OK] Keys saved to: ~/.dna/%s.dsa and ~/.dna/%s.kem\n", fingerprint, fingerprint);
 
     // Try to fetch registered name via DHT reverse lookup
     dht_context_t *dht_ctx = dht_singleton_get();
@@ -867,7 +867,7 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
         int lookup_result = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &registered_name);
 
         if (lookup_result == 0 && registered_name && registered_name[0] != '\0') {
-            printf("✓ Found registered name: %s\n", registered_name);
+            printf("[OK] Found registered name: %s\n", registered_name);
             state.identity_name_cache[fingerprint] = registered_name;
             free(registered_name);
         } else {

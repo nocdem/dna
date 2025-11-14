@@ -337,7 +337,7 @@ int main(int argc, char** argv) {
                 if (dht_singleton_init() != 0) {
                     fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
                 } else {
-                    printf("[MAIN] ✓ DHT ready!\n");
+                    printf("[MAIN] [OK] DHT ready!\n");
                 }
             });
         }
@@ -424,6 +424,6 @@ int main(int argc, char** argv) {
     glfwDestroyWindow(window);
     glfwTerminate();
 
-    printf("[MAIN] ✓ Clean shutdown complete\n");
+    printf("[MAIN] [OK] Clean shutdown complete\n");
     return 0;
 }

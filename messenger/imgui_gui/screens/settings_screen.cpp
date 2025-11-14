@@ -95,7 +95,7 @@ void render(AppState& state) {
     ImGuiStyle& current_style = ImGui::GetStyle();
     if (fabs(g_app_settings.ui_scale - current_style.FontScaleMain) > 0.01f) {
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "⚠ Restart app to apply scale changes");
+        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " Restart app to apply scale changes");
     }
 
     ImGui::Spacing();

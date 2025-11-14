@@ -219,14 +219,14 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
                 state.dht_publish_task.start([ctx, fingerprint](AsyncTask* task) {
                     printf("[AddContact] Publishing contacts to DHT...\n");
                     messenger_sync_contacts_to_dht(ctx);
-                    printf("[AddContact] ✓ Published to DHT\n");
+                    printf("[AddContact] [OK] Published to DHT\n");
 
                     // Fetch profile for new contact (cache for future use)
                     printf("[AddContact] Fetching profile for new contact...\n");
                     dht_profile_t profile;
                     int result = profile_manager_get_profile(fingerprint, &profile);
                     if (result == 0) {
-                        printf("[AddContact] ✓ Profile cached: %s\n", profile.display_name);
+                        printf("[AddContact] [OK] Profile cached: %s\n", profile.display_name);
                     } else if (result == -2) {
                         printf("[AddContact] No profile found in DHT (user hasn't published yet)\n");
                     } else {
