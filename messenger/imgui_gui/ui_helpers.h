@@ -15,4 +15,15 @@ bool ThemedButton(const char* label, const ImVec2& size = ImVec2(0, 0), bool is_
 // Global themed spinner utility
 void ThemedSpinner(const char* label, float radius = 16.0f, float thickness = 3.0f);
 
+// Check if mobile layout should be used
+inline bool IsMobileLayout() {
+    return ImGui::GetIO().DisplaySize.x < 600;
+}
+
+// Get modal width based on mobile/desktop
+inline float GetModalWidth(float desktop_width) {
+    ImGuiIO& io = ImGui::GetIO();
+    return IsMobileLayout() ? io.DisplaySize.x * 0.9f : desktop_width;
+}
+
 #endif // UI_HELPERS_H

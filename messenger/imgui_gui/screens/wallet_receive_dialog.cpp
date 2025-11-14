@@ -12,12 +12,10 @@ void render(AppState& state) {
     if (!state.show_receive_dialog) return;
 
     ImGuiIO& io = ImGui::GetIO();
-    bool is_mobile = io.DisplaySize.x < 600;
+    bool is_mobile = IsMobileLayout();
 
-    // Set fixed width like other modals
-    ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x * 0.9f : 500, 0), ImGuiCond_Always);
 
-    if (CenteredModal::Begin("Receive Tokens", &state.show_receive_dialog, ImGuiWindowFlags_NoResize, true, false)) {
+    if (CenteredModal::Begin("Receive Tokens", &state.show_receive_dialog, ImGuiWindowFlags_NoResize, true, false, 500)) {
         // Wallet name
         ImGui::Text(ICON_FA_WALLET " %s", state.wallet_name.c_str());
         ImGui::Spacing();

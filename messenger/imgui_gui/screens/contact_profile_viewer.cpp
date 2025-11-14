@@ -107,12 +107,10 @@ void render(AppState& state) {
     }
 
     ImGuiIO& io = ImGui::GetIO();
-    bool is_mobile = io.DisplaySize.x < 600;
+    bool is_mobile = IsMobileLayout();
 
-    // Set fixed width like other modals
-    ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x * 0.9f : 600, 0), ImGuiCond_Always);
 
-    if (CenteredModal::Begin("Contact Profile", &state.show_contact_profile, ImGuiWindowFlags_NoResize, true, false)) {
+    if (CenteredModal::Begin("Contact Profile", &state.show_contact_profile, ImGuiWindowFlags_NoResize, true, false, 600)) {
         // Header
 
         ImGui::Spacing();

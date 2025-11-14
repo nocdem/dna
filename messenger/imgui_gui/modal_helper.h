@@ -14,11 +14,17 @@ private:
     static inline bool* s_esc_close_target = nullptr;  // Store pointer for ESC handling
     
 public:
-    static bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0, bool allow_esc_close = true, bool show_close_button = true) {
+    static bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0, bool allow_esc_close = true, bool show_close_button = true, float desktop_width = 500.0f, float desktop_height = 0.0f) {
         // Center modal before opening
         ImGuiIO& io = ImGui::GetIO();
         ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
         ImGui::SetNextWindowPos(center, ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+        
+        // Set fixed width (and optionally height) based on mobile/desktop
+        bool is_mobile = io.DisplaySize.x < 600;
+        float modal_width = is_mobile ? io.DisplaySize.x * 0.9f : desktop_width;
+        float modal_height = desktop_height > 0 ? (is_mobile ? io.DisplaySize.y * 0.9f : desktop_height) : 0.0f;
+        ImGui::SetNextWindowSize(ImVec2(modal_width, modal_height), ImGuiCond_Always);
         
         // Apply standard modal styling
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
