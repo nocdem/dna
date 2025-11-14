@@ -2,6 +2,7 @@
 #include "../imgui.h"
 #include "../ui_helpers.h"
 #include "../font_awesome.h"
+#include "../helpers/data_loader.h"
 
 extern "C" {
     #include "../../messenger.h"
@@ -89,6 +90,13 @@ void registerName(AppState& state) {
 
     if (result == 0) {
         state.register_name_status = "Name registered successfully!";
+
+        // Update the registered name in app state
+        state.profile_registered_name = name;
+
+        // Refresh the registered name from DHT to ensure consistency
+        DataLoader::fetchRegisteredName(state);
+
         state.show_register_name = false;
     } else {
         state.register_name_status = "Registration failed. Please try again.";
@@ -100,8 +108,8 @@ void render(AppState& state) {
     if (!state.show_register_name) return;
 
     // Open popup on first show (MUST be before BeginPopupModal!)
-    if (!ImGui::IsPopupOpen("Register DNA Name")) {
-        ImGui::OpenPopup("Register DNA Name");
+    if (!ImGui::IsPopupOpen("Register DNA")) {
+        ImGui::OpenPopup("Register DNA");
     }
 
     ImGuiIO& io = ImGui::GetIO();
@@ -109,9 +117,9 @@ void render(AppState& state) {
     ImGui::SetNextWindowSize(ImVec2(600, 450), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
-    if (ImGui::BeginPopupModal("Register DNA Name", &state.show_register_name, ImGuiWindowFlags_NoResize)) {
+    if (ImGui::BeginPopupModal("Register DNA", &state.show_register_name, ImGuiWindowFlags_NoResize)) {
         ImGui::PushFont(io.Fonts->Fonts[2]);
-        ImGui::Text("Register DNA Name");
+        ImGui::Text("Register DNA");
         ImGui::PopFont();
 
         ImGui::Spacing();
@@ -167,7 +175,7 @@ void render(AppState& state) {
         if (!can_register) {
             ImGui::BeginDisabled();
         }
-        if (ButtonDark(ICON_FA_CHECK " Register Name (Free)", ImVec2(200, 40))) {
+        if (ButtonDark(ICON_FA_CHECK " Register DNA (Free)", ImVec2(200, 40))) {
             registerName(state);
         }
         if (!can_register) {

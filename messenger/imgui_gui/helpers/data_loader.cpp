@@ -8,6 +8,7 @@
 
 extern "C" {
 #include "../../crypto/utils/qgp_platform.h"
+#include "../../dht/dht_keyserver.h"
 }
 
 #include <cstring>
@@ -200,6 +201,10 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
     state.identity_loaded = true;
     state.show_identity_selection = false; // Close identity selection modal
     state.current_identity = identity;
+
+    // Fetch registered DNA name for current identity (synchronous, fast DHT query)
+    printf("[Identity] Fetching registered DNA name...\n");
+    fetchRegisteredName(state);
 
     // Model E: Check for offline messages ONCE on login
     printf("[Identity] Checking for offline messages (one-time on login)...\n");
@@ -469,6 +474,36 @@ void checkForNewMessages(AppState& state) {
         // 3. Note: Contact presence update happens in main thread when reloading contacts
         // (loadContactsForIdentity calls messenger_p2p_peer_online for each contact)
     });
+}
+
+void fetchRegisteredName(AppState& state) {
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (!ctx || !state.identity_loaded) {
+        printf("[RegisteredName] Cannot fetch - no identity loaded\n");
+        state.profile_registered_name = "";
+        return;
+    }
+
+    // Get DHT context
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        printf("[RegisteredName] DHT not available\n");
+        state.profile_registered_name = "";
+        return;
+    }
+
+    // Perform reverse lookup (fingerprint -> registered name)
+    char *registered_name = nullptr;
+    int result = dht_keyserver_reverse_lookup(dht_ctx, ctx->fingerprint, &registered_name);
+
+    if (result == 0 && registered_name != nullptr) {
+        printf("[RegisteredName] Found registered name: %s\n", registered_name);
+        state.profile_registered_name = std::string(registered_name);
+        free(registered_name);
+    } else {
+        printf("[RegisteredName] No registered name found (result=%d)\n", result);
+        state.profile_registered_name = "";
+    }
 }
 
 } // namespace DataLoader

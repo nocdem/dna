@@ -126,10 +126,13 @@ void render(AppState& state) {
         }
         ImGui::Spacing();
 
-        if (ButtonDark(ICON_FA_TAG " Register DNA Name", ImVec2(-1, btn_height))) {
-            state.show_register_name = true;
+        // Only show Register DNA button if no name is registered
+        if (state.profile_registered_name.empty()) {
+            if (ButtonDark(ICON_FA_TAG " Register DNA", ImVec2(-1, btn_height))) {
+                state.show_register_name = true;
+            }
+            ImGui::Spacing();
         }
-        ImGui::Spacing();
 
         if (ButtonDark(ICON_FA_NEWSPAPER " My Message Wall", ImVec2(-1, btn_height))) {
             // Open own message wall
@@ -152,9 +155,13 @@ void render(AppState& state) {
         if (ButtonDark(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
             state.show_profile_editor = true;
         }
-        ImGui::SameLine();
-        if (ButtonDark(ICON_FA_TAG " Register Name", ImVec2(200, btn_height))) {
-            state.show_register_name = true;
+
+        // Only show Register DNA button if no name is registered
+        if (state.profile_registered_name.empty()) {
+            ImGui::SameLine();
+            if (ButtonDark(ICON_FA_TAG " Register DNA", ImVec2(200, btn_height))) {
+                state.show_register_name = true;
+            }
         }
 
         ImGui::Spacing();

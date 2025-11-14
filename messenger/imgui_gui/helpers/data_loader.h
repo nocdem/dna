@@ -21,6 +21,9 @@ namespace DataLoader {
 
     // Check DHT offline queue for new messages (async)
     void checkForNewMessages(AppState& state);
+
+    // Fetch registered DNA name for current identity (async)
+    void fetchRegisteredName(AppState& state);
 }
 
 #endif // DATA_LOADER_H
