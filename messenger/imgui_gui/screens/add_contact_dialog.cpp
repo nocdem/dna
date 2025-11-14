@@ -188,20 +188,25 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
 
     ImGui::Spacing();
 
-    // Buttons
-    float button_width = is_mobile ? -1 : 150.0f;
-
-    if (ThemedButton("Cancel", ImVec2(button_width, 40))) {
+    // Buttons - properly aligned with equal spacing from edges
+    float button_width_left = 100.0f;
+    float button_width_right = 100.0f;
+    float window_width = ImGui::GetWindowWidth();
+    float window_padding = ImGui::GetStyle().WindowPadding.x;
+    
+    // Left button - starts at window padding
+    if (ThemedButton("Cancel", ImVec2(button_width_left, 40))) {
         state.show_add_contact_dialog = false;
         CenteredModal::End();
         return;
     }
-
-    if (!is_mobile) ImGui::SameLine();
-
+    
+    // Right button - position from window origin, not cursor
+    ImGui::SameLine(window_width - window_padding - button_width_right);
+    
     // Save button (only enabled if contact found)
     ImGui::BeginDisabled(state.add_contact_found_fingerprint.empty());
-    if (ThemedButton("Save", ImVec2(button_width, 40))) {
+    if (ThemedButton("Save", ImVec2(button_width_right, 40))) {
         // Save contact to database using FINGERPRINT
         const char* fingerprint = state.add_contact_found_fingerprint.c_str();
         int result = contacts_db_add(fingerprint, NULL);
