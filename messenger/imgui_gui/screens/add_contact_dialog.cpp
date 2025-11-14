@@ -17,7 +17,7 @@ extern AppSettings g_app_settings;
 namespace AddContactDialog {
 
 void render(AppState& state, std::function<void()> reload_contacts_callback) {
-    if (!CenteredModal::Begin("Add Contact", nullptr, ImGuiWindowFlags_NoResize, true, false, 500)) {
+    if (!CenteredModal::Begin("Add Contact", nullptr, ImGuiWindowFlags_NoResize, true, false, 300)) {
         return;
     }
 
