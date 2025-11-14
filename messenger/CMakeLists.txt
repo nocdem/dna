@@ -178,8 +178,6 @@ set(COMMON_SOURCES
     crypto/utils/qgp_utils_standalone.c
     # Cross-platform abstraction layer
     ${PLATFORM_SOURCES}
-    # Phase 9.3: Local message backup (SQLite)
-    message_backup.c
 )
 
 # DNA Messenger Library (libdna)
@@ -196,6 +194,8 @@ add_library(dna_lib STATIC
     # Legacy monolithic messenger (TODO: Remove after full modularization)
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
+    # Phase 9.3: Local message backup (SQLite)
+    message_backup.c
     database/presence_cache.c  # Phase 9.1c: Fast presence cache (O(1) lookup, no DHT queries)
     messenger_stubs.c  # DHT-based group functions (Phase 3)
     database/keyserver_cache.c  # Phase 4: SQLite keyserver cache
