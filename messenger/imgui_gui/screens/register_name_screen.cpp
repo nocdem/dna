@@ -132,22 +132,60 @@ void render(AppState& state) {
         // Check if registration task completed
         if (state.register_name_task.isCompleted() && !state.register_name_task.isRunning()) {
             auto messages = state.register_name_task.getMessages();
-            if (!messages.empty() && messages.back().find("successfully") != std::string::npos) {
-                state.show_register_name = false;
+            if (!messages.empty()) {
+                if (messages.back().find("successfully") != std::string::npos) {
+                    // Success - close after a moment
+                    state.show_register_name = false;
+                } else if (messages.back().find("failed") != std::string::npos) {
+                    // Error occurred - show error message and allow retry
+                    ImGui::Spacing();
+                    ImGui::Spacing();
+                    
+                    // Center error icon and message
+                    const char* error_msg = messages.back().c_str();
+                    float text_width = ImGui::CalcTextSize(error_msg).x;
+                    ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - text_width) * 0.5f);
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), 
+                                      ICON_FA_CIRCLE_XMARK " %s", error_msg);
+                    
+                    ImGui::Spacing();
+                    ImGui::Spacing();
+                    
+                    // Close button
+                    float btn_width = 120.0f;
+                    ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - btn_width) * 0.5f);
+                    if (ThemedButton("Close", ImVec2(btn_width, 40))) {
+                        state.show_register_name = false;
+                    }
+                    
+                    CenteredModal::End();
+                    return;
+                }
             }
         }
         
         // Show spinner if task is running
         if (state.register_name_task.isRunning()) {
-            ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - 50) * 0.5f);
+            ImGui::Spacing();
+            ImGui::Spacing();
+            
+            // Center spinner
+            float avail_width = ImGui::GetContentRegionAvail().x;
+            ImGui::SetCursorPosX((avail_width - 50) * 0.5f);
             ThemedSpinner("##regspinner", 25.0f, 4.0f);
             
             ImGui::Spacing();
+            ImGui::Spacing();
+            
+            // Center status message
             auto messages = state.register_name_task.getMessages();
             if (!messages.empty()) {
-                ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(messages.back().c_str()).x) * 0.5f);
+                float text_width = ImGui::CalcTextSize(messages.back().c_str()).x;
+                ImGui::SetCursorPosX((avail_width - text_width) * 0.5f);
                 ImGui::Text("%s", messages.back().c_str());
             }
+            
+            ImGui::Spacing();
             ImGui::Spacing();
             
             CenteredModal::End();
