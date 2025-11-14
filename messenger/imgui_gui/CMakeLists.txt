@@ -10,6 +10,9 @@ add_definitions(-DIMGUI_USE_WCHAR32)
 # Enable FreeType for colored emoji
 add_definitions(-DIMGUI_ENABLE_FREETYPE)
 
+# Prefer GLVND for OpenGL (suppresses legacy GL warning)
+set(OpenGL_GL_PREFERENCE GLVND)
+
 # Find required packages
 find_package(OpenGL REQUIRED)
 find_package(glfw3 REQUIRED)
