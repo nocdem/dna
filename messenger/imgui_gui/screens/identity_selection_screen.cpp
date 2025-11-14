@@ -21,6 +21,10 @@ extern "C" {
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#ifdef _WIN32
+#include <direct.h>
+#endif
+
 // Forward declaration for input filter callback
 static int IdentityNameInputFilter(ImGuiInputTextCallbackData* data);
 
@@ -576,7 +580,7 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
 #endif
 
 #ifdef _WIN32
-    _mkdir(dna_dir.c_str());
+    mkdir(dna_dir.c_str());
 #else
     mkdir(dna_dir.c_str(), 0700);
 #endif

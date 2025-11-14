@@ -7,8 +7,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
 #include "../dna_api.h"
 #include "../crypto/utils/qgp_types.h"
+
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_dilithium.h"
 #include "../crypto/utils/qgp_kyber.h"

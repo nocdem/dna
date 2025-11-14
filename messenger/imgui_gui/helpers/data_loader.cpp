@@ -19,6 +19,7 @@ extern "C" {
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>
+#undef STATUS_PENDING  // Undefine Windows macro that conflicts with MessageStatus enum
 #else
 #include <dirent.h>
 #endif

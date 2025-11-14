@@ -89,8 +89,25 @@ void load(AppState& state) {
                         if (timestamp_obj) {
                             const char *ts_str = json_object_get_string(timestamp_obj);
                             // Parse RFC2822 format timestamp (e.g., "Mon, 15 Oct 2024 14:30:00 GMT")
+                            // Manual parsing for cross-platform compatibility (strptime is POSIX-only)
                             struct tm tm_time = {};
-                            if (strptime(ts_str, "%a, %d %b %Y %H:%M:%S", &tm_time) != nullptr) {
+                            char month_str[4];
+                            int parsed = sscanf(ts_str, "%*[^,], %d %3s %d %d:%d:%d",
+                                              &tm_time.tm_mday, month_str, &tm_time.tm_year,
+                                              &tm_time.tm_hour, &tm_time.tm_min, &tm_time.tm_sec);
+
+                            if (parsed == 6) {
+                                // Convert month string to number
+                                const char *months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                                       "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+                                for (int i = 0; i < 12; i++) {
+                                    if (strcmp(month_str, months[i]) == 0) {
+                                        tm_time.tm_mon = i;
+                                        break;
+                                    }
+                                }
+                                tm_time.tm_year -= 1900;  // tm_year is years since 1900
+
                                 time_t tx_time = mktime(&tm_time);
                                 time_t now = time(nullptr);
                                 int64_t diff = now - tx_time;

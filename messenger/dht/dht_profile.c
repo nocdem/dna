@@ -15,6 +15,21 @@
 #include <string.h>
 #include <time.h>
 
+// Windows byte order conversion macros (be64toh, htobe64 not available)
+#ifdef _WIN32
+#include <winsock2.h>
+
+// 64-bit big-endian conversions for Windows
+#define htobe64(x) ( \
+    ((uint64_t)(htonl((uint32_t)((x) & 0xFFFFFFFF))) << 32) | \
+    ((uint64_t)(htonl((uint32_t)((x) >> 32)))) \
+)
+#define be64toh(x) htobe64(x)  // Same operation for bidirectional conversion
+
+#else
+#include <endian.h>
+#endif
+
 // JSON helpers (simple manual serialization - no json-c dependency)
 
 /**
