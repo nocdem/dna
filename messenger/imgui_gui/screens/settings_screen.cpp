@@ -106,9 +106,9 @@ void render(AppState& state) {
     ImGui::Text("Identity");
     ImGui::Spacing();
 
-    // Show registered DNA name if available (red)
+    // Show registered DNA name if available
     if (!state.profile_registered_name.empty()) {
-        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), "%s", state.profile_registered_name.c_str());
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(), "%s", state.profile_registered_name.c_str());
     }
 
     // Always show fingerprint (shortened, green)

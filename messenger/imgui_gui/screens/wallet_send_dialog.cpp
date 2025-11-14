@@ -423,9 +423,11 @@ void buildAndSendTransaction(AppState& state) {
 void render(AppState& state) {
     if (!state.show_send_dialog) return;
 
-    // Center the modal
     ImGuiIO& io = ImGui::GetIO();
-    ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
+    bool is_mobile = io.DisplaySize.x < 600;
+
+    // Set fixed width like other modals
+    ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x * 0.9f : 500, 0), ImGuiCond_Always);
 
     if (CenteredModal::Begin("Send Tokens", &state.show_send_dialog, ImGuiWindowFlags_NoResize, true, false)) {
         // Wallet name

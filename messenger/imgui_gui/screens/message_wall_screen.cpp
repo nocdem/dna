@@ -183,6 +183,8 @@ void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = (io.DisplaySize.x < 600);
 
+    // Set fixed width like other modals
+    ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x * 0.9f : 600, 0), ImGuiCond_Always);
 
     if (CenteredModal::Begin("Message Wall", &state.show_message_wall, ImGuiWindowFlags_NoResize, true, false)) {
         // Title

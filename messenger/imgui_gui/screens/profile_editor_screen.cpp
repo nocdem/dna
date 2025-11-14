@@ -159,9 +159,12 @@ void render(AppState& state) {
     }
 
     ImGuiIO& io = ImGui::GetIO();
+    bool is_mobile = io.DisplaySize.x < 600;
 
+    // Set fixed width like other modals
+    ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x * 0.9f : 600, 0), ImGuiCond_Always);
 
-    if (CenteredModal::Begin("Edit DNA Profile", NULL, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize, true, false)) {
 
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Edit your public DNA profile. All changes are stored in the DHT.");
         ImGui::Spacing();
