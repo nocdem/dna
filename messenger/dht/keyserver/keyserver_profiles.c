@@ -246,12 +246,23 @@ int dna_load_identity(
 
         printf("[DNA] Verifying version %zu/%zu (%zu bytes)...\n", i+1, value_count, values_len[i]);
 
-        // Parse JSON
-        dna_unified_identity_t *identity = NULL;
-        if (dna_identity_from_json((char*)values[i], &identity) != 0) {
-            fprintf(stderr, "[DNA] ⚠ Version %zu: JSON parse failed\n", i+1);
+        // Create null-terminated copy for JSON parsing
+        char *json_str = (char*)malloc(values_len[i] + 1);
+        if (!json_str) {
+            fprintf(stderr, "[DNA] ⚠ Version %zu: Memory allocation failed\n", i+1);
             continue;
         }
+        memcpy(json_str, values[i], values_len[i]);
+        json_str[values_len[i]] = '\0';
+
+        // Parse JSON
+        dna_unified_identity_t *identity = NULL;
+        if (dna_identity_from_json(json_str, &identity) != 0) {
+            fprintf(stderr, "[DNA] ⚠ Version %zu: JSON parse failed\n", i+1);
+            free(json_str);
+            continue;
+        }
+        free(json_str);
 
         // Verify signature
         // Build message to verify: everything except signature field
