@@ -88,8 +88,7 @@ void registerName(AppState& state) {
     }
 
     // Start async registration task
-    state.register_name_task.start([name](AsyncTask* task) {
-        AppState& state = *(AppState*)((char*)task - offsetof(AppState, register_name_task));
+    state.register_name_task.start([&state, name](AsyncTask* task) {
         messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
         
         task->addMessage("Registering name...");
