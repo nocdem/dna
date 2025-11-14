@@ -19,7 +19,12 @@ extern "C" {
 namespace ProfileEditorScreen {
 
 // Load profile from DHT (from Qt ProfileEditorDialog.cpp lines 289-381)
-void loadProfile(AppState& state) {
+void loadProfile(AppState& state, bool force_reload = false) {
+    // Skip if already cached and not forcing reload
+    if (state.profile_cached && !force_reload) {
+        return;
+    }
+    
     state.profile_status = "Loading profile from DHT...";
     state.profile_loading = true;
 
@@ -72,10 +77,12 @@ void loadProfile(AppState& state) {
         if (profile->bio[0] != '\0') strncpy(state.profile_bio, profile->bio, sizeof(state.profile_bio) - 1);
 
         state.profile_status = "Profile loaded from DHT";
+        state.profile_cached = true;  // Mark as cached
         dna_identity_free(profile);
     } else if (ret == -2) {
         state.profile_registered_name = "Not registered";
         state.profile_status = "No profile found. Create your first profile!";
+        state.profile_cached = true;  // Cache the "not found" state too
     } else {
         state.profile_status = "Failed to load profile from DHT";
         state.profile_registered_name = "Error loading";
@@ -141,6 +148,7 @@ void saveProfile(AppState& state) {
 
     if (ret == 0) {
         state.profile_status = "Profile saved to DHT successfully!";
+        state.profile_cached = false;  // Invalidate cache to force reload next time
         state.show_profile_editor = false;
     } else {
         state.profile_status = "Failed to save profile to DHT";

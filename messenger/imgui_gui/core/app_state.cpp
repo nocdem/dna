@@ -66,6 +66,7 @@ AppState::AppState() {
     // Initialize profile editor dialog state
     show_profile_editor = false;
     profile_loading = false;
+    profile_cached = false;
     memset(profile_backbone, 0, sizeof(profile_backbone));
     memset(profile_kelvpn, 0, sizeof(profile_kelvpn));
     memset(profile_subzero, 0, sizeof(profile_subzero));

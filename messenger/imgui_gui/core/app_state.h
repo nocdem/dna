@@ -177,6 +177,7 @@ public:
     std::string profile_status;
     std::string profile_registered_name;
     bool profile_loading;
+    bool profile_cached;  // Track if profile has been loaded once
 
     // Register DNA Name dialog state
     bool show_register_name;
