@@ -196,13 +196,13 @@ void render(AppState& state) {
         // Buttons - properly aligned with equal spacing
         float button_width_left = 100.0f;
         float button_width_right = 220.0f;
-        float spacing = ImGui::GetStyle().ItemSpacing.x;
         float avail_width = ImGui::GetContentRegionAvail().x;
+        float window_padding = ImGui::GetStyle().WindowPadding.x;
         
         if (ThemedButton("Cancel", ImVec2(button_width_left, 40))) {
             state.show_register_name = false;
         }
-        ImGui::SameLine(avail_width - button_width_right);
+        ImGui::SameLine(avail_width + window_padding - button_width_right);
         bool can_register = state.register_name_available && !state.register_name_checking && strlen(state.register_name_input) > 0;
         if (!can_register) {
             ImGui::BeginDisabled();
