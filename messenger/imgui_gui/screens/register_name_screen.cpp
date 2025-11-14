@@ -6,6 +6,7 @@
 #include "../settings_manager.h"
 #include "../font_awesome.h"
 #include "../helpers/data_loader.h"
+#include "../helpers/async_helpers.h"
 
 extern "C" {
     #include "../../messenger.h"
@@ -86,24 +87,30 @@ void registerName(AppState& state) {
         return;
     }
 
-    state.register_name_status = "Registering name...";
-
-    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
-    int result = messenger_register_name(ctx, ctx->fingerprint, name.c_str());
-
-    if (result == 0) {
-        state.register_name_status = "Name registered successfully!";
-
-        // Update the registered name in app state
-        state.profile_registered_name = name;
-
-        // Refresh the registered name from DHT to ensure consistency
-        DataLoader::fetchRegisteredName(state);
-
-        state.show_register_name = false;
-    } else {
-        state.register_name_status = "Registration failed. Please try again.";
-    }
+    // Start async registration task
+    state.register_name_task.start([name](AsyncTask* task) {
+        AppState& state = *(AppState*)((char*)task - offsetof(AppState, register_name_task));
+        messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+        
+        task->addMessage("Registering name...");
+        
+        int result = messenger_register_name(ctx, ctx->fingerprint, name.c_str());
+        
+        if (result == 0) {
+            task->addMessage("Name registered successfully!");
+            
+            // Update the registered name in app state
+            state.profile_registered_name = name;
+            
+            // Refresh the registered name from DHT to ensure consistency
+            DataLoader::fetchRegisteredName(state);
+            
+            std::this_thread::sleep_for(std::chrono::milliseconds(800));
+        } else {
+            task->addMessage("Registration failed. Please try again.");
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+    });
 }
 
 // Render register name dialog
@@ -118,7 +125,32 @@ void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
 
 
-    if (CenteredModal::Begin("Register DNA", &state.show_register_name, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Register DNA", &state.show_register_name, ImGuiWindowFlags_AlwaysAutoResize)) {
+        
+        // Check if registration task completed
+        if (state.register_name_task.isCompleted() && !state.register_name_task.isRunning()) {
+            auto messages = state.register_name_task.getMessages();
+            if (!messages.empty() && messages.back().find("successfully") != std::string::npos) {
+                state.show_register_name = false;
+            }
+        }
+        
+        // Show spinner if task is running
+        if (state.register_name_task.isRunning()) {
+            ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - 50) * 0.5f);
+            ThemedSpinner("##regspinner", 25.0f, 4.0f);
+            
+            ImGui::Spacing();
+            auto messages = state.register_name_task.getMessages();
+            if (!messages.empty()) {
+                ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - ImGui::CalcTextSize(messages.back().c_str()).x) * 0.5f);
+                ImGui::Text("%s", messages.back().c_str());
+            }
+            ImGui::Spacing();
+            
+            CenteredModal::End();
+            return;
+        }
 
         ImGui::Spacing();
         ImGui::TextWrapped("Register a human-readable name for your identity. Others can find you by searching for this name.");

@@ -3,8 +3,7 @@
 
 #include "data_types.h"
 #include "imgui.h"
-#include "../async_task.h"
-#include "../async_task_queue.h"
+#include "../helpers/async_helpers.h"
 #include <string>
 #include <vector>
 #include <map>
@@ -186,6 +185,7 @@ public:
     bool register_name_available;
     bool register_name_checking;
     std::string register_name_status;
+    AsyncTask register_name_task;  // Async task for name registration
 
     // Async tasks for DHT operations
     AsyncTask dht_publish_task;

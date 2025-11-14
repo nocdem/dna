@@ -12,7 +12,7 @@
 #include "settings_manager.h"
 #include "ui_helpers.h"
 #include "app.h"
-#include "async_task.h"
+#include "helpers/async_helpers.h"
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <string.h>
