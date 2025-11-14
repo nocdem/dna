@@ -125,17 +125,22 @@ void render(AppState& state) {
 
     float btn_height = is_mobile ? 50.0f : 40.0f;
 
+    // Check if user has registered name
+    bool has_registered_name = !state.profile_registered_name.empty() && 
+                               state.profile_registered_name != "Not registered" &&
+                               state.profile_registered_name != "N/A (DHT not connected)" &&
+                               state.profile_registered_name != "Error loading";
+
     if (is_mobile) {
-        if (ThemedButton(ICON_FA_USER " Edit DNA Profile", ImVec2(-1, btn_height))) {
-            state.show_profile_editor = true;
+        // Only show Edit Profile if registered
+        if (has_registered_name) {
+            if (ThemedButton(ICON_FA_USER " Edit DNA Profile", ImVec2(-1, btn_height))) {
+                state.show_profile_editor = true;
+            }
+            ImGui::Spacing();
         }
-        ImGui::Spacing();
 
         // Only show Register DNA button if no name is registered
-        bool has_registered_name = !state.profile_registered_name.empty() && 
-                                   state.profile_registered_name != "Not registered" &&
-                                   state.profile_registered_name != "N/A (DHT not connected)" &&
-                                   state.profile_registered_name != "Error loading";
         if (!has_registered_name) {
             if (ThemedButton(ICON_FA_TAG " Register DNA", ImVec2(-1, btn_height))) {
                 state.show_register_name = true;
@@ -151,17 +156,18 @@ void render(AppState& state) {
             state.show_message_wall = true;
         }
     } else {
-        if (ThemedButton(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
-            state.show_profile_editor = true;
+        // Only show Edit Profile if registered
+        if (has_registered_name) {
+            if (ThemedButton(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
+                state.show_profile_editor = true;
+            }
         }
 
         // Only show Register DNA button if no name is registered
-        bool has_registered_name = !state.profile_registered_name.empty() && 
-                                   state.profile_registered_name != "Not registered" &&
-                                   state.profile_registered_name != "N/A (DHT not connected)" &&
-                                   state.profile_registered_name != "Error loading";
         if (!has_registered_name) {
-            ImGui::SameLine();
+            if (has_registered_name) {
+                ImGui::SameLine();
+            }
             if (ThemedButton(ICON_FA_TAG " Register DNA", ImVec2(200, btn_height))) {
                 state.show_register_name = true;
             }
