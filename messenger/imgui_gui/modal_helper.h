@@ -38,6 +38,11 @@ public:
             ImGui::PopStyleVar(3);
             ImGui::PopStyleColor();
             ImGui::Spacing();
+            
+            // Handle ESC key to close modal
+            if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                ImGui::CloseCurrentPopup();
+            }
         } else {
             // Pop styles if modal didn't open
             ImGui::PopStyleVar(3);
