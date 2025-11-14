@@ -167,9 +167,11 @@ void render(AppState& state) {
             ImGui::Spacing();
             ImGui::Spacing();
             
-            // Center spinner
-            float avail_width = ImGui::GetContentRegionAvail().x;
-            ImGui::SetCursorPosX((avail_width - 50) * 0.5f);
+            // Center spinner using absolute positioning
+            float window_width = ImGui::GetWindowWidth();
+            float window_padding = ImGui::GetStyle().WindowPadding.x;
+            float spinner_size = 50.0f;
+            ImGui::SetCursorPosX((window_width - spinner_size) * 0.5f);
             ThemedSpinner("##regspinner", 25.0f, 4.0f);
             
             ImGui::Spacing();
@@ -179,7 +181,7 @@ void render(AppState& state) {
             auto messages = state.register_name_task.getMessages();
             if (!messages.empty()) {
                 float text_width = ImGui::CalcTextSize(messages.back().c_str()).x;
-                ImGui::SetCursorPosX((avail_width - text_width) * 0.5f);
+                ImGui::SetCursorPosX((window_width - text_width) * 0.5f);
                 ImGui::Text("%s", messages.back().c_str());
             }
             
