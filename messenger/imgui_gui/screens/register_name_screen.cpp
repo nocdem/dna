@@ -174,9 +174,9 @@ void render(AppState& state) {
             ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextInfo() : ClubTheme::TextInfo(), ICON_FA_SPINNER " Checking availability...");
         } else if (!state.register_name_availability.empty()) {
             if (state.register_name_available) {
-                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), ICON_FA_CHECK " %s", state.register_name_availability.c_str());
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), ICON_FA_CIRCLE_CHECK " %s", state.register_name_availability.c_str());
             } else {
-                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), ICON_FA_XMARK " %s", state.register_name_availability.c_str());
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), ICON_FA_CIRCLE_XMARK " %s", state.register_name_availability.c_str());
             }
         }
 
@@ -203,7 +203,7 @@ void render(AppState& state) {
         if (!can_register) {
             ImGui::BeginDisabled();
         }
-        if (ThemedButton(ICON_FA_CHECK " Register DNA (Free)", ImVec2(200, 40))) {
+        if (ThemedButton(ICON_FA_CIRCLE_CHECK " Register DNA (Free)", ImVec2(200, 40))) {
             registerName(state);
         }
         if (!can_register) {

@@ -49,7 +49,7 @@ void render(AppState& state) {
 
         if (state.address_copied) {
             // Show "Copied!" feedback
-            if (ThemedButton(ICON_FA_CHECK " Copied!", ImVec2(btn_width, 40))) {
+            if (ThemedButton(ICON_FA_CIRCLE_CHECK " Copied!", ImVec2(btn_width, 40))) {
                 // Button disabled
             }
 
