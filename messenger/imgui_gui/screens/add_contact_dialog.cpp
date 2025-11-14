@@ -168,9 +168,9 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
         ImGui::Text("Found: %s", state.add_contact_found_name.c_str());
         ImGui::PopStyleColor();
 
-        // Display fingerprint with wrapping to prevent modal widening
-        ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + 420.0f); // Limit width
+        // Display fingerprint with wrapping to prevent overflow
         ImGui::TextDisabled("Fingerprint:");
+        ImGui::PushTextWrapPos(0.0f); // Wrap at window edge
         ImGui::TextWrapped("%s", state.add_contact_found_fingerprint.c_str());
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
