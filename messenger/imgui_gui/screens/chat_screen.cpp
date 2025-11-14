@@ -1,4 +1,5 @@
 #include "chat_screen.h"
+#include "../modal_helper.h"
 #include "../ui_helpers.h"
 #include "../font_awesome.h"
 #include "../theme_colors.h"
