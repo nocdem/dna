@@ -227,13 +227,17 @@ void render(AppState& state) {
 
         // Availability status
         if (state.register_name_checking) {
-            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextInfo() : ClubTheme::TextInfo(), ICON_FA_SPINNER " Checking availability...");
+            ThemedSpinner("##check_spinner", 15.0f, 3.0f);
+            ImGui::SameLine();
+            ImGui::TextDisabled("Checking availability...");
         } else if (!state.register_name_availability.empty()) {
             if (state.register_name_available) {
                 ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), ICON_FA_CIRCLE_CHECK " %s", state.register_name_availability.c_str());
             } else {
                 ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), ICON_FA_CIRCLE_XMARK " %s", state.register_name_availability.c_str());
             }
+        } else if (strlen(state.register_name_input) > 0 && strlen(state.register_name_input) < 3) {
+            ImGui::TextDisabled("Type at least 3 characters");
         }
 
         ImGui::Spacing();
