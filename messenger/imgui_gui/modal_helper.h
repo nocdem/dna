@@ -41,6 +41,9 @@ public:
             
             // Handle ESC key to close modal
             if (ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                if (p_open) {
+                    *p_open = false;
+                }
                 ImGui::CloseCurrentPopup();
             }
         } else {
