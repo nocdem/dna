@@ -106,23 +106,20 @@ void render(AppState& state) {
     ImGui::Text("Identity");
     ImGui::Spacing();
 
-    // Display current identity (fingerprint + registered name if available)
-    if (state.identity_loaded && !state.current_identity.empty()) {
-        // Show registered DNA name if available
-        if (!state.profile_registered_name.empty()) {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%s", state.profile_registered_name.c_str());
-        }
+    // Show registered DNA name if available (green)
+    if (!state.profile_registered_name.empty()) {
+        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%s", state.profile_registered_name.c_str());
+    }
 
-        // Always show fingerprint (shortened)
-        std::string fp = state.current_identity;
+    // Always show fingerprint (shortened, gray)
+    std::string fp = state.current_identity;
+    if (!fp.empty()) {
         if (fp.length() > 23) {
             std::string shortened = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
             ImGui::TextDisabled("%s", shortened.c_str());
         } else {
             ImGui::TextDisabled("%s", fp.c_str());
         }
-    } else {
-        ImGui::TextDisabled("Not loaded");
     }
     ImGui::Spacing();
 
