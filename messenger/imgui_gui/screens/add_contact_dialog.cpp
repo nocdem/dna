@@ -17,12 +17,12 @@ extern AppSettings g_app_settings;
 namespace AddContactDialog {
 
 void render(AppState& state, std::function<void()> reload_contacts_callback) {
-    if (!CenteredModal::Begin("Add Contact")) {
+    if (!CenteredModal::Begin("Add Contact", nullptr, ImGuiWindowFlags_NoResize, true, false, 500)) {
         return;
     }
 
     ImGuiIO& io = ImGui::GetIO();
-    bool is_mobile = io.DisplaySize.x < 600.0f;
+    bool is_mobile = IsMobileLayout();
 
     // Autofocus on input when dialog first opens
     static bool first_open = false;
