@@ -92,3 +92,4 @@ p2p/build/
 dht/build/
 *.o
 CMakeCache.txt
+CLAUDE.md
