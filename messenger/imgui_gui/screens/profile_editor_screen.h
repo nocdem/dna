@@ -5,7 +5,7 @@
 
 namespace ProfileEditorScreen {
     // Load profile from DHT
-    void loadProfile(AppState& state);
+    void loadProfile(AppState& state, bool force_reload = false);
 
     // Save profile to DHT
     void saveProfile(AppState& state);

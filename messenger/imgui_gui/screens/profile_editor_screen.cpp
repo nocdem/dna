@@ -19,7 +19,7 @@ extern "C" {
 namespace ProfileEditorScreen {
 
 // Load profile from DHT (from Qt ProfileEditorDialog.cpp lines 289-381)
-void loadProfile(AppState& state, bool force_reload = false) {
+void loadProfile(AppState& state, bool force_reload) {
     // Skip if already cached and not forcing reload
     if (state.profile_cached && !force_reload) {
         return;
@@ -170,7 +170,7 @@ void render(AppState& state) {
     bool is_mobile = IsMobileLayout();
 
 
-    if (CenteredModal::Begin("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize, true, false, 600)) {
+    if (CenteredModal::Begin("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize, true, false, 600, 500)) {  // 600x500 with scrolling
 
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Edit your public DNA profile. All changes are stored in the DHT.");
         ImGui::Spacing();
