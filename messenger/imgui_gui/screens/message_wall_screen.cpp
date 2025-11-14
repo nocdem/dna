@@ -184,7 +184,7 @@ void render(AppState& state) {
     bool is_mobile = (io.DisplaySize.x < 600);
 
 
-    if (CenteredModal::Begin("Message Wall", &state.show_message_wall, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Message Wall", NULL, ImGuiWindowFlags_NoResize)) {
         // Title
 
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 100);

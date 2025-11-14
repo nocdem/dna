@@ -124,7 +124,7 @@ void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
 
 
-    if (CenteredModal::Begin("Register DNA", &state.show_register_name, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (CenteredModal::Begin("Register DNA", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
         
         // Check if registration task completed
         if (state.register_name_task.isCompleted() && !state.register_name_task.isRunning()) {

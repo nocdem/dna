@@ -108,7 +108,7 @@ void render(AppState& state) {
 
     ImGuiIO& io = ImGui::GetIO();
 
-    if (CenteredModal::Begin("Contact Profile", &state.show_contact_profile, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Contact Profile", NULL, ImGuiWindowFlags_NoResize)) {
         // Header
 
         ImGui::Spacing();

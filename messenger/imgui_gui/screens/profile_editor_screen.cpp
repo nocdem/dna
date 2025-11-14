@@ -161,7 +161,7 @@ void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
 
 
-    if (CenteredModal::Begin("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Edit DNA Profile", NULL, ImGuiWindowFlags_NoResize)) {
 
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Edit your public DNA profile. All changes are stored in the DHT.");
         ImGui::Spacing();
