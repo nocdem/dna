@@ -10,8 +10,11 @@ extern AppSettings g_app_settings;
 
 // Helper to create centered modal windows that stay centered on resize
 class CenteredModal {
+private:
+    static inline bool* s_esc_close_target = nullptr;  // Store pointer for ESC handling
+    
 public:
-    static bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0, bool allow_esc_close = true) {
+    static bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0, bool allow_esc_close = true, bool show_close_button = true) {
         // Center modal before opening
         ImGuiIO& io = ImGui::GetIO();
         ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
@@ -31,7 +34,9 @@ public:
             flags |= ImGuiWindowFlags_AlwaysAutoResize;
         }
         
-        bool result = ImGui::BeginPopupModal(name, p_open, flags);
+        // Store the close target for ESC handling, but pass nullptr to BeginPopupModal if no X button wanted
+        s_esc_close_target = p_open;
+        bool result = ImGui::BeginPopupModal(name, show_close_button ? p_open : nullptr, flags);
         
         if (result) {
             // Pop styles inside the modal
@@ -40,8 +45,8 @@ public:
             ImGui::Spacing();
             
             // Handle ESC key to close modal (only if allowed and p_open is provided)
-            if (allow_esc_close && p_open && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
-                *p_open = false;
+            if (allow_esc_close && s_esc_close_target && ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+                *s_esc_close_target = false;
                 ImGui::CloseCurrentPopup();
             }
         } else {
@@ -55,6 +60,7 @@ public:
     
     static void End() {
         ImGui::EndPopup();
+        s_esc_close_target = nullptr;
     }
 };
 

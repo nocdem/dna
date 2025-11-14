@@ -427,7 +427,7 @@ void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
     ImVec2 center = ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f);
 
-    if (CenteredModal::Begin("Send Tokens", &state.show_send_dialog, ImGuiWindowFlags_NoResize)) {
+    if (CenteredModal::Begin("Send Tokens", &state.show_send_dialog, ImGuiWindowFlags_NoResize, true, false)) {
         // Wallet name
         ImGui::Text(ICON_FA_WALLET " From: %s", state.wallet_name.c_str());
         ImGui::Spacing();
