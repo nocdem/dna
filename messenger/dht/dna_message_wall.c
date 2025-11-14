@@ -420,12 +420,23 @@ int dna_load_wall(dht_context_t *dht_ctx,
             continue;
         }
 
-        // Parse JSON
-        dna_message_wall_t *wall = NULL;
-        if (dna_message_wall_from_json((const char *)values[i], &wall) != 0) {
-            printf("[DNA_WALL] ⚠ Version %zu/%zu: JSON parse failed\n", i+1, value_count);
+        // Create null-terminated copy for JSON parsing
+        char *json_str = (char*)malloc(values_len[i] + 1);
+        if (!json_str) {
+            printf("[DNA_WALL] ⚠ Version %zu/%zu: Memory allocation failed\n", i+1, value_count);
             continue;
         }
+        memcpy(json_str, values[i], values_len[i]);
+        json_str[values_len[i]] = '\0';
+
+        // Parse JSON
+        dna_message_wall_t *wall = NULL;
+        if (dna_message_wall_from_json(json_str, &wall) != 0) {
+            printf("[DNA_WALL] ⚠ Version %zu/%zu: JSON parse failed\n", i+1, value_count);
+            free(json_str);
+            continue;
+        }
+        free(json_str);
 
         // Get timestamp of newest message (messages[0] is newest)
         uint64_t wall_timestamp = 0;
