@@ -157,7 +157,6 @@ void render(AppState& state) {
         ImGui::Spacing();
         ImGui::TextWrapped("Register a human-readable name for your identity. Others can find you by searching for this name.");
         ImGui::Spacing();
-        ImGui::Separator();
         ImGui::Spacing();
 
         ImGui::Text("Desired Name:");
@@ -183,7 +182,6 @@ void render(AppState& state) {
         }
 
         ImGui::Spacing();
-        ImGui::Separator();
         ImGui::Spacing();
 
         ImGui::Text(ICON_FA_COINS " Cost: 1 CPUNK");
@@ -193,19 +191,24 @@ void render(AppState& state) {
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", state.register_name_status.c_str());
 
         ImGui::Spacing();
-        ImGui::Separator();
         ImGui::Spacing();
 
-        // Buttons
-        if (ThemedButton("Cancel", ImVec2(100, 40))) {
+        // Buttons - properly aligned
+        float button_width_left = 100.0f;
+        float button_width_right = 220.0f;
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float total_button_width = button_width_left + spacing + button_width_right;
+        float avail_width = ImGui::GetContentRegionAvail().x;
+        
+        if (ThemedButton("Cancel", ImVec2(button_width_left, 40))) {
             state.show_register_name = false;
         }
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 200);
+        ImGui::SameLine();
         bool can_register = state.register_name_available && !state.register_name_checking && strlen(state.register_name_input) > 0;
         if (!can_register) {
             ImGui::BeginDisabled();
         }
-        if (ThemedButton(ICON_FA_CIRCLE_CHECK " Register DNA (Free)", ImVec2(200, 40))) {
+        if (ThemedButton(ICON_FA_CIRCLE_CHECK " Register DNA (Free)", ImVec2(button_width_right, 40))) {
             registerName(state);
         }
         if (!can_register) {
