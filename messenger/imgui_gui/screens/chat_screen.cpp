@@ -132,9 +132,11 @@ void render(AppState& state) {
     float btn_height = is_mobile ? 40.0f : 30.0f;
     float btn_spacing = 5.0f;
     float total_width = (btn_width * 2) + btn_spacing;
+    float btn_y_pos = (header_height - btn_height) * 0.5f;
 
+    // Position both buttons at the same Y coordinate
     ImGui::SetCursorPosX(ImGui::GetWindowWidth() - total_width - 10);
-    ImGui::SetCursorPosY((header_height - btn_height) * 0.5f);
+    ImGui::SetCursorPosY(btn_y_pos);
 
     // Profile button
     if (ButtonDark(ICON_FA_USER " Profile", ImVec2(btn_width, btn_height))) {
@@ -144,8 +146,9 @@ void render(AppState& state) {
         state.show_contact_profile = true;
     }
 
-    // Wall button
+    // Wall button (ensure same Y position)
     ImGui::SameLine();
+    ImGui::SetCursorPosY(btn_y_pos);
     if (ButtonDark(ICON_FA_NEWSPAPER " Wall", ImVec2(btn_width, btn_height))) {
         // Open message wall for this contact
         state.wall_fingerprint = contact.address;  // Use address as fingerprint
