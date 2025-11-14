@@ -18,7 +18,7 @@ extern "C" {
 
 namespace RegisterNameScreen {
 
-// Check name availability (from Qt RegisterDNANameDialog.cpp lines 212-249)
+// Check name availability asynchronously (from Qt RegisterDNANameDialog.cpp lines 212-249)
 void checkNameAvailability(AppState& state) {
     std::string name = std::string(state.register_name_input);
 
@@ -29,9 +29,11 @@ void checkNameAvailability(AppState& state) {
     // Convert to lowercase
     std::transform(name.begin(), name.end(), name.begin(), ::tolower);
 
+    // Early validation (synchronous)
     if (name.empty() || name.length() < 3 || name.length() > 20) {
         state.register_name_availability = "Invalid name (3-20 chars, alphanumeric + underscore only)";
         state.register_name_available = false;
+        state.register_name_checking = false;
         return;
     }
 
@@ -40,42 +42,49 @@ void checkNameAvailability(AppState& state) {
         if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_')) {
             state.register_name_availability = "Invalid name (3-20 chars, alphanumeric + underscore only)";
             state.register_name_available = false;
+            state.register_name_checking = false;
             return;
         }
     }
 
+    // Start async DHT lookup
     state.register_name_checking = true;
-
+    state.register_name_availability = "";
+    
     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
-    if (!ctx || !ctx->p2p_transport) {
-        state.register_name_availability = "P2P transport not initialized";
-        state.register_name_available = false;
+    std::string name_copy = name;
+
+    state.register_name_check_task.start([&state, ctx, name_copy](AsyncTask* task) {
+        if (!ctx || !ctx->p2p_transport) {
+            state.register_name_availability = "P2P transport not initialized";
+            state.register_name_available = false;
+            state.register_name_checking = false;
+            return;
+        }
+
+        dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+        if (!dht_ctx) {
+            state.register_name_availability = "DHT not connected";
+            state.register_name_available = false;
+            state.register_name_checking = false;
+            return;
+        }
+
+        // Query DHT for name
+        dht_pubkey_entry_t *entry = NULL;
+        int result = dht_keyserver_lookup(dht_ctx, name_copy.c_str(), &entry);
+
+        if (result == 0 && entry) {
+            state.register_name_availability = "Name already registered";
+            state.register_name_available = false;
+            dht_keyserver_free_entry(entry);
+        } else {
+            state.register_name_availability = "Name available!";
+            state.register_name_available = true;
+        }
+
         state.register_name_checking = false;
-        return;
-    }
-
-    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
-    if (!dht_ctx) {
-        state.register_name_availability = "DHT not connected";
-        state.register_name_available = false;
-        state.register_name_checking = false;
-        return;
-    }
-
-    // Query DHT for name
-    dht_pubkey_entry_t *entry = NULL;
-    int result = dht_keyserver_lookup(dht_ctx, name.c_str(), &entry);
-
-    if (result == 0 && entry) {
-        state.register_name_availability = "Name already registered";
-        state.register_name_available = false;
-        dht_keyserver_free_entry(entry);
-    } else {
-        state.register_name_availability = "Name available!";
-        state.register_name_available = true;
-    }
-
-    state.register_name_checking = false;
+    });
 }
 
 // Register name (from Qt RegisterDNANameDialog.cpp lines 251-282)
@@ -117,8 +126,22 @@ void render(AppState& state) {
     if (!state.show_register_name) return;
 
     // Open popup on first show (MUST be before BeginPopupModal!)
+    static bool modal_was_open = false;
     if (!ImGui::IsPopupOpen("Register DNA")) {
         ImGui::OpenPopup("Register DNA");
+        // Clear state when opening modal
+        if (!modal_was_open) {
+            state.register_name_availability = "";
+            state.register_name_available = false;
+            state.register_name_checking = false;
+            state.register_name_last_checked_input = "";
+            modal_was_open = true;
+        }
+    }
+
+    // Reset flag when modal is closed
+    if (!state.show_register_name) {
+        modal_was_open = false;
     }
 
     ImGuiIO& io = ImGui::GetIO();
