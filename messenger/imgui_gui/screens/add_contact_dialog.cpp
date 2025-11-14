@@ -178,7 +178,7 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
 
     // Show spinner if lookup in progress (inline with search hint)
     if (state.add_contact_lookup_in_progress) {
-        ImGui::SameLine();
+        ImGui::AlignTextToFramePadding();
         ThemedSpinner("##lookup_spinner", 15.0f, 3.0f);
         ImGui::SameLine();
         ImGui::TextDisabled("Searching...");

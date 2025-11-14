@@ -250,6 +250,7 @@ void render(AppState& state) {
 
         // Availability status
         if (state.register_name_checking) {
+            ImGui::AlignTextToFramePadding();
             ThemedSpinner("##check_spinner", 15.0f, 3.0f);
             ImGui::SameLine();
             ImGui::TextDisabled("Checking availability...");
