@@ -447,7 +447,7 @@ if(BUILD_TESTS)
 
     # DHT Identity Backup Test
     add_executable(test_identity_backup
-        test_identity_backup.c
+        tests/test_identity_backup.c
     )
 
     target_link_libraries(test_identity_backup
