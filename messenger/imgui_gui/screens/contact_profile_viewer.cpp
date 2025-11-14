@@ -111,9 +111,6 @@ void render(AppState& state) {
 
     if (ImGui::BeginPopupModal("Contact Profile", &state.show_contact_profile, ImGuiWindowFlags_NoResize)) {
         // Header
-        ImGui::PushFont(io.Fonts->Fonts[2]);
-        ImGui::Text(ICON_FA_USER " %s", state.viewed_profile_name.c_str());
-        ImGui::PopFont();
 
         ImGui::Spacing();
         ImGui::Separator();

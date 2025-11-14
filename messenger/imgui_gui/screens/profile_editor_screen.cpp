@@ -163,9 +163,6 @@ void render(AppState& state) {
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
     if (ImGui::BeginPopupModal("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize)) {
-        ImGui::PushFont(io.Fonts->Fonts[2]);
-        ImGui::Text("DNA Profile Editor");
-        ImGui::PopFont();
 
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Edit your public DNA profile. All changes are stored in the DHT.");
         ImGui::Spacing();

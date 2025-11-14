@@ -120,9 +120,6 @@ void render(AppState& state) {
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
     if (ImGui::BeginPopupModal("Register DNA", &state.show_register_name, ImGuiWindowFlags_NoResize)) {
-        ImGui::PushFont(io.Fonts->Fonts[2]);
-        ImGui::Text("Register DNA");
-        ImGui::PopFont();
 
         ImGui::Spacing();
         ImGui::TextWrapped("Register a human-readable name for your identity. Others can find you by searching for this name.");

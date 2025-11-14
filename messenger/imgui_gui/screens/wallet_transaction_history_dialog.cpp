@@ -245,9 +245,6 @@ void render(AppState& state) {
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f), ImGuiCond_FirstUseEver, ImVec2(0.5f, 0.5f));
 
     if (ImGui::BeginPopupModal("Transaction History", &state.show_transaction_history, ImGuiWindowFlags_NoResize)) {
-        ImGui::PushFont(io.Fonts->Fonts[2]); // Title font
-        ImGui::Text("Transaction History - %s", state.wallet_name.c_str());
-        ImGui::PopFont();
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -283,13 +280,6 @@ void render(AppState& state) {
                 ImGui::Indent(10);
 
                 // Direction icon (Qt lines 252-259)
-                ImGui::PushFont(io.Fonts->Fonts[2]); // Large font for icon
-                if (tx.direction == "sent") {
-                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), ICON_FA_ARROW_UP); // Red arrow up
-                } else {
-                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), ICON_FA_ARROW_DOWN); // Green arrow down
-                }
-                ImGui::PopFont();
                 ImGui::SameLine();
 
                 // Transaction info

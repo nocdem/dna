@@ -187,9 +187,6 @@ void render(AppState& state) {
 
     if (ImGui::BeginPopupModal("Message Wall", &state.show_message_wall, ImGuiWindowFlags_NoResize)) {
         // Title
-        ImGui::PushFont(io.Fonts->Fonts[2]);
-        ImGui::Text(ICON_FA_CLIPBOARD " Message Wall: %s", state.wall_display_name.c_str());
-        ImGui::PopFont();
 
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 100);
         if (ThemedButton(ICON_FA_ROTATE " Refresh", ImVec2(100, 30))) {
