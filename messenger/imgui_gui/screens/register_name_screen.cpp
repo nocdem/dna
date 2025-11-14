@@ -125,23 +125,21 @@ void registerName(AppState& state) {
 void render(AppState& state) {
     if (!state.show_register_name) return;
 
-    // Open popup on first show (MUST be before BeginPopupModal!)
-    static bool modal_was_open = false;
-    if (!ImGui::IsPopupOpen("Register DNA")) {
-        ImGui::OpenPopup("Register DNA");
-        // Clear state when opening modal
-        if (!modal_was_open) {
-            state.register_name_availability = "";
-            state.register_name_available = false;
-            state.register_name_checking = false;
-            state.register_name_last_checked_input = "";
-            modal_was_open = true;
-        }
+    // Clear state when opening modal
+    static bool was_shown = false;
+    if (!was_shown) {
+        state.register_name_availability = "";
+        state.register_name_available = false;
+        state.register_name_checking = false;
+        state.register_name_last_checked_input = "";
+        state.register_name_status = "";
+        memset(state.register_name_input, 0, sizeof(state.register_name_input));
+        was_shown = true;
     }
 
-    // Reset flag when modal is closed
-    if (!state.show_register_name) {
-        modal_was_open = false;
+    // Open popup on first show (MUST be before BeginPopupModal!)
+    if (!ImGui::IsPopupOpen("Register DNA")) {
+        ImGui::OpenPopup("Register DNA");
     }
 
     ImGuiIO& io = ImGui::GetIO();
@@ -229,6 +227,14 @@ void render(AppState& state) {
         // Update timer when input changes
         if (input_changed) {
             state.register_name_last_input_time = (float)ImGui::GetTime();
+            
+            // Clear availability text if input is too short or empty
+            std::string current_input = std::string(state.register_name_input);
+            if (current_input.length() < 3) {
+                state.register_name_availability = "";
+                state.register_name_available = false;
+                state.register_name_last_checked_input = "";
+            }
         }
 
         // Check if we should auto-trigger availability check (debounced)
@@ -301,6 +307,9 @@ void render(AppState& state) {
         }
 
         CenteredModal::End();
+    } else {
+        // Modal was closed, reset the flag
+        was_shown = false;
     }
 }
 
