@@ -200,11 +200,28 @@ void render(AppState& state) {
         ImGui::Text("Desired Name:");
         ImGui::SetNextItemWidth(-1);
         ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
-        if (ImGui::InputText("##NameInput", state.register_name_input, sizeof(state.register_name_input))) {
-            // Trigger availability check on text change
+        bool input_changed = ImGui::InputText("##NameInput", state.register_name_input, sizeof(state.register_name_input));
+        ImGui::PopStyleColor();
+
+        // Update timer when input changes
+        if (input_changed) {
+            state.register_name_last_input_time = (float)ImGui::GetTime();
+        }
+
+        // Check if we should auto-trigger availability check (debounced)
+        std::string current_input = std::string(state.register_name_input);
+        float time_since_last_input = (float)ImGui::GetTime() - state.register_name_last_input_time;
+        bool should_auto_check = (
+            current_input.length() >= 3 &&  // Minimum 3 characters
+            time_since_last_input >= 0.5f &&  // 500ms debounce
+            current_input != state.register_name_last_checked_input &&  // Haven't checked this yet
+            !state.register_name_checking  // Not already checking
+        );
+
+        if (should_auto_check) {
+            state.register_name_last_checked_input = current_input;
             checkNameAvailability(state);
         }
-        ImGui::PopStyleColor();
 
         ImGui::Spacing();
 

@@ -186,6 +186,8 @@ public:
     bool register_name_available;
     bool register_name_checking;
     std::string register_name_status;
+    float register_name_last_input_time;  // Track when user last typed
+    std::string register_name_last_checked_input;  // Track last checked input
     AsyncTask register_name_task;  // Async task for name registration
 
     // Async tasks for DHT operations

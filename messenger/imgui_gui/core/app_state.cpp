@@ -89,6 +89,8 @@ AppState::AppState() {
     show_register_name = false;
     register_name_available = false;
     register_name_checking = false;
+    register_name_last_input_time = 0.0f;
+    register_name_last_checked_input = "";
     memset(register_name_input, 0, sizeof(register_name_input));
 }
 
