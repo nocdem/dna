@@ -111,16 +111,6 @@ void render(AppState& state) {
     float btn_height = is_mobile ? 50.0f : 40.0f;
 
     if (is_mobile) {
-        if (ButtonDark("🆕 Create New Identity", ImVec2(-1, btn_height))) {
-            // TODO: Create identity dialog
-        }
-        ImGui::Spacing();
-
-        if (ButtonDark("📥 Import Identity", ImVec2(-1, btn_height))) {
-            // TODO: Import identity dialog
-        }
-        ImGui::Spacing();
-
         if (ButtonDark(ICON_FA_USER " Edit DNA Profile", ImVec2(-1, btn_height))) {
             state.show_profile_editor = true;
         }
@@ -134,7 +124,7 @@ void render(AppState& state) {
             ImGui::Spacing();
         }
 
-        if (ButtonDark(ICON_FA_NEWSPAPER " My Message Wall", ImVec2(-1, btn_height))) {
+        if (ButtonDark(ICON_FA_NEWSPAPER " Post to Wall", ImVec2(-1, btn_height))) {
             // Open own message wall
             state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
             state.wall_display_name = "My Wall";
@@ -142,16 +132,6 @@ void render(AppState& state) {
             state.show_message_wall = true;
         }
     } else {
-        if (ButtonDark("Create New Identity", ImVec2(200, btn_height))) {
-            // TODO: Create identity dialog
-        }
-        ImGui::SameLine();
-        if (ButtonDark("Import Identity", ImVec2(200, btn_height))) {
-            // TODO: Import identity dialog
-        }
-
-        ImGui::Spacing();
-
         if (ButtonDark(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
             state.show_profile_editor = true;
         }
@@ -166,7 +146,7 @@ void render(AppState& state) {
 
         ImGui::Spacing();
 
-        if (ButtonDark(ICON_FA_NEWSPAPER " My Message Wall", ImVec2(-1, btn_height))) {
+        if (ButtonDark(ICON_FA_NEWSPAPER " Post to Wall", ImVec2(200, btn_height))) {
             // Open own message wall
             state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
             state.wall_display_name = "My Wall";
