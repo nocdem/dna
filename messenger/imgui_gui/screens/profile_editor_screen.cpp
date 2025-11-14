@@ -233,11 +233,11 @@ void render(AppState& state) {
         ImGui::Spacing();
 
         // Buttons
-        if (ButtonDark("Cancel", ImVec2(100, 40))) {
+        if (ThemedButton("Cancel", ImVec2(100, 40))) {
             state.show_profile_editor = false;
         }
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 200);
-        if (ButtonDark(ICON_FA_FLOPPY_DISK " Save Profile to DHT", ImVec2(200, 40))) {
+        if (ThemedButton(ICON_FA_FLOPPY_DISK " Save Profile to DHT", ImVec2(200, 40))) {
             saveProfile(state);
         }
 

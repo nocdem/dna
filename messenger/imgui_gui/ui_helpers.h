@@ -8,9 +8,7 @@
 // Global settings (defined in main.cpp)
 extern AppSettings g_app_settings;
 
-// Helper function for modal/dialog buttons with dark text
-bool ButtonDark(const char* label, const ImVec2& size = ImVec2(0, 0));
-
+// UI Helper Functions
 // Helper function for themed main buttons
 bool ThemedButton(const char* label, const ImVec2& size = ImVec2(0, 0), bool is_active = false);
 

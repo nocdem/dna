@@ -236,7 +236,7 @@ void render(AppState& state) {
         ImGui::Spacing();
 
         // Close button
-        if (ButtonDark("Close", ImVec2(120, 40))) {
+        if (ThemedButton("Close", ImVec2(120, 40))) {
             state.show_contact_profile = false;
         }
 

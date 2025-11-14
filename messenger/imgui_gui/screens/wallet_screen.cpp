@@ -243,13 +243,13 @@ void render(AppState& state) {
 
     if (is_mobile) {
         // Mobile: Stacked full-width buttons
-        if (ButtonDark(ICON_FA_PAPER_PLANE " Send Tokens", ImVec2(-1, btn_height))) {
+        if (ThemedButton(ICON_FA_PAPER_PLANE " Send Tokens", ImVec2(-1, btn_height))) {
             state.show_send_dialog = true;
             state.send_status.clear();
         }
         ImGui::Spacing();
 
-        if (ButtonDark(ICON_FA_DOWNLOAD " Receive", ImVec2(-1, btn_height))) {
+        if (ThemedButton(ICON_FA_DOWNLOAD " Receive", ImVec2(-1, btn_height))) {
             state.show_receive_dialog = true;
             // Get wallet address for Backbone network
             wallet_list_t *wallets = (wallet_list_t*)state.wallet_list;
@@ -260,7 +260,7 @@ void render(AppState& state) {
         }
         ImGui::Spacing();
 
-        if (ButtonDark(ICON_FA_RECEIPT " Transaction History", ImVec2(-1, btn_height))) {
+        if (ThemedButton(ICON_FA_RECEIPT " Transaction History", ImVec2(-1, btn_height))) {
             state.show_transaction_history = true;
             WalletTransactionHistoryDialog::load(state);
         }
@@ -271,13 +271,13 @@ void render(AppState& state) {
         float spacing = style.ItemSpacing.x;
         float btn_width = (available_width - spacing * 2) / 3.0f;
 
-        if (ButtonDark(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, btn_height))) {
+        if (ThemedButton(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, btn_height))) {
             state.show_send_dialog = true;
             state.send_status.clear();
         }
         ImGui::SameLine();
 
-        if (ButtonDark(ICON_FA_DOWNLOAD " Receive", ImVec2(btn_width, btn_height))) {
+        if (ThemedButton(ICON_FA_DOWNLOAD " Receive", ImVec2(btn_width, btn_height))) {
             state.show_receive_dialog = true;
             // Get wallet address for Backbone network
             wallet_list_t *wallets = (wallet_list_t*)state.wallet_list;
@@ -288,7 +288,7 @@ void render(AppState& state) {
         }
         ImGui::SameLine();
 
-        if (ButtonDark(ICON_FA_RECEIPT " History", ImVec2(btn_width, btn_height))) {
+        if (ThemedButton(ICON_FA_RECEIPT " History", ImVec2(btn_width, btn_height))) {
             state.show_transaction_history = true;
             WalletTransactionHistoryDialog::load(state);
         }

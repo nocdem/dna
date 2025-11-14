@@ -126,20 +126,20 @@ void render(AppState& state) {
     float btn_height = is_mobile ? 50.0f : 40.0f;
 
     if (is_mobile) {
-        if (ButtonDark(ICON_FA_USER " Edit DNA Profile", ImVec2(-1, btn_height))) {
+        if (ThemedButton(ICON_FA_USER " Edit DNA Profile", ImVec2(-1, btn_height))) {
             state.show_profile_editor = true;
         }
         ImGui::Spacing();
 
         // Only show Register DNA button if no name is registered
         if (state.profile_registered_name.empty()) {
-            if (ButtonDark(ICON_FA_TAG " Register DNA", ImVec2(-1, btn_height))) {
+            if (ThemedButton(ICON_FA_TAG " Register DNA", ImVec2(-1, btn_height))) {
                 state.show_register_name = true;
             }
             ImGui::Spacing();
         }
 
-        if (ButtonDark(ICON_FA_NEWSPAPER " Post to Wall", ImVec2(-1, btn_height))) {
+        if (ThemedButton(ICON_FA_NEWSPAPER " Post to Wall", ImVec2(-1, btn_height))) {
             // Open own message wall
             state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
             state.wall_display_name = "My Wall";
@@ -147,21 +147,21 @@ void render(AppState& state) {
             state.show_message_wall = true;
         }
     } else {
-        if (ButtonDark(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
+        if (ThemedButton(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
             state.show_profile_editor = true;
         }
 
         // Only show Register DNA button if no name is registered
         if (state.profile_registered_name.empty()) {
             ImGui::SameLine();
-            if (ButtonDark(ICON_FA_TAG " Register DNA", ImVec2(200, btn_height))) {
+            if (ThemedButton(ICON_FA_TAG " Register DNA", ImVec2(200, btn_height))) {
                 state.show_register_name = true;
             }
         }
 
         ImGui::Spacing();
 
-        if (ButtonDark(ICON_FA_NEWSPAPER " Post to Wall", ImVec2(200, btn_height))) {
+        if (ThemedButton(ICON_FA_NEWSPAPER " Post to Wall", ImVec2(200, btn_height))) {
             // Open own message wall
             state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
             state.wall_display_name = "My Wall";

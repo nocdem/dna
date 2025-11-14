@@ -169,7 +169,7 @@ void render(AppState& state) {
         ImGui::Spacing();
 
         // Buttons
-        if (ButtonDark("Cancel", ImVec2(100, 40))) {
+        if (ThemedButton("Cancel", ImVec2(100, 40))) {
             state.show_register_name = false;
         }
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 200);
@@ -177,7 +177,7 @@ void render(AppState& state) {
         if (!can_register) {
             ImGui::BeginDisabled();
         }
-        if (ButtonDark(ICON_FA_CHECK " Register DNA (Free)", ImVec2(200, 40))) {
+        if (ThemedButton(ICON_FA_CHECK " Register DNA (Free)", ImVec2(200, 40))) {
             registerName(state);
         }
         if (!can_register) {

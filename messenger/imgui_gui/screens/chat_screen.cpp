@@ -103,7 +103,7 @@ void render(AppState& state) {
 
     if (is_mobile) {
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
-        if (ButtonDark(ICON_FA_ARROW_LEFT " Back", ImVec2(100, 40))) {
+        if (ThemedButton(ICON_FA_ARROW_LEFT " Back", ImVec2(100, 40))) {
             state.current_view = VIEW_CONTACTS;
             state.selected_contact = -1;
         }
@@ -139,7 +139,7 @@ void render(AppState& state) {
     ImGui::SetCursorPosY(btn_y_pos);
 
     // Profile button
-    if (ButtonDark(ICON_FA_USER " Profile", ImVec2(btn_width, btn_height))) {
+    if (ThemedButton(ICON_FA_USER " Profile", ImVec2(btn_width, btn_height))) {
         // Open profile viewer for this contact
         state.viewed_profile_fingerprint = contact.address;  // Use address as fingerprint
         state.viewed_profile_name = contact.name;
@@ -149,7 +149,7 @@ void render(AppState& state) {
     // Wall button (ensure same Y position)
     ImGui::SameLine();
     ImGui::SetCursorPosY(btn_y_pos);
-    if (ButtonDark(ICON_FA_NEWSPAPER " Wall", ImVec2(btn_width, btn_height))) {
+    if (ThemedButton(ICON_FA_NEWSPAPER " Wall", ImVec2(btn_width, btn_height))) {
         // Open message wall for this contact
         state.wall_fingerprint = contact.address;  // Use address as fingerprint
         state.wall_display_name = contact.name;
@@ -392,7 +392,7 @@ void render(AppState& state) {
         ImGui::PopStyleColor();
 
         // Send button with paper plane icon
-        if (ButtonDark(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
+        if (ThemedButton(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
             if (strlen(state.message_input) > 0 && state.selected_contact >= 0) {
                 // Check queue limit
                 if (state.message_send_queue.size() >= 20) {

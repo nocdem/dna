@@ -192,7 +192,7 @@ void render(AppState& state) {
         ImGui::PopFont();
 
         ImGui::SameLine(ImGui::GetContentRegionAvail().x - 100);
-        if (ButtonDark(ICON_FA_ROTATE " Refresh", ImVec2(100, 30))) {
+        if (ThemedButton(ICON_FA_ROTATE " Refresh", ImVec2(100, 30))) {
             loadMessageWall(state);
         }
 
@@ -274,7 +274,7 @@ void render(AppState& state) {
 
             // Post button
             ImGui::SameLine(ImGui::GetContentRegionAvail().x - 150);
-            if (ButtonDark(ICON_FA_PAPER_PLANE " Post Message", ImVec2(150, 35))) {
+            if (ThemedButton(ICON_FA_PAPER_PLANE " Post Message", ImVec2(150, 35))) {
                 postToMessageWall(state);
             }
         } else {
@@ -284,7 +284,7 @@ void render(AppState& state) {
         ImGui::Spacing();
 
         // Close button
-        if (ButtonDark("Close", ImVec2(-1, 40))) {
+        if (ThemedButton("Close", ImVec2(-1, 40))) {
             state.show_message_wall = false;
         }
 

@@ -28,7 +28,7 @@ void renderContactsList(AppState& state) {
     ImGui::Text("  DNA Messenger");
 
     ImGui::SameLine(io.DisplaySize.x - 60);
-    if (ButtonDark(ICON_FA_CIRCLE_PLUS, ImVec2(50, 40))) {
+    if (ThemedButton(ICON_FA_CIRCLE_PLUS, ImVec2(50, 40))) {
         // TODO: Add contact dialog
     }
 
@@ -52,7 +52,7 @@ void renderContactsList(AppState& state) {
             ImGui::PushStyleColor(ImGuiCol_Button, highlight);
         }
 
-        if (ButtonDark("##contact", ImVec2(button_width, 80))) {
+        if (ThemedButton("##contact", ImVec2(button_width, 80))) {
             state.selected_contact = i;
             state.current_view = VIEW_CHAT;
         }

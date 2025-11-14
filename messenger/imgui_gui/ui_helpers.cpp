@@ -1,31 +1,6 @@
 #include "ui_helpers.h"
 #include <cmath>
 
-// Helper function for modal/dialog buttons with dark text
-bool ButtonDark(const char* label, const ImVec2& size) {
-    ImVec4 btn_color, hover_color, active_color, text_color;
-
-    if (g_app_settings.theme == 0) { // DNA Theme
-        btn_color = DNATheme::Text();
-        hover_color = ImVec4(0.0f, 0.9f, 0.7f, 1.0f);
-        active_color = ImVec4(0.0f, 0.8f, 0.6f, 1.0f);
-        text_color = DNATheme::SelectedText();
-    } else { // Club Theme
-        btn_color = ClubTheme::Text();
-        hover_color = ImVec4(0.876f, 0.371f, 0.104f, 1.0f);
-        active_color = ImVec4(0.776f, 0.271f, 0.004f, 1.0f);
-        text_color = ClubTheme::SelectedText();
-    }
-
-    ImGui::PushStyleColor(ImGuiCol_Button, btn_color);
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
-    ImGui::PushStyleColor(ImGuiCol_Text, text_color);
-    bool result = ImGui::Button(label, size);
-    ImGui::PopStyleColor(4);
-    return result;
-}
-
 // Helper function for themed main buttons
 bool ThemedButton(const char* label, const ImVec2& size, bool is_active) {
     ImVec4 btn_color, hover_color, active_color, text_color, text_bg;

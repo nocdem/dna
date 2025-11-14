@@ -235,7 +235,7 @@ void render(AppState& state) {
 
     // Select button (only if identity selected)
     ImGui::BeginDisabled(state.selected_identity_idx < 0);
-    if (ButtonDark(ICON_FA_USER " Select Identity", ImVec2(-1, btn_height))) {
+    if (ThemedButton(ICON_FA_USER " Select Identity", ImVec2(-1, btn_height))) {
         if (state.selected_identity_idx >= 0 && state.selected_identity_idx < (int)state.identities.size()) {
             // Close identity selection modal immediately
             ImGui::CloseCurrentPopup();
@@ -264,7 +264,7 @@ void render(AppState& state) {
     ImGui::EndDisabled();
 
     // Create new button
-    if (ButtonDark(ICON_FA_CIRCLE_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
+    if (ThemedButton(ICON_FA_CIRCLE_PLUS " Create New Identity", ImVec2(-1, btn_height))) {
         // Generate mnemonic immediately (skip name step)
         if (bip39_generate_mnemonic(24, state.generated_mnemonic, sizeof(state.generated_mnemonic)) == 0) {
             state.create_identity_step = STEP_SEED_PHRASE;
@@ -277,7 +277,7 @@ void render(AppState& state) {
     }
 
     // Restore from seed button
-    if (ButtonDark(ICON_FA_DOWNLOAD " Restore from Seed", ImVec2(-1, btn_height))) {
+    if (ThemedButton(ICON_FA_DOWNLOAD " Restore from Seed", ImVec2(-1, btn_height))) {
         state.restore_identity_step = RESTORE_STEP_SEED;
         memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
         ImGui::OpenPopup("Restore from Seed");
@@ -396,7 +396,7 @@ void renderCreateIdentityStep1(AppState& state) {
     if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
 
     ImGui::BeginDisabled(!name_valid || name_len == 0);
-    if (ButtonDark("Next", ImVec2(button_width, 40)) || (enter_pressed && name_valid && name_len > 0)) {
+    if (ThemedButton("Next", ImVec2(button_width, 40)) || (enter_pressed && name_valid && name_len > 0)) {
         // Generate real BIP39 24-word seed phrase
         char mnemonic[BIP39_MAX_MNEMONIC_LENGTH];
         if (bip39_generate_mnemonic(24, mnemonic, sizeof(mnemonic)) != 0) {
@@ -412,7 +412,7 @@ void renderCreateIdentityStep1(AppState& state) {
     ImGui::EndDisabled();
 
     ImGui::SameLine();
-    if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
+    if (ThemedButton("Cancel", ImVec2(button_width, 40))) {
         // Reset wizard state and go back to identity selection
         state.create_identity_step = STEP_NAME;
         state.seed_confirmed = false;
@@ -441,7 +441,7 @@ void renderCreateIdentityStep2(AppState& state) {
 
 
     // Copy button - full width
-    if (ButtonDark(ICON_FA_COPY " Copy All Words", ImVec2(-1, 40))) {
+    if (ThemedButton(ICON_FA_COPY " Copy All Words", ImVec2(-1, 40))) {
         ImGui::SetClipboardText(state.generated_mnemonic);
         state.seed_copied = true;
         state.seed_copied_timer = 3.0f; // Show message for 3 seconds
@@ -522,7 +522,7 @@ void renderCreateIdentityStep2(AppState& state) {
 
     if (offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + offset);
 
-    if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
+    if (ThemedButton("Cancel", ImVec2(button_width, 40))) {
         // Reset wizard state and go back to identity selection
         state.seed_confirmed = false;
         state.seed_copied = false;
@@ -532,7 +532,7 @@ void renderCreateIdentityStep2(AppState& state) {
     ImGui::SameLine();
 
     ImGui::BeginDisabled(!state.seed_confirmed);
-    if (ButtonDark("Create", ImVec2(button_width, 40))) {
+    if (ThemedButton("Create", ImVec2(button_width, 40))) {
         // Close all modals immediately
         ImGui::CloseCurrentPopup();
         state.show_identity_selection = false; // Hide identity list modal immediately
@@ -709,7 +709,7 @@ void renderRestoreStep2_Seed(AppState& state) {
 
     float button_width = is_mobile ? -1 : 150.0f;
 
-    if (ButtonDark("Cancel", ImVec2(button_width, 40)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
+    if (ThemedButton("Cancel", ImVec2(button_width, 40)) || ImGui::IsKeyPressed(ImGuiKey_Escape)) {
         // Reset wizard state and go back to identity selection
         state.restore_identity_step = RESTORE_STEP_SEED;
         memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
@@ -719,7 +719,7 @@ void renderRestoreStep2_Seed(AppState& state) {
     if (!is_mobile) ImGui::SameLine();
 
     ImGui::BeginDisabled(word_count != 24);
-    if (ButtonDark("Restore", ImVec2(button_width, 40))) {
+    if (ThemedButton("Restore", ImVec2(button_width, 40))) {
         // Close all modals immediately
         ImGui::CloseCurrentPopup();
         state.show_identity_selection = false; // Hide identity list modal immediately

@@ -328,7 +328,7 @@ void render(AppState& state) {
         ImGui::Spacing();
 
         // Close button
-        if (ButtonDark("Close", ImVec2(-1, 40))) {
+        if (ThemedButton("Close", ImVec2(-1, 40))) {
             state.show_transaction_history = false;
         }
 

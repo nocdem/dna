@@ -191,7 +191,7 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
     // Buttons
     float button_width = is_mobile ? -1 : 150.0f;
 
-    if (ButtonDark("Cancel", ImVec2(button_width, 40))) {
+    if (ThemedButton("Cancel", ImVec2(button_width, 40))) {
         state.show_add_contact_dialog = false;
         CenteredModal::End();
         return;
@@ -201,7 +201,7 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
 
     // Save button (only enabled if contact found)
     ImGui::BeginDisabled(state.add_contact_found_fingerprint.empty());
-    if (ButtonDark("Save", ImVec2(button_width, 40))) {
+    if (ThemedButton("Save", ImVec2(button_width, 40))) {
         // Save contact to database using FINGERPRINT
         const char* fingerprint = state.add_contact_found_fingerprint.c_str();
         int result = contacts_db_add(fingerprint, NULL);

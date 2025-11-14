@@ -524,7 +524,7 @@ void render(AppState& state) {
         float btn_spacing = (ImGui::GetContentRegionAvail().x - (btn_width * 2)) / 3.0f;
 
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + btn_spacing);
-        if (ButtonDark(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, 40))) {
+        if (ThemedButton(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, 40))) {
             buildAndSendTransaction(state);
         }
 

@@ -50,7 +50,7 @@ void render(AppState& state) {
 
         if (state.address_copied) {
             // Show "Copied!" feedback
-            if (ButtonDark(ICON_FA_CHECK " Copied!", ImVec2(btn_width, 40))) {
+            if (ThemedButton(ICON_FA_CHECK " Copied!", ImVec2(btn_width, 40))) {
                 // Button disabled
             }
 
@@ -61,7 +61,7 @@ void render(AppState& state) {
                 state.address_copied_timer = 0.0f;
             }
         } else {
-            if (ButtonDark(ICON_FA_CLIPBOARD " Copy Address", ImVec2(btn_width, 40))) {
+            if (ThemedButton(ICON_FA_CLIPBOARD " Copy Address", ImVec2(btn_width, 40))) {
                 ImGui::SetClipboardText(state.wallet_address);
                 state.address_copied = true;
                 state.address_copied_timer = 0.0f;
