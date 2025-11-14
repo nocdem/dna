@@ -5,6 +5,7 @@
 #include "font_awesome.h"
 #include "theme_colors.h"
 #include "settings_manager.h"
+#include <GLFW/glfw3.h>
 #include "helpers/identity_helpers.h"
 #include "screens/register_name_screen.h"
 #include "screens/message_wall_screen.h"
@@ -143,6 +144,66 @@ void DNAMessengerApp::render() {
             ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
             ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
             ImGuiWindowFlags_NoScrollbar);
+
+        // Custom title bar (borderless window)
+        {
+            float title_bar_height = 40.0f;
+            ImVec2 title_bar_size = ImVec2(io.DisplaySize.x - 40, title_bar_height); // Account for window padding
+
+            // Title bar background
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            ImVec2 title_bar_min = ImGui::GetCursorScreenPos();
+            ImVec2 title_bar_max = ImVec2(title_bar_min.x + title_bar_size.x, title_bar_min.y + title_bar_size.y);
+
+            ImU32 title_bg = ImGui::ColorConvertFloat4ToU32(g_app_settings.theme == 0 ? DNATheme::Background() : ClubTheme::Background());
+            draw_list->AddRectFilled(title_bar_min, title_bar_max, title_bg);
+
+            // Make title bar draggable
+            ImGui::SetCursorScreenPos(title_bar_min);
+            ImGui::InvisibleButton("##title_bar_drag", title_bar_size);
+            if (ImGui::IsItemActive()) {
+                // Get GLFW window from ImGui backend
+                GLFWwindow* window = (GLFWwindow*)io.BackendPlatformUserData;
+                if (window && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
+                    ImVec2 delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
+                    int x, y;
+                    glfwGetWindowPos(window, &x, &y);
+                    glfwSetWindowPos(window, x + (int)delta.x, y + (int)delta.y);
+                    ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+                }
+            }
+
+            // Title text (centered vertically)
+            ImGui::SetCursorScreenPos(ImVec2(title_bar_min.x + 10, title_bar_min.y + (title_bar_height - ImGui::GetTextLineHeight()) / 2));
+            ImGui::Text("DNA Messenger");
+
+            // Close button (right side)
+            float button_size = 30.0f;
+            ImGui::SetCursorScreenPos(ImVec2(title_bar_max.x - button_size - 5, title_bar_min.y + (title_bar_height - button_size) / 2));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0)); // Transparent
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(1.0f, 0.3f, 0.3f, 0.8f)); // Red hover
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(1.0f, 0.2f, 0.2f, 1.0f)); // Darker red
+            if (ImGui::Button(ICON_FA_XMARK, ImVec2(button_size, button_size))) {
+                GLFWwindow* window = (GLFWwindow*)io.BackendPlatformUserData;
+                if (window) glfwSetWindowShouldClose(window, GLFW_TRUE);
+            }
+            ImGui::PopStyleColor(3);
+
+            // Minimize button
+            ImGui::SetCursorScreenPos(ImVec2(title_bar_max.x - button_size * 2 - 10, title_bar_min.y + (title_bar_height - button_size) / 2));
+            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0)); // Transparent
+            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.3f, 0.3f, 0.3f, 0.8f)); // Grey hover
+            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.2f, 0.2f, 1.0f)); // Darker grey
+            if (ImGui::Button(ICON_FA_MINUS, ImVec2(button_size, button_size))) {
+                GLFWwindow* window = (GLFWwindow*)io.BackendPlatformUserData;
+                if (window) glfwIconifyWindow(window);
+            }
+            ImGui::PopStyleColor(3);
+
+            // Move cursor below title bar
+            ImGui::SetCursorScreenPos(ImVec2(title_bar_min.x, title_bar_max.y + 10));
+            ImGui::Dummy(ImVec2(0, 0)); // Reset cursor position
+        }
 
         // Mobile: Full-screen views with bottom navigation
         // Desktop: Side-by-side layout

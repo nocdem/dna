@@ -204,6 +204,9 @@ int main(int argc, char** argv) {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 0);
 
+    // Remove native title bar for modern borderless look
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+
     // Load settings from file
     SettingsManager::Load(g_app_settings);
     printf("[SKETCH MODE] Settings loaded: theme=%d, window=%dx%d\n",
