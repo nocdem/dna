@@ -126,14 +126,27 @@ void render(AppState& state) {
     ImVec4 text_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
     ImGui::TextColored(text_col, "%s", contact.name.c_str());
 
-    // Message Wall button (right side of header)
+    // Profile and Wall buttons (right side of header)
     ImGui::SameLine();
-    float wall_btn_width = is_mobile ? 120.0f : 140.0f;
-    float wall_btn_height = is_mobile ? 40.0f : 30.0f;
-    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - wall_btn_width - 10);
-    ImGui::SetCursorPosY((header_height - wall_btn_height) * 0.5f);
+    float btn_width = is_mobile ? 110.0f : 120.0f;
+    float btn_height = is_mobile ? 40.0f : 30.0f;
+    float btn_spacing = 5.0f;
+    float total_width = (btn_width * 2) + btn_spacing;
 
-    if (ButtonDark(ICON_FA_NEWSPAPER " Wall", ImVec2(wall_btn_width, wall_btn_height))) {
+    ImGui::SetCursorPosX(ImGui::GetWindowWidth() - total_width - 10);
+    ImGui::SetCursorPosY((header_height - btn_height) * 0.5f);
+
+    // Profile button
+    if (ButtonDark(ICON_FA_USER " Profile", ImVec2(btn_width, btn_height))) {
+        // Open profile viewer for this contact
+        state.viewed_profile_fingerprint = contact.address;  // Use address as fingerprint
+        state.viewed_profile_name = contact.name;
+        state.show_contact_profile = true;
+    }
+
+    // Wall button
+    ImGui::SameLine();
+    if (ButtonDark(ICON_FA_NEWSPAPER " Wall", ImVec2(btn_width, btn_height))) {
         // Open message wall for this contact
         state.wall_fingerprint = contact.address;  // Use address as fingerprint
         state.wall_display_name = contact.name;

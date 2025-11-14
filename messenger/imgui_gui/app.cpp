@@ -9,6 +9,7 @@
 #include "screens/register_name_screen.h"
 #include "screens/message_wall_screen.h"
 #include "screens/profile_editor_screen.h"
+#include "screens/contact_profile_viewer.h"
 #include "screens/settings_screen.h"
 #include "screens/wallet_receive_dialog.h"
 #include "screens/wallet_send_dialog.h"
@@ -316,6 +317,9 @@ void DNAMessengerApp::renderDialogs() {
 
     // Profile Editor dialog
     ProfileEditorScreen::render(state);
+
+    // Contact Profile Viewer dialog
+    ContactProfileViewer::render(state);
 
     // Register DNA Name dialog
     RegisterNameScreen::render(state);

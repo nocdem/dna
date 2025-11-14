@@ -38,6 +38,7 @@ add_executable(dna_messenger_imgui
     screens/register_name_screen.cpp
     screens/message_wall_screen.cpp
     screens/profile_editor_screen.cpp
+    screens/contact_profile_viewer.cpp
     screens/settings_screen.cpp
     screens/wallet_receive_dialog.cpp
     screens/wallet_send_dialog.cpp

@@ -7,6 +7,7 @@
 - ✅ Modularization: 10,110 LOC extracted into 39 focused modules (91.2% reduction)
 - ✅ Phase 9.6: Encrypted DHT identity backup (Kyber1024 + AES-256-GCM, BIP39 recovery)
 - ✅ Phase 10.1: Profile system (DHT storage + 7-day cache)
+- ✅ Contact Profile Viewer (chat screen, displays bio/addresses/social links)
 - 🚧 Phase 10.2: Wall posts (censorship-resistant social media - alpha)
 
 ---
