@@ -284,9 +284,7 @@ void render(AppState& state) {
 
                 // Transaction info
                 ImGui::BeginGroup();
-                ImGui::PushFont(io.Fonts->Fonts[1]); // Bold font
                 ImGui::Text("%s %s", tx.amount.c_str(), tx.token.c_str());
-                ImGui::PopFont();
                 ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", tx.address.c_str());
                 ImGui::EndGroup();
 

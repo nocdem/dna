@@ -153,9 +153,7 @@ void render(AppState& state) {
         ImGui::Separator();
         ImGui::Spacing();
 
-        ImGui::PushFont(io.Fonts->Fonts[1]);
         ImGui::Text(ICON_FA_COINS " Cost: 1 CPUNK");
-        ImGui::PopFont();
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextInfo() : ClubTheme::TextInfo(), ICON_FA_EXCLAMATION " Payment: Free for now (not yet implemented)");
 
         ImGui::Spacing();
