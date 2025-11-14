@@ -191,18 +191,17 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
     // Buttons - properly aligned with equal spacing from edges
     float button_width_left = 100.0f;
     float button_width_right = 100.0f;
-    float window_width = ImGui::GetWindowWidth();
-    float window_padding = ImGui::GetStyle().WindowPadding.x;
+    float content_width = ImGui::GetContentRegionAvail().x;
     
-    // Left button - starts at window padding
+    // Left button - starts at current cursor position
     if (ThemedButton("Cancel", ImVec2(button_width_left, 40))) {
         state.show_add_contact_dialog = false;
         CenteredModal::End();
         return;
     }
     
-    // Right button - position from window origin, not cursor
-    ImGui::SameLine(window_width - window_padding - button_width_right);
+    // Right button - position to align with right edge of content region
+    ImGui::SameLine(0.0f, content_width - button_width_left - button_width_right);
     
     // Save button (only enabled if contact found)
     ImGui::BeginDisabled(state.add_contact_found_fingerprint.empty());
