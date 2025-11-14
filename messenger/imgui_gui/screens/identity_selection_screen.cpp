@@ -235,8 +235,28 @@ void render(AppState& state) {
     ImGui::BeginDisabled(state.selected_identity_idx < 0);
     if (ButtonDark(ICON_FA_USER " Select Identity", ImVec2(-1, btn_height))) {
         if (state.selected_identity_idx >= 0 && state.selected_identity_idx < (int)state.identities.size()) {
+            // Close identity selection modal immediately
+            ImGui::CloseCurrentPopup();
+            state.show_identity_selection = false;
+
+            // Show spinner overlay with "Connecting..." message
+            state.show_operation_spinner = true;
+            snprintf(state.operation_spinner_message, sizeof(state.operation_spinner_message),
+                     "Connecting...");
+
             state.current_identity = state.identities[state.selected_identity_idx];
-            DataLoader::loadIdentity(state, state.current_identity, [&state](int i) { DataLoader::loadMessagesForContact(state, i); });
+
+            // Load identity asynchronously
+            state.dht_publish_task.start([&state](AsyncTask* task) {
+                task->addMessage("Loading identity...");
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+                task->addMessage("Connecting...");
+                DataLoader::loadIdentity(state, state.current_identity, [&state](int i) { DataLoader::loadMessagesForContact(state, i); });
+
+                task->addMessage("✓ Connected successfully!");
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));
+            });
         }
     }
     ImGui::EndDisabled();
@@ -534,7 +554,7 @@ void renderCreateIdentityStep2(AppState& state) {
             task->addMessage("Initializing messenger context...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-            task->addMessage("Loading contacts database...");
+            task->addMessage("Connecting...");
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
             task->addMessage("✓ Identity created successfully!");
@@ -724,7 +744,7 @@ void renderRestoreStep2_Seed(AppState& state) {
             task->addMessage("Initializing messenger context...");
             std::this_thread::sleep_for(std::chrono::milliseconds(500));
 
-            task->addMessage("Loading contacts database...");
+            task->addMessage("Connecting...");
             std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
             task->addMessage("✓ Identity restored successfully!");
