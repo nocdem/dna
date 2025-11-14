@@ -122,9 +122,12 @@ void render(AppState& state) {
     }
 
     ImGuiIO& io = ImGui::GetIO();
+    bool is_mobile = io.DisplaySize.x < 600;
 
+    // Set fixed width like identity dialog
+    ImGui::SetNextWindowSize(ImVec2(is_mobile ? io.DisplaySize.x * 0.9f : 500, 0), ImGuiCond_Always);
 
-    if (CenteredModal::Begin("Register DNA", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (CenteredModal::Begin("Register DNA", NULL, ImGuiWindowFlags_NoResize)) {
         
         // Check if registration task completed
         if (state.register_name_task.isCompleted() && !state.register_name_task.isRunning()) {
