@@ -1,6 +1,8 @@
 #include "message_wall_screen.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
+#include "../theme_colors.h"
+#include "../settings_manager.h"
 #include "../font_awesome.h"
 
 extern "C" {
@@ -197,7 +199,7 @@ void render(AppState& state) {
         ImGui::Spacing();
 
         // Status label
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", state.wall_status.c_str());
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", state.wall_status.c_str());
 
         ImGui::Separator();
         ImGui::Spacing();
@@ -206,9 +208,9 @@ void render(AppState& state) {
         ImGui::BeginChild("WallMessages", ImVec2(0, state.wall_is_own ? -200 : -50), true);
 
         if (state.wall_loading) {
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Loading messages...");
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Loading messages...");
         } else if (state.wall_messages.empty()) {
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No messages yet. Be the first to post!");
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "No messages yet. Be the first to post!");
         } else {
             for (size_t i = 0; i < state.wall_messages.size(); i++) {
                 const auto& msg = state.wall_messages[i];
@@ -227,10 +229,10 @@ void render(AppState& state) {
                 ImGui::Indent(10);
 
                 // Header: timestamp + verification
-                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", formatWallTimestamp(msg.timestamp).c_str());
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", formatWallTimestamp(msg.timestamp).c_str());
                 ImGui::SameLine();
                 if (msg.verified) {
-                    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), ICON_FA_CHECK " Signed");
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), ICON_FA_CHECK " Signed");
                 }
 
                 ImGui::Spacing();
@@ -260,7 +262,7 @@ void render(AppState& state) {
             ImGui::Spacing();
 
             // Message input (white text for visibility)
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
             ImGui::InputTextMultiline("##WallInput", state.wall_message_input, sizeof(state.wall_message_input),
                                      ImVec2(-1, 80), ImGuiInputTextFlags_None);
             ImGui::PopStyleColor();
@@ -276,7 +278,7 @@ void render(AppState& state) {
                 postToMessageWall(state);
             }
         } else {
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), ICON_FA_CIRCLE_INFO " This is %s's public message wall (read-only)", state.wall_display_name.c_str());
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), ICON_FA_CIRCLE_INFO " This is %s's public message wall (read-only)", state.wall_display_name.c_str());
         }
 
         ImGui::Spacing();

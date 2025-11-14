@@ -1,6 +1,8 @@
 #include "contact_profile_viewer.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
+#include "../theme_colors.h"
+#include "../settings_manager.h"
 #include "../font_awesome.h"
 
 extern "C" {
@@ -134,7 +136,7 @@ void render(AppState& state) {
             if (!state.profile_registered_name.empty()) {
                 ImGui::Text("DNA Name:");
                 ImGui::SameLine();
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", state.profile_registered_name.c_str());
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), "%s", state.profile_registered_name.c_str());
             }
 
             // Fingerprint
@@ -143,9 +145,9 @@ void render(AppState& state) {
             std::string fp = state.viewed_profile_fingerprint;
             if (fp.length() > 23) {
                 std::string shortened = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
-                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%s", shortened.c_str());
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), "%s", shortened.c_str());
             } else {
-                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%s", fp.c_str());
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), "%s", fp.c_str());
             }
 
             ImGui::Spacing();

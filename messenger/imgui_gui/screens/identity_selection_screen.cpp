@@ -1,5 +1,7 @@
 #include "identity_selection_screen.h"
 #include "../ui_helpers.h"
+#include "../theme_colors.h"
+#include "../settings_manager.h"
 #include "../font_awesome.h"
 #include "../settings_manager.h"
 #include "../modal_helper.h"
@@ -148,7 +150,7 @@ void render(AppState& state) {
         ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y + spinner_radius + 20));
         ImGui::Text("%s", loading_text);
     } else if (state.identities.empty()) {
-        ImGui::TextColored(ImVec4(0.7f, 0.7f, 0.7f, 1.0f), "No identities found.");
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "No identities found.");
         ImGui::TextWrapped("Create a new identity to get started.");
     } else {
         for (size_t i = 0; i < state.identities.size(); i++) {
@@ -325,7 +327,7 @@ void renderCreateIdentityStep1(AppState& state) {
         ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)  // DNA: slightly lighter than bg
         : ImVec4(0.15f, 0.14f, 0.13f, 1.0f); // Club: slightly lighter
     ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
 
     bool enter_pressed = ImGui::InputText("##IdentityName", state.new_identity_name, sizeof(state.new_identity_name),
                     ImGuiInputTextFlags_CallbackCharFilter | ImGuiInputTextFlags_EnterReturnsTrue, IdentityNameInputFilter);
@@ -476,7 +478,7 @@ void renderCreateIdentityStep2(AppState& state) {
         // Format: " 1. word      "
         char label[32];
         snprintf(label, sizeof(label), "%2d. %-14s", i + 1, words[i]);
-        ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.8f, 1.0f), "%s", label);
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(), "%s", label);
 
         // Switch to second column after 12 words
         if (i == 11) {
@@ -501,7 +503,7 @@ void renderCreateIdentityStep2(AppState& state) {
         float center_offset = (ImGui::GetContentRegionAvail().x - text_size.x) * 0.5f;
         if (center_offset > 0) ImGui::SetCursorPosX(ImGui::GetCursorPosX() + center_offset);
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.3f, 1.0f, 0.3f, 1.0f)); // Green
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess()); // Green
         ImGui::Text("%s", msg);
         ImGui::PopStyleColor();
         state.seed_copied_timer -= ImGui::GetIO().DeltaTime;
@@ -671,7 +673,7 @@ void renderRestoreStep2_Seed(AppState& state) {
     ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
 
     ImGui::SetNextItemWidth(-1);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
     ImGui::InputTextMultiline("##RestoreSeedPhrase", state.generated_mnemonic, sizeof(state.generated_mnemonic),
                              ImVec2(-1, 200), ImGuiInputTextFlags_WordWrap);
     ImGui::PopStyleColor();
@@ -695,11 +697,11 @@ void renderRestoreStep2_Seed(AppState& state) {
 
         if (word_count != 24) {
             ImGui::PushTextWrapPos(0.0f);
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f),
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(),
                               "Invalid: Found %d words, need exactly 24 words", word_count);
             ImGui::PopTextWrapPos();
         } else {
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.3f, 1.0f), ICON_FA_CIRCLE_CHECK " Valid: 24 words");
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), ICON_FA_CIRCLE_CHECK " Valid: 24 words");
         }
     }
 

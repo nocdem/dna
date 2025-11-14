@@ -1,6 +1,8 @@
 #include "wallet_screen.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
+#include "../theme_colors.h"
+#include "../settings_manager.h"
 #include "../font_awesome.h"
 #include "wallet_transaction_history_dialog.h"
 #include "../../blockchain/wallet.h"
@@ -159,7 +161,7 @@ void render(AppState& state) {
         const char* error_icon = ICON_FA_TRIANGLE_EXCLAMATION " Wallet Error";
         ImVec2 text_size = ImGui::CalcTextSize(error_icon);
         ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y - 60));
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", error_icon);
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), "%s", error_icon);
 
         ImVec2 desc_size = ImGui::CalcTextSize(state.wallet_error.c_str());
         ImGui::SetCursorPos(ImVec2(center.x - desc_size.x * 0.5f, center.y - 20));
@@ -200,7 +202,8 @@ void render(AppState& state) {
 
     for (int i = 0; i < 3; i++) {
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.15f, 0.15f, 0.15f, 0.9f));
+        ImVec4 card_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(card_bg.x, card_bg.y, card_bg.z, 0.9f));
 
         float card_height = is_mobile ? 100.0f : 120.0f;
         char card_id[32];

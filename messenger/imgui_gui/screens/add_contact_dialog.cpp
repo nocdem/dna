@@ -43,7 +43,7 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
         ImGui::SetKeyboardFocusHere();
         first_open = false;
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+    ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
     bool input_changed = ImGui::InputText("##contact_input", state.add_contact_input,
                                           sizeof(state.add_contact_input));
     ImGui::PopStyleColor();

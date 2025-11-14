@@ -11,6 +11,7 @@ namespace DNATheme {
     inline ImVec4 TextHint() { return ImVec4(0.7f, 0.7f, 0.7f, 1.0f); }         // #B3B3B3 - Subtle hint text
     inline ImVec4 TextWarning() { return ImVec4(1.0f, 0.5f, 0.5f, 1.0f); }      // #FF8080 - Softer red warning
     inline ImVec4 TextSuccess() { return ImVec4(0.5f, 1.0f, 0.5f, 1.0f); }      // #80FF80 - Softer green success
+    inline ImVec4 TextInfo() { return ImVec4(1.0f, 0.8f, 0.4f, 1.0f); }         // #FFCC66 - Orange/amber info
     inline ImVec4 OfflineColor() { return ImVec4(0.867f, 0.867f, 0.867f, 1.0f); }// #DDDDDD (lighter for visibility)
     inline ImVec4 ButtonHover() { return ImVec4(0.0f, 0.85f, 0.68f, 1.0f); }    // Slightly darker cyan
     inline ImVec4 ButtonActive() { return ImVec4(0.0f, 0.75f, 0.60f, 1.0f); }   // Even darker cyan
@@ -28,6 +29,7 @@ namespace ClubTheme {
     inline ImVec4 TextHint() { return ImVec4(0.7f, 0.7f, 0.7f, 1.0f); }        // #B3B3B3 - Subtle hint text
     inline ImVec4 TextWarning() { return ImVec4(1.0f, 0.5f, 0.5f, 1.0f); }     // #FF8080 - Softer red warning
     inline ImVec4 TextSuccess() { return ImVec4(0.5f, 1.0f, 0.5f, 1.0f); }     // #80FF80 - Softer green success
+    inline ImVec4 TextInfo() { return ImVec4(1.0f, 0.8f, 0.4f, 1.0f); }        // #FFCC66 - Orange/amber info
     inline ImVec4 OfflineColor() { return ImVec4(0.867f, 0.867f, 0.867f, 1.0f); }// #DDDDDD (lighter for visibility)
     inline ImVec4 ButtonHover() { return ImVec4(0.876f, 0.400f, 0.184f, 1.0f); }// Slightly darker orange
     inline ImVec4 ButtonActive() { return ImVec4(0.776f, 0.350f, 0.164f, 1.0f); }// Even darker orange

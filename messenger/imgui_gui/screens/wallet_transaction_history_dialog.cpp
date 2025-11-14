@@ -1,6 +1,8 @@
 #include "wallet_transaction_history_dialog.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
+#include "../theme_colors.h"
+#include "../settings_manager.h"
 #include "../font_awesome.h"
 #include "../../blockchain/wallet.h"
 #include "../../blockchain/blockchain_rpc.h"
@@ -255,11 +257,11 @@ void render(AppState& state) {
         ImGui::BeginChild("TransactionList", ImVec2(0, -50), true);
 
         if (state.transaction_history_loading) {
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Loading transactions...");
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Loading transactions...");
         } else if (!state.transaction_history_error.empty()) {
-            ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", state.transaction_history_error.c_str());
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), "%s", state.transaction_history_error.c_str());
         } else if (state.transaction_list.empty()) {
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "No transactions found");
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "No transactions found");
         } else {
             // Display all transactions
             for (size_t i = 0; i < state.transaction_list.size(); i++) {
@@ -283,9 +285,9 @@ void render(AppState& state) {
                 // Direction icon (Qt lines 252-259)
                 ImGui::PushFont(io.Fonts->Fonts[2]); // Large font for icon
                 if (tx.direction == "sent") {
-                    ImGui::TextColored(ImVec4(1.0f, 0.27f, 0.27f, 1.0f), ICON_FA_ARROW_UP); // Red arrow up
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), ICON_FA_ARROW_UP); // Red arrow up
                 } else {
-                    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), ICON_FA_ARROW_DOWN); // Green arrow down
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), ICON_FA_ARROW_DOWN); // Green arrow down
                 }
                 ImGui::PopFont();
                 ImGui::SameLine();
@@ -295,17 +297,17 @@ void render(AppState& state) {
                 ImGui::PushFont(io.Fonts->Fonts[1]); // Bold font
                 ImGui::Text("%s %s", tx.amount.c_str(), tx.token.c_str());
                 ImGui::PopFont();
-                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", tx.address.c_str());
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", tx.address.c_str());
                 ImGui::EndGroup();
 
                 // Time and status (right-aligned)
                 ImGui::SameLine(ImGui::GetContentRegionAvail().x - 120);
                 ImGui::BeginGroup();
-                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", tx.time.c_str());
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", tx.time.c_str());
                 if (tx.is_declined) {
-                    ImGui::TextColored(ImVec4(1.0f, 0.27f, 0.27f, 1.0f), "%s", tx.status.c_str()); // Red for DECLINED
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), "%s", tx.status.c_str()); // Red for DECLINED
                 } else {
-                    ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s", tx.status.c_str()); // Green for ACCEPTED
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), "%s", tx.status.c_str()); // Green for ACCEPTED
                 }
                 ImGui::EndGroup();
 

@@ -1,6 +1,8 @@
 #include "wallet_receive_dialog.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
+#include "../theme_colors.h"
+#include "../settings_manager.h"
 #include "../font_awesome.h"
 
 namespace WalletReceiveDialog {
@@ -32,7 +34,7 @@ void render(AppState& state) {
         // Address input (read-only, monospace font)
         ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);  // Use default font (monospace would be better)
         ImGui::PushItemWidth(-1);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
         ImGui::InputText("##address", state.wallet_address, sizeof(state.wallet_address),
                         ImGuiInputTextFlags_ReadOnly);
         ImGui::PopStyleColor();

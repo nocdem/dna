@@ -95,7 +95,7 @@ void render(AppState& state) {
     ImGuiStyle& current_style = ImGui::GetStyle();
     if (fabs(g_app_settings.ui_scale - current_style.FontScaleMain) > 0.01f) {
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " Restart app to apply scale changes");
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextInfo() : ClubTheme::TextInfo(), ICON_FA_TRIANGLE_EXCLAMATION " Restart app to apply scale changes");
     }
 
     ImGui::Spacing();
@@ -108,7 +108,7 @@ void render(AppState& state) {
 
     // Show registered DNA name if available (red)
     if (!state.profile_registered_name.empty()) {
-        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", state.profile_registered_name.c_str());
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), "%s", state.profile_registered_name.c_str());
     }
 
     // Always show fingerprint (shortened, green)
@@ -116,9 +116,9 @@ void render(AppState& state) {
     if (!fp.empty()) {
         if (fp.length() > 23) {
             std::string shortened = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%s", shortened.c_str());
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), "%s", shortened.c_str());
         } else {
-            ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.5f, 1.0f), "%s", fp.c_str());
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), "%s", fp.c_str());
         }
     }
     ImGui::Spacing();

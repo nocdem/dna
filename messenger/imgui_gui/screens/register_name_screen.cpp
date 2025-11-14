@@ -1,6 +1,8 @@
 #include "register_name_screen.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
+#include "../theme_colors.h"
+#include "../settings_manager.h"
 #include "../font_awesome.h"
 #include "../helpers/data_loader.h"
 
@@ -130,7 +132,7 @@ void render(AppState& state) {
 
         ImGui::Text("Desired Name:");
         ImGui::SetNextItemWidth(-1);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
         if (ImGui::InputText("##NameInput", state.register_name_input, sizeof(state.register_name_input))) {
             // Trigger availability check on text change
             checkNameAvailability(state);
@@ -141,12 +143,12 @@ void render(AppState& state) {
 
         // Availability status
         if (state.register_name_checking) {
-            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.0f, 1.0f), ICON_FA_SPINNER " Checking availability...");
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextInfo() : ClubTheme::TextInfo(), ICON_FA_SPINNER " Checking availability...");
         } else if (!state.register_name_availability.empty()) {
             if (state.register_name_available) {
-                ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), ICON_FA_CHECK " %s", state.register_name_availability.c_str());
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), ICON_FA_CHECK " %s", state.register_name_availability.c_str());
             } else {
-                ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), ICON_FA_XMARK " %s", state.register_name_availability.c_str());
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), ICON_FA_XMARK " %s", state.register_name_availability.c_str());
             }
         }
 
@@ -157,10 +159,10 @@ void render(AppState& state) {
         ImGui::PushFont(io.Fonts->Fonts[1]);
         ImGui::Text(ICON_FA_COINS " Cost: 1 CPUNK");
         ImGui::PopFont();
-        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.0f, 1.0f), ICON_FA_EXCLAMATION " Payment: Free for now (not yet implemented)");
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextInfo() : ClubTheme::TextInfo(), ICON_FA_EXCLAMATION " Payment: Free for now (not yet implemented)");
 
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", state.register_name_status.c_str());
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", state.register_name_status.c_str());
 
         ImGui::Spacing();
         ImGui::Separator();

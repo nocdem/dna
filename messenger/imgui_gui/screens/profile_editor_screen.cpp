@@ -1,6 +1,8 @@
 #include "profile_editor_screen.h"
 #include "../imgui.h"
 #include "../ui_helpers.h"
+#include "../theme_colors.h"
+#include "../settings_manager.h"
 #include "../font_awesome.h"
 
 extern "C" {
@@ -165,7 +167,7 @@ void render(AppState& state) {
         ImGui::Text("DNA Profile Editor");
         ImGui::PopFont();
 
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Edit your public DNA profile. All changes are stored in the DHT.");
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Edit your public DNA profile. All changes are stored in the DHT.");
         ImGui::Spacing();
 
         ImGui::Text("Registered Name: %s", state.profile_registered_name.c_str());
@@ -177,7 +179,7 @@ void render(AppState& state) {
 
         // Cellframe Network Addresses
         if (ImGui::CollapsingHeader("Cellframe Network Addresses", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
             ImGui::InputText("Backbone", state.profile_backbone, sizeof(state.profile_backbone));
             ImGui::InputText("KelVPN", state.profile_kelvpn, sizeof(state.profile_kelvpn));
             ImGui::InputText("Subzero", state.profile_subzero, sizeof(state.profile_subzero));
@@ -188,7 +190,7 @@ void render(AppState& state) {
 
         // External Wallet Addresses
         if (ImGui::CollapsingHeader("External Wallet Addresses")) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
             ImGui::InputText("Bitcoin (BTC)", state.profile_btc, sizeof(state.profile_btc));
             ImGui::InputText("Ethereum (ETH)", state.profile_eth, sizeof(state.profile_eth));
             ImGui::InputText("Solana (SOL)", state.profile_sol, sizeof(state.profile_sol));
@@ -199,7 +201,7 @@ void render(AppState& state) {
 
         // Social Media Links
         if (ImGui::CollapsingHeader("Social Media Links")) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
             ImGui::InputText("Telegram", state.profile_telegram, sizeof(state.profile_telegram));
             ImGui::InputText("X (Twitter)", state.profile_twitter, sizeof(state.profile_twitter));
             ImGui::InputText("GitHub", state.profile_github, sizeof(state.profile_github));
@@ -210,15 +212,15 @@ void render(AppState& state) {
 
         // Profile Picture
         if (ImGui::CollapsingHeader("Profile Picture")) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
             ImGui::InputText("IPFS CID", state.profile_pic_cid, sizeof(state.profile_pic_cid));
             ImGui::PopStyleColor();
-            ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Upload your profile picture to IPFS and paste the CID here.");
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Upload your profile picture to IPFS and paste the CID here.");
         }
 
         // Bio
         if (ImGui::CollapsingHeader("Bio", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
             ImGui::InputTextMultiline("##Bio", state.profile_bio, sizeof(state.profile_bio), ImVec2(-1, 100));
             ImGui::PopStyleColor();
             ImGui::Text("%zu / 512", strlen(state.profile_bio));
@@ -227,7 +229,7 @@ void render(AppState& state) {
         ImGui::EndChild();
 
         ImGui::Spacing();
-        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "%s", state.profile_status.c_str());
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", state.profile_status.c_str());
         ImGui::Spacing();
 
         // Buttons

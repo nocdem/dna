@@ -48,7 +48,8 @@ void renderContactsList(AppState& state) {
         // Large touch-friendly buttons (80px height)
         bool selected = (int)i == state.selected_contact;
         if (selected) {
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.0f, 0.8f, 0.8f, 0.3f));
+            ImVec4 highlight = g_app_settings.theme == 0 ? DNATheme::Border() : ClubTheme::Border();
+            ImGui::PushStyleColor(ImGuiCol_Button, highlight);
         }
 
         if (ButtonDark("##contact", ImVec2(button_width, 80))) {

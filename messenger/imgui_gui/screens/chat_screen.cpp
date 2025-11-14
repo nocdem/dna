@@ -385,7 +385,7 @@ void render(AppState& state) {
         if (should_autofocus) {
             ImGui::SetKeyboardFocusHere();
         }
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
         bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", state.message_input,
             sizeof(state.message_input), ImVec2(-1, 60),
             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
@@ -474,7 +474,7 @@ void render(AppState& state) {
             return 0;
         };
 
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
         bool enter_pressed = ImGui::InputTextMultiline("##MessageInput", state.message_input,
             sizeof(state.message_input), ImVec2(input_width, 60),
             ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_CallbackAlways,
@@ -625,7 +625,8 @@ void render(AppState& state) {
         ImGui::PushStyleColor(ImGuiCol_Button, btn_color);
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(btn_color.x * 0.9f, btn_color.y * 0.9f, btn_color.z * 0.9f, btn_color.w));
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(btn_color.x * 0.8f, btn_color.y * 0.8f, btn_color.z * 0.8f, btn_color.w));
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.1f, 0.11f, 0.13f, 1.0f)); // Dark text on button
+        ImVec4 dark_text = g_app_settings.theme == 0 ? DNATheme::Background() : ClubTheme::Background();
+        ImGui::PushStyleColor(ImGuiCol_Text, dark_text); // Dark text on button
         ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 25.0f); // Round button
 
         // Center icon in button

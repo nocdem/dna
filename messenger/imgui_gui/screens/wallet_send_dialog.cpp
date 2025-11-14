@@ -1,6 +1,8 @@
 #include "wallet_send_dialog.h"
 #include "wallet_screen.h"
 #include "../ui_helpers.h"
+#include "../theme_colors.h"
+#include "../settings_manager.h"
 #include "../font_awesome.h"
 #include "imgui.h"
 
@@ -446,7 +448,7 @@ void render(AppState& state) {
         // Recipient address
         ImGui::Text("To Address:");
         ImGui::PushItemWidth(-1);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
         ImGui::InputText("##recipient", state.send_recipient, sizeof(state.send_recipient));
         ImGui::PopStyleColor();
         ImGui::PopItemWidth();
@@ -455,7 +457,7 @@ void render(AppState& state) {
         // Amount
         ImGui::Text("Amount:");
         ImGui::PushItemWidth(-120);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
         ImGui::InputText("##amount", state.send_amount, sizeof(state.send_amount));
         ImGui::PopStyleColor();
         ImGui::PopItemWidth();
@@ -482,7 +484,7 @@ void render(AppState& state) {
         // Validator fee
         ImGui::Text("Validator Fee:");
         ImGui::PushItemWidth(-80);
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
         ImGui::InputText("##fee", state.send_fee, sizeof(state.send_fee));
         ImGui::PopStyleColor();
         ImGui::PopItemWidth();
@@ -511,7 +513,7 @@ void render(AppState& state) {
 
         // Status message
         if (!state.send_status.empty()) {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 0.3f, 1.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::TextInfo() : ClubTheme::TextInfo());
             ImGui::TextWrapped("%s", state.send_status.c_str());
             ImGui::PopStyleColor();
             ImGui::Spacing();
