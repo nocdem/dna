@@ -161,16 +161,36 @@ void DNAMessengerApp::render() {
             // Make title bar draggable
             ImGui::SetCursorScreenPos(title_bar_min);
             ImGui::InvisibleButton("##title_bar_drag", title_bar_size);
-            if (ImGui::IsItemActive()) {
-                // Get GLFW window from ImGui backend
+
+            // Track drag state
+            static bool is_dragging = false;
+            static ImVec2 drag_start_pos;
+            static int window_start_x = 0, window_start_y = 0;
+
+            if (ImGui::IsItemActivated()) {
+                // Start dragging
+                is_dragging = true;
+                drag_start_pos = ImGui::GetMousePos();
                 GLFWwindow* window = (GLFWwindow*)io.BackendPlatformUserData;
-                if (window && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
-                    ImVec2 delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);
-                    int x, y;
-                    glfwGetWindowPos(window, &x, &y);
-                    glfwSetWindowPos(window, x + (int)delta.x, y + (int)delta.y);
-                    ImGui::ResetMouseDragDelta(ImGuiMouseButton_Left);
+                if (window) {
+                    glfwGetWindowPos(window, &window_start_x, &window_start_y);
                 }
+            }
+
+            if (is_dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                // Continue dragging
+                ImVec2 current_pos = ImGui::GetMousePos();
+                ImVec2 delta = ImVec2(current_pos.x - drag_start_pos.x, current_pos.y - drag_start_pos.y);
+
+                GLFWwindow* window = (GLFWwindow*)io.BackendPlatformUserData;
+                if (window) {
+                    glfwSetWindowPos(window, window_start_x + (int)delta.x, window_start_y + (int)delta.y);
+                }
+            }
+
+            if (!ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+                // Stop dragging
+                is_dragging = false;
             }
 
             // Title text (centered vertically)
