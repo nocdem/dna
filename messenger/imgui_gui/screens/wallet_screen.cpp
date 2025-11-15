@@ -186,23 +186,24 @@ void render(AppState& state) {
     // Header with wallet selector
     wallet_list_t *wallets = (wallet_list_t*)state.wallet_list;
     if (wallets && wallets->count > 1) {
-        // Show dropdown if multiple wallets
-        ImGui::Text(ICON_FA_WALLET " Wallet:");
-        ImGui::SameLine();
-        
-        if (ImGui::BeginCombo("##wallet_selector", state.wallet_name.c_str())) {
+        // Show collapsing header with tree nodes for multiple wallets
+        if (ImGui::CollapsingHeader(ICON_FA_WALLET " Wallets", ImGuiTreeNodeFlags_DefaultOpen)) {
             for (int i = 0; i < wallets->count; i++) {
                 bool is_selected = (state.current_wallet_index == i);
-                if (ImGui::Selectable(wallets->wallets[i].name, is_selected)) {
+                
+                ImGuiTreeNodeFlags flags = ImGuiTreeNodeFlags_Leaf | ImGuiTreeNodeFlags_NoTreePushOnOpen;
+                if (is_selected) {
+                    flags |= ImGuiTreeNodeFlags_Selected;
+                }
+                
+                ImGui::TreeNodeEx(wallets->wallets[i].name, flags);
+                
+                if (ImGui::IsItemClicked()) {
                     state.current_wallet_index = i;
                     state.wallet_name = std::string(wallets->wallets[i].name);
                     refreshBalances(state);  // Reload balances for new wallet
                 }
-                if (is_selected) {
-                    ImGui::SetItemDefaultFocus();
-                }
             }
-            ImGui::EndCombo();
         }
     } else {
         // Single wallet, just show name
