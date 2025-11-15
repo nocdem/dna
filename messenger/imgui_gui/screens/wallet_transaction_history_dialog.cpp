@@ -232,20 +232,26 @@ void load(AppState& state) {
 
 void render(AppState& state) {
     if (!state.show_transaction_history) return;
+    
+    printf("[TransactionHistory] render() called, show_transaction_history=%d\n", state.show_transaction_history);
 
     // Open popup on first show (MUST be before BeginPopupModal!)
     if (!ImGui::IsPopupOpen("Transaction History")) {
+        printf("[TransactionHistory] Popup not open, calling OpenPopup\n");
         ImGui::OpenPopup("Transaction History");
+        // Clear and set loading state immediately
+        state.transaction_list.clear();
+        state.transaction_history_loading = true;
+        state.transaction_history_error.clear();
+        printf("[TransactionHistory] Opening modal, setting loading=true\n");
         // Load transactions asynchronously to avoid freezing UI
-        state.transaction_history_task.start([](AsyncTask* task) {
-            AppState* s = (AppState*)task;  // Capture state through task pointer trick
-            // Note: This is a hack - we need to pass state properly
-            // For now, use global or better capture mechanism
-        });
-        // Actually just call it in a simple way
         if (!state.transaction_history_task.isRunning()) {
+            printf("[TransactionHistory] Starting async load task\n");
             state.transaction_history_task.start([&state](AsyncTask* task) {
+                printf("[TransactionHistory] Async task executing load()\n");
                 load(state);
+                printf("[TransactionHistory] Async task finished, loading=%d, error=%s, tx_count=%zu\n", 
+                       state.transaction_history_loading, state.transaction_history_error.c_str(), state.transaction_list.size());
             });
         }
     }
@@ -254,7 +260,8 @@ void render(AppState& state) {
     bool is_mobile = IsMobileLayout();
 
 
-    if (CenteredModal::Begin("Transaction History", &state.show_transaction_history, ImGuiWindowFlags_NoResize, true, false, 600)) {
+    if (CenteredModal::Begin("Transaction History", &state.show_transaction_history, ImGuiWindowFlags_NoResize, true, false, 600, 500)) {
+        printf("[TransactionHistory] CenteredModal::Begin returned TRUE\n");
 
         ImGui::Spacing();
         ImGui::Separator();
@@ -262,8 +269,17 @@ void render(AppState& state) {
 
         // Scrollable transaction list
         ImGui::BeginChild("TransactionList", ImVec2(0, -50), true);
+        
+        printf("[TransactionHistory] Render: loading=%d, error='%s', tx_count=%zu\n",
+               state.transaction_history_loading, state.transaction_history_error.c_str(), state.transaction_list.size());
 
         if (state.transaction_history_loading) {
+            // Center spinner
+            ImVec2 available_size = ImGui::GetContentRegionAvail();
+            ImVec2 center = ImVec2(available_size.x * 0.5f, available_size.y * 0.5f);
+            ImGui::SetCursorPos(ImVec2(center.x - 20, center.y - 40));
+            ThemedSpinner("##tx_loading", 20.0f, 4.0f);
+            ImGui::SetCursorPos(ImVec2(center.x - 80, center.y + 10));
             ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Loading transactions...");
         } else if (!state.transaction_history_error.empty()) {
             ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), "%s", state.transaction_history_error.c_str());
