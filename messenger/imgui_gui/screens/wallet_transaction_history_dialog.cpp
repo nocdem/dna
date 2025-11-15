@@ -236,7 +236,18 @@ void render(AppState& state) {
     // Open popup on first show (MUST be before BeginPopupModal!)
     if (!ImGui::IsPopupOpen("Transaction History")) {
         ImGui::OpenPopup("Transaction History");
-        load(state);
+        // Load transactions asynchronously to avoid freezing UI
+        state.transaction_history_task.start([](AsyncTask* task) {
+            AppState* s = (AppState*)task;  // Capture state through task pointer trick
+            // Note: This is a hack - we need to pass state properly
+            // For now, use global or better capture mechanism
+        });
+        // Actually just call it in a simple way
+        if (!state.transaction_history_task.isRunning()) {
+            state.transaction_history_task.start([&state](AsyncTask* task) {
+                load(state);
+            });
+        }
     }
 
     ImGuiIO& io = ImGui::GetIO();

@@ -3,13 +3,13 @@
 
 # compile C with /usr/bin/cc
 # compile CXX with /usr/bin/c++
-C_DEFINES = -DBUILD_HASH=\"fbdb6e2\" -DBUILD_TS=\"2025-11-15\" -DPQSIGNUM_VERSION=\"0.1.790\"
+C_DEFINES = -DBUILD_HASH=\"0210ceb\" -DBUILD_TS=\"2025-11-15\" -DPQSIGNUM_VERSION=\"0.1.791\"
 
 C_INCLUDES = -I/home/mika/dev/dna-messenger/dht -I/usr/include/p11-kit-1 -I/home/mika/dev/dna-messenger/dht/.. -I/home/mika/dev/dna-messenger/dht/../crypto -I/home/mika/dev/dna-messenger/crypto/dsa -I/home/mika/dev/dna-messenger/crypto/dsa/../..
 
 C_FLAGS = -g
 
-CXX_DEFINES = -DBUILD_HASH=\"fbdb6e2\" -DBUILD_TS=\"2025-11-15\" -DPQSIGNUM_VERSION=\"0.1.790\"
+CXX_DEFINES = -DBUILD_HASH=\"0210ceb\" -DBUILD_TS=\"2025-11-15\" -DPQSIGNUM_VERSION=\"0.1.791\"
 
 CXX_INCLUDES = -I/home/mika/dev/dna-messenger/dht -I/usr/include/p11-kit-1 -I/home/mika/dev/dna-messenger/dht/.. -I/home/mika/dev/dna-messenger/dht/../crypto -I/home/mika/dev/dna-messenger/crypto/dsa -I/home/mika/dev/dna-messenger/crypto/dsa/../..
 

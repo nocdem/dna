@@ -207,6 +207,7 @@ public:
     AsyncTaskQueue message_send_queue;  // Queue for sending multiple messages rapidly
     AsyncTask message_load_task;
     AsyncTask identity_scan_task;
+    AsyncTask transaction_history_task;  // Async task for loading transaction history
 
     // Messenger backend context (opaque pointer, defined in messenger.h)
     void *messenger_ctx;
