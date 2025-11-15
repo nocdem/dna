@@ -4,9 +4,12 @@
 #include "../ui_helpers.h"
 #include "../theme_colors.h"
 #include "../settings_manager.h"
+#include "../font_awesome.h"
 #include "../../messenger.h"
 #include "../../database/contacts_db.h"
 #include "../../database/profile_manager.h"
+#include "../../dht/dht_keyserver.h"
+#include "../../p2p/p2p_transport.h"
 
 #include <cstring>
 #include <cstdio>
@@ -16,8 +19,18 @@ extern AppSettings g_app_settings;
 
 namespace AddContactDialog {
 
+// Helper to clean up profile when closing dialog
+static void cleanupProfile(AppState& state) {
+    if (state.add_contact_profile) {
+        dna_identity_free(state.add_contact_profile);
+        state.add_contact_profile = nullptr;
+    }
+    state.add_contact_profile_loaded = false;
+    state.add_contact_profile_loading = false;
+}
+
 void render(AppState& state, std::function<void()> reload_contacts_callback) {
-    if (!CenteredModal::Begin("Add Contact", nullptr, ImGuiWindowFlags_NoResize, true, false, 300)) {
+    if (!CenteredModal::Begin("Add Contact", nullptr, ImGuiWindowFlags_NoResize, true, false, 450)) {
         return;
     }
 
@@ -78,6 +91,8 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
         state.add_contact_error_message.clear();
         state.add_contact_found_name.clear();
         state.add_contact_found_fingerprint.clear();
+        state.add_contact_profile_loaded = false;
+        state.add_contact_profile_loading = false;
         state.add_contact_last_searched_input = current_input;
 
         std::string input_copy = current_input;
@@ -128,6 +143,8 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
                 state.add_contact_lookup_in_progress = false;
                 state.add_contact_found_name.clear();
                 state.add_contact_found_fingerprint.clear();
+                state.add_contact_profile_loaded = false;
+                state.add_contact_profile_loading = false;
                 task->addMessage("Cannot add self");
                 return;
             }
@@ -138,6 +155,8 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
                 state.add_contact_lookup_in_progress = false;
                 state.add_contact_found_name.clear();
                 state.add_contact_found_fingerprint.clear();
+                state.add_contact_profile_loaded = false;
+                state.add_contact_profile_loading = false;
                 task->addMessage("Already exists");
                 return;
             }
@@ -146,6 +165,41 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
             state.add_contact_found_fingerprint = std::string(fingerprint);
             state.add_contact_found_name = input_copy;
             state.add_contact_lookup_in_progress = false;
+
+            // Fetch profile for found contact using dna_load_identity
+            state.add_contact_profile_loading = true;
+            state.add_contact_profile_loaded = false;
+            
+            // Free previous profile if exists
+            if (state.add_contact_profile) {
+                dna_identity_free(state.add_contact_profile);
+                state.add_contact_profile = nullptr;
+            }
+            
+            // Get DHT context
+            messenger_context_t *msg_ctx = (messenger_context_t*)state.messenger_ctx;
+            dht_context_t *dht_ctx = nullptr;
+            if (msg_ctx && msg_ctx->p2p_transport) {
+                dht_ctx = p2p_transport_get_dht_context(msg_ctx->p2p_transport);
+            }
+            
+            if (dht_ctx) {
+                int profile_result = dna_load_identity(dht_ctx, fingerprint, &state.add_contact_profile);
+                if (profile_result == 0 && state.add_contact_profile) {
+                    state.add_contact_profile_loaded = true;
+                    printf("[AddContact] Profile loaded for %s\n", fingerprint);
+                    if (state.add_contact_profile->bio[0] != '\0') {
+                        printf("[AddContact] Bio: %s\n", state.add_contact_profile->bio);
+                    }
+                } else if (profile_result == -2) {
+                    printf("[AddContact] No profile found for this user\n");
+                } else {
+                    printf("[AddContact] Failed to load profile (error %d)\n", profile_result);
+                }
+            } else {
+                printf("[AddContact] DHT context not available\n");
+            }
+            state.add_contact_profile_loading = false;
 
             task->addMessage("Found!");
             printf("[AddContact] Found: %s (fingerprint: %s)\n", input_copy.c_str(), fingerprint);
@@ -165,15 +219,45 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
     if (!state.add_contact_found_name.empty()) {
         ImVec4 success_color = g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess();
         ImGui::PushStyleColor(ImGuiCol_Text, success_color);
-        ImGui::Text("Found: %s", state.add_contact_found_name.c_str());
+        ImGui::Text("%s %s", ICON_FA_CIRCLE_CHECK, state.add_contact_found_name.c_str());
         ImGui::PopStyleColor();
-
-        // Display fingerprint with wrapping to prevent overflow
-        ImGui::TextDisabled("Fingerprint:");
-        ImGui::PushTextWrapPos(0.0f); // Wrap at window edge
-        ImGui::TextWrapped("%s", state.add_contact_found_fingerprint.c_str());
-        ImGui::PopTextWrapPos();
         ImGui::Spacing();
+
+        // Show profile loading or loaded state
+        if (state.add_contact_profile_loading) {
+            ImGui::AlignTextToFramePadding();
+            ThemedSpinner("##profile_spinner", 15.0f, 3.0f);
+            ImGui::SameLine();
+            ImGui::TextDisabled("Loading profile...");
+            ImGui::Spacing();
+        } else if (state.add_contact_profile_loaded && state.add_contact_profile) {
+            // Display profile information (bio only for simplicity)
+            ImGui::Separator();
+            ImGui::Spacing();
+            
+            // Show bio if available
+            if (state.add_contact_profile->bio[0] != '\0') {
+                ImGui::TextDisabled("Bio:");
+                ImGui::PushTextWrapPos(0.0f);
+                ImGui::TextWrapped("%s", state.add_contact_profile->bio);
+                ImGui::PopTextWrapPos();
+            } else {
+                ImGui::TextDisabled("No bio available");
+            }
+            
+            // TODO: Show profile picture if profile_picture_ipfs is set
+            // if (state.add_contact_profile->profile_picture_ipfs[0] != '\0') {
+            //     // Render IPFS image
+            // }
+            
+            ImGui::Spacing();
+            ImGui::Separator();
+            ImGui::Spacing();
+        } else {
+            // No profile found
+            ImGui::TextDisabled("No public profile available");
+            ImGui::Spacing();
+        }
     }
 
     // Show spinner if lookup in progress (inline with search hint)
@@ -195,6 +279,7 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
     
     // Left button - starts at current cursor position
     if (ThemedButton("Cancel", ImVec2(button_width_left, 40))) {
+        cleanupProfile(state);
         state.show_add_contact_dialog = false;
         CenteredModal::End();
         return;
@@ -240,6 +325,7 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
             }
 
             // Close dialog
+            cleanupProfile(state);
             state.show_add_contact_dialog = false;
         } else {
             printf("[AddContact] ERROR: Failed to save contact to database\n");

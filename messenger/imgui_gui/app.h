@@ -26,6 +26,9 @@ public:
     // Check if identities are ready (scanned and DHT lookups done)
     bool areIdentitiesReady() const { return state.identities_scanned; }
 
+    // Get state reference (for startup initialization)
+    AppState& getState() { return state; }
+
 private:
     // Centralized application state
     AppState state;

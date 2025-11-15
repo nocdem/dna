@@ -28,6 +28,9 @@ AppState::AppState() {
     show_add_contact_dialog = false;
     add_contact_lookup_in_progress = false;
     add_contact_last_input_time = 0.0f;
+    add_contact_profile_loaded = false;
+    add_contact_profile_loading = false;
+    add_contact_profile = nullptr;
     new_messages_received = false;
     memset(new_identity_name, 0, sizeof(new_identity_name));
     memset(generated_mnemonic, 0, sizeof(generated_mnemonic));

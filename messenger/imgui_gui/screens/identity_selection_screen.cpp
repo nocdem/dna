@@ -64,7 +64,7 @@ void render(AppState& state) {
     ImGui::Text("%s", info_text);
     ImGui::Spacing();
 
-    // Load identities on first render (async)
+    // Load identities on first render (async) - skip if already scanned by main
     if (!state.identities_scanned && !state.identity_scan_task.isRunning()) {
         state.identity_scan_task.start([&state](AsyncTask* task) {
             // Scan for identity files
@@ -114,7 +114,9 @@ void render(AppState& state) {
                     }
                 }
 
-                printf("[Identity] Started %zu async DHT lookups\n", pending_lookups);
+                if (pending_lookups > 0) {
+                    printf("[Identity] Started %zu async DHT lookups\n", pending_lookups);
+                }
             } else {
                 // No DHT available, use shortened fingerprints
                 for (const auto& fp : state.identities) {

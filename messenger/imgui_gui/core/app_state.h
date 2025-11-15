@@ -9,6 +9,11 @@
 #include <map>
 #include <mutex>
 
+extern "C" {
+    #include "../../dht/dht_profile.h"
+    #include "../../dht/dht_keyserver.h"
+}
+
 // View enumeration
 enum View {
     VIEW_CONTACTS,
@@ -85,6 +90,9 @@ public:
     std::string add_contact_error_message;
     float add_contact_last_input_time;  // Track when user last typed
     std::string add_contact_last_searched_input;  // Track what we last searched
+    bool add_contact_profile_loaded;  // Track if profile has been loaded
+    bool add_contact_profile_loading;  // Track if profile is being loaded
+    dna_unified_identity_t *add_contact_profile;  // Store the loaded profile (pointer)
 
     // Message and sync state (Model E: no continuous polling, check once on login)
     bool new_messages_received;  // Flag to reload current conversation

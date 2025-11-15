@@ -24,7 +24,10 @@
 // Backend includes
 extern "C" {
     #include "../dht/dht_singleton.h"
+    #include "../dht/dht_keyserver.h"
+    #include "../crypto/utils/qgp_platform.h"
 }
+#include "helpers/data_loader.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
@@ -337,13 +340,61 @@ int main(int argc, char** argv) {
             dht_loading_start_time = (float)glfwGetTime();
             
             // Start DHT init in background thread
-            dht_init_task.start([](AsyncTask* task) {
+            dht_init_task.start([&app](AsyncTask* task) {
                 printf("[MAIN] DHT initialization will happen asynchronously...\n");
                 
                 if (dht_singleton_init() != 0) {
                     fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
                 } else {
                     printf("[MAIN] [OK] DHT ready!\n");
+                    
+                    // Preload identity names while still on loading screen
+                    printf("[MAIN] Preloading identity names...\n");
+                    AppState& state = app.getState();
+                    DataLoader::scanIdentities(state);
+                    
+                    dht_context_t *dht_ctx = dht_singleton_get();
+                    if (dht_ctx && !state.identities.empty()) {
+                        size_t pending_lookups = 0;
+                        
+                        for (const auto& fp : state.identities) {
+                            if (fp.length() == 128 && state.identity_name_cache.find(fp) == state.identity_name_cache.end()) {
+                                // Initialize with shortened fingerprint (fallback)
+                                state.identity_name_cache[fp] = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
+                                
+                                // Start async DHT reverse lookup
+                                pending_lookups++;
+                                
+                                struct lookup_ctx {
+                                    AppState *state_ptr;
+                                    char fingerprint[129];
+                                };
+                                
+                                lookup_ctx *ctx = new lookup_ctx;
+                                ctx->state_ptr = &state;
+                                strncpy(ctx->fingerprint, fp.c_str(), 128);
+                                ctx->fingerprint[128] = '\0';
+                                
+                                dht_keyserver_reverse_lookup_async(dht_ctx, fp.c_str(),
+                                    [](char *registered_name, void *userdata) {
+                                        lookup_ctx *ctx = (lookup_ctx*)userdata;
+                                        
+                                        if (registered_name) {
+                                            std::string fp_str(ctx->fingerprint);
+                                            printf("[MAIN] DHT lookup: %s → %s\n", fp_str.substr(0, 16).c_str(), registered_name);
+                                            ctx->state_ptr->identity_name_cache[fp_str] = std::string(registered_name);
+                                            free(registered_name);
+                                        }
+                                        
+                                        delete ctx;
+                                    },
+                                    ctx);
+                            }
+                        }
+                        
+                        printf("[MAIN] Started %zu identity name lookups\n", pending_lookups);
+                        state.identities_scanned = true;
+                    }
                 }
             });
         }
