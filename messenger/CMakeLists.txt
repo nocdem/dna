@@ -144,6 +144,7 @@ add_subdirectory(crypto/cellframe_dilithium)  # Cellframe-compatible Dilithium (
 # Phase 9.1: DHT and P2P Transport Layer
 add_subdirectory(dht)               # OpenDHT integration
 add_subdirectory(p2p)               # P2P transport layer
+add_subdirectory(bootstrap)         # Bootstrap server (minimal deps)
 
 # Utility programs (export_pubkey, sign_json, verify_json) - DISABLED
 # These are no longer needed as keyserver_register.c uses inline functions

@@ -95,10 +95,4 @@ target_link_libraries(dht_lib crypto dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD 17)
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD_REQUIRED ON)
 
-# Persistent bootstrap node (only build on Linux)
-if(NOT WIN32)
-    add_executable(persistent_bootstrap persistent_bootstrap.c)
-    target_link_libraries(persistent_bootstrap dht_lib)
-    target_include_directories(persistent_bootstrap PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-endif()
+# Note: persistent_bootstrap has been moved to bootstrap/CMakeLists.txt

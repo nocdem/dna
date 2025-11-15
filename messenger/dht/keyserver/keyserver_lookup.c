@@ -355,7 +355,7 @@ int dht_keyserver_reverse_lookup(
 
     // Rebuild message to verify: dilithium_pubkey || identity || timestamp
     size_t msg_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE + strlen(identity) + sizeof(uint64_t);
-    uint8_t *msg = malloc(msg_len);
+    uint8_t *msg = (uint8_t*)malloc(msg_len);
     if (!msg) {
         json_object_put(root);
         return -1;

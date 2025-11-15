@@ -1,5 +1,5 @@
-#include "dht_context.h"
-#include "dht_value_storage.h"
+#include "../../dht/dht_context.h"
+#include "../services/value_storage/dht_value_storage.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

@@ -221,7 +221,7 @@ int dht_identity_create_and_backup(
     uint8_t tag[16]; // GCM authentication tag
     qgp_randombytes(iv, sizeof(iv));
 
-    uint8_t *encrypted_pem = malloc(pem_size);
+    uint8_t *encrypted_pem = (uint8_t*)malloc(pem_size);
     if (!encrypted_pem) {
         fprintf(stderr, "[DHT Identity] Memory allocation failed\n");
         free(pem_buffer);
@@ -243,7 +243,7 @@ int dht_identity_create_and_backup(
 
     // Construct final encrypted blob
     size_t total_size = 1568 + 12 + 16 + pem_size;
-    uint8_t *encrypted_data = malloc(total_size);
+    uint8_t *encrypted_data = (uint8_t*)malloc(total_size);
     if (!encrypted_data) {
         fprintf(stderr, "[DHT Identity] Memory allocation failed\n");
         free(encrypted_pem);

@@ -9,7 +9,7 @@
  */
 
 #include "dht_context.h"
-#include "dht_value_storage.h"
+#include "dht_value_storage.h"  // TODO: Will be moved to bootstrap/ in Phase 3
 #include <opendht/dhtrunner.h>
 #include <opendht/crypto.h>
 #include <cstring>
@@ -31,7 +31,9 @@ struct dht_identity {
 };
 
 // Global storage pointer (accessed from ValueType store callbacks)
+// TODO(refactor): Remove global state - pass storage via DHT context user_data when splitting into bootstrap module
 static dht_value_storage_t *g_global_storage = nullptr;
+static std::mutex g_storage_mutex;  // Protect storage pointer access from multiple threads
 
 // Custom ValueTypes with different TTLs and storage callbacks
 static const dht::ValueType DNA_TYPE_7DAY {
@@ -40,6 +42,7 @@ static const dht::ValueType DNA_TYPE_7DAY {
     std::chrono::hours(7 * 24),  // 7 days
     [](dht::InfoHash key, std::shared_ptr<dht::Value>& value, const dht::InfoHash&, const dht::SockAddr&) {
         // Store to persistent storage if available (7-day values - skip ephemeral)
+        std::lock_guard<std::mutex> lock(g_storage_mutex);
         if (g_global_storage && value) {
             uint64_t now = time(NULL);
             uint64_t expires_at = now + (7 * 24 * 3600);  // 7 days from now
@@ -70,6 +73,7 @@ static const dht::ValueType DNA_TYPE_365DAY {
     std::chrono::hours(365 * 24), // 365 days
     [](dht::InfoHash key, std::shared_ptr<dht::Value>& value, const dht::InfoHash&, const dht::SockAddr&) {
         // Store to persistent storage if available (365-day values - PERMANENT)
+        std::lock_guard<std::mutex> lock(g_storage_mutex);
         if (g_global_storage && value) {
             uint64_t now = time(NULL);
             uint64_t expires_at = now + (365 * 24 * 3600);  // 365 days from now
@@ -341,7 +345,10 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
                 std::cout << "[DHT] ✓ Value storage initialized" << std::endl;
 
                 // Set global storage pointer (used by ValueType store callbacks)
-                g_global_storage = ctx->storage;
+                {
+                    std::lock_guard<std::mutex> lock(g_storage_mutex);
+                    g_global_storage = ctx->storage;
+                }
                 std::cout << "[DHT] ✓ Storage callbacks enabled in ValueTypes" << std::endl;
 
                 // Launch async republish in background
@@ -447,7 +454,10 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
             // Cleanup value storage
             if (ctx->storage) {
                 std::cout << "[DHT] Cleaning up value storage..." << std::endl;
-                g_global_storage = nullptr;  // Clear global pointer first
+                {
+                    std::lock_guard<std::mutex> lock(g_storage_mutex);
+                    g_global_storage = nullptr;  // Clear global pointer first
+                }
                 dht_value_storage_free(ctx->storage);
                 ctx->storage = nullptr;
             }
