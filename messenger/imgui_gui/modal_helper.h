@@ -28,8 +28,9 @@ public:
         
         // Apply standard modal styling with border
         ImVec4 border_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+        border_color.w = 0.3f;  // Very transparent border
         ImGui::PushStyleColor(ImGuiCol_Border, border_color);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.5f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.5f, 0.5f));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 12));

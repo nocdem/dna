@@ -152,6 +152,14 @@ void render(AppState& state) {
     if (!state.wallet_loaded && !state.wallet_loading) {
         loadWallet(state);
     }
+    
+    // Auto-refresh balances every 30 seconds
+    static double last_refresh_time = 0.0;
+    double current_time = ImGui::GetTime();
+    if (state.wallet_loaded && (current_time - last_refresh_time) >= 30.0) {
+        refreshBalances(state);
+        last_refresh_time = current_time;
+    }
 
     // Show error if wallet failed to load
     if (!state.wallet_error.empty()) {
@@ -202,6 +210,8 @@ void render(AppState& state) {
                     state.current_wallet_index = i;
                     state.wallet_name = std::string(wallets->wallets[i].name);
                     refreshBalances(state);  // Reload balances for new wallet
+                    static double last_refresh_time = 0.0;
+                    last_refresh_time = ImGui::GetTime();  // Reset timer on manual wallet change
                 }
             }
         }
@@ -212,12 +222,6 @@ void render(AppState& state) {
     
     ImGui::Spacing();
     ImGui::Separator();
-    ImGui::Spacing();
-
-    // Refresh button
-    if (ImGui::Button(ICON_FA_ARROWS_ROTATE " Refresh")) {
-        refreshBalances(state);
-    }
     ImGui::Spacing();
 
     // Token balance cards
