@@ -26,7 +26,10 @@ public:
         float modal_height = desktop_height > 0 ? (is_mobile ? io.DisplaySize.y * 0.9f : desktop_height) : 0.0f;
         ImGui::SetNextWindowSize(ImVec2(modal_width, modal_height), ImGuiCond_Always);
         
-        // Apply standard modal styling
+        // Apply standard modal styling with border
+        ImVec4 border_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+        ImGui::PushStyleColor(ImGuiCol_Border, border_color);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 1.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(20, 20));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowTitleAlign, ImVec2(0.5f, 0.5f));
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 12));
@@ -46,8 +49,8 @@ public:
         
         if (result) {
             // Pop styles inside the modal
-            ImGui::PopStyleVar(3);
-            ImGui::PopStyleColor();
+            ImGui::PopStyleVar(4);  // WindowBorderSize, WindowPadding, WindowTitleAlign, FramePadding
+            ImGui::PopStyleColor(2); // Border, ModalWindowDimBg
             ImGui::Spacing();
             
             // Handle ESC key to close modal (only if allowed and p_open is provided)
@@ -57,8 +60,8 @@ public:
             }
         } else {
             // Pop styles if modal didn't open
-            ImGui::PopStyleVar(3);
-            ImGui::PopStyleColor();
+            ImGui::PopStyleVar(4);  // WindowBorderSize, WindowPadding, WindowTitleAlign, FramePadding
+            ImGui::PopStyleColor(2); // Border, ModalWindowDimBg
         }
         
         return result;

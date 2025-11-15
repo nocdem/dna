@@ -187,7 +187,7 @@ void render(AppState& state) {
     wallet_list_t *wallets = (wallet_list_t*)state.wallet_list;
     if (wallets && wallets->count > 1) {
         // Show collapsing header with tree nodes for multiple wallets
-        if (ImGui::CollapsingHeader(ICON_FA_WALLET " Wallets", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("Wallets", ImGuiTreeNodeFlags_DefaultOpen)) {
             for (int i = 0; i < wallets->count; i++) {
                 bool is_selected = (state.current_wallet_index == i);
                 
