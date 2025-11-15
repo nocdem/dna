@@ -1,0 +1,1 @@
+/usr/bin/c++ -g -Wl,--dependency-file=CMakeFiles/persistent_bootstrap.dir/link.d CMakeFiles/persistent_bootstrap.dir/persistent_bootstrap.c.o -o persistent_bootstrap  libdht_lib.a ../crypto/dsa/libdsa.a -lcrypto -lopendht -lgnutls -ljsoncpp -lssl /usr/lib/libsqlite3.so -lcrypto -lopendht -lgnutls -ljsoncpp -lssl /usr/lib/libsqlite3.so -ljson-c -lcurl

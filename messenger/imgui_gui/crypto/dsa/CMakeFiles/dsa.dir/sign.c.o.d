@@ -1,0 +1,24 @@
+crypto/dsa/CMakeFiles/dsa.dir/sign.c.o: \
+ /home/mika/dev/dna-messenger/crypto/dsa/sign.c \
+ /usr/include/stdc-predef.h \
+ /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdint.h \
+ /usr/include/stdint.h /usr/include/bits/libc-header-start.h \
+ /usr/include/features.h /usr/include/features-time64.h \
+ /usr/include/bits/wordsize.h /usr/include/bits/timesize.h \
+ /usr/include/sys/cdefs.h /usr/include/bits/long-double.h \
+ /usr/include/gnu/stubs.h /usr/include/gnu/stubs-64.h \
+ /usr/include/bits/types.h /usr/include/bits/typesizes.h \
+ /usr/include/bits/time64.h /usr/include/bits/wchar.h \
+ /usr/include/bits/stdint-intn.h /usr/include/bits/stdint-uintn.h \
+ /usr/include/bits/stdint-least.h \
+ /home/mika/dev/dna-messenger/crypto/dsa/params.h \
+ /home/mika/dev/dna-messenger/crypto/dsa/config.h \
+ /home/mika/dev/dna-messenger/crypto/dsa/sign.h \
+ /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stddef.h \
+ /home/mika/dev/dna-messenger/crypto/dsa/polyvec.h \
+ /home/mika/dev/dna-messenger/crypto/dsa/poly.h \
+ /home/mika/dev/dna-messenger/crypto/dsa/packing.h \
+ /home/mika/dev/dna-messenger/crypto/dsa/randombytes.h \
+ /home/mika/dev/dna-messenger/crypto/dsa/../../crypto/utils/qgp_random.h \
+ /home/mika/dev/dna-messenger/crypto/dsa/symmetric.h \
+ /home/mika/dev/dna-messenger/crypto/dsa/fips202.h

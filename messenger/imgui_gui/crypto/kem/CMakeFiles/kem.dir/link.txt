@@ -1,0 +1,2 @@
+/usr/bin/ar qc libkem.a CMakeFiles/kem.dir/kem.c.o CMakeFiles/kem.dir/indcpa.c.o CMakeFiles/kem.dir/poly_kyber.c.o CMakeFiles/kem.dir/polyvec.c.o CMakeFiles/kem.dir/ntt_kyber.c.o CMakeFiles/kem.dir/cbd.c.o CMakeFiles/kem.dir/reduce_kyber.c.o CMakeFiles/kem.dir/verify.c.o "CMakeFiles/kem.dir/symmetric-shake.c.o" CMakeFiles/kem.dir/fips202_kyber.c.o
+/usr/bin/ranlib libkem.a

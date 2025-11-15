@@ -30,7 +30,7 @@ static void cleanupProfile(AppState& state) {
 }
 
 void render(AppState& state, std::function<void()> reload_contacts_callback) {
-    if (!CenteredModal::Begin("Add Contact", nullptr, ImGuiWindowFlags_NoResize, true, false, 450)) {
+    if (!CenteredModal::Begin("Add Contact", &state.show_add_contact_dialog, ImGuiWindowFlags_NoResize, true, false, 450)) {
         return;
     }
 

@@ -1,0 +1,2 @@
+/usr/bin/ar qc libcellframe_minimal.a CMakeFiles/cellframe_minimal.dir/blockchain/blockchain_tx_builder_minimal.c.o CMakeFiles/cellframe_minimal.dir/blockchain/blockchain_sign_minimal.c.o CMakeFiles/cellframe_minimal.dir/blockchain/blockchain_json_minimal.c.o CMakeFiles/cellframe_minimal.dir/crypto/utils/base58.c.o
+/usr/bin/ranlib libcellframe_minimal.a

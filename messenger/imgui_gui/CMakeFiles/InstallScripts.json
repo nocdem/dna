@@ -1,0 +1,13 @@
+{
+	"InstallScripts" : 
+	[
+		"/home/mika/dev/dna-messenger/imgui_gui/cmake_install.cmake",
+		"/home/mika/dev/dna-messenger/imgui_gui/crypto/kem/cmake_install.cmake",
+		"/home/mika/dev/dna-messenger/imgui_gui/crypto/dsa/cmake_install.cmake",
+		"/home/mika/dev/dna-messenger/imgui_gui/crypto/cellframe_dilithium/cmake_install.cmake",
+		"/home/mika/dev/dna-messenger/imgui_gui/dht/cmake_install.cmake",
+		"/home/mika/dev/dna-messenger/imgui_gui/p2p/cmake_install.cmake",
+		"/home/mika/dev/dna-messenger/imgui_gui/imgui_gui/cmake_install.cmake"
+	],
+	"Parallel" : false
+}
