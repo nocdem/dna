@@ -247,3 +247,114 @@ Potential areas for future improvement:
 **Session Duration:** ~4 hours  
 **Developer:** Mika  
 **Focus:** GUI Polish & Production Readiness
+
+---
+
+# Additional Improvements - 2025-11-15
+
+## 🔐 Profile & Identity Features
+
+### Add Contact Dialog Enhancement
+- ✅ **Public profile display** - Shows user bio when searching for registered names
+- ✅ **Profile fetching** - Automatically fetches DHT profile for registered users
+- ✅ **Visual feedback** - Shows profile information (bio, etc.) in add contact dialog
+- ✅ **Fingerprint cleanup** - Removed redundant fingerprint display when profile is shown
+
+### Identity Selector Optimization
+- ✅ **Preloaded registered names** - All registered names load on program start
+- ✅ **No slow appearance** - Names show instantly in identity selector
+- ✅ **Background loading** - DHT lookups happen during startup
+- ✅ **Better UX** - No waiting for names to appear one by one
+
+---
+
+## 💰 Wallet Screen Improvements
+
+### Multi-Wallet Support
+- ✅ **Wallet selector** - Collapsing header with tree nodes for wallet selection
+- ✅ **Visual selection** - Selected wallet highlighted with TreeNodeFlags_Selected
+- ✅ **Easy switching** - Click any wallet name to switch instantly
+- ✅ **Automatic refresh** - Balances refresh when switching wallets
+
+### Auto-Refresh System
+- ✅ **30-second timer** - Wallet balances auto-refresh every 30 seconds
+- ✅ **Async updates** - Non-blocking balance refresh
+- ✅ **Manual switch refresh** - Balances reload immediately when changing wallets
+- ✅ **Timer reset** - Refresh timer resets on manual wallet change
+- ✅ **Removed refresh button** - No longer needed with auto-refresh
+
+### Wallet UI Polish
+- ✅ **Removed wallet icon** - Cleaner "Wallets" header without FontAwesome icon
+- ✅ **Better spacing** - Improved layout and visual hierarchy
+
+---
+
+## 📜 Transaction History
+
+### Async Loading
+- ✅ **No UI freeze** - Transaction history loads asynchronously
+- ✅ **AsyncTask integration** - Proper async task management
+- ✅ **Background RPC calls** - Cellframe RPC calls run in background thread
+
+### Visual Feedback
+- ✅ **Centered spinner** - ThemedSpinner shows while loading transactions
+- ✅ **Loading text** - "Loading transactions..." displayed during fetch
+- ✅ **Proper modal size** - 600x500px modal with adequate space
+- ✅ **Error handling** - Shows error messages if loading fails
+- ✅ **Empty state** - "No transactions found" when wallet has no history
+
+### Debug Logging
+- ✅ **Transaction state tracking** - Debug logs for loading state and transaction count
+- ✅ **Modal lifecycle logging** - Track modal open/close events
+- ✅ **Async task monitoring** - Log async task execution
+
+---
+
+## 🎨 Modal System Enhancements
+
+### ESC Key Fixes
+- ✅ **Add Contact ESC** - Fixed ESC key to close Add Contact dialog
+- ✅ **Consistent behavior** - All modals now close with ESC key properly
+- ✅ **State management** - Proper p_open parameter passing to modal helper
+
+### Modal Borders
+- ✅ **Themed borders** - 0.5px semi-transparent borders on all modals
+- ✅ **Border colors** - Cyan (DNA theme) / Orange (Club theme) at 30% opacity
+- ✅ **Subtle definition** - Just enough to define modal boundaries
+- ✅ **No visual weight** - Very light, doesn't overwhelm the UI
+
+---
+
+## 📊 Session Statistics
+
+- **Additional Commits:** 9
+- **Files Modified:** 10+
+- **Major Features:** 4 (Profile display, Multi-wallet, Auto-refresh, Async transactions)
+- **Bug Fixes:** 2 (ESC key, Transaction history freeze)
+- **UX Improvements:** 8+
+
+---
+
+## 🎯 User Experience Impact
+
+### Before
+- Only first wallet visible (couldn't access other wallets)
+- Manual refresh button required for wallet updates
+- Transaction history froze UI for several seconds
+- No profile info when adding contacts
+- Identity names loaded slowly in selector
+
+### After
+- ✅ All wallets accessible via clean selector UI
+- ✅ Automatic balance updates every 30 seconds
+- ✅ Instant transaction history with spinner feedback
+- ✅ See user profiles when adding contacts
+- ✅ Instant identity name display on startup
+- ✅ Professional, polished wallet management
+- ✅ No UI freezing or blocking operations
+
+---
+
+**Session Duration:** ~2 hours  
+**Developer:** Mika  
+**Focus:** Wallet UX & Performance Optimization
