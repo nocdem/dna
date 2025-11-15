@@ -112,11 +112,12 @@ ELF 64-bit LSB pie executable, x86-64, dynamically linked
 
 ## 🚧 In-Progress Phases
 
-### Phase 3: Split dht_context.cpp (PLANNED)
+### Phase 3: Split dht_context.cpp (READY FOR EXECUTION)
 
 **Duration:** 8-10 hours
-**Status:** 🔄 Next Up
+**Status:** 📋 Planned (see DHT_CONTEXT_SPLIT_PLAN.md)
 **Current File:** 1,282 lines (needs split into 4 modules)
+**Plan Document:** `/opt/dna-messenger/DHT_CONTEXT_SPLIT_PLAN.md`
 
 #### Extraction Plan:
 
