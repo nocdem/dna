@@ -522,7 +522,7 @@ DNA Board is a **censorship-resistant social media platform** built on DNA Messe
 - [x] 30-day TTL with 100 message rotation
 
 #### ✅ Completed (Phase 6.2 - Avatar & Threading):
-- [x] Avatar support (Base64, not IPFS - simpler for alpha)
+- [x] Avatar support (Base64 encoding, 64x64 PNG, 20KB limit)
 - [x] Avatar upload/resize (avatar_utils.c - stb_image integration)
 - [x] OpenGL texture loading (TextureManager singleton)
 - [x] Circular avatar display (profiles, wall, chat)
