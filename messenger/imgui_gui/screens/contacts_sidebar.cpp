@@ -166,7 +166,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         float text_width = ImGui::CalcTextSize(display_name.c_str()).x;
         float center_x = (250 - text_width) * 0.5f;
         ImGui::SetCursorPosX(center_x);
-        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", display_name.c_str());
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(), "%s", display_name.c_str());
         
         ImGui::Spacing();
         ImGui::Separator();
