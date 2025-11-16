@@ -135,12 +135,16 @@ void loadMessageWall(AppState& state) {
             size_t underscore_pos = post_id_str.find('_');
             if (underscore_pos != std::string::npos && underscore_pos == 128) {
                 wall_msg.sender_fingerprint = post_id_str.substr(0, 128);
+                printf("[WALL DEBUG] Post %zu: Fingerprint = %.16s...\n", i, wall_msg.sender_fingerprint.c_str());
 
                 // Try to load sender's avatar from profile cache/DHT
                 dna_unified_identity_t *sender_profile = nullptr;
                 int ret = dna_load_identity(dht_ctx, wall_msg.sender_fingerprint.c_str(), &sender_profile);
+                printf("[WALL DEBUG] Post %zu: Load identity ret=%d, has_avatar=%d\n", i, ret,
+                       (ret == 0 && sender_profile && sender_profile->avatar_base64[0] != '\0'));
                 if (ret == 0 && sender_profile && sender_profile->avatar_base64[0] != '\0') {
                     wall_msg.sender_avatar = std::string(sender_profile->avatar_base64);
+                    printf("[WALL DEBUG] Post %zu: Loaded avatar: %zu bytes\n", i, wall_msg.sender_avatar.length());
                 }
                 if (sender_profile) {
                     dna_identity_free(sender_profile);
