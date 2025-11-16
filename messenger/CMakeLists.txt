@@ -203,6 +203,7 @@ add_library(dna_lib STATIC
     database/contacts_db.c      # Phase 9.5: Local contacts database
     database/profile_cache.c    # Phase 10.1: Profile cache database (7-day TTL)
     database/profile_manager.c  # Phase 10.1: Smart profile fetching (cache + DHT)
+    database/cache_manager.c    # Phase 7: Unified cache lifecycle manager
     blockchain/wallet.c           # Phase 8: Cellframe wallet integration
     blockchain/blockchain_rpc.c    # Phase 8: Blockchain RPC client
     blockchain/blockchain_addr.c   # Phase 8: Blockchain address utilities
