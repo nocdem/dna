@@ -206,8 +206,6 @@ int avatar_load_and_encode(const char *file_path, char *base64_out, size_t max_l
         return -1;
     }
 
-    printf("[DEBUG AVATAR] Loaded image: %dx%d, %d channels\n", width, height, channels);
-
     // Resize to 64x64
     unsigned char *resized = (unsigned char*)malloc(64 * 64 * 4);
     if (!resized) {
@@ -227,8 +225,6 @@ int avatar_load_and_encode(const char *file_path, char *base64_out, size_t max_l
 
     stbi_image_free(img);
 
-    printf("[DEBUG AVATAR] Resized to 64x64\n");
-
     // Encode to PNG (in memory)
     png_buffer_t png_output = {NULL, 0, 0};
 
@@ -242,8 +238,6 @@ int avatar_load_and_encode(const char *file_path, char *base64_out, size_t max_l
         return -1;
     }
 
-    printf("[DEBUG AVATAR] Encoded PNG: %d bytes\n", png_output.len);
-
     // Encode to base64
     int ret = base64_encode(png_output.data, png_output.len, base64_out, max_len);
     free(png_output.data);
@@ -253,7 +247,6 @@ int avatar_load_and_encode(const char *file_path, char *base64_out, size_t max_l
         return -1;
     }
 
-    printf("[DEBUG AVATAR] Base64 encoded: %zu chars\n", strlen(base64_out));
     return 0;
 }
 
@@ -285,8 +278,6 @@ unsigned char* avatar_decode_base64(const char *base64_str,
         return NULL;
     }
 
-    printf("[DEBUG AVATAR] Decoded base64: %zu bytes\n", png_len);
-
     // Load PNG from memory
     int width, height, channels;
     unsigned char *img = stbi_load_from_memory(png_data, png_len, &width, &height, &channels, 4);
@@ -296,8 +287,6 @@ unsigned char* avatar_decode_base64(const char *base64_str,
         fprintf(stderr, "[ERROR] Failed to load PNG from memory: %s\n", stbi_failure_reason());
         return NULL;
     }
-
-    printf("[DEBUG AVATAR] Loaded PNG: %dx%d, %d channels\n", width, height, channels);
 
     *width_out = width;
     *height_out = height;

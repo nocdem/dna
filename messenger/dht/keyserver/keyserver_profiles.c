@@ -35,20 +35,10 @@ int dna_update_profile(
     }
 
     // Update profile data
-    printf("[DNA] DEBUG: Updating profile fields...\n");
-    printf("[DNA] DEBUG: Input bio: '%s'\n", profile->bio[0] ? profile->bio : "(empty)");
-    printf("[DNA] DEBUG: Input telegram: '%s'\n", profile->socials.telegram[0] ? profile->socials.telegram : "(empty)");
-    printf("[DNA] DEBUG: Input twitter: '%s'\n", profile->socials.x[0] ? profile->socials.x : "(empty)");
-    printf("[DNA] DEBUG: Input backbone: '%s'\n", profile->wallets.backbone[0] ? profile->wallets.backbone : "(empty)");
-
     memcpy(&identity->wallets, &profile->wallets, sizeof(identity->wallets));
     memcpy(&identity->socials, &profile->socials, sizeof(identity->socials));
     strncpy(identity->bio, profile->bio, sizeof(identity->bio) - 1);
     strncpy(identity->avatar_base64, profile->avatar_base64, sizeof(identity->avatar_base64) - 1);
-
-    printf("[DNA] DEBUG: After copy bio: '%s'\n", identity->bio[0] ? identity->bio : "(empty)");
-    printf("[DNA] DEBUG: After copy avatar: %zu bytes\n", strlen(identity->avatar_base64));
-    printf("[DNA] DEBUG: After copy telegram: '%s'\n", identity->socials.telegram[0] ? identity->socials.telegram : "(empty)");
 
     // Update metadata
     identity->timestamp = time(NULL);
@@ -139,22 +129,6 @@ int dna_update_profile(
         fprintf(stderr, "[DNA] Failed to serialize identity\n");
         dna_identity_free(identity);
         return -1;
-    }
-
-    // DEBUG: Check if avatar is in JSON
-    printf("[DNA] JSON length: %zu bytes\n", strlen(json));
-    if (strstr(json, "\"avatar_base64\"")) {
-        const char *avatar_start = strstr(json, "\"avatar_base64\":\"");
-        if (avatar_start) {
-            avatar_start += 17; // Skip "avatar_base64":"
-            const char *avatar_end = strchr(avatar_start, '"');
-            if (avatar_end) {
-                size_t avatar_len = avatar_end - avatar_start;
-                printf("[DNA] ✓ avatar_base64 found in JSON: %zu bytes\n", avatar_len);
-            }
-        }
-    } else {
-        printf("[DNA] ✗ NO avatar_base64 in JSON!\n");
     }
 
     // Compute DHT key: SHA3-512(fingerprint + ":profile")
