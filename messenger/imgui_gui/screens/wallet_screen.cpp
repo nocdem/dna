@@ -226,35 +226,31 @@ void render(AppState& state) {
 
     // Token balance cards
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
-    const char* token_names[] = {"ChipPunk", "Cellframe", "KelVPN"};
-    const char* token_icons[] = {ICON_FA_COINS, ICON_FA_BOLT, ICON_FA_GEM};
 
     for (int i = 0; i < 3; i++) {
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
         ImVec4 card_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(card_bg.x, card_bg.y, card_bg.z, 0.9f));
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(card_bg.x, card_bg.y, card_bg.z, 0.6f));
 
-        float card_height = is_mobile ? 100.0f : 120.0f;
+        float card_height = is_mobile ? 70.0f : 75.0f;
         char card_id[32];
         snprintf(card_id, sizeof(card_id), "##card_%s", tokens[i]);
         ImGui::BeginChild(card_id, ImVec2(-1, card_height), true);
 
-        // Token icon and name
-        ImGui::SetCursorPos(ImVec2(20, 15));
-        ImGui::Text("%s %s", token_icons[i], tokens[i]);
+        // Ticker on left
+        ImGui::SetCursorPos(ImVec2(20, card_height * 0.5f - 10));
+        ImGui::Text("%s", tokens[i]);
 
-        ImGui::SetCursorPos(ImVec2(20, 35));
-        ImGui::TextDisabled("%s", token_names[i]);
-
-        // Balance
-        ImGui::SetCursorPos(ImVec2(20, is_mobile ? 60 : 65));
+        // Balance on right (always green)
         auto it = state.token_balances.find(tokens[i]);
-        if (it != state.token_balances.end()) {
-            std::string formatted = formatBalance(it->second);
-            ImGui::Text("%s", formatted.c_str());
-        } else {
-            ImGui::TextDisabled("0.00");
-        }
+        std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
+        
+        ImVec2 balance_size = ImGui::CalcTextSize(formatted.c_str());
+        float balance_x = ImGui::GetWindowWidth() - balance_size.x - 20;
+        ImGui::SetCursorPos(ImVec2(balance_x, card_height * 0.5f - 10));
+        
+        ImVec4 green_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
+        ImGui::TextColored(green_color, "%s", formatted.c_str());
 
         ImGui::EndChild();
         ImGui::PopStyleColor();

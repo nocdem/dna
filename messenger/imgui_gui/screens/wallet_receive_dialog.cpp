@@ -5,8 +5,60 @@
 #include "../theme_colors.h"
 #include "../settings_manager.h"
 #include "../font_awesome.h"
+#include "qrcodegen.hpp"
+#include <string>
+
+using qrcodegen::QrCode;
 
 namespace WalletReceiveDialog {
+
+static void RenderQRCode(const char* text, float size) {
+    if (!text || text[0] == '\0') return;
+    
+    try {
+        // Generate QR code
+        const QrCode qr = QrCode::encodeText(text, QrCode::Ecc::MEDIUM);
+        int qr_size = qr.getSize();
+        
+        // Calculate module size (each QR "pixel")
+        float module_size = size / (qr_size + 2);  // +2 for border
+        
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        ImVec2 pos = ImGui::GetCursorScreenPos();
+        
+        // White background
+        ImVec4 bg_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
+        draw_list->AddRectFilled(pos, ImVec2(pos.x + size, pos.y + size), ImGui::ColorConvertFloat4ToU32(bg_color));
+        
+        // Draw QR modules (black squares)
+        ImVec4 fg_color = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
+        for (int y = 0; y < qr_size; y++) {
+            for (int x = 0; x < qr_size; x++) {
+                if (qr.getModule(x, y)) {
+                    ImVec2 module_pos = ImVec2(
+                        pos.x + (x + 1) * module_size,
+                        pos.y + (y + 1) * module_size
+                    );
+                    draw_list->AddRectFilled(
+                        module_pos,
+                        ImVec2(module_pos.x + module_size, module_pos.y + module_size),
+                        ImGui::ColorConvertFloat4ToU32(fg_color)
+                    );
+                }
+            }
+        }
+        
+        // Move cursor
+        ImGui::Dummy(ImVec2(size, size));
+        
+    } catch (const std::exception& e) {
+        // Fallback if QR generation fails
+        ImGui::BeginChild("##qr_error", ImVec2(size, size), true);
+        ImGui::SetCursorPos(ImVec2(size * 0.5f - 30, size * 0.5f - 10));
+        ImGui::TextDisabled("QR Error");
+        ImGui::EndChild();
+    }
+}
 
 void render(AppState& state) {
     if (!state.show_receive_dialog) return;
@@ -70,14 +122,12 @@ void render(AppState& state) {
         ImGui::Spacing();
         ImGui::Spacing();
 
-        // QR Code placeholder
-        ImGui::SetCursorPosX((ImGui::GetContentRegionAvail().x - 200) * 0.5f);
-        ImGui::BeginChild("##qr_placeholder", ImVec2(200, 200), true);
-        ImGui::SetCursorPos(ImVec2(70, 90));
-        ImGui::TextDisabled("QR Code");
-        ImGui::SetCursorPos(ImVec2(50, 105));
-        ImGui::TextDisabled("(Coming Soon)");
-        ImGui::EndChild();
+        // QR Code
+        float qr_size = 200.0f;
+        float available_width = ImGui::GetContentRegionAvail().x;
+        float qr_x = (available_width - qr_size) * 0.5f;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + qr_x);
+        RenderQRCode(state.wallet_address, qr_size);
 
         ImGui::Spacing();
         ImGui::Spacing();
@@ -87,7 +137,7 @@ void render(AppState& state) {
         float close_btn_x = (ImGui::GetContentRegionAvail().x - close_btn_width) * 0.5f;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + close_btn_x);
 
-        if (ImGui::Button("Close", ImVec2(close_btn_width, 40))) {
+        if (ThemedButton("Close", ImVec2(close_btn_width, 40))) {
             state.show_receive_dialog = false;
             state.address_copied = false;
         }

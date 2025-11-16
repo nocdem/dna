@@ -30,6 +30,12 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/misc/freetype/imgui_freetype.cpp
 )
 
+# QR code generator
+set(QRCODEGEN_DIR ${CMAKE_CURRENT_SOURCE_DIR}/vendor/qrcodegen)
+set(QRCODEGEN_SOURCES
+    ${QRCODEGEN_DIR}/qrcodegen.cpp
+)
+
 # Main application
 add_executable(dna_messenger_imgui
     main.cpp
@@ -53,6 +59,7 @@ add_executable(dna_messenger_imgui
     screens/identity_selection_screen.cpp
     screens/layout_manager.cpp
     ${IMGUI_SOURCES}
+    ${QRCODEGEN_SOURCES}
 )
 
 target_include_directories(dna_messenger_imgui PRIVATE
@@ -60,6 +67,7 @@ target_include_directories(dna_messenger_imgui PRIVATE
     ${IMGUI_DIR}/backends
     ${IMGUI_DIR}/misc/freetype
     ${FREETYPE_INCLUDE_DIRS}
+    ${QRCODEGEN_DIR}
 )
 
 target_link_libraries(dna_messenger_imgui PRIVATE
