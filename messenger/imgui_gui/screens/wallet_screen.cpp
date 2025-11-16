@@ -265,12 +265,13 @@ void render(AppState& state) {
             // Vertically align button with scaled text
             float line_height = ImGui::GetTextLineHeight();
             float scaled_line_height = line_height * 2.0f;
-            float btn_offset = (scaled_line_height - ImGui::GetFrameHeight()) * 0.5f;
+            float btn_height = scaled_line_height * 0.8f;  // Button height matches scaled text better
+            float btn_offset = (scaled_line_height - btn_height) * 0.5f;
             ImGui::SetCursorPosY(ImGui::GetCursorPosY() + btn_offset);
             
             char btn_id[32];
             snprintf(btn_id, sizeof(btn_id), ICON_FA_PAPER_PLANE " Send##%s", tokens[i]);
-            if (ThemedButton(btn_id, ImVec2(-1, 0))) {
+            if (ThemedButton(btn_id, ImVec2(-1, btn_height))) {
                 state.show_send_dialog = true;
                 state.send_status.clear();
             }
