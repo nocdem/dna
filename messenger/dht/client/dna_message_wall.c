@@ -215,6 +215,10 @@ int dna_message_wall_to_json(const dna_message_wall_t *wall, char **json_out) {
             continue;
         }
 
+        // Post ID
+        json_object_object_add(msg_obj, "post_id",
+                               json_object_new_string(wall->messages[i].post_id));
+
         // Text
         json_object_object_add(msg_obj, "text",
                                json_object_new_string(wall->messages[i].text));
@@ -231,6 +235,14 @@ int dna_message_wall_to_json(const dna_message_wall_t *wall, char **json_out) {
                                    json_object_new_string(sig_b64));
             free(sig_b64);
         }
+
+        // Threading fields
+        json_object_object_add(msg_obj, "reply_to",
+                               json_object_new_string(wall->messages[i].reply_to));
+        json_object_object_add(msg_obj, "reply_depth",
+                               json_object_new_int(wall->messages[i].reply_depth));
+        json_object_object_add(msg_obj, "reply_count",
+                               json_object_new_int(wall->messages[i].reply_count));
 
         json_object_array_add(messages_arr, msg_obj);
     }
@@ -342,6 +354,36 @@ int dna_message_wall_from_json(const char *json_str, dna_message_wall_t **wall_o
                 }
                 free(sig_bytes);
             }
+        }
+
+        // Threading fields (backward compatible: use defaults if missing)
+        json_object *j_post_id = NULL;
+        if (json_object_object_get_ex(msg_obj, "post_id", &j_post_id)) {
+            const char *post_id = json_object_get_string(j_post_id);
+            if (post_id) {
+                strncpy(wall->messages[i].post_id, post_id, sizeof(wall->messages[i].post_id) - 1);
+            }
+        } else {
+            // Backward compatibility: generate post_id from fingerprint + timestamp
+            dna_wall_make_post_id(wall->fingerprint, wall->messages[i].timestamp, wall->messages[i].post_id);
+        }
+
+        json_object *j_reply_to = NULL;
+        if (json_object_object_get_ex(msg_obj, "reply_to", &j_reply_to)) {
+            const char *reply_to = json_object_get_string(j_reply_to);
+            if (reply_to) {
+                strncpy(wall->messages[i].reply_to, reply_to, sizeof(wall->messages[i].reply_to) - 1);
+            }
+        }
+
+        json_object *j_reply_depth = NULL;
+        if (json_object_object_get_ex(msg_obj, "reply_depth", &j_reply_depth)) {
+            wall->messages[i].reply_depth = json_object_get_int(j_reply_depth);
+        }
+
+        json_object *j_reply_count = NULL;
+        if (json_object_object_get_ex(msg_obj, "reply_count", &j_reply_count)) {
+            wall->messages[i].reply_count = json_object_get_int(j_reply_count);
         }
 
         wall->message_count++;
@@ -484,7 +526,8 @@ int dna_load_wall(dht_context_t *dht_ctx,
 int dna_post_to_wall(dht_context_t *dht_ctx,
                      const char *fingerprint,
                      const char *message_text,
-                     const uint8_t *private_key) {
+                     const uint8_t *private_key,
+                     const char *reply_to) {
     if (!dht_ctx || !fingerprint || !message_text || !private_key) {
         return -1;
     }
@@ -518,6 +561,31 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     dna_wall_message_t new_msg = {0};
     strncpy(new_msg.text, message_text, DNA_MESSAGE_WALL_MAX_TEXT_LEN - 1);
     new_msg.timestamp = (uint64_t)time(NULL);
+
+    // Generate post_id
+    dna_wall_make_post_id(fingerprint, new_msg.timestamp, new_msg.post_id);
+
+    // Handle threading
+    new_msg.reply_depth = 0;  // Default: top-level post
+    new_msg.reply_count = 0;
+    if (reply_to && reply_to[0] != '\0') {
+        // This is a reply - find parent to determine depth
+        strncpy(new_msg.reply_to, reply_to, sizeof(new_msg.reply_to) - 1);
+
+        // Find parent message to calculate depth
+        for (size_t i = 0; i < wall->message_count; i++) {
+            if (strcmp(wall->messages[i].post_id, reply_to) == 0) {
+                new_msg.reply_depth = wall->messages[i].reply_depth + 1;
+                if (new_msg.reply_depth > 2) {
+                    // Max depth exceeded (0=post, 1=comment, 2=reply)
+                    fprintf(stderr, "[DNA_WALL] Max thread depth exceeded (max 3 levels)\n");
+                    dna_message_wall_free(wall);
+                    return -2;
+                }
+                break;
+            }
+        }
+    }
 
     // Sign message (text + timestamp)
     uint8_t *sign_data = malloc(text_len + sizeof(uint64_t));
@@ -578,6 +646,9 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     wall->allocated_count = new_count;
     printf("[DNA_WALL] Wall now has %zu messages\n", new_count);
 
+    // Update reply counts for all messages
+    dna_wall_update_reply_counts(wall);
+
     // Serialize to JSON
     char *json_data = NULL;
     ret = dna_message_wall_to_json(wall, &json_data);
@@ -610,5 +681,144 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
            fingerprint);
 
     dna_message_wall_free(wall);
+    return 0;
+}
+
+/**
+ * Generate post_id from fingerprint and timestamp
+ */
+int dna_wall_make_post_id(const char *fingerprint, uint64_t timestamp, char *post_id_out) {
+    if (!fingerprint || !post_id_out) {
+        return -1;
+    }
+
+    snprintf(post_id_out, 160, "%s_%lu", fingerprint, timestamp);
+    return 0;
+}
+
+/**
+ * Update reply counts for all messages
+ */
+int dna_wall_update_reply_counts(dna_message_wall_t *wall) {
+    if (!wall || !wall->messages) {
+        return -1;
+    }
+
+    // Reset all reply counts
+    for (size_t i = 0; i < wall->message_count; i++) {
+        wall->messages[i].reply_count = 0;
+    }
+
+    // Count direct replies for each message
+    for (size_t i = 0; i < wall->message_count; i++) {
+        if (wall->messages[i].reply_to[0] != '\0') {
+            // This message is a reply - find parent and increment its count
+            for (size_t j = 0; j < wall->message_count; j++) {
+                if (strcmp(wall->messages[j].post_id, wall->messages[i].reply_to) == 0) {
+                    wall->messages[j].reply_count++;
+                    break;
+                }
+            }
+        }
+    }
+
+    return 0;
+}
+
+/**
+ * Get all direct replies to a post
+ */
+int dna_wall_get_replies(const dna_message_wall_t *wall,
+                         const char *post_id,
+                         dna_wall_message_t ***replies_out,
+                         size_t *count_out) {
+    if (!wall || !post_id || !replies_out || !count_out) {
+        return -1;
+    }
+
+    // First pass: count replies
+    size_t reply_count = 0;
+    for (size_t i = 0; i < wall->message_count; i++) {
+        if (strcmp(wall->messages[i].reply_to, post_id) == 0) {
+            reply_count++;
+        }
+    }
+
+    if (reply_count == 0) {
+        *replies_out = NULL;
+        *count_out = 0;
+        return 0;
+    }
+
+    // Allocate array of pointers
+    dna_wall_message_t **replies = malloc(reply_count * sizeof(dna_wall_message_t *));
+    if (!replies) {
+        return -1;
+    }
+
+    // Second pass: collect replies
+    size_t idx = 0;
+    for (size_t i = 0; i < wall->message_count; i++) {
+        if (strcmp(wall->messages[i].reply_to, post_id) == 0) {
+            replies[idx++] = &wall->messages[i];
+        }
+    }
+
+    *replies_out = replies;
+    *count_out = reply_count;
+    return 0;
+}
+
+/**
+ * Get full conversation thread for a post (recursive helper)
+ */
+static void collect_thread_recursive(const dna_message_wall_t *wall,
+                                      const char *post_id,
+                                      dna_wall_message_t ***thread,
+                                      size_t *count,
+                                      size_t *capacity) {
+    // Find message with this post_id
+    for (size_t i = 0; i < wall->message_count; i++) {
+        if (strcmp(wall->messages[i].post_id, post_id) == 0) {
+            // Add this message to thread
+            if (*count >= *capacity) {
+                *capacity = (*capacity == 0) ? 10 : (*capacity * 2);
+                *thread = realloc(*thread, *capacity * sizeof(dna_wall_message_t *));
+            }
+            (*thread)[(*count)++] = &wall->messages[i];
+
+            // Recursively collect replies
+            dna_wall_message_t **replies = NULL;
+            size_t reply_count = 0;
+            if (dna_wall_get_replies(wall, post_id, &replies, &reply_count) == 0 && replies) {
+                for (size_t j = 0; j < reply_count; j++) {
+                    collect_thread_recursive(wall, replies[j]->post_id, thread, count, capacity);
+                }
+                free(replies);
+            }
+            break;
+        }
+    }
+}
+
+/**
+ * Get full conversation thread for a post
+ */
+int dna_wall_get_thread(const dna_message_wall_t *wall,
+                        const char *post_id,
+                        dna_wall_message_t ***thread_out,
+                        size_t *count_out) {
+    if (!wall || !post_id || !thread_out || !count_out) {
+        return -1;
+    }
+
+    dna_wall_message_t **thread = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+
+    collect_thread_recursive(wall, post_id, &thread, &count, &capacity);
+
+    *thread_out = thread;
+    *count_out = count;
     return 0;
 }

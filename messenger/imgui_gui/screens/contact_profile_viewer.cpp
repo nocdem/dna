@@ -65,6 +65,15 @@ static void loadContactProfile(AppState& state) {
         // Load bio
         if (profile->bio[0] != '\0') strncpy(state.profile_bio, profile->bio, sizeof(state.profile_bio) - 1);
 
+        // Load avatar
+        if (profile->avatar_base64[0] != '\0') {
+            state.profile_avatar_base64 = std::string(profile->avatar_base64);
+            state.profile_avatar_loaded = true;
+        } else {
+            state.profile_avatar_base64.clear();
+            state.profile_avatar_loaded = false;
+        }
+
         state.profile_status = "Profile loaded";
         dna_identity_free(profile);
     } else if (ret == -2) {
@@ -97,6 +106,8 @@ void render(AppState& state) {
         memset(state.profile_twitter, 0, sizeof(state.profile_twitter));
         memset(state.profile_github, 0, sizeof(state.profile_github));
         memset(state.profile_bio, 0, sizeof(state.profile_bio));
+        state.profile_avatar_base64.clear();
+        state.profile_avatar_loaded = false;
 
         loadContactProfile(state);
     }
@@ -124,6 +135,14 @@ void render(AppState& state) {
             ImGui::Text("Loading profile...");
         } else {
             ImGui::BeginChild("ProfileContent", ImVec2(0, -50), false);
+
+            // Avatar section (Phase 4.4)
+            if (state.profile_avatar_loaded) {
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(),
+                                 ICON_FA_IMAGE " Avatar: Loaded (64x64, %zu bytes base64)", state.profile_avatar_base64.length());
+                ImGui::Spacing();
+                ImGui::Spacing();
+            }
 
             // Identity section
             ImGui::Text(ICON_FA_FINGERPRINT " Identity");

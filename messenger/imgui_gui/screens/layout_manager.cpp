@@ -106,9 +106,9 @@ void renderBottomNavBar(AppState& state) {
 
     ImGui::SameLine();
 
-    // Profile button (placeholder)
+    // Profile button - Phase 1.2: Wire to ProfileEditorScreen
     if (ThemedButton(ICON_FA_USER "\nProfile", ImVec2(btn_width, 60), false)) {
-        // TODO: Profile view
+        state.show_profile_editor = true;
     }
 
     ImGui::PopStyleVar(2);

@@ -410,7 +410,9 @@ int messenger_send_message(
             ciphertext,         // encrypted message
             ciphertext_len,     // encrypted length
             now,                // timestamp
-            true                // is_outgoing = true (we're sending)
+            true,               // is_outgoing = true (we're sending)
+            0                   // group_id = 0 (direct messages) - Phase 5.2
+                                // TODO: Pass actual group_id for group messages
         );
 
         if (result != 0) {

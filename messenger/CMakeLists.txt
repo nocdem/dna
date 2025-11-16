@@ -177,6 +177,7 @@ set(COMMON_SOURCES
     crypto/utils/qgp_key.c
     crypto/utils/qgp_signature.c
     crypto/utils/qgp_utils_standalone.c
+    crypto/utils/avatar_utils.c        # Phase 10.2: Avatar processing (stb_image)
     # Cross-platform abstraction layer
     ${PLATFORM_SOURCES}
 )

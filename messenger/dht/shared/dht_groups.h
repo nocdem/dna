@@ -181,6 +181,23 @@ int dht_groups_list_for_user(
 );
 
 /**
+ * Get group UUID from local group ID (Phase 6.1)
+ *
+ * Helper function to map local_id to group_uuid.
+ * Useful for functions that receive local_id from GUI/API.
+ *
+ * @param identity: User identity (for per-user group cache)
+ * @param local_id: Local group ID
+ * @param uuid_out: Output buffer for UUID (37 bytes)
+ * @return: 0 on success, -1 on error, -2 if not found
+ */
+int dht_groups_get_uuid_by_local_id(
+    const char *identity,
+    int local_id,
+    char *uuid_out
+);
+
+/**
  * Sync group metadata from DHT to local cache
  *
  * @param dht_ctx: DHT context

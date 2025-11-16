@@ -150,13 +150,19 @@ public:
     bool wall_is_own;
     char wall_message_input[1025];  // 1024 + null terminator
     struct WallMessage {
+        std::string post_id;      // Unique ID (fingerprint_timestamp)
         uint64_t timestamp;
         std::string text;
         bool verified;
+        // Threading
+        std::string reply_to;     // Parent post_id (empty for top-level)
+        int reply_depth;          // 0=post, 1=comment, 2=reply
+        int reply_count;          // Number of direct replies
     };
     std::vector<WallMessage> wall_messages;
     bool wall_loading;
     std::string wall_status;
+    std::string wall_reply_to;    // Post ID being replied to (empty if posting new)
 
     // Profile Editor dialog state
     bool show_profile_editor;
@@ -182,6 +188,9 @@ public:
     char profile_website[256];
     char profile_pic_cid[256];
     char profile_bio[513];  // 512 + null terminator
+    char profile_avatar_path[512];  // Path to avatar file for upload
+    std::string profile_avatar_base64;  // Base64-encoded avatar data
+    bool profile_avatar_loaded;  // Track if avatar is loaded
     std::string profile_status;
     std::string profile_registered_name;
     bool profile_loading;

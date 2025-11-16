@@ -6,6 +6,7 @@
 #include "messenger.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/core/dht_context.h"
+#include "message_backup.h"  // Phase 5.2
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,20 +23,25 @@ static char* timestamp_to_string(uint64_t timestamp) {
     return str;
 }
 
-// Helper: Get group UUID from local group_id
-static int get_group_uuid_by_id(int group_id, char *uuid_out) {
-    // Query local cache for group_uuid by local_id
-    // This requires accessing the SQLite database directly
-    // For now, we'll use the dht_groups internal database
+// Helper: Get group UUID from local group_id (Phase 6.1)
+static int get_group_uuid_by_id(const char *identity, int group_id, char *uuid_out) {
+    if (!identity || !uuid_out) {
+        fprintf(stderr, "[MESSENGER] Invalid arguments to get_group_uuid_by_id\n");
+        return -1;
+    }
 
-    // Note: dht_groups_list_for_user returns entries with local_id,
-    // but we need a direct lookup by local_id. For simplicity,
-    // we'll store the mapping in the cache entry.
+    // Use dht_groups helper function to map local_id to UUID
+    int ret = dht_groups_get_uuid_by_local_id(identity, group_id, uuid_out);
+    if (ret != 0) {
+        if (ret == -2) {
+            fprintf(stderr, "[MESSENGER] Group ID %d not found or access denied\n", group_id);
+        } else {
+            fprintf(stderr, "[MESSENGER] Failed to lookup group UUID for ID %d\n", group_id);
+        }
+        return -1;
+    }
 
-    // TODO: Add dht_groups_get_uuid_by_local_id() helper function
-    // For now, return error - this needs to be implemented in dht_groups.c
-    fprintf(stderr, "[MESSENGER] get_group_uuid_by_id not yet implemented\n");
-    return -1;
+    return 0;
 }
 
 // ============================================================================
@@ -163,36 +169,15 @@ int messenger_get_group_info(messenger_context_t *ctx, int group_id, group_info_
         return -1;
     }
 
-    // Get all groups to find the UUID for this group_id
-    dht_group_cache_entry_t *cache_entries = NULL;
-    int count = 0;
-    int ret = dht_groups_list_for_user(ctx->identity, &cache_entries, &count);
-    if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to list groups from cache\n");
-        return -1;
-    }
-
-    // Find the matching group
+    // Get group UUID from local group_id (Phase 6.1)
     char group_uuid[37] = {0};
-    bool found = false;
-    for (int i = 0; i < count; i++) {
-        if (cache_entries[i].local_id == group_id) {
-            strcpy(group_uuid, cache_entries[i].group_uuid);
-            found = true;
-            break;
-        }
-    }
-
-    dht_groups_free_cache_entries(cache_entries, count);
-
-    if (!found) {
-        fprintf(stderr, "[MESSENGER] Group ID %d not found\n", group_id);
+    if (get_group_uuid_by_id(ctx->identity, group_id, group_uuid) != 0) {
         return -1;
     }
 
     // Get full metadata from DHT
     dht_group_metadata_t *meta = NULL;
-    ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
     if (ret != 0) {
         fprintf(stderr, "[MESSENGER] Failed to get group metadata from DHT\n");
         return -1;
@@ -227,34 +212,15 @@ int messenger_get_group_members(messenger_context_t *ctx, int group_id, char ***
     *members_out = NULL;
     *count_out = 0;
 
-    // Get group UUID from group_id
-    dht_group_cache_entry_t *cache_entries = NULL;
-    int count = 0;
-    int ret = dht_groups_list_for_user(ctx->identity, &cache_entries, &count);
-    if (ret != 0) {
-        return -1;
-    }
-
+    // Get group UUID from local group_id (Phase 6.1)
     char group_uuid[37] = {0};
-    bool found = false;
-    for (int i = 0; i < count; i++) {
-        if (cache_entries[i].local_id == group_id) {
-            strcpy(group_uuid, cache_entries[i].group_uuid);
-            found = true;
-            break;
-        }
-    }
-
-    dht_groups_free_cache_entries(cache_entries, count);
-
-    if (!found) {
-        fprintf(stderr, "[MESSENGER] Group ID %d not found\n", group_id);
+    if (get_group_uuid_by_id(ctx->identity, group_id, group_uuid) != 0) {
         return -1;
     }
 
     // Get metadata from DHT
     dht_group_metadata_t *meta = NULL;
-    ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
     if (ret != 0) {
         return -1;
     }
@@ -291,33 +257,14 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
         return -1;
     }
 
-    // Get group UUID from group_id
-    dht_group_cache_entry_t *cache_entries = NULL;
-    int count = 0;
-    int ret = dht_groups_list_for_user(ctx->identity, &cache_entries, &count);
-    if (ret != 0) {
-        return -1;
-    }
-
+    // Get group UUID from local group_id (Phase 6.1)
     char group_uuid[37] = {0};
-    bool found = false;
-    for (int i = 0; i < count; i++) {
-        if (cache_entries[i].local_id == group_id) {
-            strcpy(group_uuid, cache_entries[i].group_uuid);
-            found = true;
-            break;
-        }
-    }
-
-    dht_groups_free_cache_entries(cache_entries, count);
-
-    if (!found) {
-        fprintf(stderr, "[MESSENGER] Group ID %d not found\n", group_id);
+    if (get_group_uuid_by_id(ctx->identity, group_id, group_uuid) != 0) {
         return -1;
     }
 
     // Add member in DHT
-    ret = dht_groups_add_member(dht_ctx, group_uuid, identity, ctx->identity);
+    int ret = dht_groups_add_member(dht_ctx, group_uuid, identity, ctx->identity);
     if (ret != 0) {
         fprintf(stderr, "[MESSENGER] Failed to add member to DHT\n");
         return -1;
@@ -342,33 +289,14 @@ int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const 
         return -1;
     }
 
-    // Get group UUID from group_id
-    dht_group_cache_entry_t *cache_entries = NULL;
-    int count = 0;
-    int ret = dht_groups_list_for_user(ctx->identity, &cache_entries, &count);
-    if (ret != 0) {
-        return -1;
-    }
-
+    // Get group UUID from local group_id (Phase 6.1)
     char group_uuid[37] = {0};
-    bool found = false;
-    for (int i = 0; i < count; i++) {
-        if (cache_entries[i].local_id == group_id) {
-            strcpy(group_uuid, cache_entries[i].group_uuid);
-            found = true;
-            break;
-        }
-    }
-
-    dht_groups_free_cache_entries(cache_entries, count);
-
-    if (!found) {
-        fprintf(stderr, "[MESSENGER] Group ID %d not found\n", group_id);
+    if (get_group_uuid_by_id(ctx->identity, group_id, group_uuid) != 0) {
         return -1;
     }
 
     // Remove member from DHT
-    ret = dht_groups_remove_member(dht_ctx, group_uuid, identity, ctx->identity);
+    int ret = dht_groups_remove_member(dht_ctx, group_uuid, identity, ctx->identity);
     if (ret != 0) {
         fprintf(stderr, "[MESSENGER] Failed to remove member from DHT\n");
         return -1;
@@ -403,33 +331,14 @@ int messenger_delete_group(messenger_context_t *ctx, int group_id) {
         return -1;
     }
 
-    // Get group UUID from group_id
-    dht_group_cache_entry_t *cache_entries = NULL;
-    int count = 0;
-    int ret = dht_groups_list_for_user(ctx->identity, &cache_entries, &count);
-    if (ret != 0) {
-        return -1;
-    }
-
+    // Get group UUID from local group_id (Phase 6.1)
     char group_uuid[37] = {0};
-    bool found = false;
-    for (int i = 0; i < count; i++) {
-        if (cache_entries[i].local_id == group_id) {
-            strcpy(group_uuid, cache_entries[i].group_uuid);
-            found = true;
-            break;
-        }
-    }
-
-    dht_groups_free_cache_entries(cache_entries, count);
-
-    if (!found) {
-        fprintf(stderr, "[MESSENGER] Group ID %d not found\n", group_id);
+    if (get_group_uuid_by_id(ctx->identity, group_id, group_uuid) != 0) {
         return -1;
     }
 
     // Delete from DHT (only creator can do this)
-    ret = dht_groups_delete(dht_ctx, group_uuid, ctx->identity);
+    int ret = dht_groups_delete(dht_ctx, group_uuid, ctx->identity);
     if (ret != 0) {
         fprintf(stderr, "[MESSENGER] Failed to delete group from DHT\n");
         return -1;
@@ -451,33 +360,14 @@ int messenger_update_group_info(messenger_context_t *ctx, int group_id, const ch
         return -1;
     }
 
-    // Get group UUID from group_id
-    dht_group_cache_entry_t *cache_entries = NULL;
-    int count = 0;
-    int ret = dht_groups_list_for_user(ctx->identity, &cache_entries, &count);
-    if (ret != 0) {
-        return -1;
-    }
-
+    // Get group UUID from local group_id (Phase 6.1)
     char group_uuid[37] = {0};
-    bool found = false;
-    for (int i = 0; i < count; i++) {
-        if (cache_entries[i].local_id == group_id) {
-            strcpy(group_uuid, cache_entries[i].group_uuid);
-            found = true;
-            break;
-        }
-    }
-
-    dht_groups_free_cache_entries(cache_entries, count);
-
-    if (!found) {
-        fprintf(stderr, "[MESSENGER] Group ID %d not found\n", group_id);
+    if (get_group_uuid_by_id(ctx->identity, group_id, group_uuid) != 0) {
         return -1;
     }
 
     // Update in DHT
-    ret = dht_groups_update(dht_ctx, group_uuid, new_name, new_description, ctx->identity);
+    int ret = dht_groups_update(dht_ctx, group_uuid, new_name, new_description, ctx->identity);
     if (ret != 0) {
         fprintf(stderr, "[MESSENGER] Failed to update group in DHT\n");
         return -1;
@@ -505,27 +395,42 @@ int messenger_send_group_message(messenger_context_t *ctx, int group_id, const c
         return -1;
     }
 
-    // Send message to each member individually (multi-recipient not yet implemented)
-    // TODO: Use multi-recipient encryption for efficiency
+    // Filter out self from recipients
+    char **recipients = malloc(sizeof(char*) * member_count);
+    if (!recipients) {
+        for (int i = 0; i < member_count; i++) {
+            free(members[i]);
+        }
+        free(members);
+        return -1;
+    }
+
+    int recipient_count = 0;
     for (int i = 0; i < member_count; i++) {
         // Skip self
-        if (strcmp(members[i], ctx->identity) == 0) {
-            continue;
+        if (strcmp(members[i], ctx->identity) != 0) {
+            recipients[recipient_count++] = members[i];
+        } else {
+            free(members[i]);  // Free self identity since we're not sending to it
         }
-
-        // Send individual message
-        // This would use messenger_send_message() if that function existed
-        // For now, log the action
-        printf("[MESSENGER] Would send group message to %s\n", members[i]);
     }
 
-    // Free members array
-    for (int i = 0; i < member_count; i++) {
-        free(members[i]);
+    // Send multi-recipient encrypted message (Phase 5.1 implementation)
+    ret = messenger_send_message(ctx, (const char**)recipients, recipient_count, message_text);
+
+    // Free recipients array
+    for (int i = 0; i < recipient_count; i++) {
+        free(recipients[i]);
     }
+    free(recipients);
     free(members);
 
-    printf("[MESSENGER] Sent group message to %d members (group_id=%d)\n", member_count - 1, group_id);
+    if (ret != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to send group message\n");
+        return -1;
+    }
+
+    printf("[MESSENGER] Sent group message to %d members (group_id=%d)\n", recipient_count, group_id);
     return 0;
 }
 
@@ -535,14 +440,60 @@ int messenger_get_group_conversation(messenger_context_t *ctx, int group_id, mes
         return -1;
     }
 
-    // Group messages are stored in local SQLite with a special flag
-    // For now, return empty array
-    // TODO: Query message_backup for group messages by group_id
-
     *messages_out = NULL;
     *count_out = 0;
 
-    printf("[MESSENGER] Retrieved 0 group messages (group_id=%d) - implementation pending\n", group_id);
+    // Get messages from message_backup (Phase 5.2)
+    message_backup_context_t *backup_ctx = message_backup_init(ctx->identity);
+    if (!backup_ctx) {
+        fprintf(stderr, "[MESSENGER] Failed to init message backup\n");
+        return -1;
+    }
+
+    backup_message_t *backup_messages = NULL;
+    int backup_count = 0;
+    int ret = message_backup_get_group_conversation(backup_ctx, group_id, &backup_messages, &backup_count);
+    message_backup_close(backup_ctx);
+
+    if (ret != 0 || backup_count == 0) {
+        return (ret == 0) ? 0 : -1;
+    }
+
+    // Convert backup_message_t to message_info_t
+    message_info_t *messages = calloc(backup_count, sizeof(message_info_t));
+    if (!messages) {
+        message_backup_free_messages(backup_messages, backup_count);
+        return -1;
+    }
+
+    for (int i = 0; i < backup_count; i++) {
+        messages[i].id = backup_messages[i].id;
+        messages[i].sender = strdup(backup_messages[i].sender);
+        messages[i].recipient = strdup(backup_messages[i].recipient);
+
+        // Convert time_t to timestamp string
+        messages[i].timestamp = timestamp_to_string(backup_messages[i].timestamp);
+
+        // Convert status to string
+        const char *status_str = (backup_messages[i].status == 0) ? "pending" :
+                                  (backup_messages[i].status == 1) ? "sent" : "failed";
+        messages[i].status = strdup(status_str);
+
+        // Set delivered_at and read_at (NULL for now, would need actual timestamps)
+        messages[i].delivered_at = backup_messages[i].delivered ? strdup("delivered") : NULL;
+        messages[i].read_at = backup_messages[i].read ? strdup("read") : NULL;
+        messages[i].plaintext = NULL;  // Not decrypted yet
+
+        // Note: encrypted_message is not copied to message_info_t
+        // Messages must be decrypted separately via messenger_decrypt_message()
+    }
+
+    message_backup_free_messages(backup_messages, backup_count);
+
+    *messages_out = messages;
+    *count_out = backup_count;
+
+    printf("[MESSENGER] Retrieved %d group messages (group_id=%d)\n", backup_count, group_id);
     return 0;
 }
 

@@ -6,6 +6,7 @@
 #include "../settings_manager.h"
 #include "../../database/contacts_db.h"
 #include "../../messenger.h"
+#include "../helpers/data_loader.h"  // Phase 1.4: For contact refresh
 
 #include <cstring>
 #include <cstdio>
@@ -99,7 +100,11 @@ void renderContactsList(AppState& state) {
             ImGui::Separator();
 
             if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " View details")) {
-                printf("[Context Menu] View details for: %s\n",
+                // Phase 1.1: Wire to ContactProfileViewer
+                state.viewed_profile_fingerprint = state.contacts[i].address;
+                state.viewed_profile_name = state.contacts[i].name;
+                state.show_contact_profile = true;
+                printf("[Context Menu] Opening profile viewer for: %s\n",
                        state.contacts[i].name.c_str());
             }
 
@@ -234,8 +239,11 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             ImGui::Separator();
 
             if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO " View details")) {
-                // TODO: Show contact details dialog
-                printf("[Context Menu] View details for: %s\n",
+                // Phase 1.1: Wire to ContactProfileViewer
+                state.viewed_profile_fingerprint = state.contacts[i].address;
+                state.viewed_profile_name = state.contacts[i].name;
+                state.show_contact_profile = true;
+                printf("[Context Menu] Opening profile viewer for: %s\n",
                        state.contacts[i].name.c_str());
             }
 
@@ -302,7 +310,19 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     }
 
     if (ThemedButton(ICON_FA_ARROWS_ROTATE " Refresh", ImVec2(button_width, add_button_height), false)) {
-        // TODO: Refresh contact list / sync from DHT
+        // Phase 1.4: Trigger DHT contact sync
+        messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+        if (ctx) {
+            printf("[Contacts] Refreshing contacts from DHT...\n");
+            int result = messenger_sync_contacts_from_dht(ctx);
+            if (result == 0) {
+                printf("[Contacts] ✓ Successfully synced from DHT\n");
+                // Reload contacts from database to update UI
+                DataLoader::reloadContactsFromDatabase(state);
+            } else {
+                fprintf(stderr, "[Contacts] ✗ Failed to sync from DHT\n");
+            }
+        }
     }
 
     ImGui::EndChild(); // Sidebar

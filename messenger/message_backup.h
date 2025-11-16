@@ -41,6 +41,7 @@ typedef struct {
     bool delivered;
     bool read;
     int status;  // 0=PENDING, 1=SENT, 2=FAILED
+    int group_id;  // Group ID (0 for direct messages, >0 for group messages) - Phase 5.2
 } backup_message_t;
 
 /**
@@ -81,6 +82,7 @@ bool message_backup_exists_ciphertext(message_backup_context_t *ctx,
  * @param encrypted_len Length of encrypted message
  * @param timestamp Message timestamp
  * @param is_outgoing true if we sent it, false if we received it
+ * @param group_id Group ID (0 for direct messages, >0 for group) - Phase 5.2
  * @return 0 on success, -1 on error, 1 if already exists (duplicate skipped)
  */
 int message_backup_save(message_backup_context_t *ctx,
@@ -89,7 +91,8 @@ int message_backup_save(message_backup_context_t *ctx,
                         const uint8_t *encrypted_message,
                         size_t encrypted_len,
                         time_t timestamp,
-                        bool is_outgoing);
+                        bool is_outgoing,
+                        int group_id);
 
 /**
  * Mark message as delivered
@@ -134,6 +137,22 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
                                      const char *contact_identity,
                                      backup_message_t **messages_out,
                                      int *count_out);
+
+/**
+ * Get group conversation history (Phase 5.2)
+ *
+ * Returns all messages for specified group ID.
+ *
+ * @param ctx Backup context
+ * @param group_id Group ID
+ * @param messages_out Array of messages (caller must free)
+ * @param count_out Number of messages returned
+ * @return 0 on success, -1 on error
+ */
+int message_backup_get_group_conversation(message_backup_context_t *ctx,
+                                           int group_id,
+                                           backup_message_t **messages_out,
+                                           int *count_out);
 
 /**
  * Get all recent conversations

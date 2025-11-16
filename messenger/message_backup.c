@@ -23,7 +23,7 @@ struct message_backup_context {
 };
 
 /**
- * Database Schema (v2) - ENCRYPTED STORAGE with Status
+ * Database Schema (v3) - ENCRYPTED STORAGE with Status + Group Support (Phase 5.2)
  *
  * SECURITY: Messages stored as encrypted BLOB for data sovereignty.
  * If database is stolen, messages remain unreadable.
@@ -39,19 +39,21 @@ static const char *SCHEMA_SQL =
     "  delivered INTEGER DEFAULT 1,"
     "  read INTEGER DEFAULT 0,"
     "  is_outgoing INTEGER DEFAULT 0,"
-    "  status INTEGER DEFAULT 1"          // 0=PENDING, 1=SENT, 2=FAILED
+    "  status INTEGER DEFAULT 1,"         // 0=PENDING, 1=SENT, 2=FAILED
+    "  group_id INTEGER DEFAULT 0"        // 0=direct message, >0=group ID (Phase 5.2)
     ");"
     ""
     "CREATE INDEX IF NOT EXISTS idx_sender ON messages(sender);"
     "CREATE INDEX IF NOT EXISTS idx_recipient ON messages(recipient);"
     "CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp DESC);"
+    "CREATE INDEX IF NOT EXISTS idx_group_id ON messages(group_id);"  // Phase 5.2
     ""
     "CREATE TABLE IF NOT EXISTS metadata ("
     "  key TEXT PRIMARY KEY,"
     "  value TEXT"
     ");"
     ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '2');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '3');";
 
 /**
  * Get database path
@@ -147,6 +149,19 @@ message_backup_context_t* message_backup_init(const char *identity) {
         printf("[Backup] Migrated database schema to v2 (added status column)\n");
     }
 
+    // Migration: Add group_id column if it doesn't exist (v2 -> v3, Phase 5.2)
+    const char *migration_sql_v3 = "ALTER TABLE messages ADD COLUMN group_id INTEGER DEFAULT 0;";
+    rc = sqlite3_exec(ctx->db, migration_sql_v3, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        // Column might already exist (not an error)
+        if (strstr(err_msg, "duplicate column") == NULL) {
+            fprintf(stderr, "[Backup] Migration warning (v3): %s\n", err_msg);
+        }
+        sqlite3_free(err_msg);
+    } else {
+        printf("[Backup] Migrated database schema to v3 (added group_id column)\n");
+    }
+
     printf("[Backup] Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
     return ctx;
 }
@@ -193,7 +208,8 @@ int message_backup_save(message_backup_context_t *ctx,
                         const uint8_t *encrypted_message,
                         size_t encrypted_len,
                         time_t timestamp,
-                        bool is_outgoing) {
+                        bool is_outgoing,
+                        int group_id) {
     if (!ctx || !ctx->db) return -1;
     if (!sender || !recipient || !encrypted_message) return -1;
 
@@ -205,8 +221,8 @@ int message_backup_save(message_backup_context_t *ctx,
     }
 
     const char *sql =
-        "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read, status) "
-        "VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?)";
+        "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read, status, group_id) "
+        "VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -222,6 +238,7 @@ int message_backup_save(message_backup_context_t *ctx,
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)timestamp);
     sqlite3_bind_int(stmt, 6, is_outgoing ? 1 : 0);
     sqlite3_bind_int(stmt, 7, 0);  // status = 0 (PENDING) - will be updated after send
+    sqlite3_bind_int(stmt, 8, group_id);  // Phase 5.2: group ID
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
@@ -284,7 +301,7 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
     if (!ctx || !ctx->db || !contact_identity) return -1;
 
     const char *sql =
-        "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read, status "
+        "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read, status, group_id "
         "FROM messages "
         "WHERE (sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?) "
         "ORDER BY timestamp ASC";
@@ -342,6 +359,7 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
         messages[idx].delivered = sqlite3_column_int(stmt, 6) != 0;
         messages[idx].read = sqlite3_column_int(stmt, 7) != 0;
         messages[idx].status = sqlite3_column_int(stmt, 8);  // Read status column (default 1 for old messages)
+        messages[idx].group_id = sqlite3_column_int(stmt, 9);  // Phase 5.2: group ID
         idx++;
     }
 
@@ -351,6 +369,85 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
     *count_out = count;
 
     printf("[Backup] Retrieved %d ENCRYPTED messages for conversation with %s\n", count, contact_identity);
+    return 0;
+}
+
+/**
+ * Get group conversation history (Phase 5.2)
+ */
+int message_backup_get_group_conversation(message_backup_context_t *ctx,
+                                           int group_id,
+                                           backup_message_t **messages_out,
+                                           int *count_out) {
+    if (!ctx || !ctx->db) return -1;
+    if (group_id <= 0) return -1;  // group_id must be positive
+
+    const char *sql =
+        "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read, status, group_id "
+        "FROM messages "
+        "WHERE group_id = ? "
+        "ORDER BY timestamp ASC";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[Backup] Failed to prepare query: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, group_id);
+
+    // Count results first
+    int count = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        count++;
+    }
+    sqlite3_reset(stmt);
+
+    if (count == 0) {
+        sqlite3_finalize(stmt);
+        *messages_out = NULL;
+        *count_out = 0;
+        return 0;
+    }
+
+    // Allocate array
+    backup_message_t *messages = calloc(count, sizeof(backup_message_t));
+    if (!messages) {
+        sqlite3_finalize(stmt);
+        return -1;
+    }
+
+    // Fetch messages
+    int idx = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && idx < count) {
+        messages[idx].id = sqlite3_column_int(stmt, 0);
+        strncpy(messages[idx].sender, (const char*)sqlite3_column_text(stmt, 1), 255);
+        strncpy(messages[idx].recipient, (const char*)sqlite3_column_text(stmt, 2), 255);
+
+        // Copy encrypted message (BLOB)
+        int blob_len = sqlite3_column_bytes(stmt, 3);
+        const void *blob_data = sqlite3_column_blob(stmt, 3);
+        messages[idx].encrypted_message = malloc(blob_len);
+        if (messages[idx].encrypted_message) {
+            memcpy(messages[idx].encrypted_message, blob_data, blob_len);
+            messages[idx].encrypted_len = blob_len;
+        }
+
+        messages[idx].timestamp = (time_t)sqlite3_column_int64(stmt, 5);
+        messages[idx].delivered = sqlite3_column_int(stmt, 6) != 0;
+        messages[idx].read = sqlite3_column_int(stmt, 7) != 0;
+        messages[idx].status = sqlite3_column_int(stmt, 8);
+        messages[idx].group_id = sqlite3_column_int(stmt, 9);
+        idx++;
+    }
+
+    sqlite3_finalize(stmt);
+
+    *messages_out = messages;
+    *count_out = count;
+
+    printf("[Backup] Retrieved %d ENCRYPTED group messages (group_id=%d)\n", count, group_id);
     return 0;
 }
 

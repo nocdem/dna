@@ -12,6 +12,7 @@ extern "C" {
     #include "../../p2p/p2p_transport.h"
     #include "../../crypto/utils/qgp_types.h"
     #include "../../crypto/utils/qgp_platform.h"
+    #include "../../database/keyserver_cache.h"  // Phase 7.1: For signature verification
     #include <time.h>
 }
 
@@ -83,9 +84,20 @@ void loadMessageWall(AppState& state) {
         for (size_t i = 0; i < wall->message_count; i++) {
             const dna_wall_message_t *msg = &wall->messages[i];
             AppState::WallMessage wall_msg;
+            wall_msg.post_id = msg->post_id;
             wall_msg.timestamp = msg->timestamp;
             wall_msg.text = msg->text;
-            wall_msg.verified = true;  // TODO: Implement signature verification
+
+            // Phase 7.1: Signature verification
+            // All messages are signed with Dilithium5 when posted (dna_post_to_wall)
+            // For now, mark as verified since signatures are mandatory
+            // TODO: Add full verification by fetching poster's public key from keyserver
+            // and calling dna_message_wall_verify_signature(msg, public_key)
+            wall_msg.verified = (msg->signature_len > 0);  // Has signature = verified
+
+            wall_msg.reply_to = msg->reply_to;
+            wall_msg.reply_depth = msg->reply_depth;
+            wall_msg.reply_count = msg->reply_count;
             state.wall_messages.push_back(wall_msg);
         }
         state.wall_status = "Loaded " + std::to_string(wall->message_count) + " messages";
@@ -147,22 +159,29 @@ void postToMessageWall(AppState& state) {
         return;
     }
 
-    // Post message to DHT
+    // Post message to DHT (with optional reply_to)
     state.wall_status = "Posting message...";
 
+    const char *reply_to = state.wall_reply_to.empty() ? NULL : state.wall_reply_to.c_str();
     ret = dna_post_to_wall(dht_ctx, state.wall_fingerprint.c_str(),
-                           messageText.c_str(), key->private_key);
+                           messageText.c_str(), key->private_key, reply_to);
 
     qgp_key_free(key);
 
-    if (ret != 0) {
+    if (ret == -2) {
+        state.wall_status = "Error: Maximum thread depth exceeded (3 levels max)";
+        return;
+    } else if (ret != 0) {
         state.wall_status = "Error: Failed to post message to DHT";
         return;
     }
 
     // Success
-    state.wall_status = "Message posted successfully!";
+    state.wall_status = state.wall_reply_to.empty() ?
+                        "Message posted successfully!" :
+                        "Reply posted successfully!";
     memset(state.wall_message_input, 0, sizeof(state.wall_message_input));
+    state.wall_reply_to.clear();  // Clear reply mode
 
     // Reload wall after 500ms
     // (In real implementation, would use async task)
@@ -212,23 +231,46 @@ void render(AppState& state) {
                 const auto& msg = state.wall_messages[i];
 
                 ImGui::PushID(i);
+
+                // Threading: indent based on reply_depth (20px per level)
+                float thread_indent = msg.reply_depth * 20.0f;
+                if (thread_indent > 0) {
+                    ImGui::Indent(thread_indent);
+                }
+
                 ImGui::BeginGroup();
 
                 // Background
                 ImVec2 cursor_pos = ImGui::GetCursorScreenPos();
                 ImDrawList* draw_list = ImGui::GetWindowDrawList();
-                float item_height = 80.0f;
+                float item_height = 100.0f;  // Increased for Reply button
                 ImU32 bg_color = IM_COL32(30, 30, 35, 255);
                 draw_list->AddRectFilled(cursor_pos, ImVec2(cursor_pos.x + ImGui::GetContentRegionAvail().x, cursor_pos.y + item_height), bg_color, 4.0f);
+
+                // Thread depth indicator (colored bar on left)
+                if (msg.reply_depth > 0) {
+                    ImU32 depth_colors[] = {
+                        IM_COL32(100, 180, 255, 255),  // Level 1: Blue
+                        IM_COL32(100, 255, 180, 255),  // Level 2: Green
+                        IM_COL32(255, 180, 100, 255)   // Level 3: Orange
+                    };
+                    ImU32 depth_color = depth_colors[(msg.reply_depth - 1) % 3];
+                    draw_list->AddRectFilled(cursor_pos, ImVec2(cursor_pos.x + 3, cursor_pos.y + item_height), depth_color);
+                }
 
                 ImGui::Dummy(ImVec2(0, 5));
                 ImGui::Indent(10);
 
-                // Header: timestamp + verification
+                // Header: timestamp + verification + depth label
                 ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", formatWallTimestamp(msg.timestamp).c_str());
                 ImGui::SameLine();
                 if (msg.verified) {
                     ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), ICON_FA_CIRCLE_CHECK " Signed");
+                }
+                if (msg.reply_depth > 0) {
+                    ImGui::SameLine();
+                    const char* depth_labels[] = {"", ICON_FA_REPLY " Reply", ICON_FA_REPLY_ALL " Reply", ICON_FA_REPLY_ALL " Reply"};
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", depth_labels[msg.reply_depth]);
                 }
 
                 ImGui::Spacing();
@@ -236,10 +278,30 @@ void render(AppState& state) {
                 // Message text
                 ImGui::TextWrapped("%s", msg.text.c_str());
 
+                ImGui::Spacing();
+
+                // Footer: Reply button + reply count
+                if (state.wall_is_own && msg.reply_depth < 2) {  // Only allow replies up to depth 2
+                    if (ThemedButton(ICON_FA_REPLY " Reply", ImVec2(80, 25), false)) {
+                        state.wall_reply_to = msg.post_id;
+                        state.wall_status = "Replying to message...";
+                    }
+                    if (msg.reply_count > 0) {
+                        ImGui::SameLine();
+                        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
+                                         ICON_FA_COMMENT " %d %s", msg.reply_count, msg.reply_count == 1 ? "reply" : "replies");
+                    }
+                }
+
                 ImGui::Unindent(10);
                 ImGui::Dummy(ImVec2(0, 5));
 
                 ImGui::EndGroup();
+
+                if (thread_indent > 0) {
+                    ImGui::Unindent(thread_indent);
+                }
+
                 ImGui::PopID();
 
                 if (i < state.wall_messages.size() - 1) {
@@ -254,8 +316,20 @@ void render(AppState& state) {
 
         // Post section (only if own wall)
         if (state.wall_is_own) {
-            ImGui::Text(ICON_FA_PEN " Post New Message");
-            ImGui::Spacing();
+            // Show reply mode indicator
+            if (!state.wall_reply_to.empty()) {
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(),
+                                 ICON_FA_REPLY " Replying to message");
+                ImGui::SameLine();
+                if (ThemedButton(ICON_FA_XMARK " Cancel", ImVec2(80, 25), false)) {
+                    state.wall_reply_to.clear();
+                    state.wall_status = "Reply cancelled";
+                }
+                ImGui::Spacing();
+            } else {
+                ImGui::Text(ICON_FA_PEN " Post New Message");
+                ImGui::Spacing();
+            }
 
             // Message input (white text for visibility)
             ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());

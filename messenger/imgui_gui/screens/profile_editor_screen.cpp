@@ -12,6 +12,7 @@ extern "C" {
     #include "../../p2p/p2p_transport.h"
     #include "../../crypto/utils/qgp_types.h"
     #include "../../crypto/utils/qgp_platform.h"
+    #include "../../crypto/utils/avatar_utils.h"
 }
 
 #include <cstring>
@@ -76,6 +77,15 @@ void loadProfile(AppState& state, bool force_reload) {
         // Load bio
         if (profile->bio[0] != '\0') strncpy(state.profile_bio, profile->bio, sizeof(state.profile_bio) - 1);
 
+        // Load avatar
+        if (profile->avatar_base64[0] != '\0') {
+            state.profile_avatar_base64 = std::string(profile->avatar_base64);
+            state.profile_avatar_loaded = true;
+        } else {
+            state.profile_avatar_base64.clear();
+            state.profile_avatar_loaded = false;
+        }
+
         state.profile_status = "Profile loaded from DHT";
         state.profile_cached = true;  // Mark as cached
         dna_identity_free(profile);
@@ -129,6 +139,11 @@ void saveProfile(AppState& state) {
 
     // Bio
     if (state.profile_bio[0]) strncpy(profile_data.bio, state.profile_bio, sizeof(profile_data.bio) - 1);
+
+    // Avatar
+    if (!state.profile_avatar_base64.empty()) {
+        strncpy(profile_data.avatar_base64, state.profile_avatar_base64.c_str(), sizeof(profile_data.avatar_base64) - 1);
+    }
 
     // Load private key for signing
     const char *home = qgp_platform_home_dir();
@@ -215,12 +230,57 @@ void render(AppState& state) {
             ImGui::PopStyleColor();
         }
 
-        // Profile Picture
-        if (ImGui::CollapsingHeader("Profile Picture")) {
+        // Avatar Upload (NEW in Phase 4.3)
+        if (ImGui::CollapsingHeader("Avatar Upload (64x64)", ImGuiTreeNodeFlags_DefaultOpen)) {
+            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
+
+            // File path input
+            ImGui::InputText("Avatar File Path", state.profile_avatar_path, sizeof(state.profile_avatar_path));
+            ImGui::PopStyleColor();
+
+            ImGui::SameLine();
+            if (ThemedButton(ICON_FA_UPLOAD " Upload", ImVec2(100, 25), false)) {
+                // Process avatar file
+                if (strlen(state.profile_avatar_path) > 0) {
+                    char base64_out[12288] = {0};
+                    int ret = avatar_load_and_encode(state.profile_avatar_path, base64_out, sizeof(base64_out));
+
+                    if (ret == 0) {
+                        state.profile_avatar_base64 = std::string(base64_out);
+                        state.profile_avatar_loaded = true;
+                        state.profile_status = "Avatar uploaded successfully! (64x64)";
+                    } else {
+                        state.profile_status = "Failed to load/encode avatar image";
+                    }
+                } else {
+                    state.profile_status = "Please enter a file path first";
+                }
+            }
+
+            // Avatar status
+            if (state.profile_avatar_loaded) {
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(),
+                                 ICON_FA_CIRCLE_CHECK " Avatar loaded (%zu bytes base64)", state.profile_avatar_base64.length());
+                ImGui::SameLine();
+                if (ThemedButton(ICON_FA_TRASH " Remove", ImVec2(80, 25), false)) {
+                    state.profile_avatar_base64.clear();
+                    state.profile_avatar_loaded = false;
+                    memset(state.profile_avatar_path, 0, sizeof(state.profile_avatar_path));
+                    state.profile_status = "Avatar removed";
+                }
+            }
+
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
+                             "Supported: PNG, JPEG, BMP, GIF. Image will be resized to 64x64.");
+        }
+
+        // Profile Picture (IPFS - Legacy/Future)
+        if (ImGui::CollapsingHeader("Profile Picture (IPFS)")) {
             ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
             ImGui::InputText("IPFS CID", state.profile_pic_cid, sizeof(state.profile_pic_cid));
             ImGui::PopStyleColor();
-            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Upload your profile picture to IPFS and paste the CID here.");
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
+                             "Upload your profile picture to IPFS and paste the CID here (optional).");
         }
 
         // Bio

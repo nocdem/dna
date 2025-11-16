@@ -73,6 +73,7 @@ typedef struct {
     dna_socials_t socials;      /**< Social profiles */
     char bio[512];              /**< User bio (max 512 chars) */
     char profile_picture_ipfs[64]; /**< IPFS CID for profile picture */
+    char avatar_base64[12288];  /**< Base64-encoded avatar (64x64 PNG, ~10KB max) */
 } dna_profile_data_t;
 
 /**
@@ -103,7 +104,8 @@ typedef struct {
     char display_name[128];              /**< Display name (optional, defaults to name or fingerprint) */
     char bio[512];                       /**< User bio */
     char avatar_hash[128];               /**< SHA3-512 hash of avatar (for quick comparisons) */
-    char profile_picture_ipfs[64];       /**< IPFS CID for avatar */
+    char profile_picture_ipfs[64];       /**< IPFS CID for avatar (legacy/future) */
+    char avatar_base64[12288];           /**< Base64-encoded avatar (64x64 PNG/JPEG, ~10KB max) */
     char location[128];                  /**< Geographic location (optional) */
     char website[256];                   /**< Personal website URL (optional) */
 

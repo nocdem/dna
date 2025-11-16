@@ -1088,8 +1088,55 @@ dna_error_t dna_sign_message(
     uint8_t **signature_out,
     size_t *signature_len_out)
 {
-    // TODO: Implement standalone signing
-    return DNA_ERROR_INTERNAL;
+    // Phase 6.3: Standalone message signing API
+    if (!ctx || !message || !signer_key_name || !signature_out || !signature_len_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    // Build key file path: ~/.dna/<name>.dsa
+    char key_path[512];
+    const char *home = getenv("HOME");
+    if (!home) {
+        fprintf(stderr, "[DNA API] HOME environment variable not set\n");
+        return DNA_ERROR_INTERNAL;
+    }
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, signer_key_name);
+
+    // Load signing key
+    qgp_key_t *sign_key = NULL;
+    if (qgp_key_load(key_path, &sign_key) != 0 || !sign_key) {
+        fprintf(stderr, "[DNA API] Failed to load signing key from %s\n", key_path);
+        return DNA_ERROR_KEY_LOAD;
+    }
+
+    // Verify key type
+    if (sign_key->type != QGP_KEY_TYPE_DSA87 || sign_key->purpose != QGP_KEY_PURPOSE_SIGNING) {
+        fprintf(stderr, "[DNA API] Invalid key type (expected DSA87 signing key)\n");
+        qgp_key_free(sign_key);
+        return DNA_ERROR_INTERNAL;
+    }
+
+    // Allocate signature buffer
+    uint8_t *sig = malloc(QGP_DSA87_SIGNATURE_BYTES);
+    if (!sig) {
+        qgp_key_free(sign_key);
+        return DNA_ERROR_MEMORY;
+    }
+
+    // Sign message
+    size_t siglen = 0;
+    int result = qgp_dsa87_sign(sig, &siglen, message, message_len, sign_key->private_key);
+    qgp_key_free(sign_key);
+
+    if (result != 0) {
+        fprintf(stderr, "[DNA API] Signature generation failed\n");
+        free(sig);
+        return DNA_ERROR_INTERNAL;
+    }
+
+    *signature_out = sig;
+    *signature_len_out = siglen;
+    return DNA_OK;
 }
 
 dna_error_t dna_verify_message(
@@ -1101,8 +1148,26 @@ dna_error_t dna_verify_message(
     const uint8_t *signer_pubkey,
     size_t signer_pubkey_len)
 {
-    // TODO: Implement standalone verification
-    return DNA_ERROR_INTERNAL;
+    // Phase 6.4: Standalone message verification API
+    if (!ctx || !message || !signature || !signer_pubkey) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    // Verify public key size (Dilithium5)
+    if (signer_pubkey_len != QGP_DSA87_PUBLICKEYBYTES) {
+        fprintf(stderr, "[DNA API] Invalid public key size: %zu (expected %d)\n",
+                signer_pubkey_len, QGP_DSA87_PUBLICKEYBYTES);
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    // Verify signature
+    int result = qgp_dsa87_verify(signature, signature_len, message, message_len, signer_pubkey);
+
+    if (result == 0) {
+        return DNA_OK;  // Signature is valid
+    } else {
+        return DNA_ERROR_VERIFY;  // Signature verification failed
+    }
 }
 
 // ============================================================================

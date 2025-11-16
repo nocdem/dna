@@ -189,6 +189,8 @@ char* dna_profile_to_json(const dna_profile_data_t *profile) {
         json_object_new_string(profile->bio));
     if (profile->profile_picture_ipfs[0]) json_object_object_add(root,
         "profile_picture_ipfs", json_object_new_string(profile->profile_picture_ipfs));
+    if (profile->avatar_base64[0]) json_object_object_add(root,
+        "avatar_base64", json_object_new_string(profile->avatar_base64));
 
     const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PLAIN);
     char *result = strdup(json_str);
@@ -232,6 +234,13 @@ int dna_profile_from_json(const char *json, dna_profile_data_t **profile_out) {
         const char *str = json_object_get_string(val);
         if (str) strncpy(profile->profile_picture_ipfs, str,
                         sizeof(profile->profile_picture_ipfs) - 1);
+    }
+
+    // Avatar (base64)
+    if (json_object_object_get_ex(root, "avatar_base64", &val)) {
+        const char *str = json_object_get_string(val);
+        if (str) strncpy(profile->avatar_base64, str,
+                        sizeof(profile->avatar_base64) - 1);
     }
 
     json_object_put(root);

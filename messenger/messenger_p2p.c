@@ -472,17 +472,58 @@ static char* lookup_identity_for_pubkey(
         return NULL;
     }
 
-    // Search DHT keyserver for identity matching this Dilithium pubkey
-    // This requires iterating through the keyserver or maintaining a reverse lookup
-    // For now, we'll extract identity from the encrypted message signature later
+    // Phase 6.2: Reverse DHT lookup (pubkey → identity)
 
-    // TODO: Implement reverse DHT lookup (pubkey → identity)
-    // This would require either:
-    // 1. Storing a reverse index in local cache (pubkey_fingerprint → identity)
-    // 2. Iterating through known contacts and comparing pubkeys
-    // 3. Extracting identity from encrypted message signature
+    // First, check local contacts/keyserver cache
+    contact_list_t *contacts = NULL;
+    if (contacts_db_list(&contacts) == 0 && contacts) {
+        // Check each contact's cached pubkey
+        for (size_t i = 0; i < contacts->count; i++) {
+            const char *identity = contacts->contacts[i].identity;
+            keyserver_cache_entry_t *entry = NULL;
 
-    return NULL;  // Will be updated after message is processed
+            if (keyserver_cache_get(identity, &entry) == 0 && entry) {
+                // Compare Dilithium pubkeys
+                if (memcmp(entry->dilithium_pubkey, pubkey, 2592) == 0) {
+                    // Found matching contact!
+                    char *result = strdup(identity);
+                    keyserver_cache_free_entry(entry);
+                    contacts_db_free_list(contacts);
+                    return result;
+                }
+                keyserver_cache_free_entry(entry);
+            }
+        }
+        contacts_db_free_list(contacts);
+    }
+
+    // Not in local cache - try DHT reverse lookup (fingerprint → identity)
+    // Compute fingerprint as hex string (SHA3-512 of pubkey)
+    unsigned char hash[64];  // SHA3-512 = 64 bytes
+    qgp_sha3_512(pubkey, 2592, hash);  // Dilithium5 public key size
+
+    char fingerprint[129];  // SHA3-512 hex string = 128 chars + null
+    for (int i = 0; i < 64; i++) {
+        sprintf(fingerprint + (i * 2), "%02x", hash[i]);
+    }
+    fingerprint[128] = '\0';  // Null-terminate at position 128
+
+    // Get DHT context from P2P transport
+    dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    if (!dht_ctx) {
+        return NULL;  // No DHT context
+    }
+
+    // Query DHT for reverse mapping (fingerprint → identity)
+    char *identity = NULL;
+    int result = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &identity);
+
+    if (result == 0 && identity) {
+        // Successfully resolved identity via DHT
+        return identity;  // Caller must free
+    }
+
+    return NULL;  // No matching identity found
 }
 
 // ============================================================================
@@ -801,7 +842,8 @@ static void p2p_message_received_internal(
         message,            // encrypted message
         message_len,        // encrypted length
         now,                // timestamp
-        false               // is_outgoing = false (we're receiving)
+        false,              // is_outgoing = false (we're receiving)
+        0                   // group_id = 0 (direct messages) - Phase 5.2
     );
 
     if (result != 0) {

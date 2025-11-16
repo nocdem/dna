@@ -736,6 +736,57 @@ int dht_groups_list_for_user(
     return 0;
 }
 
+// Get group UUID from local group ID (Phase 6.1)
+int dht_groups_get_uuid_by_local_id(
+    const char *identity,
+    int local_id,
+    char *uuid_out
+) {
+    if (!identity || !uuid_out || !g_db) {
+        fprintf(stderr, "[DHT GROUPS] Invalid arguments to get_uuid_by_local_id\n");
+        return -1;
+    }
+
+    // Query local cache for UUID by local_id
+    // User must be a member of the group (security check)
+    const char *sql =
+        "SELECT c.group_uuid "
+        "FROM dht_group_cache c "
+        "INNER JOIN dht_group_members m ON c.group_uuid = m.group_uuid "
+        "WHERE c.local_id = ? AND m.member_identity = ? "
+        "LIMIT 1";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[DHT GROUPS] Failed to prepare query: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_int(stmt, 1, local_id);
+    sqlite3_bind_text(stmt, 2, identity, -1, SQLITE_STATIC);
+
+    int result = -2;  // Not found by default
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const char *uuid = (const char*)sqlite3_column_text(stmt, 0);
+        if (uuid) {
+            strncpy(uuid_out, uuid, 36);
+            uuid_out[36] = '\0';
+            result = 0;
+        }
+    }
+
+    sqlite3_finalize(stmt);
+
+    if (result == 0) {
+        printf("[DHT GROUPS] Mapped local_id %d to UUID %s for user %s\n", local_id, uuid_out, identity);
+    } else {
+        fprintf(stderr, "[DHT GROUPS] local_id %d not found for user %s\n", local_id, identity);
+    }
+
+    return result;
+}
+
 // Sync group metadata from DHT to local cache
 int dht_groups_sync_from_dht(
     dht_context_t *dht_ctx,

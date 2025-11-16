@@ -1023,16 +1023,20 @@ extern "C" int dht_delete(dht_context_t *ctx,
         // Hash the key
         auto hash = dht::InfoHash::get(key, key_len);
 
-        std::cout << "[DHT] DELETE: " << hash << std::endl;
+        // Phase 6.5: dht_delete() is a NO-OP - documented behavior
+        // OpenDHT does not support direct deletion. Values expire naturally based on TTL:
+        //   - PERMANENT: Never expire (identity keys, contact lists)
+        //   - 365-day TTL: Name registrations
+        //   - 7-day TTL: Profiles, groups, offline queue
+        //
+        // To "delete" a value:
+        //   1. Wait for natural TTL expiration (recommended)
+        //   2. Publish empty/null value to overwrite (for mutable data)
 
-        // Note: OpenDHT doesn't have a direct "delete" - we'd need to
-        // track value IDs from put() and cancel them. For now, this is
-        // a placeholder that returns success but doesn't actually delete.
-        // True deletion requires storing value IDs.
+        std::cout << "[DHT] WARNING: dht_delete() is a no-op (key=" << hash << ")" << std::endl;
+        std::cout << "[DHT] Values expire automatically based on TTL. See dht_context.h documentation." << std::endl;
 
-        std::cout << "[DHT] WARNING: Delete is not implemented (DHT values expire naturally)" << std::endl;
-
-        return 0;
+        return 0;  // Always succeed (no-op is intentional)
     } catch (const std::exception& e) {
         std::cerr << "[DHT] Exception in dht_delete: " << e.what() << std::endl;
         return -1;
