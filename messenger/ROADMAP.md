@@ -456,7 +456,7 @@ Implemented per-identity contact lists with DHT synchronization for multi-device
 ## Phase 6: DNA Board - Censorship-Resistant Social Media 🚧 IN PROGRESS (Alpha)
 
 **Timeline:** 8 weeks (alpha) | 12-16 weeks (full v1.0)
-**Status:** Phase 6.1 ✅ Complete | Phase 6.2 ✅ Complete (Alpha) | Phase 6.3 📋 Planned
+**Status:** Phase 6.1 ✅ Complete | Phase 6.2 ✅ Complete | Phase 6.3 ✅ Complete (Alpha)
 **Prerequisites:** P2P architecture, DHT storage, User profiles
 **Design Document:** `/DNA_BOARD_PHASE10_PLAN.md`
 
@@ -486,8 +486,18 @@ Implemented per-identity contact lists with DHT synchronization for multi-device
 - [x] Comment threading (reply-to field, collapsed/expandable UI, Twitter-style)
 - [x] Thread sorting (forum bump - latest activity first)
 
-**Phase 6.3 🚧 Next (Alpha - Enhancements):**
-- [ ] Community voting (thumbs up/down)
+**Phase 6.3 ✅ Complete (2025-11-17 - Community Voting):**
+- [x] Community voting system (thumbs up/down on wall posts)
+- [x] Vote backend with Dilithium5 signatures (dna_wall_votes.c/h - 650 lines)
+- [x] Separate DHT storage per post (SHA256 key derivation)
+- [x] Aggregated vote counts (upvote_count, downvote_count)
+- [x] One vote per fingerprint enforcement (permanent votes)
+- [x] Vote UI with emoji buttons (👍 👎) and real-time counts
+- [x] Net score display with color coding (green/red/gray)
+- [x] User vote highlighting (blue=upvoted, red=downvoted)
+- [x] Vote verification with post-quantum cryptography
+
+**Phase 6.4 📋 Next (Alpha - Profile Extensions):**
 - [ ] Profile schema extensions (social links: Telegram, Twitter, GitHub, Discord)
 - [ ] Crypto addresses for tipping (BTC, ETH, CPUNK)
 - [ ] Feed sorting (Recent, Top, Controversial)

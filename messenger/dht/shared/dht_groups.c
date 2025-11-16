@@ -669,7 +669,8 @@ int dht_groups_list_for_user(
     int *count_out
 ) {
     if (!identity || !groups_out || !count_out || !g_db) {
-        fprintf(stderr, "[DHT GROUPS] Invalid arguments to list_for_user\n");
+        fprintf(stderr, "[DHT GROUPS] Invalid arguments to list_for_user (identity=%p, groups_out=%p, count_out=%p, g_db=%p)\n",
+                (void*)identity, (void*)groups_out, (void*)count_out, (void*)g_db);
         return -1;
     }
 
