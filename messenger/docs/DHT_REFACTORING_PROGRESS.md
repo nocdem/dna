@@ -2,7 +2,7 @@
 
 **Project:** DNA Messenger DHT Layer Reorganization
 **Start Date:** 2025-11-15
-**Status:** Phase 4 Complete (4/9 phases)
+**Status:** Phase 5 Complete (5/9 phases)
 
 ## Overview
 
@@ -116,25 +116,50 @@ dht/
 - `a1b2c3d` - "Phase 4: Reorganize DHT directory (core/client/shared)"
 - `11f00a6` - "Phase 4 (continued): Fix all include paths after directory reorganization"
 
+### ✅ Phase 5: Unify Profile Systems (COMPLETE)
+**Date:** 2025-11-16
+**Status:** Profile systems unified under dna_unified_identity_t
+
+**Design Document:** `docs/PHASE5_PROFILE_UNIFICATION_DESIGN.md`
+
+**Changes:**
+1. **Extended dna_unified_identity_t** (dht/client/dna_profile.{h,c})
+   - Added 6 new fields: `display_name`, `avatar_hash`, `location`, `website`, `created_at`, `updated_at`
+   - Created `dna_display_profile_t` helper structure (28 fields)
+   - Implemented backward-compatible serialization/deserialization
+
+2. **Simplified Profile Cache** (database/profile_cache.{h,c})
+   - Schema: 9 columns → 3 columns (fingerprint, identity_json, cached_at)
+   - Store full identity as JSON (flexible schema)
+   - Heap-allocated identities with explicit `dna_identity_free()`
+
+3. **Updated Profile Manager** (database/profile_manager.{h,c})
+   - Changed to use `dna_load_identity()` from keyserver
+   - Implemented stale cache fallback for resilience
+   - Proper memory management throughout
+
+4. **Fixed All Consumers**
+   - Updated messenger_p2p.c to use unified identity API
+   - Fixed 5 GUI screen files for Phase 4 include paths
+   - All builds passing (100%)
+
+**Results:**
+- Single source of truth: `dna_unified_identity_t` used everywhere
+- Profile cache now stores 25-30KB JSON per identity
+- Stale cache fallback improves UX when DHT unavailable
+- 100% backward compatible with missing fields
+
+**Commits:**
+- `77f6090` - "Extended dna_unified_identity_t with display profile fields"
+- `c60e5d5` - "Updated profile_cache API to use dna_unified_identity_t"
+- `ee023bf` - "Implemented profile_cache with JSON storage"
+- `33d6873` - "Updated profile_manager to use keyserver API"
+- `71506b5` - "Fixed GUI includes for Phase 4 reorganization"
+- `4dc2f35` - "Fix Phase 5 GUI screen includes for dht_keyserver.h"
+
 ---
 
 ## Pending Phases
-
-### 🚧 Phase 5: Unify Profile Systems (PLANNED)
-**Goal:** Merge dht_profile.h + dna_profile.h into unified interface
-
-**Current State:**
-- `dht/shared/dht_profile.{c,h}` - Simple DHT profiles (display name, bio, avatar)
-- `dht/client/dna_profile.{c,h}` - Extended profiles with wallet addresses
-
-**Plan:**
-1. Analyze feature overlap and differences
-2. Design unified schema (superset of both)
-3. Migrate clients to unified API
-4. Deprecate redundant module
-5. Update all consumers
-
-**Estimated LOC:** ~500 lines affected
 
 ### 📋 Phase 6: Bootstrap Services Layer (PLANNED)
 **Goal:** Modularize bootstrap services with clean interfaces
@@ -288,10 +313,10 @@ Branches:
 
 ## Next Steps
 
-1. **Immediate:** Push Phase 4 commits to GitLab/GitHub
-2. **Short-term:** Plan Phase 5 (profile unification)
-3. **Medium-term:** Execute Phases 5-7
-4. **Long-term:** Testing, documentation, and deployment (Phases 8-9)
+1. **Immediate:** Execute Phase 6 (Bootstrap Services Layer)
+2. **Short-term:** Execute Phase 7 (Unified Cache Manager)
+3. **Medium-term:** Testing and deployment (Phase 8)
+4. **Long-term:** Documentation and polish (Phase 9)
 
 ---
 
@@ -306,4 +331,4 @@ Branches:
 ---
 
 **Last Updated:** 2025-11-16
-**Next Phase:** Phase 5 (Profile Unification)
+**Next Phase:** Phase 6 (Bootstrap Services Layer)
