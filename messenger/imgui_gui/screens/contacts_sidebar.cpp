@@ -332,7 +332,13 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     }
 
     if (ThemedButton(ICON_FA_USERS " Create Group", ImVec2(button_width, add_button_height), false)) {
-        // TODO: Open create group dialog
+        // Phase 1.3: Open create group dialog
+        state.show_create_group_dialog = true;
+        state.create_group_in_progress = false;
+        state.create_group_status.clear();
+        state.create_group_selected_members.clear();
+        memset(state.create_group_name_input, 0, sizeof(state.create_group_name_input));
+        ImGui::OpenPopup("Create Group");
     }
 
     if (ThemedButton(ICON_FA_ARROWS_ROTATE " Refresh", ImVec2(button_width, add_button_height), false)) {

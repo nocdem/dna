@@ -208,6 +208,13 @@ public:
     AsyncTask register_name_check_task;  // Async task for name availability check
     AsyncTask register_name_task;  // Async task for name registration
 
+    // Create Group dialog state (Phase 1.3)
+    bool show_create_group_dialog;
+    char create_group_name_input[256];
+    std::vector<int> create_group_selected_members;  // Indices of selected contacts
+    std::string create_group_status;
+    bool create_group_in_progress;
+
     // Async tasks for DHT operations
     AsyncTask dht_publish_task;
     AsyncTask contact_lookup_task;

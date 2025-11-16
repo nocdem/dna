@@ -17,6 +17,7 @@
 #include "screens/wallet_transaction_history_dialog.h"
 #include "screens/wallet_screen.h"
 #include "screens/add_contact_dialog.h"
+#include "screens/create_group_dialog.h"
 #include "screens/contacts_sidebar.h"
 #include "screens/chat_screen.h"
 #include "screens/layout_manager.h"
@@ -303,6 +304,9 @@ void DNAMessengerApp::renderDialogs() {
         ImGui::OpenPopup("Add Contact");
         AddContactDialog::render(state, [this]() { DataLoader::reloadContactsFromDatabase(state); });
     }
+
+    // Create Group dialog (Phase 1.3)
+    CreateGroupDialog::render(state);
 
     // Receive dialog
     WalletReceiveDialog::render(state);

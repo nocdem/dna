@@ -95,6 +95,11 @@ AppState::AppState() {
     register_name_last_input_time = 0.0f;
     register_name_last_checked_input = "";
     memset(register_name_input, 0, sizeof(register_name_input));
+
+    // Initialize create group dialog state (Phase 1.3)
+    show_create_group_dialog = false;
+    create_group_in_progress = false;
+    memset(create_group_name_input, 0, sizeof(create_group_name_input));
 }
 
 void AppState::scanIdentities() {
