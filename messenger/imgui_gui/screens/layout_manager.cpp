@@ -80,6 +80,26 @@ void renderBottomNavBar(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
     float btn_width = io.DisplaySize.x / 4.0f;
 
+    // Show current identity name centered above nav bar
+    if (!state.current_identity.empty()) {
+        ImGui::Spacing();
+        
+        // Get display name from cache, or use shortened fingerprint
+        std::string display_name = state.current_identity.substr(0, 10) + "...";
+        auto it = state.identity_name_cache.find(state.current_identity);
+        if (it != state.identity_name_cache.end()) {
+            display_name = it->second;
+        }
+        
+        // Center the identity name
+        float text_width = ImGui::CalcTextSize(display_name.c_str()).x;
+        float center_x = (io.DisplaySize.x - text_width) * 0.5f;
+        ImGui::SetCursorPosX(center_x);
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", display_name.c_str());
+        
+        ImGui::Spacing();
+    }
+
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
 

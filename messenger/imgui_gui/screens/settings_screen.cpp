@@ -102,27 +102,6 @@ void render(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Identity section
-    ImGui::Text("Identity");
-    ImGui::Spacing();
-
-    // Show registered DNA name if available
-    if (!state.profile_registered_name.empty()) {
-        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(), "%s", state.profile_registered_name.c_str());
-    }
-
-    // Always show fingerprint (shortened, green)
-    std::string fp = state.current_identity;
-    if (!fp.empty()) {
-        if (fp.length() > 23) {
-            std::string shortened = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
-            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), "%s", shortened.c_str());
-        } else {
-            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), "%s", fp.c_str());
-        }
-    }
-    ImGui::Spacing();
-
     float btn_height = is_mobile ? 50.0f : 40.0f;
 
     // Check if user has registered name
