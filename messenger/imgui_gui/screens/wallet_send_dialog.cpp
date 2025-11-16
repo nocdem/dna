@@ -4,6 +4,7 @@
 #include "../theme_colors.h"
 #include "../settings_manager.h"
 #include "../font_awesome.h"
+#include "../helpers/async_helpers.h"
 #include "imgui.h"
 #include "../modal_helper.h"
 
@@ -522,17 +523,40 @@ void render(AppState& state) {
             ImGui::Spacing();
         }
 
+        // Show spinner if transaction is in progress
+        if (state.send_transaction_task.isRunning()) {
+            float spinner_x = (ImGui::GetContentRegionAvail().x - 40) * 0.5f;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + spinner_x);
+            ThemedSpinner("##send_spinner", 20.0f, 4.0f);
+            ImGui::Spacing();
+        }
+
         // Buttons
         float btn_width = 120.0f;
         float btn_spacing = (ImGui::GetContentRegionAvail().x - (btn_width * 2)) / 3.0f;
 
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + btn_spacing);
+        
+        // Disable send button if transaction is in progress
+        if (state.send_transaction_task.isRunning()) {
+            ImGui::BeginDisabled();
+        }
+        
         if (ThemedButton(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, 40))) {
-            buildAndSendTransaction(state);
+            // Start async transaction
+            state.send_status = "Starting transaction...";
+            state.send_transaction_task.start([&state](AsyncTask* task) {
+                buildAndSendTransaction(state);
+                WalletScreen::refreshBalances(state);  // Refresh balances after send
+            });
+        }
+        
+        if (state.send_transaction_task.isRunning()) {
+            ImGui::EndDisabled();
         }
 
         ImGui::SameLine();
-        if (ImGui::Button("Cancel", ImVec2(btn_width, 40))) {
+        if (ThemedButton("Cancel", ImVec2(btn_width, 40))) {
             state.show_send_dialog = false;
             state.send_status.clear();
         }

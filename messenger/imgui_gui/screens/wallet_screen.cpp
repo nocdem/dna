@@ -235,7 +235,7 @@ void render(AppState& state) {
         float card_height = is_mobile ? 70.0f : 75.0f;
         char card_id[32];
         snprintf(card_id, sizeof(card_id), "##card_%s", tokens[i]);
-        ImGui::BeginChild(card_id, ImVec2(-1, card_height), true);
+        ImGui::BeginChild(card_id, ImVec2(-1, card_height), true, ImGuiWindowFlags_NoScrollbar);
 
         // Ticker on left
         ImGui::SetCursorPos(ImVec2(20, card_height * 0.5f - 10));
