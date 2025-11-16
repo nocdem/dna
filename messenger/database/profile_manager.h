@@ -27,7 +27,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "dht/shared/dht_profile.h"
+#include "dht/client/dna_profile.h"
 #include "dht/core/dht_context.h"
 
 #ifdef __cplusplus
@@ -46,29 +46,31 @@ int profile_manager_init(dht_context_t *dht_ctx, const char *owner_identity);
 
 /**
  * Get user profile (smart fetch: cache first, then DHT)
+ * Phase 5: Returns unified identity
  *
  * Flow:
  * 1. Check local cache
  * 2. If found and fresh (<7 days old) → return from cache
  * 3. If expired or not found → fetch from DHT
  * 4. Update cache with DHT result
- * 5. Return profile
+ * 5. Return identity
  *
  * @param user_fingerprint Fingerprint of profile owner
- * @param profile_out Output profile data (caller provides buffer)
+ * @param identity_out Output identity (allocated, caller must free with dna_identity_free())
  * @return 0 on success, -1 on error, -2 if not found
  */
-int profile_manager_get_profile(const char *user_fingerprint, dht_profile_t *profile_out);
+int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identity_t **identity_out);
 
 /**
  * Refresh profile from DHT (force update, ignores cache)
+ * Phase 5: Returns unified identity
  * Use for manual "Refresh Profile" button
  *
  * @param user_fingerprint Fingerprint of profile owner
- * @param profile_out Output profile data (caller provides buffer, can be NULL)
+ * @param identity_out Output identity (allocated, caller must free, can be NULL)
  * @return 0 on success, -1 on error, -2 if not found in DHT
  */
-int profile_manager_refresh_profile(const char *user_fingerprint, dht_profile_t *profile_out);
+int profile_manager_refresh_profile(const char *user_fingerprint, dna_unified_identity_t **identity_out);
 
 /**
  * Refresh all expired profiles from DHT (background task)
