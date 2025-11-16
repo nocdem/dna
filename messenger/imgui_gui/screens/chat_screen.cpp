@@ -4,6 +4,7 @@
 #include "../font_awesome.h"
 #include "../theme_colors.h"
 #include "../settings_manager.h"
+#include "../texture_manager.h"
 #include "imgui.h"
 #include <cstring>
 
@@ -327,6 +328,39 @@ void render(AppState& state) {
         meta_color.w = 0.7f; // Slightly transparent
 
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8.0f); // Space for arrow
+
+        // Show avatar for incoming messages if available
+        if (!msg.is_outgoing && state.profile_avatar_loaded && !state.profile_avatar_base64.empty()) {
+            int avatar_width = 0, avatar_height = 0;
+            std::string avatar_key = "chat_" + msg.sender;  // Unique key for this sender
+            GLuint texture_id = TextureManager::getInstance().loadAvatar(
+                avatar_key,
+                state.profile_avatar_base64,
+                &avatar_width,
+                &avatar_height
+            );
+
+            if (texture_id != 0) {
+                float avatar_size = 20.0f;  // Small avatar for chat messages
+                ImVec2 avatar_pos = ImGui::GetCursorScreenPos();
+
+                // Draw circular clipped avatar
+                ImDrawList* draw_list_avatar = ImGui::GetWindowDrawList();
+                draw_list_avatar->AddImageRounded(
+                    (void*)(intptr_t)texture_id,
+                    avatar_pos,
+                    ImVec2(avatar_pos.x + avatar_size, avatar_pos.y + avatar_size),
+                    ImVec2(0, 0),
+                    ImVec2(1, 1),
+                    IM_COL32(255, 255, 255, 255),
+                    avatar_size * 0.5f  // Circular
+                );
+
+                ImGui::Dummy(ImVec2(avatar_size, avatar_size));
+                ImGui::SameLine();
+            }
+        }
+
         ImGui::PushStyleColor(ImGuiCol_Text, meta_color);
         const char* sender_label = msg.is_outgoing ? "You" : msg.sender.c_str();
         ImGui::Text("%s • %s", sender_label, msg.timestamp.c_str());
