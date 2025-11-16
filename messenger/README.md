@@ -170,7 +170,7 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ P2P messaging with DHT-based peer discovery (3 bootstrap nodes)
 - ✅ Offline message queueing (messages stored in DHT for 7 days)
 - ✅ Free DNA name registration (no costs in alpha)
-- ✅ DNA Board Alpha (censorship-resistant wall posts with threading and avatars - FREE)
+- ✅ DNA Board Alpha (decentralized wall posts, threaded comments, user avatars - FREE)
 
 **Coming Soon:**
 - 🚧 Community voting (thumbs up/down on wall posts)
