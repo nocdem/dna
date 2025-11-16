@@ -26,10 +26,9 @@ GLuint TextureManager::loadAvatar(const std::string& key, const std::string& bas
         return 0;
     }
 
-    // Check cache first
+    // Check cache first (silent - happens every frame)
     auto it = texture_cache_.find(key);
     if (it != texture_cache_.end()) {
-        printf("[TextureManager] Using cached texture for key: %s\n", key.substr(0, 10).c_str());
         if (width_out) *width_out = it->second.width;
         if (height_out) *height_out = it->second.height;
         return it->second.texture_id;
