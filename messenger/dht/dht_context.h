@@ -16,6 +16,10 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+// Phase 3: Include extracted modules
+#include "core/dht_stats.h"
+#include "client/dht_identity.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -257,69 +261,8 @@ int dht_delete(dht_context_t *ctx,
  * @param stored_values Number of values stored locally (output)
  * @return 0 on success, -1 on error
  */
-int dht_get_stats(dht_context_t *ctx,
-                  size_t *node_count,
-                  size_t *stored_values);
-
-/**
- * Get storage pointer from DHT context
- *
- * Returns the value storage handle, or NULL if storage not enabled.
- * Used by bootstrap monitoring to access storage statistics.
- *
- * @param ctx DHT context
- * @return Storage handle, or NULL if not enabled
- */
-struct dht_value_storage* dht_get_storage(dht_context_t *ctx);
-
-/**
- * DHT Identity Management (for encrypted backup system)
- * These functions are exposed from dht_context.cpp to enable C code
- * to work with OpenDHT's C++ Identity type.
- */
-
-/**
- * Generate random DHT identity (RSA-2048)
- *
- * @param identity_out Output identity handle (caller must free with dht_identity_free)
- * @return 0 on success, -1 on error
- */
-int dht_identity_generate_random(dht_identity_t **identity_out);
-
-/**
- * Export identity to buffer (PEM format)
- *
- * Format: [key_pem_size(4)][key_pem][cert_pem_size(4)][cert_pem]
- *
- * @param identity Identity handle
- * @param buffer_out Output buffer (caller must free)
- * @param buffer_size_out Output buffer size
- * @return 0 on success, -1 on error
- */
-int dht_identity_export_to_buffer(
-    dht_identity_t *identity,
-    uint8_t **buffer_out,
-    size_t *buffer_size_out);
-
-/**
- * Import identity from buffer (PEM format)
- *
- * @param buffer Input buffer
- * @param buffer_size Buffer size
- * @param identity_out Output identity handle (caller must free with dht_identity_free)
- * @return 0 on success, -1 on error
- */
-int dht_identity_import_from_buffer(
-    const uint8_t *buffer,
-    size_t buffer_size,
-    dht_identity_t **identity_out);
-
-/**
- * Free DHT identity
- *
- * @param identity Identity handle
- */
-void dht_identity_free(dht_identity_t *identity);
+// NOTE: dht_get_stats() and dht_get_storage() moved to dht/core/dht_stats.h (Phase 3)
+// NOTE: dht_identity_* functions moved to dht/client/dht_identity.h (Phase 3)
 
 #ifdef __cplusplus
 }

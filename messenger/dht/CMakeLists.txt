@@ -42,6 +42,8 @@ if(WIN32)
     add_library(dht_lib STATIC
         dht_context.cpp
         dht_value_storage.cpp
+        core/dht_stats.cpp           # Phase 3: Stats module
+        client/dht_identity.cpp      # Phase 3: Identity module
         dht_offline_queue.c
         dht_groups.c
         dht_keyserver.c
@@ -68,6 +70,8 @@ else()
     add_library(dht_lib STATIC
         dht_context.cpp
         dht_value_storage.cpp
+        core/dht_stats.cpp           # Phase 3: Stats module
+        client/dht_identity.cpp      # Phase 3: Identity module
         dht_offline_queue.c
         dht_groups.c
         dht_keyserver.c
@@ -90,7 +94,14 @@ else()
         ../crypto/utils/qgp_platform_linux.c
         ../crypto/utils/qgp_aes.c)
 endif()
-target_include_directories(dht_lib PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS} ${CMAKE_CURRENT_SOURCE_DIR}/.. ${CMAKE_CURRENT_SOURCE_DIR}/../crypto)
+target_include_directories(dht_lib PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/core      # Phase 3: Stats module
+    ${CMAKE_CURRENT_SOURCE_DIR}/client    # Phase 3: Identity module
+    ${CMAKE_CURRENT_SOURCE_DIR}/shared    # Phase 4: Shared modules
+    ${OPENDHT_INCLUDE_DIRS}
+    ${CMAKE_CURRENT_SOURCE_DIR}/..
+    ${CMAKE_CURRENT_SOURCE_DIR}/../crypto)
 target_link_libraries(dht_lib crypto dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} gnutls json-c curl)
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD 17)
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD_REQUIRED ON)
