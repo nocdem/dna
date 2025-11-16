@@ -8,22 +8,17 @@
  * - Cache all fetched profiles (not just contacts)
  * - Reduces DHT queries while keeping profiles reasonably fresh
  *
- * Database Schema:
+ * Database Schema (Phase 5: Unified Identity):
  * CREATE TABLE profiles (
- *     user_fingerprint TEXT PRIMARY KEY,
- *     display_name TEXT NOT NULL,
- *     bio TEXT,
- *     avatar_hash TEXT,
- *     location TEXT,
- *     website TEXT,
- *     created_at INTEGER,
- *     updated_at INTEGER,
- *     fetched_at INTEGER  -- Unix timestamp for TTL check
+ *     fingerprint TEXT PRIMARY KEY,
+ *     identity_json TEXT NOT NULL,    -- Full dna_unified_identity_t as JSON
+ *     cached_at INTEGER NOT NULL       -- Unix timestamp for TTL check
  * );
  *
  * @file profile_cache.h
  * @author DNA Messenger Team
  * @date 2025-11-12
+ * @updated 2025-11-16 (Phase 5: Unified profile system)
  */
 
 #ifndef PROFILE_CACHE_H
@@ -32,7 +27,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "dht/shared/dht_profile.h"
+#include "dht/client/dna_profile.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -44,12 +39,13 @@ extern "C" {
 #define PROFILE_CACHE_TTL_SECONDS (7 * 24 * 3600)
 
 /**
- * Cached profile entry (includes fetch timestamp)
+ * Cached profile entry (Phase 5: Unified Identity)
+ * Includes full identity data and fetch timestamp
  */
 typedef struct {
-    char user_fingerprint[256];     // User fingerprint (128-char hex)
-    dht_profile_t profile;          // Profile data
-    uint64_t fetched_at;            // When profile was fetched (Unix timestamp)
+    char fingerprint[129];                // User fingerprint (128-char hex + null)
+    dna_unified_identity_t *identity;     // Full identity data (heap-allocated)
+    uint64_t cached_at;                   // When profile was cached (Unix timestamp)
 } profile_cache_entry_t;
 
 /**
@@ -70,24 +66,25 @@ typedef struct {
 int profile_cache_init(const char *owner_identity);
 
 /**
- * Add or update profile in cache
- * Sets fetched_at to current time
+ * Add or update profile in cache (Phase 5: Unified Identity)
+ * Sets cached_at to current time
  *
  * @param user_fingerprint Fingerprint of profile owner
- * @param profile Profile data
+ * @param identity Full unified identity data
  * @return 0 on success, -1 on error
  */
-int profile_cache_add_or_update(const char *user_fingerprint, const dht_profile_t *profile);
+int profile_cache_add_or_update(const char *user_fingerprint, const dna_unified_identity_t *identity);
 
 /**
- * Get profile from cache
+ * Get profile from cache (Phase 5: Unified Identity)
+ * Returns heap-allocated identity - caller must free with dna_identity_free()
  *
  * @param user_fingerprint Fingerprint of profile owner
- * @param profile_out Output profile data (caller provides buffer)
- * @param fetched_at_out Output fetch timestamp (can be NULL)
+ * @param identity_out Output identity data (allocated, caller must free)
+ * @param cached_at_out Output cache timestamp (can be NULL)
  * @return 0 on success, -1 on error, -2 if not found
  */
-int profile_cache_get(const char *user_fingerprint, dht_profile_t *profile_out, uint64_t *fetched_at_out);
+int profile_cache_get(const char *user_fingerprint, dna_unified_identity_t **identity_out, uint64_t *cached_at_out);
 
 /**
  * Check if profile exists in cache
