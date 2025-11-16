@@ -270,7 +270,7 @@ void render(AppState& state) {
             if (ThemedButton(ICON_FA_UPLOAD " Upload", ImVec2(100, 25), false)) {
                 // Process avatar file
                 if (strlen(state.profile_avatar_path) > 0) {
-                    char base64_out[12288] = {0};
+                    char base64_out[20480] = {0};
                     int ret = avatar_load_and_encode(state.profile_avatar_path, base64_out, sizeof(base64_out));
 
                     if (ret == 0) {
