@@ -224,34 +224,35 @@ void render(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Token balance cards
+    // Token balance display
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
-    const char* token_icons[] = {ICON_FA_COINS, ICON_FA_BOLT, ICON_FA_GEM};
 
     for (int i = 0; i < 3; i++) {
-        // Token icon and name (large text)
+        // Token name on left, balance on right (2x larger text)
         ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
-        ImGui::SetWindowFontScale(3.0f);
-        ImGui::Text("%s %s", token_icons[i], tokens[i]);
+        ImGui::SetWindowFontScale(2.0f);
+        
+        // Token name
+        ImGui::Text("%s", tokens[i]);
+        
+        // Balance on same line, right-aligned
+        ImGui::SameLine();
+        auto it = state.token_balances.find(tokens[i]);
+        std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
+        
+        // Calculate position for right alignment
+        float text_width = ImGui::CalcTextSize(formatted.c_str()).x;
+        float avail_width = ImGui::GetContentRegionAvail().x;
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail_width - text_width);
+        
+        if (it != state.token_balances.end()) {
+            ImGui::Text("%s", formatted.c_str());
+        } else {
+            ImGui::TextDisabled("%s", formatted.c_str());
+        }
+        
         ImGui::SetWindowFontScale(1.0f);
         ImGui::PopFont();
-
-        // Balance (large text)
-        auto it = state.token_balances.find(tokens[i]);
-        if (it != state.token_balances.end()) {
-            std::string formatted = formatBalance(it->second);
-            ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
-            ImGui::SetWindowFontScale(3.0f);
-            ImGui::Text("%s", formatted.c_str());
-            ImGui::SetWindowFontScale(1.0f);
-            ImGui::PopFont();
-        } else {
-            ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
-            ImGui::SetWindowFontScale(3.0f);
-            ImGui::TextDisabled("0.00");
-            ImGui::SetWindowFontScale(1.0f);
-            ImGui::PopFont();
-        }
 
         if (i < 2) ImGui::Spacing();
     }
