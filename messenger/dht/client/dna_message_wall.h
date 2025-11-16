@@ -35,6 +35,10 @@ typedef struct {
     char reply_to[160];       // Parent post_id (empty for top-level posts)
     int reply_depth;          // 0=post, 1=comment, 2=reply (max depth enforced)
     int reply_count;          // Number of direct replies (for UI display)
+
+    // Community voting (optional - loaded separately from DHT)
+    int upvotes;              // Total upvotes (0 if not loaded)
+    int downvotes;            // Total downvotes (0 if not loaded)
 } dna_wall_message_t;
 
 // Message wall structure (array of messages)

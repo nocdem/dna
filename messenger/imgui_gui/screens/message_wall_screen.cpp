@@ -10,6 +10,7 @@
 extern "C" {
     #include "../../messenger.h"
     #include "../../dht/client/dna_message_wall.h"
+    #include "../../dht/client/dna_wall_votes.h"
     #include "../../dht/client/dna_profile.h"
     #include "../../p2p/p2p_transport.h"
     #include "../../crypto/utils/qgp_types.h"
@@ -50,6 +51,99 @@ uint64_t getThreadLatestTimestamp(const std::vector<AppState::WallMessage>& mess
         }
     }
     return latest;
+}
+
+// Cast a vote on a wall post
+void castVote(AppState& state, const std::string& post_id, int8_t vote_value) {
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (!ctx || !ctx->p2p_transport) {
+        state.wall_status = "Error: DHT not available";
+        return;
+    }
+
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        state.wall_status = "Error: DHT not available";
+        return;
+    }
+
+    // Load private key for signing
+    const char *home_dir = qgp_platform_home_dir();
+    if (!home_dir) {
+        state.wall_status = "Error: Failed to get home directory";
+        return;
+    }
+
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home_dir, ctx->identity);
+
+    qgp_key_t *key = nullptr;
+    int ret = qgp_key_load(key_path, &key);
+    if (ret != 0 || !key) {
+        state.wall_status = "Error: Failed to load private key for signing";
+        return;
+    }
+
+    // Cast vote
+    state.wall_status = vote_value > 0 ? "Casting upvote..." : "Casting downvote...";
+    ret = dna_cast_vote(dht_ctx, post_id.c_str(), state.current_identity.c_str(),
+                        vote_value, key->private_key);
+
+    qgp_key_free(key);
+
+    if (ret == -2) {
+        state.wall_status = "Error: You already voted on this post (votes are permanent)";
+        return;
+    } else if (ret != 0) {
+        state.wall_status = "Error: Failed to cast vote";
+        return;
+    }
+
+    // Success - update UI
+    for (auto& msg : state.wall_messages) {
+        if (msg.post_id == post_id) {
+            msg.user_vote = vote_value;
+            if (vote_value == 1) {
+                msg.upvotes++;
+            } else {
+                msg.downvotes++;
+            }
+            break;
+        }
+    }
+
+    state.wall_status = vote_value > 0 ? "Upvote cast successfully!" : "Downvote cast successfully!";
+}
+
+// Load votes for all messages
+void loadVotesForMessages(AppState& state) {
+    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+    if (!ctx || !ctx->p2p_transport) {
+        return;
+    }
+
+    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht_ctx) {
+        return;
+    }
+
+    for (auto& msg : state.wall_messages) {
+        // Load votes from DHT
+        dna_wall_votes_t *votes = nullptr;
+        int ret = dna_load_votes(dht_ctx, msg.post_id.c_str(), &votes);
+
+        if (ret == 0 && votes) {
+            msg.upvotes = votes->upvote_count;
+            msg.downvotes = votes->downvote_count;
+            msg.user_vote = dna_get_user_vote(votes, state.current_identity.c_str());
+            dna_wall_votes_free(votes);
+        } else {
+            // No votes yet
+            msg.upvotes = 0;
+            msg.downvotes = 0;
+            msg.user_vote = 0;
+        }
+    }
 }
 
 // Format wall timestamp (from Qt MessageWallDialog.cpp lines 418-438)
@@ -130,6 +224,11 @@ void loadMessageWall(AppState& state) {
             wall_msg.reply_depth = msg->reply_depth;
             wall_msg.reply_count = msg->reply_count;
 
+            // Initialize vote fields (will be loaded separately if needed)
+            wall_msg.upvotes = 0;
+            wall_msg.downvotes = 0;
+            wall_msg.user_vote = 0;
+
             // Extract sender fingerprint from post_id (first 128 chars before underscore)
             std::string post_id_str(msg->post_id);
             size_t underscore_pos = post_id_str.find('_');
@@ -150,6 +249,9 @@ void loadMessageWall(AppState& state) {
             state.wall_messages.push_back(wall_msg);
         }
         state.wall_status = "Loaded " + std::to_string(wall->message_count) + " messages";
+
+        // Load votes for all messages
+        loadVotesForMessages(state);
     } else {
         state.wall_status = "No messages yet. Be the first to post!";
     }
@@ -420,6 +522,53 @@ void render(AppState& state) {
 
                 // Message text
                 ImGui::TextWrapped("%s", msg.text.c_str());
+
+                ImGui::Spacing();
+
+                // Community voting UI
+                ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 4));
+                ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
+
+                // Upvote button (highlight if user upvoted)
+                bool user_upvoted = (msg.user_vote == 1);
+                if (user_upvoted) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(50, 150, 255, 255));  // Blue highlight
+                }
+                bool upvote_clicked = ThemedButton((std::string("\xf0\x9f\x91\x8d ") + std::to_string(msg.upvotes)).c_str(), ImVec2(60, 25), false);
+                if (user_upvoted) {
+                    ImGui::PopStyleColor();
+                }
+
+                ImGui::SameLine();
+
+                // Downvote button (highlight if user downvoted)
+                bool user_downvoted = (msg.user_vote == -1);
+                if (user_downvoted) {
+                    ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(255, 100, 100, 255));  // Red highlight
+                }
+                bool downvote_clicked = ThemedButton((std::string("\xf0\x9f\x91\x8e ") + std::to_string(msg.downvotes)).c_str(), ImVec2(60, 25), false);
+                if (user_downvoted) {
+                    ImGui::PopStyleColor();
+                }
+
+                ImGui::SameLine();
+
+                // Net score
+                int net_score = msg.upvotes - msg.downvotes;
+                ImVec4 score_color = net_score > 0 ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) :   // Green
+                                    net_score < 0 ? ImVec4(0.8f, 0.3f, 0.3f, 1.0f) :   // Red
+                                                   ImVec4(0.7f, 0.7f, 0.7f, 1.0f);    // Gray
+                ImGui::TextColored(score_color, "Score: %+d", net_score);
+
+                ImGui::PopStyleVar(2);
+
+                // Handle vote clicks
+                if (upvote_clicked && msg.user_vote != 1) {
+                    castVote(state, msg.post_id, 1);  // Cast upvote
+                }
+                if (downvote_clicked && msg.user_vote != -1) {
+                    castVote(state, msg.post_id, -1);  // Cast downvote
+                }
 
                 ImGui::Spacing();
 

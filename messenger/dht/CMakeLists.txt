@@ -56,6 +56,7 @@ if(WIN32)
         client/dht_identity_backup.c
         client/dna_profile.c
         client/dna_message_wall.c
+        client/dna_wall_votes.c
         # Keyserver modules
         keyserver/keyserver_helpers.c
         keyserver/keyserver_publish.c
@@ -89,6 +90,7 @@ else()
         client/dht_identity_backup.c
         client/dna_profile.c
         client/dna_message_wall.c
+        client/dna_wall_votes.c
         # Keyserver modules
         keyserver/keyserver_helpers.c
         keyserver/keyserver_publish.c

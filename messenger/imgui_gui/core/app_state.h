@@ -162,6 +162,10 @@ public:
         // Sender info
         std::string sender_fingerprint;  // Extracted from post_id
         std::string sender_avatar;       // Base64 avatar (loaded from cache/DHT)
+        // Community voting
+        int upvotes;              // Total upvotes
+        int downvotes;            // Total downvotes
+        int user_vote;            // Current user's vote: +1=upvoted, -1=downvoted, 0=not voted
     };
     std::vector<WallMessage> wall_messages;
     std::set<std::string> wall_expanded_threads;  // Set of expanded thread IDs
