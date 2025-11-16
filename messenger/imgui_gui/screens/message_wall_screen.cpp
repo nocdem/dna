@@ -280,8 +280,8 @@ void render(AppState& state) {
 
                 ImGui::Spacing();
 
-                // Footer: Reply button + reply count
-                if (state.wall_is_own && msg.reply_depth < 2) {  // Only allow replies up to depth 2
+                // Footer: Reply button + reply count (allow replying to any wall)
+                if (msg.reply_depth < 2) {  // Only allow replies up to depth 2
                     if (ThemedButton(ICON_FA_REPLY " Reply", ImVec2(80, 25), false)) {
                         state.wall_reply_to = msg.post_id;
                         state.wall_status = "Replying to message...";
@@ -314,41 +314,41 @@ void render(AppState& state) {
 
         ImGui::Spacing();
 
-        // Post section (only if own wall)
-        if (state.wall_is_own) {
-            // Show reply mode indicator
-            if (!state.wall_reply_to.empty()) {
-                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(),
-                                 ICON_FA_REPLY " Replying to message");
-                ImGui::SameLine();
-                if (ThemedButton(ICON_FA_XMARK " Cancel", ImVec2(80, 25), false)) {
-                    state.wall_reply_to.clear();
-                    state.wall_status = "Reply cancelled";
-                }
-                ImGui::Spacing();
-            } else {
-                ImGui::Text(ICON_FA_PEN " Post New Message");
-                ImGui::Spacing();
-            }
-
-            // Message input (white text for visibility)
-            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
-            ImGui::InputTextMultiline("##WallInput", state.wall_message_input, sizeof(state.wall_message_input),
-                                     ImVec2(-1, 80), ImGuiInputTextFlags_None);
-            ImGui::PopStyleColor();
-
-            // Character counter
-            int len = strlen(state.wall_message_input);
-            ImGui::Text("%d / 1024", len);
+        // Post section (allow posting to any wall)
+        // Show reply mode indicator
+        if (!state.wall_reply_to.empty()) {
+            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(),
+                             ICON_FA_REPLY " Replying to message");
             ImGui::SameLine();
-
-            // Post button
-            ImGui::SameLine(ImGui::GetContentRegionAvail().x - 150);
-            if (ThemedButton(ICON_FA_PAPER_PLANE " Post Message", ImVec2(150, 35))) {
-                postToMessageWall(state);
+            if (ThemedButton(ICON_FA_XMARK " Cancel", ImVec2(80, 25), false)) {
+                state.wall_reply_to.clear();
+                state.wall_status = "Reply cancelled";
             }
+            ImGui::Spacing();
         } else {
-            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), ICON_FA_CIRCLE_INFO " This is %s's public message wall (read-only)", state.wall_display_name.c_str());
+            if (state.wall_is_own) {
+                ImGui::Text(ICON_FA_PEN " Post New Message");
+            } else {
+                ImGui::Text(ICON_FA_PEN " Post on %s's Wall", state.wall_display_name.c_str());
+            }
+            ImGui::Spacing();
+        }
+
+        // Message input (white text for visibility)
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
+        ImGui::InputTextMultiline("##WallInput", state.wall_message_input, sizeof(state.wall_message_input),
+                                 ImVec2(-1, 80), ImGuiInputTextFlags_None);
+        ImGui::PopStyleColor();
+
+        // Character counter
+        int len = strlen(state.wall_message_input);
+        ImGui::Text("%d / 1024", len);
+        ImGui::SameLine();
+
+        // Post button
+        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 150);
+        if (ThemedButton(ICON_FA_PAPER_PLANE " Post Message", ImVec2(150, 35))) {
+            postToMessageWall(state);
         }
 
         ImGui::Spacing();
