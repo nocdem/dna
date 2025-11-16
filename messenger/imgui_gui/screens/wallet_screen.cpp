@@ -222,47 +222,53 @@ void render(AppState& state) {
     
     ImGui::Separator();
 
-    // Token balance table
+    // Token balance rows (button-like cards)
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
     
-    if (ImGui::BeginTable("##token_table", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
-        // Setup columns
-        ImGui::TableSetupColumn("Token", ImGuiTableColumnFlags_WidthFixed, 80.0f);
-        ImGui::TableSetupColumn("Balance", ImGuiTableColumnFlags_WidthStretch);
-        ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 100.0f);
-
-        for (int i = 0; i < 3; i++) {
-            ImGui::TableNextRow();
-            
-            // Token column
-            ImGui::TableNextColumn();
-            ImGui::Text("%s", tokens[i]);
-            
-            // Balance column (centered)
-            ImGui::TableNextColumn();
-            auto it = state.token_balances.find(tokens[i]);
-            std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
-            
-            ImVec4 green_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
-            
-            // Center the balance
-            float text_width = ImGui::CalcTextSize(formatted.c_str()).x;
-            float avail_width = ImGui::GetContentRegionAvail().x;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_width - text_width) * 0.5f);
-            ImGui::TextColored(green_color, "%s", formatted.c_str());
-            
-            // Action column
-            ImGui::TableNextColumn();
-            char btn_id[32];
-            snprintf(btn_id, sizeof(btn_id), ICON_FA_PAPER_PLANE " Send##%s", tokens[i]);
-            if (ThemedButton(btn_id, ImVec2(-1, 0))) {
-                state.show_send_dialog = true;
-                state.send_status.clear();
-                strncpy(state.send_token, tokens[i], sizeof(state.send_token) - 1);
-            }
+    for (int i = 0; i < 3; i++) {
+        // Create button-style background
+        ImVec4 btn_bg = g_app_settings.theme == 0 ? DNATheme::Button() : ClubTheme::Button();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, btn_bg);
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
+        
+        float row_height = 60.0f;
+        char row_id[32];
+        snprintf(row_id, sizeof(row_id), "##token_row_%s", tokens[i]);
+        ImGui::BeginChild(row_id, ImVec2(-1, row_height), true, ImGuiWindowFlags_NoScrollbar);
+        
+        // Left side: Token name (large) and balance below
+        ImGui::SetCursorPos(ImVec2(15, 12));
+        ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]); // Same font but we'll scale text
+        ImGui::Text("%s", tokens[i]);
+        ImGui::PopFont();
+        
+        // Balance below token name (smaller, green)
+        ImGui::SetCursorPos(ImVec2(15, 35));
+        auto it = state.token_balances.find(tokens[i]);
+        std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
+        ImVec4 green_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(green_color.x * 0.8f, green_color.y * 0.8f, green_color.z * 0.8f, green_color.w));
+        ImGui::TextDisabled("%s", formatted.c_str());
+        ImGui::PopStyleColor();
+        
+        // Right side: Send button
+        float btn_width = 90.0f;
+        float btn_height = 40.0f;
+        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - btn_width - 10, (row_height - btn_height) * 0.5f));
+        
+        char btn_id[32];
+        snprintf(btn_id, sizeof(btn_id), ICON_FA_PAPER_PLANE " Send##%s", tokens[i]);
+        if (ThemedButton(btn_id, ImVec2(btn_width, btn_height))) {
+            state.show_send_dialog = true;
+            state.send_status.clear();
+            strncpy(state.send_token, tokens[i], sizeof(state.send_token) - 1);
         }
         
-        ImGui::EndTable();
+        ImGui::EndChild();
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor();
+        
+        if (i < 2) ImGui::Spacing();
     }
 
     ImGui::Separator();
