@@ -138,6 +138,10 @@ void saveProfile(AppState& state) {
     // Avatar
     if (!state.profile_avatar_base64.empty()) {
         strncpy(profile_data.avatar_base64, state.profile_avatar_base64.c_str(), sizeof(profile_data.avatar_base64) - 1);
+        printf("[ProfileEditor] Saving profile with avatar: %zu bytes base64\n",
+               state.profile_avatar_base64.length());
+    } else {
+        printf("[ProfileEditor] Saving profile without avatar\n");
     }
 
     // Load private key for signing
@@ -148,10 +152,12 @@ void saveProfile(AppState& state) {
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
         state.profile_status = "Failed to load private key for signing";
+        printf("[ProfileEditor] ✗ Failed to load signing key from: %s\n", key_path);
         return;
     }
 
     // Update profile in DHT
+    printf("[ProfileEditor] Publishing profile to DHT for: %s\n", ctx->fingerprint);
     int ret = dna_update_profile(dht_ctx, ctx->fingerprint, &profile_data, key->private_key);
 
     qgp_key_free(key);
@@ -160,8 +166,10 @@ void saveProfile(AppState& state) {
         state.profile_status = "Profile saved to DHT successfully!";
         state.profile_cached = false;  // Invalidate cache to force reload next time
         state.show_profile_editor = false;
+        printf("[ProfileEditor] ✓ Profile published to DHT successfully\n");
     } else {
         state.profile_status = "Failed to save profile to DHT";
+        printf("[ProfileEditor] ✗ Failed to publish profile to DHT (error code: %d)\n", ret);
     }
 }
 
@@ -233,10 +241,45 @@ void render(AppState& state) {
             ImGui::InputText("Avatar File Path", state.profile_avatar_path, sizeof(state.profile_avatar_path));
             ImGui::PopStyleColor();
 
+            // Browse button (opens file picker)
+            if (ThemedButton(ICON_FA_FOLDER_OPEN " Browse", ImVec2(100, 25), false)) {
+                #ifdef __linux__
+                // Try zenity first (GNOME), fallback to kdialog (KDE)
+                FILE *fp = popen("which zenity 2>/dev/null", "r");
+                if (fp) {
+                    char result[16];
+                    bool has_zenity = (fgets(result, sizeof(result), fp) != NULL);
+                    pclose(fp);
+
+                    if (has_zenity) {
+                        fp = popen("zenity --file-selection --title='Select Avatar Image' --file-filter='Images | *.png *.jpg *.jpeg *.bmp *.gif' 2>/dev/null", "r");
+                    } else {
+                        fp = popen("kdialog --getopenfilename . 'Images (*.png *.jpg *.jpeg *.bmp *.gif)' 2>/dev/null", "r");
+                    }
+
+                    if (fp) {
+                        char selected_path[512] = {0};
+                        if (fgets(selected_path, sizeof(selected_path), fp) != NULL) {
+                            // Remove trailing newline
+                            size_t len = strlen(selected_path);
+                            if (len > 0 && selected_path[len-1] == '\n') {
+                                selected_path[len-1] = '\0';
+                            }
+                            strncpy(state.profile_avatar_path, selected_path, sizeof(state.profile_avatar_path) - 1);
+                            printf("[ProfileEditor] Selected avatar file: %s\n", selected_path);
+                        }
+                        pclose(fp);
+                    }
+                }
+                #endif
+            }
+
             ImGui::SameLine();
             if (ThemedButton(ICON_FA_UPLOAD " Upload", ImVec2(100, 25), false)) {
                 // Process avatar file
                 if (strlen(state.profile_avatar_path) > 0) {
+                    printf("[ProfileEditor] Uploading avatar from: %s\n", state.profile_avatar_path);
+
                     char base64_out[12288] = {0};
                     int ret = avatar_load_and_encode(state.profile_avatar_path, base64_out, sizeof(base64_out));
 
@@ -244,11 +287,15 @@ void render(AppState& state) {
                         state.profile_avatar_base64 = std::string(base64_out);
                         state.profile_avatar_loaded = true;
                         state.profile_status = "Avatar uploaded successfully! (64x64)";
+                        printf("[ProfileEditor] ✓ Avatar encoded successfully: %zu bytes base64\n",
+                               state.profile_avatar_base64.length());
                     } else {
                         state.profile_status = "Failed to load/encode avatar image";
+                        printf("[ProfileEditor] ✗ Failed to encode avatar (error code: %d)\n", ret);
                     }
                 } else {
                     state.profile_status = "Please enter a file path first";
+                    printf("[ProfileEditor] ✗ No file path provided\n");
                 }
             }
 

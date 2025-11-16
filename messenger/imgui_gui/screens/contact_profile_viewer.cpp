@@ -70,9 +70,14 @@ static void loadContactProfile(AppState& state) {
         if (profile->avatar_base64[0] != '\0') {
             state.profile_avatar_base64 = std::string(profile->avatar_base64);
             state.profile_avatar_loaded = true;
+            printf("[ContactProfileViewer] Loaded avatar for %s: %zu bytes\n",
+                   state.viewed_profile_fingerprint.substr(0, 10).c_str(),
+                   state.profile_avatar_base64.length());
         } else {
             state.profile_avatar_base64.clear();
             state.profile_avatar_loaded = false;
+            printf("[ContactProfileViewer] No avatar found for %s\n",
+                   state.viewed_profile_fingerprint.substr(0, 10).c_str());
         }
 
         state.profile_status = "Profile loaded";
@@ -139,6 +144,9 @@ void render(AppState& state) {
 
             // Avatar section (display actual image)
             if (state.profile_avatar_loaded && !state.profile_avatar_base64.empty()) {
+                printf("[ContactProfileViewer] Attempting to display avatar (%zu bytes)\n",
+                       state.profile_avatar_base64.length());
+
                 // Load avatar texture
                 int avatar_width = 0, avatar_height = 0;
                 GLuint texture_id = TextureManager::getInstance().loadAvatar(
@@ -149,6 +157,9 @@ void render(AppState& state) {
                 );
 
                 if (texture_id != 0) {
+                    printf("[ContactProfileViewer] ✓ Avatar texture loaded: ID=%u, size=%dx%d\n",
+                           texture_id, avatar_width, avatar_height);
+
                     // Center the avatar
                     float avatar_display_size = 64.0f;
                     float center_x = (ImGui::GetContentRegionAvail().x - avatar_display_size) * 0.5f;
@@ -160,11 +171,16 @@ void render(AppState& state) {
                     ImGui::Spacing();
                     ImGui::Spacing();
                 } else {
+                    printf("[ContactProfileViewer] ✗ Avatar texture failed to load\n");
+
                     // Fallback if texture loading failed
                     ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
                                      ICON_FA_IMAGE " Avatar failed to load");
                     ImGui::Spacing();
                 }
+            } else {
+                printf("[ContactProfileViewer] Avatar not loaded or empty (loaded=%d, size=%zu)\n",
+                       state.profile_avatar_loaded, state.profile_avatar_base64.length());
             }
 
             // Identity section
