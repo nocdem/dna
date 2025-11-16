@@ -54,9 +54,6 @@ void load(AppState& state) {
     if (ret == 0 && response && response->result) {
         json_object *jresult = response->result;
 
-        // DEBUG: Print full RPC response
-        const char *json_str = json_object_to_json_string_ext(jresult, JSON_C_TO_STRING_PRETTY);
-
         if (json_object_is_type(jresult, json_type_array)) {
             int result_len = json_object_array_length(jresult);
 
@@ -69,9 +66,6 @@ void load(AppState& state) {
                     // Skip first 2 items (query parameters), show ALL transactions
                     for (int i = 2; i < array_len; i++) {
                         json_object *tx_obj = json_object_array_get_idx(tx_array, i);
-
-                        // DEBUG: Print each transaction object
-                        const char *tx_json = json_object_to_json_string_ext(tx_obj, JSON_C_TO_STRING_PRETTY);
 
                         json_object *status_obj = nullptr;
                         if (!json_object_object_get_ex(tx_obj, "status", &status_obj)) {
@@ -198,12 +192,9 @@ void load(AppState& state) {
 
                                     if (json_object_object_get_ex(first_data, "token", &token_obj)) {
                                         token = json_object_get_string(token_obj);
-                                    } else {
                                     }
-                                } else {
                                 }
                             }
-                        } else {
                         }
 
                         // Add transaction to list
@@ -232,26 +223,18 @@ void load(AppState& state) {
 
 void render(AppState& state) {
     if (!state.show_transaction_history) return;
-    
-    printf("[TransactionHistory] render() called, show_transaction_history=%d\n", state.show_transaction_history);
 
     // Open popup on first show (MUST be before BeginPopupModal!)
     if (!ImGui::IsPopupOpen("Transaction History")) {
-        printf("[TransactionHistory] Popup not open, calling OpenPopup\n");
         ImGui::OpenPopup("Transaction History");
         // Clear and set loading state immediately
         state.transaction_list.clear();
         state.transaction_history_loading = true;
         state.transaction_history_error.clear();
-        printf("[TransactionHistory] Opening modal, setting loading=true\n");
         // Load transactions asynchronously to avoid freezing UI
         if (!state.transaction_history_task.isRunning()) {
-            printf("[TransactionHistory] Starting async load task\n");
             state.transaction_history_task.start([&state](AsyncTask* task) {
-                printf("[TransactionHistory] Async task executing load()\n");
                 load(state);
-                printf("[TransactionHistory] Async task finished, loading=%d, error=%s, tx_count=%zu\n", 
-                       state.transaction_history_loading, state.transaction_history_error.c_str(), state.transaction_list.size());
             });
         }
     }
@@ -261,17 +244,12 @@ void render(AppState& state) {
 
 
     if (CenteredModal::Begin("Transaction History", &state.show_transaction_history, ImGuiWindowFlags_NoResize, true, false, 600, 500)) {
-        printf("[TransactionHistory] CenteredModal::Begin returned TRUE\n");
-
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
         // Scrollable transaction list
         ImGui::BeginChild("TransactionList", ImVec2(0, -50), true);
-        
-        printf("[TransactionHistory] Render: loading=%d, error='%s', tx_count=%zu\n",
-               state.transaction_history_loading, state.transaction_history_error.c_str(), state.transaction_list.size());
 
         if (state.transaction_history_loading) {
             // Center spinner
