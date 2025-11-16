@@ -46,8 +46,10 @@ int dna_update_profile(
     strncpy(identity->bio, profile->bio, sizeof(identity->bio) - 1);
     strncpy(identity->profile_picture_ipfs, profile->profile_picture_ipfs,
             sizeof(identity->profile_picture_ipfs) - 1);
+    strncpy(identity->avatar_base64, profile->avatar_base64, sizeof(identity->avatar_base64) - 1);
 
     printf("[DNA] DEBUG: After copy bio: '%s'\n", identity->bio[0] ? identity->bio : "(empty)");
+    printf("[DNA] DEBUG: After copy avatar: %zu bytes\n", strlen(identity->avatar_base64));
     printf("[DNA] DEBUG: After copy telegram: '%s'\n", identity->socials.telegram[0] ? identity->socials.telegram : "(empty)");
 
     // Update metadata
