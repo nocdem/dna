@@ -13,6 +13,7 @@
 #include "../database/keyserver_cache.h"
 #include "../dht/client/dht_identity_backup.h"
 #include "../dht/client/dht_singleton.h"
+#include "../dht/shared/dht_groups.h"
 
 // Helper function to check if file exists
 static bool file_exists(const char *path) {
@@ -131,6 +132,14 @@ messenger_context_t* messenger_init(const char *identity) {
     if (keyserver_cache_init(NULL) != 0) {
         fprintf(stderr, "Warning: Failed to initialize keyserver cache\n");
         // Non-fatal - continue without cache
+    }
+
+    // Initialize DHT groups database
+    char groups_db_path[512];
+    snprintf(groups_db_path, sizeof(groups_db_path), "%s/.dna/groups.db", getenv("HOME"));
+    if (dht_groups_init(groups_db_path) != 0) {
+        fprintf(stderr, "Warning: Failed to initialize DHT groups database\n");
+        // Non-fatal - continue without groups support
     }
 
     printf("✓ Messenger initialized for '%s'\n", identity);
