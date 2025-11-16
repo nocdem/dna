@@ -2,7 +2,7 @@
 
 **Project:** DNA Messenger DHT Layer Reorganization
 **Start Date:** 2025-11-15
-**Status:** Phase 5 Complete (5/9 phases)
+**Status:** Phase 7 Complete (5 phases implemented: 1-5, 7; Phase 6 skipped)
 
 ## Overview
 
@@ -161,33 +161,56 @@ dht/
 
 ## Pending Phases
 
-### 📋 Phase 6: Bootstrap Services Layer (PLANNED)
-**Goal:** Modularize bootstrap services with clean interfaces
+### ⏭️ Phase 6: Bootstrap Services Layer (SKIPPED)
+**Date:** 2025-11-16
+**Status:** Skipped - not needed
 
-**Planned Services:**
-- `bootstrap/services/value_storage/` - Persistent DHT value storage
-- `bootstrap/services/keyserver/` - Public key serving
-- `bootstrap/services/offline_queue/` - Message queue management
-- `bootstrap/services/monitoring/` - Health checks and metrics
+**Reason:**
+Bootstrap is intentionally minimal (92 lines in bootstrap_main.c). Services are already properly modularized:
+- Value storage: `bootstrap/services/value_storage/` (already modular)
+- Keyserver: `dht/keyserver/` (6 modules, already modular)
+- Offline queue: `dht/shared/dht_offline_queue.{c,h}` (already modular)
+- Monitoring: Basic stats printed in main loop (sufficient)
 
-**Estimated LOC:** ~300 lines of new service wrapper code
+Creating additional "wrapper services" would add unnecessary abstraction layers without benefit. The codebase already follows clean separation of concerns.
 
-### 📋 Phase 7: Unified Cache Manager (PLANNED)
-**Goal:** Consolidate all cache databases under single manager
+**Decision:** Skip to Phase 7
 
-**Current Caches:**
-- `~/.dna/keyserver_cache.db` (7d TTL)
-- `~/.dna/<identity>_contacts.db` (per-identity)
-- `~/.dna/<identity>_profiles.db` (per-identity, 7d TTL)
-- DHT groups (in-memory cache)
+### ✅ Phase 7: Unified Cache Manager (COMPLETE)
+**Date:** 2025-11-16
+**Status:** Cache lifecycle coordinator implemented
 
-**Plan:**
-1. Create `database/cache_manager.{c,h}`
-2. Unified eviction policy
-3. Shared statistics API
-4. Automatic cleanup on startup
+**Design Document:** `docs/PHASE7_CACHE_MANAGER_DESIGN.md`
 
-**Estimated LOC:** ~400 lines
+**Implementation:**
+- Created `database/cache_manager.{c,h}` (237 lines)
+- Coordinates 4 cache subsystems:
+  1. Keyserver cache (global, public keys, 7d TTL)
+  2. Profile cache (per-identity, profiles, 7d TTL)
+  3. Presence cache (in-memory, online status, 5min TTL)
+  4. Contacts database (per-identity, permanent)
+
+**API:**
+- `cache_manager_init(identity)` - Initialize all caches in dependency order + startup eviction
+- `cache_manager_cleanup()` - Close all databases in reverse order
+- `cache_manager_evict_expired()` - Remove expired entries across all caches
+- `cache_manager_stats()` - Aggregated statistics (total entries, size, expired count)
+- `cache_manager_clear_all()` - Clear all caches (for testing/logout)
+
+**Benefits:**
+✅ Single initialization entry point (prevents init order bugs)
+✅ Automatic cleanup (no forgotten close() calls)
+✅ Unified statistics API (see total cache usage at a glance)
+✅ Startup optimization (evict expired entries on launch)
+✅ Thin coordination layer (~240 LOC) - doesn't merge databases
+
+**Results:**
+- Build successful (all targets compile)
+- Module integrated into dna_lib
+- Consumer code update deferred to future work (optional)
+
+**Commits:**
+- `bb6456b` - "Phase 7: Unified Cache Manager implementation"
 
 ### 📋 Phase 8: Final Testing & Deployment (PLANNED)
 **Goal:** Comprehensive testing and production readiness
@@ -313,10 +336,32 @@ Branches:
 
 ## Next Steps
 
-1. **Immediate:** Execute Phase 6 (Bootstrap Services Layer)
-2. **Short-term:** Execute Phase 7 (Unified Cache Manager)
-3. **Medium-term:** Testing and deployment (Phase 8)
-4. **Long-term:** Documentation and polish (Phase 9)
+1. **Immediate:** Phase 9 (Code Quality & Documentation)
+2. **Optional:** Phase 8 (Final Testing & Deployment)
+3. **Future:** Continuous improvements based on usage
+
+---
+
+## Summary
+
+**Phases Completed:** 5 (1-5, 7)
+**Phases Skipped:** 1 (6 - bootstrap already modular)
+**Remaining:** 2 (8-9, documentation and testing)
+
+**Key Achievements:**
+- ✅ Bug fixes and preparation (Phase 1)
+- ✅ Bootstrap directory restructure (Phase 2)
+- ✅ DHT context modularization (Phase 3)
+- ✅ DHT directory reorganization (Phase 4)
+- ✅ Profile system unification (Phase 5)
+- ✅ Unified cache manager (Phase 7)
+
+**Code Impact:**
+- Reduced dht_context.cpp by 18.6%
+- Organized DHT into core/client/shared structure
+- Unified profile systems under single API
+- Created cache lifecycle coordinator
+- Maintained 100% backward compatibility
 
 ---
 
@@ -327,8 +372,10 @@ Branches:
 - Git history preserved via `git mv`
 - Build system updated incrementally
 - Testing performed at each phase boundary
+- Phase 6 skipped as bootstrap already properly modular
 
 ---
 
 **Last Updated:** 2025-11-16
-**Next Phase:** Phase 6 (Bootstrap Services Layer)
+**Current Phase:** Phase 9 (Documentation)
+**Status:** Ready for documentation updates
