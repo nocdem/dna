@@ -224,7 +224,7 @@ void render(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Token balance cards
+    // Token balance cards with send buttons
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
 
     for (int i = 0; i < 3; i++) {
@@ -241,16 +241,30 @@ void render(AppState& state) {
         ImGui::SetCursorPos(ImVec2(20, card_height * 0.5f - 10));
         ImGui::Text("%s", tokens[i]);
 
-        // Balance on right (always green)
+        // Balance in middle
         auto it = state.token_balances.find(tokens[i]);
         std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
         
         ImVec2 balance_size = ImGui::CalcTextSize(formatted.c_str());
-        float balance_x = ImGui::GetWindowWidth() - balance_size.x - 20;
+        float balance_x = ImGui::GetWindowWidth() * 0.5f - balance_size.x * 0.5f;
         ImGui::SetCursorPos(ImVec2(balance_x, card_height * 0.5f - 10));
         
         ImVec4 green_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
         ImGui::TextColored(green_color, "%s", formatted.c_str());
+
+        // Send button on right
+        float btn_width = is_mobile ? 70.0f : 80.0f;
+        float btn_height_inner = card_height - 20.0f;
+        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - btn_width - 15, (card_height - btn_height_inner) * 0.5f));
+        
+        char btn_id[32];
+        snprintf(btn_id, sizeof(btn_id), ICON_FA_PAPER_PLANE " Send##%s", tokens[i]);
+        if (ThemedButton(btn_id, ImVec2(btn_width, btn_height_inner))) {
+            state.show_send_dialog = true;
+            state.send_status.clear();
+            // Pre-select token in send dialog
+            strncpy(state.send_token, tokens[i], sizeof(state.send_token) - 1);
+        }
 
         ImGui::EndChild();
         ImGui::PopStyleColor();
@@ -263,17 +277,11 @@ void render(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Action buttons
+    // Action buttons (Receive and History only)
     float btn_height = is_mobile ? 50.0f : 45.0f;
 
     if (is_mobile) {
         // Mobile: Stacked full-width buttons
-        if (ThemedButton(ICON_FA_PAPER_PLANE " Send Tokens", ImVec2(-1, btn_height))) {
-            state.show_send_dialog = true;
-            state.send_status.clear();
-        }
-        ImGui::Spacing();
-
         if (ThemedButton(ICON_FA_DOWNLOAD " Receive", ImVec2(-1, btn_height))) {
             state.show_receive_dialog = true;
             // Get wallet address for Backbone network
@@ -294,13 +302,7 @@ void render(AppState& state) {
         ImGuiStyle& style = ImGui::GetStyle();
         float available_width = ImGui::GetContentRegionAvail().x;
         float spacing = style.ItemSpacing.x;
-        float btn_width = (available_width - spacing * 2) / 3.0f;
-
-        if (ThemedButton(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, btn_height))) {
-            state.show_send_dialog = true;
-            state.send_status.clear();
-        }
-        ImGui::SameLine();
+        float btn_width = (available_width - spacing) / 2.0f;
 
         if (ThemedButton(ICON_FA_DOWNLOAD " Receive", ImVec2(btn_width, btn_height))) {
             state.show_receive_dialog = true;

@@ -431,16 +431,20 @@ void render(AppState& state) {
         // Wallet name
         ImGui::Text(ICON_FA_WALLET " From: %s", state.wallet_name.c_str());
         ImGui::Spacing();
+        
+        // Show selected token (read-only)
+        ImGui::Text("Token: %s", state.send_token);
+        ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Show balance
-        auto it = state.token_balances.find("CELL");
+        // Show balance for selected token
+        auto it = state.token_balances.find(state.send_token);
         if (it != state.token_balances.end()) {
             std::string formatted = WalletScreen::formatBalance(it->second);
-            ImGui::TextDisabled("Available: %s CELL", formatted.c_str());
+            ImGui::TextDisabled("Available: %s %s", formatted.c_str(), state.send_token);
         } else {
-            ImGui::TextDisabled("Available: 0.00 CELL");
+            ImGui::TextDisabled("Available: 0.00 %s", state.send_token);
         }
         ImGui::Spacing();
 
@@ -461,11 +465,11 @@ void render(AppState& state) {
         ImGui::PopStyleColor();
         ImGui::PopItemWidth();
         ImGui::SameLine();
-        ImGui::TextDisabled("CELL");
+        ImGui::TextDisabled("%s", state.send_token);
         ImGui::SameLine();
         if (ImGui::Button("MAX", ImVec2(60, 0))) {
             // Calculate max amount (balance - fees)
-            auto balance_it = state.token_balances.find("CELL");
+            auto balance_it = state.token_balances.find(state.send_token);
             if (balance_it != state.token_balances.end()) {
                 try {
                     double balance = std::stod(balance_it->second);

@@ -123,6 +123,7 @@ public:
 
     // Send dialog state
     bool show_send_dialog;
+    char send_token[16];        // Pre-selected token (e.g., "CELL", "CPUNK")
     char send_recipient[256];
     char send_amount[32];
     char send_fee[32];
