@@ -1,8 +1,8 @@
 # DNA Messenger - Development Roadmap
 
 **Version:** 0.1.120+
-**Last Updated:** 2025-11-10
-**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4, 8, 9.1-9.5 Complete, ImGui GUI Active
+**Last Updated:** 2025-11-16
+**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4, 5.1-5.5, 6.1 Complete, ImGui GUI Active
 
 ---
 
@@ -122,34 +122,36 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 4: Desktop Application ✅ COMPLETE
+## Phase 4: Desktop Application & Wallet Integration ✅ COMPLETE
 
-**Timeline:** 4-6 weeks
+**Timeline:** 6-8 weeks (including wallet integration)
 **Status:** Complete
 
 ### Objectives
-- Qt-based desktop GUI
+- Qt-based desktop GUI (now migrated to ImGui)
 - Cross-platform (Linux, Windows, macOS)
 - Rich messaging features
 - System notifications
+- Integrated cpunk wallet
 
 ### Completed Tasks
 
 #### GUI Development
-- [x] Qt5 application framework
+- [x] Qt5 application framework (now deprecated, migrated to ImGui 2025-11-10)
+- [x] ImGui desktop application (OpenGL3 + GLFW3)
 - [x] Conversation list view (contacts and groups)
 - [x] Chat window interface
 - [x] Contact management UI
 - [x] Settings panel (themes, font scaling)
-- [x] Custom title bar (frameless window)
+- [x] Modern responsive UI
 
-#### Features
+#### Messaging Features
 - [x] Real-time message display
 - [x] Message timestamps
 - [x] Delivery and read receipts (✓✓ checkmarks)
 - [x] Desktop notifications (system tray)
 - [x] System tray integration
-- [x] Auto-update mechanism (Windows batch script)
+- [x] Auto-update mechanism
 - [x] Theme switching (cpunk.io cyan, cpunk.club orange)
 - [x] Dynamic font scaling (1x, 2x, 3x, 4x)
 - [x] Multi-recipient encryption
@@ -158,7 +160,6 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [x] Notification sound effects
 - [x] Public key caching (100-entry cache)
 - [x] Inline keyserver registration (no external utilities)
-- [x] Windows curl JSON parsing fixes
 
 #### Group Messaging
 - [x] Create groups with member selection
@@ -170,16 +171,36 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 - [x] Leave group (members only)
 - [x] Creator marked with crown icon (👑)
 - [x] Contextual Group Settings button
-- [x] PostgreSQL groups tables (migration)
+- [x] DHT-based groups (migrated from PostgreSQL)
+
+#### Wallet Integration (Complete - 2025-10-23)
+- [x] Read local Cellframe wallet files (.dwallet format)
+- [x] Connect via RPC to Cellframe node
+- [x] Display CPUNK, CELL, and KEL token balances
+- [x] Send tokens directly in messenger via transaction builder
+- [x] Receive tokens with QR code generation
+- [x] Full transaction history with status tracking
+- [x] Color-coded transaction display (green incoming, red outgoing)
+- [x] Wallet address management with easy copy-to-clipboard
+- [x] Transaction status notifications (ACCEPTED/DECLINED)
+- [x] Theme support across all wallet dialogs
+- [x] Integrated into GUI with dedicated wallet button
 
 #### Platform Support
 - [x] Linux build
-- [x] Windows build
+- [x] Windows build (MXE cross-compilation)
 - [ ] macOS build (future)
 - [x] Cross-platform compilation
 
 ### Deliverables
-- ✅ `dna_messenger_gui` - Desktop application
+- ✅ `dna_messenger_imgui` - ImGui desktop application (active)
+- ✅ `dna_messenger_gui` - Qt5 desktop application (deprecated, reference only)
+- ✅ WalletDialog - View balances and recent transactions
+- ✅ SendTokensDialog - Send tokens with transaction builder
+- ✅ ReceiveDialog - Display addresses with QR codes
+- ✅ TransactionHistoryDialog - Full transaction history
+- ✅ ThemeManager - Global theme support
+- ✅ Cellframe RPC integration for balance and transaction queries
 - ✅ Installation guide
 - ✅ User manual (README.md)
 - ✅ Platform-specific builds (Linux, Windows)
@@ -238,120 +259,15 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 6: Mobile Applications 📋 PLANNED
-
-**Timeline:** 6-8 weeks
-**Status:** Not started
-**Prerequisites:** Phase 4 complete
-
-### Objectives
-- Flutter cross-platform mobile app
-- Android and iOS support
-- Push notifications
-- Background sync
-
-### Tasks
-
-#### Mobile App Development
-- [ ] Flutter application framework
-- [ ] Mobile-optimized UI
-- [ ] Contact list interface
-- [ ] Chat interface
-- [ ] Media handling (photos, videos)
-
-#### Platform Integration
-- [ ] Android build
-- [ ] iOS build
-- [ ] Push notifications (FCM, APNS)
-- [ ] Background message sync
-- [ ] Biometric authentication
-
-#### App Store Preparation
-- [ ] App store listings
-- [ ] Screenshots and marketing materials
-- [ ] Privacy policy
-- [ ] Terms of service
-
-### Deliverables
-- `dna-mobile` - Flutter mobile app
-- Android APK / iOS IPA
-- App store submissions
-- Mobile user guide
+_(Phase 6 (Mobile Applications) and Phase 7 (Advanced Security) merged into Phase 8+ Future Enhancements)_
 
 ---
 
-## Phase 7: Advanced Security Features 📋 PLANNED
-
-**Timeline:** 4-6 weeks
-**Status:** Not started
-**Prerequisites:** Phase 4 complete
-
-### Objectives
-- Forward secrecy (session keys)
-- Multi-device synchronization
-- Enhanced security features
-
-### Tasks
-
-#### Forward Secrecy
-- [ ] Session key generation
-- [ ] Automatic session rotation
-- [ ] Session key storage
-- [ ] Backward compatibility
-
-#### Multi-Device Support
-- [ ] Device registration
-- [ ] Session key synchronization
-- [ ] Device management UI
-- [ ] Device revocation
-
-#### Security Enhancements
-- [ ] Secure memory management (mlock, secure wiping)
-- [ ] Key verification (QR codes, safety numbers)
-- [ ] Disappearing messages
-- [ ] Screenshot protection (mobile)
-
-### Deliverables
-- Forward secrecy implementation
-- Multi-device support
-- Enhanced security documentation
-
----
-
-## Phase 8: cpunk Wallet Integration ✅ COMPLETE
-
-**Timeline:** 2 weeks
-**Status:** Complete
-**Completed:** 2025-10-23
-
-### cpunk Wallet Integration (Cellframe Backbone Network)
-- [x] Read local Cellframe wallet files (.dwallet format)
-- [x] Connect via RPC to Cellframe node
-- [x] Display CPUNK, CELL, and KEL token balances
-- [x] Send tokens directly in messenger via transaction builder
-- [x] Receive tokens with QR code generation
-- [x] Full transaction history with status tracking
-- [x] Color-coded transaction display (green incoming, red outgoing)
-- [x] Wallet address management with easy copy-to-clipboard
-- [x] Transaction status notifications (ACCEPTED/DECLINED in red)
-- [x] Theme support across all wallet dialogs
-- [x] Integrated into GUI with dedicated wallet button
-
-### Deliverables
-- ✅ WalletDialog - View balances and recent transactions
-- ✅ SendTokensDialog - Send tokens with transaction builder
-- ✅ ReceiveDialog - Display addresses with QR codes
-- ✅ TransactionHistoryDialog - Full transaction history
-- ✅ ThemeManager - Global theme support
-- ✅ Cellframe RPC integration for balance and transaction queries
-
----
-
-## Phase 9: Distributed P2P Architecture 🚧 IN PROGRESS
+## Phase 5: Distributed P2P Architecture ✅ COMPLETE
 
 **Timeline:** ~6 months (long-term vision)
-**Status:** Phase 9.1 & 9.2 COMPLETE - P2P Transport, DHT, and Offline Queue operational
-**Prerequisites:** Phase 5-7 complete
+**Status:** COMPLETE - P2P Transport, DHT, and Offline Queue operational
+**Prerequisites:** Phase 4 complete
 **Design Docs:** See `/futuredesign/` folder for detailed specifications
 
 ### Objectives
@@ -364,7 +280,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ### Tasks
 
-#### Phase 9.1: P2P Transport Layer ✅ COMPLETE
+#### Phase 5.1: P2P Transport Layer ✅ COMPLETE
 - [x] ~~Integrate libp2p~~ **Used OpenDHT instead (C++ library for DHT)**
 - [x] Implement DHT for peer discovery (OpenDHT 3.5.5)
 - [x] P2P transport layer with TCP + DHT (`p2p_transport.c`)
@@ -375,9 +291,9 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
   - EU-2: dna-bootstrap-eu-2 @ 164.68.116.180:4000
 - [x] Auto-start systemd services on all bootstrap nodes
 - [x] Connection management and DHT presence registration
-- [ ] NAT traversal using libnice (ICE/STUN/TURN) - **Deferred to Phase 9.2**
+- [ ] NAT traversal using libnice (ICE/STUN/TURN) - **Deferred to future**
 
-#### Phase 9.2: Offline Message Queueing ✅ COMPLETE
+#### Phase 5.2: Offline Message Queueing ✅ COMPLETE
 **Completed:** 2025-11-02 | **Bug Fix:** 2025-11-10
 
 - [x] Integrate OpenDHT for offline message storage
@@ -396,7 +312,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
   - Solution: Added `resolve_identity_to_fingerprint()` in `messenger_p2p.c`
   - Impact: Offline messages now work reliably across all scenarios
 
-#### Phase 9.3: PostgreSQL → SQLite Migration ✅ COMPLETE
+#### Phase 5.3: PostgreSQL → SQLite Migration ✅ COMPLETE
 **Completed:** 2025-11-03
 
 Complete migration from centralized PostgreSQL to local SQLite storage:
@@ -422,7 +338,7 @@ Complete migration from centralized PostgreSQL to local SQLite storage:
 
 **Result:** DNA Messenger is now fully decentralized with NO centralized database dependencies.
 
-#### Phase 9.4: DHT-based Keyserver with Signed Reverse Mapping ✅ COMPLETE
+#### Phase 5.4: DHT-based Keyserver with Signed Reverse Mapping ✅ COMPLETE
 **Completed:** 2025-11-04
 
 Implemented cryptographically signed reverse mappings for sender identification without requiring pre-added contacts:
@@ -451,7 +367,7 @@ Implemented cryptographically signed reverse mappings for sender identification 
 - `dht/dht_keyserver.h` - Added reverse lookup function declaration
 - `messenger_p2p.c` - Integrated reverse lookup into message receive flow (40+ lines)
 
-#### Phase 9.5: Per-Identity Contact Lists with DHT Sync ✅ COMPLETE
+#### Phase 5.5: Per-Identity Contact Lists with DHT Sync ✅ COMPLETE
 **Completed:** 2025-11-05
 
 Implemented per-identity contact lists with DHT synchronization for multi-device support:
@@ -489,19 +405,19 @@ Implemented per-identity contact lists with DHT synchronization for multi-device
 
 **Total Changes:** 1,469+ lines added/modified
 
-#### Phase 9.6: Local Cache & Sync (Planned)
+#### Phase 5.6: Local Cache & Sync (Future)
 - [ ] SQLite encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM)
 - [ ] Background sync protocol (local ↔ DHT)
 - [ ] Multi-device message synchronization
 - [ ] Offline mode with automatic sync on reconnect
 - [ ] Incremental sync for large histories
 
-#### Phase 9.7: DHT Keyserver Enhancements (Planned)
+#### Phase 5.7: DHT Keyserver Enhancements (Future)
 - [ ] Key rotation and update protocol
 - [ ] Optional: Blockchain anchoring for tamper-proofing
 - [ ] DHT replication monitoring
 
-#### Phase 9.8: Integration & Testing (Planned)
+#### Phase 5.8: Integration & Testing (Future)
 - [ ] End-to-end testing with 5-10 peers
 - [ ] Network resilience testing (peer churn)
 - [ ] Performance optimization
@@ -537,179 +453,97 @@ Implemented per-identity contact lists with DHT synchronization for multi-device
 
 ---
 
-## Phase 10: DNA Board - Censorship-Resistant Social Media 🚧 IN PROGRESS (Alpha)
+## Phase 6: DNA Board - Censorship-Resistant Social Media 🚧 IN PROGRESS (Alpha)
 
-**Timeline:** 12 weeks (full features) | 2-4 weeks (alpha)
-**Status:** Phase 10.1 ✅ Complete | Phase 10.2 🚧 In Progress (Alpha - Simplified)
-**Prerequisites:** Distributed validator storage, DNA-Keyserver merge, Offline messaging system
+**Timeline:** 8 weeks (alpha) | 12-16 weeks (full v1.0)
+**Status:** Phase 6.1 ✅ Complete | Phase 6.2 🚧 In Progress (Alpha - Simplified)
+**Prerequisites:** P2P architecture, DHT storage, User profiles
 **Design Document:** `/DNA_BOARD_PHASE10_PLAN.md`
 
 ### Alpha Implementation (Current)
 
-**Phase 10.1 ✅ Complete (2025-11-12):**
+**Phase 6.1 ✅ Complete (2025-11-12):**
 - User profiles with DHT storage (display name, bio, location, website)
 - Profile cache system (7-day TTL, cache-first architecture)
 - Auto-integration (contact add, message receive, app startup)
 
-**Phase 10.2 🚧 In Progress (Alpha - Simplified):**
+**Phase 6.2 🚧 In Progress (Alpha - Simplified):**
 - Using existing legacy wall system (`dna_message_wall.c` - working)
 - Wall viewing from message window (button exists, functional)
 - Pending: Contact profile viewing, social links, comment threading
 
-**Alpha Approach:** FREE posting (no CPUNK costs), no validators, no PoH requirements. Using DHT storage with 7-day TTL. Full features (below) planned for v1.0 post-alpha.
+**Alpha Approach:** FREE posting (no CPUNK costs). Using DHT storage with 7-day TTL. Full anti-spam measures and economics planned for v1.0 post-alpha.
 
 ---
 
 ### Full Features (v1.0 - Planned)
 
-DNA Board is a **censorship-resistant social media platform** built on cpunk validator network. Content cannot be removed once posted, creating a true free speech platform with built-in spam protection.
+DNA Board is a **censorship-resistant social media platform** built on DNA Messenger's DHT network.
 
 **Core Principles:**
-1. **NO CENSORSHIP** - Content cannot be removed (no deletion endpoint)
-2. **PoH Required to Post** - Only human-verified users (PoH ≥70) can create posts
-3. **Open Responses** - Anyone can reply/comment (no PoH requirement for replies)
-4. **Community Voting** - Thumbs up/down to surface quality content
-5. **Burn Economics** - All storage fees permanently burned (deflationary)
-6. **Validator Rewards** - DAO pool distribution (no payment from users)
-
-### Architecture
-
-```
-Self-Healing Validator Network (3-Replica)
-┌─────────────────────────────────────────────┐
-│  Post → Primary Validator                   │
-│    ↓                                         │
-│  Replicate to 2 more (lowest storage)       │
-│    ↓                                         │
-│  3 Validators store content                 │
-│    ↓                                         │
-│  Heartbeat monitoring (30s intervals)       │
-│    ↓                                         │
-│  If validator offline → Auto-heal           │
-│    ↓                                         │
-│  Re-replicate to new validator              │
-│    ↓                                         │
-│  Back to 3 replicas (maintained)            │
-└─────────────────────────────────────────────┘
-```
-
-### Content & Economics
-
-| Type | Burn Fee | PoH Required | Max Size | Replication |
-|------|----------|--------------|----------|-------------|
-| Text Post | 1 CPUNK | Yes (≥70) | 5,000 chars | 3 validators |
-| Image | 2 CPUNK | Yes (with post) | 5 MB | 3 validators |
-| Video | 5 CPUNK | Yes (with post) | 50 MB | 3 validators |
-| Reply | 0.5 CPUNK | **No** | 2,000 chars | 3 validators |
-| Vote | **FREE** | No | N/A | Aggregated |
-
-**All fees BURNED** → Deflationary pressure (estimated 16M CPUNK/year burned)
-
-### Proof of Humanity (PoH) System
-
-**Who Can Post:** Only verified humans with `humanity_score >= 70`
-
-**Verification Tiers:**
-- **Auto-Verified** (75-89): Behavioral algorithm (most users)
-- **Staked-Verified** (90-94): Auto + 100 CPUNK stake
-- **DAO-Vouched** (95-99): 3 human vouches + DAO review
-- **Celebrity** (100): Public figure + DAO verification
-
-**Bot Detection:** Single-destination sends, mechanical timing, no staking
-**Human Patterns:** Multiple services, irregular timing, social verification, staking
-
-### Who Can Respond
-
-**ANYONE can reply** to existing posts:
-- No PoH requirement for replies
-- Still requires 0.5 CPUNK burn (prevents pure spam)
-- Enables free discussion and debate
-- Bot responses downvoted by community
-
-**Balance:** Spam prevention at post level + free speech at reply level
+1. **Decentralized Storage** - DHT-based content distribution
+2. **Community Voting** - Thumbs up/down to surface quality content
+3. **Comment Threading** - Nested discussions with reply support
+4. **Profile Integration** - Rich user profiles with social links
+5. **Client-Side Control** - Users control their own feed (blocking, filtering)
 
 ### Implementation Phases
 
-#### Weeks 1-2: Validator Backend Infrastructure
-- [ ] Implement PoH scoring algorithm
-- [ ] Create post/reply data structures (PostgreSQL)
-- [ ] Build `/dna_board/post` endpoint with PoH check
-- [ ] Build `/dna_board/reply` endpoint (no PoH check)
-- [ ] Add burn transaction verification
+#### Weeks 1-2: Profile Extensions
+- [x] User profiles with DHT storage (COMPLETE)
+- [ ] Social links (Telegram, Twitter, GitHub, Discord)
+- [ ] Crypto addresses for tipping (BTC, ETH, CPUNK)
+- [ ] Avatar support (IPFS integration)
 
-#### Weeks 3-4: Gossip Protocol & Replication
-- [ ] Implement heartbeat monitoring (30s intervals)
-- [ ] Build gossip protocol for content replication
-- [ ] Create 3-validator replication logic
-- [ ] Implement auto-healing (detect offline, re-replicate)
-- [ ] Build graceful exit protocol
+#### Weeks 3-4: Wall Posts & Feed
+- [x] Wall posting backend (`dna_message_wall.c` - COMPLETE)
+- [ ] Feed rendering with pagination
+- [ ] Image/video embedding
+- [ ] Feed sorting (Recent, Top, Controversial)
+- [ ] Client-side blocking/filtering
 
-#### Weeks 5-6: Voting System
-- [ ] Create vote storage and aggregation
-- [ ] Build `/dna_board/vote` endpoint
-- [ ] Implement one-vote-per-wallet enforcement
-- [ ] Add vote signature verification
-- [ ] Build feed ranking algorithm
+#### Weeks 5-6: Comment Threading
+- [ ] Nested comment system
+- [ ] Reply-to functionality
+- [ ] Comment voting
+- [ ] Thread collapse/expand
 
-#### Weeks 7-8: Client GUI (Qt)
-- [ ] Create DNABoardTab main widget
-- [ ] Build ComposeDialog with PoH verification
-- [ ] Implement PostWidget with voting UI
-- [ ] Create ThreadView for nested replies
-- [ ] Build DNABoardAPI client
-
-#### Weeks 9-10: Media & Integration
-- [ ] Add image/video upload to validators
-- [ ] Integrate wallet for burn transactions
-- [ ] Implement client-side blocking/muting
-- [ ] Add feed filters (sort, humanity min)
-- [ ] Build user profile view
-
-#### Weeks 11-12: Testing & Launch
-- [ ] Deploy to testnet validators
-- [ ] Community beta testing (100+ users)
-- [ ] Security audit (signatures, burn verification)
-- [ ] Performance optimization
-- [ ] DAO vote on Year 1 pool (100M CPUNK)
-- [ ] Mainnet launch
+#### Weeks 7-8: GUI Integration
+- [ ] Wall feed screen (ImGui)
+- [ ] Post composer dialog
+- [ ] Profile viewer dialog
+- [ ] Voting UI (thumbs up/down)
+- [ ] Thread viewer with nesting
 
 ### Key Features
 
-**Censorship Resistance:**
-- ✅ No deletion endpoint (content permanent)
-- ✅ 3-validator replication across jurisdictions
-- ✅ No central authority or single point of control
-- ✅ Client-side blocking only (no server-side)
-- ✅ Gossip protocol ensures propagation
+**Decentralization:**
+- ✅ DHT-based storage (no central server)
+- ✅ 7-day TTL in alpha, permanent storage in v1.0
+- ✅ Content replicated across DHT network
+- ✅ Client-side blocking only (no server-side censorship)
 
-**Quality Control:**
-- ✅ PoH requirement prevents bot spam
-- ✅ Community voting surfaces quality content
-- ✅ Ranking algorithm (votes × humanity × time × engagement)
-- ✅ Multiple feed views (Ranked, Recent, Top, Controversial)
-
-**Economic Model:**
-- ✅ All fees burned (deflationary)
-- ✅ Validator rewards from DAO pool (100M Year 1, halvening)
-- ✅ Stake + storage formula for validator rewards
-- ✅ No payment from users to validators
+**User Experience:**
+- ✅ Rich profiles with social links
+- ✅ Community voting system
+- ✅ Nested comment threads
+- ✅ Feed customization (sorting, filtering)
 
 ### Deliverables
 
-- Fully censorship-resistant social media platform
-- 3-validator self-healing replication
-- PoH verification system (behavioral + staking)
-- Qt GUI integration (DNABoardTab)
-- Burn economics (CPUNK deflationary pressure)
-- DAO-governed validator rewards
+- Wall posts with DHT storage
+- Comment threading system
+- Community voting interface
+- Profile extensions (social links, avatars)
+- ImGui integration (wall feed, composer, profile viewer)
 
 ---
 
-## Phase 11: Post-Quantum Voice/Video Calls 📋 PLANNED
+## Phase 7: Post-Quantum Voice/Video Calls 📋 PLANNED
 
 **Timeline:** ~20 weeks (5 months)
 **Status:** Research & Planning
-**Prerequisites:** Phase 9.1 (P2P Transport Layer)
+**Prerequisites:** Phase 5.1 (P2P Transport Layer)
 **Design Document:** `/futuredesign/VOICE-VIDEO-DESIGN.md`
 
 ### Overview
@@ -769,7 +603,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 
 ---
 
-## Phase 12+: Future Enhancements 📋 PLANNED
+## Phase 8+: Future Enhancements 📋 PLANNED
 
 ### Advanced Features
 - [ ] Stickers and GIFs
@@ -804,8 +638,9 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - ✅ Bob can decrypt and read message
 - ✅ Messages persist across sessions
 - ✅ Contact list works
+- ❌ Removed - unmaintained (functionality moved to GUI)
 
-### Phase 4 (Desktop) ✅
+### Phase 4 (Desktop & Wallet) ✅
 - ✅ GUI application working on Linux and Windows
 - ✅ Contacts and groups displayed
 - ✅ Message send/receive functional
@@ -814,17 +649,26 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - ✅ Desktop notifications working
 - ✅ Theme system functional
 - ✅ Auto-update mechanism working
+- ✅ cpunk wallet integration complete
 
-### Phase 6 (Mobile) 📋
-- ⏳ Mobile app working on Android and iOS
-- ⏳ Push notifications working
-- ⏳ Biometric authentication
-- ⏳ User onboarding smooth
+### Phase 5 (P2P Architecture) ✅
+- ✅ P2P transport layer (OpenDHT + TCP)
+- ✅ Offline message queueing (7-day TTL)
+- ✅ DHT-based keyserver with reverse mapping
+- ✅ Per-identity contact lists with DHT sync
+- ✅ PostgreSQL → SQLite migration complete
 
-### Phase 7-8 (Advanced Features) 📋
-- ⏳ Forward secrecy working
-- ⏳ Multi-device sync functional
-- ⏳ Security audit passed
+### Phase 6 (DNA Board) 🚧
+- ✅ User profiles with DHT storage
+- 🚧 Wall posts and feed
+- ⏳ Comment threading
+- ⏳ Community voting
+
+### Phase 7-8+ (Future) 📋
+- ⏳ Post-quantum voice/video calls
+- ⏳ Mobile apps (Android/iOS)
+- ⏳ Forward secrecy
+- ⏳ Advanced security features
 
 ---
 
@@ -834,14 +678,13 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 |---------|-------|--------|-------------|
 | 0.1.0 | Phase 1 | ✅ Complete | Fork preparation |
 | 0.2.0 | Phase 2 | ✅ Complete | Library API |
-| 0.3.0 | Phase 3 | ✅ Complete | CLI messenger |
-| 0.4.0 | Phase 4 | ✅ Complete | Desktop app with groups |
-| 0.5.0 | Phase 5 | 🚧 In Progress | Web messenger (WebAssembly) |
-| 0.8.0 | Phase 8 | ✅ Complete | cpunk Wallet integration |
-| 1.0.0 | Phase 6-7 | 📋 Planned | Mobile + Advanced Security (first stable release) |
-| 1.1.0 | Phase 6 | 📋 Planned | Mobile apps |
-| 1.2.0 | Phase 7 | 📋 Planned | Advanced security |
-| 2.0.0 | Phase 9 | 📋 Planned | P2P architecture |
+| 0.3.0 | Phase 3 | ✅ Complete | CLI messenger (removed) |
+| 0.4.0 | Phase 4 | ✅ Complete | Desktop app + wallet integration |
+| 0.5.0 | Phase 5 | ✅ Complete | P2P architecture (DHT, offline queue, contacts sync) |
+| 0.6.0 | Phase 6 | 🚧 In Progress | DNA Board (profiles, wall posts, social media) |
+| 0.7.0 | Phase 5 | 📋 Planned | Web messenger (WebAssembly) |
+| 1.0.0 | Phase 7 | 📋 Planned | Voice/Video calls (first stable release) |
+| 1.1.0 | Phase 8+ | 📋 Planned | Advanced features (mobile, security, etc.) |
 
 **Current Version:** 0.1.120+ (auto-incremented with each commit)
 
@@ -871,25 +714,24 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 ### ✅ Completed
 - **Phase 1:** Fork Preparation
 - **Phase 2:** Library API Design
-- **Phase 3:** CLI Messenger Client (PostgreSQL → SQLite migration complete)
-- **Phase 4:** Desktop Application (with groups!)
-- **Phase 8:** cpunk Wallet Integration (Cellframe Backbone)
-- **Phase 9.1:** P2P Transport Layer (OpenDHT + TCP)
-- **Phase 9.2:** Offline Message Queueing (DHT storage with 7-day TTL)
-- **Phase 9.3:** PostgreSQL → SQLite Migration (Fully decentralized storage)
-- **Phase 9.4:** DHT-based Keyserver with Signed Reverse Mapping
-- **Phase 9.5:** Per-Identity Contact Lists with DHT Sync
+- **Phase 3:** CLI Messenger Client (Removed - unmaintained)
+- **Phase 4:** Desktop Application & Wallet Integration (ImGui + cpunk wallet)
+- **Phase 5.1:** P2P Transport Layer (OpenDHT + TCP)
+- **Phase 5.2:** Offline Message Queueing (DHT storage with 7-day TTL)
+- **Phase 5.3:** PostgreSQL → SQLite Migration (Fully decentralized storage)
+- **Phase 5.4:** DHT-based Keyserver with Signed Reverse Mapping
+- **Phase 5.5:** Per-Identity Contact Lists with DHT Sync
+- **Phase 6.1:** User Profiles with DHT Storage
 
 ### 🚧 In Progress
 - **Phase 5:** Web-Based Messenger (active on `feature/web-messenger` branch)
+- **Phase 6.2:** Wall Posts & Social Features (alpha)
 
 ### 📋 Planned
-- **Phase 6:** Mobile Applications
-- **Phase 7:** Advanced Security Features
-- **Phase 9.6-9.8:** Multi-device message sync, DHT keyserver enhancements, integration testing
-- **Phase 10:** DNA Board (Censorship-resistant social media)
-- **Phase 11:** Post-Quantum Voice/Video Calls
-- **Phase 12+:** Future Enhancements
+- **Phase 5.6-5.8:** Multi-device message sync, DHT keyserver enhancements, integration testing
+- **Phase 6:** DNA Board full features (comment threading, voting, social links)
+- **Phase 7:** Post-Quantum Voice/Video Calls
+- **Phase 8+:** Future Enhancements (mobile apps, advanced security, etc.)
 
 ---
 
@@ -897,7 +739,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 
 DNA Messenger is in active development. Contributions welcome!
 
-**Current Phase:** Web-Based Messenger (Phase 5)
+**Current Phase:** DNA Board Social Features (Phase 6.2) & Web-Based Messenger (Phase 5)
 **How to Contribute:**
 - Check `CLAUDE.md` for development guidelines
 - Pick tasks from current phase
@@ -908,43 +750,39 @@ DNA Messenger is in active development. Contributions welcome!
 
 **Project Start:** 2025-10-14
 **Current Version:** 0.1.120+
-**Next Milestone:** Web Messenger (Phase 5)
+**Next Milestone:** DNA Board Social Features (Phase 6.2) & Web Messenger (Phase 5)
 **Recent Achievements:**
+- ✅ **DHT Refactoring Complete!** (2025-11-16)
+  - Phase 7: Unified cache manager implementation
+  - Phase 5: Profile system unification (dna_unified_identity_t)
+  - Phase 4: DHT directory reorganization (core/client/shared)
+  - Phase 3: dht_context.cpp modularization
+  - 100% backward compatible migration
+- ✅ **User Profiles with DHT Storage!** (Phase 6.1 - 2025-11-12)
+  - Profile cache system (7-day TTL, cache-first)
+  - Display names, bios, avatars, social links
+  - Auto-integration with contacts and messaging
 - ✅ **GUI Migration: Qt → ImGui!** (2025-11-10)
-  - Migrated from Qt5 to ImGui for active development
   - Modern immediate-mode rendering (OpenGL3 + GLFW3)
-  - Cross-platform support (Linux, Windows, future mobile)
   - Async task system for non-blocking operations
   - Qt code preserved in `gui/` for reference
 - ✅ **CRITICAL BUG FIX: Offline Message Queue Key Mismatch!** (2025-11-10)
   - Fixed bug where messages sent to display names couldn't be retrieved
-  - Added `resolve_identity_to_fingerprint()` function
   - All DHT queue operations now use fingerprints consistently
-  - Offline messages work reliably across all scenarios
-- ✅ **Per-Identity Contact Lists with DHT Sync!** (Phase 9.5 - 2025-11-05)
+- ✅ **Per-Identity Contact Lists with DHT Sync!** (Phase 5.5 - 2025-11-05)
   - Isolated contact databases per identity
   - Kyber1024 self-encryption for DHT storage
   - Multi-device sync via BIP39 seed phrase
-  - Automatic migration from global contacts
-  - GUI sync controls with status indicators
-- ✅ **DHT-based Keyserver with Signed Reverse Mapping!** (Phase 9.4 - 2025-11-04)
-  - Cryptographically signed reverse mappings (fingerprint → identity)
+- ✅ **DHT-based Keyserver with Signed Reverse Mapping!** (Phase 5.4 - 2025-11-04)
+  - Cryptographically signed reverse mappings
   - Sender identification without pre-added contacts
-  - Prevents identity spoofing attacks
-  - Cross-platform signature verification
-- ✅ **PostgreSQL → SQLite Migration Complete!** (Phase 9.3 - 2025-11-03)
+- ✅ **PostgreSQL → SQLite Migration Complete!** (Phase 5.3 - 2025-11-03)
   - Fully decentralized storage (NO centralized database)
   - DHT-based groups with UUID v4 + SHA256 keys
-  - Keyserver cache with 7-day TTL
-  - Bootstrap deployment automation
-- ✅ **Offline Message Queueing** (Phase 9.2 - 2025-11-02)
+- ✅ **Offline Message Queueing** (Phase 5.2 - 2025-11-02)
   - 7-day DHT storage for offline recipients
   - Automatic 2-minute polling
-  - Binary serialization with magic bytes
-- ✅ **cpunk Wallet Integration** (Phase 8)
+- ✅ **cpunk Wallet Integration** (Phase 4 - 2025-10-23)
   - View CPUNK, CELL, KEL balances
   - Send/receive tokens with QR codes
-  - Full transaction history with color-coded status
-  - Theme-aware wallet UI
-- ✅ Full group messaging feature complete!
-- ✅ Public key caching (100x API call reduction)
+  - Full transaction history

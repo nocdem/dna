@@ -194,11 +194,11 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 ### ❌ Phase 3: CLI Messenger Client (Removed - 2025-11-05)
 _CLI messenger was removed as unmaintained. All functionality is available in the GUI application._
 
-### ✅ Phase 4: Desktop GUI (Complete)
+### ✅ Phase 4: Desktop GUI & Wallet Integration (Complete)
 
 **Note:** Originally implemented with Qt5. Now migrated to ImGui (2025-11-10). Qt code preserved in `gui/` for reference.
 
-**Features (Implemented):**
+**GUI Features (Implemented):**
 - GUI with contact list and chat area (ImGui active, Qt deprecated)
 - Message send/receive functionality
 - Real contacts from keyserver
@@ -213,13 +213,16 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 - Theme system (2 themes: DNA cyan, Club orange)
 - Font scaling (1x-4x)
 - **Group messaging with full UI**
-- **cpunk Wallet integration (COMPLETE)**
-  - View CPUNK, CELL, and KEL token balances
-  - Send tokens with transaction builder
-  - Receive tokens with QR codes and wallet addresses
-  - Transaction history with color-coded status
-  - Theme-aware wallet UI
-  - Direct integration with Cellframe node RPC
+
+**Wallet Integration (Complete - 2025-10-23):**
+- ✅ cpunk Wallet integration for Cellframe Backbone network
+  - View CPUNK, CELL, and KEL token balances from Cellframe wallets
+  - Send tokens via Cellframe RPC (tx_create, tx_sign, tx_send)
+  - Receive tokens with QR code generation
+  - Full transaction history with status tracking
+  - Color-coded transaction display (green incoming, red outgoing)
+  - Theme support across all wallet dialogs
+  - Direct integration with local Cellframe node via RPC
 
 ### 🚧 Phase 5: Web-Based Messenger (In Progress - branch: feature/web-messenger)
 - [x] WebAssembly crypto module (Emscripten compilation)
@@ -232,57 +235,33 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 - [ ] Client-side encryption/decryption
 - [ ] IndexedDB for local key storage
 
-### 📋 Phase 6: Advanced Security (Planned)
-- Forward secrecy (session keys)
-- Multi-device synchronization
-- Secure memory management
-- Key verification (QR codes)
-- Disappearing messages
-
-### 📋 Phase 7: Mobile Apps (Planned)
-- Flutter mobile app
-- Android and iOS support
-- Push notifications
-- Background sync
-- Biometric authentication
-
-### ✅ Phase 8: cpunk Wallet Integration (Complete)
-- ✅ cpunk Wallet integration for Cellframe Backbone network
-  - View CPUNK, CELL, and KEL token balances from Cellframe wallets
-  - Send tokens via Cellframe RPC (tx_create, tx_sign, tx_send)
-  - Receive tokens with QR code generation
-  - Full transaction history with status tracking
-  - Color-coded transaction display (green incoming, red outgoing)
-  - Theme support across all wallet dialogs
-  - Direct integration with local Cellframe node via RPC
-
-### ✅ Phase 9: Distributed P2P Architecture (COMPLETE)
-- ✅ **Phase 9.1:** P2P Transport Layer (COMPLETE)
+### ✅ Phase 6: Distributed P2P Architecture (COMPLETE)
+- ✅ **Phase 6.1:** P2P Transport Layer (COMPLETE)
   - OpenDHT integration for peer discovery
   - Direct peer-to-peer messaging via TCP
   - 3 public bootstrap nodes (US/EU)
   - `persistent_bootstrap` binary (Linux only) for running your own DHT bootstrap node
 
-- ✅ **Phase 9.2:** Offline Message Queueing (COMPLETE - Bug Fix: 2025-11-10)
+- ✅ **Phase 6.2:** Offline Message Queueing (COMPLETE - Bug Fix: 2025-11-10)
   - DHT-based message storage for offline recipients
   - 7-day message TTL with automatic retrieval
   - Binary serialization with SHA256 keys
   - 2-minute automatic polling in GUI
   - **Critical Bug Fix (2025-11-10):** Fixed queue key mismatch (display names vs fingerprints)
 
-- ✅ **Phase 9.3:** PostgreSQL → SQLite Migration (COMPLETE)
+- ✅ **Phase 6.3:** PostgreSQL → SQLite Migration (COMPLETE)
   - Local SQLite message storage (no centralized DB)
   - DHT-based groups with UUID v4 + SHA256 keys
   - Local SQLite cache for offline access
   - Full CRUD operations for groups
 
-- ✅ **Phase 9.4:** DHT-based Keyserver with Signed Reverse Mapping (COMPLETE)
+- ✅ **Phase 6.4:** DHT-based Keyserver with Signed Reverse Mapping (COMPLETE)
   - Cryptographically signed reverse mappings (fingerprint → identity)
   - Sender identification without pre-added contacts
   - Cross-platform signature verification
   - Prevents identity spoofing attacks
 
-- ✅ **Phase 9.5:** Per-Identity Contact Lists with DHT Sync (COMPLETE)
+- ✅ **Phase 6.5:** Per-Identity Contact Lists with DHT Sync (COMPLETE)
   - Per-identity SQLite databases (`~/.dna/<identity>_contacts.db`)
   - Automatic migration from global contacts.db
   - DHT synchronization with Kyber1024 self-encryption
@@ -291,21 +270,19 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
   - Manual and automatic sync in GUI (10-minute timer)
   - SHA3-512 DHT key derivation for contact list storage
 
-### 📋 Phase 10: DNA Board - Censorship-Resistant Social Media (Planned)
-**True free speech platform** built on cpunk validator network:
-- **No Censorship:** Content cannot be removed (no deletion endpoint)
-- **PoH Required:** Only verified humans (PoH ≥70) can post (prevents bot spam)
-- **Open Replies:** Anyone can comment (no PoH for replies, enables free discussion)
-- **Community Voting:** Thumbs up/down to surface quality content (FREE)
-- **Burn Economics:** All fees permanently burned (1 CPUNK/post, 0.5 CPUNK/reply)
-- **Self-Healing:** 3-validator replication with auto-recovery
-- **Validator Rewards:** DAO pool distribution (100M Year 1, halvening)
-- **Timeline:** 12 weeks
+### 📋 Phase 7: DNA Board - Censorship-Resistant Social Media (Planned)
+**Free speech social media platform** built on DNA Messenger:
+- **Wall Posts:** Public posts visible to all DNA users
+- **Comments & Threads:** Nested comment system for discussions
+- **User Profiles:** Display names, bios, avatars, social links
+- **Community Voting:** Thumbs up/down to surface quality content
+- **DHT Storage:** Decentralized storage (7-day TTL in alpha, permanent in v1.0)
+- **Timeline:** 8 weeks
 - **Design Doc:** `/DNA_BOARD_PHASE10_PLAN.md`
 
-**Key Innovation:** Combines censorship resistance (no deletion) with quality control (PoH verification) while maintaining free speech (open replies)
+**Note:** Alpha version is FREE with no costs. Full economics and anti-spam measures planned for v1.0.
 
-### 📋 Phase 11: Post-Quantum Voice/Video Calls (Planned)
+### 📋 Phase 8: Post-Quantum Voice/Video Calls (Planned)
 **Full quantum-safe voice and video calls:**
 - Kyber1024 via DNA messaging (bypasses WebRTC's quantum-vulnerable DTLS)
 - libsrtp2 + AES-256-GCM media encryption
@@ -313,7 +290,7 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 - Timeline: ~20 weeks
 - Design: `/futuredesign/VOICE-VIDEO-DESIGN.md`
 
-### 📋 Phase 12+: Future Enhancements (Planned)
+### 📋 Phase 9+: Future Enhancements (Planned)
 **Advanced Features:**
 - Stickers and GIFs
 - Rich text formatting
