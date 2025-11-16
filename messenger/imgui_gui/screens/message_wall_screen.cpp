@@ -298,7 +298,7 @@ void render(AppState& state) {
                 for (size_t i = 0; i < display_count; i++) {
                     const auto& msg = *thread_msgs[i];
 
-                ImGui::PushID(i);
+                ImGui::PushID(msg.post_id.c_str());
 
                 // Threading: indent based on reply_depth (20px per level)
                 float thread_indent = msg.reply_depth * 20.0f;
