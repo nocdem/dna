@@ -226,7 +226,6 @@ void render(AppState& state) {
 
     // Token balance cards
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
-    const char* token_names[] = {"ChipPunk", "Cellframe", "KelVPN"};
     const char* token_icons[] = {ICON_FA_COINS, ICON_FA_BOLT, ICON_FA_GEM};
 
     for (int i = 0; i < 3; i++) {
@@ -234,20 +233,17 @@ void render(AppState& state) {
         ImVec4 card_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
         ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(card_bg.x, card_bg.y, card_bg.z, 0.9f));
 
-        float card_height = is_mobile ? 100.0f : 120.0f;
+        float card_height = is_mobile ? 80.0f : 90.0f;
         char card_id[32];
         snprintf(card_id, sizeof(card_id), "##card_%s", tokens[i]);
         ImGui::BeginChild(card_id, ImVec2(-1, card_height), true);
 
         // Token icon and name
-        ImGui::SetCursorPos(ImVec2(20, 15));
+        ImGui::SetCursorPos(ImVec2(20, 20));
         ImGui::Text("%s %s", token_icons[i], tokens[i]);
 
-        ImGui::SetCursorPos(ImVec2(20, 35));
-        ImGui::TextDisabled("%s", token_names[i]);
-
         // Balance
-        ImGui::SetCursorPos(ImVec2(20, is_mobile ? 60 : 65));
+        ImGui::SetCursorPos(ImVec2(20, is_mobile ? 50 : 55));
         auto it = state.token_balances.find(tokens[i]);
         if (it != state.token_balances.end()) {
             std::string formatted = formatBalance(it->second);
