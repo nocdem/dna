@@ -149,8 +149,8 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     ImVec4 border_col = (g_app_settings.theme == 0) ? DNATheme::Separator() : ClubTheme::Separator();
     ImGui::PushStyleColor(ImGuiCol_Border, border_col);
     
-    // Set sidebar background to button color (InputBackground)
-    ImVec4 sidebar_bg = (g_app_settings.theme == 0) ? DNATheme::InputBackground() : ClubTheme::InputBackground();
+    // Set sidebar background to button default color (Text color - cyan/orange)
+    ImVec4 sidebar_bg = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
     ImGui::PushStyleColor(ImGuiCol_ChildBg, sidebar_bg);
 
     ImGui::BeginChild("Sidebar", ImVec2(250, 0), true, ImGuiWindowFlags_NoScrollbar);
