@@ -44,8 +44,6 @@ int dna_update_profile(
     memcpy(&identity->wallets, &profile->wallets, sizeof(identity->wallets));
     memcpy(&identity->socials, &profile->socials, sizeof(identity->socials));
     strncpy(identity->bio, profile->bio, sizeof(identity->bio) - 1);
-    strncpy(identity->profile_picture_ipfs, profile->profile_picture_ipfs,
-            sizeof(identity->profile_picture_ipfs) - 1);
     strncpy(identity->avatar_base64, profile->avatar_base64, sizeof(identity->avatar_base64) - 1);
 
     printf("[DNA] DEBUG: After copy bio: '%s'\n", identity->bio[0] ? identity->bio : "(empty)");
