@@ -259,7 +259,30 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
   - Manual and automatic sync in GUI (10-minute timer)
   - SHA3-512 DHT key derivation for contact list storage
 
-### 🚧 Phase 6: Web-Based Messenger (In Progress - branch: feature/web-messenger)
+### 🚧 Phase 6: DNA Board - Censorship-Resistant Social Media (In Progress - Alpha)
+
+**Completed (Phase 6.1):**
+- [x] User profiles with DHT storage (display name, bio, location, website)
+- [x] Profile cache system (7-day TTL, cache-first architecture)
+- [x] Profile editor screen (edit own profile)
+- [x] Contact profile viewer (view others' profiles)
+- [x] Wall post backend (`dna_message_wall.c` - 614 lines)
+- [x] Wall post GUI screen (`message_wall_screen.cpp` - 291 lines)
+- [x] Wall viewing ("Wall" button functional in chat)
+- [x] Dilithium5 signatures for wall posts
+- [x] 30-day TTL with rotation (100 messages max)
+
+**In Progress (Phase 6.2):**
+- [ ] Comment threading (reply-to field, nested UI)
+- [ ] Community voting (thumbs up/down)
+- [ ] Profile schema extensions (social links: Telegram, Twitter, GitHub, Discord)
+- [ ] Crypto addresses for tipping (BTC, ETH, CPUNK)
+- [ ] Avatar support (IPFS integration)
+- [ ] Feed sorting (Recent, Top, Controversial)
+
+**Note:** Alpha version is FREE with no costs. Full economics and anti-spam measures planned for v1.0.
+
+### 📋 Phase 7: Web-Based Messenger (Planned - branch: feature/web-messenger)
 - [x] WebAssembly crypto module (Emscripten compilation)
 - [x] DNA API compiled to WASM (dna_wasm.js/wasm)
 - [x] JavaScript wrapper functions
@@ -269,18 +292,6 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 - [ ] Cross-browser compatibility (Chrome, Firefox, Safari, Edge)
 - [ ] Client-side encryption/decryption
 - [ ] IndexedDB for local key storage
-
-### 📋 Phase 7: DNA Board - Censorship-Resistant Social Media (Planned)
-**Free speech social media platform** built on DNA Messenger:
-- **Wall Posts:** Public posts visible to all DNA users
-- **Comments & Threads:** Nested comment system for discussions
-- **User Profiles:** Display names, bios, avatars, social links
-- **Community Voting:** Thumbs up/down to surface quality content
-- **DHT Storage:** Decentralized storage (7-day TTL in alpha, permanent in v1.0)
-- **Timeline:** 8 weeks
-- **Design Doc:** `/DNA_BOARD_PHASE10_PLAN.md`
-
-**Note:** Alpha version is FREE with no costs. Full economics and anti-spam measures planned for v1.0.
 
 ### 📋 Phase 8: Post-Quantum Voice/Video Calls (Planned)
 **Full quantum-safe voice and video calls:**
