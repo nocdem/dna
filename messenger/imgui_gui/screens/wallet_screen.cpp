@@ -224,53 +224,47 @@ void render(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Token balance cards with send buttons
+    // Token balance table
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
+    
+    if (ImGui::BeginTable("##token_table", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
+        // Setup columns
+        ImGui::TableSetupColumn("Token", ImGuiTableColumnFlags_WidthFixed, 80.0f);
+        ImGui::TableSetupColumn("Balance", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Action", ImGuiTableColumnFlags_WidthFixed, 100.0f);
 
-    for (int i = 0; i < 3; i++) {
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
-        ImVec4 card_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(card_bg.x, card_bg.y, card_bg.z, 0.6f));
-
-        float card_height = is_mobile ? 70.0f : 75.0f;
-        char card_id[32];
-        snprintf(card_id, sizeof(card_id), "##card_%s", tokens[i]);
-        ImGui::BeginChild(card_id, ImVec2(-1, card_height), true, ImGuiWindowFlags_NoScrollbar);
-
-        // Ticker on left
-        ImGui::SetCursorPos(ImVec2(20, card_height * 0.5f - 10));
-        ImGui::Text("%s", tokens[i]);
-
-        // Balance in middle
-        auto it = state.token_balances.find(tokens[i]);
-        std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
-        
-        ImVec2 balance_size = ImGui::CalcTextSize(formatted.c_str());
-        float balance_x = ImGui::GetWindowWidth() * 0.5f - balance_size.x * 0.5f;
-        ImGui::SetCursorPos(ImVec2(balance_x, card_height * 0.5f - 10));
-        
-        ImVec4 green_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
-        ImGui::TextColored(green_color, "%s", formatted.c_str());
-
-        // Send button on right
-        float btn_width = is_mobile ? 70.0f : 80.0f;
-        float btn_height_inner = card_height - 20.0f;
-        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - btn_width - 15, (card_height - btn_height_inner) * 0.5f));
-        
-        char btn_id[32];
-        snprintf(btn_id, sizeof(btn_id), ICON_FA_PAPER_PLANE " Send##%s", tokens[i]);
-        if (ThemedButton(btn_id, ImVec2(btn_width, btn_height_inner))) {
-            state.show_send_dialog = true;
-            state.send_status.clear();
-            // Pre-select token in send dialog
-            strncpy(state.send_token, tokens[i], sizeof(state.send_token) - 1);
+        for (int i = 0; i < 3; i++) {
+            ImGui::TableNextRow();
+            
+            // Token column
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", tokens[i]);
+            
+            // Balance column (centered)
+            ImGui::TableNextColumn();
+            auto it = state.token_balances.find(tokens[i]);
+            std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
+            
+            ImVec4 green_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
+            
+            // Center the balance
+            float text_width = ImGui::CalcTextSize(formatted.c_str()).x;
+            float avail_width = ImGui::GetContentRegionAvail().x;
+            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (avail_width - text_width) * 0.5f);
+            ImGui::TextColored(green_color, "%s", formatted.c_str());
+            
+            // Action column
+            ImGui::TableNextColumn();
+            char btn_id[32];
+            snprintf(btn_id, sizeof(btn_id), ICON_FA_PAPER_PLANE " Send##%s", tokens[i]);
+            if (ThemedButton(btn_id, ImVec2(-1, 0))) {
+                state.show_send_dialog = true;
+                state.send_status.clear();
+                strncpy(state.send_token, tokens[i], sizeof(state.send_token) - 1);
+            }
         }
-
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar();
-
-        ImGui::Spacing();
+        
+        ImGui::EndTable();
     }
 
     ImGui::Spacing();
