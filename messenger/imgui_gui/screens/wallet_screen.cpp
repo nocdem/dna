@@ -229,34 +229,31 @@ void render(AppState& state) {
     const char* token_icons[] = {ICON_FA_COINS, ICON_FA_BOLT, ICON_FA_GEM};
 
     for (int i = 0; i < 3; i++) {
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
-        ImVec4 card_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(card_bg.x, card_bg.y, card_bg.z, 0.9f));
-
-        float card_height = is_mobile ? 80.0f : 90.0f;
-        char card_id[32];
-        snprintf(card_id, sizeof(card_id), "##card_%s", tokens[i]);
-        ImGui::BeginChild(card_id, ImVec2(-1, card_height), true);
-
-        // Token icon and name
-        ImGui::SetCursorPos(ImVec2(20, 20));
+        // Token icon and name (large text)
+        ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
+        ImGui::SetWindowFontScale(3.0f);
         ImGui::Text("%s %s", token_icons[i], tokens[i]);
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopFont();
 
-        // Balance
-        ImGui::SetCursorPos(ImVec2(20, is_mobile ? 50 : 55));
+        // Balance (large text)
         auto it = state.token_balances.find(tokens[i]);
         if (it != state.token_balances.end()) {
             std::string formatted = formatBalance(it->second);
+            ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
+            ImGui::SetWindowFontScale(3.0f);
             ImGui::Text("%s", formatted.c_str());
+            ImGui::SetWindowFontScale(1.0f);
+            ImGui::PopFont();
         } else {
+            ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
+            ImGui::SetWindowFontScale(3.0f);
             ImGui::TextDisabled("0.00");
+            ImGui::SetWindowFontScale(1.0f);
+            ImGui::PopFont();
         }
 
-        ImGui::EndChild();
-        ImGui::PopStyleColor();
-        ImGui::PopStyleVar();
-
-        ImGui::Spacing();
+        if (i < 2) ImGui::Spacing();
     }
 
     ImGui::Spacing();
