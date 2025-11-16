@@ -143,7 +143,7 @@ std::string formatBalance(const std::string& coins) {
 void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = io.DisplaySize.x < 600.0f;
-    float padding = is_mobile ? 15.0f : 20.0f;
+    float padding = is_mobile ? 10.0f : 15.0f;
 
     ImGui::SetCursorPos(ImVec2(padding, padding));
     ImGui::BeginChild("WalletContent", ImVec2(-padding, -padding), false);
@@ -220,14 +220,12 @@ void render(AppState& state) {
         ImGui::Text(ICON_FA_WALLET " %s", state.wallet_name.c_str());
     }
     
-    ImGui::Spacing();
     ImGui::Separator();
-    ImGui::Spacing();
 
     // Token balance table
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
     
-    if (ImGui::BeginTable("##token_table", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp)) {
+    if (ImGui::BeginTable("##token_table", 3, ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_PadOuterX)) {
         // Setup columns
         ImGui::TableSetupColumn("Token", ImGuiTableColumnFlags_WidthFixed, 80.0f);
         ImGui::TableSetupColumn("Balance", ImGuiTableColumnFlags_WidthStretch);
@@ -267,12 +265,10 @@ void render(AppState& state) {
         ImGui::EndTable();
     }
 
-    ImGui::Spacing();
     ImGui::Separator();
-    ImGui::Spacing();
 
     // Action buttons (Receive and History only)
-    float btn_height = is_mobile ? 50.0f : 45.0f;
+    float btn_height = is_mobile ? 45.0f : 40.0f;
 
     if (is_mobile) {
         // Mobile: Stacked full-width buttons
@@ -285,7 +281,6 @@ void render(AppState& state) {
                                   "Backbone", state.wallet_address);
             }
         }
-        ImGui::Spacing();
 
         if (ThemedButton(ICON_FA_RECEIPT " Transaction History", ImVec2(-1, btn_height))) {
             state.show_transaction_history = true;
