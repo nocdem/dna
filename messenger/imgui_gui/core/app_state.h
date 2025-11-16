@@ -159,6 +159,9 @@ public:
         std::string reply_to;     // Parent post_id (empty for top-level)
         int reply_depth;          // 0=post, 1=comment, 2=reply
         int reply_count;          // Number of direct replies
+        // Sender info
+        std::string sender_fingerprint;  // Extracted from post_id
+        std::string sender_avatar;       // Base64 avatar (loaded from cache/DHT)
     };
     std::vector<WallMessage> wall_messages;
     std::set<std::string> wall_expanded_threads;  // Set of expanded thread IDs

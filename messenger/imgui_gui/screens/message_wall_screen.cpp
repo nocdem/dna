@@ -5,10 +5,12 @@
 #include "../theme_colors.h"
 #include "../settings_manager.h"
 #include "../font_awesome.h"
+#include "../texture_manager.h"
 
 extern "C" {
     #include "../../messenger.h"
     #include "../../dht/client/dna_message_wall.h"
+    #include "../../dht/client/dna_profile.h"
     #include "../../p2p/p2p_transport.h"
     #include "../../crypto/utils/qgp_types.h"
     #include "../../crypto/utils/qgp_platform.h"
@@ -127,6 +129,24 @@ void loadMessageWall(AppState& state) {
             wall_msg.reply_to = msg->reply_to;
             wall_msg.reply_depth = msg->reply_depth;
             wall_msg.reply_count = msg->reply_count;
+
+            // Extract sender fingerprint from post_id (first 128 chars before underscore)
+            std::string post_id_str(msg->post_id);
+            size_t underscore_pos = post_id_str.find('_');
+            if (underscore_pos != std::string::npos && underscore_pos == 128) {
+                wall_msg.sender_fingerprint = post_id_str.substr(0, 128);
+
+                // Try to load sender's avatar from profile cache/DHT
+                dna_unified_identity_t *sender_profile = nullptr;
+                int ret = dna_load_identity(dht_ctx, wall_msg.sender_fingerprint.c_str(), &sender_profile);
+                if (ret == 0 && sender_profile && sender_profile->avatar_base64[0] != '\0') {
+                    wall_msg.sender_avatar = std::string(sender_profile->avatar_base64);
+                }
+                if (sender_profile) {
+                    dna_identity_free(sender_profile);
+                }
+            }
+
             state.wall_messages.push_back(wall_msg);
         }
         state.wall_status = "Loaded " + std::to_string(wall->message_count) + " messages";
@@ -329,7 +349,38 @@ void render(AppState& state) {
                 ImGui::Dummy(ImVec2(0, 5));
                 ImGui::Indent(10);
 
-                // Header: timestamp + verification
+                // Header: avatar + timestamp + verification
+                // Display avatar if available
+                if (!msg.sender_avatar.empty()) {
+                    int avatar_width = 0, avatar_height = 0;
+                    GLuint texture_id = TextureManager::getInstance().loadAvatar(
+                        msg.sender_fingerprint,
+                        msg.sender_avatar,
+                        &avatar_width,
+                        &avatar_height
+                    );
+
+                    if (texture_id != 0) {
+                        float avatar_size = 24.0f;  // Small avatar for wall posts
+                        ImVec2 avatar_pos = ImGui::GetCursorScreenPos();
+
+                        // Draw circular clipped avatar
+                        ImDrawList* draw_list_avatar = ImGui::GetWindowDrawList();
+                        draw_list_avatar->AddImageRounded(
+                            (void*)(intptr_t)texture_id,
+                            avatar_pos,
+                            ImVec2(avatar_pos.x + avatar_size, avatar_pos.y + avatar_size),
+                            ImVec2(0, 0),
+                            ImVec2(1, 1),
+                            IM_COL32(255, 255, 255, 255),
+                            avatar_size * 0.5f  // Circular
+                        );
+
+                        ImGui::Dummy(ImVec2(avatar_size, avatar_size));
+                        ImGui::SameLine();
+                    }
+                }
+
                 ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", formatWallTimestamp(msg.timestamp).c_str());
                 ImGui::SameLine();
                 if (msg.verified) {
