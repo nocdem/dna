@@ -141,6 +141,22 @@ int dna_update_profile(
         return -1;
     }
 
+    // DEBUG: Check if avatar is in JSON
+    printf("[DNA] JSON length: %zu bytes\n", strlen(json));
+    if (strstr(json, "\"avatar_base64\"")) {
+        const char *avatar_start = strstr(json, "\"avatar_base64\":\"");
+        if (avatar_start) {
+            avatar_start += 17; // Skip "avatar_base64":"
+            const char *avatar_end = strchr(avatar_start, '"');
+            if (avatar_end) {
+                size_t avatar_len = avatar_end - avatar_start;
+                printf("[DNA] ✓ avatar_base64 found in JSON: %zu bytes\n", avatar_len);
+            }
+        }
+    } else {
+        printf("[DNA] ✗ NO avatar_base64 in JSON!\n");
+    }
+
     // Compute DHT key: SHA3-512(fingerprint + ":profile")
     char key_input[256];
     snprintf(key_input, sizeof(key_input), "%s:profile", fingerprint);
