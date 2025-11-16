@@ -10,8 +10,8 @@
 #include <mutex>
 
 extern "C" {
-    #include "../../dht/dht_profile.h"
-    #include "../../dht/dht_keyserver.h"
+    #include "../../dht/client/dna_profile.h"
+    #include "../../dht/core/dht_keyserver.h"
 }
 
 // View enumeration

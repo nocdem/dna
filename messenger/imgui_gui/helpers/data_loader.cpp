@@ -3,12 +3,12 @@
 #include "../../messenger_p2p.h"
 #include "../../database/contacts_db.h"
 #include "../../database/profile_manager.h"
-#include "../../dht/dht_singleton.h"
+#include "../../dht/client/dht_singleton.h"
 #include "../../p2p/p2p_transport.h"
 
 extern "C" {
 #include "../../crypto/utils/qgp_platform.h"
-#include "../../dht/dht_keyserver.h"
+#include "../../dht/core/dht_keyserver.h"
 }
 
 #include <cstring>

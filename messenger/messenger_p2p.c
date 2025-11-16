@@ -810,13 +810,14 @@ static void p2p_message_received_internal(
         printf("[P2P] ✓ Message from %s stored in SQLite\n", sender_identity);
     }
 
-    // Fetch sender profile for caching (only if expired or missing)
-    dht_profile_t profile;
+    // Fetch sender profile for caching (only if expired or missing) - Phase 5: Unified Identity
     if (profile_cache_is_expired(sender_identity)) {
         printf("[P2P] Fetching profile for sender: %s\n", sender_identity);
-        int profile_result = profile_manager_get_profile(sender_identity, &profile);
-        if (profile_result == 0) {
-            printf("[P2P] ✓ Profile cached: %s\n", profile.display_name);
+        dna_unified_identity_t *identity = NULL;
+        int profile_result = profile_manager_get_profile(sender_identity, &identity);
+        if (profile_result == 0 && identity) {
+            printf("[P2P] ✓ Identity cached: %s\n", identity->display_name[0] ? identity->display_name : sender_identity);
+            dna_identity_free(identity);
         } else if (profile_result == -2) {
             printf("[P2P] Profile not found for sender: %s\n", sender_identity);
         } else {

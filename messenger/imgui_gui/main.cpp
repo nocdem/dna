@@ -23,8 +23,8 @@
 
 // Backend includes
 extern "C" {
-    #include "../dht/dht_singleton.h"
-    #include "../dht/dht_keyserver.h"
+    #include "../dht/client/dht_singleton.h"
+    #include "../dht/core/dht_keyserver.h"
     #include "../crypto/utils/qgp_platform.h"
 }
 #include "helpers/data_loader.h"
@@ -57,8 +57,8 @@ extern "C" {
 #include "../messenger.h"
 #include "../blockchain/wallet.h"
 #include "../crypto/bip39/bip39.h"
-#include "../dht/dna_message_wall.h"
-#include "../dht/dna_profile.h"
+#include "../dht/client/dna_message_wall.h"
+#include "../dht/client/dna_profile.h"
 #include "../p2p/p2p_transport.h"
 }
 

@@ -40,9 +40,9 @@ extern "C" {
     #include "../messenger.h"
     #include "../messenger_p2p.h"  // For messenger_p2p_check_offline_messages
     #include "../crypto/bip39/bip39.h"
-    #include "../dht/dht_keyserver.h"
-    #include "../dht/dht_singleton.h"
-    #include "../dht/dna_message_wall.h"  // For message wall functions
+    #include "../dht/core/dht_keyserver.h"
+    #include "../dht/client/dht_singleton.h"
+    #include "../dht/client/dna_message_wall.h"  // For message wall functions
     #include "../p2p/p2p_transport.h"  // For P2P transport DHT access
     #include "../crypto/utils/qgp_types.h"  // For qgp_key_load, qgp_key_free
     #include "../crypto/utils/qgp_platform.h"  // For qgp_platform_home_dir
