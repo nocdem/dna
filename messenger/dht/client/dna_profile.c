@@ -306,8 +306,8 @@ char* dna_identity_to_json(const dna_unified_identity_t *identity) {
         json_object_new_string(identity->bio));
     if (identity->avatar_hash[0]) json_object_object_add(root, "avatar_hash",
         json_object_new_string(identity->avatar_hash));
-    if (identity->profile_picture_ipfs[0]) json_object_object_add(root,
-        "profile_picture_ipfs", json_object_new_string(identity->profile_picture_ipfs));
+    if (identity->avatar_base64[0]) json_object_object_add(root,
+        "avatar_base64", json_object_new_string(identity->avatar_base64));
     if (identity->location[0]) json_object_object_add(root, "location",
         json_object_new_string(identity->location));
     if (identity->website[0]) json_object_object_add(root, "website",
@@ -427,10 +427,9 @@ int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_o
         if (str) strncpy(identity->avatar_hash, str, sizeof(identity->avatar_hash) - 1);
     }
 
-    if (json_object_object_get_ex(root, "profile_picture_ipfs", &val)) {
+    if (json_object_object_get_ex(root, "avatar_base64", &val)) {
         const char *str = json_object_get_string(val);
-        if (str) strncpy(identity->profile_picture_ipfs, str,
-                        sizeof(identity->profile_picture_ipfs) - 1);
+        if (str) strncpy(identity->avatar_base64, str, sizeof(identity->avatar_base64) - 1);
     }
 
     if (json_object_object_get_ex(root, "location", &val)) {
