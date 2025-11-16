@@ -20,7 +20,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "dht_context.h"
+#include "core/dht_context.h"
 
 #define TEST_KEY_STRING "test_signed_put_key_12345"
 

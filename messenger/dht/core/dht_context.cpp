@@ -9,9 +9,9 @@
  */
 
 #include "dht_context.h"
-#include "dht_value_storage.h"  // TODO: Will be moved to bootstrap/ in Phase 3
-#include "core/dht_stats.h"     // Phase 3: Stats functions
-#include "client/dht_identity.h" // Phase 3: Identity functions
+#include "../shared/dht_value_storage.h"  // Phase 4: Moved to shared/
+#include "dht_stats.h"     // Phase 3: Stats functions
+#include "../client/dht_identity.h" // Phase 3: Identity functions
 #include <opendht/dhtrunner.h>
 #include <opendht/crypto.h>
 #include <cstring>

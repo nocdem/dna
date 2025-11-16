@@ -11,7 +11,7 @@
 #ifndef DNA_MESSAGE_WALL_H
 #define DNA_MESSAGE_WALL_H
 
-#include "dht_context.h"
+#include "../core/dht_context.h"
 #include <stdint.h>
 #include <time.h>
 

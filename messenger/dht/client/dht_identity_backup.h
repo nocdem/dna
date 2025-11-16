@@ -19,7 +19,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "../dna_api.h"
-#include "dht_context.h"
+#include "../core/dht_context.h"
 
 #ifdef __cplusplus
 extern "C" {

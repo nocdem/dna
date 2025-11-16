@@ -40,25 +40,30 @@ endif()
 # DHT library
 if(WIN32)
     add_library(dht_lib STATIC
-        dht_context.cpp
-        dht_value_storage.cpp
-        core/dht_stats.cpp           # Phase 3: Stats module
-        client/dht_identity.cpp      # Phase 3: Identity module
-        dht_offline_queue.c
-        dht_groups.c
-        dht_keyserver.c
+        # Core modules (Phase 3/4)
+        core/dht_context.cpp
+        core/dht_stats.cpp
+        core/dht_keyserver.c
+        # Shared modules (Phase 4)
+        shared/dht_value_storage.cpp
+        shared/dht_offline_queue.c
+        shared/dht_groups.c
+        shared/dht_profile.c
+        # Client modules (Phase 3/4)
+        client/dht_identity.cpp
+        client/dht_singleton.c
+        client/dht_contactlist.c
+        client/dht_identity_backup.c
+        client/dna_profile.c
+        client/dna_message_wall.c
+        # Keyserver modules
         keyserver/keyserver_helpers.c
         keyserver/keyserver_publish.c
         keyserver/keyserver_lookup.c
         keyserver/keyserver_names.c
         keyserver/keyserver_profiles.c
         keyserver/keyserver_addresses.c
-        dht_contactlist.c
-        dht_profile.c
-        dht_singleton.c
-        dht_identity_backup.c
-        dna_profile.c
-        dna_message_wall.c
+        # Platform-specific
         gnutls_stubs_win.c
         ../crypto/utils/qgp_sha3.c
         ../crypto/utils/qgp_dilithium.c
@@ -68,25 +73,30 @@ if(WIN32)
         ../crypto/utils/qgp_aes.c)
 else()
     add_library(dht_lib STATIC
-        dht_context.cpp
-        dht_value_storage.cpp
-        core/dht_stats.cpp           # Phase 3: Stats module
-        client/dht_identity.cpp      # Phase 3: Identity module
-        dht_offline_queue.c
-        dht_groups.c
-        dht_keyserver.c
+        # Core modules (Phase 3/4)
+        core/dht_context.cpp
+        core/dht_stats.cpp
+        core/dht_keyserver.c
+        # Shared modules (Phase 4)
+        shared/dht_value_storage.cpp
+        shared/dht_offline_queue.c
+        shared/dht_groups.c
+        shared/dht_profile.c
+        # Client modules (Phase 3/4)
+        client/dht_identity.cpp
+        client/dht_singleton.c
+        client/dht_contactlist.c
+        client/dht_identity_backup.c
+        client/dna_profile.c
+        client/dna_message_wall.c
+        # Keyserver modules
         keyserver/keyserver_helpers.c
         keyserver/keyserver_publish.c
         keyserver/keyserver_lookup.c
         keyserver/keyserver_names.c
         keyserver/keyserver_profiles.c
         keyserver/keyserver_addresses.c
-        dht_contactlist.c
-        dht_profile.c
-        dht_singleton.c
-        dht_identity_backup.c
-        dna_profile.c
-        dna_message_wall.c
+        # Crypto utilities
         ../crypto/utils/qgp_sha3.c
         ../crypto/utils/qgp_dilithium.c
         ../blockchain/blockchain_rpc.c

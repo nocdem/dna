@@ -34,7 +34,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "dht_context.h"
+#include "../core/dht_context.h"
 
 #ifdef __cplusplus
 extern "C" {

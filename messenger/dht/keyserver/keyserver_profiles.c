@@ -4,7 +4,7 @@
  */
 
 #include "keyserver_core.h"
-#include "../dht_keyserver.h"
+#include "../core/dht_keyserver.h"
 
 // Update DNA profile data
 int dna_update_profile(

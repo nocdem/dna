@@ -11,8 +11,8 @@
 #include <openssl/evp.h>
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_types.h"
-#include "../dht/dht_keyserver.h"
-#include "../dht/dht_singleton.h"
+#include "../dht/core/dht_keyserver.h"
+#include "../dht/client/dht_singleton.h"
 #include "../database/keyserver_cache.h"
 #include "../database/contacts_db.h"
 #include "../p2p/p2p_transport.h"

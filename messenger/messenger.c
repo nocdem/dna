@@ -39,7 +39,7 @@
 #include "crypto/utils/qgp_dilithium.h"
 #include "crypto/utils/qgp_kyber.h"
 #include "crypto/utils/qgp_sha3.h"  // For SHA3-512 fingerprint computation
-#include "dht/dht_singleton.h"  // Global DHT singleton
+#include "dht/client/dht_singleton.h"  // Global DHT singleton
 #include "dht/dht_identity_backup.h"  // DHT identity encrypted backup
 #include "crypto/utils/qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
@@ -51,7 +51,7 @@
 #include "database/keyserver_cache.h"  // Phase 4: Keyserver cache
 #include "dht/dht_keyserver.h"   // Phase 9.4: DHT-based keyserver
 #include "dht/dht_context.h"     // Phase 9.4: DHT context management
-#include "dht/dht_contactlist.h" // DHT contact list sync
+#include "dht/client/dht_contactlist.h" // DHT contact list sync
 #include "p2p/p2p_transport.h"   // For getting DHT context
 #include "database/contacts_db.h"         // Phase 9.4: Local contacts database
 #include "messenger/identity.h"  // Phase: Modularization - Identity utilities

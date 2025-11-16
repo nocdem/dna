@@ -8,8 +8,8 @@
 #include <string.h>
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_types.h"
-#include "../dht/dht_contactlist.h"
-#include "../dht/dht_context.h"
+#include "../dht/client/dht_contactlist.h"
+#include "../dht/core/dht_context.h"
 #include "../database/contacts_db.h"
 #include "../p2p/p2p_transport.h"
 

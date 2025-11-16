@@ -8,7 +8,7 @@
  * @date 2025-11-05
  */
 
-#include "../dht/dna_profile.h"
+#include "../dht/client/dna_profile.h"
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>

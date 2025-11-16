@@ -1,5 +1,5 @@
 #include "dht_stats.h"
-#include "../dht_value_storage.h"
+#include "../shared/dht_value_storage.h"
 
 #include <opendht/dhtrunner.h>
 #include <iostream>

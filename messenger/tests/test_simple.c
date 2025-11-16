@@ -1,4 +1,4 @@
-#include "../dht/dna_profile.h"
+#include "../dht/client/dna_profile.h"
 #include <stdio.h>
 #include <assert.h>
 

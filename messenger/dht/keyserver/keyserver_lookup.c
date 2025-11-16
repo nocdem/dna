@@ -4,7 +4,7 @@
  */
 
 #include "keyserver_core.h"
-#include "../dht_keyserver.h"
+#include "../core/dht_keyserver.h"
 
 // Async reverse lookup helper structure
 typedef struct {

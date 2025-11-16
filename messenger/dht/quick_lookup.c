@@ -1,7 +1,7 @@
-#include "dht_context.h"
+#include "core/dht_context.h"
 #include "dht_keyserver.h"
 #include "dna_profile.h"
-#include "dht_offline_queue.h"
+#include "shared/dht_offline_queue.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

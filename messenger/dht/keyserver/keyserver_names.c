@@ -4,7 +4,7 @@
  */
 
 #include "keyserver_core.h"
-#include "../dht_keyserver.h"
+#include "../core/dht_keyserver.h"
 
 // Compute fingerprint from Dilithium5 public key (public wrapper)
 void dna_compute_fingerprint(

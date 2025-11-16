@@ -17,8 +17,8 @@
 #include <stddef.h>
 
 // Phase 3: Include extracted modules
-#include "core/dht_stats.h"
-#include "client/dht_identity.h"
+#include "dht_stats.h"
+#include "../client/dht_identity.h"
 
 #ifdef __cplusplus
 extern "C" {

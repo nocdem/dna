@@ -6,8 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "dht_context.h"
-#include "dht_offline_queue.h"
+#include "core/dht_context.h"
+#include "shared/dht_offline_queue.h"
 
 int main(int argc, char *argv[]) {
     if (argc != 3) {

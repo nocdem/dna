@@ -4,7 +4,7 @@
  */
 
 #include "dht_value_storage.h"
-#include "../../../dht/dht_context.h"
+#include "../../../dht/core/dht_context.h"
 #include <sqlite3.h>
 #include <pthread.h>
 #include <string.h>

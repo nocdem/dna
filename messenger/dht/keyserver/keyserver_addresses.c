@@ -4,7 +4,7 @@
  */
 
 #include "keyserver_core.h"
-#include "../dht_keyserver.h"
+#include "../core/dht_keyserver.h"
 
 // Resolve DNA name to wallet address
 int dna_resolve_address(

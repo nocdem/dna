@@ -12,6 +12,8 @@ add_library(bootstrap_value_storage STATIC
 target_include_directories(bootstrap_value_storage PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/services/value_storage
     ${CMAKE_SOURCE_DIR}/dht
+    ${CMAKE_SOURCE_DIR}/dht/core
+    ${CMAKE_SOURCE_DIR}/dht/shared
 )
 
 target_link_libraries(bootstrap_value_storage
@@ -29,6 +31,8 @@ if(NOT WIN32)
         ${CMAKE_CURRENT_SOURCE_DIR}/core
         ${CMAKE_CURRENT_SOURCE_DIR}/services/value_storage
         ${CMAKE_SOURCE_DIR}/dht
+        ${CMAKE_SOURCE_DIR}/dht/core
+        ${CMAKE_SOURCE_DIR}/dht/shared
         ${CMAKE_SOURCE_DIR}/crypto/utils
     )
 
@@ -55,6 +59,8 @@ if(NOT WIN32)
     target_include_directories(migrate_storage_once PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/services/value_storage
         ${CMAKE_SOURCE_DIR}/dht
+        ${CMAKE_SOURCE_DIR}/dht/core
+        ${CMAKE_SOURCE_DIR}/dht/shared
     )
 
     target_link_libraries(migrate_storage_once

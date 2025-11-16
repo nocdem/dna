@@ -33,7 +33,7 @@
 #ifndef DHT_SINGLETON_H
 #define DHT_SINGLETON_H
 
-#include "dht_context.h"
+#include "../core/dht_context.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -1,7 +1,7 @@
 #ifndef DHT_OFFLINE_QUEUE_H
 #define DHT_OFFLINE_QUEUE_H
 
-#include "dht_context.h"
+#include "../core/dht_context.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>

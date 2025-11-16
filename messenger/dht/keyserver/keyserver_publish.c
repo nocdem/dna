@@ -4,7 +4,7 @@
  */
 
 #include "keyserver_core.h"
-#include "../dht_keyserver.h"
+#include "../core/dht_keyserver.h"
 
 // Publish public keys to DHT (FINGERPRINT-FIRST architecture)
 int dht_keyserver_publish(

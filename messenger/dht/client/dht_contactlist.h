@@ -37,7 +37,7 @@
 #ifndef DHT_CONTACTLIST_H
 #define DHT_CONTACTLIST_H
 
-#include "dht_context.h"
+#include "../core/dht_context.h"
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>

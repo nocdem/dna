@@ -11,8 +11,8 @@
 #include "../crypto/utils/qgp_types.h"
 #include "../message_backup.h"
 #include "../database/keyserver_cache.h"
-#include "../dht/dht_identity_backup.h"
-#include "../dht/dht_singleton.h"
+#include "../dht/client/dht_identity_backup.h"
+#include "../dht/client/dht_singleton.h"
 
 // Helper function to check if file exists
 static bool file_exists(const char *path) {
