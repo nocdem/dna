@@ -123,7 +123,6 @@ public:
 
     // Send dialog state
     bool show_send_dialog;
-    char send_token[16];        // Pre-selected token (e.g., "CELL", "CPUNK")
     char send_recipient[256];
     char send_amount[32];
     char send_fee[32];
@@ -218,7 +217,6 @@ public:
     AsyncTask message_load_task;
     AsyncTask identity_scan_task;
     AsyncTask transaction_history_task;  // Async task for loading transaction history
-    AsyncTask send_transaction_task;     // Async task for sending transactions
 
     // Messenger backend context (opaque pointer, defined in messenger.h)
     void *messenger_ctx;

@@ -143,7 +143,7 @@ std::string formatBalance(const std::string& coins) {
 void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = io.DisplaySize.x < 600.0f;
-    float padding = is_mobile ? 10.0f : 15.0f;
+    float padding = is_mobile ? 15.0f : 20.0f;
 
     ImGui::SetCursorPos(ImVec2(padding, padding));
     ImGui::BeginChild("WalletContent", ImVec2(-padding, -padding), false);
@@ -220,71 +220,64 @@ void render(AppState& state) {
         ImGui::Text(ICON_FA_WALLET " %s", state.wallet_name.c_str());
     }
     
+    ImGui::Spacing();
     ImGui::Separator();
+    ImGui::Spacing();
 
-    // Token balance cards (responsive grid)
+    // Token balance cards
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
-    
-    float card_width = 280.0f;  // Fixed width per card
-    float card_height = 70.0f;
-    float spacing = 10.0f;
-    float available_width = ImGui::GetContentRegionAvail().x;
-    
-    // Calculate how many cards fit per row
-    int cards_per_row = (int)((available_width + spacing) / (card_width + spacing));
-    if (cards_per_row < 1) cards_per_row = 1;
-    
+    const char* token_names[] = {"ChipPunk", "Cellframe", "KelVPN"};
+    const char* token_icons[] = {ICON_FA_COINS, ICON_FA_BOLT, ICON_FA_GEM};
+
     for (int i = 0; i < 3; i++) {
-        // Start new row if needed
-        if (i > 0 && i % cards_per_row != 0) {
-            ImGui::SameLine();
-        }
-        
-        // Card background
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 12.0f);
         ImVec4 card_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, card_bg);
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
-        
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(card_bg.x, card_bg.y, card_bg.z, 0.9f));
+
+        float card_height = is_mobile ? 100.0f : 120.0f;
         char card_id[32];
-        snprintf(card_id, sizeof(card_id), "##token_card_%s", tokens[i]);
-        ImGui::BeginChild(card_id, ImVec2(card_width, card_height), true, ImGuiWindowFlags_NoScrollbar);
-        
-        // Token name (top left)
-        ImGui::SetCursorPos(ImVec2(15, 12));
-        ImGui::Text("%s", tokens[i]);
-        
-        // Balance (below token name, green)
-        ImGui::SetCursorPos(ImVec2(15, 35));
+        snprintf(card_id, sizeof(card_id), "##card_%s", tokens[i]);
+        ImGui::BeginChild(card_id, ImVec2(-1, card_height), true);
+
+        // Token icon and name
+        ImGui::SetCursorPos(ImVec2(20, 15));
+        ImGui::Text("%s %s", token_icons[i], tokens[i]);
+
+        ImGui::SetCursorPos(ImVec2(20, 35));
+        ImGui::TextDisabled("%s", token_names[i]);
+
+        // Balance
+        ImGui::SetCursorPos(ImVec2(20, is_mobile ? 60 : 65));
         auto it = state.token_balances.find(tokens[i]);
-        std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
-        ImVec4 green_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
-        ImGui::TextColored(green_color, "%s", formatted.c_str());
-        
-        // Send button (right side)
-        float btn_width = 80.0f;
-        float btn_height = 35.0f;
-        ImGui::SetCursorPos(ImVec2(card_width - btn_width - 10, (card_height - btn_height) * 0.5f));
-        
-        char btn_id[32];
-        snprintf(btn_id, sizeof(btn_id), ICON_FA_PAPER_PLANE " Send##%s", tokens[i]);
-        if (ThemedButton(btn_id, ImVec2(btn_width, btn_height))) {
-            state.show_send_dialog = true;
-            state.send_status.clear();
-            strncpy(state.send_token, tokens[i], sizeof(state.send_token) - 1);
+        if (it != state.token_balances.end()) {
+            std::string formatted = formatBalance(it->second);
+            ImGui::Text("%s", formatted.c_str());
+        } else {
+            ImGui::TextDisabled("0.00");
         }
-        
+
         ImGui::EndChild();
-        ImGui::PopStyleVar();
         ImGui::PopStyleColor();
+        ImGui::PopStyleVar();
+
+        ImGui::Spacing();
     }
 
+    ImGui::Spacing();
     ImGui::Separator();
+    ImGui::Spacing();
 
-    // Action buttons (Receive and History only)
-    float btn_height = is_mobile ? 45.0f : 40.0f;
+    // Action buttons
+    float btn_height = is_mobile ? 50.0f : 45.0f;
 
     if (is_mobile) {
         // Mobile: Stacked full-width buttons
+        if (ThemedButton(ICON_FA_PAPER_PLANE " Send Tokens", ImVec2(-1, btn_height))) {
+            state.show_send_dialog = true;
+            state.send_status.clear();
+        }
+        ImGui::Spacing();
+
         if (ThemedButton(ICON_FA_DOWNLOAD " Receive", ImVec2(-1, btn_height))) {
             state.show_receive_dialog = true;
             // Get wallet address for Backbone network
@@ -294,6 +287,7 @@ void render(AppState& state) {
                                   "Backbone", state.wallet_address);
             }
         }
+        ImGui::Spacing();
 
         if (ThemedButton(ICON_FA_RECEIPT " Transaction History", ImVec2(-1, btn_height))) {
             state.show_transaction_history = true;
@@ -304,7 +298,13 @@ void render(AppState& state) {
         ImGuiStyle& style = ImGui::GetStyle();
         float available_width = ImGui::GetContentRegionAvail().x;
         float spacing = style.ItemSpacing.x;
-        float btn_width = (available_width - spacing) / 2.0f;
+        float btn_width = (available_width - spacing * 2) / 3.0f;
+
+        if (ThemedButton(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, btn_height))) {
+            state.show_send_dialog = true;
+            state.send_status.clear();
+        }
+        ImGui::SameLine();
 
         if (ThemedButton(ICON_FA_DOWNLOAD " Receive", ImVec2(btn_width, btn_height))) {
             state.show_receive_dialog = true;

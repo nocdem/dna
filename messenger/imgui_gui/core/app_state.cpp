@@ -52,8 +52,6 @@ AppState::AppState() {
 
     // Initialize send dialog state
     show_send_dialog = false;
-    memset(send_token, 0, sizeof(send_token));
-    strcpy(send_token, "CELL");        // Default token
     memset(send_recipient, 0, sizeof(send_recipient));
     strcpy(send_amount, "0.001");  // Default amount
     strcpy(send_fee, "0.01");      // Default fee
