@@ -222,39 +222,48 @@ void render(AppState& state) {
     
     ImGui::Separator();
 
-    // Token balance rows (button-like cards)
+    // Token balance cards (responsive grid)
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
     
+    float card_width = 280.0f;  // Fixed width per card
+    float card_height = 70.0f;
+    float spacing = 10.0f;
+    float available_width = ImGui::GetContentRegionAvail().x;
+    
+    // Calculate how many cards fit per row
+    int cards_per_row = (int)((available_width + spacing) / (card_width + spacing));
+    if (cards_per_row < 1) cards_per_row = 1;
+    
     for (int i = 0; i < 3; i++) {
-        // Create button-style background
-        ImVec4 btn_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, btn_bg);
+        // Start new row if needed
+        if (i > 0 && i % cards_per_row != 0) {
+            ImGui::SameLine();
+        }
+        
+        // Card background
+        ImVec4 card_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, card_bg);
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
         
-        float row_height = 60.0f;
-        char row_id[32];
-        snprintf(row_id, sizeof(row_id), "##token_row_%s", tokens[i]);
-        ImGui::BeginChild(row_id, ImVec2(-1, row_height), true, ImGuiWindowFlags_NoScrollbar);
+        char card_id[32];
+        snprintf(card_id, sizeof(card_id), "##token_card_%s", tokens[i]);
+        ImGui::BeginChild(card_id, ImVec2(card_width, card_height), true, ImGuiWindowFlags_NoScrollbar);
         
-        // Left side: Token name (large) and balance below
+        // Token name (top left)
         ImGui::SetCursorPos(ImVec2(15, 12));
-        ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]); // Same font but we'll scale text
         ImGui::Text("%s", tokens[i]);
-        ImGui::PopFont();
         
-        // Balance below token name (smaller, green)
+        // Balance (below token name, green)
         ImGui::SetCursorPos(ImVec2(15, 35));
         auto it = state.token_balances.find(tokens[i]);
         std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
         ImVec4 green_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
-        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(green_color.x * 0.8f, green_color.y * 0.8f, green_color.z * 0.8f, green_color.w));
-        ImGui::TextDisabled("%s", formatted.c_str());
-        ImGui::PopStyleColor();
+        ImGui::TextColored(green_color, "%s", formatted.c_str());
         
-        // Right side: Send button
-        float btn_width = 90.0f;
-        float btn_height = 40.0f;
-        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - btn_width - 10, (row_height - btn_height) * 0.5f));
+        // Send button (right side)
+        float btn_width = 80.0f;
+        float btn_height = 35.0f;
+        ImGui::SetCursorPos(ImVec2(card_width - btn_width - 10, (card_height - btn_height) * 0.5f));
         
         char btn_id[32];
         snprintf(btn_id, sizeof(btn_id), ICON_FA_PAPER_PLANE " Send##%s", tokens[i]);
@@ -267,8 +276,6 @@ void render(AppState& state) {
         ImGui::EndChild();
         ImGui::PopStyleVar();
         ImGui::PopStyleColor();
-        
-        if (i < 2) ImGui::Spacing();
     }
 
     ImGui::Separator();
