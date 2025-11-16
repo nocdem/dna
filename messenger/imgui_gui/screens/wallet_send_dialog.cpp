@@ -207,34 +207,40 @@ void buildAndSendTransaction(AppState& state) {
     cellframe_tx_set_timestamp(builder, ts);
 
     // Parse recipient address from Base58
-    cellframe_addr_t recipient_addr;
-    size_t decoded_size = base58_decode(recipient, &recipient_addr);
+    uint8_t recipient_addr_buf[BASE58_DECODE_SIZE(256)];  // Large enough buffer
+    size_t decoded_size = base58_decode(recipient, recipient_addr_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
         state.send_status = "ERROR: Invalid recipient address";
         free(selected_utxos);
         cellframe_tx_builder_free(builder);
         return;
     }
+    cellframe_addr_t recipient_addr;
+    memcpy(&recipient_addr, recipient_addr_buf, sizeof(cellframe_addr_t));
 
     // Parse network collector address
-    cellframe_addr_t network_collector_addr;
-    decoded_size = base58_decode(NETWORK_FEE_COLLECTOR, &network_collector_addr);
+    uint8_t network_collector_buf[BASE58_DECODE_SIZE(256)];  // Large enough buffer
+    decoded_size = base58_decode(NETWORK_FEE_COLLECTOR, network_collector_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
         state.send_status = "ERROR: Invalid network collector address";
         free(selected_utxos);
         cellframe_tx_builder_free(builder);
         return;
     }
+    cellframe_addr_t network_collector_addr;
+    memcpy(&network_collector_addr, network_collector_buf, sizeof(cellframe_addr_t));
 
     // Parse sender address (for change)
-    cellframe_addr_t sender_addr;
-    decoded_size = base58_decode(address, &sender_addr);
+    uint8_t sender_addr_buf[BASE58_DECODE_SIZE(256)];  // Large enough buffer
+    decoded_size = base58_decode(address, sender_addr_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
         state.send_status = "ERROR: Invalid sender address";
         free(selected_utxos);
         cellframe_tx_builder_free(builder);
         return;
     }
+    cellframe_addr_t sender_addr;
+    memcpy(&sender_addr, sender_addr_buf, sizeof(cellframe_addr_t));
 
     // Calculate network fee
     uint256_t network_fee = {0};
