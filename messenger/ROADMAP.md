@@ -2,7 +2,7 @@
 
 **Version:** 0.1.120+
 **Last Updated:** 2025-11-16
-**Project Status:** Phase 5 (Web-Based Messenger) - Phase 4, 5.1-5.5, 6.1 Complete, ImGui GUI Active
+**Project Status:** Phase 6 (Web Messenger) & Phase 7 (DNA Board) - Phase 4, 5.1-5.5, 7.1 Complete, ImGui GUI Active
 
 ---
 
@@ -208,7 +208,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messaging platform forked f
 
 ---
 
-## Phase 5: Web-Based Messenger 🚧 IN PROGRESS
+## Phase 6: Web-Based Messenger 🚧 IN PROGRESS
 
 **Timeline:** 3-4 weeks
 **Status:** Active development (branch: `feature/web-messenger`)
@@ -453,21 +453,21 @@ Implemented per-identity contact lists with DHT synchronization for multi-device
 
 ---
 
-## Phase 6: DNA Board - Censorship-Resistant Social Media 🚧 IN PROGRESS (Alpha)
+## Phase 7: DNA Board - Censorship-Resistant Social Media 🚧 IN PROGRESS (Alpha)
 
 **Timeline:** 8 weeks (alpha) | 12-16 weeks (full v1.0)
-**Status:** Phase 6.1 ✅ Complete | Phase 6.2 🚧 In Progress (Alpha - Simplified)
+**Status:** Phase 7.1 ✅ Complete | Phase 7.2 🚧 In Progress (Alpha - Simplified)
 **Prerequisites:** P2P architecture, DHT storage, User profiles
 **Design Document:** `/DNA_BOARD_PHASE10_PLAN.md`
 
 ### Alpha Implementation (Current)
 
-**Phase 6.1 ✅ Complete (2025-11-12):**
+**Phase 7.1 ✅ Complete (2025-11-12):**
 - User profiles with DHT storage (display name, bio, location, website)
 - Profile cache system (7-day TTL, cache-first architecture)
 - Auto-integration (contact add, message receive, app startup)
 
-**Phase 6.2 🚧 In Progress (Alpha - Simplified):**
+**Phase 7.2 🚧 In Progress (Alpha - Simplified):**
 - Using existing legacy wall system (`dna_message_wall.c` - working)
 - Wall viewing from message window (button exists, functional)
 - Pending: Contact profile viewing, social links, comment threading
@@ -539,7 +539,7 @@ DNA Board is a **censorship-resistant social media platform** built on DNA Messe
 
 ---
 
-## Phase 7: Post-Quantum Voice/Video Calls 📋 PLANNED
+## Phase 8: Post-Quantum Voice/Video Calls 📋 PLANNED
 
 **Timeline:** ~20 weeks (5 months)
 **Status:** Research & Planning
@@ -603,7 +603,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 
 ---
 
-## Phase 8+: Future Enhancements 📋 PLANNED
+## Phase 9+: Future Enhancements 📋 PLANNED
 
 ### Advanced Features
 - [ ] Stickers and GIFs
@@ -658,13 +658,19 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - ✅ Per-identity contact lists with DHT sync
 - ✅ PostgreSQL → SQLite migration complete
 
-### Phase 6 (DNA Board) 🚧
+### Phase 6 (Web Messenger) 🚧
+- ✅ WebAssembly crypto module
+- 🚧 HTML5 responsive UI
+- ⏳ Browser-based client
+- ⏳ PWA support
+
+### Phase 7 (DNA Board) 🚧
 - ✅ User profiles with DHT storage
 - 🚧 Wall posts and feed
 - ⏳ Comment threading
 - ⏳ Community voting
 
-### Phase 7-8+ (Future) 📋
+### Phase 8-9+ (Future) 📋
 - ⏳ Post-quantum voice/video calls
 - ⏳ Mobile apps (Android/iOS)
 - ⏳ Forward secrecy
@@ -681,10 +687,10 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 | 0.3.0 | Phase 3 | ✅ Complete | CLI messenger (removed) |
 | 0.4.0 | Phase 4 | ✅ Complete | Desktop app + wallet integration |
 | 0.5.0 | Phase 5 | ✅ Complete | P2P architecture (DHT, offline queue, contacts sync) |
-| 0.6.0 | Phase 6 | 🚧 In Progress | DNA Board (profiles, wall posts, social media) |
-| 0.7.0 | Phase 5 | 📋 Planned | Web messenger (WebAssembly) |
-| 1.0.0 | Phase 7 | 📋 Planned | Voice/Video calls (first stable release) |
-| 1.1.0 | Phase 8+ | 📋 Planned | Advanced features (mobile, security, etc.) |
+| 0.6.0 | Phase 6 | 🚧 In Progress | Web messenger (WebAssembly) |
+| 0.7.0 | Phase 7 | 🚧 In Progress | DNA Board (profiles, wall posts, social media) |
+| 1.0.0 | Phase 8 | 📋 Planned | Voice/Video calls (first stable release) |
+| 1.1.0 | Phase 9+ | 📋 Planned | Advanced features (mobile, security, etc.) |
 
 **Current Version:** 0.1.120+ (auto-incremented with each commit)
 
@@ -721,17 +727,17 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - **Phase 5.3:** PostgreSQL → SQLite Migration (Fully decentralized storage)
 - **Phase 5.4:** DHT-based Keyserver with Signed Reverse Mapping
 - **Phase 5.5:** Per-Identity Contact Lists with DHT Sync
-- **Phase 6.1:** User Profiles with DHT Storage
+- **Phase 7.1:** User Profiles with DHT Storage
 
 ### 🚧 In Progress
-- **Phase 5:** Web-Based Messenger (active on `feature/web-messenger` branch)
-- **Phase 6.2:** Wall Posts & Social Features (alpha)
+- **Phase 6:** Web-Based Messenger (active on `feature/web-messenger` branch)
+- **Phase 7.2:** Wall Posts & Social Features (alpha)
 
 ### 📋 Planned
 - **Phase 5.6-5.8:** Multi-device message sync, DHT keyserver enhancements, integration testing
-- **Phase 6:** DNA Board full features (comment threading, voting, social links)
-- **Phase 7:** Post-Quantum Voice/Video Calls
-- **Phase 8+:** Future Enhancements (mobile apps, advanced security, etc.)
+- **Phase 7:** DNA Board full features (comment threading, voting, social links)
+- **Phase 8:** Post-Quantum Voice/Video Calls
+- **Phase 9+:** Future Enhancements (mobile apps, advanced security, etc.)
 
 ---
 
@@ -739,7 +745,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 
 DNA Messenger is in active development. Contributions welcome!
 
-**Current Phase:** DNA Board Social Features (Phase 6.2) & Web-Based Messenger (Phase 5)
+**Current Phase:** DNA Board Social Features (Phase 7.2) & Web-Based Messenger (Phase 6)
 **How to Contribute:**
 - Check `CLAUDE.md` for development guidelines
 - Pick tasks from current phase
@@ -750,7 +756,7 @@ DNA Messenger is in active development. Contributions welcome!
 
 **Project Start:** 2025-10-14
 **Current Version:** 0.1.120+
-**Next Milestone:** DNA Board Social Features (Phase 6.2) & Web Messenger (Phase 5)
+**Next Milestone:** DNA Board Social Features (Phase 7.2) & Web Messenger (Phase 6)
 **Recent Achievements:**
 - ✅ **DHT Refactoring Complete!** (2025-11-16)
   - Phase 7: Unified cache manager implementation
@@ -758,7 +764,7 @@ DNA Messenger is in active development. Contributions welcome!
   - Phase 4: DHT directory reorganization (core/client/shared)
   - Phase 3: dht_context.cpp modularization
   - 100% backward compatible migration
-- ✅ **User Profiles with DHT Storage!** (Phase 6.1 - 2025-11-12)
+- ✅ **User Profiles with DHT Storage!** (Phase 7.1 - 2025-11-12)
   - Profile cache system (7-day TTL, cache-first)
   - Display names, bios, avatars, social links
   - Auto-integration with contacts and messaging

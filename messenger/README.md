@@ -224,7 +224,42 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
   - Theme support across all wallet dialogs
   - Direct integration with local Cellframe node via RPC
 
-### 🚧 Phase 5: Web-Based Messenger (In Progress - branch: feature/web-messenger)
+### ✅ Phase 5: Distributed P2P Architecture (COMPLETE)
+- ✅ **Phase 5.1:** P2P Transport Layer (COMPLETE)
+  - OpenDHT integration for peer discovery
+  - Direct peer-to-peer messaging via TCP
+  - 3 public bootstrap nodes (US/EU)
+  - `persistent_bootstrap` binary (Linux only) for running your own DHT bootstrap node
+
+- ✅ **Phase 5.2:** Offline Message Queueing (COMPLETE - Bug Fix: 2025-11-10)
+  - DHT-based message storage for offline recipients
+  - 7-day message TTL with automatic retrieval
+  - Binary serialization with SHA256 keys
+  - 2-minute automatic polling in GUI
+  - **Critical Bug Fix (2025-11-10):** Fixed queue key mismatch (display names vs fingerprints)
+
+- ✅ **Phase 5.3:** PostgreSQL → SQLite Migration (COMPLETE)
+  - Local SQLite message storage (no centralized DB)
+  - DHT-based groups with UUID v4 + SHA256 keys
+  - Local SQLite cache for offline access
+  - Full CRUD operations for groups
+
+- ✅ **Phase 5.4:** DHT-based Keyserver with Signed Reverse Mapping (COMPLETE)
+  - Cryptographically signed reverse mappings (fingerprint → identity)
+  - Sender identification without pre-added contacts
+  - Cross-platform signature verification
+  - Prevents identity spoofing attacks
+
+- ✅ **Phase 5.5:** Per-Identity Contact Lists with DHT Sync (COMPLETE)
+  - Per-identity SQLite databases (`~/.dna/<identity>_contacts.db`)
+  - Automatic migration from global contacts.db
+  - DHT synchronization with Kyber1024 self-encryption
+  - Dilithium5 signatures for authenticity
+  - Multi-device support via BIP39 seed phrase
+  - Manual and automatic sync in GUI (10-minute timer)
+  - SHA3-512 DHT key derivation for contact list storage
+
+### 🚧 Phase 6: Web-Based Messenger (In Progress - branch: feature/web-messenger)
 - [x] WebAssembly crypto module (Emscripten compilation)
 - [x] DNA API compiled to WASM (dna_wasm.js/wasm)
 - [x] JavaScript wrapper functions
@@ -234,41 +269,6 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 - [ ] Cross-browser compatibility (Chrome, Firefox, Safari, Edge)
 - [ ] Client-side encryption/decryption
 - [ ] IndexedDB for local key storage
-
-### ✅ Phase 6: Distributed P2P Architecture (COMPLETE)
-- ✅ **Phase 6.1:** P2P Transport Layer (COMPLETE)
-  - OpenDHT integration for peer discovery
-  - Direct peer-to-peer messaging via TCP
-  - 3 public bootstrap nodes (US/EU)
-  - `persistent_bootstrap` binary (Linux only) for running your own DHT bootstrap node
-
-- ✅ **Phase 6.2:** Offline Message Queueing (COMPLETE - Bug Fix: 2025-11-10)
-  - DHT-based message storage for offline recipients
-  - 7-day message TTL with automatic retrieval
-  - Binary serialization with SHA256 keys
-  - 2-minute automatic polling in GUI
-  - **Critical Bug Fix (2025-11-10):** Fixed queue key mismatch (display names vs fingerprints)
-
-- ✅ **Phase 6.3:** PostgreSQL → SQLite Migration (COMPLETE)
-  - Local SQLite message storage (no centralized DB)
-  - DHT-based groups with UUID v4 + SHA256 keys
-  - Local SQLite cache for offline access
-  - Full CRUD operations for groups
-
-- ✅ **Phase 6.4:** DHT-based Keyserver with Signed Reverse Mapping (COMPLETE)
-  - Cryptographically signed reverse mappings (fingerprint → identity)
-  - Sender identification without pre-added contacts
-  - Cross-platform signature verification
-  - Prevents identity spoofing attacks
-
-- ✅ **Phase 6.5:** Per-Identity Contact Lists with DHT Sync (COMPLETE)
-  - Per-identity SQLite databases (`~/.dna/<identity>_contacts.db`)
-  - Automatic migration from global contacts.db
-  - DHT synchronization with Kyber1024 self-encryption
-  - Dilithium5 signatures for authenticity
-  - Multi-device support via BIP39 seed phrase
-  - Manual and automatic sync in GUI (10-minute timer)
-  - SHA3-512 DHT key derivation for contact list storage
 
 ### 📋 Phase 7: DNA Board - Censorship-Resistant Social Media (Planned)
 **Free speech social media platform** built on DNA Messenger:
