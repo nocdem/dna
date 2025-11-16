@@ -42,6 +42,7 @@ add_executable(dna_messenger_imgui
     app.cpp
     settings_manager.cpp
     ui_helpers.cpp
+    texture_manager.cpp
     core/app_state.cpp
     helpers/data_loader.cpp
     screens/register_name_screen.cpp

@@ -5,6 +5,7 @@
 #include "../theme_colors.h"
 #include "../settings_manager.h"
 #include "../font_awesome.h"
+#include "../texture_manager.h"
 
 extern "C" {
     #include "../../messenger.h"
@@ -136,12 +137,34 @@ void render(AppState& state) {
         } else {
             ImGui::BeginChild("ProfileContent", ImVec2(0, -50), false);
 
-            // Avatar section (Phase 4.4)
-            if (state.profile_avatar_loaded) {
-                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(),
-                                 ICON_FA_IMAGE " Avatar: Loaded (64x64, %zu bytes base64)", state.profile_avatar_base64.length());
-                ImGui::Spacing();
-                ImGui::Spacing();
+            // Avatar section (display actual image)
+            if (state.profile_avatar_loaded && !state.profile_avatar_base64.empty()) {
+                // Load avatar texture
+                int avatar_width = 0, avatar_height = 0;
+                GLuint texture_id = TextureManager::getInstance().loadAvatar(
+                    state.viewed_profile_fingerprint,
+                    state.profile_avatar_base64,
+                    &avatar_width,
+                    &avatar_height
+                );
+
+                if (texture_id != 0) {
+                    // Center the avatar
+                    float avatar_display_size = 64.0f;
+                    float center_x = (ImGui::GetContentRegionAvail().x - avatar_display_size) * 0.5f;
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + center_x);
+
+                    // Display avatar image
+                    ImGui::Image((void*)(intptr_t)texture_id, ImVec2(avatar_display_size, avatar_display_size));
+
+                    ImGui::Spacing();
+                    ImGui::Spacing();
+                } else {
+                    // Fallback if texture loading failed
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
+                                     ICON_FA_IMAGE " Avatar failed to load");
+                    ImGui::Spacing();
+                }
             }
 
             // Identity section

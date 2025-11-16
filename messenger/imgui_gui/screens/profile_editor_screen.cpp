@@ -5,6 +5,7 @@
 #include "../theme_colors.h"
 #include "../settings_manager.h"
 #include "../font_awesome.h"
+#include "../texture_manager.h"
 
 extern "C" {
     #include "../../messenger.h"
@@ -257,16 +258,41 @@ void render(AppState& state) {
                 }
             }
 
-            // Avatar status
-            if (state.profile_avatar_loaded) {
-                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(),
-                                 ICON_FA_CIRCLE_CHECK " Avatar loaded (%zu bytes base64)", state.profile_avatar_base64.length());
-                ImGui::SameLine();
-                if (ThemedButton(ICON_FA_TRASH " Remove", ImVec2(80, 25), false)) {
-                    state.profile_avatar_base64.clear();
-                    state.profile_avatar_loaded = false;
-                    memset(state.profile_avatar_path, 0, sizeof(state.profile_avatar_path));
-                    state.profile_status = "Avatar removed";
+            // Avatar preview and controls
+            if (state.profile_avatar_loaded && !state.profile_avatar_base64.empty()) {
+                // Load and display avatar texture
+                messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                std::string cache_key = ctx ? std::string(ctx->identity) : "preview";
+
+                int avatar_width = 0, avatar_height = 0;
+                GLuint texture_id = TextureManager::getInstance().loadAvatar(
+                    cache_key,
+                    state.profile_avatar_base64,
+                    &avatar_width,
+                    &avatar_height
+                );
+
+                if (texture_id != 0) {
+                    // Center the avatar preview
+                    float avatar_display_size = 64.0f;
+                    float center_x = (ImGui::GetContentRegionAvail().x - avatar_display_size) * 0.5f;
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + center_x);
+
+                    // Display avatar image
+                    ImGui::Image((void*)(intptr_t)texture_id, ImVec2(avatar_display_size, avatar_display_size));
+
+                    // Remove button (centered below avatar)
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + center_x);
+                    if (ThemedButton(ICON_FA_TRASH " Remove", ImVec2(100, 25), false)) {
+                        state.profile_avatar_base64.clear();
+                        state.profile_avatar_loaded = false;
+                        memset(state.profile_avatar_path, 0, sizeof(state.profile_avatar_path));
+                        state.profile_status = "Avatar removed";
+                        TextureManager::getInstance().removeTexture(cache_key);
+                    }
+                } else {
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(),
+                                     ICON_FA_IMAGE " Avatar failed to load");
                 }
             }
 
