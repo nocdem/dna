@@ -524,11 +524,12 @@ int dna_load_wall(dht_context_t *dht_ctx,
  * Post a message to user's public message wall
  */
 int dna_post_to_wall(dht_context_t *dht_ctx,
-                     const char *fingerprint,
+                     const char *wall_owner_fingerprint,
+                     const char *poster_fingerprint,
                      const char *message_text,
                      const uint8_t *private_key,
                      const char *reply_to) {
-    if (!dht_ctx || !fingerprint || !message_text || !private_key) {
+    if (!dht_ctx || !wall_owner_fingerprint || !poster_fingerprint || !message_text || !private_key) {
         return -1;
     }
 
@@ -539,16 +540,16 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
         return -1;
     }
 
-    // Load existing wall (or create new)
+    // Load existing wall from wall owner's DHT location (or create new)
     dna_message_wall_t *wall = NULL;
-    int ret = dna_load_wall(dht_ctx, fingerprint, &wall);
+    int ret = dna_load_wall(dht_ctx, wall_owner_fingerprint, &wall);
     if (ret == -2) {
         // Wall doesn't exist, create new
         wall = calloc(1, sizeof(dna_message_wall_t));
         if (!wall) {
             return -1;
         }
-        strncpy(wall->fingerprint, fingerprint, sizeof(wall->fingerprint) - 1);
+        strncpy(wall->fingerprint, wall_owner_fingerprint, sizeof(wall->fingerprint) - 1);
         wall->messages = NULL;
         wall->message_count = 0;
         wall->allocated_count = 0;
@@ -562,8 +563,8 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     strncpy(new_msg.text, message_text, DNA_MESSAGE_WALL_MAX_TEXT_LEN - 1);
     new_msg.timestamp = (uint64_t)time(NULL);
 
-    // Generate post_id
-    dna_wall_make_post_id(fingerprint, new_msg.timestamp, new_msg.post_id);
+    // Generate post_id using POSTER's fingerprint (not wall owner's!)
+    dna_wall_make_post_id(poster_fingerprint, new_msg.timestamp, new_msg.post_id);
 
     // Handle threading
     new_msg.reply_depth = 0;  // Default: top-level post
@@ -658,9 +659,9 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
         return -1;
     }
 
-    // Publish to DHT
+    // Publish to DHT at wall owner's location
     char dht_key[65] = {0};
-    if (dna_message_wall_get_dht_key(fingerprint, dht_key) != 0) {
+    if (dna_message_wall_get_dht_key(wall_owner_fingerprint, dht_key) != 0) {
         free(json_data);
         dna_message_wall_free(wall);
         return -1;
@@ -677,8 +678,8 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
         return -1;
     }
 
-    printf("[DNA_WALL] Successfully posted message to wall (fingerprint=%s)\n",
-           fingerprint);
+    printf("[DNA_WALL] Successfully posted message to wall (wall_owner=%s, poster=%s)\n",
+           wall_owner_fingerprint, poster_fingerprint);
 
     dna_message_wall_free(wall);
     return 0;

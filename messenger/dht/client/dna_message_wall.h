@@ -60,14 +60,16 @@ typedef struct {
  * - reply_depth automatically calculated (0=post, 1=comment, 2=reply)
  *
  * @param dht_ctx DHT context
- * @param fingerprint User's SHA3-512 fingerprint (128 hex chars)
+ * @param wall_owner_fingerprint Wall owner's SHA3-512 fingerprint (where wall is stored)
+ * @param poster_fingerprint Poster's SHA3-512 fingerprint (who is posting)
  * @param message_text Message text (max 1024 chars)
  * @param private_key Dilithium5 private key for signing (4896 bytes)
  * @param reply_to Parent post_id for threading (NULL or "" for top-level post)
  * @return 0 on success, -1 on error, -2 if max depth exceeded
  */
 int dna_post_to_wall(dht_context_t *dht_ctx,
-                     const char *fingerprint,
+                     const char *wall_owner_fingerprint,
+                     const char *poster_fingerprint,
                      const char *message_text,
                      const uint8_t *private_key,
                      const char *reply_to);

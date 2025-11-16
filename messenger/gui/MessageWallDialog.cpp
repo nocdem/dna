@@ -286,9 +286,13 @@ void MessageWallDialog::onPostMessage() {
     statusLabel->setStyleSheet("font-style: italic; color: blue;");
     postButton->setEnabled(false);
 
-    ret = dna_post_to_wall(dht_ctx, m_fingerprint.toUtf8().constData(),
+    // Pass both: wall owner's fingerprint and poster's fingerprint (current user)
+    ret = dna_post_to_wall(dht_ctx,
+                           m_fingerprint.toUtf8().constData(),  // Wall owner
+                           m_ctx->identity,  // Poster (current user)
                            messageText.toUtf8().constData(),
-                           key->private_key);
+                           key->private_key,
+                           NULL);
 
     qgp_key_free(key);
 
