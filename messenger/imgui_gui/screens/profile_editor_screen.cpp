@@ -72,9 +72,6 @@ void loadProfile(AppState& state, bool force_reload) {
         if (profile->socials.x[0] != '\0') strncpy(state.profile_twitter, profile->socials.x, sizeof(state.profile_twitter) - 1);
         if (profile->socials.github[0] != '\0') strncpy(state.profile_github, profile->socials.github, sizeof(state.profile_github) - 1);
 
-        // Load profile picture CID
-        if (profile->profile_picture_ipfs[0] != '\0') strncpy(state.profile_pic_cid, profile->profile_picture_ipfs, sizeof(state.profile_pic_cid) - 1);
-
         // Load bio
         if (profile->bio[0] != '\0') strncpy(state.profile_bio, profile->bio, sizeof(state.profile_bio) - 1);
 
@@ -134,9 +131,6 @@ void saveProfile(AppState& state) {
     if (state.profile_telegram[0]) strncpy(profile_data.socials.telegram, state.profile_telegram, sizeof(profile_data.socials.telegram) - 1);
     if (state.profile_twitter[0]) strncpy(profile_data.socials.x, state.profile_twitter, sizeof(profile_data.socials.x) - 1);
     if (state.profile_github[0]) strncpy(profile_data.socials.github, state.profile_github, sizeof(profile_data.socials.github) - 1);
-
-    // Profile picture CID
-    if (state.profile_pic_cid[0]) strncpy(profile_data.profile_picture_ipfs, state.profile_pic_cid, sizeof(profile_data.profile_picture_ipfs) - 1);
 
     // Bio
     if (state.profile_bio[0]) strncpy(profile_data.bio, state.profile_bio, sizeof(profile_data.bio) - 1);
@@ -298,15 +292,6 @@ void render(AppState& state) {
 
             ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
                              "Supported: PNG, JPEG, BMP, GIF. Image will be resized to 64x64.");
-        }
-
-        // Profile Picture (IPFS - Legacy/Future)
-        if (ImGui::CollapsingHeader("Profile Picture (IPFS)")) {
-            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
-            ImGui::InputText("IPFS CID", state.profile_pic_cid, sizeof(state.profile_pic_cid));
-            ImGui::PopStyleColor();
-            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
-                             "Upload your profile picture to IPFS and paste the CID here (optional).");
         }
 
         // Bio
