@@ -276,12 +276,18 @@ void render(AppState& state) {
 
             ImGui::SameLine();
             if (ThemedButton(ICON_FA_UPLOAD " Upload", ImVec2(100, 25), false)) {
+                printf("[ProfileEditor] ========== UPLOAD BUTTON CLICKED ==========\n");
+                fflush(stdout);
+
                 // Process avatar file
                 if (strlen(state.profile_avatar_path) > 0) {
-                    printf("[ProfileEditor] Uploading avatar from: %s\n", state.profile_avatar_path);
+                    printf("[ProfileEditor] Uploading avatar from: '%s'\n", state.profile_avatar_path);
+                    printf("[ProfileEditor] Path length: %zu bytes\n", strlen(state.profile_avatar_path));
 
                     char base64_out[12288] = {0};
+                    printf("[ProfileEditor] Calling avatar_load_and_encode...\n");
                     int ret = avatar_load_and_encode(state.profile_avatar_path, base64_out, sizeof(base64_out));
+                    printf("[ProfileEditor] avatar_load_and_encode returned: %d\n", ret);
 
                     if (ret == 0) {
                         state.profile_avatar_base64 = std::string(base64_out);
@@ -295,8 +301,10 @@ void render(AppState& state) {
                     }
                 } else {
                     state.profile_status = "Please enter a file path first";
-                    printf("[ProfileEditor] ✗ No file path provided\n");
+                    printf("[ProfileEditor] ✗ No file path provided (path='%s', len=%zu)\n",
+                           state.profile_avatar_path, strlen(state.profile_avatar_path));
                 }
+                printf("[ProfileEditor] ========== UPLOAD COMPLETE ==========\n");
             }
 
             // Avatar preview and controls
