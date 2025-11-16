@@ -261,7 +261,7 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 
 ### 🚧 Phase 6: DNA Board - Censorship-Resistant Social Media (In Progress - Alpha)
 
-**Completed (Phase 6.1):**
+**Completed (Phase 6.1 - Base System):**
 - [x] User profiles with DHT storage (display name, bio, location, website)
 - [x] Profile cache system (7-day TTL, cache-first architecture)
 - [x] Profile editor screen (edit own profile)
@@ -272,12 +272,27 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 - [x] Dilithium5 signatures for wall posts
 - [x] 30-day TTL with rotation (100 messages max)
 
-**In Progress (Phase 6.2):**
-- [ ] Comment threading (reply-to field, nested UI)
-- [ ] Community voting (thumbs up/down)
+**Completed (Phase 6.2 - Avatar System):**
+- [x] Avatar upload with auto-resize (64x64 PNG, 20KB limit)
+- [x] Base64 encoding for DHT storage
+- [x] OpenGL texture loading (TextureManager singleton)
+- [x] Circular avatar clipping (profiles, wall, chat)
+- [x] Comment threading (reply-to field, collapsed/expandable UI)
+- [x] Thread sorting (forum bump - latest activity first)
+- [x] Wall poster identification fix (post_id uses poster fingerprint)
+
+**Completed (Phase 6.3 - Community Voting):**
+- [x] Community voting system (thumbs up/down on wall posts)
+- [x] Vote backend with Dilithium5 signatures (`dna_wall_votes.c/h` - 650 lines)
+- [x] Separate DHT storage per post (SHA256 key derivation)
+- [x] One vote per fingerprint enforcement (permanent votes)
+- [x] Vote UI with emoji buttons (👍 👎) and real-time counts
+- [x] Net score display with color coding (green/red/gray)
+- [x] User vote highlighting (blue=upvoted, red=downvoted)
+
+**Next (Phase 6.4):**
 - [ ] Profile schema extensions (social links: Telegram, Twitter, GitHub, Discord)
 - [ ] Crypto addresses for tipping (BTC, ETH, CPUNK)
-- [ ] Avatar support (IPFS integration)
 - [ ] Feed sorting (Recent, Top, Controversial)
 
 **Note:** Alpha version is FREE with no costs. Full economics and anti-spam measures planned for v1.0.
