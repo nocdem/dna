@@ -261,19 +261,40 @@ void render(AppState& state) {
                 ImGui::Dummy(ImVec2(0, 5));
                 ImGui::Indent(10);
 
-                // Header: timestamp + verification + depth label
+                // Header: timestamp + verification
                 ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", formatWallTimestamp(msg.timestamp).c_str());
                 ImGui::SameLine();
                 if (msg.verified) {
                     ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextSuccess() : ClubTheme::TextSuccess(), ICON_FA_CIRCLE_CHECK " Signed");
                 }
-                if (msg.reply_depth > 0) {
-                    ImGui::SameLine();
-                    const char* depth_labels[] = {"", ICON_FA_REPLY " Reply", ICON_FA_REPLY_ALL " Reply", ICON_FA_REPLY_ALL " Reply"};
-                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", depth_labels[msg.reply_depth]);
-                }
 
                 ImGui::Spacing();
+
+                // Show "Reply to" line if this is a reply
+                if (msg.reply_depth > 0 && !msg.reply_to.empty()) {
+                    // Find parent message
+                    std::string parent_text = "";
+                    for (const auto& m : state.wall_messages) {
+                        if (m.post_id == msg.reply_to) {
+                            parent_text = m.text;
+                            break;
+                        }
+                    }
+
+                    // Show reply context
+                    if (!parent_text.empty()) {
+                        // Truncate parent text to first 50 chars
+                        std::string truncated = parent_text;
+                        if (truncated.length() > 50) {
+                            truncated = truncated.substr(0, 50) + "...";
+                        }
+
+                        const char* reply_icon = ICON_FA_TURN_UP " ";
+                        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
+                                         "%sReplying to: \"%s\"", reply_icon, truncated.c_str());
+                        ImGui::Spacing();
+                    }
+                }
 
                 // Message text
                 ImGui::TextWrapped("%s", msg.text.c_str());
