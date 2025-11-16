@@ -8,7 +8,7 @@
 #include "../../messenger.h"
 #include "../../database/contacts_db.h"
 #include "../../database/profile_manager.h"
-#include "../../dht/dht_keyserver.h"
+#include "../../dht/core/dht_keyserver.h"
 #include "../../p2p/p2p_transport.h"
 
 #include <cstring>
@@ -312,10 +312,12 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
 
                     // Fetch profile for new contact (cache for future use)
                     printf("[AddContact] Fetching profile for new contact...\n");
-                    dht_profile_t profile;
-                    int result = profile_manager_get_profile(fingerprint, &profile);
-                    if (result == 0) {
-                        printf("[AddContact] [OK] Profile cached: %s\n", profile.display_name);
+                    dna_unified_identity_t *identity = NULL;
+                    int result = profile_manager_get_profile(fingerprint, &identity);
+                    if (result == 0 && identity) {
+                        printf("[AddContact] [OK] Profile cached: %s\n",
+                               identity->display_name[0] ? identity->display_name : fingerprint);
+                        dna_identity_free(identity);
                     } else if (result == -2) {
                         printf("[AddContact] No profile found in DHT (user hasn't published yet)\n");
                     } else {

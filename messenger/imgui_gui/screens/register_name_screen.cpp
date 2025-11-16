@@ -10,7 +10,7 @@
 
 extern "C" {
     #include "../../messenger.h"
-    #include "../../dht/dht_keyserver.h"
+    #include "../../dht/core/dht_keyserver.h"
     #include "../../p2p/p2p_transport.h"
 }
 #include <algorithm>

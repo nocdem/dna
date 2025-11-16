@@ -12,7 +12,7 @@ extern "C" {
 #include "../../messenger.h"
 #include "../../crypto/bip39/bip39.h"
 #include "../../dht/client/dht_singleton.h"
-#include "../../dht/dht_keyserver.h"
+#include "../../dht/core/dht_keyserver.h"
 #include "../../crypto/utils/qgp_platform.h"
 }
 
