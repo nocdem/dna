@@ -224,60 +224,59 @@ void render(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    // Token balance display
+    // Token balance display (borderless table)
     const char* tokens[] = {"CPUNK", "CELL", "KEL"};
 
-    for (int i = 0; i < 3; i++) {
-        // Token name on left (2x larger text)
-        ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
-        ImGui::SetWindowFontScale(2.0f);
-        ImGui::Text("%s", tokens[i]);
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::PopFont();
-        
-        // Balance and button on same line
-        ImGui::SameLine();
-        
-        // Get balance text
-        auto it = state.token_balances.find(tokens[i]);
-        std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
-        
-        // Calculate spacing - balance positioned with extra space before button
-        float btn_width = 100.0f;
-        float extra_spacing = 60.0f;  // 2-3 more spaces worth of spacing
-        float text_width = ImGui::CalcTextSize(formatted.c_str()).x;
-        float avail_width = ImGui::GetContentRegionAvail().x;
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avail_width - text_width - btn_width - extra_spacing);
-        
-        // Draw balance (2x larger text)
-        ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
-        ImGui::SetWindowFontScale(2.0f);
-        if (it != state.token_balances.end()) {
-            ImGui::Text("%s", formatted.c_str());
-        } else {
-            ImGui::TextDisabled("%s", formatted.c_str());
-        }
-        ImGui::SetWindowFontScale(1.0f);
-        ImGui::PopFont();
-        
-        // Send button on same line with vertical alignment
-        ImGui::SameLine();
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + (extra_spacing - 20.0f)); // Add extra spacing
-        
-        // Adjust button vertical position to align with scaled text
-        float line_height = ImGui::GetTextLineHeight();
-        float scaled_line_height = line_height * 2.0f;
-        float btn_offset = (scaled_line_height - ImGui::GetFrameHeight()) * 0.5f;
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + btn_offset);
-        
-        char btn_id[32];
-        snprintf(btn_id, sizeof(btn_id), ICON_FA_PAPER_PLANE " Send##%s", tokens[i]);
-        if (ThemedButton(btn_id, ImVec2(btn_width, 0))) {
-            state.show_send_dialog = true;
-            state.send_status.clear();
-        }
+    if (ImGui::BeginTable("##tokens_table", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_NoPadOuterX)) {
+        // Setup columns: token (left), amount (left), button (right)
+        ImGui::TableSetupColumn("Token", ImGuiTableColumnFlags_WidthFixed, 150.0f);
+        ImGui::TableSetupColumn("Amount", ImGuiTableColumnFlags_WidthStretch);
+        ImGui::TableSetupColumn("Button", ImGuiTableColumnFlags_WidthFixed, 100.0f);
 
-        if (i < 2) ImGui::Spacing();
+        for (int i = 0; i < 3; i++) {
+            ImGui::TableNextRow();
+            
+            // Token column (left-aligned, 2x text)
+            ImGui::TableNextColumn();
+            ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
+            ImGui::SetWindowFontScale(2.0f);
+            ImGui::Text("%s", tokens[i]);
+            ImGui::SetWindowFontScale(1.0f);
+            ImGui::PopFont();
+            
+            // Amount column (left-aligned, 2x text)
+            ImGui::TableNextColumn();
+            auto it = state.token_balances.find(tokens[i]);
+            std::string formatted = (it != state.token_balances.end()) ? formatBalance(it->second) : "0.00";
+            
+            ImGui::PushFont(ImGui::GetIO().Fonts->Fonts[0]);
+            ImGui::SetWindowFontScale(2.0f);
+            if (it != state.token_balances.end()) {
+                ImGui::Text("%s", formatted.c_str());
+            } else {
+                ImGui::TextDisabled("%s", formatted.c_str());
+            }
+            ImGui::SetWindowFontScale(1.0f);
+            ImGui::PopFont();
+            
+            // Button column (right-aligned, normal size)
+            ImGui::TableNextColumn();
+            
+            // Vertically align button with scaled text
+            float line_height = ImGui::GetTextLineHeight();
+            float scaled_line_height = line_height * 2.0f;
+            float btn_offset = (scaled_line_height - ImGui::GetFrameHeight()) * 0.5f;
+            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + btn_offset);
+            
+            char btn_id[32];
+            snprintf(btn_id, sizeof(btn_id), ICON_FA_PAPER_PLANE " Send##%s", tokens[i]);
+            if (ThemedButton(btn_id, ImVec2(-1, 0))) {
+                state.show_send_dialog = true;
+                state.send_status.clear();
+            }
+        }
+        
+        ImGui::EndTable();
     }
 
     ImGui::Spacing();
