@@ -1,8 +1,8 @@
 # DNA Messenger - Development Roadmap
 
 **Version:** 0.1.120+
-**Last Updated:** 2025-11-16
-**Project Status:** Phase 6 (DNA Board) - Phase 4, 5.1-5.5, 6.1 Complete, ImGui GUI Active
+**Last Updated:** 2025-11-17
+**Project Status:** Phase 6 (DNA Board) - Phase 4, 5.1-5.5, 6.1-6.2 Complete, ImGui GUI Active
 
 ---
 
@@ -456,11 +456,11 @@ Implemented per-identity contact lists with DHT synchronization for multi-device
 ## Phase 6: DNA Board - Censorship-Resistant Social Media 🚧 IN PROGRESS (Alpha)
 
 **Timeline:** 8 weeks (alpha) | 12-16 weeks (full v1.0)
-**Status:** Phase 6.1 ✅ Complete | Phase 6.2 🚧 In Progress (Alpha)
+**Status:** Phase 6.1 ✅ Complete | Phase 6.2 ✅ Complete (Alpha) | Phase 6.3 📋 Planned
 **Prerequisites:** P2P architecture, DHT storage, User profiles
 **Design Document:** `/DNA_BOARD_PHASE10_PLAN.md`
 
-### Alpha Implementation (Current)
+### Alpha Implementation
 
 **Phase 6.1 ✅ Complete (2025-11-12 to 2025-11-16):**
 - [x] User profiles with DHT storage (display name, bio, location, website)
@@ -474,12 +474,22 @@ Implemented per-identity contact lists with DHT synchronization for multi-device
 - [x] Dilithium5 signatures for wall posts
 - [x] 30-day TTL with rotation (100 messages max)
 
-**Phase 6.2 🚧 In Progress (Alpha - Simplified):**
-- [ ] Comment threading (reply-to field, nested UI)
+**Phase 6.2 ✅ Complete (2025-11-17 - Avatar System):**
+- [x] Avatar support (Base64 encoding, 64x64 PNG, 20KB limit)
+- [x] Avatar upload with auto-resize (stb_image integration)
+- [x] OpenGL texture loading (TextureManager singleton)
+- [x] Circular avatar clipping (ImDrawList::AddImageRounded)
+- [x] Avatar display in profiles (64x64 preview)
+- [x] Avatar display in wall posts (24px circular)
+- [x] Avatar display in chat messages (20px circular)
+- [x] Wall poster identification fix (post_id uses poster fingerprint)
+- [x] Comment threading (reply-to field, collapsed/expandable UI, Twitter-style)
+- [x] Thread sorting (forum bump - latest activity first)
+
+**Phase 6.3 🚧 Next (Alpha - Enhancements):**
 - [ ] Community voting (thumbs up/down)
 - [ ] Profile schema extensions (social links: Telegram, Twitter, GitHub, Discord)
 - [ ] Crypto addresses for tipping (BTC, ETH, CPUNK)
-- [ ] Avatar support (IPFS integration)
 - [ ] Feed sorting (Recent, Top, Controversial)
 
 **Alpha Approach:** FREE posting (no CPUNK costs). Using DHT storage with 7-day TTL. Full anti-spam measures and economics planned for v1.0 post-alpha.
@@ -499,7 +509,7 @@ DNA Board is a **censorship-resistant social media platform** built on DNA Messe
 
 ### Implementation Status
 
-#### ✅ Completed (Phase 6.1):
+#### ✅ Completed (Phase 6.1 - Base System):
 - [x] User profiles with DHT storage (dna_profile.c/h - 470 lines)
 - [x] Profile cache system (profile_cache.c/h - 550 lines)
 - [x] Profile manager (profile_manager.c/h - 235 lines)
@@ -511,15 +521,22 @@ DNA Board is a **censorship-resistant social media platform** built on DNA Messe
 - [x] Dilithium5 signatures for posts
 - [x] 30-day TTL with 100 message rotation
 
-#### 🚧 In Progress (Phase 6.2):
-- [ ] Comment threading (nested reply system)
+#### ✅ Completed (Phase 6.2 - Avatar & Threading):
+- [x] Avatar support (Base64, not IPFS - simpler for alpha)
+- [x] Avatar upload/resize (avatar_utils.c - stb_image integration)
+- [x] OpenGL texture loading (TextureManager singleton)
+- [x] Circular avatar display (profiles, wall, chat)
+- [x] Comment threading (collapsed/expandable UI, Twitter-style)
+- [x] Thread sorting (forum bump - latest activity)
+- [x] Wall poster identification fix (post_id fingerprint)
+
+#### 🚧 In Progress (Phase 6.3):
 - [ ] Community voting (thumbs up/down UI)
 - [ ] Profile schema extensions (social links)
 - [ ] Crypto addresses for tipping
-- [ ] Avatar support (IPFS)
 - [ ] Feed sorting and filtering
 
-#### 📋 Planned (Phase 6.3):
+#### 📋 Planned (Phase 6.4):
 - [ ] Image/video embedding
 - [ ] Feed rendering with pagination
 - [ ] Client-side blocking/filtering

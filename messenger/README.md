@@ -154,6 +154,7 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ Persistent group chats with member management
 - ✅ Per-identity contact lists with DHT sync (multi-device support via BIP39)
 - ✅ User profiles with DHT storage (display name, bio, avatar, location, website)
+- ✅ Avatar system (64x64 PNG upload, Base64 encoding, circular display)
 - ✅ Profile cache system (7-day TTL, cache-first architecture)
 - ✅ 24-word BIP39 recovery phrases
 - ✅ Cross-platform (Linux & Windows)
@@ -169,10 +170,10 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ P2P messaging with DHT-based peer discovery (3 bootstrap nodes)
 - ✅ Offline message queueing (messages stored in DHT for 7 days)
 - ✅ Free DNA name registration (no costs in alpha)
+- ✅ DNA Board Alpha (censorship-resistant wall posts with threading and avatars - FREE)
 
 **Coming Soon:**
-- 🚧 Wall posts and comments (censorship-resistant social media - FREE in alpha)
-- 🚧 ImGui profile editor dialog
+- 🚧 Community voting (thumbs up/down on wall posts)
 - 🚧 Web-based messenger (Phase 5)
 - 📋 Mobile applications (Flutter)
 - 📋 Forward secrecy (ephemeral session keys)
