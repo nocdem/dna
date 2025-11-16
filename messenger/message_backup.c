@@ -46,7 +46,6 @@ static const char *SCHEMA_SQL =
     "CREATE INDEX IF NOT EXISTS idx_sender ON messages(sender);"
     "CREATE INDEX IF NOT EXISTS idx_recipient ON messages(recipient);"
     "CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp DESC);"
-    "CREATE INDEX IF NOT EXISTS idx_group_id ON messages(group_id);"  // Phase 5.2
     ""
     "CREATE TABLE IF NOT EXISTS metadata ("
     "  key TEXT PRIMARY KEY,"
@@ -160,6 +159,14 @@ message_backup_context_t* message_backup_init(const char *identity) {
         sqlite3_free(err_msg);
     } else {
         printf("[Backup] Migrated database schema to v3 (added group_id column)\n");
+    }
+
+    // Create index on group_id (safe to run now that column exists)
+    const char *index_sql = "CREATE INDEX IF NOT EXISTS idx_group_id ON messages(group_id);";
+    rc = sqlite3_exec(ctx->db, index_sql, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[Backup] Failed to create group_id index: %s\n", err_msg);
+        sqlite3_free(err_msg);
     }
 
     printf("[Backup] Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
