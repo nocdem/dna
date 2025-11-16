@@ -4,7 +4,13 @@
 #include <iostream>
 #include <memory>
 #include <cstring>
-#include <arpa/inet.h>  // For htonl/ntohl
+
+// Platform-specific network byte order functions
+#ifdef _WIN32
+    #include <winsock2.h>  // For htonl/ntohl on Windows
+#else
+    #include <arpa/inet.h>  // For htonl/ntohl on Unix/Linux
+#endif
 
 // Need the full dht_identity struct definition (from dht_context.cpp)
 struct dht_identity {
