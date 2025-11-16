@@ -32,7 +32,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "dht/dht_profile.h"
+#include "dht/shared/dht_profile.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -4,8 +4,8 @@
  */
 
 #include "messenger.h"
-#include "dht/dht_groups.h"
-#include "dht/dht_context.h"
+#include "dht/shared/dht_groups.h"
+#include "dht/core/dht_context.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

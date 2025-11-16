@@ -27,7 +27,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include <stdbool.h>
-#include "dht/dht_profile.h"
+#include "dht/shared/dht_profile.h"
 #include "dht/core/dht_context.h"
 
 #ifdef __cplusplus

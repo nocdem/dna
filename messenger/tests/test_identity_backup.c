@@ -12,9 +12,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include "dht/dht_identity_backup.h"
-#include "dht/dht_singleton.h"
-#include "dht/dht_context.h"
+#include "dht/client/dht_identity_backup.h"
+#include "dht/client/dht_singleton.h"
+#include "dht/core/dht_context.h"
 #include "crypto/kem/kem.h"
 #include "crypto/utils/qgp_sha3.h"
 
