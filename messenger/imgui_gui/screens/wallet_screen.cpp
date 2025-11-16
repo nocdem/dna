@@ -281,8 +281,6 @@ void render(AppState& state) {
     }
 
     ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
 
     // Action buttons (Receive and History only)
     float btn_height = is_mobile ? 50.0f : 45.0f;
