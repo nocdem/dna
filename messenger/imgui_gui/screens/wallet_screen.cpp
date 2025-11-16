@@ -227,7 +227,7 @@ void render(AppState& state) {
     
     for (int i = 0; i < 3; i++) {
         // Create button-style background
-        ImVec4 btn_bg = g_app_settings.theme == 0 ? DNATheme::Button() : ClubTheme::Button();
+        ImVec4 btn_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
         ImGui::PushStyleColor(ImGuiCol_ChildBg, btn_bg);
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
         
