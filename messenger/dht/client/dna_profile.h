@@ -100,13 +100,20 @@ typedef struct {
     uint32_t name_version;               /**< Version (increment on renewal) */
 
     // ===== PROFILE DATA =====
+    char display_name[128];              /**< Display name (optional, defaults to name or fingerprint) */
+    char bio[512];                       /**< User bio */
+    char avatar_hash[128];               /**< SHA3-512 hash of avatar (for quick comparisons) */
+    char profile_picture_ipfs[64];       /**< IPFS CID for avatar */
+    char location[128];                  /**< Geographic location (optional) */
+    char website[256];                   /**< Personal website URL (optional) */
+
     dna_wallets_t wallets;               /**< Wallet addresses (unified) */
     dna_socials_t socials;               /**< Social profiles */
-    char bio[512];                       /**< User bio */
-    char profile_picture_ipfs[64];       /**< IPFS CID */
 
     // ===== METADATA =====
-    uint64_t timestamp;                  /**< Last update timestamp */
+    uint64_t created_at;                 /**< Profile creation timestamp */
+    uint64_t updated_at;                 /**< Last update timestamp */
+    uint64_t timestamp;                  /**< Entry timestamp */
     uint32_t version;                    /**< Entry version */
 
     // ===== SIGNATURE =====
@@ -286,6 +293,47 @@ const char* dna_identity_get_wallet(const dna_unified_identity_t *identity,
 int dna_identity_set_wallet(dna_unified_identity_t *identity,
                              const char *network,
                              const char *address);
+
+/**
+ * @brief Display-only profile data (extracted from dna_unified_identity_t)
+ *
+ * Used for UI rendering without exposing full identity.
+ * Contains only the fields needed for profile display.
+ */
+typedef struct {
+    char fingerprint[129];          /**< SHA3-512 fingerprint */
+    char display_name[128];         /**< Display name */
+    char bio[512];                  /**< Biography */
+    char avatar_hash[128];          /**< Avatar hash (SHA3-512) */
+    char location[128];             /**< Location */
+    char website[256];              /**< Website URL */
+
+    // Selected social links
+    char telegram[128];             /**< Telegram username */
+    char x[128];                    /**< X (Twitter) handle */
+    char github[128];               /**< GitHub username */
+
+    // Selected wallet addresses (for tipping)
+    char backbone[120];             /**< Backbone address */
+    char btc[128];                  /**< Bitcoin address */
+    char eth[128];                  /**< Ethereum address */
+
+    uint64_t updated_at;            /**< Last update timestamp */
+} dna_display_profile_t;
+
+/**
+ * @brief Extract display profile from unified identity
+ *
+ * Converts a full identity structure into a display-only profile
+ * suitable for UI rendering. Only includes publicly visible fields.
+ *
+ * @param identity Full identity structure
+ * @param display_out Output display profile (caller provides buffer)
+ */
+void dna_identity_to_display_profile(
+    const dna_unified_identity_t *identity,
+    dna_display_profile_t *display_out
+);
 
 #ifdef __cplusplus
 }

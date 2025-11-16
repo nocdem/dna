@@ -290,13 +290,25 @@ char* dna_identity_to_json(const dna_unified_identity_t *identity) {
     json_object *socials_obj = socials_to_json(&identity->socials);
     json_object_object_add(root, "socials", socials_obj);
 
-    // Bio and profile picture
+    // Profile data (Phase 5: Extended fields)
+    if (identity->display_name[0]) json_object_object_add(root, "display_name",
+        json_object_new_string(identity->display_name));
     if (identity->bio[0]) json_object_object_add(root, "bio",
         json_object_new_string(identity->bio));
+    if (identity->avatar_hash[0]) json_object_object_add(root, "avatar_hash",
+        json_object_new_string(identity->avatar_hash));
     if (identity->profile_picture_ipfs[0]) json_object_object_add(root,
         "profile_picture_ipfs", json_object_new_string(identity->profile_picture_ipfs));
+    if (identity->location[0]) json_object_object_add(root, "location",
+        json_object_new_string(identity->location));
+    if (identity->website[0]) json_object_object_add(root, "website",
+        json_object_new_string(identity->website));
 
-    // Metadata
+    // Metadata (Phase 5: Extended timestamps)
+    if (identity->created_at) json_object_object_add(root, "created_at",
+        json_object_new_int64(identity->created_at));
+    if (identity->updated_at) json_object_object_add(root, "updated_at",
+        json_object_new_int64(identity->updated_at));
     json_object_object_add(root, "timestamp",
         json_object_new_int64(identity->timestamp));
     json_object_object_add(root, "version",
@@ -390,20 +402,45 @@ int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_o
         socials_from_json(val, &identity->socials);
     }
 
-    // Bio
+    // Profile data (Phase 5: Extended fields)
+    if (json_object_object_get_ex(root, "display_name", &val)) {
+        const char *str = json_object_get_string(val);
+        if (str) strncpy(identity->display_name, str, sizeof(identity->display_name) - 1);
+    }
+
     if (json_object_object_get_ex(root, "bio", &val)) {
         const char *str = json_object_get_string(val);
         if (str) strncpy(identity->bio, str, sizeof(identity->bio) - 1);
     }
 
-    // Profile picture
+    if (json_object_object_get_ex(root, "avatar_hash", &val)) {
+        const char *str = json_object_get_string(val);
+        if (str) strncpy(identity->avatar_hash, str, sizeof(identity->avatar_hash) - 1);
+    }
+
     if (json_object_object_get_ex(root, "profile_picture_ipfs", &val)) {
         const char *str = json_object_get_string(val);
         if (str) strncpy(identity->profile_picture_ipfs, str,
                         sizeof(identity->profile_picture_ipfs) - 1);
     }
 
-    // Metadata
+    if (json_object_object_get_ex(root, "location", &val)) {
+        const char *str = json_object_get_string(val);
+        if (str) strncpy(identity->location, str, sizeof(identity->location) - 1);
+    }
+
+    if (json_object_object_get_ex(root, "website", &val)) {
+        const char *str = json_object_get_string(val);
+        if (str) strncpy(identity->website, str, sizeof(identity->website) - 1);
+    }
+
+    // Metadata (Phase 5: Extended timestamps)
+    if (json_object_object_get_ex(root, "created_at", &val)) {
+        identity->created_at = json_object_get_int64(val);
+    }
+    if (json_object_object_get_ex(root, "updated_at", &val)) {
+        identity->updated_at = json_object_get_int64(val);
+    }
     if (json_object_object_get_ex(root, "timestamp", &val)) {
         identity->timestamp = json_object_get_int64(val);
     }
@@ -682,4 +719,49 @@ int dna_identity_set_wallet(dna_unified_identity_t *identity,
     #undef SET_WALLET
 
     return -1;  // Unknown network
+}
+
+// ===== Display Profile Extraction (Phase 5) =====
+
+void dna_identity_to_display_profile(
+    const dna_unified_identity_t *identity,
+    dna_display_profile_t *display_out
+) {
+    if (!identity || !display_out) return;
+
+    // Initialize to zero
+    memset(display_out, 0, sizeof(dna_display_profile_t));
+
+    // Copy basic profile fields
+    strncpy(display_out->fingerprint, identity->fingerprint,
+            sizeof(display_out->fingerprint) - 1);
+    strncpy(display_out->display_name, identity->display_name,
+            sizeof(display_out->display_name) - 1);
+    strncpy(display_out->bio, identity->bio,
+            sizeof(display_out->bio) - 1);
+    strncpy(display_out->avatar_hash, identity->avatar_hash,
+            sizeof(display_out->avatar_hash) - 1);
+    strncpy(display_out->location, identity->location,
+            sizeof(display_out->location) - 1);
+    strncpy(display_out->website, identity->website,
+            sizeof(display_out->website) - 1);
+
+    // Copy selected social links (most popular)
+    strncpy(display_out->telegram, identity->socials.telegram,
+            sizeof(display_out->telegram) - 1);
+    strncpy(display_out->x, identity->socials.x,
+            sizeof(display_out->x) - 1);
+    strncpy(display_out->github, identity->socials.github,
+            sizeof(display_out->github) - 1);
+
+    // Copy selected wallet addresses (for tipping)
+    strncpy(display_out->backbone, identity->wallets.backbone,
+            sizeof(display_out->backbone) - 1);
+    strncpy(display_out->btc, identity->wallets.btc,
+            sizeof(display_out->btc) - 1);
+    strncpy(display_out->eth, identity->wallets.eth,
+            sizeof(display_out->eth) - 1);
+
+    // Copy timestamp
+    display_out->updated_at = identity->updated_at;
 }
