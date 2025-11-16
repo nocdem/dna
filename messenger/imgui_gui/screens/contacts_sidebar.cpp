@@ -353,7 +353,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
 
     ImGui::EndChild(); // Sidebar
 
-    ImGui::PopStyleColor(); // Border
+    ImGui::PopStyleColor(2); // Border + ChildBg
 }
 
 } // namespace ContactsSidebar
