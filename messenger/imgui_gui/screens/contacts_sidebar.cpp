@@ -151,6 +151,28 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
 
     ImGui::BeginChild("Sidebar", ImVec2(250, 0), true, ImGuiWindowFlags_NoScrollbar);
 
+    // Show current identity name centered at top
+    if (!state.current_identity.empty()) {
+        ImGui::Spacing();
+        
+        // Get display name from cache, or use shortened fingerprint
+        std::string display_name = state.current_identity.substr(0, 10) + "...";
+        auto it = state.identity_name_cache.find(state.current_identity);
+        if (it != state.identity_name_cache.end()) {
+            display_name = it->second;
+        }
+        
+        // Center the identity name
+        float text_width = ImGui::CalcTextSize(display_name.c_str()).x;
+        float center_x = (250 - text_width) * 0.5f;
+        ImGui::SetCursorPosX(center_x);
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", display_name.c_str());
+        
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
+
     // Navigation buttons (40px each)
     if (ThemedButton(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40), state.current_view == VIEW_CONTACTS || state.current_view == VIEW_CHAT)) {
         state.current_view = VIEW_CONTACTS;
