@@ -27,6 +27,7 @@ set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/mika/dev/dna-messenger/crypto/utils/qgp_sha3.c" "CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.o" "gcc" "CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.o.d"
   "/home/mika/dev/dna-messenger/crypto/utils/qgp_signature.c" "CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o" "gcc" "CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o.d"
   "/home/mika/dev/dna-messenger/crypto/utils/qgp_utils_standalone.c" "CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o" "gcc" "CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o.d"
+  "/home/mika/dev/dna-messenger/database/cache_manager.c" "CMakeFiles/dna_lib.dir/database/cache_manager.c.o" "gcc" "CMakeFiles/dna_lib.dir/database/cache_manager.c.o.d"
   "/home/mika/dev/dna-messenger/database/contacts_db.c" "CMakeFiles/dna_lib.dir/database/contacts_db.c.o" "gcc" "CMakeFiles/dna_lib.dir/database/contacts_db.c.o.d"
   "/home/mika/dev/dna-messenger/database/keyserver_cache.c" "CMakeFiles/dna_lib.dir/database/keyserver_cache.c.o" "gcc" "CMakeFiles/dna_lib.dir/database/keyserver_cache.c.o.d"
   "/home/mika/dev/dna-messenger/database/presence_cache.c" "CMakeFiles/dna_lib.dir/database/presence_cache.c.o" "gcc" "CMakeFiles/dna_lib.dir/database/presence_cache.c.o.d"

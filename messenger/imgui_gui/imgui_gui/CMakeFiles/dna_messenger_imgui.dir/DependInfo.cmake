@@ -35,6 +35,7 @@ set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/mika/dev/dna-messenger/imgui_gui/vendor/imgui/imgui_tables.cpp" "imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/imgui_tables.cpp.o" "gcc" "imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/imgui_tables.cpp.o.d"
   "/home/mika/dev/dna-messenger/imgui_gui/vendor/imgui/imgui_widgets.cpp" "imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/imgui_widgets.cpp.o" "gcc" "imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/imgui_widgets.cpp.o.d"
   "/home/mika/dev/dna-messenger/imgui_gui/vendor/imgui/misc/freetype/imgui_freetype.cpp" "imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_freetype.cpp.o" "gcc" "imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_freetype.cpp.o.d"
+  "/home/mika/dev/dna-messenger/imgui_gui/vendor/qrcodegen/qrcodegen.cpp" "imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o" "gcc" "imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o.d"
   "" "imgui_gui/dna_messenger_imgui" "gcc" "imgui_gui/CMakeFiles/dna_messenger_imgui.dir/link.d"
   )
 

@@ -54,6 +54,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/imgui_widgets.cpp.o.d"
   "CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_freetype.cpp.o"
   "CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_freetype.cpp.o.d"
+  "CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o"
+  "CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o.d"
   "dna_messenger_imgui"
   "dna_messenger_imgui.pdb"
 )

@@ -51,10 +51,12 @@ dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o: \
  /usr/include/asm/bitsperlong.h /usr/include/asm-generic/bitsperlong.h \
  /usr/include/asm/sockios.h /usr/include/asm-generic/sockios.h \
  /usr/include/bits/types/struct_osockaddr.h /usr/include/bits/in.h \
- /home/mika/dev/dna-messenger/dht/keyserver/../dht_context.h \
- /home/mika/dev/dna-messenger/dht/keyserver/../dht_keyserver.h \
- /home/mika/dev/dna-messenger/dht/keyserver/../dna_profile.h \
- /home/mika/dev/dna-messenger/dht/keyserver/../dna_profile.h \
+ /home/mika/dev/dna-messenger/dht/keyserver/../core/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/keyserver/../core/dht_stats.h \
+ /home/mika/dev/dna-messenger/dht/keyserver/../core/../client/dht_identity.h \
+ /home/mika/dev/dna-messenger/dht/keyserver/../core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
+ /home/mika/dev/dna-messenger/dht/keyserver/../client/dna_profile.h \
  /home/mika/dev/dna-messenger/dht/keyserver/../../crypto/utils/qgp_dilithium.h \
  /home/mika/dev/dna-messenger/dht/keyserver/../../crypto/utils/qgp_sha3.h \
  /home/mika/dev/dna-messenger/dht/keyserver/../../blockchain/blockchain_rpc.h \

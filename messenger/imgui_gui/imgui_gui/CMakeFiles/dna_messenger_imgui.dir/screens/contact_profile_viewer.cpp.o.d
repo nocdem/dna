@@ -177,11 +177,10 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/screens/contact_profile_viewer.cpp.
  /usr/include/c++/15.2.1/map /usr/include/c++/15.2.1/bits/stl_tree.h \
  /usr/include/c++/15.2.1/bits/stl_map.h \
  /usr/include/c++/15.2.1/bits/stl_multimap.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dht_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/client/dna_profile.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdbool.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dht_context.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dht_keyserver.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dna_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../modal_helper.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../theme_colors.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../settings_manager.h \
@@ -193,7 +192,7 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/screens/contact_profile_viewer.cpp.
  /home/mika/dev/dna-messenger/imgui_gui/screens/../../dna_api.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../../p2p/p2p_transport.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../../message_backup.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../../dht/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/imgui_gui/screens/../../dht/core/dht_keyserver.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../../p2p/p2p_transport.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../../crypto/utils/qgp_types.h \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_compiler.h \

@@ -84,9 +84,12 @@ p2p/CMakeFiles/p2p_transport.dir/transport/transport_helpers.c.o: \
  /usr/include/bits/types/struct_osockaddr.h /usr/include/netinet/in.h \
  /usr/include/bits/in.h /usr/include/arpa/inet.h /usr/include/ifaddrs.h \
  /home/mika/dev/dna-messenger/p2p/p2p_transport.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
- /home/mika/dev/dna-messenger/dht/dht_offline_queue.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
- /home/mika/dev/dna-messenger/dht/dht_singleton.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_stats.h \
+ /home/mika/dev/dna-messenger/dht/core/../client/dht_identity.h \
+ /home/mika/dev/dna-messenger/dht/shared/dht_offline_queue.h \
+ /home/mika/dev/dna-messenger/dht/shared/../core/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/client/dht_singleton.h \
+ /home/mika/dev/dna-messenger/dht/client/../core/dht_context.h \
  /home/mika/dev/dna-messenger/p2p/../database/contacts_db.h \
  /home/mika/dev/dna-messenger/p2p/../crypto/utils/qgp_sha3.h

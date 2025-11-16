@@ -185,11 +185,10 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/main.cpp.o: \
  /usr/include/c++/15.2.1/map /usr/include/c++/15.2.1/bits/stl_tree.h \
  /usr/include/c++/15.2.1/bits/stl_map.h \
  /usr/include/c++/15.2.1/bits/stl_multimap.h \
- /home/mika/dev/dna-messenger/imgui_gui/core/../../dht/dht_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/core/../../dht/client/dna_profile.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdbool.h \
- /home/mika/dev/dna-messenger/imgui_gui/core/../../dht/dht_context.h \
- /home/mika/dev/dna-messenger/imgui_gui/core/../../dht/dht_keyserver.h \
- /home/mika/dev/dna-messenger/imgui_gui/core/../../dht/dna_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/core/../../dht/core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
  /usr/include/c++/15.2.1/algorithm \
  /usr/include/c++/15.2.1/bits/stl_algo.h \
  /usr/include/c++/15.2.1/bits/algorithmfwd.h \
@@ -236,9 +235,11 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/main.cpp.o: \
  /usr/include/linux/close_range.h /usr/include/bits/ss_flags.h \
  /usr/include/bits/types/struct_sigstack.h /usr/include/bits/sigthread.h \
  /usr/include/bits/signal_ext.h \
- /home/mika/dev/dna-messenger/imgui_gui/../dht/dht_singleton.h \
- /home/mika/dev/dna-messenger/imgui_gui/../dht/dht_context.h \
- /home/mika/dev/dna-messenger/imgui_gui/../dht/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/imgui_gui/../dht/client/dht_singleton.h \
+ /home/mika/dev/dna-messenger/imgui_gui/../dht/client/../core/dht_context.h \
+ /home/mika/dev/dna-messenger/imgui_gui/../dht/client/../core/dht_stats.h \
+ /home/mika/dev/dna-messenger/imgui_gui/../dht/client/../core/../client/dht_identity.h \
+ /home/mika/dev/dna-messenger/imgui_gui/../dht/core/dht_keyserver.h \
  /home/mika/dev/dna-messenger/imgui_gui/../crypto/utils/qgp_platform.h \
  /home/mika/dev/dna-messenger/imgui_gui/helpers/data_loader.h \
  /home/mika/dev/dna-messenger/imgui_gui/helpers/../core/app_state.h \
@@ -259,8 +260,8 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/main.cpp.o: \
  /home/mika/dev/dna-messenger/imgui_gui/../messenger.h \
  /home/mika/dev/dna-messenger/imgui_gui/../blockchain/wallet.h \
  /home/mika/dev/dna-messenger/imgui_gui/../crypto/bip39/bip39.h \
- /home/mika/dev/dna-messenger/imgui_gui/../dht/dna_message_wall.h \
- /home/mika/dev/dna-messenger/imgui_gui/../dht/dna_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/../dht/client/dna_message_wall.h \
+ /home/mika/dev/dna-messenger/imgui_gui/../dht/client/dna_profile.h \
  /home/mika/dev/dna-messenger/imgui_gui/../p2p/p2p_transport.h \
  /home/mika/dev/dna-messenger/imgui_gui/vendor/imgui/fonts/NotoSans-Regular.h \
  /home/mika/dev/dna-messenger/imgui_gui/vendor/imgui/fonts/fa-solid-900.h

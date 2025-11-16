@@ -177,11 +177,10 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/helpers/data_loader.cpp.o: \
  /usr/include/c++/15.2.1/map /usr/include/c++/15.2.1/bits/stl_tree.h \
  /usr/include/c++/15.2.1/bits/stl_map.h \
  /usr/include/c++/15.2.1/bits/stl_multimap.h \
- /home/mika/dev/dna-messenger/imgui_gui/helpers/../core/../../dht/dht_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/helpers/../core/../../dht/client/dna_profile.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdbool.h \
- /home/mika/dev/dna-messenger/imgui_gui/helpers/../core/../../dht/dht_context.h \
- /home/mika/dev/dna-messenger/imgui_gui/helpers/../core/../../dht/dht_keyserver.h \
- /home/mika/dev/dna-messenger/imgui_gui/helpers/../core/../../dht/dna_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/helpers/../core/../../dht/core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
  /home/mika/dev/dna-messenger/imgui_gui/helpers/../../messenger.h \
  /home/mika/dev/dna-messenger/imgui_gui/helpers/../../dna_api.h \
  /home/mika/dev/dna-messenger/imgui_gui/helpers/../../p2p/p2p_transport.h \
@@ -190,13 +189,15 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/helpers/data_loader.cpp.o: \
  /home/mika/dev/dna-messenger/imgui_gui/helpers/../../messenger.h \
  /home/mika/dev/dna-messenger/imgui_gui/helpers/../../database/contacts_db.h \
  /home/mika/dev/dna-messenger/imgui_gui/helpers/../../database/profile_manager.h \
- /home/mika/dev/dna-messenger/dht/dht_profile.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
- /home/mika/dev/dna-messenger/imgui_gui/helpers/../../dht/dht_singleton.h \
- /home/mika/dev/dna-messenger/imgui_gui/helpers/../../dht/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_stats.h \
+ /home/mika/dev/dna-messenger/dht/core/../client/dht_identity.h \
+ /home/mika/dev/dna-messenger/imgui_gui/helpers/../../dht/client/dht_singleton.h \
+ /home/mika/dev/dna-messenger/imgui_gui/helpers/../../dht/client/../core/dht_context.h \
  /home/mika/dev/dna-messenger/imgui_gui/helpers/../../p2p/p2p_transport.h \
  /home/mika/dev/dna-messenger/imgui_gui/helpers/../../crypto/utils/qgp_platform.h \
- /home/mika/dev/dna-messenger/imgui_gui/helpers/../../dht/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/imgui_gui/helpers/../../dht/core/dht_keyserver.h \
  /usr/include/c++/15.2.1/cstring /usr/include/c++/15.2.1/algorithm \
  /usr/include/c++/15.2.1/bits/stl_algo.h \
  /usr/include/c++/15.2.1/bits/algorithmfwd.h \

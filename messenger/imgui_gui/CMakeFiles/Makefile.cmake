@@ -8,6 +8,7 @@ set(CMAKE_DEPENDS_GENERATOR "Unix Makefiles")
 set(CMAKE_MAKEFILE_DEPENDS
   "CMakeCache.txt"
   "/home/mika/dev/dna-messenger/CMakeLists.txt"
+  "/home/mika/dev/dna-messenger/bootstrap/CMakeLists.txt"
   "/home/mika/dev/dna-messenger/crypto/cellframe_dilithium/CMakeLists.txt"
   "/home/mika/dev/dna-messenger/crypto/dsa/CMakeLists.txt"
   "/home/mika/dev/dna-messenger/crypto/kem/CMakeLists.txt"
@@ -83,6 +84,7 @@ set(CMAKE_MAKEFILE_PRODUCTS
   "crypto/cellframe_dilithium/CMakeFiles/CMakeDirectoryInformation.cmake"
   "dht/CMakeFiles/CMakeDirectoryInformation.cmake"
   "p2p/CMakeFiles/CMakeDirectoryInformation.cmake"
+  "bootstrap/CMakeFiles/CMakeDirectoryInformation.cmake"
   "imgui_gui/CMakeFiles/CMakeDirectoryInformation.cmake"
   )
 
@@ -97,7 +99,9 @@ set(CMAKE_DEPEND_INFO_FILES
   "crypto/dsa/CMakeFiles/dsa.dir/DependInfo.cmake"
   "crypto/cellframe_dilithium/CMakeFiles/cellframe_dilithium.dir/DependInfo.cmake"
   "dht/CMakeFiles/dht_lib.dir/DependInfo.cmake"
-  "dht/CMakeFiles/persistent_bootstrap.dir/DependInfo.cmake"
   "p2p/CMakeFiles/p2p_transport.dir/DependInfo.cmake"
+  "bootstrap/CMakeFiles/bootstrap_value_storage.dir/DependInfo.cmake"
+  "bootstrap/CMakeFiles/persistent_bootstrap.dir/DependInfo.cmake"
+  "bootstrap/CMakeFiles/migrate_storage_once.dir/DependInfo.cmake"
   "imgui_gui/CMakeFiles/dna_messenger_imgui.dir/DependInfo.cmake"
   )

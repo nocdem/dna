@@ -14,10 +14,13 @@ CMakeFiles/dna_lib.dir/database/profile_manager.c.o: \
  /usr/include/bits/stdint-least.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stddef.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdbool.h \
- /home/mika/dev/dna-messenger/dht/dht_profile.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_stats.h \
+ /home/mika/dev/dna-messenger/dht/core/../client/dht_identity.h \
  /home/mika/dev/dna-messenger/database/profile_cache.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
  /usr/include/stdio.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdarg.h \
  /usr/include/bits/types/__fpos_t.h /usr/include/bits/types/__mbstate_t.h \

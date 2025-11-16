@@ -177,11 +177,10 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/screens/add_contact_dialog.cpp.o: \
  /usr/include/c++/15.2.1/map /usr/include/c++/15.2.1/bits/stl_tree.h \
  /usr/include/c++/15.2.1/bits/stl_map.h \
  /usr/include/c++/15.2.1/bits/stl_multimap.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dht_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/client/dna_profile.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdbool.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dht_context.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dht_keyserver.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dna_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../modal_helper.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../theme_colors.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../settings_manager.h \
@@ -195,8 +194,10 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/screens/add_contact_dialog.cpp.o: \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../../message_backup.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../../database/contacts_db.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../../database/profile_manager.h \
- /home/mika/dev/dna-messenger/dht/dht_profile.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../../dht/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_stats.h \
+ /home/mika/dev/dna-messenger/dht/core/../client/dht_identity.h \
+ /home/mika/dev/dna-messenger/imgui_gui/screens/../../dht/core/dht_keyserver.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/../../p2p/p2p_transport.h \
  /usr/include/c++/15.2.1/cstring

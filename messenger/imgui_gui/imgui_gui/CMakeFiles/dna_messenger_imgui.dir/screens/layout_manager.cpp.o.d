@@ -177,11 +177,10 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/screens/layout_manager.cpp.o: \
  /usr/include/c++/15.2.1/map /usr/include/c++/15.2.1/bits/stl_tree.h \
  /usr/include/c++/15.2.1/bits/stl_map.h \
  /usr/include/c++/15.2.1/bits/stl_multimap.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dht_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/client/dna_profile.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdbool.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dht_context.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dht_keyserver.h \
- /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/dna_profile.h \
+ /home/mika/dev/dna-messenger/imgui_gui/screens/../core/../../dht/core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/contacts_sidebar.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/chat_screen.h \
  /home/mika/dev/dna-messenger/imgui_gui/screens/wallet_screen.h \

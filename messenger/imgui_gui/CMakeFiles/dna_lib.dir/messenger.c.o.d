@@ -102,10 +102,12 @@ CMakeFiles/dna_lib.dir/messenger.c.o: \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_dilithium.h \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_kyber.h \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_sha3.h \
- /home/mika/dev/dna-messenger/dht/dht_singleton.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
- /home/mika/dev/dna-messenger/dht/dht_identity_backup.h \
- /home/mika/dev/dna-messenger/dht/../dna_api.h \
+ /home/mika/dev/dna-messenger/dht/client/dht_singleton.h \
+ /home/mika/dev/dna-messenger/dht/client/../core/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/client/../core/dht_stats.h \
+ /home/mika/dev/dna-messenger/dht/client/../core/../client/dht_identity.h \
+ /home/mika/dev/dna-messenger/dht/client/dht_identity_backup.h \
+ /home/mika/dev/dna-messenger/p2p/../dna_api.h \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_types.h \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_compiler.h \
  /home/mika/dev/dna-messenger/qgp.h \
@@ -115,10 +117,10 @@ CMakeFiles/dna_lib.dir/messenger.c.o: \
  /home/mika/dev/dna-messenger/crypto/utils/aes_keywrap.h \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_random.h \
  /home/mika/dev/dna-messenger/database/keyserver_cache.h \
- /home/mika/dev/dna-messenger/dht/dht_keyserver.h \
- /home/mika/dev/dna-messenger/dht/dna_profile.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
- /home/mika/dev/dna-messenger/dht/dht_contactlist.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/client/dht_contactlist.h \
  /home/mika/dev/dna-messenger/database/contacts_db.h \
  /home/mika/dev/dna-messenger/messenger/identity.h \
  /home/mika/dev/dna-messenger/messenger/messenger_core.h \

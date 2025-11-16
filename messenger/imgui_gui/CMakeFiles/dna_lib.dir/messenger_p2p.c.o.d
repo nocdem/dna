@@ -24,18 +24,20 @@ CMakeFiles/dna_lib.dir/messenger_p2p.c.o: \
  /usr/include/bits/types/struct_itimerspec.h \
  /usr/include/bits/types/locale_t.h /usr/include/bits/types/__locale_t.h \
  /home/mika/dev/dna-messenger/message_backup.h \
- /home/mika/dev/dna-messenger/dht/dht_offline_queue.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
- /home/mika/dev/dna-messenger/dht/dht_keyserver.h \
- /home/mika/dev/dna-messenger/dht/dna_profile.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/shared/dht_offline_queue.h \
+ /home/mika/dev/dna-messenger/dht/shared/../core/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/shared/../core/dht_stats.h \
+ /home/mika/dev/dna-messenger/dht/shared/../core/../client/dht_identity.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_context.h \
  /home/mika/dev/dna-messenger/database/keyserver_cache.h \
  /home/mika/dev/dna-messenger/database/contacts_db.h \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_sha3.h \
  /home/mika/dev/dna-messenger/database/presence_cache.h \
  /home/mika/dev/dna-messenger/database/profile_manager.h \
- /home/mika/dev/dna-messenger/dht/dht_profile.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_context.h \
  /home/mika/dev/dna-messenger/database/profile_cache.h \
  /usr/include/stdio.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdarg.h \

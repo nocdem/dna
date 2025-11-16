@@ -1,7 +1,7 @@
 CMakeFiles/test_simple.dir/tests/test_simple.c.o: \
  /home/mika/dev/dna-messenger/tests/test_simple.c \
  /usr/include/stdc-predef.h \
- /home/mika/dev/dna-messenger/tests/../dht/dna_profile.h \
+ /home/mika/dev/dna-messenger/tests/../dht/client/dna_profile.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdint.h \
  /usr/include/stdint.h /usr/include/bits/libc-header-start.h \
  /usr/include/features.h /usr/include/features-time64.h \

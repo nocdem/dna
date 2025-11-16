@@ -82,10 +82,12 @@ CMakeFiles/dna_lib.dir/messenger/keys.c.o: \
  /home/mika/dev/dna-messenger/messenger/../crypto/utils/qgp_platform.h \
  /home/mika/dev/dna-messenger/messenger/../crypto/utils/qgp_types.h \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_compiler.h \
- /home/mika/dev/dna-messenger/messenger/../dht/dht_keyserver.h \
- /home/mika/dev/dna-messenger/messenger/../dht/dna_profile.h \
- /home/mika/dev/dna-messenger/messenger/../dht/dht_singleton.h \
- /home/mika/dev/dna-messenger/messenger/../dht/dht_context.h \
+ /home/mika/dev/dna-messenger/messenger/../dht/core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
+ /home/mika/dev/dna-messenger/messenger/../dht/client/dht_singleton.h \
+ /home/mika/dev/dna-messenger/messenger/../dht/client/../core/dht_context.h \
+ /home/mika/dev/dna-messenger/messenger/../dht/client/../core/dht_stats.h \
+ /home/mika/dev/dna-messenger/messenger/../dht/client/../core/../client/dht_identity.h \
  /home/mika/dev/dna-messenger/messenger/../database/keyserver_cache.h \
  /home/mika/dev/dna-messenger/messenger/../database/contacts_db.h \
  /home/mika/dev/dna-messenger/messenger/../p2p/p2p_transport.h

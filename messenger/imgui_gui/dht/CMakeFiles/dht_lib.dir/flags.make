@@ -3,15 +3,15 @@
 
 # compile C with /usr/bin/cc
 # compile CXX with /usr/bin/c++
-C_DEFINES = -DBUILD_HASH=\"87bec8c\" -DBUILD_TS=\"2025-11-15\" -DPQSIGNUM_VERSION=\"0.1.792\"
+C_DEFINES = -DBUILD_HASH=\"6c9d33f\" -DBUILD_TS=\"2025-11-16\" -DPQSIGNUM_VERSION=\"0.1.821\"
 
-C_INCLUDES = -I/home/mika/dev/dna-messenger/dht -I/usr/include/p11-kit-1 -I/home/mika/dev/dna-messenger/dht/.. -I/home/mika/dev/dna-messenger/dht/../crypto -I/home/mika/dev/dna-messenger/crypto/dsa -I/home/mika/dev/dna-messenger/crypto/dsa/../..
+C_INCLUDES = -I/home/mika/dev/dna-messenger/dht -I/home/mika/dev/dna-messenger/dht/core -I/home/mika/dev/dna-messenger/dht/client -I/home/mika/dev/dna-messenger/dht/shared -I/usr/include/p11-kit-1 -I/home/mika/dev/dna-messenger/dht/.. -I/home/mika/dev/dna-messenger/dht/../crypto -I/home/mika/dev/dna-messenger/crypto/dsa -I/home/mika/dev/dna-messenger/crypto/dsa/../..
 
 C_FLAGS = -g
 
-CXX_DEFINES = -DBUILD_HASH=\"87bec8c\" -DBUILD_TS=\"2025-11-15\" -DPQSIGNUM_VERSION=\"0.1.792\"
+CXX_DEFINES = -DBUILD_HASH=\"6c9d33f\" -DBUILD_TS=\"2025-11-16\" -DPQSIGNUM_VERSION=\"0.1.821\"
 
-CXX_INCLUDES = -I/home/mika/dev/dna-messenger/dht -I/usr/include/p11-kit-1 -I/home/mika/dev/dna-messenger/dht/.. -I/home/mika/dev/dna-messenger/dht/../crypto -I/home/mika/dev/dna-messenger/crypto/dsa -I/home/mika/dev/dna-messenger/crypto/dsa/../..
+CXX_INCLUDES = -I/home/mika/dev/dna-messenger/dht -I/home/mika/dev/dna-messenger/dht/core -I/home/mika/dev/dna-messenger/dht/client -I/home/mika/dev/dna-messenger/dht/shared -I/usr/include/p11-kit-1 -I/home/mika/dev/dna-messenger/dht/.. -I/home/mika/dev/dna-messenger/dht/../crypto -I/home/mika/dev/dna-messenger/crypto/dsa -I/home/mika/dev/dna-messenger/crypto/dsa/../..
 
 CXX_FLAGS = -g -std=gnu++17
 

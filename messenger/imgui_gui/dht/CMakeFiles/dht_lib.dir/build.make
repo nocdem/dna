@@ -72,80 +72,192 @@ include dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/codegen:
 .PHONY : dht/CMakeFiles/dht_lib.dir/codegen
 
-dht/CMakeFiles/dht_lib.dir/dht_context.cpp.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dht_context.cpp.o: /home/mika/dev/dna-messenger/dht/dht_context.cpp
-dht/CMakeFiles/dht_lib.dir/dht_context.cpp.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object dht/CMakeFiles/dht_lib.dir/dht_context.cpp.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dht_context.cpp.o -MF CMakeFiles/dht_lib.dir/dht_context.cpp.o.d -o CMakeFiles/dht_lib.dir/dht_context.cpp.o -c /home/mika/dev/dna-messenger/dht/dht_context.cpp
+dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.o: /home/mika/dev/dna-messenger/dht/core/dht_context.cpp
+dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_1) "Building CXX object dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.o -MF CMakeFiles/dht_lib.dir/core/dht_context.cpp.o.d -o CMakeFiles/dht_lib.dir/core/dht_context.cpp.o -c /home/mika/dev/dna-messenger/dht/core/dht_context.cpp
 
-dht/CMakeFiles/dht_lib.dir/dht_context.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/dht_lib.dir/dht_context.cpp.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/mika/dev/dna-messenger/dht/dht_context.cpp > CMakeFiles/dht_lib.dir/dht_context.cpp.i
+dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/dht_lib.dir/core/dht_context.cpp.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/mika/dev/dna-messenger/dht/core/dht_context.cpp > CMakeFiles/dht_lib.dir/core/dht_context.cpp.i
 
-dht/CMakeFiles/dht_lib.dir/dht_context.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/dht_lib.dir/dht_context.cpp.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/mika/dev/dna-messenger/dht/dht_context.cpp -o CMakeFiles/dht_lib.dir/dht_context.cpp.s
+dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/dht_lib.dir/core/dht_context.cpp.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/mika/dev/dna-messenger/dht/core/dht_context.cpp -o CMakeFiles/dht_lib.dir/core/dht_context.cpp.s
 
-dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.o: /home/mika/dev/dna-messenger/dht/dht_value_storage.cpp
-dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.o -MF CMakeFiles/dht_lib.dir/dht_value_storage.cpp.o.d -o CMakeFiles/dht_lib.dir/dht_value_storage.cpp.o -c /home/mika/dev/dna-messenger/dht/dht_value_storage.cpp
+dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.o: /home/mika/dev/dna-messenger/dht/core/dht_stats.cpp
+dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_2) "Building CXX object dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.o -MF CMakeFiles/dht_lib.dir/core/dht_stats.cpp.o.d -o CMakeFiles/dht_lib.dir/core/dht_stats.cpp.o -c /home/mika/dev/dna-messenger/dht/core/dht_stats.cpp
 
-dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/dht_lib.dir/dht_value_storage.cpp.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/mika/dev/dna-messenger/dht/dht_value_storage.cpp > CMakeFiles/dht_lib.dir/dht_value_storage.cpp.i
+dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/dht_lib.dir/core/dht_stats.cpp.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/mika/dev/dna-messenger/dht/core/dht_stats.cpp > CMakeFiles/dht_lib.dir/core/dht_stats.cpp.i
 
-dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/dht_lib.dir/dht_value_storage.cpp.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/mika/dev/dna-messenger/dht/dht_value_storage.cpp -o CMakeFiles/dht_lib.dir/dht_value_storage.cpp.s
+dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/dht_lib.dir/core/dht_stats.cpp.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/mika/dev/dna-messenger/dht/core/dht_stats.cpp -o CMakeFiles/dht_lib.dir/core/dht_stats.cpp.s
 
-dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.o: /home/mika/dev/dna-messenger/dht/dht_offline_queue.c
-dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building C object dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.o -MF CMakeFiles/dht_lib.dir/dht_offline_queue.c.o.d -o CMakeFiles/dht_lib.dir/dht_offline_queue.c.o -c /home/mika/dev/dna-messenger/dht/dht_offline_queue.c
+dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.o: /home/mika/dev/dna-messenger/dht/core/dht_keyserver.c
+dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_3) "Building C object dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.o -MF CMakeFiles/dht_lib.dir/core/dht_keyserver.c.o.d -o CMakeFiles/dht_lib.dir/core/dht_keyserver.c.o -c /home/mika/dev/dna-messenger/dht/core/dht_keyserver.c
 
-dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/dht_offline_queue.c.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/dht_offline_queue.c > CMakeFiles/dht_lib.dir/dht_offline_queue.c.i
+dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/core/dht_keyserver.c.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/core/dht_keyserver.c > CMakeFiles/dht_lib.dir/core/dht_keyserver.c.i
 
-dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/dht_offline_queue.c.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/dht_offline_queue.c -o CMakeFiles/dht_lib.dir/dht_offline_queue.c.s
+dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/core/dht_keyserver.c.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/core/dht_keyserver.c -o CMakeFiles/dht_lib.dir/core/dht_keyserver.c.s
 
-dht/CMakeFiles/dht_lib.dir/dht_groups.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dht_groups.c.o: /home/mika/dev/dna-messenger/dht/dht_groups.c
-dht/CMakeFiles/dht_lib.dir/dht_groups.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building C object dht/CMakeFiles/dht_lib.dir/dht_groups.c.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dht_groups.c.o -MF CMakeFiles/dht_lib.dir/dht_groups.c.o.d -o CMakeFiles/dht_lib.dir/dht_groups.c.o -c /home/mika/dev/dna-messenger/dht/dht_groups.c
+dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.o: /home/mika/dev/dna-messenger/dht/shared/dht_value_storage.cpp
+dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.o -MF CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.o.d -o CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.o -c /home/mika/dev/dna-messenger/dht/shared/dht_value_storage.cpp
 
-dht/CMakeFiles/dht_lib.dir/dht_groups.c.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/dht_groups.c.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/dht_groups.c > CMakeFiles/dht_lib.dir/dht_groups.c.i
+dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/mika/dev/dna-messenger/dht/shared/dht_value_storage.cpp > CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.i
 
-dht/CMakeFiles/dht_lib.dir/dht_groups.c.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/dht_groups.c.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/dht_groups.c -o CMakeFiles/dht_lib.dir/dht_groups.c.s
+dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/mika/dev/dna-messenger/dht/shared/dht_value_storage.cpp -o CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.s
 
-dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.o: /home/mika/dev/dna-messenger/dht/dht_keyserver.c
-dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building C object dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.o -MF CMakeFiles/dht_lib.dir/dht_keyserver.c.o.d -o CMakeFiles/dht_lib.dir/dht_keyserver.c.o -c /home/mika/dev/dna-messenger/dht/dht_keyserver.c
+dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.o: /home/mika/dev/dna-messenger/dht/shared/dht_offline_queue.c
+dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building C object dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.o -MF CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.o.d -o CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.o -c /home/mika/dev/dna-messenger/dht/shared/dht_offline_queue.c
 
-dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/dht_keyserver.c.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/dht_keyserver.c > CMakeFiles/dht_lib.dir/dht_keyserver.c.i
+dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/shared/dht_offline_queue.c > CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.i
 
-dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/dht_keyserver.c.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/dht_keyserver.c -o CMakeFiles/dht_lib.dir/dht_keyserver.c.s
+dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/shared/dht_offline_queue.c -o CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.s
+
+dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.o: /home/mika/dev/dna-messenger/dht/shared/dht_groups.c
+dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building C object dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.o -MF CMakeFiles/dht_lib.dir/shared/dht_groups.c.o.d -o CMakeFiles/dht_lib.dir/shared/dht_groups.c.o -c /home/mika/dev/dna-messenger/dht/shared/dht_groups.c
+
+dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/shared/dht_groups.c.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/shared/dht_groups.c > CMakeFiles/dht_lib.dir/shared/dht_groups.c.i
+
+dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/shared/dht_groups.c.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/shared/dht_groups.c -o CMakeFiles/dht_lib.dir/shared/dht_groups.c.s
+
+dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.o: /home/mika/dev/dna-messenger/dht/shared/dht_profile.c
+dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building C object dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.o -MF CMakeFiles/dht_lib.dir/shared/dht_profile.c.o.d -o CMakeFiles/dht_lib.dir/shared/dht_profile.c.o -c /home/mika/dev/dna-messenger/dht/shared/dht_profile.c
+
+dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/shared/dht_profile.c.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/shared/dht_profile.c > CMakeFiles/dht_lib.dir/shared/dht_profile.c.i
+
+dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/shared/dht_profile.c.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/shared/dht_profile.c -o CMakeFiles/dht_lib.dir/shared/dht_profile.c.s
+
+dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.o: /home/mika/dev/dna-messenger/dht/client/dht_identity.cpp
+dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.o -MF CMakeFiles/dht_lib.dir/client/dht_identity.cpp.o.d -o CMakeFiles/dht_lib.dir/client/dht_identity.cpp.o -c /home/mika/dev/dna-messenger/dht/client/dht_identity.cpp
+
+dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/dht_lib.dir/client/dht_identity.cpp.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/mika/dev/dna-messenger/dht/client/dht_identity.cpp > CMakeFiles/dht_lib.dir/client/dht_identity.cpp.i
+
+dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/dht_lib.dir/client/dht_identity.cpp.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/mika/dev/dna-messenger/dht/client/dht_identity.cpp -o CMakeFiles/dht_lib.dir/client/dht_identity.cpp.s
+
+dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.o: /home/mika/dev/dna-messenger/dht/client/dht_singleton.c
+dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building C object dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.o -MF CMakeFiles/dht_lib.dir/client/dht_singleton.c.o.d -o CMakeFiles/dht_lib.dir/client/dht_singleton.c.o -c /home/mika/dev/dna-messenger/dht/client/dht_singleton.c
+
+dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/client/dht_singleton.c.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/client/dht_singleton.c > CMakeFiles/dht_lib.dir/client/dht_singleton.c.i
+
+dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/client/dht_singleton.c.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/client/dht_singleton.c -o CMakeFiles/dht_lib.dir/client/dht_singleton.c.s
+
+dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.o: /home/mika/dev/dna-messenger/dht/client/dht_contactlist.c
+dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building C object dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.o -MF CMakeFiles/dht_lib.dir/client/dht_contactlist.c.o.d -o CMakeFiles/dht_lib.dir/client/dht_contactlist.c.o -c /home/mika/dev/dna-messenger/dht/client/dht_contactlist.c
+
+dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/client/dht_contactlist.c.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/client/dht_contactlist.c > CMakeFiles/dht_lib.dir/client/dht_contactlist.c.i
+
+dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/client/dht_contactlist.c.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/client/dht_contactlist.c -o CMakeFiles/dht_lib.dir/client/dht_contactlist.c.s
+
+dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.o: /home/mika/dev/dna-messenger/dht/client/dht_identity_backup.c
+dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building C object dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.o -MF CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.o.d -o CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.o -c /home/mika/dev/dna-messenger/dht/client/dht_identity_backup.c
+
+dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/client/dht_identity_backup.c > CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.i
+
+dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/client/dht_identity_backup.c -o CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.s
+
+dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.o: /home/mika/dev/dna-messenger/dht/client/dna_profile.c
+dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building C object dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.o -MF CMakeFiles/dht_lib.dir/client/dna_profile.c.o.d -o CMakeFiles/dht_lib.dir/client/dna_profile.c.o -c /home/mika/dev/dna-messenger/dht/client/dna_profile.c
+
+dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/client/dna_profile.c.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/client/dna_profile.c > CMakeFiles/dht_lib.dir/client/dna_profile.c.i
+
+dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/client/dna_profile.c.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/client/dna_profile.c -o CMakeFiles/dht_lib.dir/client/dna_profile.c.s
+
+dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
+dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.o: /home/mika/dev/dna-messenger/dht/client/dna_message_wall.c
+dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building C object dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.o -MF CMakeFiles/dht_lib.dir/client/dna_message_wall.c.o.d -o CMakeFiles/dht_lib.dir/client/dna_message_wall.c.o -c /home/mika/dev/dna-messenger/dht/client/dna_message_wall.c
+
+dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/client/dna_message_wall.c.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/client/dna_message_wall.c > CMakeFiles/dht_lib.dir/client/dna_message_wall.c.i
+
+dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/client/dna_message_wall.c.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/client/dna_message_wall.c -o CMakeFiles/dht_lib.dir/client/dna_message_wall.c.s
 
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.o: /home/mika/dev/dna-messenger/dht/keyserver/keyserver_helpers.c
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.o -MF CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.o.d -o CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.o -c /home/mika/dev/dna-messenger/dht/keyserver/keyserver_helpers.c
 
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.i: cmake_force
@@ -159,7 +271,7 @@ dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.s: cmake_force
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.o: /home/mika/dev/dna-messenger/dht/keyserver/keyserver_publish.c
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.o -MF CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.o.d -o CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.o -c /home/mika/dev/dna-messenger/dht/keyserver/keyserver_publish.c
 
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.i: cmake_force
@@ -173,7 +285,7 @@ dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.s: cmake_force
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.o: /home/mika/dev/dna-messenger/dht/keyserver/keyserver_lookup.c
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.o -MF CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.o.d -o CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.o -c /home/mika/dev/dna-messenger/dht/keyserver/keyserver_lookup.c
 
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.i: cmake_force
@@ -187,7 +299,7 @@ dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.s: cmake_force
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.o: /home/mika/dev/dna-messenger/dht/keyserver/keyserver_names.c
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.o -MF CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.o.d -o CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.o -c /home/mika/dev/dna-messenger/dht/keyserver/keyserver_names.c
 
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.i: cmake_force
@@ -201,7 +313,7 @@ dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.s: cmake_force
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o: /home/mika/dev/dna-messenger/dht/keyserver/keyserver_profiles.c
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o -MF CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o.d -o CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o -c /home/mika/dev/dna-messenger/dht/keyserver/keyserver_profiles.c
 
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.i: cmake_force
@@ -215,7 +327,7 @@ dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.s: cmake_force
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.o: /home/mika/dev/dna-messenger/dht/keyserver/keyserver_addresses.c
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building C object dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.o -MF CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.o.d -o CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.o -c /home/mika/dev/dna-messenger/dht/keyserver/keyserver_addresses.c
 
 dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.i: cmake_force
@@ -226,94 +338,10 @@ dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.s"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/keyserver/keyserver_addresses.c -o CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.s
 
-dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.o: /home/mika/dev/dna-messenger/dht/dht_contactlist.c
-dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building C object dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.o -MF CMakeFiles/dht_lib.dir/dht_contactlist.c.o.d -o CMakeFiles/dht_lib.dir/dht_contactlist.c.o -c /home/mika/dev/dna-messenger/dht/dht_contactlist.c
-
-dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/dht_contactlist.c.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/dht_contactlist.c > CMakeFiles/dht_lib.dir/dht_contactlist.c.i
-
-dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/dht_contactlist.c.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/dht_contactlist.c -o CMakeFiles/dht_lib.dir/dht_contactlist.c.s
-
-dht/CMakeFiles/dht_lib.dir/dht_profile.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dht_profile.c.o: /home/mika/dev/dna-messenger/dht/dht_profile.c
-dht/CMakeFiles/dht_lib.dir/dht_profile.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building C object dht/CMakeFiles/dht_lib.dir/dht_profile.c.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dht_profile.c.o -MF CMakeFiles/dht_lib.dir/dht_profile.c.o.d -o CMakeFiles/dht_lib.dir/dht_profile.c.o -c /home/mika/dev/dna-messenger/dht/dht_profile.c
-
-dht/CMakeFiles/dht_lib.dir/dht_profile.c.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/dht_profile.c.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/dht_profile.c > CMakeFiles/dht_lib.dir/dht_profile.c.i
-
-dht/CMakeFiles/dht_lib.dir/dht_profile.c.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/dht_profile.c.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/dht_profile.c -o CMakeFiles/dht_lib.dir/dht_profile.c.s
-
-dht/CMakeFiles/dht_lib.dir/dht_singleton.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dht_singleton.c.o: /home/mika/dev/dna-messenger/dht/dht_singleton.c
-dht/CMakeFiles/dht_lib.dir/dht_singleton.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building C object dht/CMakeFiles/dht_lib.dir/dht_singleton.c.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dht_singleton.c.o -MF CMakeFiles/dht_lib.dir/dht_singleton.c.o.d -o CMakeFiles/dht_lib.dir/dht_singleton.c.o -c /home/mika/dev/dna-messenger/dht/dht_singleton.c
-
-dht/CMakeFiles/dht_lib.dir/dht_singleton.c.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/dht_singleton.c.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/dht_singleton.c > CMakeFiles/dht_lib.dir/dht_singleton.c.i
-
-dht/CMakeFiles/dht_lib.dir/dht_singleton.c.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/dht_singleton.c.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/dht_singleton.c -o CMakeFiles/dht_lib.dir/dht_singleton.c.s
-
-dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.o: /home/mika/dev/dna-messenger/dht/dht_identity_backup.c
-dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building C object dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.o -MF CMakeFiles/dht_lib.dir/dht_identity_backup.c.o.d -o CMakeFiles/dht_lib.dir/dht_identity_backup.c.o -c /home/mika/dev/dna-messenger/dht/dht_identity_backup.c
-
-dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/dht_identity_backup.c.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/dht_identity_backup.c > CMakeFiles/dht_lib.dir/dht_identity_backup.c.i
-
-dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/dht_identity_backup.c.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/dht_identity_backup.c -o CMakeFiles/dht_lib.dir/dht_identity_backup.c.s
-
-dht/CMakeFiles/dht_lib.dir/dna_profile.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dna_profile.c.o: /home/mika/dev/dna-messenger/dht/dna_profile.c
-dht/CMakeFiles/dht_lib.dir/dna_profile.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building C object dht/CMakeFiles/dht_lib.dir/dna_profile.c.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dna_profile.c.o -MF CMakeFiles/dht_lib.dir/dna_profile.c.o.d -o CMakeFiles/dht_lib.dir/dna_profile.c.o -c /home/mika/dev/dna-messenger/dht/dna_profile.c
-
-dht/CMakeFiles/dht_lib.dir/dna_profile.c.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/dna_profile.c.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/dna_profile.c > CMakeFiles/dht_lib.dir/dna_profile.c.i
-
-dht/CMakeFiles/dht_lib.dir/dna_profile.c.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/dna_profile.c.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/dna_profile.c -o CMakeFiles/dht_lib.dir/dna_profile.c.s
-
-dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
-dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.o: /home/mika/dev/dna-messenger/dht/dna_message_wall.c
-dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building C object dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.o"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.o -MF CMakeFiles/dht_lib.dir/dna_message_wall.c.o.d -o CMakeFiles/dht_lib.dir/dna_message_wall.c.o -c /home/mika/dev/dna-messenger/dht/dna_message_wall.c
-
-dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.i: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dht_lib.dir/dna_message_wall.c.i"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/dht/dna_message_wall.c > CMakeFiles/dht_lib.dir/dna_message_wall.c.i
-
-dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.s: cmake_force
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dht_lib.dir/dna_message_wall.c.s"
-	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/dht/dna_message_wall.c -o CMakeFiles/dht_lib.dir/dna_message_wall.c.s
-
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_sha3.c
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building C object dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building C object dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.o -MF CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.o.d -o CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_sha3.c
 
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.i: cmake_force
@@ -327,7 +355,7 @@ dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.s: cmake_force
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_dilithium.c
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building C object dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building C object dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.o -MF CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.o.d -o CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_dilithium.c
 
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.i: cmake_force
@@ -341,7 +369,7 @@ dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.s: cmake_force
 dht/CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.o: /home/mika/dev/dna-messenger/blockchain/blockchain_rpc.c
 dht/CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building C object dht/CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building C object dht/CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.o -MF CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.o.d -o CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.o -c /home/mika/dev/dna-messenger/blockchain/blockchain_rpc.c
 
 dht/CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.i: cmake_force
@@ -355,7 +383,7 @@ dht/CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.s: cmake_force
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_random.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_random.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_random.c
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_random.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building C object dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_random.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building C object dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_random.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_random.c.o -MF CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_random.c.o.d -o CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_random.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_random.c
 
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_random.c.i: cmake_force
@@ -369,7 +397,7 @@ dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_random.c.s: cmake_force
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_platform_linux.c
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building C object dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building C object dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.c.o -MF CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.c.o.d -o CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_platform_linux.c
 
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.c.i: cmake_force
@@ -383,7 +411,7 @@ dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.c.s: cmake_force
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.o: dht/CMakeFiles/dht_lib.dir/flags.make
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_aes.c
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.o: dht/CMakeFiles/dht_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building C object dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building C object dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.o"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && /usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.o -MF CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.o.d -o CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_aes.c
 
 dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.i: cmake_force
@@ -396,23 +424,25 @@ dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.s: cmake_force
 
 # Object files for target dht_lib
 dht_lib_OBJECTS = \
-"CMakeFiles/dht_lib.dir/dht_context.cpp.o" \
-"CMakeFiles/dht_lib.dir/dht_value_storage.cpp.o" \
-"CMakeFiles/dht_lib.dir/dht_offline_queue.c.o" \
-"CMakeFiles/dht_lib.dir/dht_groups.c.o" \
-"CMakeFiles/dht_lib.dir/dht_keyserver.c.o" \
+"CMakeFiles/dht_lib.dir/core/dht_context.cpp.o" \
+"CMakeFiles/dht_lib.dir/core/dht_stats.cpp.o" \
+"CMakeFiles/dht_lib.dir/core/dht_keyserver.c.o" \
+"CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.o" \
+"CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.o" \
+"CMakeFiles/dht_lib.dir/shared/dht_groups.c.o" \
+"CMakeFiles/dht_lib.dir/shared/dht_profile.c.o" \
+"CMakeFiles/dht_lib.dir/client/dht_identity.cpp.o" \
+"CMakeFiles/dht_lib.dir/client/dht_singleton.c.o" \
+"CMakeFiles/dht_lib.dir/client/dht_contactlist.c.o" \
+"CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.o" \
+"CMakeFiles/dht_lib.dir/client/dna_profile.c.o" \
+"CMakeFiles/dht_lib.dir/client/dna_message_wall.c.o" \
 "CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.o" \
 "CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.o" \
 "CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.o" \
 "CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.o" \
 "CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o" \
 "CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.o" \
-"CMakeFiles/dht_lib.dir/dht_contactlist.c.o" \
-"CMakeFiles/dht_lib.dir/dht_profile.c.o" \
-"CMakeFiles/dht_lib.dir/dht_singleton.c.o" \
-"CMakeFiles/dht_lib.dir/dht_identity_backup.c.o" \
-"CMakeFiles/dht_lib.dir/dna_profile.c.o" \
-"CMakeFiles/dht_lib.dir/dna_message_wall.c.o" \
 "CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.o" \
 "CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.o" \
 "CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.o" \
@@ -423,23 +453,25 @@ dht_lib_OBJECTS = \
 # External object files for target dht_lib
 dht_lib_EXTERNAL_OBJECTS =
 
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dht_context.cpp.o
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.o
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.o
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dht_groups.c.o
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.o
+dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.o
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_helpers.c.o
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.o
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_lookup.c.o
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_names.c.o
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_profiles.c.o
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_addresses.c.o
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.o
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dht_profile.c.o
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dht_singleton.c.o
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.o
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dna_profile.c.o
-dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.o
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.o
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_dilithium.c.o
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/__/blockchain/blockchain_rpc.c.o
@@ -448,7 +480,7 @@ dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_platform_linux.
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_aes.c.o
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/build.make
 dht/libdht_lib.a: dht/CMakeFiles/dht_lib.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Linking CXX static library libdht_lib.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Linking CXX static library libdht_lib.a"
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && $(CMAKE_COMMAND) -P CMakeFiles/dht_lib.dir/cmake_clean_target.cmake
 	cd /home/mika/dev/dna-messenger/imgui_gui/dht && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/dht_lib.dir/link.txt --verbose=$(VERBOSE)
 

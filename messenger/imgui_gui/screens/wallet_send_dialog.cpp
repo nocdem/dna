@@ -432,20 +432,16 @@ void render(AppState& state) {
         // Wallet name
         ImGui::Text(ICON_FA_WALLET " From: %s", state.wallet_name.c_str());
         ImGui::Spacing();
-        
-        // Show selected token (read-only)
-        ImGui::Text("Token: %s", state.send_token);
-        ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
 
-        // Show balance for selected token
-        auto it = state.token_balances.find(state.send_token);
+        // Show balance
+        auto it = state.token_balances.find("CELL");
         if (it != state.token_balances.end()) {
             std::string formatted = WalletScreen::formatBalance(it->second);
-            ImGui::TextDisabled("Available: %s %s", formatted.c_str(), state.send_token);
+            ImGui::TextDisabled("Available: %s CELL", formatted.c_str());
         } else {
-            ImGui::TextDisabled("Available: 0.00 %s", state.send_token);
+            ImGui::TextDisabled("Available: 0.00 CELL");
         }
         ImGui::Spacing();
 
@@ -466,11 +462,11 @@ void render(AppState& state) {
         ImGui::PopStyleColor();
         ImGui::PopItemWidth();
         ImGui::SameLine();
-        ImGui::TextDisabled("%s", state.send_token);
+        ImGui::TextDisabled("CELL");
         ImGui::SameLine();
         if (ImGui::Button("MAX", ImVec2(60, 0))) {
             // Calculate max amount (balance - fees)
-            auto balance_it = state.token_balances.find(state.send_token);
+            auto balance_it = state.token_balances.find("CELL");
             if (balance_it != state.token_balances.end()) {
                 try {
                     double balance = std::stod(balance_it->second);
@@ -523,36 +519,13 @@ void render(AppState& state) {
             ImGui::Spacing();
         }
 
-        // Show spinner if transaction is in progress
-        if (state.send_transaction_task.isRunning()) {
-            float spinner_x = (ImGui::GetContentRegionAvail().x - 40) * 0.5f;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + spinner_x);
-            ThemedSpinner("##send_spinner", 20.0f, 4.0f);
-            ImGui::Spacing();
-        }
-
         // Buttons
         float btn_width = 120.0f;
         float btn_spacing = (ImGui::GetContentRegionAvail().x - (btn_width * 2)) / 3.0f;
 
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + btn_spacing);
-        
-        // Disable send button if transaction is in progress
-        if (state.send_transaction_task.isRunning()) {
-            ImGui::BeginDisabled();
-        }
-        
         if (ThemedButton(ICON_FA_PAPER_PLANE " Send", ImVec2(btn_width, 40))) {
-            // Start async transaction
-            state.send_status = "Starting transaction...";
-            state.send_transaction_task.start([&state](AsyncTask* task) {
-                buildAndSendTransaction(state);
-                WalletScreen::refreshBalances(state);  // Refresh balances after send
-            });
-        }
-        
-        if (state.send_transaction_task.isRunning()) {
-            ImGui::EndDisabled();
+            buildAndSendTransaction(state);
         }
 
         ImGui::SameLine();

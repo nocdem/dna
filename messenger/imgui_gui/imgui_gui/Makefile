@@ -823,6 +823,30 @@ vendor/imgui/misc/freetype/imgui_freetype.cpp.s:
 	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f imgui_gui/CMakeFiles/dna_messenger_imgui.dir/build.make imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_freetype.cpp.s
 .PHONY : vendor/imgui/misc/freetype/imgui_freetype.cpp.s
 
+vendor/qrcodegen/qrcodegen.o: vendor/qrcodegen/qrcodegen.cpp.o
+.PHONY : vendor/qrcodegen/qrcodegen.o
+
+# target to build an object file
+vendor/qrcodegen/qrcodegen.cpp.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f imgui_gui/CMakeFiles/dna_messenger_imgui.dir/build.make imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o
+.PHONY : vendor/qrcodegen/qrcodegen.cpp.o
+
+vendor/qrcodegen/qrcodegen.i: vendor/qrcodegen/qrcodegen.cpp.i
+.PHONY : vendor/qrcodegen/qrcodegen.i
+
+# target to preprocess a source file
+vendor/qrcodegen/qrcodegen.cpp.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f imgui_gui/CMakeFiles/dna_messenger_imgui.dir/build.make imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.i
+.PHONY : vendor/qrcodegen/qrcodegen.cpp.i
+
+vendor/qrcodegen/qrcodegen.s: vendor/qrcodegen/qrcodegen.cpp.s
+.PHONY : vendor/qrcodegen/qrcodegen.s
+
+# target to generate assembly for a file
+vendor/qrcodegen/qrcodegen.cpp.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f imgui_gui/CMakeFiles/dna_messenger_imgui.dir/build.make imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.s
+.PHONY : vendor/qrcodegen/qrcodegen.cpp.s
+
 # Help Target
 help:
 	@echo "The following are some of the valid targets for this Makefile:"
@@ -917,6 +941,9 @@ help:
 	@echo "... vendor/imgui/misc/freetype/imgui_freetype.o"
 	@echo "... vendor/imgui/misc/freetype/imgui_freetype.i"
 	@echo "... vendor/imgui/misc/freetype/imgui_freetype.s"
+	@echo "... vendor/qrcodegen/qrcodegen.o"
+	@echo "... vendor/qrcodegen/qrcodegen.i"
+	@echo "... vendor/qrcodegen/qrcodegen.s"
 .PHONY : help
 
 

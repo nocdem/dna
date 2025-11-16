@@ -175,20 +175,6 @@ dht_lib/fast:
 	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/build
 .PHONY : dht_lib/fast
 
-# Convenience name for target.
-dht/CMakeFiles/persistent_bootstrap.dir/rule:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 dht/CMakeFiles/persistent_bootstrap.dir/rule
-.PHONY : dht/CMakeFiles/persistent_bootstrap.dir/rule
-
-# Convenience name for target.
-persistent_bootstrap: dht/CMakeFiles/persistent_bootstrap.dir/rule
-.PHONY : persistent_bootstrap
-
-# fast build rule for target.
-persistent_bootstrap/fast:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/persistent_bootstrap.dir/build.make dht/CMakeFiles/persistent_bootstrap.dir/build
-.PHONY : persistent_bootstrap/fast
-
 __/blockchain/blockchain_rpc.o: __/blockchain/blockchain_rpc.c.o
 .PHONY : __/blockchain/blockchain_rpc.o
 
@@ -333,269 +319,221 @@ __/crypto/utils/qgp_sha3.c.s:
 	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/__/crypto/utils/qgp_sha3.c.s
 .PHONY : __/crypto/utils/qgp_sha3.c.s
 
-dht_contactlist.o: dht_contactlist.c.o
-.PHONY : dht_contactlist.o
+client/dht_contactlist.o: client/dht_contactlist.c.o
+.PHONY : client/dht_contactlist.o
 
 # target to build an object file
-dht_contactlist.c.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.o
-.PHONY : dht_contactlist.c.o
+client/dht_contactlist.c.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.o
+.PHONY : client/dht_contactlist.c.o
 
-dht_contactlist.i: dht_contactlist.c.i
-.PHONY : dht_contactlist.i
+client/dht_contactlist.i: client/dht_contactlist.c.i
+.PHONY : client/dht_contactlist.i
 
 # target to preprocess a source file
-dht_contactlist.c.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.i
-.PHONY : dht_contactlist.c.i
+client/dht_contactlist.c.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.i
+.PHONY : client/dht_contactlist.c.i
 
-dht_contactlist.s: dht_contactlist.c.s
-.PHONY : dht_contactlist.s
+client/dht_contactlist.s: client/dht_contactlist.c.s
+.PHONY : client/dht_contactlist.s
 
 # target to generate assembly for a file
-dht_contactlist.c.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_contactlist.c.s
-.PHONY : dht_contactlist.c.s
+client/dht_contactlist.c.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_contactlist.c.s
+.PHONY : client/dht_contactlist.c.s
 
-dht_context.o: dht_context.cpp.o
-.PHONY : dht_context.o
+client/dht_identity.o: client/dht_identity.cpp.o
+.PHONY : client/dht_identity.o
 
 # target to build an object file
-dht_context.cpp.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_context.cpp.o
-.PHONY : dht_context.cpp.o
+client/dht_identity.cpp.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.o
+.PHONY : client/dht_identity.cpp.o
 
-dht_context.i: dht_context.cpp.i
-.PHONY : dht_context.i
+client/dht_identity.i: client/dht_identity.cpp.i
+.PHONY : client/dht_identity.i
 
 # target to preprocess a source file
-dht_context.cpp.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_context.cpp.i
-.PHONY : dht_context.cpp.i
+client/dht_identity.cpp.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.i
+.PHONY : client/dht_identity.cpp.i
 
-dht_context.s: dht_context.cpp.s
-.PHONY : dht_context.s
+client/dht_identity.s: client/dht_identity.cpp.s
+.PHONY : client/dht_identity.s
 
 # target to generate assembly for a file
-dht_context.cpp.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_context.cpp.s
-.PHONY : dht_context.cpp.s
+client/dht_identity.cpp.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_identity.cpp.s
+.PHONY : client/dht_identity.cpp.s
 
-dht_groups.o: dht_groups.c.o
-.PHONY : dht_groups.o
+client/dht_identity_backup.o: client/dht_identity_backup.c.o
+.PHONY : client/dht_identity_backup.o
 
 # target to build an object file
-dht_groups.c.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_groups.c.o
-.PHONY : dht_groups.c.o
+client/dht_identity_backup.c.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.o
+.PHONY : client/dht_identity_backup.c.o
 
-dht_groups.i: dht_groups.c.i
-.PHONY : dht_groups.i
+client/dht_identity_backup.i: client/dht_identity_backup.c.i
+.PHONY : client/dht_identity_backup.i
 
 # target to preprocess a source file
-dht_groups.c.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_groups.c.i
-.PHONY : dht_groups.c.i
+client/dht_identity_backup.c.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.i
+.PHONY : client/dht_identity_backup.c.i
 
-dht_groups.s: dht_groups.c.s
-.PHONY : dht_groups.s
+client/dht_identity_backup.s: client/dht_identity_backup.c.s
+.PHONY : client/dht_identity_backup.s
 
 # target to generate assembly for a file
-dht_groups.c.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_groups.c.s
-.PHONY : dht_groups.c.s
+client/dht_identity_backup.c.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_identity_backup.c.s
+.PHONY : client/dht_identity_backup.c.s
 
-dht_identity_backup.o: dht_identity_backup.c.o
-.PHONY : dht_identity_backup.o
+client/dht_singleton.o: client/dht_singleton.c.o
+.PHONY : client/dht_singleton.o
 
 # target to build an object file
-dht_identity_backup.c.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.o
-.PHONY : dht_identity_backup.c.o
+client/dht_singleton.c.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.o
+.PHONY : client/dht_singleton.c.o
 
-dht_identity_backup.i: dht_identity_backup.c.i
-.PHONY : dht_identity_backup.i
+client/dht_singleton.i: client/dht_singleton.c.i
+.PHONY : client/dht_singleton.i
 
 # target to preprocess a source file
-dht_identity_backup.c.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.i
-.PHONY : dht_identity_backup.c.i
+client/dht_singleton.c.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.i
+.PHONY : client/dht_singleton.c.i
 
-dht_identity_backup.s: dht_identity_backup.c.s
-.PHONY : dht_identity_backup.s
+client/dht_singleton.s: client/dht_singleton.c.s
+.PHONY : client/dht_singleton.s
 
 # target to generate assembly for a file
-dht_identity_backup.c.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_identity_backup.c.s
-.PHONY : dht_identity_backup.c.s
+client/dht_singleton.c.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dht_singleton.c.s
+.PHONY : client/dht_singleton.c.s
 
-dht_keyserver.o: dht_keyserver.c.o
-.PHONY : dht_keyserver.o
+client/dna_message_wall.o: client/dna_message_wall.c.o
+.PHONY : client/dna_message_wall.o
 
 # target to build an object file
-dht_keyserver.c.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.o
-.PHONY : dht_keyserver.c.o
+client/dna_message_wall.c.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.o
+.PHONY : client/dna_message_wall.c.o
 
-dht_keyserver.i: dht_keyserver.c.i
-.PHONY : dht_keyserver.i
+client/dna_message_wall.i: client/dna_message_wall.c.i
+.PHONY : client/dna_message_wall.i
 
 # target to preprocess a source file
-dht_keyserver.c.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.i
-.PHONY : dht_keyserver.c.i
+client/dna_message_wall.c.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.i
+.PHONY : client/dna_message_wall.c.i
 
-dht_keyserver.s: dht_keyserver.c.s
-.PHONY : dht_keyserver.s
+client/dna_message_wall.s: client/dna_message_wall.c.s
+.PHONY : client/dna_message_wall.s
 
 # target to generate assembly for a file
-dht_keyserver.c.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_keyserver.c.s
-.PHONY : dht_keyserver.c.s
+client/dna_message_wall.c.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dna_message_wall.c.s
+.PHONY : client/dna_message_wall.c.s
 
-dht_offline_queue.o: dht_offline_queue.c.o
-.PHONY : dht_offline_queue.o
+client/dna_profile.o: client/dna_profile.c.o
+.PHONY : client/dna_profile.o
 
 # target to build an object file
-dht_offline_queue.c.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.o
-.PHONY : dht_offline_queue.c.o
+client/dna_profile.c.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.o
+.PHONY : client/dna_profile.c.o
 
-dht_offline_queue.i: dht_offline_queue.c.i
-.PHONY : dht_offline_queue.i
+client/dna_profile.i: client/dna_profile.c.i
+.PHONY : client/dna_profile.i
 
 # target to preprocess a source file
-dht_offline_queue.c.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.i
-.PHONY : dht_offline_queue.c.i
+client/dna_profile.c.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.i
+.PHONY : client/dna_profile.c.i
 
-dht_offline_queue.s: dht_offline_queue.c.s
-.PHONY : dht_offline_queue.s
+client/dna_profile.s: client/dna_profile.c.s
+.PHONY : client/dna_profile.s
 
 # target to generate assembly for a file
-dht_offline_queue.c.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_offline_queue.c.s
-.PHONY : dht_offline_queue.c.s
+client/dna_profile.c.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/client/dna_profile.c.s
+.PHONY : client/dna_profile.c.s
 
-dht_profile.o: dht_profile.c.o
-.PHONY : dht_profile.o
+core/dht_context.o: core/dht_context.cpp.o
+.PHONY : core/dht_context.o
 
 # target to build an object file
-dht_profile.c.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_profile.c.o
-.PHONY : dht_profile.c.o
+core/dht_context.cpp.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.o
+.PHONY : core/dht_context.cpp.o
 
-dht_profile.i: dht_profile.c.i
-.PHONY : dht_profile.i
+core/dht_context.i: core/dht_context.cpp.i
+.PHONY : core/dht_context.i
 
 # target to preprocess a source file
-dht_profile.c.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_profile.c.i
-.PHONY : dht_profile.c.i
+core/dht_context.cpp.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.i
+.PHONY : core/dht_context.cpp.i
 
-dht_profile.s: dht_profile.c.s
-.PHONY : dht_profile.s
+core/dht_context.s: core/dht_context.cpp.s
+.PHONY : core/dht_context.s
 
 # target to generate assembly for a file
-dht_profile.c.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_profile.c.s
-.PHONY : dht_profile.c.s
+core/dht_context.cpp.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/core/dht_context.cpp.s
+.PHONY : core/dht_context.cpp.s
 
-dht_singleton.o: dht_singleton.c.o
-.PHONY : dht_singleton.o
+core/dht_keyserver.o: core/dht_keyserver.c.o
+.PHONY : core/dht_keyserver.o
 
 # target to build an object file
-dht_singleton.c.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_singleton.c.o
-.PHONY : dht_singleton.c.o
+core/dht_keyserver.c.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.o
+.PHONY : core/dht_keyserver.c.o
 
-dht_singleton.i: dht_singleton.c.i
-.PHONY : dht_singleton.i
+core/dht_keyserver.i: core/dht_keyserver.c.i
+.PHONY : core/dht_keyserver.i
 
 # target to preprocess a source file
-dht_singleton.c.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_singleton.c.i
-.PHONY : dht_singleton.c.i
+core/dht_keyserver.c.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.i
+.PHONY : core/dht_keyserver.c.i
 
-dht_singleton.s: dht_singleton.c.s
-.PHONY : dht_singleton.s
+core/dht_keyserver.s: core/dht_keyserver.c.s
+.PHONY : core/dht_keyserver.s
 
 # target to generate assembly for a file
-dht_singleton.c.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_singleton.c.s
-.PHONY : dht_singleton.c.s
+core/dht_keyserver.c.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/core/dht_keyserver.c.s
+.PHONY : core/dht_keyserver.c.s
 
-dht_value_storage.o: dht_value_storage.cpp.o
-.PHONY : dht_value_storage.o
+core/dht_stats.o: core/dht_stats.cpp.o
+.PHONY : core/dht_stats.o
 
 # target to build an object file
-dht_value_storage.cpp.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.o
-.PHONY : dht_value_storage.cpp.o
+core/dht_stats.cpp.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.o
+.PHONY : core/dht_stats.cpp.o
 
-dht_value_storage.i: dht_value_storage.cpp.i
-.PHONY : dht_value_storage.i
-
-# target to preprocess a source file
-dht_value_storage.cpp.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.i
-.PHONY : dht_value_storage.cpp.i
-
-dht_value_storage.s: dht_value_storage.cpp.s
-.PHONY : dht_value_storage.s
-
-# target to generate assembly for a file
-dht_value_storage.cpp.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dht_value_storage.cpp.s
-.PHONY : dht_value_storage.cpp.s
-
-dna_message_wall.o: dna_message_wall.c.o
-.PHONY : dna_message_wall.o
-
-# target to build an object file
-dna_message_wall.c.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.o
-.PHONY : dna_message_wall.c.o
-
-dna_message_wall.i: dna_message_wall.c.i
-.PHONY : dna_message_wall.i
+core/dht_stats.i: core/dht_stats.cpp.i
+.PHONY : core/dht_stats.i
 
 # target to preprocess a source file
-dna_message_wall.c.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.i
-.PHONY : dna_message_wall.c.i
+core/dht_stats.cpp.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.i
+.PHONY : core/dht_stats.cpp.i
 
-dna_message_wall.s: dna_message_wall.c.s
-.PHONY : dna_message_wall.s
-
-# target to generate assembly for a file
-dna_message_wall.c.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dna_message_wall.c.s
-.PHONY : dna_message_wall.c.s
-
-dna_profile.o: dna_profile.c.o
-.PHONY : dna_profile.o
-
-# target to build an object file
-dna_profile.c.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dna_profile.c.o
-.PHONY : dna_profile.c.o
-
-dna_profile.i: dna_profile.c.i
-.PHONY : dna_profile.i
-
-# target to preprocess a source file
-dna_profile.c.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dna_profile.c.i
-.PHONY : dna_profile.c.i
-
-dna_profile.s: dna_profile.c.s
-.PHONY : dna_profile.s
+core/dht_stats.s: core/dht_stats.cpp.s
+.PHONY : core/dht_stats.s
 
 # target to generate assembly for a file
-dna_profile.c.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/dna_profile.c.s
-.PHONY : dna_profile.c.s
+core/dht_stats.cpp.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/core/dht_stats.cpp.s
+.PHONY : core/dht_stats.cpp.s
 
 keyserver/keyserver_addresses.o: keyserver/keyserver_addresses.c.o
 .PHONY : keyserver/keyserver_addresses.o
@@ -741,29 +679,101 @@ keyserver/keyserver_publish.c.s:
 	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/keyserver/keyserver_publish.c.s
 .PHONY : keyserver/keyserver_publish.c.s
 
-persistent_bootstrap.o: persistent_bootstrap.c.o
-.PHONY : persistent_bootstrap.o
+shared/dht_groups.o: shared/dht_groups.c.o
+.PHONY : shared/dht_groups.o
 
 # target to build an object file
-persistent_bootstrap.c.o:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/persistent_bootstrap.dir/build.make dht/CMakeFiles/persistent_bootstrap.dir/persistent_bootstrap.c.o
-.PHONY : persistent_bootstrap.c.o
+shared/dht_groups.c.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.o
+.PHONY : shared/dht_groups.c.o
 
-persistent_bootstrap.i: persistent_bootstrap.c.i
-.PHONY : persistent_bootstrap.i
+shared/dht_groups.i: shared/dht_groups.c.i
+.PHONY : shared/dht_groups.i
 
 # target to preprocess a source file
-persistent_bootstrap.c.i:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/persistent_bootstrap.dir/build.make dht/CMakeFiles/persistent_bootstrap.dir/persistent_bootstrap.c.i
-.PHONY : persistent_bootstrap.c.i
+shared/dht_groups.c.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.i
+.PHONY : shared/dht_groups.c.i
 
-persistent_bootstrap.s: persistent_bootstrap.c.s
-.PHONY : persistent_bootstrap.s
+shared/dht_groups.s: shared/dht_groups.c.s
+.PHONY : shared/dht_groups.s
 
 # target to generate assembly for a file
-persistent_bootstrap.c.s:
-	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/persistent_bootstrap.dir/build.make dht/CMakeFiles/persistent_bootstrap.dir/persistent_bootstrap.c.s
-.PHONY : persistent_bootstrap.c.s
+shared/dht_groups.c.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_groups.c.s
+.PHONY : shared/dht_groups.c.s
+
+shared/dht_offline_queue.o: shared/dht_offline_queue.c.o
+.PHONY : shared/dht_offline_queue.o
+
+# target to build an object file
+shared/dht_offline_queue.c.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.o
+.PHONY : shared/dht_offline_queue.c.o
+
+shared/dht_offline_queue.i: shared/dht_offline_queue.c.i
+.PHONY : shared/dht_offline_queue.i
+
+# target to preprocess a source file
+shared/dht_offline_queue.c.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.i
+.PHONY : shared/dht_offline_queue.c.i
+
+shared/dht_offline_queue.s: shared/dht_offline_queue.c.s
+.PHONY : shared/dht_offline_queue.s
+
+# target to generate assembly for a file
+shared/dht_offline_queue.c.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_offline_queue.c.s
+.PHONY : shared/dht_offline_queue.c.s
+
+shared/dht_profile.o: shared/dht_profile.c.o
+.PHONY : shared/dht_profile.o
+
+# target to build an object file
+shared/dht_profile.c.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.o
+.PHONY : shared/dht_profile.c.o
+
+shared/dht_profile.i: shared/dht_profile.c.i
+.PHONY : shared/dht_profile.i
+
+# target to preprocess a source file
+shared/dht_profile.c.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.i
+.PHONY : shared/dht_profile.c.i
+
+shared/dht_profile.s: shared/dht_profile.c.s
+.PHONY : shared/dht_profile.s
+
+# target to generate assembly for a file
+shared/dht_profile.c.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_profile.c.s
+.PHONY : shared/dht_profile.c.s
+
+shared/dht_value_storage.o: shared/dht_value_storage.cpp.o
+.PHONY : shared/dht_value_storage.o
+
+# target to build an object file
+shared/dht_value_storage.cpp.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.o
+.PHONY : shared/dht_value_storage.cpp.o
+
+shared/dht_value_storage.i: shared/dht_value_storage.cpp.i
+.PHONY : shared/dht_value_storage.i
+
+# target to preprocess a source file
+shared/dht_value_storage.cpp.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.i
+.PHONY : shared/dht_value_storage.cpp.i
+
+shared/dht_value_storage.s: shared/dht_value_storage.cpp.s
+.PHONY : shared/dht_value_storage.s
+
+# target to generate assembly for a file
+shared/dht_value_storage.cpp.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f dht/CMakeFiles/dht_lib.dir/build.make dht/CMakeFiles/dht_lib.dir/shared/dht_value_storage.cpp.s
+.PHONY : shared/dht_value_storage.cpp.s
 
 # Help Target
 help:
@@ -778,7 +788,6 @@ help:
 	@echo "... list_install_components"
 	@echo "... rebuild_cache"
 	@echo "... dht_lib"
-	@echo "... persistent_bootstrap"
 	@echo "... __/blockchain/blockchain_rpc.o"
 	@echo "... __/blockchain/blockchain_rpc.i"
 	@echo "... __/blockchain/blockchain_rpc.s"
@@ -797,39 +806,33 @@ help:
 	@echo "... __/crypto/utils/qgp_sha3.o"
 	@echo "... __/crypto/utils/qgp_sha3.i"
 	@echo "... __/crypto/utils/qgp_sha3.s"
-	@echo "... dht_contactlist.o"
-	@echo "... dht_contactlist.i"
-	@echo "... dht_contactlist.s"
-	@echo "... dht_context.o"
-	@echo "... dht_context.i"
-	@echo "... dht_context.s"
-	@echo "... dht_groups.o"
-	@echo "... dht_groups.i"
-	@echo "... dht_groups.s"
-	@echo "... dht_identity_backup.o"
-	@echo "... dht_identity_backup.i"
-	@echo "... dht_identity_backup.s"
-	@echo "... dht_keyserver.o"
-	@echo "... dht_keyserver.i"
-	@echo "... dht_keyserver.s"
-	@echo "... dht_offline_queue.o"
-	@echo "... dht_offline_queue.i"
-	@echo "... dht_offline_queue.s"
-	@echo "... dht_profile.o"
-	@echo "... dht_profile.i"
-	@echo "... dht_profile.s"
-	@echo "... dht_singleton.o"
-	@echo "... dht_singleton.i"
-	@echo "... dht_singleton.s"
-	@echo "... dht_value_storage.o"
-	@echo "... dht_value_storage.i"
-	@echo "... dht_value_storage.s"
-	@echo "... dna_message_wall.o"
-	@echo "... dna_message_wall.i"
-	@echo "... dna_message_wall.s"
-	@echo "... dna_profile.o"
-	@echo "... dna_profile.i"
-	@echo "... dna_profile.s"
+	@echo "... client/dht_contactlist.o"
+	@echo "... client/dht_contactlist.i"
+	@echo "... client/dht_contactlist.s"
+	@echo "... client/dht_identity.o"
+	@echo "... client/dht_identity.i"
+	@echo "... client/dht_identity.s"
+	@echo "... client/dht_identity_backup.o"
+	@echo "... client/dht_identity_backup.i"
+	@echo "... client/dht_identity_backup.s"
+	@echo "... client/dht_singleton.o"
+	@echo "... client/dht_singleton.i"
+	@echo "... client/dht_singleton.s"
+	@echo "... client/dna_message_wall.o"
+	@echo "... client/dna_message_wall.i"
+	@echo "... client/dna_message_wall.s"
+	@echo "... client/dna_profile.o"
+	@echo "... client/dna_profile.i"
+	@echo "... client/dna_profile.s"
+	@echo "... core/dht_context.o"
+	@echo "... core/dht_context.i"
+	@echo "... core/dht_context.s"
+	@echo "... core/dht_keyserver.o"
+	@echo "... core/dht_keyserver.i"
+	@echo "... core/dht_keyserver.s"
+	@echo "... core/dht_stats.o"
+	@echo "... core/dht_stats.i"
+	@echo "... core/dht_stats.s"
 	@echo "... keyserver/keyserver_addresses.o"
 	@echo "... keyserver/keyserver_addresses.i"
 	@echo "... keyserver/keyserver_addresses.s"
@@ -848,9 +851,18 @@ help:
 	@echo "... keyserver/keyserver_publish.o"
 	@echo "... keyserver/keyserver_publish.i"
 	@echo "... keyserver/keyserver_publish.s"
-	@echo "... persistent_bootstrap.o"
-	@echo "... persistent_bootstrap.i"
-	@echo "... persistent_bootstrap.s"
+	@echo "... shared/dht_groups.o"
+	@echo "... shared/dht_groups.i"
+	@echo "... shared/dht_groups.s"
+	@echo "... shared/dht_offline_queue.o"
+	@echo "... shared/dht_offline_queue.i"
+	@echo "... shared/dht_offline_queue.s"
+	@echo "... shared/dht_profile.o"
+	@echo "... shared/dht_profile.i"
+	@echo "... shared/dht_profile.s"
+	@echo "... shared/dht_value_storage.o"
+	@echo "... shared/dht_value_storage.i"
+	@echo "... shared/dht_value_storage.s"
 .PHONY : help
 
 

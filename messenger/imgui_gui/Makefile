@@ -279,19 +279,6 @@ dht_lib/fast:
 .PHONY : dht_lib/fast
 
 #=============================================================================
-# Target rules for targets named persistent_bootstrap
-
-# Build rule for target.
-persistent_bootstrap: cmake_check_build_system
-	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 persistent_bootstrap
-.PHONY : persistent_bootstrap
-
-# fast build rule for target.
-persistent_bootstrap/fast:
-	$(MAKE) $(MAKESILENT) -f dht/CMakeFiles/persistent_bootstrap.dir/build.make dht/CMakeFiles/persistent_bootstrap.dir/build
-.PHONY : persistent_bootstrap/fast
-
-#=============================================================================
 # Target rules for targets named p2p_transport
 
 # Build rule for target.
@@ -303,6 +290,45 @@ p2p_transport: cmake_check_build_system
 p2p_transport/fast:
 	$(MAKE) $(MAKESILENT) -f p2p/CMakeFiles/p2p_transport.dir/build.make p2p/CMakeFiles/p2p_transport.dir/build
 .PHONY : p2p_transport/fast
+
+#=============================================================================
+# Target rules for targets named bootstrap_value_storage
+
+# Build rule for target.
+bootstrap_value_storage: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 bootstrap_value_storage
+.PHONY : bootstrap_value_storage
+
+# fast build rule for target.
+bootstrap_value_storage/fast:
+	$(MAKE) $(MAKESILENT) -f bootstrap/CMakeFiles/bootstrap_value_storage.dir/build.make bootstrap/CMakeFiles/bootstrap_value_storage.dir/build
+.PHONY : bootstrap_value_storage/fast
+
+#=============================================================================
+# Target rules for targets named persistent_bootstrap
+
+# Build rule for target.
+persistent_bootstrap: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 persistent_bootstrap
+.PHONY : persistent_bootstrap
+
+# fast build rule for target.
+persistent_bootstrap/fast:
+	$(MAKE) $(MAKESILENT) -f bootstrap/CMakeFiles/persistent_bootstrap.dir/build.make bootstrap/CMakeFiles/persistent_bootstrap.dir/build
+.PHONY : persistent_bootstrap/fast
+
+#=============================================================================
+# Target rules for targets named migrate_storage_once
+
+# Build rule for target.
+migrate_storage_once: cmake_check_build_system
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/Makefile2 migrate_storage_once
+.PHONY : migrate_storage_once
+
+# fast build rule for target.
+migrate_storage_once/fast:
+	$(MAKE) $(MAKESILENT) -f bootstrap/CMakeFiles/migrate_storage_once.dir/build.make bootstrap/CMakeFiles/migrate_storage_once.dir/build
+.PHONY : migrate_storage_once/fast
 
 #=============================================================================
 # Target rules for targets named dna_messenger_imgui
@@ -847,6 +873,30 @@ crypto/utils/qgp_utils_standalone.s: crypto/utils/qgp_utils_standalone.c.s
 crypto/utils/qgp_utils_standalone.c.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/dna_lib.dir/build.make CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.s
 .PHONY : crypto/utils/qgp_utils_standalone.c.s
+
+database/cache_manager.o: database/cache_manager.c.o
+.PHONY : database/cache_manager.o
+
+# target to build an object file
+database/cache_manager.c.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/dna_lib.dir/build.make CMakeFiles/dna_lib.dir/database/cache_manager.c.o
+.PHONY : database/cache_manager.c.o
+
+database/cache_manager.i: database/cache_manager.c.i
+.PHONY : database/cache_manager.i
+
+# target to preprocess a source file
+database/cache_manager.c.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/dna_lib.dir/build.make CMakeFiles/dna_lib.dir/database/cache_manager.c.i
+.PHONY : database/cache_manager.c.i
+
+database/cache_manager.s: database/cache_manager.c.s
+.PHONY : database/cache_manager.s
+
+# target to generate assembly for a file
+database/cache_manager.c.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/dna_lib.dir/build.make CMakeFiles/dna_lib.dir/database/cache_manager.c.s
+.PHONY : database/cache_manager.c.s
 
 database/contacts_db.o: database/contacts_db.c.o
 .PHONY : database/contacts_db.o
@@ -1556,6 +1606,7 @@ help:
 	@echo "... install/strip"
 	@echo "... list_install_components"
 	@echo "... rebuild_cache"
+	@echo "... bootstrap_value_storage"
 	@echo "... cellframe_dilithium"
 	@echo "... cellframe_minimal"
 	@echo "... dht_lib"
@@ -1563,6 +1614,7 @@ help:
 	@echo "... dna_messenger_imgui"
 	@echo "... dsa"
 	@echo "... kem"
+	@echo "... migrate_storage_once"
 	@echo "... p2p_transport"
 	@echo "... persistent_bootstrap"
 	@echo "... test_dna_profile"
@@ -1634,6 +1686,9 @@ help:
 	@echo "... crypto/utils/qgp_utils_standalone.o"
 	@echo "... crypto/utils/qgp_utils_standalone.i"
 	@echo "... crypto/utils/qgp_utils_standalone.s"
+	@echo "... database/cache_manager.o"
+	@echo "... database/cache_manager.i"
+	@echo "... database/cache_manager.s"
 	@echo "... database/contacts_db.o"
 	@echo "... database/contacts_db.i"
 	@echo "... database/contacts_db.s"

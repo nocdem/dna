@@ -51,7 +51,9 @@ CMakeFiles/dna_lib.dir/messenger/init.c.o: \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_compiler.h \
  /home/mika/dev/dna-messenger/messenger/../message_backup.h \
  /home/mika/dev/dna-messenger/messenger/../database/keyserver_cache.h \
- /home/mika/dev/dna-messenger/messenger/../dht/dht_identity_backup.h \
- /home/mika/dev/dna-messenger/messenger/../dht/../dna_api.h \
- /home/mika/dev/dna-messenger/messenger/../dht/dht_context.h \
- /home/mika/dev/dna-messenger/messenger/../dht/dht_singleton.h
+ /home/mika/dev/dna-messenger/messenger/../dht/client/dht_identity_backup.h \
+ /home/mika/dev/dna-messenger/p2p/../dna_api.h \
+ /home/mika/dev/dna-messenger/messenger/../dht/client/../core/dht_context.h \
+ /home/mika/dev/dna-messenger/messenger/../dht/client/../core/dht_stats.h \
+ /home/mika/dev/dna-messenger/messenger/../dht/client/../core/../client/dht_identity.h \
+ /home/mika/dev/dna-messenger/messenger/../dht/client/dht_singleton.h

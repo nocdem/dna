@@ -31,7 +31,6 @@
 /home/mika/dev/dna-messenger/imgui_gui/crypto/cellframe_dilithium/CMakeFiles/install/local.dir
 /home/mika/dev/dna-messenger/imgui_gui/crypto/cellframe_dilithium/CMakeFiles/install/strip.dir
 /home/mika/dev/dna-messenger/imgui_gui/dht/CMakeFiles/dht_lib.dir
-/home/mika/dev/dna-messenger/imgui_gui/dht/CMakeFiles/persistent_bootstrap.dir
 /home/mika/dev/dna-messenger/imgui_gui/dht/CMakeFiles/edit_cache.dir
 /home/mika/dev/dna-messenger/imgui_gui/dht/CMakeFiles/rebuild_cache.dir
 /home/mika/dev/dna-messenger/imgui_gui/dht/CMakeFiles/list_install_components.dir
@@ -45,6 +44,15 @@
 /home/mika/dev/dna-messenger/imgui_gui/p2p/CMakeFiles/install.dir
 /home/mika/dev/dna-messenger/imgui_gui/p2p/CMakeFiles/install/local.dir
 /home/mika/dev/dna-messenger/imgui_gui/p2p/CMakeFiles/install/strip.dir
+/home/mika/dev/dna-messenger/imgui_gui/bootstrap/CMakeFiles/bootstrap_value_storage.dir
+/home/mika/dev/dna-messenger/imgui_gui/bootstrap/CMakeFiles/persistent_bootstrap.dir
+/home/mika/dev/dna-messenger/imgui_gui/bootstrap/CMakeFiles/migrate_storage_once.dir
+/home/mika/dev/dna-messenger/imgui_gui/bootstrap/CMakeFiles/edit_cache.dir
+/home/mika/dev/dna-messenger/imgui_gui/bootstrap/CMakeFiles/rebuild_cache.dir
+/home/mika/dev/dna-messenger/imgui_gui/bootstrap/CMakeFiles/list_install_components.dir
+/home/mika/dev/dna-messenger/imgui_gui/bootstrap/CMakeFiles/install.dir
+/home/mika/dev/dna-messenger/imgui_gui/bootstrap/CMakeFiles/install/local.dir
+/home/mika/dev/dna-messenger/imgui_gui/bootstrap/CMakeFiles/install/strip.dir
 /home/mika/dev/dna-messenger/imgui_gui/imgui_gui/CMakeFiles/dna_messenger_imgui.dir
 /home/mika/dev/dna-messenger/imgui_gui/imgui_gui/CMakeFiles/edit_cache.dir
 /home/mika/dev/dna-messenger/imgui_gui/imgui_gui/CMakeFiles/rebuild_cache.dir

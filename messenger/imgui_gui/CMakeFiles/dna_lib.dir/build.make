@@ -310,10 +310,24 @@ CMakeFiles/dna_lib.dir/database/profile_manager.c.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dna_lib.dir/database/profile_manager.c.s"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/database/profile_manager.c -o CMakeFiles/dna_lib.dir/database/profile_manager.c.s
 
+CMakeFiles/dna_lib.dir/database/cache_manager.c.o: CMakeFiles/dna_lib.dir/flags.make
+CMakeFiles/dna_lib.dir/database/cache_manager.c.o: /home/mika/dev/dna-messenger/database/cache_manager.c
+CMakeFiles/dna_lib.dir/database/cache_manager.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building C object CMakeFiles/dna_lib.dir/database/cache_manager.c.o"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/database/cache_manager.c.o -MF CMakeFiles/dna_lib.dir/database/cache_manager.c.o.d -o CMakeFiles/dna_lib.dir/database/cache_manager.c.o -c /home/mika/dev/dna-messenger/database/cache_manager.c
+
+CMakeFiles/dna_lib.dir/database/cache_manager.c.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing C source to CMakeFiles/dna_lib.dir/database/cache_manager.c.i"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -E /home/mika/dev/dna-messenger/database/cache_manager.c > CMakeFiles/dna_lib.dir/database/cache_manager.c.i
+
+CMakeFiles/dna_lib.dir/database/cache_manager.c.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling C source to assembly CMakeFiles/dna_lib.dir/database/cache_manager.c.s"
+	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -S /home/mika/dev/dna-messenger/database/cache_manager.c -o CMakeFiles/dna_lib.dir/database/cache_manager.c.s
+
 CMakeFiles/dna_lib.dir/blockchain/wallet.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/blockchain/wallet.c.o: /home/mika/dev/dna-messenger/blockchain/wallet.c
 CMakeFiles/dna_lib.dir/blockchain/wallet.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building C object CMakeFiles/dna_lib.dir/blockchain/wallet.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building C object CMakeFiles/dna_lib.dir/blockchain/wallet.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/blockchain/wallet.c.o -MF CMakeFiles/dna_lib.dir/blockchain/wallet.c.o.d -o CMakeFiles/dna_lib.dir/blockchain/wallet.c.o -c /home/mika/dev/dna-messenger/blockchain/wallet.c
 
 CMakeFiles/dna_lib.dir/blockchain/wallet.c.i: cmake_force
@@ -327,7 +341,7 @@ CMakeFiles/dna_lib.dir/blockchain/wallet.c.s: cmake_force
 CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.o: /home/mika/dev/dna-messenger/blockchain/blockchain_rpc.c
 CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building C object CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building C object CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.o -MF CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.o.d -o CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.o -c /home/mika/dev/dna-messenger/blockchain/blockchain_rpc.c
 
 CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.i: cmake_force
@@ -341,7 +355,7 @@ CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.s: cmake_force
 CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.o: /home/mika/dev/dna-messenger/blockchain/blockchain_addr.c
 CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building C object CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building C object CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.o -MF CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.o.d -o CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.o -c /home/mika/dev/dna-messenger/blockchain/blockchain_addr.c
 
 CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.i: cmake_force
@@ -355,7 +369,7 @@ CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/base58.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/base58.c.o: /home/mika/dev/dna-messenger/crypto/utils/base58.c
 CMakeFiles/dna_lib.dir/crypto/utils/base58.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/base58.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/base58.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/base58.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/base58.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/base58.c.o -c /home/mika/dev/dna-messenger/crypto/utils/base58.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/base58.c.i: cmake_force
@@ -369,7 +383,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/base58.c.s: cmake_force
 CMakeFiles/dna_lib.dir/legacy-tools/keygen.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/legacy-tools/keygen.c.o: /home/mika/dev/dna-messenger/legacy-tools/keygen.c
 CMakeFiles/dna_lib.dir/legacy-tools/keygen.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/keygen.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/keygen.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/legacy-tools/keygen.c.o -MF CMakeFiles/dna_lib.dir/legacy-tools/keygen.c.o.d -o CMakeFiles/dna_lib.dir/legacy-tools/keygen.c.o -c /home/mika/dev/dna-messenger/legacy-tools/keygen.c
 
 CMakeFiles/dna_lib.dir/legacy-tools/keygen.c.i: cmake_force
@@ -383,7 +397,7 @@ CMakeFiles/dna_lib.dir/legacy-tools/keygen.c.s: cmake_force
 CMakeFiles/dna_lib.dir/legacy-tools/sign.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/legacy-tools/sign.c.o: /home/mika/dev/dna-messenger/legacy-tools/sign.c
 CMakeFiles/dna_lib.dir/legacy-tools/sign.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/sign.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/sign.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/legacy-tools/sign.c.o -MF CMakeFiles/dna_lib.dir/legacy-tools/sign.c.o.d -o CMakeFiles/dna_lib.dir/legacy-tools/sign.c.o -c /home/mika/dev/dna-messenger/legacy-tools/sign.c
 
 CMakeFiles/dna_lib.dir/legacy-tools/sign.c.i: cmake_force
@@ -397,7 +411,7 @@ CMakeFiles/dna_lib.dir/legacy-tools/sign.c.s: cmake_force
 CMakeFiles/dna_lib.dir/legacy-tools/verify.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/legacy-tools/verify.c.o: /home/mika/dev/dna-messenger/legacy-tools/verify.c
 CMakeFiles/dna_lib.dir/legacy-tools/verify.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/verify.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/verify.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/legacy-tools/verify.c.o -MF CMakeFiles/dna_lib.dir/legacy-tools/verify.c.o.d -o CMakeFiles/dna_lib.dir/legacy-tools/verify.c.o -c /home/mika/dev/dna-messenger/legacy-tools/verify.c
 
 CMakeFiles/dna_lib.dir/legacy-tools/verify.c.i: cmake_force
@@ -411,7 +425,7 @@ CMakeFiles/dna_lib.dir/legacy-tools/verify.c.s: cmake_force
 CMakeFiles/dna_lib.dir/legacy-tools/export.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/legacy-tools/export.c.o: /home/mika/dev/dna-messenger/legacy-tools/export.c
 CMakeFiles/dna_lib.dir/legacy-tools/export.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/export.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/export.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/legacy-tools/export.c.o -MF CMakeFiles/dna_lib.dir/legacy-tools/export.c.o.d -o CMakeFiles/dna_lib.dir/legacy-tools/export.c.o -c /home/mika/dev/dna-messenger/legacy-tools/export.c
 
 CMakeFiles/dna_lib.dir/legacy-tools/export.c.i: cmake_force
@@ -425,7 +439,7 @@ CMakeFiles/dna_lib.dir/legacy-tools/export.c.s: cmake_force
 CMakeFiles/dna_lib.dir/legacy-tools/encrypt.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/legacy-tools/encrypt.c.o: /home/mika/dev/dna-messenger/legacy-tools/encrypt.c
 CMakeFiles/dna_lib.dir/legacy-tools/encrypt.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/encrypt.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_27) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/encrypt.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/legacy-tools/encrypt.c.o -MF CMakeFiles/dna_lib.dir/legacy-tools/encrypt.c.o.d -o CMakeFiles/dna_lib.dir/legacy-tools/encrypt.c.o -c /home/mika/dev/dna-messenger/legacy-tools/encrypt.c
 
 CMakeFiles/dna_lib.dir/legacy-tools/encrypt.c.i: cmake_force
@@ -439,7 +453,7 @@ CMakeFiles/dna_lib.dir/legacy-tools/encrypt.c.s: cmake_force
 CMakeFiles/dna_lib.dir/legacy-tools/decrypt.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/legacy-tools/decrypt.c.o: /home/mika/dev/dna-messenger/legacy-tools/decrypt.c
 CMakeFiles/dna_lib.dir/legacy-tools/decrypt.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_27) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/decrypt.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/decrypt.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/legacy-tools/decrypt.c.o -MF CMakeFiles/dna_lib.dir/legacy-tools/decrypt.c.o.d -o CMakeFiles/dna_lib.dir/legacy-tools/decrypt.c.o -c /home/mika/dev/dna-messenger/legacy-tools/decrypt.c
 
 CMakeFiles/dna_lib.dir/legacy-tools/decrypt.c.i: cmake_force
@@ -453,7 +467,7 @@ CMakeFiles/dna_lib.dir/legacy-tools/decrypt.c.s: cmake_force
 CMakeFiles/dna_lib.dir/legacy-tools/keyring.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/legacy-tools/keyring.c.o: /home/mika/dev/dna-messenger/legacy-tools/keyring.c
 CMakeFiles/dna_lib.dir/legacy-tools/keyring.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/keyring.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_29) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/keyring.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/legacy-tools/keyring.c.o -MF CMakeFiles/dna_lib.dir/legacy-tools/keyring.c.o.d -o CMakeFiles/dna_lib.dir/legacy-tools/keyring.c.o -c /home/mika/dev/dna-messenger/legacy-tools/keyring.c
 
 CMakeFiles/dna_lib.dir/legacy-tools/keyring.c.i: cmake_force
@@ -467,7 +481,7 @@ CMakeFiles/dna_lib.dir/legacy-tools/keyring.c.s: cmake_force
 CMakeFiles/dna_lib.dir/legacy-tools/utils.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/legacy-tools/utils.c.o: /home/mika/dev/dna-messenger/legacy-tools/utils.c
 CMakeFiles/dna_lib.dir/legacy-tools/utils.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_29) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/utils.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_30) "Building C object CMakeFiles/dna_lib.dir/legacy-tools/utils.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/legacy-tools/utils.c.o -MF CMakeFiles/dna_lib.dir/legacy-tools/utils.c.o.d -o CMakeFiles/dna_lib.dir/legacy-tools/utils.c.o -c /home/mika/dev/dna-messenger/legacy-tools/utils.c
 
 CMakeFiles/dna_lib.dir/legacy-tools/utils.c.i: cmake_force
@@ -481,7 +495,7 @@ CMakeFiles/dna_lib.dir/legacy-tools/utils.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/armor.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/armor.c.o: /home/mika/dev/dna-messenger/crypto/utils/armor.c
 CMakeFiles/dna_lib.dir/crypto/utils/armor.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_30) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/armor.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_31) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/armor.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/armor.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/armor.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/armor.c.o -c /home/mika/dev/dna-messenger/crypto/utils/armor.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/armor.c.i: cmake_force
@@ -495,7 +509,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/armor.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/aes_keywrap.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/aes_keywrap.c.o: /home/mika/dev/dna-messenger/crypto/utils/aes_keywrap.c
 CMakeFiles/dna_lib.dir/crypto/utils/aes_keywrap.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_31) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/aes_keywrap.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_32) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/aes_keywrap.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/aes_keywrap.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/aes_keywrap.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/aes_keywrap.c.o -c /home/mika/dev/dna-messenger/crypto/utils/aes_keywrap.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/aes_keywrap.c.i: cmake_force
@@ -509,7 +523,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/aes_keywrap.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/bip39/bip39.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/bip39/bip39.c.o: /home/mika/dev/dna-messenger/crypto/bip39/bip39.c
 CMakeFiles/dna_lib.dir/crypto/bip39/bip39.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_32) "Building C object CMakeFiles/dna_lib.dir/crypto/bip39/bip39.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_33) "Building C object CMakeFiles/dna_lib.dir/crypto/bip39/bip39.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/bip39/bip39.c.o -MF CMakeFiles/dna_lib.dir/crypto/bip39/bip39.c.o.d -o CMakeFiles/dna_lib.dir/crypto/bip39/bip39.c.o -c /home/mika/dev/dna-messenger/crypto/bip39/bip39.c
 
 CMakeFiles/dna_lib.dir/crypto/bip39/bip39.c.i: cmake_force
@@ -523,7 +537,7 @@ CMakeFiles/dna_lib.dir/crypto/bip39/bip39.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/bip39/bip39_pbkdf2.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/bip39/bip39_pbkdf2.c.o: /home/mika/dev/dna-messenger/crypto/bip39/bip39_pbkdf2.c
 CMakeFiles/dna_lib.dir/crypto/bip39/bip39_pbkdf2.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_33) "Building C object CMakeFiles/dna_lib.dir/crypto/bip39/bip39_pbkdf2.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_34) "Building C object CMakeFiles/dna_lib.dir/crypto/bip39/bip39_pbkdf2.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/bip39/bip39_pbkdf2.c.o -MF CMakeFiles/dna_lib.dir/crypto/bip39/bip39_pbkdf2.c.o.d -o CMakeFiles/dna_lib.dir/crypto/bip39/bip39_pbkdf2.c.o -c /home/mika/dev/dna-messenger/crypto/bip39/bip39_pbkdf2.c
 
 CMakeFiles/dna_lib.dir/crypto/bip39/bip39_pbkdf2.c.i: cmake_force
@@ -537,7 +551,7 @@ CMakeFiles/dna_lib.dir/crypto/bip39/bip39_pbkdf2.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/bip39/seed_derivation.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/bip39/seed_derivation.c.o: /home/mika/dev/dna-messenger/crypto/bip39/seed_derivation.c
 CMakeFiles/dna_lib.dir/crypto/bip39/seed_derivation.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_34) "Building C object CMakeFiles/dna_lib.dir/crypto/bip39/seed_derivation.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_35) "Building C object CMakeFiles/dna_lib.dir/crypto/bip39/seed_derivation.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/bip39/seed_derivation.c.o -MF CMakeFiles/dna_lib.dir/crypto/bip39/seed_derivation.c.o.d -o CMakeFiles/dna_lib.dir/crypto/bip39/seed_derivation.c.o -c /home/mika/dev/dna-messenger/crypto/bip39/seed_derivation.c
 
 CMakeFiles/dna_lib.dir/crypto/bip39/seed_derivation.c.i: cmake_force
@@ -551,7 +565,7 @@ CMakeFiles/dna_lib.dir/crypto/bip39/seed_derivation.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/kyber_deterministic.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/kyber_deterministic.c.o: /home/mika/dev/dna-messenger/crypto/utils/kyber_deterministic.c
 CMakeFiles/dna_lib.dir/crypto/utils/kyber_deterministic.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_35) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/kyber_deterministic.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_36) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/kyber_deterministic.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/kyber_deterministic.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/kyber_deterministic.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/kyber_deterministic.c.o -c /home/mika/dev/dna-messenger/crypto/utils/kyber_deterministic.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/kyber_deterministic.c.i: cmake_force
@@ -565,7 +579,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/kyber_deterministic.c.s: cmake_force
 CMakeFiles/dna_lib.dir/dna_config.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/dna_config.c.o: /home/mika/dev/dna-messenger/dna_config.c
 CMakeFiles/dna_lib.dir/dna_config.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_36) "Building C object CMakeFiles/dna_lib.dir/dna_config.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_37) "Building C object CMakeFiles/dna_lib.dir/dna_config.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/dna_config.c.o -MF CMakeFiles/dna_lib.dir/dna_config.c.o.d -o CMakeFiles/dna_lib.dir/dna_config.c.o -c /home/mika/dev/dna-messenger/dna_config.c
 
 CMakeFiles/dna_lib.dir/dna_config.c.i: cmake_force
@@ -579,7 +593,7 @@ CMakeFiles/dna_lib.dir/dna_config.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_random.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_random.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_random.c
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_random.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_37) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_random.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_38) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_random.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/qgp_random.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/qgp_random.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/qgp_random.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_random.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_random.c.i: cmake_force
@@ -593,7 +607,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/qgp_random.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_aes.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_aes.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_aes.c
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_aes.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_38) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_aes.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_39) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_aes.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/qgp_aes.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/qgp_aes.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/qgp_aes.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_aes.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_aes.c.i: cmake_force
@@ -607,7 +621,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/qgp_aes.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_kyber.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_kyber.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_kyber.c
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_kyber.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_39) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_kyber.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_40) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_kyber.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/qgp_kyber.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/qgp_kyber.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/qgp_kyber.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_kyber.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_kyber.c.i: cmake_force
@@ -621,7 +635,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/qgp_kyber.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_dilithium.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_dilithium.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_dilithium.c
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_dilithium.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_40) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_dilithium.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_41) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_dilithium.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/qgp_dilithium.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/qgp_dilithium.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/qgp_dilithium.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_dilithium.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_dilithium.c.i: cmake_force
@@ -635,7 +649,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/qgp_dilithium.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_sha3.c
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_41) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_42) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_sha3.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.i: cmake_force
@@ -649,7 +663,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/qgp_sha3.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_key.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_key.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_key.c
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_key.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_42) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_key.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_43) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_key.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/qgp_key.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/qgp_key.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/qgp_key.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_key.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_key.c.i: cmake_force
@@ -663,7 +677,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/qgp_key.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_signature.c
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_43) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_44) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_signature.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.i: cmake_force
@@ -677,7 +691,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_utils_standalone.c
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_44) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_45) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_utils_standalone.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.i: cmake_force
@@ -691,7 +705,7 @@ CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.s: cmake_force
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_platform_linux.c.o: CMakeFiles/dna_lib.dir/flags.make
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_platform_linux.c.o: /home/mika/dev/dna-messenger/crypto/utils/qgp_platform_linux.c
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_platform_linux.c.o: CMakeFiles/dna_lib.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_45) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_platform_linux.c.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_46) "Building C object CMakeFiles/dna_lib.dir/crypto/utils/qgp_platform_linux.c.o"
 	/usr/bin/cc $(C_DEFINES) $(C_INCLUDES) $(C_FLAGS) -MD -MT CMakeFiles/dna_lib.dir/crypto/utils/qgp_platform_linux.c.o -MF CMakeFiles/dna_lib.dir/crypto/utils/qgp_platform_linux.c.o.d -o CMakeFiles/dna_lib.dir/crypto/utils/qgp_platform_linux.c.o -c /home/mika/dev/dna-messenger/crypto/utils/qgp_platform_linux.c
 
 CMakeFiles/dna_lib.dir/crypto/utils/qgp_platform_linux.c.i: cmake_force
@@ -721,6 +735,7 @@ dna_lib_OBJECTS = \
 "CMakeFiles/dna_lib.dir/database/contacts_db.c.o" \
 "CMakeFiles/dna_lib.dir/database/profile_cache.c.o" \
 "CMakeFiles/dna_lib.dir/database/profile_manager.c.o" \
+"CMakeFiles/dna_lib.dir/database/cache_manager.c.o" \
 "CMakeFiles/dna_lib.dir/blockchain/wallet.c.o" \
 "CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.o" \
 "CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.o" \
@@ -770,6 +785,7 @@ libdna_lib.a: CMakeFiles/dna_lib.dir/database/keyserver_cache.c.o
 libdna_lib.a: CMakeFiles/dna_lib.dir/database/contacts_db.c.o
 libdna_lib.a: CMakeFiles/dna_lib.dir/database/profile_cache.c.o
 libdna_lib.a: CMakeFiles/dna_lib.dir/database/profile_manager.c.o
+libdna_lib.a: CMakeFiles/dna_lib.dir/database/cache_manager.c.o
 libdna_lib.a: CMakeFiles/dna_lib.dir/blockchain/wallet.c.o
 libdna_lib.a: CMakeFiles/dna_lib.dir/blockchain/blockchain_rpc.c.o
 libdna_lib.a: CMakeFiles/dna_lib.dir/blockchain/blockchain_addr.c.o
@@ -800,7 +816,7 @@ libdna_lib.a: CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o
 libdna_lib.a: CMakeFiles/dna_lib.dir/crypto/utils/qgp_platform_linux.c.o
 libdna_lib.a: CMakeFiles/dna_lib.dir/build.make
 libdna_lib.a: CMakeFiles/dna_lib.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_46) "Linking CXX static library libdna_lib.a"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_47) "Linking CXX static library libdna_lib.a"
 	$(CMAKE_COMMAND) -P CMakeFiles/dna_lib.dir/cmake_clean_target.cmake
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/dna_lib.dir/link.txt --verbose=$(VERBOSE)
 

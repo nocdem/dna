@@ -450,6 +450,20 @@ imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_fr
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_freetype.cpp.s"
 	cd /home/mika/dev/dna-messenger/imgui_gui/imgui_gui && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/mika/dev/dna-messenger/imgui_gui/vendor/imgui/misc/freetype/imgui_freetype.cpp -o CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_freetype.cpp.s
 
+imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o: imgui_gui/CMakeFiles/dna_messenger_imgui.dir/flags.make
+imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o: vendor/qrcodegen/qrcodegen.cpp
+imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o: imgui_gui/CMakeFiles/dna_messenger_imgui.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Building CXX object imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o"
+	cd /home/mika/dev/dna-messenger/imgui_gui/imgui_gui && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o -MF CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o.d -o CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o -c /home/mika/dev/dna-messenger/imgui_gui/vendor/qrcodegen/qrcodegen.cpp
+
+imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.i"
+	cd /home/mika/dev/dna-messenger/imgui_gui/imgui_gui && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /home/mika/dev/dna-messenger/imgui_gui/vendor/qrcodegen/qrcodegen.cpp > CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.i
+
+imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.s"
+	cd /home/mika/dev/dna-messenger/imgui_gui/imgui_gui && /usr/bin/c++ $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /home/mika/dev/dna-messenger/imgui_gui/vendor/qrcodegen/qrcodegen.cpp -o CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.s
+
 # Object files for target dna_messenger_imgui
 dna_messenger_imgui_OBJECTS = \
 "CMakeFiles/dna_messenger_imgui.dir/main.cpp.o" \
@@ -478,7 +492,8 @@ dna_messenger_imgui_OBJECTS = \
 "CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/imgui_widgets.cpp.o" \
 "CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/backends/imgui_impl_glfw.cpp.o" \
 "CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/backends/imgui_impl_opengl3.cpp.o" \
-"CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_freetype.cpp.o"
+"CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_freetype.cpp.o" \
+"CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o"
 
 # External object files for target dna_messenger_imgui
 dna_messenger_imgui_EXTERNAL_OBJECTS =
@@ -510,6 +525,7 @@ imgui_gui/dna_messenger_imgui: imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vend
 imgui_gui/dna_messenger_imgui: imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/backends/imgui_impl_glfw.cpp.o
 imgui_gui/dna_messenger_imgui: imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/backends/imgui_impl_opengl3.cpp.o
 imgui_gui/dna_messenger_imgui: imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/imgui/misc/freetype/imgui_freetype.cpp.o
+imgui_gui/dna_messenger_imgui: imgui_gui/CMakeFiles/dna_messenger_imgui.dir/vendor/qrcodegen/qrcodegen.cpp.o
 imgui_gui/dna_messenger_imgui: imgui_gui/CMakeFiles/dna_messenger_imgui.dir/build.make
 imgui_gui/dna_messenger_imgui: imgui_gui/CMakeFiles/dna_messenger_imgui.dir/compiler_depend.ts
 imgui_gui/dna_messenger_imgui: /usr/lib/libglfw.so.3.4
@@ -531,7 +547,7 @@ imgui_gui/dna_messenger_imgui: crypto/cellframe_dilithium/libcellframe_dilithium
 imgui_gui/dna_messenger_imgui: /usr/lib/libssl.so
 imgui_gui/dna_messenger_imgui: /usr/lib/libcrypto.so
 imgui_gui/dna_messenger_imgui: imgui_gui/CMakeFiles/dna_messenger_imgui.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Linking CXX executable dna_messenger_imgui"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/home/mika/dev/dna-messenger/imgui_gui/CMakeFiles --progress-num=$(CMAKE_PROGRESS_29) "Linking CXX executable dna_messenger_imgui"
 	cd /home/mika/dev/dna-messenger/imgui_gui/imgui_gui && $(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/dna_messenger_imgui.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.

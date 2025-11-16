@@ -50,6 +50,6 @@ CMakeFiles/dna_lib.dir/messenger/identity.c.o: \
  /home/mika/dev/dna-messenger/messenger/../crypto/utils/qgp_platform.h \
  /home/mika/dev/dna-messenger/messenger/../crypto/utils/qgp_types.h \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_compiler.h \
- /home/mika/dev/dna-messenger/messenger/../dht/dht_keyserver.h \
- /home/mika/dev/dna-messenger/messenger/../dht/dna_profile.h \
+ /home/mika/dev/dna-messenger/messenger/../dht/core/dht_keyserver.h \
+ /home/mika/dev/dna-messenger/dht/client/dna_profile.h \
  /home/mika/dev/dna-messenger/messenger/../p2p/p2p_transport.h

@@ -37,15 +37,17 @@ CMakeFiles/test_identity_backup.dir/tests/test_identity_backup.c.o: \
  /usr/include/bits/posix_opt.h /usr/include/bits/environments.h \
  /usr/include/bits/confname.h /usr/include/bits/getopt_posix.h \
  /usr/include/bits/getopt_core.h /usr/include/bits/unistd_ext.h \
- /home/mika/dev/dna-messenger/dht/dht_identity_backup.h \
+ /home/mika/dev/dna-messenger/dht/client/dht_identity_backup.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdint.h \
  /usr/include/stdint.h /usr/include/bits/wchar.h \
  /usr/include/bits/stdint-uintn.h /usr/include/bits/stdint-least.h \
  /usr/lib/gcc/x86_64-pc-linux-gnu/15.2.1/include/stdbool.h \
- /home/mika/dev/dna-messenger/dht/../dna_api.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
- /home/mika/dev/dna-messenger/dht/dht_singleton.h \
- /home/mika/dev/dna-messenger/dht/dht_context.h \
+ /home/mika/dev/dna-messenger/p2p/../dna_api.h \
+ /home/mika/dev/dna-messenger/dht/client/../core/dht_context.h \
+ /home/mika/dev/dna-messenger/dht/client/../core/dht_stats.h \
+ /home/mika/dev/dna-messenger/dht/client/../core/../client/dht_identity.h \
+ /home/mika/dev/dna-messenger/dht/client/dht_singleton.h \
+ /home/mika/dev/dna-messenger/dht/core/dht_context.h \
  /home/mika/dev/dna-messenger/crypto/kem/kem.h \
  /home/mika/dev/dna-messenger/crypto/kem/params.h \
  /home/mika/dev/dna-messenger/crypto/utils/qgp_sha3.h

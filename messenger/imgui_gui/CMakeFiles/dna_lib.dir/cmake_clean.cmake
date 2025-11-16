@@ -37,6 +37,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/dna_lib.dir/crypto/utils/qgp_signature.c.o.d"
   "CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o"
   "CMakeFiles/dna_lib.dir/crypto/utils/qgp_utils_standalone.c.o.d"
+  "CMakeFiles/dna_lib.dir/database/cache_manager.c.o"
+  "CMakeFiles/dna_lib.dir/database/cache_manager.c.o.d"
   "CMakeFiles/dna_lib.dir/database/contacts_db.c.o"
   "CMakeFiles/dna_lib.dir/database/contacts_db.c.o.d"
   "CMakeFiles/dna_lib.dir/database/keyserver_cache.c.o"

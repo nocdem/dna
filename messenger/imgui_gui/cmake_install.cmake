@@ -49,6 +49,7 @@ if(NOT CMAKE_INSTALL_LOCAL_ONLY)
   include("/home/mika/dev/dna-messenger/imgui_gui/crypto/cellframe_dilithium/cmake_install.cmake")
   include("/home/mika/dev/dna-messenger/imgui_gui/dht/cmake_install.cmake")
   include("/home/mika/dev/dna-messenger/imgui_gui/p2p/cmake_install.cmake")
+  include("/home/mika/dev/dna-messenger/imgui_gui/bootstrap/cmake_install.cmake")
   include("/home/mika/dev/dna-messenger/imgui_gui/imgui_gui/cmake_install.cmake")
 
 endif()
