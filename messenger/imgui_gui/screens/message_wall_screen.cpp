@@ -18,8 +18,37 @@ extern "C" {
 
 #include <cstring>
 #include <cctype>
+#include <algorithm>
 
 namespace MessageWallScreen {
+
+// Thread helper: Find root parent of a message
+std::string findRootParent(const std::vector<AppState::WallMessage>& messages, const std::string& post_id) {
+    // Find the message
+    for (const auto& msg : messages) {
+        if (msg.post_id == post_id) {
+            // If it's a top-level post, it IS the root
+            if (msg.reply_to.empty() || msg.reply_depth == 0) {
+                return post_id;
+            }
+            // Otherwise, recursively find parent's root
+            return findRootParent(messages, msg.reply_to);
+        }
+    }
+    return post_id;  // Fallback
+}
+
+// Thread helper: Get latest timestamp in thread (for sorting by activity)
+uint64_t getThreadLatestTimestamp(const std::vector<AppState::WallMessage>& messages, const std::string& root_id) {
+    uint64_t latest = 0;
+    for (const auto& msg : messages) {
+        std::string msg_root = findRootParent(messages, msg.post_id);
+        if (msg_root == root_id && msg.timestamp > latest) {
+            latest = msg.timestamp;
+        }
+    }
+    return latest;
+}
 
 // Format wall timestamp (from Qt MessageWallDialog.cpp lines 418-438)
 std::string formatWallTimestamp(uint64_t timestamp) {
@@ -227,8 +256,47 @@ void render(AppState& state) {
         } else if (state.wall_messages.empty()) {
             ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "No messages yet. Be the first to post!");
         } else {
-            for (size_t i = 0; i < state.wall_messages.size(); i++) {
-                const auto& msg = state.wall_messages[i];
+            // Group messages by thread (root parent) and sort by latest activity
+            std::vector<std::string> root_posts;  // List of root post IDs
+            std::map<std::string, uint64_t> thread_activity;  // root_id -> latest timestamp
+
+            // Find all root posts (top-level posts)
+            for (const auto& msg : state.wall_messages) {
+                if (msg.reply_to.empty() || msg.reply_depth == 0) {
+                    if (std::find(root_posts.begin(), root_posts.end(), msg.post_id) == root_posts.end()) {
+                        root_posts.push_back(msg.post_id);
+                        thread_activity[msg.post_id] = getThreadLatestTimestamp(state.wall_messages, msg.post_id);
+                    }
+                }
+            }
+
+            // Sort threads by latest activity (most recent first)
+            std::sort(root_posts.begin(), root_posts.end(), [&thread_activity](const std::string& a, const std::string& b) {
+                return thread_activity[a] > thread_activity[b];
+            });
+
+            // Display each thread
+            for (size_t thread_idx = 0; thread_idx < root_posts.size(); thread_idx++) {
+                const std::string& root_id = root_posts[thread_idx];
+                bool is_expanded = state.wall_expanded_threads.count(root_id) > 0;
+
+                // Collect all messages in this thread
+                std::vector<const AppState::WallMessage*> thread_msgs;
+                for (const auto& msg : state.wall_messages) {
+                    if (findRootParent(state.wall_messages, msg.post_id) == root_id) {
+                        thread_msgs.push_back(&msg);
+                    }
+                }
+
+                // Sort thread messages by timestamp (oldest first for natural reading)
+                std::sort(thread_msgs.begin(), thread_msgs.end(), [](const AppState::WallMessage* a, const AppState::WallMessage* b) {
+                    return a->timestamp < b->timestamp;
+                });
+
+                // Display messages (root only if collapsed, all if expanded)
+                size_t display_count = is_expanded ? thread_msgs.size() : 1;
+                for (size_t i = 0; i < display_count; i++) {
+                    const auto& msg = *thread_msgs[i];
 
                 ImGui::PushID(i);
 
@@ -301,16 +369,33 @@ void render(AppState& state) {
 
                 ImGui::Spacing();
 
-                // Footer: Reply button + reply count (allow replying to any wall)
+                // Footer: Reply button + expand/collapse + reply count
                 if (msg.reply_depth < 2) {  // Only allow replies up to depth 2
                     if (ThemedButton(ICON_FA_REPLY " Reply", ImVec2(80, 25), false)) {
                         state.wall_reply_to = msg.post_id;
                         state.wall_status = "Replying to message...";
                     }
-                    if (msg.reply_count > 0) {
+
+                    // For root post (depth 0), show expand/collapse button
+                    if (msg.reply_depth == 0 && thread_msgs.size() > 1) {
+                        ImGui::SameLine();
+                        const char* expand_icon = is_expanded ? ICON_FA_ANGLE_UP : ICON_FA_ANGLE_DOWN;
+                        const char* expand_text = is_expanded ? "Collapse" : "Expand";
+                        if (ThemedButton((std::string(expand_icon) + " " + expand_text).c_str(), ImVec2(100, 25), false)) {
+                            if (is_expanded) {
+                                state.wall_expanded_threads.erase(root_id);
+                            } else {
+                                state.wall_expanded_threads.insert(root_id);
+                            }
+                        }
+                    }
+
+                    // Show reply count
+                    int total_replies = thread_msgs.size() - 1;  // Subtract root post
+                    if (msg.reply_depth == 0 && total_replies > 0) {
                         ImGui::SameLine();
                         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
-                                         ICON_FA_COMMENT " %d %s", msg.reply_count, msg.reply_count == 1 ? "reply" : "replies");
+                                         ICON_FA_COMMENT " %d %s", total_replies, total_replies == 1 ? "reply" : "replies");
                     }
                 }
 
@@ -325,10 +410,18 @@ void render(AppState& state) {
 
                 ImGui::PopID();
 
-                if (i < state.wall_messages.size() - 1) {
+                if (i < display_count - 1) {
                     ImGui::Spacing();
                 }
-            }
+                }  // End message loop
+
+                // Thread separator
+                if (thread_idx < root_posts.size() - 1) {
+                    ImGui::Spacing();
+                    ImGui::Separator();
+                    ImGui::Spacing();
+                }
+            }  // End thread loop
         }
 
         ImGui::EndChild();

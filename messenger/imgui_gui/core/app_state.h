@@ -7,6 +7,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <set>
 #include <mutex>
 
 extern "C" {
@@ -160,6 +161,7 @@ public:
         int reply_count;          // Number of direct replies
     };
     std::vector<WallMessage> wall_messages;
+    std::set<std::string> wall_expanded_threads;  // Set of expanded thread IDs
     bool wall_loading;
     std::string wall_status;
     std::string wall_reply_to;    // Post ID being replied to (empty if posting new)
