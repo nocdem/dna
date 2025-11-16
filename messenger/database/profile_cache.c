@@ -96,18 +96,12 @@ int profile_cache_init(const char *owner_identity) {
         return -1;
     }
 
-    // Create table if it doesn't exist
+    // Create table if it doesn't exist (Phase 5: Unified Identity)
     const char *sql =
         "CREATE TABLE IF NOT EXISTS profiles ("
-        "    user_fingerprint TEXT PRIMARY KEY,"
-        "    display_name TEXT NOT NULL,"
-        "    bio TEXT,"
-        "    avatar_hash TEXT,"
-        "    location TEXT,"
-        "    website TEXT,"
-        "    created_at INTEGER,"
-        "    updated_at INTEGER,"
-        "    fetched_at INTEGER"
+        "    fingerprint TEXT PRIMARY KEY,"
+        "    identity_json TEXT NOT NULL,"
+        "    cached_at INTEGER NOT NULL"
         ");";
 
     char *err_msg = NULL;
@@ -120,6 +114,15 @@ int profile_cache_init(const char *owner_identity) {
         return -1;
     }
 
+    // Create index on cached_at for TTL queries
+    const char *index_sql = "CREATE INDEX IF NOT EXISTS idx_cached_at ON profiles(cached_at);";
+    rc = sqlite3_exec(g_db, index_sql, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[PROFILE_CACHE] Failed to create index: %s\n", err_msg);
+        sqlite3_free(err_msg);
+        // Non-fatal, continue
+    }
+
     // Store owner identity
     strncpy(g_owner_identity, owner_identity, sizeof(g_owner_identity) - 1);
     g_owner_identity[sizeof(g_owner_identity) - 1] = '\0';
@@ -129,74 +132,75 @@ int profile_cache_init(const char *owner_identity) {
 }
 
 /**
- * Add or update profile in cache
+ * Add or update profile in cache (Phase 5: Unified Identity)
  */
-int profile_cache_add_or_update(const char *user_fingerprint, const dht_profile_t *profile) {
+int profile_cache_add_or_update(const char *user_fingerprint, const dna_unified_identity_t *identity) {
     if (!g_db) {
         fprintf(stderr, "[PROFILE_CACHE] Database not initialized\n");
         return -1;
     }
 
-    if (!user_fingerprint || !profile) {
+    if (!user_fingerprint || !identity) {
         fprintf(stderr, "[PROFILE_CACHE] Invalid parameters\n");
+        return -1;
+    }
+
+    // Serialize identity to JSON
+    char *identity_json = dna_identity_to_json(identity);
+    if (!identity_json) {
+        fprintf(stderr, "[PROFILE_CACHE] Failed to serialize identity to JSON\n");
         return -1;
     }
 
     const char *sql =
         "INSERT OR REPLACE INTO profiles "
-        "(user_fingerprint, display_name, bio, avatar_hash, location, website, "
-        " created_at, updated_at, fetched_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);";
+        "(fingerprint, identity_json, cached_at) "
+        "VALUES (?, ?, ?);";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "[PROFILE_CACHE] Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        free(identity_json);
         return -1;
     }
 
     uint64_t now = (uint64_t)time(NULL);
 
     sqlite3_bind_text(stmt, 1, user_fingerprint, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 2, profile->display_name, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 3, profile->bio, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 4, profile->avatar_hash, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 5, profile->location, -1, SQLITE_STATIC);
-    sqlite3_bind_text(stmt, 6, profile->website, -1, SQLITE_STATIC);
-    sqlite3_bind_int64(stmt, 7, profile->created_at);
-    sqlite3_bind_int64(stmt, 8, profile->updated_at);
-    sqlite3_bind_int64(stmt, 9, now);  // fetched_at = now
+    sqlite3_bind_text(stmt, 2, identity_json, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 3, now);
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
+    free(identity_json);
 
     if (rc != SQLITE_DONE) {
         fprintf(stderr, "[PROFILE_CACHE] Failed to insert/update: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
-    printf("[PROFILE_CACHE] Cached profile for: %s\n", user_fingerprint);
+    printf("[PROFILE_CACHE] Cached identity for: %s\n", user_fingerprint);
     return 0;
 }
 
 /**
- * Get profile from cache
+ * Get profile from cache (Phase 5: Unified Identity)
  */
-int profile_cache_get(const char *user_fingerprint, dht_profile_t *profile_out, uint64_t *fetched_at_out) {
+int profile_cache_get(const char *user_fingerprint, dna_unified_identity_t **identity_out, uint64_t *cached_at_out) {
     if (!g_db) {
         fprintf(stderr, "[PROFILE_CACHE] Database not initialized\n");
         return -1;
     }
 
-    if (!user_fingerprint || !profile_out) {
+    if (!user_fingerprint || !identity_out) {
         fprintf(stderr, "[PROFILE_CACHE] Invalid parameters\n");
         return -1;
     }
 
     const char *sql =
-        "SELECT display_name, bio, avatar_hash, location, website, "
-        "       created_at, updated_at, fetched_at "
-        "FROM profiles WHERE user_fingerprint = ?;";
+        "SELECT identity_json, cached_at "
+        "FROM profiles WHERE fingerprint = ?;";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
@@ -213,29 +217,28 @@ int profile_cache_get(const char *user_fingerprint, dht_profile_t *profile_out, 
         return -2;  // Not found
     }
 
-    // Read profile data
-    memset(profile_out, 0, sizeof(dht_profile_t));
+    // Read JSON and deserialize
+    const char *identity_json = (const char*)sqlite3_column_text(stmt, 0);
+    if (!identity_json) {
+        fprintf(stderr, "[PROFILE_CACHE] NULL identity_json in database\n");
+        sqlite3_finalize(stmt);
+        return -1;
+    }
 
-    const char *display_name = (const char*)sqlite3_column_text(stmt, 0);
-    const char *bio = (const char*)sqlite3_column_text(stmt, 1);
-    const char *avatar_hash = (const char*)sqlite3_column_text(stmt, 2);
-    const char *location = (const char*)sqlite3_column_text(stmt, 3);
-    const char *website = (const char*)sqlite3_column_text(stmt, 4);
+    dna_unified_identity_t *identity = NULL;
+    int parse_result = dna_identity_from_json(identity_json, &identity);
+    if (parse_result != 0 || !identity) {
+        fprintf(stderr, "[PROFILE_CACHE] Failed to parse identity JSON\n");
+        sqlite3_finalize(stmt);
+        return -1;
+    }
 
-    if (display_name) strncpy(profile_out->display_name, display_name, sizeof(profile_out->display_name) - 1);
-    if (bio) strncpy(profile_out->bio, bio, sizeof(profile_out->bio) - 1);
-    if (avatar_hash) strncpy(profile_out->avatar_hash, avatar_hash, sizeof(profile_out->avatar_hash) - 1);
-    if (location) strncpy(profile_out->location, location, sizeof(profile_out->location) - 1);
-    if (website) strncpy(profile_out->website, website, sizeof(profile_out->website) - 1);
-
-    profile_out->created_at = sqlite3_column_int64(stmt, 5);
-    profile_out->updated_at = sqlite3_column_int64(stmt, 6);
-
-    if (fetched_at_out) {
-        *fetched_at_out = sqlite3_column_int64(stmt, 7);
+    if (cached_at_out) {
+        *cached_at_out = sqlite3_column_int64(stmt, 1);
     }
 
     sqlite3_finalize(stmt);
+    *identity_out = identity;
     return 0;
 }
 
@@ -247,7 +250,7 @@ bool profile_cache_exists(const char *user_fingerprint) {
         return false;
     }
 
-    const char *sql = "SELECT COUNT(*) FROM profiles WHERE user_fingerprint = ?;";
+    const char *sql = "SELECT COUNT(*) FROM profiles WHERE fingerprint = ?;";
     sqlite3_stmt *stmt = NULL;
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
@@ -274,7 +277,7 @@ bool profile_cache_is_expired(const char *user_fingerprint) {
         return true;  // Treat as expired if error
     }
 
-    const char *sql = "SELECT fetched_at FROM profiles WHERE user_fingerprint = ?;";
+    const char *sql = "SELECT cached_at FROM profiles WHERE fingerprint = ?;";
     sqlite3_stmt *stmt = NULL;
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
@@ -286,9 +289,9 @@ bool profile_cache_is_expired(const char *user_fingerprint) {
 
     bool expired = true;
     if (sqlite3_step(stmt) == SQLITE_ROW) {
-        uint64_t fetched_at = sqlite3_column_int64(stmt, 0);
+        uint64_t cached_at = sqlite3_column_int64(stmt, 0);
         uint64_t now = (uint64_t)time(NULL);
-        uint64_t age = now - fetched_at;
+        uint64_t age = now - cached_at;
 
         expired = (age >= PROFILE_CACHE_TTL_SECONDS);
     }
@@ -311,7 +314,7 @@ int profile_cache_delete(const char *user_fingerprint) {
         return -1;
     }
 
-    const char *sql = "DELETE FROM profiles WHERE user_fingerprint = ?;";
+    const char *sql = "DELETE FROM profiles WHERE fingerprint = ?;";
     sqlite3_stmt *stmt = NULL;
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
@@ -344,7 +347,7 @@ int profile_cache_list_expired(char ***fingerprints_out, size_t *count_out) {
     uint64_t now = (uint64_t)time(NULL);
     uint64_t cutoff = now - PROFILE_CACHE_TTL_SECONDS;
 
-    const char *sql = "SELECT user_fingerprint FROM profiles WHERE fetched_at < ?;";
+    const char *sql = "SELECT fingerprint FROM profiles WHERE cached_at < ?;";
     sqlite3_stmt *stmt = NULL;
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
@@ -398,9 +401,7 @@ int profile_cache_list_all(profile_cache_list_t **list_out) {
         return -1;
     }
 
-    const char *sql =
-        "SELECT user_fingerprint, display_name, bio, avatar_hash, location, website, "
-        "       created_at, updated_at, fetched_at FROM profiles;";
+    const char *sql = "SELECT fingerprint, identity_json, cached_at FROM profiles;";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
@@ -444,27 +445,25 @@ int profile_cache_list_all(profile_cache_list_t **list_out) {
         profile_cache_entry_t *entry = &list->entries[i];
         memset(entry, 0, sizeof(profile_cache_entry_t));
 
+        // Read fingerprint
         const char *fp = (const char*)sqlite3_column_text(stmt, 0);
-        if (fp) strncpy(entry->user_fingerprint, fp, sizeof(entry->user_fingerprint) - 1);
+        if (fp) strncpy(entry->fingerprint, fp, sizeof(entry->fingerprint) - 1);
 
-        const char *dn = (const char*)sqlite3_column_text(stmt, 1);
-        if (dn) strncpy(entry->profile.display_name, dn, sizeof(entry->profile.display_name) - 1);
+        // Parse identity JSON
+        const char *identity_json = (const char*)sqlite3_column_text(stmt, 1);
+        if (identity_json) {
+            dna_unified_identity_t *identity = NULL;
+            if (dna_identity_from_json(identity_json, &identity) == 0 && identity) {
+                entry->identity = identity;
+            } else {
+                // Skip entries with invalid JSON
+                fprintf(stderr, "[PROFILE_CACHE] Skipping entry with invalid JSON: %s\n", fp);
+                continue;
+            }
+        }
 
-        const char *bio = (const char*)sqlite3_column_text(stmt, 2);
-        if (bio) strncpy(entry->profile.bio, bio, sizeof(entry->profile.bio) - 1);
-
-        const char *ah = (const char*)sqlite3_column_text(stmt, 3);
-        if (ah) strncpy(entry->profile.avatar_hash, ah, sizeof(entry->profile.avatar_hash) - 1);
-
-        const char *loc = (const char*)sqlite3_column_text(stmt, 4);
-        if (loc) strncpy(entry->profile.location, loc, sizeof(entry->profile.location) - 1);
-
-        const char *web = (const char*)sqlite3_column_text(stmt, 5);
-        if (web) strncpy(entry->profile.website, web, sizeof(entry->profile.website) - 1);
-
-        entry->profile.created_at = sqlite3_column_int64(stmt, 6);
-        entry->profile.updated_at = sqlite3_column_int64(stmt, 7);
-        entry->fetched_at = sqlite3_column_int64(stmt, 8);
+        // Read cached_at
+        entry->cached_at = sqlite3_column_int64(stmt, 2);
 
         i++;
     }
@@ -525,11 +524,17 @@ int profile_cache_clear_all(void) {
 }
 
 /**
- * Free profile list
+ * Free profile list (Phase 5: Unified Identity)
  */
 void profile_cache_free_list(profile_cache_list_t *list) {
     if (list) {
         if (list->entries) {
+            // Free each identity
+            for (size_t i = 0; i < list->count; i++) {
+                if (list->entries[i].identity) {
+                    dna_identity_free(list->entries[i].identity);
+                }
+            }
             free(list->entries);
         }
         free(list);
