@@ -154,7 +154,7 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
     p = strstr(p, "\"creator\":\"");
     if (!p) goto error;
     p += 11;
-    sscanf(p, "%32[^\"]", meta->creator);
+    sscanf(p, "%128[^\"]", meta->creator);  // Read full 128-char fingerprint
 
     // Parse timestamps and version
     p = strstr(p, "\"created_at\":");
@@ -179,13 +179,13 @@ static int deserialize_metadata(const char *json, dht_group_metadata_t **meta_ou
         if (!meta->members) goto error;
 
         for (uint32_t i = 0; i < meta->member_count; i++) {
-            meta->members[i] = malloc(33);
+            meta->members[i] = malloc(129);  // 128 chars + null for full fingerprint
             if (!meta->members[i]) goto error;
 
             p = strchr(p, '"');
             if (!p) goto error;
             p++;
-            sscanf(p, "%32[^\"]", meta->members[i]);
+            sscanf(p, "%128[^\"]", meta->members[i]);  // Read full 128-char fingerprint
         }
     }
 

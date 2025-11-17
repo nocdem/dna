@@ -31,7 +31,7 @@ typedef struct {
     char group_uuid[37];           // UUID v4 (36 chars + null)
     char name[128];                 // Group name
     char description[512];          // Group description
-    char creator[33];               // Creator DNA identity
+    char creator[129];              // Creator DNA fingerprint (128 hex chars + null)
     uint64_t created_at;            // Unix timestamp
     uint32_t version;               // Version number (for updates)
     uint32_t member_count;          // Number of members
@@ -46,7 +46,7 @@ typedef struct {
     int local_id;                   // Local database ID
     char group_uuid[37];            // Global group UUID
     char name[128];                 // Cached group name
-    char creator[33];               // Creator identity
+    char creator[129];              // Creator fingerprint (128 hex chars + null)
     uint64_t created_at;            // Creation timestamp
     uint64_t last_sync;             // Last DHT sync timestamp
 } dht_group_cache_entry_t;

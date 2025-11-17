@@ -809,7 +809,7 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
 
     printf("[GROUP MSG] Group has %u members\n", metadata->member_count);
 
-    // Step 3: Build recipients array (exclude self to avoid duplicate)
+    // Step 3: Build recipients array (exclude self, verify keys exist)
     const char **recipients = malloc(metadata->member_count * sizeof(char*));
     if (!recipients) {
         fprintf(stderr, "[GROUP MSG] Memory allocation failed\n");
@@ -818,15 +818,41 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
     }
 
     size_t recipient_count = 0;
+    size_t members_without_keys = 0;
+
     for (uint32_t i = 0; i < metadata->member_count; i++) {
         // Skip self (already added by messenger_send_message)
         if (strcmp(metadata->members[i], ctx->identity) == 0) {
             continue;
         }
-        recipients[recipient_count++] = metadata->members[i];
+
+        // Verify this member has published keys (quick check)
+        uint8_t *sign_key = NULL, *enc_key = NULL;
+        size_t sign_len = 0, enc_len = 0;
+
+        if (messenger_load_pubkey(ctx, metadata->members[i], &sign_key, &sign_len,
+                                  &enc_key, &enc_len, NULL) == 0) {
+            // Keys found - include in recipients
+            recipients[recipient_count++] = metadata->members[i];
+            free(sign_key);
+            free(enc_key);
+        } else {
+            // Keys not found - skip this member
+            fprintf(stderr, "[GROUP MSG] Warning: Member '%s' has no keys in DHT, skipping\n",
+                    metadata->members[i]);
+            members_without_keys++;
+        }
     }
 
-    printf("[GROUP MSG] Sending to %zu recipients (excluding self)\n", recipient_count);
+    if (recipient_count == 0) {
+        fprintf(stderr, "[GROUP MSG] Error: No valid recipients (all members missing keys)\n");
+        free(recipients);
+        dht_groups_free_metadata(metadata);
+        return -1;
+    }
+
+    printf("[GROUP MSG] Sending to %zu/%u recipients (%zu without keys, excluding self)\n",
+           recipient_count, metadata->member_count - 1, members_without_keys);
 
     // Step 4: Get group's local_id for database storage
     int local_id = 0;
