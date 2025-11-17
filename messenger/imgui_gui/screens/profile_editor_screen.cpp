@@ -159,7 +159,8 @@ void saveProfile(AppState& state) {
 
     if (ret == 0) {
         state.profile_status = "Profile saved to DHT successfully!";
-        state.profile_cached = false;  // Invalidate cache to force reload next time
+        // Keep cache valid since we already have the current data in memory
+        // state.profile_cached is already true, no need to invalidate
         state.show_profile_editor = false;
     } else {
         state.profile_status = "Failed to save profile to DHT";
