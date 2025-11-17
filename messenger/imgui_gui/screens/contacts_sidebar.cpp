@@ -4,12 +4,15 @@
 #include "../font_awesome.h"
 #include "../theme_colors.h"
 #include "../settings_manager.h"
+#include "../texture_manager.h"
+#include "../helpers/avatar_helpers.h"
 #include "../../database/contacts_db.h"
 #include "../../messenger.h"
 #include "../helpers/data_loader.h"  // Phase 1.4: For contact refresh
 
 #include <cstring>
 #include <cstdio>
+#include <GLFW/glfw3.h>  // For GLuint
 
 // External settings variable
 extern AppSettings g_app_settings;
@@ -166,11 +169,49 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             display_name = it->second;
         }
         
+        // Show avatar if available
+        if (state.profile_avatar_loaded && !state.profile_avatar_base64.empty()) {
+            int avatar_width = 0, avatar_height = 0;
+            GLuint texture_id = TextureManager::getInstance().loadAvatar(
+                state.current_identity,
+                state.profile_avatar_base64,
+                &avatar_width,
+                &avatar_height
+            );
+            
+            if (texture_id != 0) {
+                // Center avatar (64x64)
+                float avatar_size = 64.0f;
+                float center_x = (250 - avatar_size) * 0.5f;
+                ImGui::SetCursorPosX(center_x);
+                
+                // Render circular avatar with border
+                ImVec4 border_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+                AvatarHelpers::renderCircularAvatar(texture_id, avatar_size, border_col, 0.5f);
+                
+                ImGui::Spacing();
+            }
+        }
+        
         // Center the identity name
         float text_width = ImGui::CalcTextSize(display_name.c_str()).x;
         float center_x = (250 - text_width) * 0.5f;
         ImGui::SetCursorPosX(center_x);
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(), "%s", display_name.c_str());
+        
+        ImGui::Spacing();
+        
+        // Edit Profile button - only show if user has registered name
+        bool has_registered_name = !state.profile_registered_name.empty() &&
+                                   state.profile_registered_name != "Loading..." &&
+                                   state.profile_registered_name != "N/A (DHT not connected)" &&
+                                   state.profile_registered_name != "Error loading";
+        
+        if (has_registered_name) {
+            if (ThemedButton(ICON_FA_USER " Edit Profile", ImVec2(-1, 40))) {
+                state.show_profile_editor = true;
+            }
+        }
         
         ImGui::Spacing();
         ImGui::Separator();
@@ -186,22 +227,6 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     }
     if (ThemedButton(ICON_FA_GEAR " Settings", ImVec2(-1, 40), state.current_view == VIEW_SETTINGS)) {
         state.current_view = VIEW_SETTINGS;
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    
-    // Edit Profile button - only show if user has registered name
-    bool has_registered_name = !state.profile_registered_name.empty() &&
-                               state.profile_registered_name != "Loading..." &&
-                               state.profile_registered_name != "N/A (DHT not connected)" &&
-                               state.profile_registered_name != "Error loading";
-    
-    if (has_registered_name) {
-        if (ThemedButton(ICON_FA_USER " Edit Profile", ImVec2(-1, 40))) {
-            state.show_profile_editor = true;
-        }
     }
 
     ImGui::Spacing();

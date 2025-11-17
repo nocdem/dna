@@ -6,6 +6,7 @@
 #include "../settings_manager.h"
 #include "../font_awesome.h"
 #include "../texture_manager.h"
+#include "../helpers/avatar_helpers.h"
 #include <nfd.h>
 
 extern "C" {
@@ -18,6 +19,7 @@ extern "C" {
 }
 
 #include <cstring>
+#include <algorithm>
 
 namespace ProfileEditorScreen {
 
@@ -78,8 +80,20 @@ void loadProfile(AppState& state, bool force_reload) {
 
         // Load avatar
         if (profile->avatar_base64[0] != '\0') {
-            state.profile_avatar_base64 = std::string(profile->avatar_base64);
-            state.profile_avatar_loaded = true;
+            // Validate base64 string length (must be multiple of 4)
+            size_t len = strlen(profile->avatar_base64);
+            
+            // Base64 must be a multiple of 4. If not, the data was truncated and is invalid.
+            if (len % 4 == 0 && len > 0) {
+                state.profile_avatar_base64 = std::string(profile->avatar_base64);
+                state.profile_avatar_loaded = true;
+                printf("[ProfileEditor] Loaded avatar from DHT (%zu bytes)\n", len);
+            } else {
+                printf("[ProfileEditor] Avatar corrupted in DHT (invalid length: %zu, not multiple of 4)\n", len);
+                printf("[ProfileEditor] Please re-upload your avatar\n");
+                state.profile_avatar_base64.clear();
+                state.profile_avatar_loaded = false;
+            }
         } else {
             state.profile_avatar_base64.clear();
             state.profile_avatar_loaded = false;
@@ -138,7 +152,16 @@ void saveProfile(AppState& state) {
 
     // Avatar
     if (!state.profile_avatar_base64.empty()) {
+        size_t avatar_len = state.profile_avatar_base64.length();
+        printf("[ProfileEditor] Saving avatar: %zu bytes\n", avatar_len);
+        
+        if (avatar_len >= sizeof(profile_data.avatar_base64)) {
+            printf("[ProfileEditor] WARNING: Avatar too large (%zu bytes), truncating to %zu\n", 
+                   avatar_len, sizeof(profile_data.avatar_base64) - 1);
+        }
+        
         strncpy(profile_data.avatar_base64, state.profile_avatar_base64.c_str(), sizeof(profile_data.avatar_base64) - 1);
+        profile_data.avatar_base64[sizeof(profile_data.avatar_base64) - 1] = '\0';  // Ensure null termination
     }
 
     // Load private key for signing
@@ -247,8 +270,9 @@ void render(AppState& state) {
                     float center_x = (ImGui::GetContentRegionAvail().x - avatar_display_size) * 0.5f;
                     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + center_x);
 
-                    // Display avatar image
-                    ImGui::Image((void*)(intptr_t)texture_id, ImVec2(avatar_display_size, avatar_display_size));
+                    // Render circular avatar with border
+                    ImVec4 border_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+                    AvatarHelpers::renderCircularAvatar(texture_id, avatar_display_size, border_col, 0.5f);
 
                     // Remove button (centered below avatar)
                     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + center_x);
@@ -269,10 +293,10 @@ void render(AppState& state) {
                                  "No avatar uploaded");
                 ImGui::Spacing();
                 
-                if (ThemedButton(ICON_FA_FOLDER_OPEN " Browse PNG File", ImVec2(200, 30), false)) {
-                    // Use NFD to select PNG file
+                if (ThemedButton(ICON_FA_FOLDER_OPEN " Browse Image File", ImVec2(200, 30), false)) {
+                    // Use NFD to select image file
                     nfdchar_t *outPath = nullptr;
-                    nfdfilteritem_t filters[1] = { { "PNG Image", "png" } };
+                    nfdfilteritem_t filters[1] = { { "Image Files", "png,jpg,jpeg,bmp,gif" } };
                     nfdresult_t result = NFD_OpenDialog(&outPath, filters, 1, nullptr);
                     
                     if (result == NFD_OKAY) {
