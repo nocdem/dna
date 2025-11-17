@@ -101,7 +101,7 @@ dht/
 **Files Moved:** 26 files via `git mv` (history preserved)
 
 **Include Path Updates:** 48+ files updated
-- messenger.c, messenger_p2p.c, messenger_stubs.c
+- messenger.c, messenger_p2p.c, messenger_groups.c
 - database/profile_manager.h, profile_cache.h
 - All keyserver/*.c files
 - All test files

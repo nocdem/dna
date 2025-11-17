@@ -52,7 +52,7 @@ The invitation system consists of three main layers:
 │  │  - Store in group_invitations DB                     │  │
 │  └──────────────────────────────────────────────────────┘  │
 │  ┌──────────────────────────────────────────────────────┐  │
-│  │  messenger_stubs.c: Accept/Reject handlers           │  │
+│  │  messenger_groups.c: Accept/Reject handlers           │  │
 │  │  - messenger_accept_group_invitation()               │  │
 │  │  - messenger_reject_group_invitation()               │  │
 │  │  - DHT group sync on accept                          │  │

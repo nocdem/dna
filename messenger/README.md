@@ -33,9 +33,9 @@ Binaries from the latest builds are available on GitLab CI/CD artifacts:
 - **Download:** https://gitlab.cpunk.io/cpunk/dna-messenger/-/artifacts
 
 Available platforms:
-- **Linux x86_64:** ImGui GUI (dna_messenger_imgui), Qt GUI (dna_messenger_gui - deprecated), DHT bootstrap (persistent_bootstrap)
-- **Linux ARM64:** ImGui GUI (dna_messenger_imgui), Qt GUI (dna_messenger_gui - deprecated), DHT bootstrap (persistent_bootstrap)
-- **Windows x64:** ImGui GUI (dna_messenger_imgui.exe), Qt GUI (dna_messenger_gui.exe - deprecated)
+- **Linux x86_64:** ImGui GUI (dna_messenger_imgui), DHT bootstrap (persistent_bootstrap)
+- **Linux ARM64:** ImGui GUI (dna_messenger_imgui), DHT bootstrap (persistent_bootstrap)
+- **Windows x64:** ImGui GUI (dna_messenger_imgui.exe)
 
 Note: Builds are generated on every push to main branch.
 
@@ -98,11 +98,8 @@ mkdir build && cd build
 cmake ..
 make
 
-# Run ImGui GUI (active)
+# Run ImGui GUI
 ./imgui_gui/dna_messenger_imgui
-
-# Run Qt GUI (deprecated, reference only)
-./gui/dna_messenger_gui
 
 # Optional: Run DHT bootstrap server (for running your own bootstrap node)
 ./dht/persistent_bootstrap
@@ -131,7 +128,7 @@ export MXE_DIR=/path/to/mxe  # e.g., /opt/buildtools/mxe or ~/.cache/mxe
 
 # Output:
 # - dist/dna-messenger-VERSION-windows-x64.zip
-# - build-release/windows-x64/gui/dna_messenger_gui.exe
+# - build-release/windows-x64/imgui_gui/dna_messenger_imgui.exe
 ```
 
 **MXE Setup (First Time Only):**
@@ -196,10 +193,10 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 
 ### ✅ Phase 4: Desktop GUI & Wallet Integration (Complete)
 
-**Note:** Originally implemented with Qt5. Now migrated to ImGui (2025-11-10). Qt code preserved in `gui/` for reference.
+**Note:** Originally implemented with Qt5. Migrated to ImGui (2025-11-10). Qt code archived in `legacy-gui/` (deprecated, not maintained).
 
 **GUI Features (Implemented):**
-- GUI with contact list and chat area (ImGui active, Qt deprecated)
+- GUI with contact list and chat area (ImGui)
 - Message send/receive functionality
 - Real contacts from keyserver
 - Real conversations from database

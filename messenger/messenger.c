@@ -444,7 +444,7 @@ bool messenger_is_identity_migrated(const char *name) {
 // GROUP MANAGEMENT
 // ============================================================================
 // MODULARIZATION: Legacy PostgreSQL functions removed (Phase 3)
-// Active DHT-based group functions in messenger_stubs.c:
+// Active DHT-based group functions in messenger_groups.c:
 //   - messenger_create_group()
 //   - messenger_add_group_member()
 //   - messenger_remove_group_member()

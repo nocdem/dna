@@ -399,7 +399,7 @@ Implemented P2P invitation delivery system for group membership:
   - Inviter name and member count display
   - Accept button (green check icon) - triggers DHT sync
   - Decline button (red X icon) - marks as rejected
-- [x] **Accept Workflow:** DHT group synchronization (`messenger_stubs.c`)
+- [x] **Accept Workflow:** DHT group synchronization (`messenger_groups.c`)
   - Fetch group metadata from DHT via UUID
   - Store group in local cache (`~/.dna/groups_cache.db`)
   - Update invitation status to ACCEPTED
@@ -416,7 +416,7 @@ Implemented P2P invitation delivery system for group membership:
 - `messenger.h` - Added `message_type` to `message_info_t` struct
 - `messenger/messages.c` - Updated `messenger_send_message()` signature
 - `messenger_p2p.c` - Invitation detection logic (~80 LOC)
-- `messenger_stubs.c` - Accept/reject handlers (~40 LOC)
+- `messenger_groups.c` - Accept/reject handlers (~40 LOC)
 - `chat_screen.cpp` - Invitation rendering UI (~80 LOC)
 - `data_loader.cpp` - Populate `message_type` when loading messages
 - `imgui_gui/core/data_types.h` - Added `message_type` to Message struct

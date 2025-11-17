@@ -193,13 +193,13 @@ add_library(dna_lib STATIC
     messenger/contacts.c
     messenger/keygen.c
     messenger/messages.c
-    # Legacy monolithic messenger (TODO: Remove after full modularization)
+    # Messenger facade (delegates to messenger/ modules)
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
     # Phase 9.3: Local message backup (SQLite)
     message_backup.c
     database/presence_cache.c  # Phase 9.1c: Fast presence cache (O(1) lookup, no DHT queries)
-    messenger_stubs.c  # DHT-based group functions (Phase 3)
+    messenger_groups.c  # DHT-based group messaging (Phase 5.6 - complete)
     database/keyserver_cache.c  # Phase 4: SQLite keyserver cache
     database/contacts_db.c      # Phase 9.5: Local contacts database
     database/profile_cache.c    # Phase 10.1: Profile cache database (7-day TTL)
@@ -316,7 +316,7 @@ if(NOT WIN32)
 endif()
 
 # Qt GUI removed - migrated to ImGui (see imgui_gui/ subdirectory)
-# Old Qt GUI code preserved in gui/ directory for reference during migration
+# Old Qt GUI code archived in legacy-gui/ directory (deprecated, not maintained)
 
 # Build type configuration
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
