@@ -48,58 +48,237 @@ void renderGroupChat(AppState& state, bool is_mobile) {
 
     ImGui::EndChild();
 
-    // Message area - show placeholder for now
+    // Message area
     float input_height = is_mobile ? 100.0f : 80.0f;
     ImGui::BeginChild("GroupMessageArea", ImVec2(0, -input_height), true);
 
-    // Center placeholder message
-    float window_width = ImGui::GetWindowWidth();
-    float window_height = ImGui::GetWindowHeight();
+    // Copy messages with mutex protection (minimal lock time)
+    std::vector<Message> messages_copy;
+    {
+        std::lock_guard<std::mutex> lock(state.messages_mutex);
+        messages_copy = state.group_messages[state.selected_group];
+    }
 
-    const char* placeholder_title = "Group Chat";
-    const char* placeholder_text1 = "Group messaging is coming soon!";
-    const char* placeholder_text2 = "You can accept group invitations, but sending/receiving";
-    const char* placeholder_text3 = "group messages will be available in a future update.";
+    // Render all group messages
+    for (size_t i = 0; i < messages_copy.size(); i++) {
+        const auto& msg = messages_copy[i];
 
-    ImVec2 title_size = ImGui::CalcTextSize(placeholder_title);
-    ImVec2 text1_size = ImGui::CalcTextSize(placeholder_text1);
-    ImVec2 text2_size = ImGui::CalcTextSize(placeholder_text2);
-    ImVec2 text3_size = ImGui::CalcTextSize(placeholder_text3);
+        // Calculate bubble width
+        float available_width = ImGui::GetContentRegionAvail().x;
+        float bubble_width = available_width;
 
-    float total_height = title_size.y + 30 + text1_size.y + 10 + text2_size.y + text3_size.y;
-    float start_y = (window_height - total_height) * 0.4f;
+        // Bubble background (theme-aware)
+        ImVec4 base_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+        ImVec4 bg_color;
+        if (msg.is_outgoing) {
+            bg_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.25f);
+        } else {
+            bg_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.12f);
+        }
 
-    ImGui::SetCursorPos(ImVec2((window_width - title_size.x) * 0.5f, start_y));
-    ImGui::TextColored((g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text(), "%s", placeholder_title);
+        ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
 
-    ImGui::SetCursorPos(ImVec2((window_width - text1_size.x) * 0.5f, start_y + title_size.y + 30));
-    ImGui::Text("%s", placeholder_text1);
+        char bubble_id[32];
+        snprintf(bubble_id, sizeof(bubble_id), "group_bubble%zu", i);
 
-    ImGui::SetCursorPos(ImVec2((window_width - text2_size.x) * 0.5f, start_y + title_size.y + 30 + text1_size.y + 10));
-    ImGui::Text("%s", placeholder_text2);
+        // Calculate dimensions
+        float padding_horizontal = 15.0f;
+        float padding_vertical = 12.0f;
+        float content_width = bubble_width - (padding_horizontal * 2);
 
-    ImGui::SetCursorPos(ImVec2((window_width - text3_size.x) * 0.5f, start_y + title_size.y + 30 + text1_size.y + 10 + text2_size.y));
-    ImGui::Text("%s", placeholder_text3);
+        ImVec2 text_size = ImGui::CalcTextSize(msg.content.c_str(), NULL, false, content_width);
+        float bubble_height = text_size.y + (padding_vertical * 2);
+
+        ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false, ImGuiWindowFlags_NoScrollbar);
+
+        // Padding
+        ImGui::SetCursorPos(ImVec2(padding_horizontal, padding_vertical));
+
+        // Message content
+        ImGui::PushStyleColor(ImGuiCol_Text, (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text());
+        ImGui::PushTextWrapPos(content_width + padding_horizontal);
+        ImGui::TextWrapped("%s", msg.content.c_str());
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+
+        ImGui::EndChild();
+
+        ImGui::PopStyleVar();
+        ImGui::PopStyleColor(2);
+
+        // Sender name and timestamp (below bubble)
+        ImGui::Spacing();
+        ImVec4 meta_color = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+        ImGui::PushStyleColor(ImGuiCol_Text, meta_color);
+        const char* sender_label = msg.is_outgoing ? "You" : msg.sender.c_str();
+        ImGui::Text("%s • %s", sender_label, msg.timestamp.c_str());
+        ImGui::PopStyleColor();
+
+        ImGui::Spacing();
+        ImGui::Spacing();
+    }
+
+    // Handle scroll logic
+    float current_scroll = ImGui::GetScrollY();
+    float max_scroll = ImGui::GetScrollMaxY();
+    bool is_at_bottom = (current_scroll >= max_scroll - 1.0f);
+
+    bool user_scrolled_up = !is_at_bottom && ImGui::IsWindowFocused();
+    if (user_scrolled_up && state.scroll_to_bottom_frames > 0) {
+        state.scroll_to_bottom_frames = 0;
+    }
+
+    if (state.scroll_to_bottom_frames > 0) {
+        state.scroll_to_bottom_frames--;
+        if (state.scroll_to_bottom_frames == 0) {
+            ImGui::SetScrollY(ImGui::GetScrollMaxY());
+        }
+    } else if (state.should_scroll_to_bottom) {
+        state.scroll_to_bottom_frames = 2;
+        state.should_scroll_to_bottom = false;
+    }
 
     ImGui::EndChild();
 
-    // Input area (disabled for now)
-    ImGui::BeginChild("GroupInputArea", ImVec2(0, 0), true);
-    ImGui::BeginDisabled();
+    // Input area
+    ImGui::Spacing();
+    ImGui::Spacing();
 
-    ImVec4 input_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
-    ImGui::PushItemWidth(-1);
+    ImVec4 recipient_bg = g_app_settings.theme == 0
+        ? ImVec4(0.12f, 0.14f, 0.16f, 1.0f)
+        : ImVec4(0.15f, 0.14f, 0.13f, 1.0f);
 
-    char disabled_input[256] = "Group messaging coming soon...";
-    ImGui::InputTextMultiline("##disabled_group_input", disabled_input, sizeof(disabled_input),
-                              ImVec2(-1, is_mobile ? 60 : 40),
-                              ImGuiInputTextFlags_ReadOnly);
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, recipient_bg);
 
-    ImGui::PopItemWidth();
+    if (is_mobile) {
+        // Mobile layout
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
+        bool enter_pressed = ImGui::InputTextMultiline("##GroupMessageInput", state.message_input,
+            sizeof(state.message_input), ImVec2(-1, 60),
+            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
+        ImGui::PopStyleColor();
+
+        // Send button
+        if (ThemedButton(ICON_FA_PAPER_PLANE, ImVec2(-1, 40)) || enter_pressed) {
+            if (strlen(state.message_input) > 0 && state.selected_group >= 0) {
+                messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                if (ctx) {
+                    std::string message_copy = std::string(state.message_input);
+                    std::string group_uuid = state.groups[state.selected_group].group_uuid;
+                    int group_idx = state.selected_group;
+
+                    // Get message index
+                    int msg_idx;
+                    {
+                        std::lock_guard<std::mutex> lock(state.messages_mutex);
+                        msg_idx = state.group_messages[group_idx].size();
+
+                        // Optimistic UI update
+                        Message pending_msg;
+                        pending_msg.sender = "You";
+                        pending_msg.content = message_copy;
+                        pending_msg.timestamp = "now";
+                        pending_msg.is_outgoing = true;
+                        pending_msg.status = STATUS_PENDING;
+                        state.group_messages[group_idx].push_back(pending_msg);
+                    }
+
+                    // Clear input
+                    state.message_input[0] = '\0';
+                    state.should_focus_input = true;
+                    state.should_scroll_to_bottom = true;
+
+                    // Enqueue send task
+                    state.message_send_queue.enqueue([&state, ctx, message_copy, group_uuid, group_idx, msg_idx]() {
+                        int result = messenger_send_group_message(ctx, group_uuid.c_str(), message_copy.c_str());
+
+                        // Update status
+                        {
+                            std::lock_guard<std::mutex> lock(state.messages_mutex);
+                            if (msg_idx < (int)state.group_messages[group_idx].size()) {
+                                state.group_messages[group_idx][msg_idx].status =
+                                    (result == 0) ? STATUS_SENT : STATUS_FAILED;
+                            }
+                        }
+
+                        if (result == 0) {
+                            printf("[Group Send] [OK] Message sent to group %s\n", group_uuid.c_str());
+                        } else {
+                            printf("[Group Send] ERROR: Failed to send to group %s\n", group_uuid.c_str());
+                        }
+                    }, msg_idx);
+                }
+            }
+        }
+    } else {
+        // Desktop layout
+        float input_width = ImGui::GetContentRegionAvail().x - 70;
+
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
+        bool enter_pressed = ImGui::InputTextMultiline("##GroupMessageInput", state.message_input,
+            sizeof(state.message_input), ImVec2(input_width, 40),
+            ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine);
+        ImGui::PopStyleColor();
+
+        ImGui::SameLine();
+
+        // Send button
+        if (ThemedButton(ICON_FA_PAPER_PLANE, ImVec2(60, 40)) || enter_pressed) {
+            if (strlen(state.message_input) > 0 && state.selected_group >= 0) {
+                messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                if (ctx) {
+                    std::string message_copy = std::string(state.message_input);
+                    std::string group_uuid = state.groups[state.selected_group].group_uuid;
+                    int group_idx = state.selected_group;
+
+                    // Get message index
+                    int msg_idx;
+                    {
+                        std::lock_guard<std::mutex> lock(state.messages_mutex);
+                        msg_idx = state.group_messages[group_idx].size();
+
+                        // Optimistic UI update
+                        Message pending_msg;
+                        pending_msg.sender = "You";
+                        pending_msg.content = message_copy;
+                        pending_msg.timestamp = "now";
+                        pending_msg.is_outgoing = true;
+                        pending_msg.status = STATUS_PENDING;
+                        state.group_messages[group_idx].push_back(pending_msg);
+                    }
+
+                    // Clear input
+                    state.message_input[0] = '\0';
+                    state.should_focus_input = true;
+                    state.should_scroll_to_bottom = true;
+
+                    // Enqueue send task
+                    state.message_send_queue.enqueue([&state, ctx, message_copy, group_uuid, group_idx, msg_idx]() {
+                        int result = messenger_send_group_message(ctx, group_uuid.c_str(), message_copy.c_str());
+
+                        // Update status
+                        {
+                            std::lock_guard<std::mutex> lock(state.messages_mutex);
+                            if (msg_idx < (int)state.group_messages[group_idx].size()) {
+                                state.group_messages[group_idx][msg_idx].status =
+                                    (result == 0) ? STATUS_SENT : STATUS_FAILED;
+                            }
+                        }
+
+                        if (result == 0) {
+                            printf("[Group Send] [OK] Message sent to group %s\n", group_uuid.c_str());
+                        } else {
+                            printf("[Group Send] ERROR: Failed to send to group %s\n", group_uuid.c_str());
+                        }
+                    }, msg_idx);
+                }
+            }
+        }
+    }
+
     ImGui::PopStyleColor();
-    ImGui::EndDisabled();
-    ImGui::EndChild();
 }
 
 void retryMessage(AppState& state, int contact_idx, int msg_idx) {
@@ -151,7 +330,7 @@ void retryMessage(AppState& state, int contact_idx, int msg_idx) {
     // Enqueue retry task
     state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, contact_idx, msg_idx]() {
         const char* recipients[] = { recipient.c_str() };
-        int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
+        int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0);
 
         // Update status with mutex protection
         {
@@ -570,7 +749,7 @@ void render(AppState& state) {
                         // Enqueue message send task
                         state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, contact_idx, msg_idx]() {
                             const char* recipients[] = { recipient.c_str() };
-                            int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
+                            int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0);
 
                             // Update status with mutex protection
                             {
@@ -818,7 +997,7 @@ void render(AppState& state) {
                         // Enqueue message send task
                         state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, contact_idx, msg_idx]() {
                             const char* recipients[] = { recipient.c_str() };
-                            int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str());
+                            int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0);
 
                             // Update status with mutex protection
                             {

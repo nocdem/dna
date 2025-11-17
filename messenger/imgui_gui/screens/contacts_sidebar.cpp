@@ -264,6 +264,59 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
                 state.selected_contact = -1;  // Deselect contact
                 state.current_view = VIEW_CHAT;
                 printf("[Groups] Selected group: %s\n", state.groups[i].name.c_str());
+
+                // Load group messages (Phase 6.2)
+                messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                if (ctx) {
+                    backup_message_t *messages = NULL;
+                    int count = 0;
+
+                    if (messenger_load_group_messages(ctx, state.groups[i].group_uuid.c_str(),
+                                                     &messages, &count) == 0) {
+                        printf("[Groups] Loaded %d messages for group\n", count);
+
+                        // Convert to Message format and store in group_messages
+                        std::vector<Message> msg_list;
+                        for (int j = 0; j < count; j++) {
+                            Message msg;
+                            msg.sender = std::string(messages[j].sender);
+                            // Check if outgoing by comparing sender with current identity
+                            msg.is_outgoing = (strcmp(messages[j].sender, ctx->identity) == 0);
+                            msg.status = (MessageStatus)messages[j].status;
+
+                            // Decrypt message content
+                            char *plaintext = NULL;
+                            size_t plaintext_len = 0;
+                            if (messenger_decrypt_message(ctx, messages[j].id, &plaintext, &plaintext_len) == 0) {
+                                msg.content = std::string(plaintext, plaintext_len);
+                                free(plaintext);
+                            } else {
+                                msg.content = "[Failed to decrypt]";
+                            }
+
+                            // Format timestamp
+                            char time_str[64];
+                            struct tm *tm_info = localtime(&messages[j].timestamp);
+                            strftime(time_str, sizeof(time_str), "%H:%M", tm_info);
+                            msg.timestamp = std::string(time_str);
+
+                            msg_list.push_back(msg);
+                        }
+
+                        // Store in group_messages map
+                        {
+                            std::lock_guard<std::mutex> lock(state.messages_mutex);
+                            state.group_messages[i] = msg_list;
+                        }
+
+                        message_backup_free_messages(messages, count);
+                    } else {
+                        printf("[Groups] Failed to load messages or no messages found\n");
+                        // Initialize empty message list
+                        std::lock_guard<std::mutex> lock(state.messages_mutex);
+                        state.group_messages[i] = std::vector<Message>();
+                    }
+                }
             }
 
             // Draw background

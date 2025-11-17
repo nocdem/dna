@@ -27,13 +27,15 @@ extern "C" {
  * @param recipients: Array of recipient identity strings
  * @param recipient_count: Number of recipients
  * @param message: Plaintext message (NULL-terminated string)
+ * @param group_id: Group ID (0 for direct messages, >0 for group messages)
  * @return: 0 on success, -1 on error
  */
 int messenger_send_message(
     messenger_context_t *ctx,
     const char **recipients,
     size_t recipient_count,
-    const char *message
+    const char *message,
+    int group_id
 );
 
 /**

@@ -264,7 +264,8 @@ int messenger_send_message(
     messenger_context_t *ctx,
     const char **recipients,
     size_t recipient_count,
-    const char *message
+    const char *message,
+    int group_id
 ) {
     if (!ctx || !recipients || !message || recipient_count == 0 || recipient_count > 254) {
         fprintf(stderr, "Error: Invalid arguments (recipient_count must be 1-254)\n");
@@ -411,8 +412,7 @@ int messenger_send_message(
             ciphertext_len,     // encrypted length
             now,                // timestamp
             true,               // is_outgoing = true (we're sending)
-            0                   // group_id = 0 (direct messages) - Phase 5.2
-                                // TODO: Pass actual group_id for group messages
+            group_id            // group_id (0 for direct, >0 for group) - Phase 6.2
         );
 
         if (result != 0) {

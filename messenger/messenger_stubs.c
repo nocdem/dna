@@ -408,60 +408,6 @@ int messenger_update_group_info(messenger_context_t *ctx, int group_id, const ch
     return 0;
 }
 
-int messenger_send_group_message(messenger_context_t *ctx, int group_id, const char *message_text) {
-    if (!ctx || !message_text) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to send_group_message\n");
-        return -1;
-    }
-
-    // Get group members
-    char **members = NULL;
-    int member_count = 0;
-    int ret = messenger_get_group_members(ctx, group_id, &members, &member_count);
-    if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to get group members\n");
-        return -1;
-    }
-
-    // Filter out self from recipients
-    char **recipients = malloc(sizeof(char*) * member_count);
-    if (!recipients) {
-        for (int i = 0; i < member_count; i++) {
-            free(members[i]);
-        }
-        free(members);
-        return -1;
-    }
-
-    int recipient_count = 0;
-    for (int i = 0; i < member_count; i++) {
-        // Skip self
-        if (strcmp(members[i], ctx->identity) != 0) {
-            recipients[recipient_count++] = members[i];
-        } else {
-            free(members[i]);  // Free self identity since we're not sending to it
-        }
-    }
-
-    // Send multi-recipient encrypted message (Phase 5.1 implementation)
-    ret = messenger_send_message(ctx, (const char**)recipients, recipient_count, message_text);
-
-    // Free recipients array
-    for (int i = 0; i < recipient_count; i++) {
-        free(recipients[i]);
-    }
-    free(recipients);
-    free(members);
-
-    if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to send group message\n");
-        return -1;
-    }
-
-    printf("[MESSENGER] Sent group message to %d members (group_id=%d)\n", recipient_count, group_id);
-    return 0;
-}
-
 int messenger_get_group_conversation(messenger_context_t *ctx, int group_id, message_info_t **messages_out, int *count_out) {
     if (!ctx || !messages_out || !count_out) {
         fprintf(stderr, "[MESSENGER] Invalid arguments to get_group_conversation\n");
@@ -568,8 +514,8 @@ int messenger_send_group_invitation(messenger_context_t *ctx, const char *group_
 
     const char *json_str = json_object_to_json_string_ext(j_invite, JSON_C_TO_STRING_PLAIN);
 
-    // Send as encrypted message
-    int ret = messenger_send_message(ctx, &recipient, 1, json_str);
+    // Send as encrypted message (group_id=0 for invitation messages)
+    int ret = messenger_send_message(ctx, &recipient, 1, json_str, 0);
 
     json_object_put(j_invite);
 
@@ -815,4 +761,166 @@ int messenger_sync_groups(messenger_context_t *ctx) {
     }
 
     return 0;
+}
+
+// ============================================================================
+// GROUP MESSAGING (Phase 6.2)
+// ============================================================================
+
+/**
+ * Send message to a group
+ *
+ * Looks up group members from DHT and sends encrypted message to all members
+ * using multi-recipient encryption (Kyber1024 + AES-256-GCM).
+ *
+ * @param ctx Messenger context
+ * @param group_uuid Group UUID (36 chars)
+ * @param message Plaintext message
+ * @return 0 on success, -1 on error
+ */
+int messenger_send_group_message(messenger_context_t *ctx, const char *group_uuid, const char *message) {
+    if (!ctx || !group_uuid || !message) {
+        fprintf(stderr, "[GROUP MSG] Invalid parameters\n");
+        return -1;
+    }
+
+    printf("[GROUP MSG] Sending message to group %s\n", group_uuid);
+
+    // Step 1: Get DHT context
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        fprintf(stderr, "[GROUP MSG] DHT not initialized\n");
+        return -1;
+    }
+
+    // Step 2: Get group metadata from DHT
+    dht_group_metadata_t *metadata = NULL;
+    int result = dht_groups_get(dht_ctx, group_uuid, &metadata);
+    if (result != 0 || !metadata) {
+        fprintf(stderr, "[GROUP MSG] Failed to get group metadata from DHT\n");
+        return -1;
+    }
+
+    if (metadata->member_count == 0 || !metadata->members) {
+        fprintf(stderr, "[GROUP MSG] Group has no members\n");
+        dht_groups_free_metadata(metadata);
+        return -1;
+    }
+
+    printf("[GROUP MSG] Group has %u members\n", metadata->member_count);
+
+    // Step 3: Build recipients array (exclude self to avoid duplicate)
+    const char **recipients = malloc(metadata->member_count * sizeof(char*));
+    if (!recipients) {
+        fprintf(stderr, "[GROUP MSG] Memory allocation failed\n");
+        dht_groups_free_metadata(metadata);
+        return -1;
+    }
+
+    size_t recipient_count = 0;
+    for (uint32_t i = 0; i < metadata->member_count; i++) {
+        // Skip self (already added by messenger_send_message)
+        if (strcmp(metadata->members[i], ctx->identity) == 0) {
+            continue;
+        }
+        recipients[recipient_count++] = metadata->members[i];
+    }
+
+    printf("[GROUP MSG] Sending to %zu recipients (excluding self)\n", recipient_count);
+
+    // Step 4: Get group's local_id for database storage
+    int local_id = 0;
+    dht_group_cache_entry_t *entries = NULL;
+    int count = 0;
+    if (dht_groups_list_for_user(ctx->identity, &entries, &count) == 0) {
+        for (int i = 0; i < count; i++) {
+            if (strcmp(entries[i].group_uuid, group_uuid) == 0) {
+                local_id = entries[i].local_id;
+                break;
+            }
+        }
+        dht_groups_free_cache_entries(entries, count);
+    }
+
+    if (local_id == 0) {
+        fprintf(stderr, "[GROUP MSG] Error: Group not found in cache\n");
+        free(recipients);
+        dht_groups_free_metadata(metadata);
+        return -1;
+    }
+
+    printf("[GROUP MSG] Group local_id: %d\n", local_id);
+
+    // Step 5: Send message using multi-recipient encryption
+    // messenger_send_message will handle:
+    // - Multi-recipient Kyber1024 encryption
+    // - P2P delivery
+    // - DHT offline queue fallback
+    // - SQLite storage with group_id
+    result = messenger_send_message(ctx, recipients, recipient_count, message, local_id);
+
+    free(recipients);
+    dht_groups_free_metadata(metadata);
+
+    if (result == 0) {
+        printf("[GROUP MSG] ✓ Group message sent successfully\n");
+    } else {
+        fprintf(stderr, "[GROUP MSG] Failed to send group message\n");
+    }
+
+    return result;
+}
+
+/**
+ * Load group conversation messages
+ *
+ * Retrieves all messages for a specific group from local SQLite database.
+ * Messages are returned ENCRYPTED - caller must decrypt each message.
+ *
+ * @param ctx Messenger context
+ * @param group_uuid Group UUID (36 chars)
+ * @param messages_out Output array of messages (caller must free with message_backup_free_messages)
+ * @param count_out Number of messages returned
+ * @return 0 on success, -1 on error
+ */
+int messenger_load_group_messages(messenger_context_t *ctx, const char *group_uuid,
+                                   backup_message_t **messages_out, int *count_out) {
+    if (!ctx || !group_uuid || !messages_out || !count_out) {
+        fprintf(stderr, "[GROUP MSG] Invalid parameters\n");
+        return -1;
+    }
+
+    // Step 1: Get group's local_id from cache
+    dht_group_cache_entry_t *entries = NULL;
+    int entry_count = 0;
+    int local_id = 0;
+
+    if (dht_groups_list_for_user(ctx->identity, &entries, &entry_count) == 0) {
+        for (int i = 0; i < entry_count; i++) {
+            if (strcmp(entries[i].group_uuid, group_uuid) == 0) {
+                local_id = entries[i].local_id;
+                break;
+            }
+        }
+        dht_groups_free_cache_entries(entries, entry_count);
+    }
+
+    if (local_id == 0) {
+        fprintf(stderr, "[GROUP MSG] Group not found in cache: %s\n", group_uuid);
+        return -1;
+    }
+
+    printf("[GROUP MSG] Loading messages for group (local_id=%d)\n", local_id);
+
+    // Step 2: Query messages from database using existing function
+    int result = message_backup_get_group_conversation(ctx->backup_ctx, local_id,
+                                                        messages_out, count_out);
+
+    if (result == 0) {
+        printf("[GROUP MSG] ✓ Loaded %d group messages\n", *count_out);
+    } else {
+        fprintf(stderr, "[GROUP MSG] Failed to load group messages\n");
+    }
+
+    return result;
 }

@@ -108,7 +108,8 @@ public:
     std::vector<Group> groups;                        // User's groups
     std::vector<GroupInvitation> pending_invitations; // Pending group invitations
     std::map<int, std::vector<Message>> contact_messages;
-    mutable std::mutex messages_mutex;  // Protect contact_messages from concurrent access
+    std::map<int, std::vector<Message>> group_messages;  // Phase 6.2: Group messages (indexed by group index)
+    mutable std::mutex messages_mutex;  // Protect contact_messages and group_messages from concurrent access
     char message_input[16384]; // 16KB for long messages
 
     // Wallet state

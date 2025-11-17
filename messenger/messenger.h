@@ -370,13 +370,15 @@ int messenger_delete_pubkey(messenger_context_t *ctx, const char *identity);
  * @param recipients: Array of recipient identities (1-254, sender is added automatically)
  * @param recipient_count: Number of recipients (1-254)
  * @param message: Plaintext message
+ * @param group_id: Group ID (0 for direct messages, >0 for group messages)
  * @return: 0 on success, -1 on error
  */
 int messenger_send_message(
     messenger_context_t *ctx,
     const char **recipients,
     size_t recipient_count,
-    const char *message
+    const char *message,
+    int group_id
 );
 
 /**
@@ -669,38 +671,6 @@ int messenger_update_group_info(
 );
 
 /**
- * Send message to group
- *
- * Automatically sends to all group members.
- *
- * @param ctx: Messenger context
- * @param group_id: Group ID
- * @param message: Message text
- * @return: 0 on success, -1 on error
- */
-int messenger_send_group_message(
-    messenger_context_t *ctx,
-    int group_id,
-    const char *message
-);
-
-/**
- * Get conversation for a group
- *
- * @param ctx: Messenger context
- * @param group_id: Group ID
- * @param messages_out: Output array of message_info_t (caller must free)
- * @param count_out: Number of messages returned
- * @return: 0 on success, -1 on error
- */
-int messenger_get_group_conversation(
-    messenger_context_t *ctx,
-    int group_id,
-    message_info_t **messages_out,
-    int *count_out
-);
-
-/**
  * Send group invitation to a user
  *
  * @param ctx: Messenger context
@@ -755,6 +725,42 @@ int messenger_reject_group_invitation(
  * @return: 0 on success, -1 on error
  */
 int messenger_sync_groups(messenger_context_t *ctx);
+
+/**
+ * Send message to a group (Phase 6.2)
+ *
+ * Looks up group members from DHT and sends encrypted message to all members
+ * using multi-recipient encryption (Kyber1024 + AES-256-GCM).
+ *
+ * @param ctx: Messenger context
+ * @param group_uuid: Group UUID (36 chars)
+ * @param message: Plaintext message
+ * @return: 0 on success, -1 on error
+ */
+int messenger_send_group_message(
+    messenger_context_t *ctx,
+    const char *group_uuid,
+    const char *message
+);
+
+/**
+ * Load group conversation messages (Phase 6.2)
+ *
+ * Retrieves all messages for a specific group from local SQLite database.
+ * Messages are returned ENCRYPTED - caller must decrypt each message.
+ *
+ * @param ctx: Messenger context
+ * @param group_uuid: Group UUID (36 chars)
+ * @param messages_out: Output array of messages (caller must free with message_backup_free_messages)
+ * @param count_out: Number of messages returned
+ * @return: 0 on success, -1 on error
+ */
+int messenger_load_group_messages(
+    messenger_context_t *ctx,
+    const char *group_uuid,
+    backup_message_t **messages_out,
+    int *count_out
+);
 
 /**
  * Free group array
