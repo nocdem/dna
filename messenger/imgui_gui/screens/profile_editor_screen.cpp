@@ -6,6 +6,7 @@
 #include "../settings_manager.h"
 #include "../font_awesome.h"
 #include "../texture_manager.h"
+#include <nfd.h>
 
 extern "C" {
     #include "../../messenger.h"
@@ -182,10 +183,8 @@ void render(AppState& state) {
 
     if (CenteredModal::Begin("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize, true, false, 600, 500)) {  // 600x500 with scrolling
 
-        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "Edit your public DNA profile. All changes are stored in the DHT.");
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(), "Edit your public DNA profile. All changes are stored in the DHT.");
         ImGui::Spacing();
-
-        ImGui::Text("Registered Name: %s", state.profile_registered_name.c_str());
         ImGui::Separator();
         ImGui::Spacing();
 
@@ -193,7 +192,7 @@ void render(AppState& state) {
         ImGui::BeginChild("ProfileForm", ImVec2(0, -80), true);
 
         // Cellframe Network Addresses
-        if (ImGui::CollapsingHeader("Cellframe Network Addresses", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("Cellframe Network Addresses")) {
             ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
             ImGui::InputText("Backbone", state.profile_backbone, sizeof(state.profile_backbone));
             ImGui::InputText("KelVPN", state.profile_kelvpn, sizeof(state.profile_kelvpn));
@@ -226,65 +225,7 @@ void render(AppState& state) {
         }
 
         // Avatar Upload (NEW in Phase 4.3)
-        if (ImGui::CollapsingHeader("Avatar Upload (64x64)", ImGuiTreeNodeFlags_DefaultOpen)) {
-            ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
-
-            // File path input
-            ImGui::InputText("Avatar File Path", state.profile_avatar_path, sizeof(state.profile_avatar_path));
-            ImGui::PopStyleColor();
-
-            // Browse button (opens file picker)
-            if (ThemedButton(ICON_FA_FOLDER_OPEN " Browse", ImVec2(100, 25), false)) {
-                #ifdef __linux__
-                // Try zenity first (GNOME), fallback to kdialog (KDE)
-                FILE *fp = popen("which zenity 2>/dev/null", "r");
-                if (fp) {
-                    char result[16];
-                    bool has_zenity = (fgets(result, sizeof(result), fp) != NULL);
-                    pclose(fp);
-
-                    if (has_zenity) {
-                        fp = popen("zenity --file-selection --title='Select Avatar Image' --file-filter='Images | *.png *.jpg *.jpeg *.bmp *.gif' 2>/dev/null", "r");
-                    } else {
-                        fp = popen("kdialog --getopenfilename . 'Images (*.png *.jpg *.jpeg *.bmp *.gif)' 2>/dev/null", "r");
-                    }
-
-                    if (fp) {
-                        char selected_path[512] = {0};
-                        if (fgets(selected_path, sizeof(selected_path), fp) != NULL) {
-                            // Remove trailing newline
-                            size_t len = strlen(selected_path);
-                            if (len > 0 && selected_path[len-1] == '\n') {
-                                selected_path[len-1] = '\0';
-                            }
-                            strncpy(state.profile_avatar_path, selected_path, sizeof(state.profile_avatar_path) - 1);
-                            printf("[ProfileEditor] Selected avatar file: %s\n", selected_path);
-                        }
-                        pclose(fp);
-                    }
-                }
-                #endif
-            }
-
-            ImGui::SameLine();
-            if (ThemedButton(ICON_FA_UPLOAD " Upload", ImVec2(100, 25), false)) {
-                // Process avatar file
-                if (strlen(state.profile_avatar_path) > 0) {
-                    char base64_out[20480] = {0};
-                    int ret = avatar_load_and_encode(state.profile_avatar_path, base64_out, sizeof(base64_out));
-
-                    if (ret == 0) {
-                        state.profile_avatar_base64 = std::string(base64_out);
-                        state.profile_avatar_loaded = true;
-                        state.profile_status = "Avatar uploaded successfully! (64x64)";
-                    } else {
-                        state.profile_status = "Failed to load/encode avatar image";
-                    }
-                } else {
-                    state.profile_status = "Please enter a file path first";
-                }
-            }
-
+        if (ImGui::CollapsingHeader("Avatar Upload (64x64)")) {
             // Avatar preview and controls
             if (state.profile_avatar_loaded && !state.profile_avatar_base64.empty()) {
                 // Load and display avatar texture
@@ -310,25 +251,68 @@ void render(AppState& state) {
 
                     // Remove button (centered below avatar)
                     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + center_x);
-                    if (ThemedButton(ICON_FA_TRASH " Remove", ImVec2(100, 25), false)) {
+                    if (ThemedButton(ICON_FA_TRASH " Remove", ImVec2(avatar_display_size, 25), false)) {
                         state.profile_avatar_base64.clear();
                         state.profile_avatar_loaded = false;
-                        memset(state.profile_avatar_path, 0, sizeof(state.profile_avatar_path));
                         state.profile_status = "Avatar removed";
+                        // Remove from texture cache
                         TextureManager::getInstance().removeTexture(cache_key);
                     }
                 } else {
                     ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(),
-                                     ICON_FA_IMAGE " Avatar failed to load");
+                                     "Failed to load avatar preview");
+                }
+            } else {
+                // No avatar uploaded - show browse button
+                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
+                                 "No avatar uploaded");
+                ImGui::Spacing();
+                
+                if (ThemedButton(ICON_FA_FOLDER_OPEN " Browse PNG File", ImVec2(200, 30), false)) {
+                    // Use NFD to select PNG file
+                    nfdchar_t *outPath = nullptr;
+                    nfdfilteritem_t filters[1] = { { "PNG Image", "png" } };
+                    nfdresult_t result = NFD_OpenDialog(&outPath, filters, 1, nullptr);
+                    
+                    if (result == NFD_OKAY) {
+                        // Process avatar file immediately (larger buffer for safety)
+                        char *base64_out = (char*)malloc(65536); // 64KB buffer for base64
+                        if (!base64_out) {
+                            state.profile_status = "Failed to allocate memory";
+                            NFD_FreePath(outPath);
+                            return;
+                        }
+                        
+                        int ret = avatar_load_and_encode(outPath, base64_out, 65536);
+
+                        if (ret == 0) {
+                            // Remove old texture from cache before loading new one
+                            messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                            std::string cache_key = ctx ? std::string(ctx->identity) : "preview";
+                            TextureManager::getInstance().removeTexture(cache_key);
+                            
+                            state.profile_avatar_base64 = std::string(base64_out);
+                            state.profile_avatar_loaded = true;
+                            state.profile_status = "Avatar uploaded successfully! (64x64)";
+                            printf("[ProfileEditor] Avatar loaded from: %s\n", outPath);
+                        } else {
+                            state.profile_status = "Failed to load/resize avatar image";
+                        }
+                        
+                        free(base64_out);
+                        NFD_FreePath(outPath);
+                    } else if (result == NFD_CANCEL) {
+                        printf("[ProfileEditor] User cancelled file selection\n");
+                    } else {
+                        printf("[ProfileEditor] NFD Error: %s\n", NFD_GetError());
+                        state.profile_status = "Error opening file dialog";
+                    }
                 }
             }
-
-            ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
-                             "Supported: PNG, JPEG, BMP, GIF. Image will be resized to 64x64.");
         }
 
         // Bio
-        if (ImGui::CollapsingHeader("Bio", ImGuiTreeNodeFlags_DefaultOpen)) {
+        if (ImGui::CollapsingHeader("Bio")) {
             ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
             ImGui::InputTextMultiline("##Bio", state.profile_bio, sizeof(state.profile_bio), ImVec2(-1, 100));
             ImGui::PopStyleColor();

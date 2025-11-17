@@ -29,6 +29,8 @@ extern "C" {
 }
 #include "helpers/data_loader.h"
 #include "screens/wallet_screen.h"
+#include "screens/profile_editor_screen.h"
+#include <nfd.h>
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
@@ -212,6 +214,13 @@ int main(int argc, char** argv) {
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
         return 1;
+
+    // Initialize NFD
+    if (NFD_Init() != NFD_OKAY) {
+        fprintf(stderr, "[MAIN] NFD initialization failed: %s\n", NFD_GetError());
+        return 1;
+    }
+    printf("[MAIN] NFD initialized successfully\n");
 
     const char* glsl_version = "#version 130";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -433,6 +442,13 @@ int main(int argc, char** argv) {
                                 printf("[MAIN] No wallets found to preload\n");
                             }
                         });
+                        
+                        // Preload user profile asynchronously (non-blocking)
+                        printf("[MAIN] Preloading user profile...\n");
+                        state.profile_preload_task.start([&state](AsyncTask* task) {
+                            ProfileEditorScreen::loadProfile(state, false);
+                            printf("[MAIN] User profile preloaded\n");
+                        });
                     }
                 }
             });
@@ -515,6 +531,9 @@ int main(int argc, char** argv) {
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
+
+    printf("[MAIN] Shutting down NFD...\n");
+    NFD_Quit();
 
     printf("[MAIN] Destroying window...\n");
     glfwDestroyWindow(window);

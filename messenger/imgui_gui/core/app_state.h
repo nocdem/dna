@@ -240,6 +240,7 @@ public:
     AsyncTask dht_publish_task;
     AsyncTask contact_lookup_task;
     AsyncTask wallet_preload_task;  // Preload wallet data on startup
+    AsyncTask profile_preload_task;  // Preload profile data on startup
     AsyncTask contact_sync_task;
     AsyncTask message_poll_task;
     AsyncTaskQueue message_send_queue;  // Queue for sending multiple messages rapidly

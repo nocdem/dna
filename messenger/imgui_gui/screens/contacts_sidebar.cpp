@@ -206,6 +206,17 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
 
     ImGui::Spacing();
 
+    // Groups and Contacts in a single scrollable child
+    // Calculate available height: total sidebar height minus fixed elements at top and bottom
+    float add_button_height = 40.0f;
+    float num_buttons = 3.0f;
+    float spacing = ImGui::GetStyle().ItemSpacing.y;
+    float available_height = ImGui::GetContentRegionAvail().y - (add_button_height * num_buttons) - (spacing * num_buttons);
+
+    // Set scrollbar background to match sidebar background
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, sidebar_bg);
+    ImGui::BeginChild("GroupsAndContactsScroll", ImVec2(0, available_height), false);
+    
     // Groups section header with pending invitations badge
     char groups_header[64];
     if (state.pending_invitations.size() > 0) {
@@ -218,10 +229,6 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
 
     // Groups list (if any)
     if (state.groups.size() > 0 || state.pending_invitations.size() > 0) {
-        float groups_list_height = (state.groups.size() + state.pending_invitations.size()) * 35.0f;
-        if (groups_list_height > 150.0f) groups_list_height = 150.0f; // Max height
-
-        ImGui::BeginChild("GroupsList", ImVec2(0, groups_list_height), false);
         float list_width = ImGui::GetContentRegionAvail().x;
 
         // Render pending invitations first (with special styling)
@@ -360,7 +367,6 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             ImGui::PopID();
         }
 
-        ImGui::EndChild(); // GroupsList
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
@@ -369,14 +375,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     ImGui::Text("Contacts");
     ImGui::Spacing();
 
-    // Contact list - use remaining space minus 3 action buttons
-    float add_button_height = 40.0f;
-    float num_buttons = 3.0f;
-    float spacing = ImGui::GetStyle().ItemSpacing.y;
-    float available_height = ImGui::GetContentRegionAvail().y - (add_button_height * num_buttons) - (spacing * num_buttons);
-
-    ImGui::BeginChild("ContactList", ImVec2(0, available_height), false);
-
+    // Contact list
     float list_width = ImGui::GetContentRegionAvail().x;
     for (size_t i = 0; i < state.contacts.size(); i++) {
         ImGui::PushID(i);
@@ -495,7 +494,8 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         ImGui::PopID();
     }
 
-    ImGui::EndChild(); // ContactList
+    ImGui::EndChild(); // GroupsAndContactsScroll
+    ImGui::PopStyleColor(); // ScrollbarBg
 
     // Action buttons at bottom (40px each to match main buttons)
     float button_width = ImGui::GetContentRegionAvail().x;
