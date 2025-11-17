@@ -201,7 +201,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         
         ImGui::Spacing();
         
-        // Edit Profile button - only show if user has registered name
+        // Show Register DNA or Edit Profile button based on registration status
         bool has_registered_name = !state.profile_registered_name.empty() &&
                                    state.profile_registered_name != "Loading..." &&
                                    state.profile_registered_name != "N/A (DHT not connected)" &&
@@ -209,8 +209,14 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
                                    state.profile_registered_name != "Error loading";
         
         if (has_registered_name) {
+            // User is registered - show Edit Profile button
             if (ThemedButton(ICON_FA_USER " Edit Profile", ImVec2(-1, 40))) {
                 state.show_profile_editor = true;
+            }
+        } else {
+            // User not registered - show Register DNA button
+            if (ThemedButton(ICON_FA_ID_CARD " Register DNA", ImVec2(-1, 40))) {
+                state.show_register_name = true;
             }
         }
         

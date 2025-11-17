@@ -119,14 +119,6 @@ void render(AppState& state) {
             ImGui::Spacing();
         }
 
-        // Only show Register DNA button if no name is registered
-        if (!has_registered_name) {
-            if (ThemedButton(ICON_FA_TAG " Register DNA", ImVec2(-1, btn_height))) {
-                state.show_register_name = true;
-            }
-            ImGui::Spacing();
-        }
-
         // Only show Post to Wall if registered
         if (has_registered_name) {
             if (ThemedButton(ICON_FA_NEWSPAPER " Post to Wall", ImVec2(-1, btn_height))) {
@@ -138,18 +130,8 @@ void render(AppState& state) {
             }
         }
     } else {
-        // Desktop mode - Edit Profile is in sidebar, not here
+        // Desktop mode - Register DNA/Edit Profile is in sidebar
         
-        // Only show Register DNA button if no name is registered
-        if (!has_registered_name) {
-            if (has_registered_name) {
-                ImGui::SameLine();
-            }
-            if (ThemedButton(ICON_FA_TAG " Register DNA", ImVec2(200, btn_height))) {
-                state.show_register_name = true;
-            }
-        }
-
         ImGui::Spacing();
 
         // Only show Post to Wall if registered
