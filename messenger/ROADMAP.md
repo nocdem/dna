@@ -2,7 +2,7 @@
 
 **Version:** 0.1.120+
 **Last Updated:** 2025-11-17
-**Project Status:** Phase 6 (DNA Board) - Phase 4, 5.1-5.5, 6.1-6.2 Complete, ImGui GUI Active
+**Project Status:** Phase 6 (DNA Board) - Phase 4, 5.1-5.6, 6.1-6.3 Complete, ImGui GUI Active
 
 ---
 
@@ -372,52 +372,71 @@ Implemented cryptographically signed reverse mappings for sender identification 
 
 Implemented per-identity contact lists with DHT synchronization for multi-device support:
 
-- [x] **Per-Identity Databases:** `~/.dna/<identity>_contacts.db` (isolated storage)
-- [x] **Automatic Migration:** Migrates from global `contacts.db` to per-identity databases
-- [x] **DHT Contact List Sync:** Full implementation in `dht/dht_contactlist.c/h` (820+ lines)
-  - SHA3-512 DHT key derivation: `hash(identity + ":contactlist")`
-  - JSON serialization with timestamp and version
-  - Kyber1024 self-encryption (user encrypts with own public key)
-  - Dilithium5 signatures for authenticity
-  - 7-day TTL with auto-republish capability
-- [x] **Multi-Device Support:** Same BIP39 seed → same keys → decrypt contacts on any device
-- [x] **GUI Integration:** Manual and automatic sync controls
-  - Status indicator: `📇 Contacts: Local` → `📇 Syncing...` → `📇 Synced ✓`
-  - Manual sync button: Settings → Sync Contacts to DHT
-  - Auto-sync timer: Every 10 minutes in background
-- [x] **Security Features:**
-  - Self-encryption prevents unauthorized access
-  - DHT is source of truth (replaces local on sync)
-  - Signature prevents tampering
-  - Predictable storage location but encrypted data
+#### Phase 5.6: P2P Group Invitations ✅ COMPLETE
+**Completed:** 2025-11-17
 
-**Use Case:** User adds contacts on Device A, syncs to DHT. Later restores identity from seed on Device B. Auto-sync downloads and decrypts contact list. Contacts appear automatically.
+Implemented P2P invitation delivery system for group membership:
 
-**Files Created:**
-- `dht/dht_contactlist.h` (207 lines) - DHT contact list API
-- `dht/dht_contactlist.c` (820 lines) - Full implementation with encryption
+- [x] **Database Schema Evolution:** Messages table extended to v5
+  - Added `message_type` field (0=chat, 1=group_invitation)
+  - Added `invitation_status` field (0=pending, 1=accepted, 2=rejected)
+  - Backward compatible via ALTER TABLE with DEFAULT values
+- [x] **JSON Invitation Format:** Standardized invitation message structure
+  - `type`: "group_invite" (message type discriminator)
+  - `group_uuid`: UUID v4 group identifier (36 chars)
+  - `group_name`: Display name of the group
+  - `inviter`: SHA3-512 fingerprint (128 chars) of inviter
+  - `member_count`: Current number of group members
+- [x] **Backend Detection:** Automatic invitation recognition (`messenger_p2p.c`)
+  - Decrypt incoming messages with Kyber1024 + AES-256-GCM
+  - Parse JSON and detect `"type": "group_invite"`
+  - Extract group details and store in `group_invitations` database
+  - Store message with `message_type=1` for UI rendering
+- [x] **UI Rendering:** Rich invitation display (`chat_screen.cpp`)
+  - Blue invitation box with rounded border (8px radius)
+  - Group icon (Font Awesome ICON_FA_USERS)
+  - Group name and invitation details
+  - Inviter name and member count display
+  - Accept button (green check icon) - triggers DHT sync
+  - Decline button (red X icon) - marks as rejected
+- [x] **Accept Workflow:** DHT group synchronization (`messenger_stubs.c`)
+  - Fetch group metadata from DHT via UUID
+  - Store group in local cache (`~/.dna/groups_cache.db`)
+  - Update invitation status to ACCEPTED
+  - Group appears in user's groups list
+- [x] **Reject Workflow:** Invitation state management
+  - Mark invitation as rejected in database
+  - Allow re-acceptance (invitation UI persists)
+  - No DHT sync for rejected invitations
+
+**Use Case:** User A creates "Team Chat" group and adds User B. User B receives invitation message in chat with User A, sees blue box with Accept/Decline buttons. Clicking Accept syncs group from DHT and adds it to groups list.
 
 **Files Modified:**
-- `contacts_db.h/c` - Per-identity databases + migration (170+ lines)
-- `messenger.h/c` - Sync functions (240+ lines)
-- `gui/MainWindow.h/cpp` - Sync UI and timers (93 lines)
-- `dht/CMakeLists.txt` - Build configuration
+- `message_backup.h/c` - Schema v4→v5 (message_type, invitation_status fields)
+- `messenger.h` - Added `message_type` to `message_info_t` struct
+- `messenger/messages.c` - Updated `messenger_send_message()` signature
+- `messenger_p2p.c` - Invitation detection logic (~80 LOC)
+- `messenger_stubs.c` - Accept/reject handlers (~40 LOC)
+- `chat_screen.cpp` - Invitation rendering UI (~80 LOC)
+- `data_loader.cpp` - Populate `message_type` when loading messages
+- `imgui_gui/core/data_types.h` - Added `message_type` to Message struct
 
-**Total Changes:** 1,469+ lines added/modified
+**Total Changes:** ~300 LOC
+**Documentation:** `/docs/GROUP_INVITATIONS_GUIDE.md` (comprehensive 500+ line guide)
 
-#### Phase 5.6: Local Cache & Sync (Future)
+#### Phase 5.7: Local Cache & Sync (Future)
 - [ ] SQLite encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM)
 - [ ] Background sync protocol (local ↔ DHT)
 - [ ] Multi-device message synchronization
 - [ ] Offline mode with automatic sync on reconnect
 - [ ] Incremental sync for large histories
 
-#### Phase 5.7: DHT Keyserver Enhancements (Future)
+#### Phase 5.8: DHT Keyserver Enhancements (Future)
 - [ ] Key rotation and update protocol
 - [ ] Optional: Blockchain anchoring for tamper-proofing
 - [ ] DHT replication monitoring
 
-#### Phase 5.8: Integration & Testing (Future)
+#### Phase 5.9: Integration & Testing (Future)
 - [ ] End-to-end testing with 5-10 peers
 - [ ] Network resilience testing (peer churn)
 - [ ] Performance optimization
@@ -769,13 +788,16 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - **Phase 5.3:** PostgreSQL → SQLite Migration (Fully decentralized storage)
 - **Phase 5.4:** DHT-based Keyserver with Signed Reverse Mapping
 - **Phase 5.5:** Per-Identity Contact Lists with DHT Sync
+- **Phase 5.6:** P2P Group Invitations
 - **Phase 6.1:** User Profiles, Profile Editor/Viewer, Wall Posts (backend + GUI)
+- **Phase 6.2:** Avatar System (Base64 encoding, circular display, OpenGL textures)
+- **Phase 6.3:** Community Voting (Dilithium5 signatures, permanent votes)
 
 ### 🚧 In Progress
-- **Phase 6.2:** DNA Board enhancements (comment threading, voting, social links, avatars)
+- **Phase 6.4:** DNA Board enhancements (profile extensions, feed sorting)
 
 ### 📋 Planned
-- **Phase 5.6-5.8:** Multi-device message sync, DHT keyserver enhancements, integration testing
+- **Phase 5.7-5.9:** Multi-device message sync, DHT keyserver enhancements, integration testing
 - **Phase 7:** Web-Based Messenger (HTML5 UI, PWA, IndexedDB)
 - **Phase 8:** Post-Quantum Voice/Video Calls
 - **Phase 9+:** Future Enhancements (mobile apps, advanced security, etc.)
@@ -797,8 +819,24 @@ DNA Messenger is in active development. Contributions welcome!
 
 **Project Start:** 2025-10-14
 **Current Version:** 0.1.120+
-**Next Milestone:** DNA Board Social Features (Phase 6.2)
+**Next Milestone:** DNA Board Profile Extensions (Phase 6.4)
 **Recent Achievements:**
+- ✅ **P2P Group Invitations!** (Phase 5.6 - 2025-11-17)
+  - Encrypted JSON invitation messages (Kyber1024 + AES-256-GCM)
+  - Rich UI with blue invitation box, Accept/Decline buttons
+  - Automatic DHT group synchronization on acceptance
+  - Database schema v5 with message_type and invitation_status fields
+  - Comprehensive guide: `/docs/GROUP_INVITATIONS_GUIDE.md`
+- ✅ **Community Voting System!** (Phase 6.3 - 2025-11-17)
+  - Thumbs up/down voting on wall posts with Dilithium5 signatures
+  - Permanent votes (one per fingerprint, cannot be changed)
+  - Net score display with color coding (green/red/gray)
+  - Vote backend: 650 lines with full cryptographic verification
+- ✅ **Avatar System!** (Phase 6.2 - 2025-11-17)
+  - Base64-encoded PNG avatars (64x64, 20KB limit)
+  - OpenGL texture loading with TextureManager singleton
+  - Circular display in profiles (64px), wall posts (24px), chat (20px)
+  - Auto-resize via stb_image integration
 - ✅ **DHT Refactoring Complete!** (2025-11-16)
   - Phase 7: Unified cache manager implementation
   - Phase 5: Profile system unification (dna_unified_identity_t)
