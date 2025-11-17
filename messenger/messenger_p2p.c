@@ -979,14 +979,8 @@ int messenger_p2p_check_offline_messages(
         printf("[P2P] ✓ Retrieved %zu offline messages from DHT\n", count);
         // Messages are automatically delivered via p2p_message_received_internal()
         // which stores them in SQLite for GUI retrieval
-
-        // Sync groups to check for new invitations in the retrieved messages
-        printf("[P2P] Syncing groups after offline message retrieval...\n");
-        if (messenger_sync_groups(ctx) == 0) {
-            printf("[P2P] ✓ Group sync complete\n");
-        } else {
-            printf("[P2P] Warning: Group sync failed\n");
-        }
+        // Note: Group sync is handled separately by messenger_sync_groups() which
+        // calls this function internally to avoid circular dependencies
     } else if (result == 0 && count == 0) {
         printf("[P2P] No offline messages in DHT\n");
     } else {
