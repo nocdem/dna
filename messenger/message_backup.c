@@ -23,10 +23,19 @@ struct message_backup_context {
 };
 
 /**
- * Database Schema (v3) - ENCRYPTED STORAGE with Status + Group Support (Phase 5.2)
+ * Database Schema (v5) - Add invitation_status for group invitations (Phase 6.2)
  *
  * SECURITY: Messages stored as encrypted BLOB for data sovereignty.
  * If database is stolen, messages remain unreadable.
+ *
+ * Message Types:
+ *   0 = regular chat message (default)
+ *   1 = group invitation
+ *
+ * Invitation Status (only for message_type=1):
+ *   0 = pending (default)
+ *   1 = accepted
+ *   2 = declined
  */
 static const char *SCHEMA_SQL =
     "CREATE TABLE IF NOT EXISTS messages ("
@@ -40,7 +49,9 @@ static const char *SCHEMA_SQL =
     "  read INTEGER DEFAULT 0,"
     "  is_outgoing INTEGER DEFAULT 0,"
     "  status INTEGER DEFAULT 1,"         // 0=PENDING, 1=SENT, 2=FAILED
-    "  group_id INTEGER DEFAULT 0"        // 0=direct message, >0=group ID (Phase 5.2)
+    "  group_id INTEGER DEFAULT 0,"       // 0=direct message, >0=group ID (Phase 5.2)
+    "  message_type INTEGER DEFAULT 0,"   // 0=chat, 1=group_invitation (Phase 6.2)
+    "  invitation_status INTEGER DEFAULT 0"  // 0=pending, 1=accepted, 2=declined (Phase 6.2)
     ");"
     ""
     "CREATE INDEX IF NOT EXISTS idx_sender ON messages(sender);"
@@ -52,7 +63,7 @@ static const char *SCHEMA_SQL =
     "  value TEXT"
     ");"
     ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '3');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '5');";
 
 /**
  * Get database path
@@ -169,6 +180,32 @@ message_backup_context_t* message_backup_init(const char *identity) {
         sqlite3_free(err_msg);
     }
 
+    // Migration: Add message_type column if it doesn't exist (v3 -> v4, Phase 6.2)
+    const char *migration_sql_v4 = "ALTER TABLE messages ADD COLUMN message_type INTEGER DEFAULT 0;";
+    rc = sqlite3_exec(ctx->db, migration_sql_v4, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        // Column might already exist (not an error)
+        if (strstr(err_msg, "duplicate column") == NULL) {
+            fprintf(stderr, "[Backup] Migration warning (v4): %s\n", err_msg);
+        }
+        sqlite3_free(err_msg);
+    } else {
+        printf("[Backup] Migrated database schema to v4 (added message_type column)\n");
+    }
+
+    // Migration: Add invitation_status column if it doesn't exist (v4 -> v5, Phase 6.2)
+    const char *migration_sql_v5 = "ALTER TABLE messages ADD COLUMN invitation_status INTEGER DEFAULT 0;";
+    rc = sqlite3_exec(ctx->db, migration_sql_v5, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        // Column might already exist (not an error)
+        if (strstr(err_msg, "duplicate column") == NULL) {
+            fprintf(stderr, "[Backup] Migration warning (v5): %s\n", err_msg);
+        }
+        sqlite3_free(err_msg);
+    } else {
+        printf("[Backup] Migrated database schema to v5 (added invitation_status column)\n");
+    }
+
     printf("[Backup] Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
     return ctx;
 }
@@ -216,7 +253,8 @@ int message_backup_save(message_backup_context_t *ctx,
                         size_t encrypted_len,
                         time_t timestamp,
                         bool is_outgoing,
-                        int group_id) {
+                        int group_id,
+                        int message_type) {
     if (!ctx || !ctx->db) return -1;
     if (!sender || !recipient || !encrypted_message) return -1;
 
@@ -228,8 +266,8 @@ int message_backup_save(message_backup_context_t *ctx,
     }
 
     const char *sql =
-        "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read, status, group_id) "
-        "VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?)";
+        "INSERT INTO messages (sender, recipient, encrypted_message, encrypted_len, timestamp, is_outgoing, delivered, read, status, group_id, message_type) "
+        "VALUES (?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?)";
 
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
@@ -246,6 +284,7 @@ int message_backup_save(message_backup_context_t *ctx,
     sqlite3_bind_int(stmt, 6, is_outgoing ? 1 : 0);
     sqlite3_bind_int(stmt, 7, 0);  // status = 0 (PENDING) - will be updated after send
     sqlite3_bind_int(stmt, 8, group_id);  // Phase 5.2: group ID
+    sqlite3_bind_int(stmt, 9, message_type);  // Phase 6.2: message type
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);

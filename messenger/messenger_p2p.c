@@ -835,6 +835,7 @@ static void p2p_message_received_internal(
     // The message is already encrypted at this point
     time_t now = time(NULL);
 
+    // TODO: Detect message_type by decrypting and checking for GROUP_INVITATION prefix
     int result = message_backup_save(
         ctx->backup_ctx,
         sender_identity,    // sender
@@ -843,7 +844,8 @@ static void p2p_message_received_internal(
         message_len,        // encrypted length
         now,                // timestamp
         false,              // is_outgoing = false (we're receiving)
-        0                   // group_id = 0 (direct messages) - Phase 5.2
+        0,                  // group_id = 0 (direct messages) - Phase 5.2
+        MESSAGE_TYPE_CHAT   // message_type (default to chat, will be updated if invitation detected)
     );
 
     if (result != 0) {

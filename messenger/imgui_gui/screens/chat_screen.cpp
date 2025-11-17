@@ -330,7 +330,7 @@ void retryMessage(AppState& state, int contact_idx, int msg_idx) {
     // Enqueue retry task
     state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, contact_idx, msg_idx]() {
         const char* recipients[] = { recipient.c_str() };
-        int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0);
+        int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0, MESSAGE_TYPE_CHAT);
 
         // Update status with mutex protection
         {
@@ -749,7 +749,7 @@ void render(AppState& state) {
                         // Enqueue message send task
                         state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, contact_idx, msg_idx]() {
                             const char* recipients[] = { recipient.c_str() };
-                            int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0);
+                            int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0, MESSAGE_TYPE_CHAT);
 
                             // Update status with mutex protection
                             {
@@ -997,7 +997,7 @@ void render(AppState& state) {
                         // Enqueue message send task
                         state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, contact_idx, msg_idx]() {
                             const char* recipients[] = { recipient.c_str() };
-                            int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0);
+                            int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0, MESSAGE_TYPE_CHAT);
 
                             // Update status with mutex protection
                             {

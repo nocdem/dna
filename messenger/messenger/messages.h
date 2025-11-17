@@ -28,6 +28,7 @@ extern "C" {
  * @param recipient_count: Number of recipients
  * @param message: Plaintext message (NULL-terminated string)
  * @param group_id: Group ID (0 for direct messages, >0 for group messages)
+ * @param message_type: Message type (MESSAGE_TYPE_CHAT or MESSAGE_TYPE_GROUP_INVITATION)
  * @return: 0 on success, -1 on error
  */
 int messenger_send_message(
@@ -35,7 +36,8 @@ int messenger_send_message(
     const char **recipients,
     size_t recipient_count,
     const char *message,
-    int group_id
+    int group_id,
+    int message_type
 );
 
 /**

@@ -514,8 +514,8 @@ int messenger_send_group_invitation(messenger_context_t *ctx, const char *group_
 
     const char *json_str = json_object_to_json_string_ext(j_invite, JSON_C_TO_STRING_PLAIN);
 
-    // Send as encrypted message (group_id=0 for invitation messages)
-    int ret = messenger_send_message(ctx, &recipient, 1, json_str, 0);
+    // Send as encrypted message (group_id=0, message_type=GROUP_INVITATION)
+    int ret = messenger_send_message(ctx, &recipient, 1, json_str, 0, MESSAGE_TYPE_GROUP_INVITATION);
 
     json_object_put(j_invite);
 
@@ -883,7 +883,7 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
     // - P2P delivery
     // - DHT offline queue fallback
     // - SQLite storage with group_id
-    result = messenger_send_message(ctx, recipients, recipient_count, message, local_id);
+    result = messenger_send_message(ctx, recipients, recipient_count, message, local_id, MESSAGE_TYPE_CHAT);
 
     free(recipients);
     dht_groups_free_metadata(metadata);

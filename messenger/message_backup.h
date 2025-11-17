@@ -28,6 +28,20 @@ extern "C" {
 typedef struct message_backup_context message_backup_context_t;
 
 /**
+ * Message Types (Phase 6.2)
+ */
+#define MESSAGE_TYPE_CHAT 0
+#define MESSAGE_TYPE_GROUP_INVITATION 1
+
+/**
+ * Invitation Status (Phase 6.2 - only for MESSAGE_TYPE_GROUP_INVITATION)
+ * NOTE: These match the enum in database/group_invitations.h
+ */
+#define MESSAGE_INVITATION_STATUS_PENDING 0
+#define MESSAGE_INVITATION_STATUS_ACCEPTED 1
+#define MESSAGE_INVITATION_STATUS_REJECTED 2
+
+/**
  * Message Structure (for retrieval)
  * NOTE: Messages stored ENCRYPTED in database for security
  */
@@ -42,6 +56,8 @@ typedef struct {
     bool read;
     int status;  // 0=PENDING, 1=SENT, 2=FAILED
     int group_id;  // Group ID (0 for direct messages, >0 for group messages) - Phase 5.2
+    int message_type;  // 0=chat, 1=group_invitation - Phase 6.2
+    int invitation_status;  // 0=pending, 1=accepted, 2=declined - Phase 6.2
 } backup_message_t;
 
 /**
@@ -83,6 +99,7 @@ bool message_backup_exists_ciphertext(message_backup_context_t *ctx,
  * @param timestamp Message timestamp
  * @param is_outgoing true if we sent it, false if we received it
  * @param group_id Group ID (0 for direct messages, >0 for group) - Phase 5.2
+ * @param message_type Message type (0=chat, 1=group_invitation) - Phase 6.2
  * @return 0 on success, -1 on error, 1 if already exists (duplicate skipped)
  */
 int message_backup_save(message_backup_context_t *ctx,
@@ -92,7 +109,8 @@ int message_backup_save(message_backup_context_t *ctx,
                         size_t encrypted_len,
                         time_t timestamp,
                         bool is_outgoing,
-                        int group_id);
+                        int group_id,
+                        int message_type);
 
 /**
  * Mark message as delivered
