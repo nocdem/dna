@@ -32,74 +32,6 @@ struct dht_identity {
     dht_identity(const dht::crypto::Identity& id) : identity(id) {}
 };
 
-// Global storage pointer (accessed from ValueType store callbacks)
-// TODO(refactor): Remove global state - pass storage via DHT context user_data when splitting into bootstrap module
-static dht_value_storage_t *g_global_storage = nullptr;
-static std::mutex g_storage_mutex;  // Protect storage pointer access from multiple threads
-
-// Custom ValueTypes with different TTLs and storage callbacks
-static const dht::ValueType DNA_TYPE_7DAY {
-    0x1001,                      // Type ID for 7-day data (messages, contacts, etc.)
-    "DNA_7DAY",
-    std::chrono::hours(7 * 24),  // 7 days
-    [](dht::InfoHash key, std::shared_ptr<dht::Value>& value, const dht::InfoHash&, const dht::SockAddr&) {
-        // Store to persistent storage if available (7-day values - skip ephemeral)
-        std::lock_guard<std::mutex> lock(g_storage_mutex);
-        if (g_global_storage && value) {
-            uint64_t now = time(NULL);
-            uint64_t expires_at = now + (7 * 24 * 3600);  // 7 days from now
-
-            if (dht_value_storage_should_persist(value->type, expires_at)) {
-                std::string key_str = key.toString();
-                dht_value_metadata_t metadata;
-                metadata.key_hash = (const uint8_t*)key_str.data();
-                metadata.key_hash_len = key_str.size();
-                metadata.value_data = value->data.data();
-                metadata.value_data_len = value->data.size();
-                metadata.value_type = value->type;
-                metadata.created_at = now;
-                metadata.expires_at = expires_at;
-
-                if (dht_value_storage_put(g_global_storage, &metadata) == 0) {
-                    std::cout << "[Storage] ✓ Persisted 7-day value (" << value->data.size() << " bytes)" << std::endl;
-                }
-            }
-        }
-        return true;  // Accept all
-    }
-};
-
-static const dht::ValueType DNA_TYPE_365DAY {
-    0x1002,                       // Type ID for 365-day data (name registrations)
-    "DNA_365DAY",
-    std::chrono::hours(365 * 24), // 365 days
-    [](dht::InfoHash key, std::shared_ptr<dht::Value>& value, const dht::InfoHash&, const dht::SockAddr&) {
-        // Store to persistent storage if available (365-day values - PERMANENT)
-        std::lock_guard<std::mutex> lock(g_storage_mutex);
-        if (g_global_storage && value) {
-            uint64_t now = time(NULL);
-            uint64_t expires_at = now + (365 * 24 * 3600);  // 365 days from now
-
-            if (dht_value_storage_should_persist(value->type, expires_at)) {
-                std::string key_str = key.toString();
-                dht_value_metadata_t metadata;
-                metadata.key_hash = (const uint8_t*)key_str.data();
-                metadata.key_hash_len = key_str.size();
-                metadata.value_data = value->data.data();
-                metadata.value_data_len = value->data.size();
-                metadata.value_type = value->type;
-                metadata.created_at = now;
-                metadata.expires_at = expires_at;
-
-                if (dht_value_storage_put(g_global_storage, &metadata) == 0) {
-                    std::cout << "[Storage] ✓ Persisted 365-day value (" << value->data.size() << " bytes)" << std::endl;
-                }
-            }
-        }
-        return true;  // Accept all
-    }
-};
-
 // Helper functions for persistent identity (OpenDHT 2.x and 3.x compatible)
 namespace {
     // Save identity to PEM files (works with both 2.x and 3.x)
@@ -204,10 +136,90 @@ struct dht_context {
     bool running;
     dht_value_storage_t *storage;  // Value persistence (NULL for user nodes)
 
-    dht_context() : running(false), storage(nullptr) {
+    // ValueTypes with lambda-captured context (eliminates global storage pointer)
+    dht::ValueType type_7day;
+    dht::ValueType type_365day;
+
+    dht_context() : running(false), storage(nullptr),
+                    // Initialize with dummy values (will be replaced in start())
+                    type_7day(0, "", std::chrono::hours(0)),
+                    type_365day(0, "", std::chrono::hours(0)) {
         memset(&config, 0, sizeof(config));
     }
 };
+
+// Factory functions to create ValueTypes with captured context (MUST be after struct definition)
+namespace {
+    // Factory: Create 7-day ValueType with captured context
+    dht::ValueType create_7day_type(dht_context_t* ctx) {
+        return dht::ValueType(
+            0x1001,                      // Type ID
+            "DNA_7DAY",                  // Type name
+            std::chrono::hours(7 * 24),  // 7 days TTL
+            [ctx](dht::InfoHash key, std::shared_ptr<dht::Value>& value,
+                  const dht::InfoHash&, const dht::SockAddr&) -> bool {
+                // Store to persistent storage if available (ctx->storage may be NULL)
+                if (ctx && ctx->storage && value) {
+                    uint64_t now = time(NULL);
+                    uint64_t expires_at = now + (7 * 24 * 3600);
+
+                    if (dht_value_storage_should_persist(value->type, expires_at)) {
+                        std::string key_str = key.toString();
+                        dht_value_metadata_t metadata;
+                        metadata.key_hash = (const uint8_t*)key_str.data();
+                        metadata.key_hash_len = key_str.size();
+                        metadata.value_data = value->data.data();
+                        metadata.value_data_len = value->data.size();
+                        metadata.value_type = value->type;
+                        metadata.created_at = now;
+                        metadata.expires_at = expires_at;
+
+                        if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
+                            std::cout << "[Storage] ✓ Persisted 7-day value ("
+                                      << value->data.size() << " bytes)" << std::endl;
+                        }
+                    }
+                }
+                return true;  // Accept all
+            }
+        );
+    }
+
+    // Factory: Create 365-day ValueType with captured context
+    dht::ValueType create_365day_type(dht_context_t* ctx) {
+        return dht::ValueType(
+            0x1002,                       // Type ID
+            "DNA_365DAY",                 // Type name
+            std::chrono::hours(365 * 24), // 365 days TTL
+            [ctx](dht::InfoHash key, std::shared_ptr<dht::Value>& value,
+                  const dht::InfoHash&, const dht::SockAddr&) -> bool {
+                // Store to persistent storage if available
+                if (ctx && ctx->storage && value) {
+                    uint64_t now = time(NULL);
+                    uint64_t expires_at = now + (365 * 24 * 3600);
+
+                    if (dht_value_storage_should_persist(value->type, expires_at)) {
+                        std::string key_str = key.toString();
+                        dht_value_metadata_t metadata;
+                        metadata.key_hash = (const uint8_t*)key_str.data();
+                        metadata.key_hash_len = key_str.size();
+                        metadata.value_data = value->data.data();
+                        metadata.value_data_len = value->data.size();
+                        metadata.value_type = value->type;
+                        metadata.created_at = now;
+                        metadata.expires_at = expires_at;
+
+                        if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
+                            std::cout << "[Storage] ✓ Persisted 365-day value ("
+                                      << value->data.size() << " bytes)" << std::endl;
+                        }
+                    }
+                }
+                return true;  // Accept all
+            }
+        );
+    }
+}
 
 /**
  * Initialize DHT context
@@ -307,8 +319,15 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
 
         // Register custom ValueTypes (CRITICAL: all nodes must know these types!)
         std::cout << "[DHT] Registering custom ValueTypes..." << std::endl;
-        ctx->runner.registerType(DNA_TYPE_7DAY);
-        ctx->runner.registerType(DNA_TYPE_365DAY);
+
+        // Create ValueTypes with captured context (eliminates global storage)
+        ctx->type_7day = create_7day_type(ctx);
+        ctx->type_365day = create_365day_type(ctx);
+
+        // Register with DhtRunner
+        ctx->runner.registerType(ctx->type_7day);
+        ctx->runner.registerType(ctx->type_365day);
+
         std::cout << "[DHT] ✓ Registered DNA_TYPE_7DAY (id=0x1001, TTL=7 days)" << std::endl;
         std::cout << "[DHT] ✓ Registered DNA_TYPE_365DAY (id=0x1002, TTL=365 days)" << std::endl;
 
@@ -344,14 +363,7 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
 
             ctx->storage = dht_value_storage_new(storage_path.c_str());
             if (ctx->storage) {
-                std::cout << "[DHT] ✓ Value storage initialized" << std::endl;
-
-                // Set global storage pointer (used by ValueType store callbacks)
-                {
-                    std::lock_guard<std::mutex> lock(g_storage_mutex);
-                    g_global_storage = ctx->storage;
-                }
-                std::cout << "[DHT] ✓ Storage callbacks enabled in ValueTypes" << std::endl;
+                std::cout << "[DHT] ✓ Value storage initialized (captured in ValueTypes)" << std::endl;
 
                 // Launch async republish in background
                 if (dht_value_storage_restore_async(ctx->storage, ctx) == 0) {
@@ -401,8 +413,15 @@ extern "C" int dht_context_start_with_identity(dht_context_t *ctx, dht_identity_
 
         // Register custom ValueTypes
         std::cout << "[DHT] Registering custom ValueTypes..." << std::endl;
-        ctx->runner.registerType(DNA_TYPE_7DAY);
-        ctx->runner.registerType(DNA_TYPE_365DAY);
+
+        // Create ValueTypes with captured context (eliminates global storage)
+        ctx->type_7day = create_7day_type(ctx);
+        ctx->type_365day = create_365day_type(ctx);
+
+        // Register with DhtRunner
+        ctx->runner.registerType(ctx->type_7day);
+        ctx->runner.registerType(ctx->type_365day);
+
         std::cout << "[DHT] ✓ Registered DNA_TYPE_7DAY (id=0x1001, TTL=7 days)" << std::endl;
         std::cout << "[DHT] ✓ Registered DNA_TYPE_365DAY (id=0x1002, TTL=365 days)" << std::endl;
 
@@ -456,10 +475,6 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
             // Cleanup value storage
             if (ctx->storage) {
                 std::cout << "[DHT] Cleaning up value storage..." << std::endl;
-                {
-                    std::lock_guard<std::mutex> lock(g_storage_mutex);
-                    g_global_storage = nullptr;  // Clear global pointer first
-                }
                 dht_value_storage_free(ctx->storage);
                 ctx->storage = nullptr;
             }
@@ -538,7 +553,7 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
         if (ttl_seconds == UINT_MAX) {
             // Permanent storage (never expires)
             // IMPORTANT: Must assign ValueType so bootstrap nodes recognize it
-            dht_value->type = DNA_TYPE_365DAY.id;  // Use 365-day type for permanent data
+            dht_value->type = 0x1002;  // Use 365-day type for permanent data
             std::cout << "[DHT] PUT PERMANENT (async): " << hash << " (" << value_len << " bytes, type=0x" << std::hex << dht_value->type << std::dec << ")" << std::endl;
 
             // Use done callback to track completion
@@ -604,9 +619,9 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
         } else {
             // Choose ValueType based on TTL (365 days vs 7 days)
             if (ttl_seconds >= 365 * 24 * 3600) {
-                dht_value->type = DNA_TYPE_365DAY.id;  // Assign type ID
+                dht_value->type = 0x1002;  // Assign type ID
             } else {
-                dht_value->type = DNA_TYPE_7DAY.id;    // Assign type ID
+                dht_value->type = 0x1001;    // Assign type ID
             }
 
             std::cout << "[DHT] PUT: " << hash << " (" << value_len << " bytes, TTL=" << ttl_seconds << "s, type=0x" << std::hex << dht_value->type << std::dec << ")" << std::endl;
@@ -735,9 +750,9 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
 
         // Choose ValueType based on TTL (365 days vs 7 days)
         if (ttl_seconds >= 365 * 24 * 3600) {
-            dht_value->type = DNA_TYPE_365DAY.id;
+            dht_value->type = 0x1002;
         } else {
-            dht_value->type = DNA_TYPE_7DAY.id;
+            dht_value->type = 0x1001;
         }
 
         // CRITICAL: Set fixed value ID (not auto-generated)
