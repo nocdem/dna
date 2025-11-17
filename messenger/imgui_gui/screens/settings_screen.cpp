@@ -131,8 +131,6 @@ void render(AppState& state) {
         }
     } else {
         // Desktop mode - Register DNA/Edit Profile is in sidebar
-        
-        ImGui::Spacing();
 
         // Only show Post to Wall if registered
         if (has_registered_name) {
