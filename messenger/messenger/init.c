@@ -134,9 +134,9 @@ messenger_context_t* messenger_init(const char *identity) {
         // Non-fatal - continue without cache
     }
 
-    // Initialize DHT groups database
+    // Initialize DHT groups database (per-identity)
     char groups_db_path[512];
-    snprintf(groups_db_path, sizeof(groups_db_path), "%s/.dna/groups.db", getenv("HOME"));
+    snprintf(groups_db_path, sizeof(groups_db_path), "%s/.dna/%s_groups.db", getenv("HOME"), identity);
     if (dht_groups_init(groups_db_path) != 0) {
         fprintf(stderr, "Warning: Failed to initialize DHT groups database\n");
         // Non-fatal - continue without groups support
