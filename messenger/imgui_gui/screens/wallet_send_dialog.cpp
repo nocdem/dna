@@ -470,7 +470,7 @@ void render(AppState& state) {
         ImGui::SameLine();
         ImGui::TextDisabled("CELL");
         ImGui::SameLine();
-        if (ImGui::Button("MAX", ImVec2(60, 0))) {
+        if (ThemedButton("MAX", ImVec2(60, 0))) {
             // Calculate max amount (balance - fees)
             auto balance_it = state.token_balances.find("CELL");
             if (balance_it != state.token_balances.end()) {

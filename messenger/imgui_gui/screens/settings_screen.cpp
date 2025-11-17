@@ -138,13 +138,8 @@ void render(AppState& state) {
             }
         }
     } else {
-        // Only show Edit Profile if registered
-        if (has_registered_name) {
-            if (ThemedButton(ICON_FA_USER " Edit Profile", ImVec2(200, btn_height))) {
-                state.show_profile_editor = true;
-            }
-        }
-
+        // Desktop mode - Edit Profile is in sidebar, not here
+        
         // Only show Register DNA button if no name is registered
         if (!has_registered_name) {
             if (has_registered_name) {

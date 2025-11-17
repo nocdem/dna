@@ -89,7 +89,7 @@ void render(AppState& state) {
         state.selected_invitation_index >= (int)state.pending_invitations.size()) {
         ImGui::Text("Error: Invalid invitation selected");
         ImGui::Spacing();
-        if (ImGui::Button("Close")) {
+        if (ThemedButton("Close", ImVec2(120, 0))) {
             state.show_group_invitation_dialog = false;
         }
         CenteredModal::End();
@@ -156,7 +156,7 @@ void render(AppState& state) {
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.1f, 0.6f, 0.1f, 1.0f));
 
     float button_width = (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) / 2.0f;
-    if (ImGui::Button(ICON_FA_CHECK "  Accept", ImVec2(button_width, 40))) {
+    if (ThemedButton(ICON_FA_CHECK "  Accept", ImVec2(button_width, 40))) {
         state.invitation_action_in_progress = true;
         state.invitation_action_status = "Accepting invitation...";
 
@@ -189,7 +189,7 @@ void render(AppState& state) {
     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.8f, 0.3f, 0.3f, 1.0f));
     ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.6f, 0.1f, 0.1f, 1.0f));
 
-    if (ImGui::Button(ICON_FA_XMARK "  Reject", ImVec2(button_width, 40))) {
+    if (ThemedButton(ICON_FA_XMARK "  Reject", ImVec2(button_width, 40))) {
         state.invitation_action_in_progress = true;
         state.invitation_action_status = "Rejecting invitation...";
 
@@ -221,7 +221,7 @@ void render(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    if (ImGui::Button("Close", ImVec2(-1, 0))) {
+    if (ThemedButton("Close", ImVec2(-1, 0))) {
         state.show_group_invitation_dialog = false;
         state.selected_invitation_index = -1;
         state.invitation_action_status.clear();

@@ -28,6 +28,7 @@ extern "C" {
     #include "../crypto/utils/qgp_platform.h"
 }
 #include "helpers/data_loader.h"
+#include "screens/wallet_screen.h"
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
@@ -420,6 +421,18 @@ int main(int argc, char** argv) {
                         }
                         
                         state.identities_scanned = true;
+                        
+                        // Preload wallet data asynchronously (non-blocking)
+                        printf("[MAIN] Preloading wallet data...\n");
+                        state.wallet_preload_task.start([&state](AsyncTask* task) {
+                            WalletScreen::loadWallet(state);
+                            if (state.wallet_loaded) {
+                                WalletScreen::preloadAllBalances(state);
+                                printf("[MAIN] Wallet data preloaded successfully\n");
+                            } else {
+                                printf("[MAIN] No wallets found to preload\n");
+                            }
+                        });
                     }
                 }
             });

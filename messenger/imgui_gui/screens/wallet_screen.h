@@ -7,9 +7,9 @@
 namespace WalletScreen {
     // Load wallet from Cellframe node
     void loadWallet(AppState& state);
-
-    // Refresh token balances via RPC
-    void refreshBalances(AppState& state);
+    
+    // Preload balances for all wallets (used during startup and periodic refresh)
+    void preloadAllBalances(AppState& state);
 
     // Format balance with smart decimals
     std::string formatBalance(const std::string& coins);

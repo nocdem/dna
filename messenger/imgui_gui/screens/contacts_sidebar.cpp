@@ -189,6 +189,22 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     }
 
     ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    
+    // Edit Profile button - only show if user has registered name
+    bool has_registered_name = !state.profile_registered_name.empty() &&
+                               state.profile_registered_name != "Loading..." &&
+                               state.profile_registered_name != "N/A (DHT not connected)" &&
+                               state.profile_registered_name != "Error loading";
+    
+    if (has_registered_name) {
+        if (ThemedButton(ICON_FA_USER " Edit Profile", ImVec2(-1, 40))) {
+            state.show_profile_editor = true;
+        }
+    }
+
+    ImGui::Spacing();
 
     // Groups section header with pending invitations badge
     char groups_header[64];
