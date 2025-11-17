@@ -205,6 +205,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         bool has_registered_name = !state.profile_registered_name.empty() &&
                                    state.profile_registered_name != "Loading..." &&
                                    state.profile_registered_name != "N/A (DHT not connected)" &&
+                                   state.profile_registered_name != "Not registered" &&
                                    state.profile_registered_name != "Error loading";
         
         if (has_registered_name) {
