@@ -110,6 +110,9 @@ void registerName(AppState& state) {
             // Update the registered name in app state
             state.profile_registered_name = name;
             
+            // Update identity name cache so sidebar displays the new name immediately
+            state.identity_name_cache[state.current_identity] = name;
+            
             // Refresh the registered name from DHT to ensure consistency
             DataLoader::fetchRegisteredName(state);
             
