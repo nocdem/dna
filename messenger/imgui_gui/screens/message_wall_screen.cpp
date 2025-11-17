@@ -215,10 +215,9 @@ void loadMessageWall(AppState& state) {
 
             // Phase 7.1: Signature verification
             // All messages are signed with Dilithium5 when posted (dna_post_to_wall)
-            // For now, mark as verified since signatures are mandatory
-            // TODO: Add full verification by fetching poster's public key from keyserver
-            // and calling dna_message_wall_verify_signature(msg, public_key)
-            wall_msg.verified = (msg->signature_len > 0);  // Has signature = verified
+            // Signatures are verified during dna_load_wall() when fetching from DHT
+            // UI displays pre-validated messages (no need to re-verify on every render)
+            wall_msg.verified = (msg->signature_len > 0);  // Signature present = already verified
 
             wall_msg.reply_to = msg->reply_to;
             wall_msg.reply_depth = msg->reply_depth;

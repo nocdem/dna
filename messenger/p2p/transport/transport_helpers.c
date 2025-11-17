@@ -15,8 +15,9 @@ void sha3_512_hash(const uint8_t *data, size_t len, uint8_t *hash_out) {
 
 /**
  * Get external IP address
- * TODO: Implement proper external IP detection (STUN, HTTP API, etc.)
- * For now, returns local network IP address
+ * Currently returns local network IP (works for LAN and DHT-mediated connections)
+ * DHT handles NAT traversal via OpenDHT's built-in peer discovery
+ * TODO (Future Enhancement): Add STUN/HTTP API for direct internet P2P without DHT
  */
 int get_external_ip(char *ip_out, size_t len) {
 #ifdef _WIN32

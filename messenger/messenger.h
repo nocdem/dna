@@ -347,14 +347,8 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx);
 int messenger_sync_contacts_from_dht(messenger_context_t *ctx);
 int messenger_contacts_auto_sync(messenger_context_t *ctx);
 
-/**
- * Delete public key from keyserver
- *
- * @param ctx: Messenger context
- * @param identity: Key owner's identity
- * @return: 0 on success, -1 on error
- */
-int messenger_delete_pubkey(messenger_context_t *ctx, const char *identity);
+// NOTE: messenger_delete_pubkey() removed - DHT keys are PERMANENT by design
+// (see CLAUDE.md:205 - Identity keys persist indefinitely for security)
 
 // ============================================================================
 // MESSAGE OPERATIONS (messages table)

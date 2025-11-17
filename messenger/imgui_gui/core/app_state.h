@@ -57,6 +57,7 @@ public:
     int selected_identity_idx;
     CreateIdentityStep create_identity_step;
     RestoreIdentityStep restore_identity_step;
+    std::string restore_error_message;  // Error message for restore failures
     char generated_mnemonic[512];
     bool seed_confirmed;
     bool seed_copied;

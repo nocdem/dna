@@ -704,6 +704,14 @@ void renderRestoreStep2_Seed(AppState& state) {
         }
     }
 
+    // Display error message if restoration failed
+    if (!state.restore_error_message.empty()) {
+        ImGui::Spacing();
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextColored(ImVec4(1.0f, 0.3f, 0.3f, 1.0f), ICON_FA_TRIANGLE_EXCLAMATION " %s", state.restore_error_message.c_str());
+        ImGui::PopTextWrapPos();
+    }
+
     ImGui::Spacing();
 
     float button_width = is_mobile ? -1 : 150.0f;
@@ -712,6 +720,7 @@ void renderRestoreStep2_Seed(AppState& state) {
         // Reset wizard state and go back to identity selection
         state.restore_identity_step = RESTORE_STEP_SEED;
         memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));
+        state.restore_error_message.clear();
         ImGui::CloseCurrentPopup();
     }
 
@@ -719,6 +728,9 @@ void renderRestoreStep2_Seed(AppState& state) {
 
     ImGui::BeginDisabled(word_count != 24);
     if (ThemedButton("Restore", ImVec2(button_width, 40))) {
+        // Clear any previous error
+        state.restore_error_message.clear();
+
         // Close all modals immediately
         ImGui::CloseCurrentPopup();
         state.show_identity_selection = false; // Hide identity list modal immediately
@@ -813,7 +825,7 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
     if (!bip39_validate_mnemonic(normalized.c_str())) {
         printf("[Identity] ERROR: Invalid BIP39 mnemonic\n");
         printf("[Identity] Please check that you have exactly 24 valid words\n");
-        // TODO: Show error modal to user
+        state.restore_error_message = "Invalid BIP39 mnemonic. Please check that you have exactly 24 valid words.";
         return;
     }
 
@@ -825,6 +837,7 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
 
     if (qgp_derive_seeds_from_mnemonic(normalized.c_str(), "", signing_seed, encryption_seed) != 0) {
         printf("[Identity] ERROR: Failed to derive seeds from mnemonic\n");
+        state.restore_error_message = "Failed to derive seeds from mnemonic. Please try again.";
         return;
     }
 

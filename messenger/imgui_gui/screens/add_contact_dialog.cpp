@@ -244,12 +244,10 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
             } else {
                 ImGui::TextDisabled("No bio available");
             }
-            
-            // TODO: Show profile picture if profile_picture_ipfs is set
-            // if (state.add_contact_profile->profile_picture_ipfs[0] != '\0') {
-            //     // Render IPFS image
-            // }
-            
+
+            // NOTE: Profile pictures now use Base64 avatar system (Phase 10.3)
+            // See avatar_base64 field in dna_unified_identity_t
+
             ImGui::Spacing();
             ImGui::Separator();
             ImGui::Spacing();

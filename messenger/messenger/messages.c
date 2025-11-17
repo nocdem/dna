@@ -786,12 +786,8 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     return 0;
 }
 
-int messenger_delete_pubkey(messenger_context_t *ctx, const char *identity) {
-    // TODO: Phase 2/4 - Migrate to DHT keyserver
-    fprintf(stderr, "ERROR: messenger_delete_pubkey() not yet implemented (DHT migration pending)\n");
-    (void)ctx; (void)identity;
-    return -1;
-}
+// NOTE: messenger_delete_pubkey() removed - DHT keys are PERMANENT by design
+// (see CLAUDE.md:205 - Identity keys persist indefinitely for security)
 
 int messenger_delete_message(messenger_context_t *ctx, int message_id) {
     if (!ctx) {

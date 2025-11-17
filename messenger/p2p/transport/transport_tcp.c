@@ -6,32 +6,10 @@
 #include "transport_core.h"
 
 /**
- * Connection receive thread
- * Handles incoming messages from a peer
- * @param arg: p2p_connection_t pointer
- * @return: NULL
+ * NOTE: This function is for future persistent bidirectional P2P connections (not currently used).
+ * Active implementation uses short-lived connections in listener_thread() below.
+ * See listener_thread() for active message callback and messenger_p2p.c for decryption.
  */
-void* connection_recv_thread(void *arg) {
-    p2p_connection_t *conn = (p2p_connection_t*)arg;
-
-    printf("[P2P] Receive thread started for peer\n");
-
-    uint8_t buffer[65536];
-    while (conn->active) {
-        ssize_t received = recv(conn->sockfd, buffer, sizeof(buffer), 0);
-        if (received <= 0) {
-            printf("[P2P] Connection closed by peer\n");
-            conn->active = false;
-            break;
-        }
-
-        // TODO: Decrypt and verify message
-        // TODO: Call message callback
-        printf("[P2P] Received %zd bytes from peer\n", received);
-    }
-
-    return NULL;
-}
 
 /**
  * Accept incoming connections (listener thread)

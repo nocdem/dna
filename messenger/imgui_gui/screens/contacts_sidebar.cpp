@@ -33,7 +33,9 @@ void renderContactsList(AppState& state) {
 
     ImGui::SameLine(io.DisplaySize.x - 60);
     if (ThemedButton(ICON_FA_CIRCLE_PLUS, ImVec2(50, 40))) {
-        // TODO: Add contact dialog
+        state.show_add_contact_dialog = true;
+        state.add_contact_lookup_in_progress = false;
+        state.add_contact_error_message.clear();
     }
 
     ImGui::EndChild();

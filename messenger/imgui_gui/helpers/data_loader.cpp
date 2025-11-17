@@ -238,7 +238,9 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
             group.group_uuid = groups_array[i].group_uuid;
             group.name = groups_array[i].name;
             group.creator = groups_array[i].creator;
-            group.member_count = 0;  // TODO: Get member count from DHT
+            // TODO: Query member count from dht_group_members table (local cache)
+            // or add member_count column to dht_group_cache table
+            group.member_count = 0;
             group.created_at = groups_array[i].created_at;
             group.last_sync = groups_array[i].last_sync;
 
