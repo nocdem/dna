@@ -17,6 +17,7 @@ struct Message {
     std::string timestamp;
     bool is_outgoing;
     MessageStatus status;  // Delivery status
+    int message_type;      // 0=chat, 1=group_invitation (Phase 6.2)
 };
 
 // Contact data structure

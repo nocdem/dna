@@ -965,6 +965,7 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
         messages[i].delivered_at = backup_messages[i].delivered ? strdup(messages[i].timestamp) : NULL;
         messages[i].read_at = backup_messages[i].read ? strdup(messages[i].timestamp) : NULL;
         messages[i].plaintext = NULL;  // Not decrypted yet
+        messages[i].message_type = backup_messages[i].message_type;  // Phase 6.2: Copy message type
 
         if (!messages[i].sender || !messages[i].recipient || !messages[i].timestamp || !messages[i].status) {
             // Clean up on failure

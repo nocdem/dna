@@ -10,6 +10,8 @@
 
 extern "C" {
 #include "../../messenger.h"
+#include "../../message_backup.h"
+#include <json-c/json.h>
 }
 
 namespace ChatScreen {
@@ -482,6 +484,87 @@ void render(AppState& state) {
     // Render all messages (no clipper for variable-height items)
     for (size_t i = 0; i < messages_copy.size(); i++) {
         const auto& msg = messages_copy[i];
+
+        // Phase 6.2: Render group invitations with special UI
+        if (msg.message_type == MESSAGE_TYPE_GROUP_INVITATION) {
+            // Parse JSON to extract invitation details
+            json_object *j_msg = json_tokener_parse(msg.content.c_str());
+            if (j_msg) {
+                json_object *j_uuid = NULL, *j_name = NULL, *j_inviter = NULL, *j_count = NULL;
+                json_object_object_get_ex(j_msg, "group_uuid", &j_uuid);
+                json_object_object_get_ex(j_msg, "group_name", &j_name);
+                json_object_object_get_ex(j_msg, "inviter", &j_inviter);
+                json_object_object_get_ex(j_msg, "member_count", &j_count);
+
+                const char *group_uuid = j_uuid ? json_object_get_string(j_uuid) : "unknown";
+                const char *group_name = j_name ? json_object_get_string(j_name) : "Unknown Group";
+                const char *inviter = j_inviter ? json_object_get_string(j_inviter) : "Unknown";
+                int member_count = j_count ? json_object_get_int(j_count) : 0;
+
+                // Blue invitation box
+                float available_width = ImGui::GetContentRegionAvail().x;
+                ImVec4 invitation_bg = ImVec4(0.2f, 0.4f, 0.8f, 0.3f);  // Blue background
+                ImGui::PushStyleColor(ImGuiCol_ChildBg, invitation_bg);
+                ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0.2f, 0.4f, 0.8f, 0.6f));
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 8.0f);
+                ImGui::PushStyleVar(ImGuiStyleVar_ChildBorderSize, 2.0f);
+
+                char invitation_id[64];
+                snprintf(invitation_id, sizeof(invitation_id), "invitation_%zu", i);
+
+                float invitation_height = 120.0f;
+                ImGui::BeginChild(invitation_id, ImVec2(available_width, invitation_height), true);
+
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
+
+                // Icon and title
+                ImGui::Text(ICON_FA_USERS " Group Invitation");
+                ImGui::Spacing();
+
+                // Group details
+                ImGui::Text("You've been invited to:");
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f));
+                ImGui::Text("  %s", group_name);
+                ImGui::PopStyleColor();
+                ImGui::Text("From: %s • %d members", msg.sender.c_str(), member_count);
+
+                ImGui::Spacing();
+
+                // Accept/Decline buttons
+                ImGui::SetCursorPosX(15.0f);
+                if (ImGui::Button(ICON_FA_CHECK " Accept", ImVec2(120, 30))) {
+                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                    if (ctx) {
+                        messenger_accept_group_invitation(ctx, group_uuid);
+                        // Group will appear in groups list on next app restart or manual refresh
+                    }
+                }
+                ImGui::SameLine();
+                if (ImGui::Button(ICON_FA_XMARK " Decline", ImVec2(120, 30))) {
+                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                    if (ctx) {
+                        messenger_reject_group_invitation(ctx, group_uuid);
+                    }
+                }
+
+                ImGui::EndChild();
+                ImGui::PopStyleVar(2);
+                ImGui::PopStyleColor(2);
+
+                json_object_put(j_msg);
+
+                // Timestamp below invitation
+                ImGui::Spacing();
+                ImVec4 meta_color = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
+                ImGui::PushStyleColor(ImGuiCol_Text, meta_color);
+                ImGui::Text("%s • %s", msg.sender.c_str(), msg.timestamp.c_str());
+                ImGui::PopStyleColor();
+                ImGui::Spacing();
+                ImGui::Spacing();
+
+                continue;  // Skip regular message rendering
+            }
+        }
 
             // Calculate bubble width based on current window size
             float available_width = ImGui::GetContentRegionAvail().x;

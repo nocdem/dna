@@ -494,6 +494,7 @@ void loadMessagesForContact(AppState& state, int contact_index) {
                 msg.timestamp = timestamp;
                 msg.is_outgoing = is_outgoing;
                 msg.status = msg_status;
+                msg.message_type = messages[i].message_type;  // Phase 6.2: Copy message type (0=chat, 1=group_invitation)
 
                 loaded_messages.push_back(msg);
             }

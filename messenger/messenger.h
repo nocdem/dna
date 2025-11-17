@@ -72,6 +72,7 @@ typedef struct {
     char *delivered_at;          // Delivery timestamp (NULL if not delivered)
     char *read_at;               // Read timestamp (NULL if not read)
     char *plaintext;             // Decrypted message text (NULL if not decrypted)
+    int message_type;            // Message type: 0=chat, 1=group_invitation (Phase 6.2)
 } message_info_t;
 
 // ============================================================================
