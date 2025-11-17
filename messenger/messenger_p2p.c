@@ -8,18 +8,22 @@
 #include "messenger.h"
 #include "p2p/p2p_transport.h"
 #include "dht/shared/dht_offline_queue.h"
+#include "dht/shared/dht_groups.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/core/dht_context.h"
 #include "database/keyserver_cache.h"
 #include "database/contacts_db.h"
+#include "database/group_invitations.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "database/presence_cache.h"
 #include "database/profile_manager.h"
 #include "database/profile_cache.h"
+#include "dna_api.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <openssl/sha.h>
+#include <json-c/json.h>
 
 // Platform-specific headers for home directory detection
 #ifndef _WIN32
@@ -835,7 +839,58 @@ static void p2p_message_received_internal(
     // The message is already encrypted at this point
     time_t now = time(NULL);
 
-    // TODO: Detect message_type by decrypting and checking for GROUP_INVITATION prefix
+    // Phase 6.2: Detect group invitations by decrypting and checking JSON
+    int message_type = MESSAGE_TYPE_CHAT;  // default
+
+    // Try to decrypt message to check if it's an invitation
+    uint8_t *plaintext = NULL;
+    size_t plaintext_len = 0;
+    if (dna_decrypt_message(ctx->dna_ctx, message, message_len, ctx->identity,
+                            &plaintext, &plaintext_len, NULL, NULL) == DNA_OK && plaintext) {
+        // Check if it's JSON with "type": "group_invite"
+        json_object *j_msg = json_tokener_parse((const char*)plaintext);
+        if (j_msg) {
+            json_object *j_type = NULL;
+            if (json_object_object_get_ex(j_msg, "type", &j_type)) {
+                const char *type_str = json_object_get_string(j_type);
+                if (type_str && strcmp(type_str, "group_invite") == 0) {
+                    // It's a group invitation!
+                    message_type = MESSAGE_TYPE_GROUP_INVITATION;
+
+                    // Extract invitation details
+                    json_object *j_uuid = NULL, *j_name = NULL, *j_inviter = NULL, *j_count = NULL;
+                    json_object_object_get_ex(j_msg, "group_uuid", &j_uuid);
+                    json_object_object_get_ex(j_msg, "group_name", &j_name);
+                    json_object_object_get_ex(j_msg, "inviter", &j_inviter);
+                    json_object_object_get_ex(j_msg, "member_count", &j_count);
+
+                    if (j_uuid && j_name && j_inviter) {
+                        // Store in group_invitations database
+                        group_invitation_t invitation = {0};
+                        strncpy(invitation.group_uuid, json_object_get_string(j_uuid), sizeof(invitation.group_uuid) - 1);
+                        strncpy(invitation.group_name, json_object_get_string(j_name), sizeof(invitation.group_name) - 1);
+                        strncpy(invitation.inviter, json_object_get_string(j_inviter), sizeof(invitation.inviter) - 1);
+                        invitation.invited_at = now;
+                        invitation.status = INVITATION_STATUS_PENDING;
+                        invitation.member_count = j_count ? json_object_get_int(j_count) : 0;
+
+                        int store_result = group_invitations_store(&invitation);
+                        if (store_result == 0) {
+                            printf("[P2P] ✓ Group invitation stored: %s (from %s)\n",
+                                   invitation.group_name, invitation.inviter);
+                        } else if (store_result == -2) {
+                            printf("[P2P] Group invitation already exists: %s\n", invitation.group_name);
+                        } else {
+                            fprintf(stderr, "[P2P] Failed to store group invitation\n");
+                        }
+                    }
+                }
+            }
+            json_object_put(j_msg);
+        }
+        free(plaintext);
+    }
+
     int result = message_backup_save(
         ctx->backup_ctx,
         sender_identity,    // sender
@@ -844,14 +899,14 @@ static void p2p_message_received_internal(
         message_len,        // encrypted length
         now,                // timestamp
         false,              // is_outgoing = false (we're receiving)
-        0,                  // group_id = 0 (direct messages) - Phase 5.2
-        MESSAGE_TYPE_CHAT   // message_type (default to chat, will be updated if invitation detected)
+        0,                  // group_id = 0 (direct messages for invitations)
+        message_type        // message_type (chat or invitation)
     );
 
     if (result != 0) {
         fprintf(stderr, "[P2P] Failed to store received message in SQLite\n");
     } else {
-        printf("[P2P] ✓ Message from %s stored in SQLite\n", sender_identity);
+        printf("[P2P] ✓ Message from %s stored in SQLite (type=%d)\n", sender_identity, message_type);
     }
 
     // Fetch sender profile for caching (only if expired or missing) - Phase 5: Unified Identity
