@@ -1000,7 +1000,7 @@ void render(AppState& state) {
 
                 // Display emojis in a grid (9 per row)
                 for (int i = 0; i < emoji_count; i++) {
-                    if (ImGui::Button(emojis[i], ImVec2(35, 35))) {
+                    if (ThemedButton(emojis[i], ImVec2(35, 35))) {
                         if (len > 0) state.message_input[len-1] = '\0'; // Remove the ':'
                         strcat(state.message_input, emojis[i]);
                         state.input_cursor_pos = strlen(state.message_input); // Set cursor to end
@@ -1038,7 +1038,7 @@ void render(AppState& state) {
         ImVec2 padding((button_size - icon_size.x) * 0.5f, (button_size - icon_size.y) * 0.5f);
         ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, padding);
 
-        bool icon_clicked = ImGui::Button(icon, ImVec2(button_size, button_size));
+        bool icon_clicked = ThemedButton(icon, ImVec2(button_size, button_size));
 
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor(4);
@@ -1112,7 +1112,7 @@ void render(AppState& state) {
         ImGui::Text("Message queue is full (20 pending messages).");
         ImGui::Text("Please wait for messages to send before adding more.");
         ImGui::Spacing();
-        if (ImGui::Button("OK", ImVec2(120, 0))) {
+        if (ThemedButton("OK", ImVec2(120, 0))) {
             ImGui::CloseCurrentPopup();
         }
         CenteredModal::End();

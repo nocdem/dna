@@ -4,12 +4,15 @@
 #include "../font_awesome.h"
 #include "../theme_colors.h"
 #include "../settings_manager.h"
+#include "../texture_manager.h"
+#include "../helpers/avatar_helpers.h"
 #include "../../database/contacts_db.h"
 #include "../../messenger.h"
 #include "../helpers/data_loader.h"  // Phase 1.4: For contact refresh
 
 #include <cstring>
 #include <cstdio>
+#include <GLFW/glfw3.h>  // For GLuint
 
 // External settings variable
 extern AppSettings g_app_settings;
@@ -166,11 +169,56 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             display_name = it->second;
         }
         
+        // Show avatar if available
+        if (state.profile_avatar_loaded && !state.profile_avatar_base64.empty()) {
+            int avatar_width = 0, avatar_height = 0;
+            GLuint texture_id = TextureManager::getInstance().loadAvatar(
+                state.current_identity,
+                state.profile_avatar_base64,
+                &avatar_width,
+                &avatar_height
+            );
+            
+            if (texture_id != 0) {
+                // Center avatar (64x64)
+                float avatar_size = 64.0f;
+                float center_x = (250 - avatar_size) * 0.5f;
+                ImGui::SetCursorPosX(center_x);
+                
+                // Render circular avatar with border
+                ImVec4 border_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+                AvatarHelpers::renderCircularAvatar(texture_id, avatar_size, border_col, 0.5f);
+                
+                ImGui::Spacing();
+            }
+        }
+        
         // Center the identity name
         float text_width = ImGui::CalcTextSize(display_name.c_str()).x;
         float center_x = (250 - text_width) * 0.5f;
         ImGui::SetCursorPosX(center_x);
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(), "%s", display_name.c_str());
+        
+        ImGui::Spacing();
+        
+        // Show Register DNA or Edit Profile button based on registration status
+        bool has_registered_name = !state.profile_registered_name.empty() &&
+                                   state.profile_registered_name != "Loading..." &&
+                                   state.profile_registered_name != "N/A (DHT not connected)" &&
+                                   state.profile_registered_name != "Not registered" &&
+                                   state.profile_registered_name != "Error loading";
+        
+        if (has_registered_name) {
+            // User is registered - show Edit Profile button
+            if (ThemedButton(ICON_FA_USER " Edit Profile", ImVec2(-1, 40))) {
+                state.show_profile_editor = true;
+            }
+        } else {
+            // User not registered - show Register DNA button
+            if (ThemedButton(ICON_FA_ID_CARD " Register DNA", ImVec2(-1, 40))) {
+                state.show_register_name = true;
+            }
+        }
         
         ImGui::Spacing();
         ImGui::Separator();
@@ -190,6 +238,17 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
 
     ImGui::Spacing();
 
+    // Groups and Contacts in a single scrollable child
+    // Calculate available height: total sidebar height minus fixed elements at top and bottom
+    float add_button_height = 40.0f;
+    float num_buttons = 3.0f;
+    float spacing = ImGui::GetStyle().ItemSpacing.y;
+    float available_height = ImGui::GetContentRegionAvail().y - (add_button_height * num_buttons) - (spacing * num_buttons);
+
+    // Set scrollbar background to match sidebar background
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, sidebar_bg);
+    ImGui::BeginChild("GroupsAndContactsScroll", ImVec2(0, available_height), false);
+    
     // Groups section header with pending invitations badge
     char groups_header[64];
     if (state.pending_invitations.size() > 0) {
@@ -202,10 +261,6 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
 
     // Groups list (if any)
     if (state.groups.size() > 0 || state.pending_invitations.size() > 0) {
-        float groups_list_height = (state.groups.size() + state.pending_invitations.size()) * 35.0f;
-        if (groups_list_height > 150.0f) groups_list_height = 150.0f; // Max height
-
-        ImGui::BeginChild("GroupsList", ImVec2(0, groups_list_height), false);
         float list_width = ImGui::GetContentRegionAvail().x;
 
         // Render pending invitations first (with special styling)
@@ -344,7 +399,6 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             ImGui::PopID();
         }
 
-        ImGui::EndChild(); // GroupsList
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
@@ -353,14 +407,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     ImGui::Text("Contacts");
     ImGui::Spacing();
 
-    // Contact list - use remaining space minus 3 action buttons
-    float add_button_height = 40.0f;
-    float num_buttons = 3.0f;
-    float spacing = ImGui::GetStyle().ItemSpacing.y;
-    float available_height = ImGui::GetContentRegionAvail().y - (add_button_height * num_buttons) - (spacing * num_buttons);
-
-    ImGui::BeginChild("ContactList", ImVec2(0, available_height), false);
-
+    // Contact list
     float list_width = ImGui::GetContentRegionAvail().x;
     for (size_t i = 0; i < state.contacts.size(); i++) {
         ImGui::PushID(i);
@@ -479,7 +526,8 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         ImGui::PopID();
     }
 
-    ImGui::EndChild(); // ContactList
+    ImGui::EndChild(); // GroupsAndContactsScroll
+    ImGui::PopStyleColor(); // ScrollbarBg
 
     // Action buttons at bottom (40px each to match main buttons)
     float button_width = ImGui::GetContentRegionAvail().x;

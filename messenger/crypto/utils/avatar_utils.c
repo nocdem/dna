@@ -156,7 +156,7 @@ static int base64_decode(const char *data, unsigned char **out, size_t *out_len)
 }
 
 /**
- * @brief PNG output buffer structure
+ * @brief JPEG/image output buffer structure
  */
 typedef struct {
     unsigned char *data;
@@ -165,7 +165,7 @@ typedef struct {
 } png_buffer_t;
 
 /**
- * @brief PNG write callback for stbi_write_png_to_func
+ * @brief JPEG/image write callback for stbi_write functions
  */
 static void png_write_callback(void *context, void *data, int size) {
     png_buffer_t *output = (png_buffer_t*)context;
@@ -225,27 +225,41 @@ int avatar_load_and_encode(const char *file_path, char *base64_out, size_t max_l
 
     stbi_image_free(img);
 
-    // Encode to PNG (in memory)
-    png_buffer_t png_output = {NULL, 0, 0};
+    // Encode to JPEG (in memory) with 85% quality for smaller file size
+    png_buffer_t jpeg_output = {NULL, 0, 0};
 
-    // Write PNG to memory using callback
-    stbi_write_png_to_func(png_write_callback, &png_output, 64, 64, 4, resized, 64 * 4);
+    // Write JPEG to memory using callback (quality: 85 = good balance of size/quality)
+    stbi_write_jpg_to_func(png_write_callback, &jpeg_output, 64, 64, 4, resized, 85);
 
     free(resized);
 
-    if (!png_output.data || png_output.len == 0) {
-        fprintf(stderr, "[ERROR] Failed to encode PNG\n");
+    if (!jpeg_output.data || jpeg_output.len == 0) {
+        fprintf(stderr, "[ERROR] Failed to encode JPEG\n");
+        return -1;
+    }
+    
+    printf("[Avatar] JPEG size: %d bytes\n", jpeg_output.len);
+    
+    // Check if base64 will fit (base64 is ~4/3 of original size)
+    size_t estimated_base64_size = ((jpeg_output.len + 2) / 3) * 4;
+    if (estimated_base64_size >= max_len) {
+        fprintf(stderr, "[ERROR] Avatar too large: %zu bytes base64 (max: %zu)\n", 
+                estimated_base64_size, max_len);
+        fprintf(stderr, "[ERROR] Please use a simpler image with less detail\n");
+        free(jpeg_output.data);
         return -1;
     }
 
     // Encode to base64
-    int ret = base64_encode(png_output.data, png_output.len, base64_out, max_len);
-    free(png_output.data);
+    int ret = base64_encode(jpeg_output.data, jpeg_output.len, base64_out, max_len);
+    free(jpeg_output.data);
 
     if (ret != 0) {
         fprintf(stderr, "[ERROR] Failed to encode base64\n");
         return -1;
     }
+    
+    printf("[Avatar] Base64 size: %zu bytes\n", strlen(base64_out));
 
     return 0;
 }

@@ -116,7 +116,8 @@ public:
     bool wallet_loaded;
     bool wallet_loading;
     std::string wallet_name;
-    std::map<std::string, std::string> token_balances;  // ticker -> balance (CPUNK, CELL, KEL)
+    std::map<std::string, std::string> token_balances;  // ticker -> balance for current wallet
+    std::map<int, std::map<std::string, std::string>> all_wallet_balances;  // wallet_index -> (ticker -> balance)
     std::string wallet_error;
     void *wallet_list;  // wallet_list_t* (opaque pointer)
     int current_wallet_index;
@@ -238,6 +239,8 @@ public:
     // Async tasks for DHT operations
     AsyncTask dht_publish_task;
     AsyncTask contact_lookup_task;
+    AsyncTask wallet_preload_task;  // Preload wallet data on startup
+    AsyncTask profile_preload_task;  // Preload profile data on startup
     AsyncTask contact_sync_task;
     AsyncTask message_poll_task;
     AsyncTaskQueue message_send_queue;  // Queue for sending multiple messages rapidly

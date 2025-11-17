@@ -5,6 +5,7 @@
 #include "../../database/profile_manager.h"
 #include "../../dht/client/dht_singleton.h"
 #include "../../p2p/p2p_transport.h"
+#include "../screens/profile_editor_screen.h"
 
 extern "C" {
 #include "../../crypto/utils/qgp_platform.h"
@@ -169,6 +170,13 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
         } else {
             printf("[Identity] Warning: Failed to sync groups\n");
         }
+        
+        // Preload user profile asynchronously for instant Edit Profile
+        printf("[Identity] Preloading user profile...\n");
+        state.profile_preload_task.start([&state](AsyncTask* task) {
+            ProfileEditorScreen::loadProfile(state, false);
+            printf("[Identity] User profile preloaded\n");
+        });
     }
 
     // Load contacts from database using messenger API

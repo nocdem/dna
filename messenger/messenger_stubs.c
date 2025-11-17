@@ -696,8 +696,19 @@ int messenger_sync_groups(messenger_context_t *ctx) {
                 continue;  // Skip messages we can't decrypt
             }
 
+            // Ensure null-terminated for JSON parsing
+            char *plaintext_str = malloc(plaintext_len + 1);
+            if (!plaintext_str) {
+                free(plaintext);
+                free(sender_pubkey);
+                continue;
+            }
+            memcpy(plaintext_str, plaintext, plaintext_len);
+            plaintext_str[plaintext_len] = '\0';
+            
             // Try to parse as JSON
-            json_object *j_msg = json_tokener_parse((const char*)plaintext);
+            json_object *j_msg = json_tokener_parse(plaintext_str);
+            free(plaintext_str);
             if (j_msg) {
                 json_object *j_type = json_object_object_get(j_msg, "type");
 
