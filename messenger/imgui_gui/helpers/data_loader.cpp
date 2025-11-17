@@ -9,6 +9,8 @@
 extern "C" {
 #include "../../crypto/utils/qgp_platform.h"
 #include "../../dht/core/dht_keyserver.h"
+#include "../../database/group_invitations.h"
+#include "../../dht/shared/dht_groups.h"
 }
 
 #include <cstring>
@@ -133,6 +135,14 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
         }
         printf("[Identity] P2P transport initialized\n");
 
+        // Initialize group invitations database
+        printf("[Identity] Initializing group invitations database...\n");
+        if (group_invitations_init(identity.c_str()) == 0) {
+            printf("[Identity] [OK] Group invitations database initialized\n");
+        } else {
+            printf("[Identity] Warning: Failed to initialize group invitations database\n");
+        }
+
         // Register presence in DHT (announce we're online)
         printf("[Identity] Registering presence in DHT...\n");
         if (messenger_p2p_refresh_presence(ctx) == 0) {
@@ -150,6 +160,14 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
             } else {
                 printf("[Identity] Warning: Failed to initialize profile manager\n");
             }
+        }
+
+        // Sync groups and check for pending invitations
+        printf("[Identity] Syncing groups and invitations...\n");
+        if (messenger_sync_groups(ctx) == 0) {
+            printf("[Identity] [OK] Groups synced successfully\n");
+        } else {
+            printf("[Identity] Warning: Failed to sync groups\n");
         }
     }
 
@@ -197,6 +215,57 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
         printf("[Contacts] Loaded %d contacts\n", contactCount);
     } else {
         printf("[Contacts] No contacts found or error loading contacts\n");
+    }
+
+    // Load groups for this identity
+    printf("[Groups] Loading groups from cache...\n");
+    state.groups.clear();
+
+    dht_group_cache_entry_t *groups_array = nullptr;
+    int groups_count = 0;
+    if (dht_groups_list_for_user(identity.c_str(), &groups_array, &groups_count) == 0 && groups_count > 0) {
+        for (int i = 0; i < groups_count; i++) {
+            Group group;
+            group.local_id = groups_array[i].local_id;
+            group.group_uuid = groups_array[i].group_uuid;
+            group.name = groups_array[i].name;
+            group.creator = groups_array[i].creator;
+            group.member_count = 0;  // TODO: Get member count from DHT
+            group.created_at = groups_array[i].created_at;
+            group.last_sync = groups_array[i].last_sync;
+
+            state.groups.push_back(group);
+        }
+
+        dht_groups_free_cache_entries(groups_array, groups_count);
+        printf("[Groups] Loaded %d groups\n", groups_count);
+    } else {
+        printf("[Groups] No groups found for this identity\n");
+    }
+
+    // Load pending invitations
+    printf("[Invitations] Loading pending invitations...\n");
+    state.pending_invitations.clear();
+
+    group_invitation_t *invitations_array = nullptr;
+    int invitations_count = 0;
+    if (group_invitations_get_pending(&invitations_array, &invitations_count) == 0 && invitations_count > 0) {
+        for (int i = 0; i < invitations_count; i++) {
+            GroupInvitation invitation;
+            invitation.group_uuid = invitations_array[i].group_uuid;
+            invitation.group_name = invitations_array[i].group_name;
+            invitation.inviter = invitations_array[i].inviter;
+            invitation.invited_at = invitations_array[i].invited_at;
+            invitation.status = invitations_array[i].status;
+            invitation.member_count = invitations_array[i].member_count;
+
+            state.pending_invitations.push_back(invitation);
+        }
+
+        group_invitations_free(invitations_array, invitations_count);
+        printf("[Invitations] Found %d pending invitation(s)\n", invitations_count);
+    } else {
+        printf("[Invitations] No pending invitations\n");
     }
 
     state.identity_loaded = true;

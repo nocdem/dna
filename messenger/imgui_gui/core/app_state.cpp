@@ -8,6 +8,8 @@ AppState::AppState() {
     current_view = VIEW_CONTACTS;
     selected_contact = -1;
     prev_selected_contact = -1;
+    selected_group = -1;
+    is_viewing_group = false;
     should_focus_input = false;
     input_cursor_pos = -1;
     show_wallet = false;
@@ -100,6 +102,11 @@ AppState::AppState() {
     show_create_group_dialog = false;
     create_group_in_progress = false;
     memset(create_group_name_input, 0, sizeof(create_group_name_input));
+
+    // Initialize group invitation dialog state (Phase 6.1)
+    show_group_invitation_dialog = false;
+    selected_invitation_index = -1;
+    invitation_action_in_progress = false;
 }
 
 void AppState::scanIdentities() {

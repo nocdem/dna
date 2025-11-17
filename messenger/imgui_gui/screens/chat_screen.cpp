@@ -14,6 +14,94 @@ extern "C" {
 
 namespace ChatScreen {
 
+void renderGroupChat(AppState& state, bool is_mobile) {
+    const Group& group = state.groups[state.selected_group];
+
+    // Top bar (mobile: with back button)
+    float header_height = is_mobile ? 60.0f : 40.0f;
+    ImGui::BeginChild("GroupChatHeader", ImVec2(0, header_height), true, ImGuiWindowFlags_NoScrollbar);
+
+    if (is_mobile) {
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
+        if (ThemedButton(ICON_FA_ARROW_LEFT " Back", ImVec2(100, 40))) {
+            state.current_view = VIEW_CONTACTS;
+            state.selected_group = -1;
+            state.is_viewing_group = false;
+        }
+        ImGui::SameLine();
+    }
+
+    // Group icon and name
+    const char* group_icon = ICON_FA_USERS;
+    ImVec4 icon_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+
+    // Center text vertically in header
+    float text_size_y = ImGui::CalcTextSize(group.name.c_str()).y;
+    float text_offset_y = (header_height - text_size_y) * 0.5f;
+    ImGui::SetCursorPosY(text_offset_y);
+
+    ImGui::TextColored(icon_color, "%s", group_icon);
+    ImGui::SameLine();
+
+    ImVec4 text_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+    ImGui::TextColored(text_col, "%s (%d members)", group.name.c_str(), group.member_count);
+
+    ImGui::EndChild();
+
+    // Message area - show placeholder for now
+    float input_height = is_mobile ? 100.0f : 80.0f;
+    ImGui::BeginChild("GroupMessageArea", ImVec2(0, -input_height), true);
+
+    // Center placeholder message
+    float window_width = ImGui::GetWindowWidth();
+    float window_height = ImGui::GetWindowHeight();
+
+    const char* placeholder_title = "Group Chat";
+    const char* placeholder_text1 = "Group messaging is coming soon!";
+    const char* placeholder_text2 = "You can accept group invitations, but sending/receiving";
+    const char* placeholder_text3 = "group messages will be available in a future update.";
+
+    ImVec2 title_size = ImGui::CalcTextSize(placeholder_title);
+    ImVec2 text1_size = ImGui::CalcTextSize(placeholder_text1);
+    ImVec2 text2_size = ImGui::CalcTextSize(placeholder_text2);
+    ImVec2 text3_size = ImGui::CalcTextSize(placeholder_text3);
+
+    float total_height = title_size.y + 30 + text1_size.y + 10 + text2_size.y + text3_size.y;
+    float start_y = (window_height - total_height) * 0.4f;
+
+    ImGui::SetCursorPos(ImVec2((window_width - title_size.x) * 0.5f, start_y));
+    ImGui::TextColored((g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text(), "%s", placeholder_title);
+
+    ImGui::SetCursorPos(ImVec2((window_width - text1_size.x) * 0.5f, start_y + title_size.y + 30));
+    ImGui::Text("%s", placeholder_text1);
+
+    ImGui::SetCursorPos(ImVec2((window_width - text2_size.x) * 0.5f, start_y + title_size.y + 30 + text1_size.y + 10));
+    ImGui::Text("%s", placeholder_text2);
+
+    ImGui::SetCursorPos(ImVec2((window_width - text3_size.x) * 0.5f, start_y + title_size.y + 30 + text1_size.y + 10 + text2_size.y));
+    ImGui::Text("%s", placeholder_text3);
+
+    ImGui::EndChild();
+
+    // Input area (disabled for now)
+    ImGui::BeginChild("GroupInputArea", ImVec2(0, 0), true);
+    ImGui::BeginDisabled();
+
+    ImVec4 input_bg = g_app_settings.theme == 0 ? DNATheme::InputBackground() : ClubTheme::InputBackground();
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, input_bg);
+    ImGui::PushItemWidth(-1);
+
+    char disabled_input[256] = "Group messaging coming soon...";
+    ImGui::InputTextMultiline("##disabled_group_input", disabled_input, sizeof(disabled_input),
+                              ImVec2(-1, is_mobile ? 60 : 40),
+                              ImGuiInputTextFlags_ReadOnly);
+
+    ImGui::PopItemWidth();
+    ImGui::PopStyleColor();
+    ImGui::EndDisabled();
+    ImGui::EndChild();
+}
+
 void retryMessage(AppState& state, int contact_idx, int msg_idx) {
     if (contact_idx < 0 || contact_idx >= (int)state.contacts.size()) {
         printf("[Retry] ERROR: Invalid contact index\n");
@@ -86,6 +174,24 @@ void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = io.DisplaySize.x < 600.0f;
 
+    // Handle group mode
+    if (state.is_viewing_group) {
+        if (state.selected_group < 0 || state.selected_group >= (int)state.groups.size()) {
+            if (is_mobile) {
+                state.current_view = VIEW_CONTACTS;
+                return;
+            } else {
+                ImGui::Text("Select a group to start chatting");
+                return;
+            }
+        }
+
+        // Render group chat UI
+        renderGroupChat(state, is_mobile);
+        return;
+    }
+
+    // Handle contact mode
     if (state.selected_contact < 0 || state.selected_contact >= (int)state.contacts.size()) {
         if (is_mobile) {
             // On mobile, show state.contacts list

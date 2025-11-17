@@ -44,6 +44,8 @@ public:
     View current_view;
     int selected_contact;
     int prev_selected_contact;
+    int selected_group;  // Index into groups vector (-1 if viewing contact)
+    bool is_viewing_group;  // True if viewing group chat, false if viewing contact chat
     bool should_focus_input;
     int input_cursor_pos;
     bool show_wallet;
@@ -103,6 +105,8 @@ public:
 
     // Data
     std::vector<Contact> contacts;
+    std::vector<Group> groups;                        // User's groups
+    std::vector<GroupInvitation> pending_invitations; // Pending group invitations
     std::map<int, std::vector<Message>> contact_messages;
     mutable std::mutex messages_mutex;  // Protect contact_messages from concurrent access
     char message_input[16384]; // 16KB for long messages
@@ -223,6 +227,12 @@ public:
     std::vector<int> create_group_selected_members;  // Indices of selected contacts
     std::string create_group_status;
     bool create_group_in_progress;
+
+    // Group Invitation dialog state (Phase 6.1)
+    bool show_group_invitation_dialog;
+    int selected_invitation_index;  // Index into pending_invitations vector
+    std::string invitation_action_status;  // Status message for accept/reject
+    bool invitation_action_in_progress;
 
     // Async tasks for DHT operations
     AsyncTask dht_publish_task;

@@ -701,6 +701,62 @@ int messenger_get_group_conversation(
 );
 
 /**
+ * Send group invitation to a user
+ *
+ * @param ctx: Messenger context
+ * @param group_uuid: Group UUID
+ * @param recipient: Identity to invite
+ * @param group_name: Group name
+ * @param member_count: Current member count
+ * @return: 0 on success, -1 on error
+ */
+int messenger_send_group_invitation(
+    messenger_context_t *ctx,
+    const char *group_uuid,
+    const char *recipient,
+    const char *group_name,
+    int member_count
+);
+
+/**
+ * Accept a group invitation
+ *
+ * @param ctx: Messenger context
+ * @param group_uuid: Group UUID to accept
+ * @return: 0 on success, -1 on error
+ */
+int messenger_accept_group_invitation(
+    messenger_context_t *ctx,
+    const char *group_uuid
+);
+
+/**
+ * Reject a group invitation
+ *
+ * @param ctx: Messenger context
+ * @param group_uuid: Group UUID to reject
+ * @return: 0 on success, -1 on error
+ */
+int messenger_reject_group_invitation(
+    messenger_context_t *ctx,
+    const char *group_uuid
+);
+
+/**
+ * Sync groups and invitations from DHT and offline messages
+ *
+ * This function:
+ * - Checks for offline messages
+ * - Scans recent messages for group invitations
+ * - Stores new invitations in local database
+ * - Should be called on login and periodically
+ *
+ * @param ctx: Messenger context
+ * @return: 0 on success, -1 on error
+ */
+int messenger_sync_groups(messenger_context_t *ctx);
+
+/**
  * Free group array
  *
  * @param groups: Array of group_info_t to free

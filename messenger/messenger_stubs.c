@@ -4,9 +4,17 @@
  */
 
 #include "messenger.h"
+#include "messenger_p2p.h"  // For messenger_p2p_check_offline_messages
 #include "dht/shared/dht_groups.h"
 #include "dht/core/dht_context.h"
+#include "dht/client/dht_singleton.h"  // For dht_singleton_get
 #include "message_backup.h"  // Phase 5.2
+#include "database/group_invitations.h"  // Group invitation management
+#include "dna_api.h"  // For dna_decrypt_message_raw
+#include "crypto/utils/qgp_types.h"  // For qgp_key_load/free
+#include "crypto/utils/qgp_platform.h"  // For qgp_platform_home_dir
+#include "p2p/p2p_transport.h"  // For p2p_transport_get_dht_context
+#include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -273,6 +281,26 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
     // Sync back to local cache
     dht_groups_sync_from_dht(dht_ctx, group_uuid);
 
+    // Fetch group metadata to get name and member count for invitation
+    dht_group_metadata_t *meta = NULL;
+    ret = dht_groups_get(dht_ctx, group_uuid, &meta);
+    if (ret == 0 && meta) {
+        // Send invitation to the new member
+        ret = messenger_send_group_invitation(ctx, group_uuid, identity,
+                                               meta->name, meta->member_count);
+        if (ret == 0) {
+            printf("[MESSENGER] Sent group invitation to %s for group '%s'\n",
+                   identity, meta->name);
+        } else {
+            fprintf(stderr, "[MESSENGER] Warning: Failed to send invitation to %s\n", identity);
+            // Non-fatal - member is still added to DHT
+        }
+        dht_groups_free_metadata(meta);
+    } else {
+        fprintf(stderr, "[MESSENGER] Warning: Could not fetch group metadata to send invitation\n");
+        // Non-fatal - member is still added to DHT
+    }
+
     printf("[MESSENGER] Added member %s to group %d\n", identity, group_id);
     return 0;
 }
@@ -508,4 +536,283 @@ void messenger_free_groups(group_info_t *groups, int count) {
     }
 
     free(groups);
+}
+
+/**
+ * Send group invitation to a user
+ *
+ * Creates a special invitation message with JSON format:
+ * {
+ *   "type": "group_invite",
+ *   "group_uuid": "...",
+ *   "group_name": "...",
+ *   "inviter": "...",
+ *   "member_count": 5
+ * }
+ */
+int messenger_send_group_invitation(messenger_context_t *ctx, const char *group_uuid,
+                                     const char *recipient, const char *group_name,
+                                     int member_count) {
+    if (!ctx || !group_uuid || !recipient || !group_name) {
+        fprintf(stderr, "[MESSENGER] Invalid arguments to send_group_invitation\n");
+        return -1;
+    }
+
+    // Create invitation JSON
+    json_object *j_invite = json_object_new_object();
+    json_object_object_add(j_invite, "type", json_object_new_string("group_invite"));
+    json_object_object_add(j_invite, "group_uuid", json_object_new_string(group_uuid));
+    json_object_object_add(j_invite, "group_name", json_object_new_string(group_name));
+    json_object_object_add(j_invite, "inviter", json_object_new_string(ctx->identity));
+    json_object_object_add(j_invite, "member_count", json_object_new_int(member_count));
+
+    const char *json_str = json_object_to_json_string_ext(j_invite, JSON_C_TO_STRING_PLAIN);
+
+    // Send as encrypted message
+    int ret = messenger_send_message(ctx, &recipient, 1, json_str);
+
+    json_object_put(j_invite);
+
+    if (ret != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to send group invitation\n");
+        return -1;
+    }
+
+    printf("[MESSENGER] Sent group invitation to %s for group '%s' (UUID: %s)\n",
+           recipient, group_name, group_uuid);
+    return 0;
+}
+
+/**
+ * Accept a group invitation
+ */
+int messenger_accept_group_invitation(messenger_context_t *ctx, const char *group_uuid) {
+    if (!ctx || !group_uuid) {
+        fprintf(stderr, "[MESSENGER] Invalid arguments to accept_group_invitation\n");
+        return -1;
+    }
+
+    // Get invitation details
+    group_invitation_t *invitation = NULL;
+    int ret = group_invitations_get(group_uuid, &invitation);
+    if (ret != 0 || !invitation) {
+        fprintf(stderr, "[MESSENGER] Invitation not found: %s\n", group_uuid);
+        return -1;
+    }
+
+    // Sync group metadata from DHT
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        fprintf(stderr, "[MESSENGER] DHT not initialized\n");
+        group_invitations_free(invitation, 1);
+        return -1;
+    }
+
+    ret = dht_groups_sync_from_dht(dht_ctx, group_uuid);
+    if (ret != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to sync group from DHT\n");
+        group_invitations_free(invitation, 1);
+        return -1;
+    }
+
+    // Update invitation status to accepted
+    group_invitations_update_status(group_uuid, INVITATION_STATUS_ACCEPTED);
+
+    group_invitations_free(invitation, 1);
+
+    printf("[MESSENGER] Accepted group invitation: %s\n", group_uuid);
+    return 0;
+}
+
+/**
+ * Reject a group invitation
+ */
+int messenger_reject_group_invitation(messenger_context_t *ctx, const char *group_uuid) {
+    if (!ctx || !group_uuid) {
+        fprintf(stderr, "[MESSENGER] Invalid arguments to reject_group_invitation\n");
+        return -1;
+    }
+
+    // Update invitation status to rejected
+    int ret = group_invitations_update_status(group_uuid, INVITATION_STATUS_REJECTED);
+    if (ret != 0) {
+        fprintf(stderr, "[MESSENGER] Failed to update invitation status\n");
+        return -1;
+    }
+
+    printf("[MESSENGER] Rejected group invitation: %s\n", group_uuid);
+    return 0;
+}
+
+/**
+ * Sync groups from offline messages and DHT
+ *
+ * This function:
+ * 1. Checks for offline messages containing group invitations
+ * 2. Scans recent messages for invitation JSON
+ * 3. Stores invitations in local database
+ * 4. Handles duplicates gracefully
+ */
+int messenger_sync_groups(messenger_context_t *ctx) {
+    if (!ctx) {
+        fprintf(stderr, "[MESSENGER] Invalid context for sync_groups\n");
+        return -1;
+    }
+
+    printf("[MESSENGER] Syncing groups and invitations...\n");
+
+    // Step 1: Check for offline messages (which may contain invitations)
+    if (ctx->p2p_enabled && ctx->p2p_transport) {
+        size_t offline_count = 0;
+        messenger_p2p_check_offline_messages(ctx, &offline_count);
+        if (offline_count > 0) {
+            printf("[MESSENGER] Retrieved %zu offline messages (may include invitations)\n", offline_count);
+        }
+    }
+
+    // Step 2: Scan recent messages for group invitations
+    char **contacts = NULL;
+    int contact_count = 0;
+
+    int ret = message_backup_get_recent_contacts(ctx->backup_ctx, &contacts, &contact_count);
+    if (ret != 0 || contact_count == 0) {
+        printf("[MESSENGER] No recent messages to scan for invitations\n");
+        return 0;
+    }
+
+    printf("[MESSENGER] Scanning %d recent contacts for group invitations...\n", contact_count);
+
+    // Load recipient's private Kyber1024 key from filesystem (for decryption)
+    const char *home = qgp_platform_home_dir();
+    char kyber_path[512];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
+
+    qgp_key_t *kyber_key = NULL;
+    if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
+        fprintf(stderr, "[MESSENGER] Failed to load Kyber key for decryption\n");
+        // Free contacts list
+        for (int i = 0; i < contact_count; i++) {
+            free(contacts[i]);
+        }
+        free(contacts);
+        return -1;
+    }
+
+    if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
+        fprintf(stderr, "[MESSENGER] Invalid Kyber key size: %zu (expected 3168)\n",
+                kyber_key->private_key_size);
+        qgp_key_free(kyber_key);
+        // Free contacts list
+        for (int i = 0; i < contact_count; i++) {
+            free(contacts[i]);
+        }
+        free(contacts);
+        return -1;
+    }
+
+    int invitations_found = 0;
+
+    // Step 3: For each contact, get their messages and check for invitations
+    for (int i = 0; i < contact_count; i++) {
+        backup_message_t *messages = NULL;
+        int message_count = 0;
+
+        ret = message_backup_get_conversation(ctx->backup_ctx, contacts[i], &messages, &message_count);
+        if (ret != 0 || message_count == 0) {
+            continue;
+        }
+
+        // Check each message for group invitation JSON
+        for (int j = 0; j < message_count; j++) {
+            // Skip if already read (already processed)
+            if (messages[j].read) {
+                continue;
+            }
+
+            // Decrypt the message
+            uint8_t *plaintext = NULL;
+            size_t plaintext_len = 0;
+            uint8_t *sender_pubkey = NULL;
+            size_t sender_pubkey_len = 0;
+
+            dna_error_t err = dna_decrypt_message_raw(
+                ctx->dna_ctx,
+                messages[j].encrypted_message,
+                messages[j].encrypted_len,
+                kyber_key->private_key,  // Kyber1024 private key
+                &plaintext,
+                &plaintext_len,
+                &sender_pubkey,
+                &sender_pubkey_len
+            );
+
+            if (err != DNA_OK || !plaintext) {
+                continue;  // Skip messages we can't decrypt
+            }
+
+            // Try to parse as JSON
+            json_object *j_msg = json_tokener_parse((const char*)plaintext);
+            if (j_msg) {
+                json_object *j_type = json_object_object_get(j_msg, "type");
+
+                if (j_type && strcmp(json_object_get_string(j_type), "group_invite") == 0) {
+                    // This is a group invitation!
+                    json_object *j_uuid = json_object_object_get(j_msg, "group_uuid");
+                    json_object *j_name = json_object_object_get(j_msg, "group_name");
+                    json_object *j_inviter = json_object_object_get(j_msg, "inviter");
+                    json_object *j_count = json_object_object_get(j_msg, "member_count");
+
+                    if (j_uuid && j_name && j_inviter && j_count) {
+                        group_invitation_t invitation = {0};
+                        strncpy(invitation.group_uuid, json_object_get_string(j_uuid),
+                                sizeof(invitation.group_uuid) - 1);
+                        strncpy(invitation.group_name, json_object_get_string(j_name),
+                                sizeof(invitation.group_name) - 1);
+                        strncpy(invitation.inviter, json_object_get_string(j_inviter),
+                                sizeof(invitation.inviter) - 1);
+                        invitation.invited_at = messages[j].timestamp;
+                        invitation.status = INVITATION_STATUS_PENDING;
+                        invitation.member_count = json_object_get_int(j_count);
+
+                        // Store invitation (handles duplicates with return code -2)
+                        ret = group_invitations_store(&invitation);
+                        if (ret == 0) {
+                            printf("[MESSENGER] Found new group invitation: '%s' from %s\n",
+                                   invitation.group_name, invitation.inviter);
+                            invitations_found++;
+                        } else if (ret == -2) {
+                            // Duplicate, ignore silently
+                        }
+
+                        // Mark message as read so we don't process it again
+                        message_backup_mark_read(ctx->backup_ctx, messages[j].id);
+                    }
+                }
+
+                json_object_put(j_msg);
+            }
+
+            free(plaintext);
+            free(sender_pubkey);
+        }
+
+        message_backup_free_messages(messages, message_count);
+    }
+
+    // Free Kyber key (secure wipe)
+    qgp_key_free(kyber_key);
+
+    // Free contacts list
+    for (int i = 0; i < contact_count; i++) {
+        free(contacts[i]);
+    }
+    free(contacts);
+
+    if (invitations_found > 0) {
+        printf("[MESSENGER] ✓ Sync complete: %d new invitation(s) found\n", invitations_found);
+    } else {
+        printf("[MESSENGER] ✓ Sync complete: no new invitations\n");
+    }
+
+    return 0;
 }

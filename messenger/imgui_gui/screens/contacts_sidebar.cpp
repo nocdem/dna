@@ -189,6 +189,114 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     }
 
     ImGui::Spacing();
+
+    // Groups section header with pending invitations badge
+    char groups_header[64];
+    if (state.pending_invitations.size() > 0) {
+        snprintf(groups_header, sizeof(groups_header), "Groups (%zu pending)", state.pending_invitations.size());
+    } else {
+        snprintf(groups_header, sizeof(groups_header), "Groups");
+    }
+    ImGui::Text("%s", groups_header);
+    ImGui::Spacing();
+
+    // Groups list (if any)
+    if (state.groups.size() > 0 || state.pending_invitations.size() > 0) {
+        float groups_list_height = (state.groups.size() + state.pending_invitations.size()) * 35.0f;
+        if (groups_list_height > 150.0f) groups_list_height = 150.0f; // Max height
+
+        ImGui::BeginChild("GroupsList", ImVec2(0, groups_list_height), false);
+        float list_width = ImGui::GetContentRegionAvail().x;
+
+        // Render pending invitations first (with special styling)
+        for (size_t i = 0; i < state.pending_invitations.size(); i++) {
+            ImGui::PushID(1000 + i); // Offset ID to avoid conflicts
+
+            float item_height = 30;
+            ImVec2 cursor_screen_pos = ImGui::GetCursorScreenPos();
+            bool clicked = ImGui::InvisibleButton("##invitation", ImVec2(list_width, item_height));
+
+            if (clicked) {
+                // Open invitation dialog when clicked
+                state.selected_invitation_index = i;
+                state.show_group_invitation_dialog = true;
+                state.invitation_action_status.clear();
+                state.invitation_action_in_progress = false;
+                printf("[Groups] Clicked pending invitation: %s\n", state.pending_invitations[i].group_name.c_str());
+            }
+
+            // Draw background (highlight pending invitations)
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            ImVec2 rect_min = cursor_screen_pos;
+            ImVec2 rect_max = ImVec2(cursor_screen_pos.x + list_width, cursor_screen_pos.y + item_height);
+
+            // Orange/yellow background for pending invitations
+            ImU32 bg_color = IM_COL32(255, 165, 0, 100); // Orange with alpha
+            draw_list->AddRectFilled(rect_min, rect_max, bg_color);
+
+            // Display: "ICON Group Name (Pending)"
+            char display_text[256];
+            snprintf(display_text, sizeof(display_text), "%s   %s (Pending)", ICON_FA_ENVELOPE, state.pending_invitations[i].group_name.c_str());
+
+            ImVec2 text_size = ImGui::CalcTextSize(display_text);
+            float text_offset_y = (item_height - text_size.y) * 0.5f;
+            ImVec2 text_pos = ImVec2(cursor_screen_pos.x + 8, cursor_screen_pos.y + text_offset_y);
+            ImVec4 text_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+            ImU32 text_color = IM_COL32((int)(text_col.x * 255), (int)(text_col.y * 255), (int)(text_col.z * 255), 255);
+            draw_list->AddText(text_pos, text_color, display_text);
+
+            ImGui::PopID();
+        }
+
+        // Render groups
+        for (size_t i = 0; i < state.groups.size(); i++) {
+            ImGui::PushID(2000 + i); // Offset ID to avoid conflicts
+
+            float item_height = 30;
+            ImVec2 cursor_screen_pos = ImGui::GetCursorScreenPos();
+            bool clicked = ImGui::InvisibleButton("##group", ImVec2(list_width, item_height));
+            bool hovered = ImGui::IsItemHovered();
+
+            if (clicked) {
+                // Select group and show group chat
+                state.selected_group = i;
+                state.is_viewing_group = true;
+                state.selected_contact = -1;  // Deselect contact
+                state.current_view = VIEW_CHAT;
+                printf("[Groups] Selected group: %s\n", state.groups[i].name.c_str());
+            }
+
+            // Draw background
+            ImDrawList* draw_list = ImGui::GetWindowDrawList();
+            ImVec2 rect_min = cursor_screen_pos;
+            ImVec2 rect_max = ImVec2(cursor_screen_pos.x + list_width, cursor_screen_pos.y + item_height);
+
+            if (hovered) {
+                ImVec4 col = (g_app_settings.theme == 0) ? DNATheme::ButtonHover() : ClubTheme::ButtonHover();
+                ImU32 bg_color = IM_COL32((int)(col.x * 255), (int)(col.y * 255), (int)(col.z * 255), 255);
+                draw_list->AddRectFilled(rect_min, rect_max, bg_color);
+            }
+
+            // Display: "ICON Group Name"
+            char display_text[256];
+            snprintf(display_text, sizeof(display_text), "%s   %s", ICON_FA_USERS, state.groups[i].name.c_str());
+
+            ImVec2 text_size = ImGui::CalcTextSize(display_text);
+            float text_offset_y = (item_height - text_size.y) * 0.5f;
+            ImVec2 text_pos = ImVec2(cursor_screen_pos.x + 8, cursor_screen_pos.y + text_offset_y);
+            ImVec4 text_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+            ImU32 text_color = IM_COL32((int)(text_col.x * 255), (int)(text_col.y * 255), (int)(text_col.z * 255), 255);
+            draw_list->AddText(text_pos, text_color, display_text);
+
+            ImGui::PopID();
+        }
+
+        ImGui::EndChild(); // GroupsList
+        ImGui::Spacing();
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
+
     ImGui::Text("Contacts");
     ImGui::Spacing();
 
@@ -214,6 +322,8 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
 
         if (clicked) {
             state.selected_contact = i;
+            state.selected_group = -1;  // Deselect group
+            state.is_viewing_group = false;
             state.current_view = VIEW_CHAT;
             // Load messages for this contact from database
             load_messages_callback(i);
