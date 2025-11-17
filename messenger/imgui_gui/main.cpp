@@ -31,6 +31,9 @@ extern "C" {
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
+#include <chrono>
+#include <thread>
+#include <atomic>
 
 #ifndef _WIN32
 #include <dirent.h>
@@ -355,7 +358,9 @@ int main(int argc, char** argv) {
                     
                     dht_context_t *dht_ctx = dht_singleton_get();
                     if (dht_ctx && !state.identities.empty()) {
-                        size_t pending_lookups = 0;
+                        // Track completed lookups with atomic counter
+                        std::atomic<size_t> completed_lookups(0);
+                        size_t total_lookups = 0;
                         
                         for (const auto& fp : state.identities) {
                             if (fp.length() == 128 && state.identity_name_cache.find(fp) == state.identity_name_cache.end()) {
@@ -363,15 +368,17 @@ int main(int argc, char** argv) {
                                 state.identity_name_cache[fp] = fp.substr(0, 10) + "..." + fp.substr(fp.length() - 10);
                                 
                                 // Start async DHT reverse lookup
-                                pending_lookups++;
+                                total_lookups++;
                                 
                                 struct lookup_ctx {
                                     AppState *state_ptr;
                                     char fingerprint[129];
+                                    std::atomic<size_t> *completed_ptr;
                                 };
                                 
                                 lookup_ctx *ctx = new lookup_ctx;
                                 ctx->state_ptr = &state;
+                                ctx->completed_ptr = &completed_lookups;
                                 strncpy(ctx->fingerprint, fp.c_str(), 128);
                                 ctx->fingerprint[128] = '\0';
                                 
@@ -386,22 +393,41 @@ int main(int argc, char** argv) {
                                             free(registered_name);
                                         }
                                         
+                                        // Mark this lookup as completed
+                                        (*ctx->completed_ptr)++;
+                                        
                                         delete ctx;
                                     },
                                     ctx);
                             }
                         }
                         
-                        printf("[MAIN] Started %zu identity name lookups\n", pending_lookups);
+                        printf("[MAIN] Started %zu identity name lookups\n", total_lookups);
+                        
+                        // Wait for all lookups to complete (with timeout)
+                        if (total_lookups > 0) {
+                            const int max_wait_ms = 3000; // 3 second timeout
+                            const int poll_interval_ms = 50;
+                            int waited_ms = 0;
+                            
+                            while (completed_lookups < total_lookups && waited_ms < max_wait_ms) {
+                                std::this_thread::sleep_for(std::chrono::milliseconds(poll_interval_ms));
+                                waited_ms += poll_interval_ms;
+                            }
+                            
+                            printf("[MAIN] Completed %zu/%zu lookups in %dms\n", 
+                                   completed_lookups.load(), total_lookups, waited_ms);
+                        }
+                        
                         state.identities_scanned = true;
                     }
                 }
             });
         }
         
-        // Show loading screen until DHT ready
+        // Show loading screen until DHT ready AND identities scanned
         float elapsed = (float)glfwGetTime() - dht_loading_start_time;
-        bool show_loading = dht_init_task.isRunning() || elapsed < 0.5f;
+        bool show_loading = dht_init_task.isRunning() || !app.areIdentitiesReady() || elapsed < 0.5f;
         
         if (show_loading) {
             // Show loading screen

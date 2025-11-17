@@ -90,9 +90,16 @@ static void compute_dht_key(const char *group_uuid, char *key_out) {
 
 // Helper: Serialize metadata to JSON string
 static char* serialize_metadata(const dht_group_metadata_t *meta) {
-    // Calculate required buffer size
+    // Calculate required buffer size more accurately
     size_t base_size = 512 + strlen(meta->name) + strlen(meta->description);
-    size_t members_size = meta->member_count * 40;  // ~33 chars per member + quotes/commas
+    
+    // Calculate actual members size: each member can be up to 32 chars + quotes (2) + comma (1) = 35
+    size_t members_size = 0;
+    for (uint32_t i = 0; i < meta->member_count; i++) {
+        members_size += strlen(meta->members[i]) + 3;  // +3 for quotes and comma
+    }
+    members_size += 16;  // Extra margin for array brackets and final member
+    
     char *json = malloc(base_size + members_size);
     if (!json) return NULL;
 
