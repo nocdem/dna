@@ -110,9 +110,19 @@ const char* qgp_platform_home_dir(void) {
     const char *home = getenv("HOME");
     if (!home) {
         /* Fallback: Try to get from /etc/passwd */
-        home = getpwuid(getuid())->pw_dir;
+        struct passwd *pw = getpwuid(getuid());
+        if (pw) {
+            home = pw->pw_dir;
+        }
     }
-    return home ? home : "/tmp";  /* Last resort fallback */
+
+    if (!home) {
+        /* CRITICAL: Cannot determine home directory */
+        fprintf(stderr, "FATAL: Cannot determine home directory (HOME not set and getpwuid failed)\n");
+        return NULL;
+    }
+
+    return home;
 }
 
 char* qgp_platform_join_path(const char *dir, const char *file) {
@@ -147,4 +157,38 @@ char* qgp_platform_join_path(const char *dir, const char *file) {
     result[pos + file_len] = '\0';
 
     return result;
+}
+
+/* ============================================================================
+ * Secure Memory Wiping (Prevents compiler optimization)
+ * ============================================================================ */
+
+void qgp_secure_memzero(void *ptr, size_t len) {
+    if (!ptr || len == 0) {
+        return;
+    }
+
+#if defined(__linux__) || defined(__unix__)
+    /* Use explicit_bzero if available (glibc 2.25+, BSD) */
+    #if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 25))
+        explicit_bzero(ptr, len);
+    #elif defined(__OpenBSD__) || defined(__FreeBSD__)
+        explicit_bzero(ptr, len);
+    #else
+        /* Fallback: Use volatile pointer to prevent optimization */
+        volatile uint8_t *volatile vptr = (volatile uint8_t *volatile)ptr;
+        while (len--) {
+            *vptr++ = 0;
+        }
+    #endif
+#elif defined(_WIN32)
+    /* Windows: Use SecureZeroMemory */
+    SecureZeroMemory(ptr, len);
+#else
+    /* Generic fallback: Use volatile pointer */
+    volatile uint8_t *volatile vptr = (volatile uint8_t *volatile)ptr;
+    while (len--) {
+        *vptr++ = 0;
+    }
+#endif
 }

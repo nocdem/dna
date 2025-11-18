@@ -8,6 +8,11 @@
 #include "imgui.h"
 #include <cstring>
 
+// Undefine Windows macros that conflict with MessageStatus enum
+#ifdef _WIN32
+#undef STATUS_PENDING
+#endif
+
 extern "C" {
 #include "../../messenger.h"
 #include "../../message_backup.h"
@@ -1002,7 +1007,13 @@ void render(AppState& state) {
                 for (int i = 0; i < emoji_count; i++) {
                     if (ThemedButton(emojis[i], ImVec2(35, 35))) {
                         if (len > 0) state.message_input[len-1] = '\0'; // Remove the ':'
-                        strcat(state.message_input, emojis[i]);
+                        // Bounds-checked emoji append
+                        size_t current_len = strlen(state.message_input);
+                        size_t emoji_len = strlen(emojis[i]);
+                        size_t remaining = sizeof(state.message_input) - current_len - 1;
+                        if (emoji_len <= remaining) {
+                            strncat(state.message_input, emojis[i], remaining);
+                        }
                         state.input_cursor_pos = strlen(state.message_input); // Set cursor to end
                         state.show_emoji_picker = false;
                         state.should_focus_input = true;

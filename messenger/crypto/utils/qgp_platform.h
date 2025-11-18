@@ -98,6 +98,25 @@ const char* qgp_platform_home_dir(void);
 char* qgp_platform_join_path(const char *dir, const char *file);
 
 /* ============================================================================
+ * Secure Memory Operations
+ * ============================================================================ */
+
+/**
+ * Securely zero memory (prevents compiler optimization)
+ *
+ * Unlike memset(ptr, 0, len), this function guarantees that the memory
+ * will be zeroed and not optimized away by the compiler. Use this for
+ * wiping sensitive data like keys, passphrases, or plaintext.
+ *
+ * Linux: Uses explicit_bzero() if available, or volatile pointer fallback
+ * Windows: Uses SecureZeroMemory()
+ *
+ * @param ptr Pointer to memory to zero
+ * @param len Number of bytes to zero
+ */
+void qgp_secure_memzero(void *ptr, size_t len);
+
+/* ============================================================================
  * Platform Detection Macros
  * ============================================================================ */
 

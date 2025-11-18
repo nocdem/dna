@@ -33,7 +33,7 @@ void compute_dht_key_by_fingerprint(const char *fingerprint, char *key_out) {
 
     // Convert to hex string (128 chars)
     for (int i = 0; i < 64; i++) {
-        sprintf(key_out + (i * 2), "%02x", hash[i]);
+        snprintf(key_out + (i * 2), 3, "%02x", hash[i]);
     }
     key_out[128] = '\0';
 }
@@ -53,7 +53,7 @@ void compute_dht_key_by_name(const char *name, char *key_out) {
 
     // Convert to hex string (128 chars)
     for (int i = 0; i < 64; i++) {
-        sprintf(key_out + (i * 2), "%02x", hash[i]);
+        snprintf(key_out + (i * 2), 3, "%02x", hash[i]);
     }
     key_out[128] = '\0';
 }
@@ -69,7 +69,7 @@ void compute_fingerprint(const uint8_t *dilithium_pubkey, char *fingerprint_out)
 
     // Convert to hex string (128 chars)
     for (int i = 0; i < 64; i++) {
-        sprintf(fingerprint_out + (i * 2), "%02x", hash[i]);
+        snprintf(fingerprint_out + (i * 2), 3, "%02x", hash[i]);
     }
     fingerprint_out[128] = '\0';
 }
@@ -85,7 +85,7 @@ char* serialize_entry(const dht_pubkey_entry_t *entry) {
     // For simplicity, we'll store as hex string
     char dilithium_hex[DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE * 2 + 1];
     for (int i = 0; i < DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE; i++) {
-        sprintf(dilithium_hex + (i * 2), "%02x", entry->dilithium_pubkey[i]);
+        snprintf(dilithium_hex + (i * 2), 3, "%02x", entry->dilithium_pubkey[i]);
     }
     dilithium_hex[DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE * 2] = '\0';
     json_object_object_add(root, "dilithium_pubkey", json_object_new_string(dilithium_hex));
@@ -93,7 +93,7 @@ char* serialize_entry(const dht_pubkey_entry_t *entry) {
     // Kyber pubkey (hex string)
     char kyber_hex[DHT_KEYSERVER_KYBER_PUBKEY_SIZE * 2 + 1];
     for (int i = 0; i < DHT_KEYSERVER_KYBER_PUBKEY_SIZE; i++) {
-        sprintf(kyber_hex + (i * 2), "%02x", entry->kyber_pubkey[i]);
+        snprintf(kyber_hex + (i * 2), 3, "%02x", entry->kyber_pubkey[i]);
     }
     kyber_hex[DHT_KEYSERVER_KYBER_PUBKEY_SIZE * 2] = '\0';
     json_object_object_add(root, "kyber_pubkey", json_object_new_string(kyber_hex));
@@ -110,7 +110,7 @@ char* serialize_entry(const dht_pubkey_entry_t *entry) {
     // Signature (hex string)
     char sig_hex[DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE * 2 + 1];
     for (int i = 0; i < DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE; i++) {
-        sprintf(sig_hex + (i * 2), "%02x", entry->signature[i]);
+        snprintf(sig_hex + (i * 2), 3, "%02x", entry->signature[i]);
     }
     sig_hex[DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE * 2] = '\0';
     json_object_object_add(root, "signature", json_object_new_string(sig_hex));
