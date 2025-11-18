@@ -215,6 +215,14 @@ int main(int argc, char** argv) {
     if (!glfwInit())
         return 1;
 
+    // Workaround for GTK3 file chooser pathbar crash (VULN-GTK-001)
+    // See: https://gitlab.gnome.org/GNOME/gtk/-/issues/4829
+    // GTK pathbar has threading issues with cancellable operations
+    #ifndef _WIN32
+    setenv("GDK_SYNCHRONIZE", "1", 0);  // Synchronous X11 operations prevent race conditions
+    printf("[MAIN] GTK file dialog workaround applied (GDK_SYNCHRONIZE=1)\n");
+    #endif
+
     // Initialize NFD
     if (NFD_Init() != NFD_OKAY) {
         fprintf(stderr, "[MAIN] NFD initialization failed: %s\n", NFD_GetError());

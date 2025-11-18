@@ -300,12 +300,16 @@ void render(AppState& state) {
                 ImGui::Spacing();
                 
                 if (ThemedButton(ICON_FA_FOLDER_OPEN " Browse Image File", ImVec2(200, 30), false)) {
-                    // Use NFD to select image file
+                    // Use NFD to select image file (GTK workaround applied in main.cpp)
                     nfdchar_t *outPath = nullptr;
                     nfdfilteritem_t filters[1] = { { "Image Files", "png,jpg,jpeg,bmp,gif" } };
                     nfdresult_t result = NFD_OpenDialog(&outPath, filters, 1, nullptr);
-                    
-                    if (result == NFD_OKAY) {
+
+                    if (result == NFD_ERROR) {
+                        state.profile_status = std::string("File dialog error: ") + NFD_GetError();
+                        printf("[ProfileEditor] NFD error: %s\n", NFD_GetError());
+                    }
+                    else if (result == NFD_OKAY) {
                         // Process avatar file immediately (larger buffer for safety)
                         char *base64_out = (char*)malloc(65536); // 64KB buffer for base64
                         if (!base64_out) {
