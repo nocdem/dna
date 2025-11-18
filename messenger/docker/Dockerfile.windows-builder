@@ -144,12 +144,106 @@ RUN wget https://download.savannah.gnu.org/releases/freetype/freetype-2.13.2.tar
     make && make install && \
     cd .. && rm -rf freetype-2.13.2*
 
-# Note: GLib, libnice, and OpenDHT are complex - skip for initial version
-# These would require significant effort to cross-compile properly
-# For a working Windows build, we'd need to either:
-# 1. Build these dependencies (very complex)
-# 2. Use vcpkg or another package manager
-# 3. Build natively on Windows
+# Build GLib for Windows (required by libnice)
+# GLib needs: libffi, pcre2, and libiconv
+RUN apt-get update && apt-get install -y gettext && \
+    # Build libffi
+    wget https://github.com/libffi/libffi/releases/download/v3.4.4/libffi-3.4.4.tar.gz && \
+    tar xzf libffi-3.4.4.tar.gz && cd libffi-3.4.4 && \
+    ./configure --host=x86_64-w64-mingw32 --prefix=${MINGW_PREFIX} --enable-static --disable-shared && \
+    make && make install && \
+    cd .. && rm -rf libffi-3.4.4* && \
+    # Build pcre2
+    wget https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.42/pcre2-10.42.tar.gz && \
+    tar xzf pcre2-10.42.tar.gz && cd pcre2-10.42 && \
+    ./configure --host=x86_64-w64-mingw32 --prefix=${MINGW_PREFIX} --enable-static --disable-shared && \
+    make && make install && \
+    cd .. && rm -rf pcre2-10.42* && \
+    # Build libiconv
+    wget https://ftp.gnu.org/pub/gnu/libiconv/libiconv-1.17.tar.gz && \
+    tar xzf libiconv-1.17.tar.gz && cd libiconv-1.17 && \
+    ./configure --host=x86_64-w64-mingw32 --prefix=${MINGW_PREFIX} --enable-static --disable-shared && \
+    make && make install && \
+    cd .. && rm -rf libiconv-1.17* && \
+    # Build gettext (libintl)
+    wget https://ftp.gnu.org/pub/gnu/gettext/gettext-0.22.4.tar.gz && \
+    tar xzf gettext-0.22.4.tar.gz && cd gettext-0.22.4 && \
+    ./configure --host=x86_64-w64-mingw32 --prefix=${MINGW_PREFIX} --enable-static --disable-shared --disable-java --disable-csharp && \
+    make && make install && \
+    cd .. && rm -rf gettext-0.22.4*
+
+# Build GLib with Meson
+RUN wget https://download.gnome.org/sources/glib/2.78/glib-2.78.3.tar.xz && \
+    tar xf glib-2.78.3.tar.xz && cd glib-2.78.3 && \
+    meson setup build --cross-file /build/mingw-cross.txt \
+        --prefix=${MINGW_PREFIX} \
+        --default-library=static \
+        -Dtests=false -Dglib_debug=disabled -Dintrospection=disabled && \
+    ninja -C build && ninja -C build install && \
+    cd .. && rm -rf glib-2.78.3*
+
+# Build GnuTLS for Windows (required by OpenDHT)
+RUN apt-get update && apt-get install -y gperf texinfo && \
+    # Build nettle (crypto library for GnuTLS)
+    wget https://ftp.gnu.org/gnu/nettle/nettle-3.9.1.tar.gz && \
+    tar xzf nettle-3.9.1.tar.gz && cd nettle-3.9.1 && \
+    ./configure --host=x86_64-w64-mingw32 --prefix=${MINGW_PREFIX} --enable-static --disable-shared --disable-documentation && \
+    make && make install && \
+    cd .. && rm -rf nettle-3.9.1* && \
+    # Build GMP (for nettle/GnuTLS)
+    wget https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz && \
+    tar xf gmp-6.3.0.tar.xz && cd gmp-6.3.0 && \
+    ./configure --host=x86_64-w64-mingw32 --prefix=${MINGW_PREFIX} --enable-static --disable-shared && \
+    make && make install && \
+    cd .. && rm -rf gmp-6.3.0* && \
+    # Build GnuTLS
+    wget https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.2.tar.xz && \
+    tar xf gnutls-3.8.2.tar.xz && cd gnutls-3.8.2 && \
+    ./configure --host=x86_64-w64-mingw32 --prefix=${MINGW_PREFIX} \
+        --enable-static --disable-shared \
+        --with-included-libtasn1 --with-included-unistring \
+        --without-p11-kit --disable-doc --disable-tests --disable-tools && \
+    make && make install && \
+    cd .. && rm -rf gnutls-3.8.2*
+
+# Build argon2 for Windows (required by OpenDHT)
+RUN git clone https://github.com/P-H-C/phc-winner-argon2.git && cd phc-winner-argon2 && \
+    CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar RANLIB=x86_64-w64-mingw32-ranlib \
+    make && \
+    mkdir -p ${MINGW_PREFIX}/include ${MINGW_PREFIX}/lib && \
+    cp include/argon2.h ${MINGW_PREFIX}/include/ && \
+    cp libargon2.a ${MINGW_PREFIX}/lib/ && \
+    cd .. && rm -rf phc-winner-argon2
+
+# Build jsoncpp for Windows (required by OpenDHT)
+RUN git clone https://github.com/open-source-parsers/jsoncpp.git && cd jsoncpp && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=/build/mingw-toolchain.cmake \
+        -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+        -DBUILD_SHARED_LIBS=OFF -DJSONCPP_WITH_TESTS=OFF && \
+    make && make install && \
+    cd ../.. && rm -rf jsoncpp
+
+# Build libnice for Windows (P2P/ICE)
+RUN git clone https://gitlab.freedesktop.org/libnice/libnice.git && cd libnice && \
+    meson setup build --cross-file /build/mingw-cross.txt \
+        --prefix=${MINGW_PREFIX} \
+        --default-library=static \
+        -Dtests=disabled -Dexamples=disabled -Dintrospection=disabled \
+        -Dgupnp=disabled -Dgstreamer=disabled && \
+    ninja -C build && ninja -C build install && \
+    cd .. && rm -rf libnice
+
+# Build OpenDHT for Windows (DHT networking)
+RUN git clone https://github.com/savoirfairelinux/opendht.git && cd opendht && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=/build/mingw-toolchain.cmake \
+        -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+        -DOPENDHT_STATIC=ON -DBUILD_SHARED_LIBS=OFF \
+        -DOPENDHT_PYTHON=OFF -DOPENDHT_TOOLS=OFF -DOPENDHT_SYSTEMD=OFF \
+        -DOPENDHT_TESTS=OFF -DOPENDHT_DOCUMENTATION=OFF && \
+    make && make install && \
+    cd ../.. && rm -rf opendht
 
 WORKDIR /workspace
 
