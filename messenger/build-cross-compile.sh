@@ -192,8 +192,8 @@ build_windows_x64() {
         echo -e "${GREEN}✓${NC} MXE directory found at ${MXE_DIR}"
     fi
 
-    # Check if MXE is already built (check for qmake as indicator)
-    if [ ! -f "${MXE_PREFIX}/bin/qmake" ]; then
+    # Check if MXE is already built (check for gcc as indicator)
+    if [ ! -f "${MXE_PREFIX}/bin/x86_64-w64-mingw32.static-gcc" ]; then
         echo -e "${YELLOW}MXE build incomplete or missing, building dependencies...${NC}"
         echo -e "${YELLOW}This will take a while on first run (1-2 hours)${NC}"
 
@@ -225,8 +225,8 @@ build_windows_x64() {
         fi
 
         cd "$MXE_DIR"
-        echo -e "${BLUE}Building MXE dependencies: qtbase qtmultimedia postgresql openssl json-c curl libnice glib${NC}"
-        make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openssl json-c curl libnice glib -j$(nproc)
+        echo -e "${BLUE}Building MXE dependencies: gcc openssl json-c curl libnice glib glfw glew freetype${NC}"
+        make MXE_TARGETS=x86_64-w64-mingw32.static gcc openssl json-c curl libnice glib glfw glew freetype -j$(nproc)
         echo -e "${GREEN}✓${NC} MXE build complete"
     else
         echo -e "${GREEN}✓${NC} MXE build already complete, skipping build step"
@@ -283,10 +283,6 @@ set(CMAKE_EXE_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")
 set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
 set(BUILD_SHARED_LIBS OFF)
 set(PKG_CONFIG_EXECUTABLE ${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-pkg-config)
-set(Qt5_DIR "${MXE_PREFIX}/qt5/lib/cmake/Qt5")
-set(Qt5Core_DIR "${MXE_PREFIX}/qt5/lib/cmake/Qt5Core")
-set(Qt5Widgets_DIR "${MXE_PREFIX}/qt5/lib/cmake/Qt5Widgets")
-set(Qt5Multimedia_DIR "${MXE_PREFIX}/qt5/lib/cmake/Qt5Multimedia")
 EOF
 
     echo -e "${BLUE}Configuring CMake...${NC}"
@@ -300,9 +296,9 @@ EOF
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64"
-    # CLI is disabled, only package GUI
-    if [ -f gui/dna_messenger_gui.exe ]; then
-        cp gui/dna_messenger_gui.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
+    # ImGui GUI executable
+    if [ -f imgui_gui/dna_messenger_imgui.exe ]; then
+        cp imgui_gui/dna_messenger_imgui.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
     else
         echo -e "${RED}Error: GUI executable not found${NC}"
         return 1
