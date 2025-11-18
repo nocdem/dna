@@ -100,7 +100,8 @@ int qgp_signature_verify_size(const qgp_signature_t *sig, size_t expected_size) 
 /**
  * Serialize signature to buffer
  *
- * Format: [type(1) | pkey_size(2) | sig_size(2) | public_key | signature]
+ * Format v0.07: [type(1) | sig_size(2) | signature]
+ * (Public key removed - sender fingerprint inside encrypted payload instead)
  *
  * @param sig: Signature to serialize
  * @param buffer: Output buffer (must be at least qgp_signature_get_size() bytes)
@@ -116,17 +117,13 @@ size_t qgp_signature_serialize(const qgp_signature_t *sig, uint8_t *buffer) {
     // Type (1 byte)
     *ptr++ = (uint8_t)sig->type;
 
-    // Public key size (2 bytes, big-endian)
-    *ptr++ = (sig->public_key_size >> 8) & 0xFF;
-    *ptr++ = sig->public_key_size & 0xFF;
-
     // Signature size (2 bytes, big-endian)
     *ptr++ = (sig->signature_size >> 8) & 0xFF;
     *ptr++ = sig->signature_size & 0xFF;
 
-    // Public key + signature data
-    memcpy(ptr, sig->data, sig->public_key_size + sig->signature_size);
-    ptr += sig->public_key_size + sig->signature_size;
+    // Signature data only (no public key)
+    memcpy(ptr, qgp_signature_get_bytes(sig), sig->signature_size);
+    ptr += sig->signature_size;
 
     return ptr - buffer;
 }
@@ -134,13 +131,16 @@ size_t qgp_signature_serialize(const qgp_signature_t *sig, uint8_t *buffer) {
 /**
  * Deserialize signature from buffer
  *
+ * Format v0.07: [type(1) | sig_size(2) | signature]
+ * (No public key - it's inside encrypted payload)
+ *
  * @param buffer: Input buffer
  * @param buffer_size: Buffer size
  * @param sig_out: Output signature (caller must free with qgp_signature_free())
  * @return: 0 on success, -1 on error
  */
 int qgp_signature_deserialize(const uint8_t *buffer, size_t buffer_size, qgp_signature_t **sig_out) {
-    if (!buffer || !sig_out || buffer_size < 5) {
+    if (!buffer || !sig_out || buffer_size < 3) {
         fprintf(stderr, "qgp_signature_deserialize: Invalid arguments\n");
         return -1;
     }
@@ -150,31 +150,27 @@ int qgp_signature_deserialize(const uint8_t *buffer, size_t buffer_size, qgp_sig
     // Parse type
     qgp_sig_type_t type = (qgp_sig_type_t)(*ptr++);
 
-    // Parse public key size (big-endian)
-    uint16_t pkey_size = ((uint16_t)ptr[0] << 8) | ptr[1];
-    ptr += 2;
-
     // Parse signature size (big-endian)
     uint16_t sig_size = ((uint16_t)ptr[0] << 8) | ptr[1];
     ptr += 2;
 
-    // Validate sizes
-    size_t expected_total = 5 + pkey_size + sig_size;
+    // Validate size
+    size_t expected_total = 3 + sig_size;
     if (buffer_size < expected_total) {
         fprintf(stderr, "qgp_signature_deserialize: Buffer too small (expected %zu, got %zu)\n",
                 expected_total, buffer_size);
         return -1;
     }
 
-    // Create signature structure
-    qgp_signature_t *sig = qgp_signature_new(type, pkey_size, sig_size);
+    // Create signature structure (no public key, pkey_size = 0)
+    qgp_signature_t *sig = qgp_signature_new(type, 0, sig_size);
     if (!sig) {
         fprintf(stderr, "qgp_signature_deserialize: Memory allocation failed\n");
         return -1;
     }
 
-    // Copy data
-    memcpy(sig->data, ptr, pkey_size + sig_size);
+    // Copy signature data only
+    memcpy(qgp_signature_get_bytes(sig), ptr, sig_size);
 
     *sig_out = sig;
     return 0;

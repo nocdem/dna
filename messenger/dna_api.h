@@ -209,14 +209,19 @@ dna_error_t dna_decrypt_message(
 /**
  * Decrypt message with raw keys (for PostgreSQL integration)
  *
+ * v0.07: sender_sign_pubkey_out now contains 64-byte SHA3-512 fingerprint (not full pubkey)
+ * Caller must query keyserver to get actual public key for signature verification
+ *
  * @param ctx: DNA context
  * @param ciphertext: Encrypted message buffer
  * @param ciphertext_len: Ciphertext length
  * @param recipient_enc_privkey: Recipient's Kyber1024 private key (3168 bytes)
  * @param plaintext_out: Output plaintext buffer (caller must free)
  * @param plaintext_len_out: Output plaintext length
- * @param sender_sign_pubkey_out: Sender's Dilithium5 public key (caller must free)
- * @param sender_sign_pubkey_len_out: Sender's public key length
+ * @param sender_sign_pubkey_out: v0.07: Sender's fingerprint (64 bytes, caller must free)
+ * @param sender_sign_pubkey_len_out: Sender's fingerprint length (64)
+ * @param signature_out: Signature bytes (caller must free, can be NULL if not needed)
+ * @param signature_len_out: Signature length (can be NULL if not needed)
  * @return: DNA_OK on success, error code otherwise
  */
 dna_error_t dna_decrypt_message_raw(
@@ -227,7 +232,9 @@ dna_error_t dna_decrypt_message_raw(
     uint8_t **plaintext_out,
     size_t *plaintext_len_out,
     uint8_t **sender_sign_pubkey_out,
-    size_t *sender_sign_pubkey_len_out
+    size_t *sender_sign_pubkey_len_out,
+    uint8_t **signature_out,
+    size_t *signature_len_out
 );
 
 // ============================================================================

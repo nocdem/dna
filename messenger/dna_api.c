@@ -12,6 +12,7 @@
 #include "crypto/utils/qgp_aes.h"
 #include "crypto/utils/qgp_kyber.h"
 #include "crypto/utils/qgp_dilithium.h"
+#include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/aes_keywrap.h"
 #include <stdlib.h>
 #include <string.h>
@@ -31,7 +32,7 @@ struct dna_context {
 
 // File format constants (same as QGP)
 #define DNA_ENC_MAGIC "PQSIGENC"
-#define DNA_ENC_VERSION 0x06  // Version 6: Category 5 (Kyber1024 + Dilithium5 + SHA3-512)
+#define DNA_ENC_VERSION 0x07  // Version 7: Fingerprint privacy (sender FP encrypted, pubkey removed from sig)
 #define DAP_ENC_KEY_TYPE_KEM_KYBER512 23
 
 // Header structure (same as encrypt.c/decrypt.c)
@@ -587,36 +588,63 @@ dna_error_t dna_encrypt_message_raw(
     signature->signature_size = actual_sig_len;
     signature_size = qgp_signature_get_size(signature);
 
-    // Generate random DEK (32 bytes)
-    dek = malloc(32);
-    if (!dek || qgp_randombytes(dek, 32) != 0) {
+    // v0.07: Compute sender fingerprint (SHA3-512 of Dilithium5 pubkey)
+    uint8_t sender_fingerprint[64];
+    if (qgp_sha3_512(sender_sign_pubkey, QGP_DSA87_PUBLICKEYBYTES, sender_fingerprint) != 0) {
         result = DNA_ERROR_CRYPTO;
         goto cleanup;
     }
 
-    // Encrypt with AES-256-GCM
+    // v0.07: Build payload = fingerprint || plaintext
+    size_t payload_len = 64 + plaintext_len;
+    uint8_t *payload = malloc(payload_len);
+    if (!payload) {
+        result = DNA_ERROR_MEMORY;
+        goto cleanup;
+    }
+    memcpy(payload, sender_fingerprint, 64);
+    memcpy(payload + 64, plaintext, plaintext_len);
+
+    // Generate random DEK (32 bytes)
+    dek = malloc(32);
+    if (!dek || qgp_randombytes(dek, 32) != 0) {
+        memset(payload, 0, payload_len);
+        free(payload);
+        result = DNA_ERROR_CRYPTO;
+        goto cleanup;
+    }
+
+    // Encrypt payload with AES-256-GCM
     dna_enc_header_t header_for_aad;
     memset(&header_for_aad, 0, sizeof(header_for_aad));
     memcpy(header_for_aad.magic, DNA_ENC_MAGIC, 8);
     header_for_aad.version = DNA_ENC_VERSION;
     header_for_aad.enc_key_type = DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header_for_aad.recipient_count = 1;
-    header_for_aad.encrypted_size = (uint32_t)plaintext_len;
+    header_for_aad.encrypted_size = (uint32_t)payload_len;  // v0.07: encrypt fingerprint + plaintext
     header_for_aad.signature_size = (uint32_t)signature_size;
 
-    encrypted_data = malloc(plaintext_len);
+    encrypted_data = malloc(payload_len);
     if (!encrypted_data) {
+        memset(payload, 0, payload_len);
+        free(payload);
         result = DNA_ERROR_MEMORY;
         goto cleanup;
     }
 
-    if (qgp_aes256_encrypt(dek, plaintext, plaintext_len,
+    if (qgp_aes256_encrypt(dek, payload, payload_len,
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            encrypted_data, &encrypted_size,
                            nonce, tag) != 0) {
+        memset(payload, 0, payload_len);
+        free(payload);
         result = DNA_ERROR_CRYPTO;
         goto cleanup;
     }
+
+    // Clean up payload (contains fingerprint)
+    memset(payload, 0, payload_len);
+    free(payload);
 
     // Create recipient entry (wrap DEK for recipient)
     uint8_t kyber_ct[QGP_KEM1024_CIPHERTEXTBYTES];
@@ -715,7 +743,9 @@ dna_error_t dna_decrypt_message_raw(
     uint8_t **plaintext_out,
     size_t *plaintext_len_out,
     uint8_t **sender_sign_pubkey_out,
-    size_t *sender_sign_pubkey_len_out)
+    size_t *sender_sign_pubkey_len_out,
+    uint8_t **signature_out,
+    size_t *signature_len_out)
 {
     if (!ctx || !ciphertext || !recipient_enc_privkey ||
         !plaintext_out || !plaintext_len_out ||
@@ -816,6 +846,22 @@ dna_error_t dna_decrypt_message_raw(
     memcpy(tag, ciphertext + offset, 16);
     offset += 16;
 
+    // Parse signature (v0.07: type(1) + sig_size(2) + sig_bytes)
+    if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
+        if (qgp_signature_deserialize(ciphertext + offset, signature_size,
+                                       &signature) != 0) {
+            fprintf(stderr, "[DEBUG] Signature deserialization failed\n");
+            result = DNA_ERROR_DECRYPT;
+            goto cleanup;
+        }
+        offset += signature_size;
+        fprintf(stderr, "[DEBUG] Signature parsed (%zu bytes)\n", signature_size);
+    } else {
+        fprintf(stderr, "[DEBUG] Invalid signature size or bounds check failed\n");
+        result = DNA_ERROR_DECRYPT;
+        goto cleanup;
+    }
+
     // Decrypt with AES-256-GCM
     dna_enc_header_t header_for_aad;
     memcpy(&header_for_aad, &header, sizeof(header));
@@ -836,37 +882,60 @@ dna_error_t dna_decrypt_message_raw(
     }
     fprintf(stderr, "[DEBUG] AES-256-GCM decryption succeeded (%zu bytes)\n", decrypted_size);
 
-    // Parse and verify signature
-    if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
-        const uint8_t *sig_data = ciphertext + offset;
-
-        if (qgp_signature_deserialize(sig_data, signature_size, &signature) == 0 &&
-            signature != NULL) {
-
-            uint8_t *sig_pubkey = qgp_signature_get_pubkey(signature);
-            uint8_t *sig_bytes = qgp_signature_get_bytes(signature);
-
-            fprintf(stderr, "[DEBUG] Verifying Dilithium signature (%zu bytes)...\n", signature->signature_size);
-            if (qgp_dsa87_verify(sig_bytes, signature->signature_size,
-                                     decrypted, decrypted_size, sig_pubkey) != 0) {
-                fprintf(stderr, "[DEBUG] Dilithium signature verification FAILED\n");
-                result = DNA_ERROR_VERIFY;
-                goto cleanup;
-            }
-
-            // Return sender's public key
-            *sender_sign_pubkey_len_out = signature->public_key_size;
-            *sender_sign_pubkey_out = malloc(*sender_sign_pubkey_len_out);
-            if (*sender_sign_pubkey_out) {
-                memcpy(*sender_sign_pubkey_out, sig_pubkey, *sender_sign_pubkey_len_out);
-            }
-        }
+    // v0.07: Extract fingerprint from decrypted payload
+    if (decrypted_size < 64) {
+        fprintf(stderr, "[DEBUG] Decrypted payload too small (< 64 bytes fingerprint)\n");
+        result = DNA_ERROR_DECRYPT;
+        goto cleanup;
     }
 
-    *plaintext_out = decrypted;
-    *plaintext_len_out = decrypted_size;
+    // Extract sender fingerprint (first 64 bytes)
+    *sender_sign_pubkey_len_out = 64;
+    *sender_sign_pubkey_out = malloc(64);
+    if (!*sender_sign_pubkey_out) {
+        result = DNA_ERROR_MEMORY;
+        goto cleanup;
+    }
+    memcpy(*sender_sign_pubkey_out, decrypted, 64);
+    fprintf(stderr, "[DEBUG] Extracted sender fingerprint (64 bytes)\n");
+
+    // Extract actual plaintext (everything after fingerprint)
+    size_t actual_plaintext_len = decrypted_size - 64;
+    *plaintext_len_out = actual_plaintext_len;
+    *plaintext_out = malloc(actual_plaintext_len);
+    if (!*plaintext_out) {
+        free(*sender_sign_pubkey_out);
+        *sender_sign_pubkey_out = NULL;
+        result = DNA_ERROR_MEMORY;
+        goto cleanup;
+    }
+    memcpy(*plaintext_out, decrypted + 64, actual_plaintext_len);
+    fprintf(stderr, "[DEBUG] Extracted plaintext (%zu bytes)\n", actual_plaintext_len);
+
+    // v0.07: Return signature to caller for verification
+    if (signature_out && signature_len_out && signature) {
+        // Get signature bytes from parsed signature
+        size_t sig_bytes_len = signature->signature_size;
+        *signature_len_out = sig_bytes_len;
+        *signature_out = malloc(sig_bytes_len);
+        if (!*signature_out) {
+            free(*plaintext_out);
+            free(*sender_sign_pubkey_out);
+            *plaintext_out = NULL;
+            *sender_sign_pubkey_out = NULL;
+            result = DNA_ERROR_MEMORY;
+            goto cleanup;
+        }
+        memcpy(*signature_out, qgp_signature_get_bytes(signature), sig_bytes_len);
+        fprintf(stderr, "[DEBUG] Signature returned to caller (%zu bytes)\n", sig_bytes_len);
+    }
+
+    // v0.07: Signature verification must be done by caller
+    // Caller must:
+    // 1. Query keyserver for pubkey using returned fingerprint
+    // 2. Verify signature against plaintext using qgp_dilithium5_verify()
+
     result = DNA_OK;
-    decrypted = NULL;  // Don't free on cleanup
 
 cleanup:
     if (recipient_entries) free(recipient_entries);
@@ -1011,6 +1080,22 @@ dna_error_t dna_decrypt_message(
     memcpy(tag, ciphertext + offset, 16);
     offset += 16;
 
+    // Parse signature (v0.07: type(1) + sig_size(2) + sig_bytes)
+    if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
+        if (qgp_signature_deserialize(ciphertext + offset, signature_size,
+                                       &signature) != 0) {
+            fprintf(stderr, "[DEBUG] Signature deserialization failed\n");
+            result = DNA_ERROR_DECRYPT;
+            goto cleanup;
+        }
+        offset += signature_size;
+        fprintf(stderr, "[DEBUG] Signature parsed (%zu bytes)\n", signature_size);
+    } else {
+        fprintf(stderr, "[DEBUG] Invalid signature size or bounds check failed\n");
+        result = DNA_ERROR_DECRYPT;
+        goto cleanup;
+    }
+
     // Decrypt with AES-256-GCM
     dna_enc_header_t header_for_aad;
     memcpy(&header_for_aad, &header, sizeof(header));
@@ -1031,37 +1116,40 @@ dna_error_t dna_decrypt_message(
     }
     fprintf(stderr, "[DEBUG] AES-256-GCM decryption succeeded (%zu bytes)\n", decrypted_size);
 
-    // Parse and verify signature
-    if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
-        const uint8_t *sig_data = ciphertext + offset;
-
-        if (qgp_signature_deserialize(sig_data, signature_size, &signature) == 0 &&
-            signature != NULL) {
-
-            uint8_t *sig_pubkey = qgp_signature_get_pubkey(signature);
-            uint8_t *sig_bytes = qgp_signature_get_bytes(signature);
-
-            fprintf(stderr, "[DEBUG] Verifying Dilithium signature (%zu bytes)...\n", signature->signature_size);
-            if (qgp_dsa87_verify(sig_bytes, signature->signature_size,
-                                     decrypted, decrypted_size, sig_pubkey) != 0) {
-                fprintf(stderr, "[DEBUG] Dilithium signature verification FAILED\n");
-                result = DNA_ERROR_VERIFY;
-                goto cleanup;
-            }
-
-            // Return sender's public key
-            *sender_pubkey_len_out = signature->public_key_size;
-            *sender_pubkey_out = malloc(*sender_pubkey_len_out);
-            if (*sender_pubkey_out) {
-                memcpy(*sender_pubkey_out, sig_pubkey, *sender_pubkey_len_out);
-            }
-        }
+    // v0.07: Extract fingerprint from decrypted payload
+    if (decrypted_size < 64) {
+        fprintf(stderr, "[DEBUG] Decrypted payload too small (< 64 bytes fingerprint)\n");
+        result = DNA_ERROR_DECRYPT;
+        goto cleanup;
     }
 
-    *plaintext_out = decrypted;
-    *plaintext_len_out = decrypted_size;
+    // Extract sender fingerprint (first 64 bytes)
+    *sender_pubkey_len_out = 64;
+    *sender_pubkey_out = malloc(64);
+    if (!*sender_pubkey_out) {
+        result = DNA_ERROR_MEMORY;
+        goto cleanup;
+    }
+    memcpy(*sender_pubkey_out, decrypted, 64);
+    fprintf(stderr, "[DEBUG] Extracted sender fingerprint (64 bytes)\n");
+
+    // Extract actual plaintext (everything after fingerprint)
+    size_t actual_plaintext_len = decrypted_size - 64;
+    *plaintext_len_out = actual_plaintext_len;
+    *plaintext_out = malloc(actual_plaintext_len);
+    if (!*plaintext_out) {
+        free(*sender_pubkey_out);
+        *sender_pubkey_out = NULL;
+        result = DNA_ERROR_MEMORY;
+        goto cleanup;
+    }
+    memcpy(*plaintext_out, decrypted + 64, actual_plaintext_len);
+    fprintf(stderr, "[DEBUG] Extracted plaintext (%zu bytes)\n", actual_plaintext_len);
+
+    // v0.07: dna_decrypt_message doesn't expose signature
+    // Use dna_decrypt_message_raw if you need signature verification
+
     result = DNA_OK;
-    decrypted = NULL;  // Don't free on cleanup
 
 cleanup:
     if (recipient_entries) free(recipient_entries);

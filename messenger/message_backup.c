@@ -23,7 +23,7 @@ struct message_backup_context {
 };
 
 /**
- * Database Schema (v5) - Add invitation_status for group invitations (Phase 6.2)
+ * Database Schema (v6) - Add sender_fingerprint for v0.07 message format (Phase 12)
  *
  * SECURITY: Messages stored as encrypted BLOB for data sovereignty.
  * If database is stolen, messages remain unreadable.
@@ -42,6 +42,7 @@ static const char *SCHEMA_SQL =
     "  id INTEGER PRIMARY KEY AUTOINCREMENT,"
     "  sender TEXT NOT NULL,"
     "  recipient TEXT NOT NULL,"
+    "  sender_fingerprint BLOB,"          // SHA3-512 fingerprint (64 bytes, v0.07)
     "  encrypted_message BLOB NOT NULL,"  // Encrypted ciphertext
     "  encrypted_len INTEGER NOT NULL,"   // Ciphertext length
     "  timestamp INTEGER NOT NULL,"
@@ -57,13 +58,14 @@ static const char *SCHEMA_SQL =
     "CREATE INDEX IF NOT EXISTS idx_sender ON messages(sender);"
     "CREATE INDEX IF NOT EXISTS idx_recipient ON messages(recipient);"
     "CREATE INDEX IF NOT EXISTS idx_timestamp ON messages(timestamp DESC);"
+    "CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint);"
     ""
     "CREATE TABLE IF NOT EXISTS metadata ("
     "  key TEXT PRIMARY KEY,"
     "  value TEXT"
     ");"
     ""
-    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '5');";
+    "INSERT OR IGNORE INTO metadata (key, value) VALUES ('version', '6');";
 
 /**
  * Get database path

@@ -493,6 +493,8 @@ int dht_contactlist_fetch(
     size_t decrypted_len = 0;
     uint8_t *sender_pubkey_out = NULL;
     size_t sender_pubkey_len_out = 0;
+    uint8_t *signature_out = NULL;
+    size_t signature_out_len = 0;
 
     // Decrypt with own private key (self-decryption)
     dna_error_t dec_result = dna_decrypt_message_raw(
@@ -502,8 +504,10 @@ int dht_contactlist_fetch(
         kyber_privkey,              // recipient_enc_privkey (self)
         &decrypted_data,            // output plaintext (allocated by function)
         &decrypted_len,             // output length
-        &sender_pubkey_out,         // sender's dilithium pubkey (for verification)
-        &sender_pubkey_len_out      // sender pubkey length
+        &sender_pubkey_out,         // v0.07: sender's fingerprint (64 bytes)
+        &sender_pubkey_len_out,     // sender fingerprint length
+        &signature_out,             // signature bytes (from v0.07 message)
+        &signature_out_len          // signature length
     );
 
     dna_context_free(dna_ctx);
@@ -511,6 +515,7 @@ int dht_contactlist_fetch(
     if (dec_result != DNA_OK) {
         fprintf(stderr, "[DHT_CONTACTLIST] Failed to decrypt JSON: %s\n", dna_error_string(dec_result));
         free(blob);
+        if (signature_out) free(signature_out);
         return -1;
     }
 
@@ -522,6 +527,7 @@ int dht_contactlist_fetch(
         fprintf(stderr, "[DHT_CONTACTLIST] Failed to allocate JSON buffer\n");
         free(decrypted_data);
         free(sender_pubkey_out);
+        if (signature_out) free(signature_out);
         free(blob);
         return -1;
     }
@@ -537,6 +543,7 @@ int dht_contactlist_fetch(
             free(json_str);
             free(decrypted_data);
             free(sender_pubkey_out);
+            if (signature_out) free(signature_out);
             free(blob);
             return -1;
         }
@@ -545,6 +552,7 @@ int dht_contactlist_fetch(
 
     free(decrypted_data);
     free(sender_pubkey_out);
+    if (signature) free(signature);
     free(blob);
 
     // Step 6: Parse JSON

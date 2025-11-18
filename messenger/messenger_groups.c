@@ -680,6 +680,8 @@ int messenger_sync_groups(messenger_context_t *ctx) {
             size_t plaintext_len = 0;
             uint8_t *sender_pubkey = NULL;
             size_t sender_pubkey_len = 0;
+            uint8_t *signature = NULL;
+            size_t signature_len = 0;
 
             dna_error_t err = dna_decrypt_message_raw(
                 ctx->dna_ctx,
@@ -689,10 +691,13 @@ int messenger_sync_groups(messenger_context_t *ctx) {
                 &plaintext,
                 &plaintext_len,
                 &sender_pubkey,
-                &sender_pubkey_len
+                &sender_pubkey_len,
+                &signature,
+                &signature_len
             );
 
             if (err != DNA_OK || !plaintext) {
+                if (signature) free(signature);
                 continue;  // Skip messages we can't decrypt
             }
 
@@ -701,6 +706,7 @@ int messenger_sync_groups(messenger_context_t *ctx) {
             if (!plaintext_str) {
                 free(plaintext);
                 free(sender_pubkey);
+                if (signature) free(signature);
                 continue;
             }
             memcpy(plaintext_str, plaintext, plaintext_len);
@@ -751,6 +757,7 @@ int messenger_sync_groups(messenger_context_t *ctx) {
 
             free(plaintext);
             free(sender_pubkey);
+            if (signature) free(signature);
         }
 
         message_backup_free_messages(messages, message_count);

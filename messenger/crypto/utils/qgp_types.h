@@ -100,10 +100,11 @@ typedef struct {
 
 /**
  * Signature helper macros
+ * v0.07: Signature block no longer contains public key
  */
 #define qgp_signature_get_pubkey(sig) ((sig)->data)
 #define qgp_signature_get_bytes(sig) ((sig)->data + (sig)->public_key_size)
-#define qgp_signature_total_size(sig) (5 + (sig)->public_key_size + (sig)->signature_size)
+#define qgp_signature_total_size(sig) (3 + (sig)->signature_size)  // v0.07: type(1) + sig_size(2) + sig
 
 // ============================================================================
 // HASH STRUCTURE

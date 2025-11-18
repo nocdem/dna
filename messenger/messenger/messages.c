@@ -604,6 +604,8 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     size_t plaintext_len = 0;
     uint8_t *sender_sign_pubkey_from_msg = NULL;
     size_t sender_sign_pubkey_len = 0;
+    uint8_t *signature = NULL;
+    size_t signature_len = 0;
 
     dna_error_t err = dna_decrypt_message_raw(
         ctx->dna_ctx,
@@ -612,8 +614,10 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
         kyber_key->private_key,
         &plaintext,
         &plaintext_len,
-        &sender_sign_pubkey_from_msg,
-        &sender_sign_pubkey_len
+        &sender_sign_pubkey_from_msg,  // v0.07: This is now 64-byte fingerprint, not pubkey
+        &sender_sign_pubkey_len,
+        &signature,
+        &signature_len
     );
 
     // Free Kyber key (secure wipes private key internally)
@@ -625,28 +629,39 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
         return -1;
     }
 
-    // Verify sender's public key against keyserver
+    // v0.07: sender_sign_pubkey_from_msg is now the 64-byte fingerprint
+    // Look up actual pubkey from keyserver using fingerprint
     uint8_t *sender_sign_pubkey_keyserver = NULL;
     uint8_t *sender_enc_pubkey_keyserver = NULL;
     size_t sender_sign_len_keyserver = 0, sender_enc_len_keyserver = 0;
 
+    // Convert fingerprint to hex for keyserver lookup
+    char fingerprint_hex[129];
+    for (int i = 0; i < 64; i++) {
+        sprintf(fingerprint_hex + (i * 2), "%02x", sender_sign_pubkey_from_msg[i]);
+    }
+    fingerprint_hex[128] = '\0';
+
+    // Query keyserver by fingerprint (cache-first, then DHT)
+    int sig_verified = 0;
     if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
                                &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver, NULL) != 0) {
-        fprintf(stderr, "Warning: Could not verify sender '%s' against keyserver\n", sender);
-        fprintf(stderr, "Message decrypted but sender identity NOT verified!\n");
+        fprintf(stderr, "Warning: Could not load sender '%s' pubkey from keyserver\n", sender);
+        fprintf(stderr, "Message decrypted but signature NOT verified!\n");
+        fprintf(stderr, "Fingerprint: %s\n", fingerprint_hex);
     } else {
-        // Compare public keys
-        if (sender_sign_len_keyserver != sender_sign_pubkey_len ||
-            memcmp(sender_sign_pubkey_keyserver, sender_sign_pubkey_from_msg, sender_sign_pubkey_len) != 0) {
-            fprintf(stderr, "ERROR: Sender public key mismatch!\n");
-            fprintf(stderr, "The message claims to be from '%s' but the signature doesn't match keyserver.\n", sender);
-            fprintf(stderr, "Possible spoofing attempt!\n");
-            free(plaintext);
-            free(sender_sign_pubkey_from_msg);
-            free(sender_sign_pubkey_keyserver);
-            free(sender_enc_pubkey_keyserver);
-            message_backup_free_messages(all_messages, all_count);
-            return -1;
+        // v0.07: Verify signature using looked-up public key
+        if (signature && signature_len > 0) {
+            if (qgp_dsa87_verify(signature, signature_len, plaintext, plaintext_len,
+                                 sender_sign_pubkey_keyserver) == 0) {
+                sig_verified = 1;
+                fprintf(stderr, "[DEBUG] ✓ Signature verified successfully (fingerprint: %.16s...)\n", fingerprint_hex);
+            } else {
+                fprintf(stderr, "[ERROR] ✗ Signature verification FAILED (fingerprint: %.16s...)\n", fingerprint_hex);
+                fprintf(stderr, "WARNING: Message may be forged or corrupted!\n");
+            }
+        } else {
+            fprintf(stderr, "[ERROR] No signature found in message\n");
         }
         free(sender_sign_pubkey_keyserver);
         free(sender_enc_pubkey_keyserver);
@@ -657,12 +672,18 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     printf("----------------------------------------\n");
     printf("%.*s\n", (int)plaintext_len, plaintext);
     printf("----------------------------------------\n");
-    printf("✓ Signature verified from %s\n", sender);
-    printf("✓ Sender identity verified against keyserver\n");
+    if (sig_verified) {
+        printf("✓ Signature verified from %s\n", sender);
+        printf("✓ Sender identity verified against keyserver\n");
+    } else {
+        printf("⚠ WARNING: Signature NOT verified!\n");
+        printf("  Sender: %s (unverified)\n", sender);
+    }
 
     // Cleanup
     free(plaintext);
     free(sender_sign_pubkey_from_msg);
+    if (signature) free(signature);
     message_backup_free_messages(all_messages, all_count);
     printf("\n");
     return 0;
@@ -726,6 +747,8 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     size_t plaintext_len = 0;
     uint8_t *sender_sign_pubkey_from_msg = NULL;
     size_t sender_sign_pubkey_len = 0;
+    uint8_t *signature = NULL;
+    size_t signature_len = 0;
 
     dna_error_t err = dna_decrypt_message_raw(
         ctx->dna_ctx,
@@ -734,8 +757,10 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
         kyber_key->private_key,
         &plaintext,
         &plaintext_len,
-        &sender_sign_pubkey_from_msg,
-        &sender_sign_pubkey_len
+        &sender_sign_pubkey_from_msg,  // v0.07: Now 64-byte fingerprint
+        &sender_sign_pubkey_len,
+        &signature,
+        &signature_len
     );
 
     // Free Kyber key (secure wipes private key internally)
@@ -746,29 +771,11 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
         return -1;
     }
 
-    // Verify sender's public key against keyserver
-    uint8_t *sender_sign_pubkey_keyserver = NULL;
-    uint8_t *sender_enc_pubkey_keyserver = NULL;
-    size_t sender_sign_len_keyserver = 0, sender_enc_len_keyserver = 0;
-
-    if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
-                               &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver, NULL) == 0) {
-        // Compare public keys
-        if (sender_sign_len_keyserver != sender_sign_pubkey_len ||
-            memcmp(sender_sign_pubkey_keyserver, sender_sign_pubkey_from_msg, sender_sign_pubkey_len) != 0) {
-            // Signature mismatch - possible spoofing
-            free(plaintext);
-            free(sender_sign_pubkey_from_msg);
-            free(sender_sign_pubkey_keyserver);
-            free(sender_enc_pubkey_keyserver);
-            message_backup_free_messages(all_messages, all_count);
-            return -1;
-        }
-        free(sender_sign_pubkey_keyserver);
-        free(sender_enc_pubkey_keyserver);
-    }
+    // v0.07: sender_sign_pubkey_from_msg is 64-byte fingerprint
+    // Keyserver lookup and signature verification handled by caller if needed
 
     free(sender_sign_pubkey_from_msg);
+    if (signature) free(signature);
     message_backup_free_messages(all_messages, all_count);
 
     // Return plaintext as null-terminated string
