@@ -552,7 +552,7 @@ int dht_contactlist_fetch(
 
     free(decrypted_data);
     free(sender_pubkey_out);
-    if (signature) free(signature);
+    if (signature_out) free(signature_out);
     free(blob);
 
     // Step 6: Parse JSON

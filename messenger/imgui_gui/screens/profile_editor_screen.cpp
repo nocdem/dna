@@ -274,14 +274,20 @@ void render(AppState& state) {
                     ImVec4 border_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
                     AvatarHelpers::renderCircularAvatar(texture_id, avatar_display_size, border_col, 0.5f);
 
-                    // Remove button (centered below avatar)
-                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + center_x);
-                    if (ThemedButton(ICON_FA_TRASH " Remove", ImVec2(avatar_display_size, 25), false)) {
+                    // Remove button (centered below avatar) - round icon button
+                    ImGui::Spacing();
+                    float remove_button_size = 32.0f;
+                    float button_center_x = (ImGui::GetContentRegionAvail().x - remove_button_size) * 0.5f;
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + button_center_x);
+                    if (ThemedRoundButton(ICON_FA_TRASH, remove_button_size, false)) {
                         state.profile_avatar_base64.clear();
                         state.profile_avatar_loaded = false;
                         state.profile_status = "Avatar removed";
                         // Remove from texture cache
                         TextureManager::getInstance().removeTexture(cache_key);
+                    }
+                    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                        ImGui::SetTooltip("Remove avatar");
                     }
                 } else {
                     ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(),
