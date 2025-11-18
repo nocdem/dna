@@ -959,7 +959,7 @@ void render(AppState& state) {
         // Emoji picker popup
         if (state.show_emoji_picker) {
             ImGui::SetNextWindowPos(state.emoji_picker_pos, ImGuiCond_Always);
-            ImGui::SetNextWindowSize(ImVec2(360, 200), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(ImVec2(300, 280), ImGuiCond_Always);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10, 10));
 
             if (ImGui::Begin("##EmojiPicker", &state.show_emoji_picker, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize)) {
@@ -993,16 +993,17 @@ void render(AppState& state) {
                     ICON_FA_SHIELD, ICON_FA_KEY, ICON_FA_LOCK, ICON_FA_EYE
                 };
                 static const int emoji_count = sizeof(emojis) / sizeof(emojis[0]);
-                static const int emojis_per_row = 9;
+                static const int emojis_per_row = 7;
 
                 ImGui::BeginChild("EmojiGrid", ImVec2(0, 0), false);
 
                 // Display emojis as text with click detection
                 ImVec4 text_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
-                ImVec4 hover_color = g_app_settings.theme == 0 ? DNATheme::ButtonHover() : ClubTheme::ButtonHover();
+                ImVec4 hover_bg_color = g_app_settings.theme == 0 ? DNATheme::ButtonHover() : ClubTheme::ButtonHover();
+                ImVec4 hover_text_color = g_app_settings.theme == 0 ? DNATheme::Background() : ClubTheme::Background();
                 ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 8));
 
-                // Display emojis in a grid (9 per row)
+                // Display emojis in a grid (7 per row)
                 for (int i = 0; i < emoji_count; i++) {
                     ImGui::PushID(i);
                     
@@ -1013,17 +1014,18 @@ void render(AppState& state) {
                     // Draw hover background
                     if (hovered) {
                         ImDrawList* draw_list = ImGui::GetWindowDrawList();
-                        ImU32 bg_color = ImGui::GetColorU32(hover_color);
+                        ImU32 bg_color = ImGui::GetColorU32(hover_bg_color);
                         draw_list->AddRectFilled(cursor_pos, ImVec2(cursor_pos.x + 35, cursor_pos.y + 35), bg_color, 4.0f);
                     }
                     
-                    // Draw emoji icon centered
+                    // Draw emoji icon centered - use dark color when hovered
+                    ImVec4 icon_color = hovered ? hover_text_color : text_color;
                     ImVec2 text_size = ImGui::CalcTextSize(emojis[i]);
                     ImVec2 text_pos = ImVec2(
                         cursor_pos.x + (35 - text_size.x) * 0.5f,
                         cursor_pos.y + (35 - text_size.y) * 0.5f
                     );
-                    ImGui::GetWindowDrawList()->AddText(text_pos, ImGui::GetColorU32(text_color), emojis[i]);
+                    ImGui::GetWindowDrawList()->AddText(text_pos, ImGui::GetColorU32(icon_color), emojis[i]);
                     
                     if (clicked) {
                         if (len > 0) state.message_input[len-1] = '\0'; // Remove the ':'
