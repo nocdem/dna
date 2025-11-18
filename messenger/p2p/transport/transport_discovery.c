@@ -95,7 +95,7 @@ int p2p_register_presence(p2p_transport_t *ctx) {
     // Compute fingerprint (hex string) from public key hash for ICE DHT key
     char fingerprint_hex[129];  // SHA3-512 = 64 bytes * 2 hex chars + null
     for (int i = 0; i < 64; i++) {
-        sprintf(fingerprint_hex + (i * 2), "%02x", dht_key[i]);
+        snprintf(fingerprint_hex + (i * 2), 3, "%02x", dht_key[i]);  // Fixed: use snprintf with size 3
     }
     fingerprint_hex[128] = '\0';
 
@@ -293,7 +293,7 @@ int p2p_send_message(
 
     char peer_fingerprint_hex[129];  // SHA3-512 = 64 bytes * 2 hex chars + null
     for (int i = 0; i < 64; i++) {
-        sprintf(peer_fingerprint_hex + (i * 2), "%02x", peer_dht_key[i]);
+        snprintf(peer_fingerprint_hex + (i * 2), 3, "%02x", peer_dht_key[i]);  // Fixed: use snprintf with size 3
     }
     peer_fingerprint_hex[128] = '\0';
 

@@ -499,7 +499,10 @@ int ice_fetch_from_dht(ice_context_t *ctx, const char *peer_fingerprint) {
 
     if (result != 0 || !data) {
         fprintf(stderr, "[ICE] Failed to fetch candidates from DHT\n");
-        if (data) free(data);
+        if (data) {
+            free(data);
+            data = NULL;  // Fixed: Prevent use-after-free
+        }
         return -1;
     }
 
@@ -511,6 +514,7 @@ int ice_fetch_from_dht(ice_context_t *ctx, const char *peer_fingerprint) {
     ctx->remote_candidates[copy_len] = '\0';
 
     free(data);
+    data = NULL;  // Fixed: Prevent use-after-free
 
     printf("[ICE] Successfully fetched candidates from DHT\n");
     return 0;
@@ -644,7 +648,13 @@ int ice_recv_timeout(ice_context_t *ctx, uint8_t *buf, size_t buflen, int timeou
             g_cond_wait(&ctx->recv_cond, &ctx->recv_mutex);
         } else {
             // Timed wait
-            gint64 end_time = g_get_monotonic_time() + (timeout_ms * 1000);  // microseconds
+            // Fixed: Check for overflow before multiplication
+            if (timeout_ms > INT_MAX / 1000) {
+                fprintf(stderr, "[ICE] Timeout too large: %d ms\n", timeout_ms);
+                g_mutex_unlock(&ctx->recv_mutex);
+                return -1;
+            }
+            gint64 end_time = g_get_monotonic_time() + ((gint64)timeout_ms * 1000);  // microseconds
             if (!g_cond_wait_until(&ctx->recv_cond, &ctx->recv_mutex, end_time)) {
                 // Timeout
                 g_mutex_unlock(&ctx->recv_mutex);
@@ -784,10 +794,19 @@ static void on_candidate_gathering_done(NiceAgent *agent, guint stream_id, gpoin
         gchar *candidate_str = nice_agent_generate_local_candidate_sdp(agent, c);
 
         if (candidate_str) {
-            size_t remaining = MAX_CANDIDATES_SIZE - strlen(ctx->local_candidates) - 1;
-            if (remaining > strlen(candidate_str) + 1) {
-                strcat(ctx->local_candidates, candidate_str);
-                strcat(ctx->local_candidates, "\n");
+            size_t current_len = strlen(ctx->local_candidates);
+            size_t remaining = MAX_CANDIDATES_SIZE - current_len - 1;
+            size_t candidate_len = strlen(candidate_str);
+            size_t needed = candidate_len + 1;  // +1 for '\n'
+
+            // Fixed: use >= instead of >, account for newline, use strncat
+            if (remaining >= needed) {
+                strncat(ctx->local_candidates, candidate_str, remaining);
+                current_len += candidate_len;
+                remaining = MAX_CANDIDATES_SIZE - current_len - 1;
+                if (remaining > 0) {
+                    strncat(ctx->local_candidates, "\n", remaining);
+                }
             }
             g_free(candidate_str);
         }
