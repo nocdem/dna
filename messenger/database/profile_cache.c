@@ -96,6 +96,25 @@ int profile_cache_init(const char *owner_identity) {
         return -1;
     }
 
+    // MIGRATION: Check if old schema exists (without fingerprint column)
+    // Query to check if fingerprint column exists
+    const char *check_sql = "SELECT fingerprint FROM profiles LIMIT 1;";
+    sqlite3_stmt *check_stmt = NULL;
+    rc = sqlite3_prepare_v2(g_db, check_sql, -1, &check_stmt, NULL);
+
+    if (rc != SQLITE_OK) {
+        // Table doesn't exist or has wrong schema - drop and recreate
+        printf("[PROFILE_CACHE] Migrating to new schema (fingerprint column)\n");
+        char *err_msg = NULL;
+        sqlite3_exec(g_db, "DROP TABLE IF EXISTS profiles;", NULL, NULL, &err_msg);
+        if (err_msg) {
+            fprintf(stderr, "[PROFILE_CACHE] Migration warning: %s\n", err_msg);
+            sqlite3_free(err_msg);
+        }
+    } else {
+        sqlite3_finalize(check_stmt);
+    }
+
     // Create table if it doesn't exist (Phase 5: Unified Identity)
     const char *sql =
         "CREATE TABLE IF NOT EXISTS profiles ("
