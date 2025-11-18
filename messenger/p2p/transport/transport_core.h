@@ -101,7 +101,8 @@ struct p2p_transport {
     size_t connection_count;
     pthread_mutex_t connections_mutex;
 
-    // Callbacks
+    // Callbacks (protected by callback_mutex to prevent TOCTOU race conditions)
+    pthread_mutex_t callback_mutex;
     p2p_message_callback_t message_callback;
     p2p_connection_callback_t connection_callback;
     void *callback_user_data;

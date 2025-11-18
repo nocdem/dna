@@ -349,30 +349,43 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
         strncpy(frac_part, frac_start, frac_len);
 
         // Pad fractional part to 18 digits with zeros
-        while (strlen(frac_part) < 18) {
-            strcat(frac_part, "0");
+        size_t current_len = strlen(frac_part);
+        while (current_len < 18) {
+            frac_part[current_len++] = '0';
         }
+        frac_part[18] = '\0';
 
-        // Parse integer and fractional parts
+        // Parse integer and fractional parts with overflow checking
         // WORKAROUND: Manual parsing to avoid strtoull() bugs in cross-compiled environments
         // Use 10ULL to force 64-bit arithmetic (critical for Windows cross-compile!)
         uint64_t int_value = 0;
         for (const char *p = int_part; *p; p++) {
             if (*p < '0' || *p > '9') break;
-            int_value = int_value * 10ULL + (uint64_t)(*p - '0');
+            uint64_t digit = (uint64_t)(*p - '0');
+            // Check for overflow BEFORE multiplication
+            if (int_value > (UINT64_MAX - digit) / 10) {
+                fprintf(stderr, "[ERROR] Integer overflow in amount parsing: %s\n", value_str);
+                return -1;
+            }
+            int_value = int_value * 10ULL + digit;
+        }
+
+        // Check range AFTER parsing (max ~18 CELL fits in uint64_t)
+        if (int_value > 18) {
+            fprintf(stderr, "[ERROR] Amount too large: %s CELL (max ~18 CELL)\n", value_str);
+            return -1;
         }
 
         uint64_t frac_value = 0;
         for (const char *p = frac_part; *p; p++) {
             if (*p < '0' || *p > '9') break;
-            frac_value = frac_value * 10ULL + (uint64_t)(*p - '0');
-        }
-
-        // Calculate total datoshi: (int_value * 10^18) + frac_value
-        // Check for overflow
-        if (int_value > 18) {  // Max ~18 CELL fits in uint64_t
-            fprintf(stderr, "[ERROR] Amount too large: %s CELL (max ~18 CELL)\n", value_str);
-            return -1;
+            uint64_t digit = (uint64_t)(*p - '0');
+            // Check for overflow BEFORE multiplication
+            if (frac_value > (UINT64_MAX - digit) / 10) {
+                fprintf(stderr, "[ERROR] Integer overflow in fractional parsing: %s\n", value_str);
+                return -1;
+            }
+            frac_value = frac_value * 10ULL + digit;
         }
 
         datoshi = (int_value * 1000000000000000000ULL) + frac_value;
@@ -380,12 +393,18 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
         printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> int:%llu frac:%llu -> datoshi: %llu (0x%llx)\n",
                value_str, (unsigned long long)int_value, (unsigned long long)frac_value, (unsigned long long)datoshi, (unsigned long long)datoshi);
     } else {
-        // Parse as integer datoshi string
+        // Parse as integer datoshi string with overflow checking
         // Manual parsing to avoid strtoull() 32-bit truncation on Windows
         datoshi = 0;
         for (const char *p = value_str; *p; p++) {
             if (*p < '0' || *p > '9') break;
-            datoshi = datoshi * 10ULL + (uint64_t)(*p - '0');
+            uint64_t digit = (uint64_t)(*p - '0');
+            // Check for overflow BEFORE multiplication
+            if (datoshi > (UINT64_MAX - digit) / 10) {
+                fprintf(stderr, "[ERROR] Integer overflow in datoshi parsing: %s\n", value_str);
+                return -1;
+            }
+            datoshi = datoshi * 10ULL + digit;
         }
         printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> datoshi: %llu (0x%llx)\n",
                value_str, (unsigned long long)datoshi, (unsigned long long)datoshi);

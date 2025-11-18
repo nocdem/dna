@@ -50,8 +50,9 @@ p2p_transport_t* p2p_transport_init(
     ctx->connection_callback = connection_callback;
     ctx->callback_user_data = callback_user_data;
 
-    // Initialize mutex
+    // Initialize mutexes
     pthread_mutex_init(&ctx->connections_mutex, NULL);
+    pthread_mutex_init(&ctx->callback_mutex, NULL);
 
     // Use global DHT singleton (initialized at app startup)
     // No need to create/start DHT here - it's already running
@@ -121,7 +122,9 @@ void p2p_transport_free(p2p_transport_t *ctx) {
     // Don't free DHT - it's a global singleton managed at app level
     ctx->dht = NULL;
 
+    // Destroy mutexes
     pthread_mutex_destroy(&ctx->connections_mutex);
+    pthread_mutex_destroy(&ctx->callback_mutex);
 
     // Clear sensitive keys
     memset(ctx->my_private_key, 0, sizeof(ctx->my_private_key));

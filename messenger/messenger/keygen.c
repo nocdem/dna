@@ -767,12 +767,24 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
         return -1;
     }
 
-    // Build mnemonic from first 24 words
-    mnemonic[0] = '\0';
+    // Build mnemonic from first 24 words with bounds checking
+    size_t pos = 0;
     for (int i = 0; i < 24; i++) {
-        if (i > 0) strcat(mnemonic, " ");
-        strcat(mnemonic, words[i]);
+        // Add space separator
+        if (i > 0 && pos < sizeof(mnemonic) - 1) {
+            mnemonic[pos++] = ' ';
+        }
+
+        // Add word with overflow check
+        size_t word_len = strlen(words[i]);
+        if (pos + word_len >= sizeof(mnemonic)) {
+            fprintf(stderr, "Error: Mnemonic buffer overflow (word %d too long)\n", i);
+            return -1;
+        }
+        memcpy(mnemonic + pos, words[i], word_len);
+        pos += word_len;
     }
+    mnemonic[pos] = '\0';
 
     // If 25th word exists, it's the passphrase
     if (word_count >= 25) {

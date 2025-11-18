@@ -50,6 +50,26 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
         fprintf(stderr, "[CONTACTS_DB] Failed to get home directory\n");
         return -1;
     }
+
+    // Validate owner_identity to prevent path traversal attacks
+    // Use whitelist approach: only allow alphanumeric, dash, underscore
+    size_t identity_len = strlen(owner_identity);
+    if (identity_len == 0 || identity_len > 128) {
+        fprintf(stderr, "[CONTACTS_DB] Invalid identity length: %zu (must be 1-128 chars)\n", identity_len);
+        return -1;
+    }
+
+    for (size_t i = 0; i < identity_len; i++) {
+        char c = owner_identity[i];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+              (c >= '0' && c <= '9') || c == '-' || c == '_')) {
+            fprintf(stderr, "[CONTACTS_DB] Invalid character in identity: 0x%02X at position %zu\n",
+                    (unsigned char)c, i);
+            fprintf(stderr, "[CONTACTS_DB] Only alphanumeric, dash, and underscore allowed\n");
+            return -1;
+        }
+    }
+
     snprintf(path_out, path_size, "%s/.dna/%s_contacts.db", home, owner_identity);
 #endif
     return 0;

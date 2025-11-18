@@ -109,14 +109,23 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
         return -1;
     }
 
-    // Build items array
-    char *json = malloc(65536);  // Large buffer for items
+    // Build items array with bounds checking
+    #define MAX_JSON_SIZE (1024 * 1024)  // 1MB max transaction size
+    char *json = malloc(MAX_JSON_SIZE);
     if (!json) {
         return -1;
     }
 
     size_t json_len = 0;
-    json_len += sprintf(json + json_len, "  \"items\": [\n");
+    size_t remaining = MAX_JSON_SIZE;
+
+    int ret = snprintf(json + json_len, remaining, "  \"items\": [\n");
+    if (ret < 0 || (size_t)ret >= remaining) {
+        free(json);
+        return -1;
+    }
+    json_len += ret;
+    remaining -= ret;
 
     size_t offset = 0;
     int item_count = 0;
@@ -126,7 +135,13 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
         uint8_t type = item[0];
 
         if (item_count > 0) {
-            json_len += sprintf(json + json_len, ",\n");
+            ret = snprintf(json + json_len, remaining, ",\n");
+            if (ret < 0 || (size_t)ret >= remaining) {
+                free(json);
+                return -1;
+            }
+            json_len += ret;
+            remaining -= ret;
         }
 
         if (type == TX_ITEM_TYPE_IN) {
@@ -136,9 +151,15 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
             char prev_hash_hex[67];
             cellframe_hash_to_hex(&in_item->tx_prev_hash, prev_hash_hex);
 
-            json_len += sprintf(json + json_len,
+            ret = snprintf(json + json_len, remaining,
                 "    {\"type\":\"in\", \"prev_hash\":\"%s\", \"out_prev_idx\":%u}",
                 prev_hash_hex, in_item->tx_out_prev_idx);
+            if (ret < 0 || (size_t)ret >= remaining) {
+                free(json);
+                return -1;
+            }
+            json_len += ret;
+            remaining -= ret;
 
             offset += sizeof(cellframe_tx_in_t);
 
@@ -159,9 +180,15 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
             }
             addr_base58[addr_len] = '\0';
 
-            json_len += sprintf(json + json_len,
+            ret = snprintf(json + json_len, remaining,
                 "    {\"type\":\"out\", \"addr\":\"%s\", \"value\":\"%s\"}",
                 addr_base58, value_str);
+            if (ret < 0 || (size_t)ret >= remaining) {
+                free(json);
+                return -1;
+            }
+            json_len += ret;
+            remaining -= ret;
 
             offset += sizeof(cellframe_tx_out_t);
 
@@ -177,12 +204,18 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
                 subtype_str = "fee";
             }
 
-            json_len += sprintf(json + json_len,
+            ret = snprintf(json + json_len, remaining,
                 "    {\"type\":\"out_cond\", \"subtype\":\"%s\", "
                 "\"value\":\"%s\", \"ts_expires\":\"%s\", \"service_id\":\"0x%016lX\"}",
                 subtype_str, value_str,
                 cond_item->ts_expires == 0 ? "never" : "timestamp",
                 cond_item->srv_uid);
+            if (ret < 0 || (size_t)ret >= remaining) {
+                free(json);
+                return -1;
+            }
+            json_len += ret;
+            remaining -= ret;
 
             offset += sizeof(cellframe_tx_out_cond_t);
 
@@ -193,32 +226,57 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
 
             // Write raw string (cellframe-tool-sign expects plain text, not base64)
             // Source: dap_chain_net_tx.c:1281 uses dap_strlen() directly on data string
-            json_len += sprintf(json + json_len,
+            ret = snprintf(json + json_len, remaining,
                 "    {\"type\":\"data\", \"type_tsd\":%u, \"data\":\"", tsd->type);
+            if (ret < 0 || (size_t)ret >= remaining) {
+                free(json);
+                return -1;
+            }
+            json_len += ret;
+            remaining -= ret;
 
-            // Copy data with JSON escaping
+            // Copy data with JSON escaping and bounds checking
             for (uint32_t i = 0; i < tsd->size; i++) {
                 char c = tsd->data[i];
+
+                // Check we have at least 2 bytes remaining for worst case (escape + char)
+                if (remaining < 3) {
+                    fprintf(stderr, "[JSON] TSD data too large, buffer full\n");
+                    free(json);
+                    return -1;
+                }
+
                 if (c == '"' || c == '\\') {
                     json[json_len++] = '\\';  // Escape quotes and backslashes
                     json[json_len++] = c;
+                    remaining -= 2;
                 } else if (c == '\n') {
                     json[json_len++] = '\\';
                     json[json_len++] = 'n';
+                    remaining -= 2;
                 } else if (c == '\r') {
                     json[json_len++] = '\\';
                     json[json_len++] = 'r';
+                    remaining -= 2;
                 } else if (c == '\t') {
                     json[json_len++] = '\\';
                     json[json_len++] = 't';
+                    remaining -= 2;
                 } else if (c == '\0') {
                     break;  // Stop at null terminator for strings
                 } else {
                     json[json_len++] = c;
+                    remaining--;
                 }
             }
 
-            json_len += sprintf(json + json_len, "\", \"size\":%u}", tsd->size);
+            ret = snprintf(json + json_len, remaining, "\", \"size\":%u}", tsd->size);
+            if (ret < 0 || (size_t)ret >= remaining) {
+                free(json);
+                return -1;
+            }
+            json_len += ret;
+            remaining -= ret;
 
             offset += sizeof(cellframe_tx_tsd_t) + tsd_item->size;
 
@@ -234,11 +292,18 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
                 return -1;
             }
 
-            json_len += sprintf(json + json_len,
+            ret = snprintf(json + json_len, remaining,
                 "    {\"type\":\"sign\", \"sig_size\":%u, \"sig_b64\":\"%s\"}",
                 sig_header->sig_size, sig_b64);
 
             free(sig_b64);
+
+            if (ret < 0 || (size_t)ret >= remaining) {
+                free(json);
+                return -1;
+            }
+            json_len += ret;
+            remaining -= ret;
 
             offset += sizeof(cellframe_tx_sig_header_t) + sig_header->sig_size;
 
@@ -251,10 +316,16 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
         item_count++;
     }
 
-    json_len += sprintf(json + json_len, "\n  ]");
+    ret = snprintf(json + json_len, remaining, "\n  ]");
+    if (ret < 0 || (size_t)ret >= remaining) {
+        free(json);
+        return -1;
+    }
+    json_len += ret;
 
     *items_json_out = json;
     return 0;
+    #undef MAX_JSON_SIZE
 }
 
 int cellframe_tx_to_json(const uint8_t *tx_data, size_t tx_size, char **json_out) {

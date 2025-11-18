@@ -84,11 +84,14 @@ void* listener_thread(void *arg) {
         printf("[P2P] ✓ Received %u bytes from peer\n", msg_len);
 
         // Call message callback if registered (stores message in SQLite)
+        // Protected by callback_mutex to prevent TOCTOU race condition
+        pthread_mutex_lock(&ctx->callback_mutex);
         if (ctx->message_callback) {
             // Note: We don't have the peer's public key here (would need handshake)
             // For now, pass NULL - the callback can try to identify sender from message content
             ctx->message_callback(NULL, message, msg_len, ctx->callback_user_data);
         }
+        pthread_mutex_unlock(&ctx->callback_mutex);
 
         // Send ACK (1 byte = 0x01) to confirm receipt
         uint8_t ack = 0x01;

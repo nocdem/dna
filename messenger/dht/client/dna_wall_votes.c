@@ -6,11 +6,18 @@
 #include "../../crypto/utils/qgp_dilithium.h"
 #include "../../crypto/utils/qgp_types.h"
 #include "../core/dht_context.h"
+#include "../core/dht_keyserver.h"  // For signature verification
 #include <json-c/json.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <arpa/inet.h>
+
+#ifdef _WIN32
+    #include <winsock2.h>
+#else
+    #include <arpa/inet.h>
+#endif
+
 #include <openssl/evp.h>
 
 // Network byte order conversion for uint64_t
@@ -292,8 +299,56 @@ int dna_load_votes(dht_context_t *dht_ctx,
         return -1;
     }
 
-    printf("[DNA_VOTES] ✓ Loaded votes (up=%d, down=%d, total=%zu)\n",
+    printf("[DNA_VOTES] ✓ Loaded votes (up=%d, down=%d, total=%zu) - verifying signatures...\n",
            (*votes_out)->upvote_count, (*votes_out)->downvote_count, (*votes_out)->vote_count);
+
+    // SECURITY: Verify all vote signatures before accepting them
+    // This prevents forged votes published directly to DHT
+    size_t verified_count = 0;
+    int upvote_count = 0;
+    int downvote_count = 0;
+
+    for (size_t i = 0; i < (*votes_out)->vote_count; i++) {
+        dna_wall_vote_t *vote = &(*votes_out)->votes[i];
+
+        // Lookup voter's public key from keyserver
+        dht_pubkey_entry_t *pubkey_entry = NULL;
+        if (dht_keyserver_lookup(dht_ctx, vote->voter_fingerprint, &pubkey_entry) != 0) {
+            fprintf(stderr, "[DNA_VOTES] WARNING: Failed to lookup public key for voter %s, skipping vote\n",
+                    vote->voter_fingerprint);
+            continue;
+        }
+
+        // Verify vote signature
+        int verify_ret = dna_verify_vote_signature(vote, post_id, pubkey_entry->dilithium_pubkey);
+        dht_keyserver_free_entry(pubkey_entry);
+
+        if (verify_ret != 0) {
+            fprintf(stderr, "[DNA_VOTES] WARNING: Invalid signature for vote from %s, vote rejected\n",
+                    vote->voter_fingerprint);
+            continue;
+        }
+
+        // Vote verified successfully
+        verified_count++;
+        if (vote->vote_value == 1) {
+            upvote_count++;
+        } else if (vote->vote_value == -1) {
+            downvote_count++;
+        }
+    }
+
+    // Update counts with verified votes only
+    (*votes_out)->upvote_count = upvote_count;
+    (*votes_out)->downvote_count = downvote_count;
+
+    printf("[DNA_VOTES] ✓ Verified %zu/%zu votes (up=%d, down=%d)\n",
+           verified_count, (*votes_out)->vote_count, upvote_count, downvote_count);
+
+    if (verified_count < (*votes_out)->vote_count) {
+        fprintf(stderr, "[DNA_VOTES] WARNING: %zu votes failed verification and were rejected\n",
+                (*votes_out)->vote_count - verified_count);
+    }
 
     return 0;
 }
