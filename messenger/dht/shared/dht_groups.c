@@ -11,7 +11,8 @@
 
 #include "dht_groups.h"
 #include "../core/dht_context.h"
-#include "../crypto/utils/qgp_sha3.h"
+#include "../../crypto/utils/qgp_sha3.h"
+#include "../../crypto/utils/qgp_random.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,19 +46,16 @@ static const char *GROUP_CACHE_SCHEMA =
     "CREATE INDEX IF NOT EXISTS idx_member_identity ON dht_group_members(member_identity);";
 
 // Helper: Generate UUID v4
-static void generate_uuid_v4(char *uuid_out) {
-    // Simple UUID v4 generation (random-based)
+// Returns: 0 on success, -1 on failure
+static int generate_uuid_v4(char *uuid_out) {
+    // UUID v4 generation using cryptographically secure randomness
     unsigned char bytes[16];
-    FILE *f = fopen("/dev/urandom", "rb");
-    if (f) {
-        fread(bytes, 1, 16, f);
-        fclose(f);
-    } else {
-        // Fallback to rand()
-        srand(time(NULL));
-        for (int i = 0; i < 16; i++) {
-            bytes[i] = rand() & 0xFF;
-        }
+
+    // Use qgp_randombytes for cryptographically secure random generation
+    // This uses getrandom() on Linux or BCryptGenRandom() on Windows
+    if (qgp_randombytes(bytes, 16) != 0) {
+        fprintf(stderr, "[ERROR] Failed to generate UUID: no secure randomness available\n");
+        return -1;
     }
 
     // Set version (4) and variant (RFC 4122)
@@ -70,6 +68,8 @@ static void generate_uuid_v4(char *uuid_out) {
         bytes[4], bytes[5], bytes[6], bytes[7],
         bytes[8], bytes[9], bytes[10], bytes[11],
         bytes[12], bytes[13], bytes[14], bytes[15]);
+
+    return 0;  // Success
 }
 
 // Helper: Compute SHA3-512 hash for DHT key (Category 5)
@@ -256,7 +256,10 @@ int dht_groups_create(
 
     // Generate UUID
     char group_uuid[37];
-    generate_uuid_v4(group_uuid);
+    if (generate_uuid_v4(group_uuid) != 0) {
+        fprintf(stderr, "[DHT GROUPS] Failed to generate UUID for group\n");
+        return -1;
+    }
     strcpy(group_uuid_out, group_uuid);
 
     // Build metadata

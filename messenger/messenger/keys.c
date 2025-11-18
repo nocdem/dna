@@ -9,6 +9,10 @@
 #include <json-c/json.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
+#ifdef _WIN32
+#define CURL_STATICLIB  // Required for static linking on Windows
+#endif
+#include <curl/curl.h>
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_types.h"
 #include "../dht/core/dht_keyserver.h"
@@ -16,6 +20,34 @@
 #include "../database/keyserver_cache.h"
 #include "../database/contacts_db.h"
 #include "../p2p/p2p_transport.h"
+
+// ============================================================================
+// CURL HELPERS
+// ============================================================================
+
+// Response buffer for curl
+struct curl_response_buffer {
+    char *data;
+    size_t size;
+};
+
+// Curl write callback (renamed to avoid conflict with curl.h typedef)
+static size_t keys_curl_write_cb(void *contents, size_t size, size_t nmemb, void *userp) {
+    size_t realsize = size * nmemb;
+    struct curl_response_buffer *buf = (struct curl_response_buffer *)userp;
+
+    char *ptr = realloc(buf->data, buf->size + realsize + 1);
+    if (!ptr) {
+        return 0;
+    }
+
+    buf->data = ptr;
+    memcpy(&(buf->data[buf->size]), contents, realsize);
+    buf->size += realsize;
+    buf->data[buf->size] = 0;
+
+    return realsize;
+}
 
 // ============================================================================
 // HELPER FUNCTIONS (Base64 encoding/decoding)
@@ -299,25 +331,48 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
         return -1;
     }
 
-    // Fetch from cpunk.io API
+    // Fetch from cpunk.io API using libcurl (secure, no command injection)
     const char *url = "https://cpunk.io/api/keyserver/list";
-    char cmd[1024];
-#ifdef _WIN32
-    snprintf(cmd, sizeof(cmd), "curl -s \"%s\"", url);
-#else
-    snprintf(cmd, sizeof(cmd), "curl -s '%s'", url);
-#endif
 
-    FILE *fp = popen(cmd, "r");
-    if (!fp) {
-        fprintf(stderr, "Error: Failed to fetch identity list from keyserver\n");
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        fprintf(stderr, "Error: Failed to initialize curl\n");
         return -1;
     }
 
-    char response[102400]; // 100KB buffer for large lists
-    size_t response_len = fread(response, 1, sizeof(response) - 1, fp);
-    response[response_len] = '\0';
-    pclose(fp);
+    // Setup response buffer
+    struct curl_response_buffer resp_buf = {0};
+
+    // Configure curl options
+    curl_easy_setopt(curl, CURLOPT_URL, url);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, keys_curl_write_cb);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);  // HTTPS only
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);  // 30 second timeout
+    curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);  // Follow redirects
+    curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);  // Max 3 redirects
+
+    // Perform request
+    CURLcode res = curl_easy_perform(curl);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        fprintf(stderr, "Error: Failed to fetch identity list from keyserver: %s\n",
+                curl_easy_strerror(res));
+        if (resp_buf.data) {
+            free(resp_buf.data);
+        }
+        return -1;
+    }
+
+    if (!resp_buf.data) {
+        fprintf(stderr, "Error: Empty response from keyserver\n");
+        return -1;
+    }
+
+    // Use the response buffer
+    char *response = resp_buf.data;
+    size_t response_len = resp_buf.size;
 
     // Trim whitespace
     while (response_len > 0 &&
@@ -332,6 +387,7 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
     struct json_object *root = json_tokener_parse(response);
     if (!root) {
         fprintf(stderr, "Error: Failed to parse JSON response\n");
+        free(response);
         return -1;
     }
 
@@ -340,6 +396,7 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
     if (!success_obj || !json_object_get_boolean(success_obj)) {
         fprintf(stderr, "Error: API returned failure\n");
         json_object_put(root);
+        free(response);
         return -1;
     }
 
@@ -353,6 +410,7 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
     struct json_object *identities_obj = json_object_object_get(root, "identities");
     if (!identities_obj || !json_object_is_type(identities_obj, json_type_array)) {
         json_object_put(root);
+        free(response);
         return 0;
     }
 
@@ -372,6 +430,7 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
 
     printf("\n");
     json_object_put(root);
+    free(response);
     return 0;
 }
 

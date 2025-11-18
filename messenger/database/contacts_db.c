@@ -41,6 +41,16 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
 
     for (size_t i = 0; i < identity_len; i++) {
         char c = owner_identity[i];
+
+        // Explicitly block path traversal characters on all platforms
+        if (c == '\\' || c == '/' || c == ':' || c == '.') {
+            fprintf(stderr, "[CONTACTS_DB] Path traversal character blocked: 0x%02X at position %zu\n",
+                    (unsigned char)c, i);
+            fprintf(stderr, "[CONTACTS_DB] Backslash, slash, colon, and dot not allowed\n");
+            return -1;
+        }
+
+        // Whitelist: only allow alphanumeric, dash, underscore
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
               (c >= '0' && c <= '9') || c == '-' || c == '_')) {
             fprintf(stderr, "[CONTACTS_DB] Invalid character in identity: 0x%02X at position %zu\n",
