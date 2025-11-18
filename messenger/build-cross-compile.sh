@@ -225,8 +225,8 @@ build_windows_x64() {
         fi
 
         cd "$MXE_DIR"
-        echo -e "${BLUE}Building MXE dependencies: gcc openssl json-c curl libnice glib glfw glew freetype${NC}"
-        make MXE_TARGETS=x86_64-w64-mingw32.static gcc openssl json-c curl libnice glib glfw glew freetype -j$(nproc)
+        echo -e "${BLUE}Building MXE dependencies: gcc openssl json-c curl libnice glib freetype${NC}"
+        make MXE_TARGETS=x86_64-w64-mingw32.static gcc openssl json-c curl libnice glib freetype -j$(nproc)
         echo -e "${GREEN}✓${NC} MXE build complete"
     else
         echo -e "${GREEN}✓${NC} MXE build already complete, skipping build step"
