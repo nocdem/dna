@@ -36,6 +36,40 @@ bool ThemedButton(const char* label, const ImVec2& size, bool is_active) {
     return result;
 }
 
+// Helper function for themed round icon buttons
+bool ThemedRoundButton(const char* icon, float size, bool is_active) {
+    ImVec4 btn_color, hover_color, active_color, text_color;
+
+    if (g_app_settings.theme == 0) { // DNA Theme
+        btn_color = DNATheme::Text();
+        hover_color = DNATheme::ButtonHover();
+        active_color = DNATheme::ButtonActive();
+        text_color = DNATheme::SelectedText();
+    } else { // Club Theme
+        btn_color = ClubTheme::Text();
+        hover_color = ClubTheme::ButtonHover();
+        active_color = ClubTheme::ButtonActive();
+        text_color = ClubTheme::SelectedText();
+    }
+
+    if (is_active) {
+        ImGui::PushStyleColor(ImGuiCol_Button, active_color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active_color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
+    } else {
+        ImGui::PushStyleColor(ImGuiCol_Button, btn_color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, hover_color);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, active_color);
+    }
+
+    ImGui::PushStyleColor(ImGuiCol_Text, text_color);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, size * 0.5f);
+    bool result = ImGui::Button(icon, ImVec2(size, size));
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
+    return result;
+}
+
 // Global themed spinner utility (beautiful arc design)
 void ThemedSpinner(const char* label, float radius, float thickness) {
     ImGui::BeginGroup();

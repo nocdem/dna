@@ -211,14 +211,37 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
                                    state.profile_registered_name != "Error loading";
         
         if (has_registered_name) {
-            // User is registered - show Edit Profile button
-            if (ThemedButton(ICON_FA_USER " Edit Profile", ImVec2(-1, 40))) {
+            // User is registered - show round icon buttons for Edit Profile and Post to Wall
+            // Center the buttons
+            float button_spacing = 8.0f;
+            float total_width = 32.0f + button_spacing + 32.0f;
+            float start_x = (250 - total_width) * 0.5f;
+            
+            ImGui::SetCursorPosX(start_x);
+            if (ThemedRoundButton(ICON_FA_USER)) {
                 state.show_profile_editor = true;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                ImGui::SetTooltip("Edit your profile information");
+            }
+            
+            ImGui::SameLine(0, button_spacing);
+            if (ThemedRoundButton(ICON_FA_NEWSPAPER)) {
+                state.wall_fingerprint = state.current_identity;
+                state.wall_display_name = "My Wall";
+                state.wall_is_own = true;
+                state.show_message_wall = true;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                ImGui::SetTooltip("Post messages to your public wall");
             }
         } else {
             // User not registered - show Register DNA button
             if (ThemedButton(ICON_FA_ID_CARD " Register DNA", ImVec2(-1, 40))) {
                 state.show_register_name = true;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                ImGui::SetTooltip("Register a human-readable DNA name");
             }
         }
         
@@ -231,11 +254,22 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     if (ThemedButton(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40), state.current_view == VIEW_CONTACTS || state.current_view == VIEW_CHAT)) {
         state.current_view = VIEW_CONTACTS;
     }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+        ImGui::SetTooltip("View conversations and messages");
+    }
+    
     if (ThemedButton(ICON_FA_WALLET " Wallet", ImVec2(-1, 40), state.current_view == VIEW_WALLET)) {
         state.current_view = VIEW_WALLET;
     }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+        ImGui::SetTooltip("Manage your cryptocurrency wallet");
+    }
+    
     if (ThemedButton(ICON_FA_GEAR " Settings", ImVec2(-1, 40), state.current_view == VIEW_SETTINGS)) {
         state.current_view = VIEW_SETTINGS;
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+        ImGui::SetTooltip("Configure application settings");
     }
 
     ImGui::Spacing();
@@ -543,6 +577,9 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         memset(state.add_contact_input, 0, sizeof(state.add_contact_input));
         ImGui::OpenPopup("Add Contact");
     }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+        ImGui::SetTooltip("Add a new contact by DNA name or fingerprint");
+    }
 
     if (ThemedButton(ICON_FA_USERS " Create Group", ImVec2(button_width, add_button_height), false)) {
         // Phase 1.3: Open create group dialog
@@ -552,6 +589,9 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         state.create_group_selected_members.clear();
         memset(state.create_group_name_input, 0, sizeof(state.create_group_name_input));
         ImGui::OpenPopup("Create Group");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+        ImGui::SetTooltip("Create a new group conversation");
     }
 
     if (ThemedButton(ICON_FA_ARROWS_ROTATE " Refresh", ImVec2(button_width, add_button_height), false)) {
@@ -568,6 +608,9 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
                 fprintf(stderr, "[Contacts] ✗ Failed to sync from DHT\n");
             }
         }
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+        ImGui::SetTooltip("Sync contacts from the DHT network");
     }
 
     ImGui::EndChild(); // Sidebar

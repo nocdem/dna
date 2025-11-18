@@ -118,30 +118,8 @@ void render(AppState& state) {
             }
             ImGui::Spacing();
         }
-
-        // Only show Post to Wall if registered
-        if (has_registered_name) {
-            if (ThemedButton(ICON_FA_NEWSPAPER " Post to Wall", ImVec2(-1, btn_height))) {
-                // Open own message wall
-                state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
-                state.wall_display_name = "My Wall";
-                state.wall_is_own = true;  // Can post to own wall
-                state.show_message_wall = true;
-            }
-        }
     } else {
-        // Desktop mode - Register DNA/Edit Profile is in sidebar
-
-        // Only show Post to Wall if registered
-        if (has_registered_name) {
-            if (ThemedButton(ICON_FA_NEWSPAPER " Post to Wall", ImVec2(200, btn_height))) {
-                // Open own message wall
-                state.wall_fingerprint = state.current_identity;  // Use current identity fingerprint
-                state.wall_display_name = "My Wall";
-                state.wall_is_own = true;  // Can post to own wall
-                state.show_message_wall = true;
-            }
-        }
+        // Desktop mode - Register DNA/Edit Profile and Post to Wall are in sidebar
     }
 
     ImGui::Spacing();
