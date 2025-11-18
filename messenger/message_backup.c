@@ -208,6 +208,27 @@ message_backup_context_t* message_backup_init(const char *identity) {
         printf("[Backup] Migrated database schema to v5 (added invitation_status column)\n");
     }
 
+    // Migration: Add sender_fingerprint column if it doesn't exist (v5 -> v6, Phase 12)
+    const char *migration_sql_v6 = "ALTER TABLE messages ADD COLUMN sender_fingerprint BLOB;";
+    rc = sqlite3_exec(ctx->db, migration_sql_v6, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        // Column might already exist (not an error)
+        if (strstr(err_msg, "duplicate column") == NULL) {
+            fprintf(stderr, "[Backup] Migration warning (v6): %s\n", err_msg);
+        }
+        sqlite3_free(err_msg);
+    } else {
+        printf("[Backup] Migrated database schema to v6 (added sender_fingerprint column)\n");
+    }
+
+    // Create index on sender_fingerprint (safe to run now that column exists)
+    const char *index_sql_v6 = "CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint);";
+    rc = sqlite3_exec(ctx->db, index_sql_v6, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[Backup] Failed to create sender_fingerprint index: %s\n", err_msg);
+        sqlite3_free(err_msg);
+    }
+
     printf("[Backup] Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
     return ctx;
 }

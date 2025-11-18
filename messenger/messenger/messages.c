@@ -246,7 +246,7 @@ static int messenger_encrypt_multi_recipient(
     messenger_enc_header_t header;
     memset(&header, 0, sizeof(header));
     memcpy(header.magic, "PQSIGENC", 8);
-    header.version = 0x06;
+    header.version = 0x08;  // v0.08: fingerprint + timestamp + plaintext
     header.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header.recipient_count = (uint8_t)recipient_count;
     header.encrypted_size = (uint32_t)encrypted_size;
