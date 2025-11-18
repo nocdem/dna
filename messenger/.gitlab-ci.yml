@@ -29,6 +29,8 @@ build:linux-x64:
     - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libglew-dev libfreetype6-dev
     # OpenDHT dependencies
     - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev
+    # OpenSSL (required by crypto layer)
+    - apt-get install -y -qq libssl-dev
   script:
     - mkdir -p build
     - cd build
@@ -43,7 +45,7 @@ build:linux-x64:
     name: "dna-messenger-linux-x64-${CI_COMMIT_SHORT_SHA}"
     paths:
       - build/imgui_gui/dna_messenger_imgui
-    expire_in: 1 week
+    expire_in: 2 days  # Short expiry to avoid spam, latest successful build is kept
 
 # Windows x86_64 build (MinGW cross-compile)
 build:windows-x64:
@@ -66,5 +68,5 @@ build:windows-x64:
       - dist/*.zip
       - dist/*.tar.gz
       - dist/windows-x64/
-    expire_in: 1 week
+    expire_in: 2 days  # Short expiry to avoid spam, latest successful build is kept
   allow_failure: true
