@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <endian.h>
 
 // ============================================================================
 // INTERNAL STRUCTURES
@@ -32,7 +33,7 @@ struct dna_context {
 
 // File format constants (same as QGP)
 #define DNA_ENC_MAGIC "PQSIGENC"
-#define DNA_ENC_VERSION 0x07  // Version 7: Fingerprint privacy (sender FP encrypted, pubkey removed from sig)
+#define DNA_ENC_VERSION 0x08  // Version 8: Encrypted timestamp (fingerprint + timestamp + plaintext)
 #define DAP_ENC_KEY_TYPE_KEM_KYBER512 23
 
 // Header structure (same as encrypt.c/decrypt.c)
@@ -546,6 +547,7 @@ dna_error_t dna_encrypt_message_raw(
     const uint8_t *recipient_enc_pubkey,
     const uint8_t *sender_sign_pubkey,
     const uint8_t *sender_sign_privkey,
+    uint64_t timestamp,
     uint8_t **ciphertext_out,
     size_t *ciphertext_len_out)
 {
@@ -595,15 +597,23 @@ dna_error_t dna_encrypt_message_raw(
         goto cleanup;
     }
 
-    // v0.07: Build payload = fingerprint || plaintext
-    size_t payload_len = 64 + plaintext_len;
+    // v0.08: Build payload = fingerprint(64) || timestamp(8) || plaintext
+    size_t payload_len = 64 + 8 + plaintext_len;
     uint8_t *payload = malloc(payload_len);
     if (!payload) {
         result = DNA_ERROR_MEMORY;
         goto cleanup;
     }
+
+    // Copy fingerprint
     memcpy(payload, sender_fingerprint, 64);
-    memcpy(payload + 64, plaintext, plaintext_len);
+
+    // Copy timestamp (big-endian for network byte order)
+    uint64_t timestamp_be = htobe64(timestamp);
+    memcpy(payload + 64, &timestamp_be, 8);
+
+    // Copy plaintext
+    memcpy(payload + 64 + 8, plaintext, plaintext_len);
 
     // Generate random DEK (32 bytes)
     dek = malloc(32);
@@ -745,7 +755,8 @@ dna_error_t dna_decrypt_message_raw(
     uint8_t **sender_sign_pubkey_out,
     size_t *sender_sign_pubkey_len_out,
     uint8_t **signature_out,
-    size_t *signature_len_out)
+    size_t *signature_len_out,
+    uint64_t *timestamp_out)
 {
     if (!ctx || !ciphertext || !recipient_enc_privkey ||
         !plaintext_out || !plaintext_len_out ||
@@ -882,9 +893,9 @@ dna_error_t dna_decrypt_message_raw(
     }
     fprintf(stderr, "[DEBUG] AES-256-GCM decryption succeeded (%zu bytes)\n", decrypted_size);
 
-    // v0.07: Extract fingerprint from decrypted payload
-    if (decrypted_size < 64) {
-        fprintf(stderr, "[DEBUG] Decrypted payload too small (< 64 bytes fingerprint)\n");
+    // v0.08: Extract fingerprint + timestamp from decrypted payload
+    if (decrypted_size < 72) {  // 64 (fingerprint) + 8 (timestamp)
+        fprintf(stderr, "[DEBUG] Decrypted payload too small (< 72 bytes for fingerprint+timestamp)\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -899,8 +910,16 @@ dna_error_t dna_decrypt_message_raw(
     memcpy(*sender_sign_pubkey_out, decrypted, 64);
     fprintf(stderr, "[DEBUG] Extracted sender fingerprint (64 bytes)\n");
 
-    // Extract actual plaintext (everything after fingerprint)
-    size_t actual_plaintext_len = decrypted_size - 64;
+    // Extract timestamp (bytes 64-71, big-endian)
+    if (timestamp_out) {
+        uint64_t timestamp_be;
+        memcpy(&timestamp_be, decrypted + 64, 8);
+        *timestamp_out = be64toh(timestamp_be);
+        fprintf(stderr, "[DEBUG] Extracted timestamp (%lu)\n", (unsigned long)*timestamp_out);
+    }
+
+    // Extract actual plaintext (everything after fingerprint + timestamp)
+    size_t actual_plaintext_len = decrypted_size - 72;  // 64 + 8
     *plaintext_len_out = actual_plaintext_len;
     *plaintext_out = malloc(actual_plaintext_len);
     if (!*plaintext_out) {
@@ -909,7 +928,7 @@ dna_error_t dna_decrypt_message_raw(
         result = DNA_ERROR_MEMORY;
         goto cleanup;
     }
-    memcpy(*plaintext_out, decrypted + 64, actual_plaintext_len);
+    memcpy(*plaintext_out, decrypted + 72, actual_plaintext_len);
     fprintf(stderr, "[DEBUG] Extracted plaintext (%zu bytes)\n", actual_plaintext_len);
 
     // v0.07: Return signature to caller for verification
@@ -1116,9 +1135,9 @@ dna_error_t dna_decrypt_message(
     }
     fprintf(stderr, "[DEBUG] AES-256-GCM decryption succeeded (%zu bytes)\n", decrypted_size);
 
-    // v0.07: Extract fingerprint from decrypted payload
-    if (decrypted_size < 64) {
-        fprintf(stderr, "[DEBUG] Decrypted payload too small (< 64 bytes fingerprint)\n");
+    // v0.08: Extract fingerprint + timestamp from decrypted payload
+    if (decrypted_size < 72) {  // 64 (fingerprint) + 8 (timestamp)
+        fprintf(stderr, "[DEBUG] Decrypted payload too small (< 72 bytes for fingerprint+timestamp)\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -1133,8 +1152,11 @@ dna_error_t dna_decrypt_message(
     memcpy(*sender_pubkey_out, decrypted, 64);
     fprintf(stderr, "[DEBUG] Extracted sender fingerprint (64 bytes)\n");
 
-    // Extract actual plaintext (everything after fingerprint)
-    size_t actual_plaintext_len = decrypted_size - 64;
+    // Extract timestamp (bytes 64-71, big-endian) - ignored in this function
+    // (dna_decrypt_message doesn't expose timestamp, use dna_decrypt_message_raw if needed)
+
+    // Extract actual plaintext (everything after fingerprint + timestamp)
+    size_t actual_plaintext_len = decrypted_size - 72;  // 64 + 8
     *plaintext_len_out = actual_plaintext_len;
     *plaintext_out = malloc(actual_plaintext_len);
     if (!*plaintext_out) {
@@ -1143,7 +1165,7 @@ dna_error_t dna_decrypt_message(
         result = DNA_ERROR_MEMORY;
         goto cleanup;
     }
-    memcpy(*plaintext_out, decrypted + 64, actual_plaintext_len);
+    memcpy(*plaintext_out, decrypted + 72, actual_plaintext_len);
     fprintf(stderr, "[DEBUG] Extracted plaintext (%zu bytes)\n", actual_plaintext_len);
 
     // v0.07: dna_decrypt_message doesn't expose signature

@@ -268,6 +268,7 @@ int dht_contactlist_publish(
     size_t encrypted_len = 0;
 
     // Self-encryption: encrypt with own public key, sign with own private key
+    uint64_t sync_timestamp = (uint64_t)time(NULL);
     dna_error_t enc_result = dna_encrypt_message_raw(
         dna_ctx,
         (const uint8_t*)json_str,
@@ -275,6 +276,7 @@ int dht_contactlist_publish(
         kyber_pubkey,           // recipient_enc_pubkey (self)
         dilithium_pubkey,       // sender_sign_pubkey (self)
         dilithium_privkey,      // sender_sign_privkey (self)
+        sync_timestamp,         // v0.08: contact list sync timestamp
         &encrypted_data,        // output ciphertext (allocated by function)
         &encrypted_len          // output length
     );
@@ -495,6 +497,7 @@ int dht_contactlist_fetch(
     size_t sender_pubkey_len_out = 0;
     uint8_t *signature_out = NULL;
     size_t signature_out_len = 0;
+    uint64_t sender_timestamp = 0;
 
     // Decrypt with own private key (self-decryption)
     dna_error_t dec_result = dna_decrypt_message_raw(
@@ -507,7 +510,8 @@ int dht_contactlist_fetch(
         &sender_pubkey_out,         // v0.07: sender's fingerprint (64 bytes)
         &sender_pubkey_len_out,     // sender fingerprint length
         &signature_out,             // signature bytes (from v0.07 message)
-        &signature_out_len          // signature length
+        &signature_out_len,         // signature length
+        &sender_timestamp           // v0.08: sender's timestamp
     );
 
     dna_context_free(dna_ctx);
