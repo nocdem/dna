@@ -29,8 +29,8 @@ build:linux-x64:
     - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libglew-dev libfreetype6-dev
     # OpenDHT dependencies
     - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev
-    # OpenSSL (required by crypto layer)
-    - apt-get install -y -qq libssl-dev
+    # Crypto and network dependencies
+    - apt-get install -y -qq libssl-dev libcurl4-openssl-dev
   script:
     - mkdir -p build
     - cd build
