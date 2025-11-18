@@ -290,6 +290,10 @@ void ice_context_free(ice_context_t *ctx) {
 
     printf("[ICE] Freeing context\n");
 
+    // SECURITY FIX: Lock mutex before disconnecting signal handlers
+    // Prevents race condition if callback fires during cleanup
+    g_mutex_lock(&ctx->recv_mutex);
+
     // PHASE 3 FIX: Disconnect signal handlers before destroying agent
     if (ctx->agent) {
         if (ctx->gathering_handler_id != 0) {
@@ -301,6 +305,8 @@ void ice_context_free(ice_context_t *ctx) {
             ctx->state_handler_id = 0;
         }
     }
+
+    g_mutex_unlock(&ctx->recv_mutex);
 
     // Stop main loop and wait for thread to finish
     if (ctx->loop) {
@@ -591,20 +597,30 @@ int ice_send(ice_context_t *ctx, const uint8_t *data, size_t len) {
         return -1;
     }
 
-    // Send via nice_agent_send
-    int sent = nice_agent_send(ctx->agent, ctx->stream_id,
-                               ctx->component_id, len, (const gchar*)data);
+    // SECURITY FIX: Retry partial sends until all data is sent
+    // Previously would return after partial send, potentially losing data
+    size_t total_sent = 0;
+    while (total_sent < len) {
+        int sent = nice_agent_send(ctx->agent, ctx->stream_id,
+                                   ctx->component_id,
+                                   len - total_sent,
+                                   (const gchar*)(data + total_sent));
 
-    if (sent < 0) {
-        fprintf(stderr, "[ICE] Send failed\n");
-        return -1;
+        if (sent < 0) {
+            fprintf(stderr, "[ICE] Send failed after %zu/%zu bytes\n", total_sent, len);
+            return -1;
+        }
+
+        total_sent += sent;
+
+        // Log if multiple iterations needed (shouldn't be common)
+        if (sent > 0 && total_sent < len) {
+            printf("[ICE] Partial send: %d bytes, retrying (%zu/%zu total)\n",
+                   sent, total_sent, len);
+        }
     }
 
-    if ((size_t)sent != len) {
-        fprintf(stderr, "[ICE] Partial send: %d/%zu bytes\n", sent, len);
-    }
-
-    return sent;
+    return (int)total_sent;
 }
 
 /**
@@ -677,15 +693,22 @@ int ice_recv_timeout(ice_context_t *ctx, uint8_t *buf, size_t buflen, int timeou
         return 0;
     }
 
-    // Copy to output buffer
-    size_t copy_len = msg->len < buflen ? msg->len : buflen;
-    memcpy(buf, msg->data, copy_len);
-
-    // Warn if buffer was too small
+    // SECURITY FIX: Reject messages that don't fit in buffer
+    // Previously would silently truncate, losing data
     if (msg->len > buflen) {
-        fprintf(stderr, "[ICE] Warning: Message truncated (%zu bytes, buffer %zu)\n",
+        fprintf(stderr, "[ICE] Error: Buffer too small (%zu bytes needed, %zu provided)\n",
                 msg->len, buflen);
+        fprintf(stderr, "[ICE] Message returned to queue head for retry with larger buffer\n");
+
+        // Return message to front of queue for retry
+        g_queue_push_head(ctx->recv_queue, msg);
+
+        g_mutex_unlock(&ctx->recv_mutex);
+        return -1;  // Caller must retry with larger buffer
     }
+
+    // Copy to output buffer (fits completely)
+    memcpy(buf, msg->data, msg->len);
 
     // Free message
     free(msg->data);
@@ -694,9 +717,9 @@ int ice_recv_timeout(ice_context_t *ctx, uint8_t *buf, size_t buflen, int timeou
     g_mutex_unlock(&ctx->recv_mutex);
 
     printf("[ICE] Read %zu bytes from queue (%u messages remaining)\n",
-           copy_len, g_queue_get_length(ctx->recv_queue));
+           msg->len, g_queue_get_length(ctx->recv_queue));
 
-    return (int)copy_len;
+    return (int)msg->len;
 }
 
 /**
