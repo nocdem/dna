@@ -130,6 +130,7 @@ void render(AppState& state) {
 
     // Clear state when opening modal
     static bool was_shown = false;
+    static bool focus_set = false;
     if (!was_shown) {
         state.register_name_availability = "";
         state.register_name_available = false;
@@ -138,6 +139,7 @@ void render(AppState& state) {
         state.register_name_status = "";
         memset(state.register_name_input, 0, sizeof(state.register_name_input));
         was_shown = true;
+        focus_set = false;  // Reset focus flag when opening
     }
 
     // Open popup on first show (MUST be before BeginPopupModal!)
@@ -223,6 +225,13 @@ void render(AppState& state) {
 
         ImGui::Text("Desired Name:");
         ImGui::SetNextItemWidth(-1);
+        
+        // Autofocus on first render
+        if (!focus_set) {
+            ImGui::SetKeyboardFocusHere();
+            focus_set = true;
+        }
+        
         ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
         bool input_changed = ImGui::InputText("##NameInput", state.register_name_input, sizeof(state.register_name_input));
         ImGui::PopStyleColor();
