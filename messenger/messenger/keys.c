@@ -347,7 +347,7 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
     curl_easy_setopt(curl, CURLOPT_URL, url);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, keys_curl_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
-    curl_easy_setopt(curl, CURLOPT_PROTOCOLS, CURLPROTO_HTTPS);  // HTTPS only
+    curl_easy_setopt(curl, CURLOPT_PROTOCOLS_STR, "https");  // HTTPS only (curl 7.85.0+)
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);  // 30 second timeout
     curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);  // Follow redirects
     curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);  // Max 3 redirects
