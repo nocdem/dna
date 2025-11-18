@@ -125,6 +125,22 @@ else()
     endif()
 endif()
 
+# libnice for NAT traversal (STUN+ICE, no TURN for decentralization)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(NICE REQUIRED nice)
+pkg_check_modules(GLIB2 REQUIRED glib-2.0)
+
+if(NICE_FOUND)
+    message(STATUS "libnice found: ${NICE_VERSION}")
+    message(STATUS "libnice include: ${NICE_INCLUDE_DIRS}")
+    message(STATUS "libnice libraries: ${NICE_LIBRARIES}")
+endif()
+
+if(GLIB2_FOUND)
+    message(STATUS "glib-2.0 found: ${GLIB2_VERSION}")
+    message(STATUS "glib-2.0 include: ${GLIB2_INCLUDE_DIRS}")
+endif()
+
 # NOTE: PostgreSQL removed 2025-11-03 - migrated to SQLite for decentralization
 # SQLite3 for all local storage (messages, keyserver cache)
 find_package(SQLite3 REQUIRED)
@@ -223,6 +239,8 @@ target_link_libraries(dna_lib
     p2p_transport  # Link p2p_transport again for static linking order
     stdc++         # C++ standard library (required by dht_lib and OpenDHT)
     ${JSONC_LIBRARIES}
+    ${NICE_LIBRARIES}   # Phase 11: libnice for NAT traversal (STUN+ICE)
+    ${GLIB2_LIBRARIES}  # Phase 11: glib-2.0 (required by libnice)
     ${PLATFORM_LIBS}
     CURL::libcurl  # Phase 8: CURL for RPC calls
 )
@@ -276,6 +294,8 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/p2p  # Phase 9.1b: P2P transport headers
     ${CMAKE_SOURCE_DIR}/dht  # Phase 9.1: DHT headers
     ${OPENSSL_INCLUDE_DIR}
+    ${NICE_INCLUDE_DIRS}   # Phase 11: libnice headers
+    ${GLIB2_INCLUDE_DIRS}  # Phase 11: glib-2.0 headers
 )
 
 # Add json-c include directories if found

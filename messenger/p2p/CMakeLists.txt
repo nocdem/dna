@@ -32,6 +32,7 @@ add_library(p2p_transport STATIC
     transport/transport_tcp.c
     transport/transport_discovery.c
     transport/transport_offline.c
+    transport/transport_ice.c  # Phase 11: NAT traversal (STUN+ICE)
 )
 
 target_include_directories(p2p_transport PUBLIC
@@ -39,12 +40,16 @@ target_include_directories(p2p_transport PUBLIC
     ${DHT_DIR}
     ${OPENSSL_INCLUDE_DIR}
     ${OPENDHT_INCLUDE_DIRS}
+    ${NICE_INCLUDE_DIRS}   # Phase 11: libnice headers
+    ${GLIB2_INCLUDE_DIRS}  # Phase 11: glib-2.0 headers
 )
 
 target_link_libraries(p2p_transport
     ${DHT_LIB}
     ${OPENDHT_LIBRARIES}
     ${OPENSSL_LIBRARIES}
+    ${NICE_LIBRARIES}   # Phase 11: libnice for NAT traversal
+    ${GLIB2_LIBRARIES}  # Phase 11: glib-2.0 (required by libnice)
 )
 
 # Platform-specific libraries

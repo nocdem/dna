@@ -225,8 +225,8 @@ build_windows_x64() {
         fi
 
         cd "$MXE_DIR"
-        echo -e "${BLUE}Building MXE dependencies: qtbase qtmultimedia postgresql openssl json-c curl${NC}"
-        make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openssl json-c curl -j$(nproc)
+        echo -e "${BLUE}Building MXE dependencies: qtbase qtmultimedia postgresql openssl json-c curl libnice glib${NC}"
+        make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openssl json-c curl libnice glib -j$(nproc)
         echo -e "${GREEN}✓${NC} MXE build complete"
     else
         echo -e "${GREEN}✓${NC} MXE build already complete, skipping build step"
