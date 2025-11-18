@@ -162,77 +162,158 @@ EOF
     echo ""
 }
 
-# Build Windows x86_64 (MinGW cross-compile - simplified, no MXE)
+# Build Windows x86_64 (MXE static cross-compile)
 build_windows_x64() {
     echo -e "${BLUE}=========================================${NC}"
     echo -e "${BLUE} Building: Windows x86_64${NC}"
     echo -e "${BLUE}=========================================${NC}"
 
-    # Check for MinGW cross-compiler
-    if ! command -v x86_64-w64-mingw32-gcc &> /dev/null; then
-        echo -e "${RED}Error: MinGW cross-compiler not found${NC}"
-        echo -e "Ubuntu/Debian: ${YELLOW}sudo apt install mingw-w64 g++-mingw-w64-x86-64${NC}"
-        return 1
+    # MXE directory - configurable via environment variable
+    # Priority: MXE_DIR env var > ~/.cache/mxe > project/mxe
+    if [ -n "$MXE_DIR" ]; then
+        echo -e "${BLUE}Using MXE_DIR from environment: ${MXE_DIR}${NC}"
+    elif [ -d "$HOME/.cache/mxe" ] || [ -z "${MXE_USE_PROJECT_DIR}" ]; then
+        MXE_DIR="$HOME/.cache/mxe"
+        echo -e "${BLUE}Using cached MXE directory: ${MXE_DIR}${NC}"
+    else
+        MXE_DIR="${PROJECT_ROOT}/mxe"
+        echo -e "${BLUE}Using project MXE directory: ${MXE_DIR}${NC}"
     fi
+
+    MXE_PREFIX="${MXE_DIR}/usr/x86_64-w64-mingw32.static"
+
+    # Check if MXE is already built
+    if [ ! -d "$MXE_DIR" ]; then
+        echo -e "${YELLOW}MXE not found, cloning to ${MXE_DIR}...${NC}"
+        mkdir -p "$(dirname "$MXE_DIR")"
+        cd "$(dirname "$MXE_DIR")"
+        git clone https://github.com/mxe/mxe.git "$(basename "$MXE_DIR")"
+    else
+        echo -e "${GREEN}✓${NC} MXE directory found at ${MXE_DIR}"
+    fi
+
+    # Check if MXE is already built (check for qmake as indicator)
+    if [ ! -f "${MXE_PREFIX}/bin/qmake" ]; then
+        echo -e "${YELLOW}MXE build incomplete or missing, building dependencies...${NC}"
+        echo -e "${YELLOW}This will take a while on first run (1-2 hours)${NC}"
+
+        # Check for required build dependencies
+        echo -e "${BLUE}Checking build dependencies...${NC}"
+        MISSING_DEPS=""
+        for dep in git make gcc g++ cmake autoconf automake libtool pkg-config bison flex gperf ruby unzip; do
+            if ! command -v "$dep" &> /dev/null; then
+                MISSING_DEPS="$MISSING_DEPS $dep"
+            fi
+        done
+
+        # Check for 7z (command from p7zip package)
+        if ! command -v 7z &> /dev/null && ! command -v 7za &> /dev/null; then
+            MISSING_DEPS="$MISSING_DEPS p7zip"
+        fi
+
+        if [ -n "$MISSING_DEPS" ]; then
+            echo -e "${RED}Error: Missing dependencies:${MISSING_DEPS}${NC}"
+            echo -e "Arch Linux: ${YELLOW}sudo pacman -S base-devel git cmake autoconf automake libtool pkg-config perl python bison flex gperf ruby unzip p7zip lzip intltool xz gettext${NC}"
+            echo -e "Ubuntu/Debian: ${YELLOW}sudo apt install git make gcc g++ cmake autoconf automake libtool libtool-bin pkg-config perl libxml-parser-perl python3 python3-mako bison flex gperf ruby unzip p7zip-full lzip intltool xz-utils libgdk-pixbuf2.0-dev gettext autopoint libssl-dev zlib1g-dev bzip2${NC}"
+            return 1
+        fi
+
+        # Create python symlink if needed (MXE expects 'python' not 'python3')
+        if [ ! -e /usr/bin/python ] && [ -e /usr/bin/python3 ]; then
+            echo -e "${YELLOW}Creating python symlink...${NC}"
+            sudo ln -sf /usr/bin/python3 /usr/bin/python || true
+        fi
+
+        cd "$MXE_DIR"
+        echo -e "${BLUE}Building MXE dependencies: qtbase qtmultimedia postgresql openssl json-c curl libnice glib${NC}"
+        make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openssl json-c curl libnice glib -j$(nproc)
+        echo -e "${GREEN}✓${NC} MXE build complete"
+    else
+        echo -e "${GREEN}✓${NC} MXE build already complete, skipping build step"
+    fi
+
+    # Build OpenDHT and msgpack for Windows
+    echo -e "${BLUE}Building P2P dependencies (OpenDHT, msgpack)...${NC}"
+    export MXE_DIR
+    "${PROJECT_ROOT}/build-opendht-windows.sh"
+
+    # Set up environment
+    # Add both the general bin dir and the target-specific bin dir to PATH
+    # The target bin dir contains the actual binutils (as, ld, etc.)
+    export PATH="${MXE_DIR}/usr/bin:${MXE_PREFIX}/bin:$PATH"
+    export MXE_PREFIX
 
     BUILD_PATH="${PROJECT_ROOT}/${BUILD_DIR}/windows-x64"
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
 
-    # Create simple MinGW toolchain file
-    cat > toolchain-mingw64.cmake << 'EOF'
+    # Create a wrapper bin directory with unprefixed symlinks for binutils
+    # This allows GCC to find tools like 'as', 'ld', etc. without the target prefix
+    WRAPPER_BIN="${BUILD_PATH}/mxe-wrapper-bin"
+    mkdir -p "$WRAPPER_BIN"
+
+    # Create symlinks for common binutils
+    for tool in as ld ar nm objcopy objdump ranlib strip; do
+        ln -sf "${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-${tool}" "${WRAPPER_BIN}/${tool}"
+    done
+
+    # Create toolchain file
+    cat > toolchain-mingw64.cmake << EOF
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
-set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)
-set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)
-set(CMAKE_RC_COMPILER x86_64-w64-mingw32-windres)
+# Use full paths to compilers to ensure proper toolchain discovery
+set(CMAKE_C_COMPILER ${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-gcc)
+set(CMAKE_CXX_COMPILER ${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-g++)
+set(CMAKE_RC_COMPILER ${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-windres)
 
-set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)
+# Tell GCC where to find binutils (assembler, linker, etc.) using -B flag
+# This points to a wrapper directory with unprefixed symlinks to the MXE tools
+set(CMAKE_C_FLAGS_INIT "-B${BUILD_PATH}/mxe-wrapper-bin")
+set(CMAKE_CXX_FLAGS_INIT "-B${BUILD_PATH}/mxe-wrapper-bin")
+
+set(CMAKE_FIND_ROOT_PATH ${MXE_PREFIX})
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
-
-# Static linking
-set(CMAKE_EXE_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")
-set(CMAKE_SHARED_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")
-
 set(WIN32 TRUE)
 set(MINGW TRUE)
+# Force static linking
+set(CMAKE_EXE_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")
+set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+set(BUILD_SHARED_LIBS OFF)
+set(PKG_CONFIG_EXECUTABLE ${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-pkg-config)
+set(Qt5_DIR "${MXE_PREFIX}/qt5/lib/cmake/Qt5")
+set(Qt5Core_DIR "${MXE_PREFIX}/qt5/lib/cmake/Qt5Core")
+set(Qt5Widgets_DIR "${MXE_PREFIX}/qt5/lib/cmake/Qt5Widgets")
+set(Qt5Multimedia_DIR "${MXE_PREFIX}/qt5/lib/cmake/Qt5Multimedia")
 EOF
 
-    echo -e "${YELLOW}Note: Windows build requires Windows versions of all dependencies${NC}"
-    echo -e "${YELLOW}This is a placeholder - full Windows cross-compilation needs:${NC}"
-    echo -e "${YELLOW}  - Windows versions of: OpenDHT, OpenSSL, CURL, json-c, SQLite, libnice, glib${NC}"
-    echo -e "${YELLOW}  - Windows versions of: GLFW, GLEW, FreeType, GTK3${NC}"
-    echo -e "${YELLOW}For now, Windows builds should be done on Windows or with full MXE setup${NC}"
-
-    # Try to configure (will likely fail due to missing dependencies)
+    echo -e "${BLUE}Configuring CMake...${NC}"
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-mingw64.cmake \
-        -DCMAKE_BUILD_TYPE=Release || {
-        echo -e "${RED}CMake configuration failed (expected - missing Windows dependencies)${NC}"
-        return 1
-    }
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_GUI=ON
 
-    make -j$(nproc) || {
-        echo -e "${RED}Build failed${NC}"
-        return 1
-    }
+    echo -e "${BLUE}Building...${NC}"
+    make -j$(nproc) VERBOSE=1
 
-    # Package if successful
+    # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64"
-    if [ -f imgui_gui/dna_messenger_imgui.exe ]; then
-        cp imgui_gui/dna_messenger_imgui.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
-        cd "${PROJECT_ROOT}/${DIST_DIR}"
-        zip -r "${PROJECT_NAME}-${FULL_VERSION}-windows-x64.zip" windows-x64/
-        echo -e "${GREEN}✓ Windows x86_64 build complete${NC}"
+    # CLI is disabled, only package GUI
+    if [ -f gui/dna_messenger_gui.exe ]; then
+        cp gui/dna_messenger_gui.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
     else
-        echo -e "${RED}Error: Executable not found${NC}"
+        echo -e "${RED}Error: GUI executable not found${NC}"
         return 1
     fi
 
+    # Create zip
+    cd "${PROJECT_ROOT}/${DIST_DIR}"
+    zip -r "${PROJECT_NAME}-${FULL_VERSION}-windows-x64.zip" windows-x64/
+
     cd "${PROJECT_ROOT}"
+    echo -e "${GREEN}✓ Windows x86_64 build complete${NC}"
     echo ""
 }
 
