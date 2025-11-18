@@ -648,9 +648,10 @@ int ice_recv_timeout(ice_context_t *ctx, uint8_t *buf, size_t buflen, int timeou
             g_cond_wait(&ctx->recv_cond, &ctx->recv_mutex);
         } else {
             // Timed wait
-            // Fixed: Check for overflow before multiplication
-            if (timeout_ms > INT_MAX / 1000) {
-                fprintf(stderr, "[ICE] Timeout too large: %d ms\n", timeout_ms);
+            // Fixed: Check for negative values and overflow before multiplication
+            if (timeout_ms < 0 || timeout_ms > INT_MAX / 1000) {
+                fprintf(stderr, "[ICE] Invalid timeout: %d ms (must be 0 to %d)\n",
+                        timeout_ms, INT_MAX / 1000);
                 g_mutex_unlock(&ctx->recv_mutex);
                 return -1;
             }
@@ -799,13 +800,15 @@ static void on_candidate_gathering_done(NiceAgent *agent, guint stream_id, gpoin
             size_t candidate_len = strlen(candidate_str);
             size_t needed = candidate_len + 1;  // +1 for '\n'
 
-            // Fixed: use >= instead of >, account for newline, use strncat
+            // Fixed: use >= instead of >, account for newline, recalculate length after strncat
             if (remaining >= needed) {
                 strncat(ctx->local_candidates, candidate_str, remaining);
-                current_len += candidate_len;
+                current_len = strlen(ctx->local_candidates);  // Recalculate actual length
                 remaining = MAX_CANDIDATES_SIZE - current_len - 1;
                 if (remaining > 0) {
                     strncat(ctx->local_candidates, "\n", remaining);
+                    current_len = strlen(ctx->local_candidates);  // Update again
+                    remaining = MAX_CANDIDATES_SIZE - current_len - 1;
                 }
             }
             g_free(candidate_str);

@@ -532,7 +532,8 @@ int main(int argc, char **argv) {
     // Step 5: Sign transaction
     printf("[5/7] Signing transaction...\n");
 
-    // DEBUG: Save ORIGINAL unsigned binary (with actual tx_items_size)
+#ifdef DEBUG_BLOCKCHAIN_SIGNING
+    // Debug: Save ORIGINAL unsigned binary (with actual tx_items_size)
     size_t orig_size;
     const uint8_t *orig_data = cellframe_tx_get_data(builder, &orig_size);
     if (orig_data) {
@@ -540,17 +541,18 @@ int main(int argc, char **argv) {
         if (f_bin) {
             fwrite(orig_data, 1, orig_size, f_bin);
             fclose(f_bin);
-//             fprintf(stderr, "[DEBUG] Unsigned binary saved: /tmp/unsigned_tx_our.bin (%zu bytes)\n", orig_size);
+            fprintf(stderr, "[DEBUG] Unsigned binary saved: /tmp/unsigned_tx_our.bin (%zu bytes)\n", orig_size);
         }
 
-        // DEBUG: Print hex dump of first 100 bytes
-//         fprintf(stderr, "[DEBUG] First 100 bytes of unsigned transaction:\n");
+        // Debug: Print hex dump of first 100 bytes
+        fprintf(stderr, "[DEBUG] First 100 bytes of unsigned transaction:\n");
         for (size_t i = 0; i < (orig_size < 100 ? orig_size : 100); i++) {
             fprintf(stderr, "%02x", orig_data[i]);
             if ((i + 1) % 32 == 0) fprintf(stderr, "\n");
         }
         fprintf(stderr, "\n");
     }
+#endif
 
     // Get signing data (TEMPORARY COPY with tx_items_size = 0)
     size_t tx_size;

@@ -187,13 +187,15 @@ int cellframe_sign_transaction(const uint8_t *tx_data, size_t tx_size,
 //             fprintf(stderr, "[SIGN] ✅ CORRECT: tx_items_size is 0\n");
         }
 
-        // DEBUG: Save signing data to file
+#ifdef DEBUG_BLOCKCHAIN_SIGNING
+        // Debug: Save signing data to file for analysis
         FILE *f_sign = fopen("/tmp/signing_data_our.bin", "wb");
         if (f_sign) {
             fwrite(tx_data, 1, tx_size, f_sign);
             fclose(f_sign);
-//             fprintf(stderr, "[SIGN] DEBUG: Saved signing data to /tmp/signing_data_our.bin\n");
+            fprintf(stderr, "[SIGN] DEBUG: Saved signing data to /tmp/signing_data_our.bin\n");
         }
+#endif
     }
 
     // Step 1: Hash transaction

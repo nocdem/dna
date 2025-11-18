@@ -15,15 +15,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
+#include <pthread.h>
 
+static pthread_mutex_t g_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 static bool g_initialized = false;
 static char g_current_identity[256] = {0};
 
 /**
  * Initialize ALL cache modules in dependency order
+ * Thread-safe: Uses mutex to prevent concurrent initialization
  */
 int cache_manager_init(const char *identity) {
+    pthread_mutex_lock(&g_init_mutex);
+
     if (g_initialized) {
+        pthread_mutex_unlock(&g_init_mutex);
         fprintf(stderr, "[CACHE_MGR] Already initialized\n");
         return 0;
     }
@@ -34,6 +40,7 @@ int cache_manager_init(const char *identity) {
     printf("[CACHE_MGR] [1/4] Initializing keyserver cache (global)...\n");
     if (keyserver_cache_init(NULL) != 0) {
         fprintf(stderr, "[CACHE_MGR] Failed to initialize keyserver cache\n");
+        pthread_mutex_unlock(&g_init_mutex);
         return -1;
     }
 
@@ -45,6 +52,7 @@ int cache_manager_init(const char *identity) {
         if (profile_cache_init(identity) != 0) {
             fprintf(stderr, "[CACHE_MGR] Failed to initialize profile cache\n");
             keyserver_cache_cleanup();
+            pthread_mutex_unlock(&g_init_mutex);
             return -1;
         }
 
@@ -53,6 +61,7 @@ int cache_manager_init(const char *identity) {
             fprintf(stderr, "[CACHE_MGR] Failed to initialize contacts database\n");
             profile_cache_close();
             keyserver_cache_cleanup();
+            pthread_mutex_unlock(&g_init_mutex);
             return -1;
         }
     } else {
@@ -69,6 +78,7 @@ int cache_manager_init(const char *identity) {
             profile_cache_close();
         }
         keyserver_cache_cleanup();
+        pthread_mutex_unlock(&g_init_mutex);
         return -1;
     }
 
@@ -80,15 +90,20 @@ int cache_manager_init(const char *identity) {
     }
 
     g_initialized = true;
+    pthread_mutex_unlock(&g_init_mutex);
     printf("[CACHE_MGR] Cache subsystem initialized successfully\n");
     return 0;
 }
 
 /**
  * Cleanup ALL cache modules in reverse order
+ * Thread-safe: Uses mutex to prevent concurrent cleanup
  */
 void cache_manager_cleanup(void) {
+    pthread_mutex_lock(&g_init_mutex);
+
     if (!g_initialized) {
+        pthread_mutex_unlock(&g_init_mutex);
         return;
     }
 
@@ -106,6 +121,7 @@ void cache_manager_cleanup(void) {
 
     g_initialized = false;
     g_current_identity[0] = '\0';
+    pthread_mutex_unlock(&g_init_mutex);
     printf("[CACHE_MGR] Cache subsystem cleaned up\n");
 }
 
