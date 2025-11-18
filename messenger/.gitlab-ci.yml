@@ -25,10 +25,16 @@ build:linux-x64:
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq build-essential cmake git pkg-config xxd
-    # ImGui GUI dependencies
-    - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libglew-dev libfreetype6-dev
+    # Core dependencies
+    - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev
+    # P2P/DHT dependencies
+    - apt-get install -y -qq libnice-dev libglib2.0-dev
     # OpenDHT dependencies
     - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev
+    # ImGui GUI dependencies
+    - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libfreetype6-dev
+    # Native file dialog (GTK3)
+    - apt-get install -y -qq libgtk-3-dev
   script:
     - mkdir -p build
     - cd build
