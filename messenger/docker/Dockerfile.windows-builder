@@ -1,0 +1,159 @@
+# DNA Messenger - Windows Cross-Compilation Builder
+# This image contains pre-built MinGW versions of all dependencies
+# Build once, use forever in CI for fast Windows builds
+#
+# Build: docker build -f docker/Dockerfile.windows-builder -t dna-windows-builder .
+# Push: docker tag dna-windows-builder yourusername/dna-windows-builder:latest
+#       docker push yourusername/dna-windows-builder:latest
+
+FROM ubuntu:24.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install build tools and MinGW
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    pkg-config \
+    wget \
+    xxd \
+    autoconf \
+    automake \
+    libtool \
+    mingw-w64 \
+    g++-mingw-w64-x86-64 \
+    gcc-mingw-w64-x86-64 \
+    wine \
+    wine64 \
+    meson \
+    ninja-build \
+    python3-pip \
+    && pip3 install --break-system-packages meson && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set up MinGW environment
+ENV MINGW_PREFIX=/usr/x86_64-w64-mingw32
+ENV PKG_CONFIG_PATH=${MINGW_PREFIX}/lib/pkgconfig
+ENV PATH=${MINGW_PREFIX}/bin:$PATH
+
+WORKDIR /build
+
+# Create CMake toolchain file for MinGW (needed before builds)
+RUN echo 'set(CMAKE_SYSTEM_NAME Windows)\n\
+set(CMAKE_SYSTEM_PROCESSOR x86_64)\n\
+set(CMAKE_C_COMPILER x86_64-w64-mingw32-gcc)\n\
+set(CMAKE_CXX_COMPILER x86_64-w64-mingw32-g++)\n\
+set(CMAKE_RC_COMPILER x86_64-w64-mingw32-windres)\n\
+set(CMAKE_FIND_ROOT_PATH /usr/x86_64-w64-mingw32)\n\
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)\n\
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)\n\
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)\n\
+set(CMAKE_EXE_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")\n\
+set(CMAKE_SHARED_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")\n\
+set(WIN32 TRUE)\n\
+set(MINGW TRUE)' > /build/mingw-toolchain.cmake
+
+# Create Meson cross-file for GLib/libnice (needed before builds)
+RUN echo "[binaries]\n\
+c = 'x86_64-w64-mingw32-gcc'\n\
+cpp = 'x86_64-w64-mingw32-g++'\n\
+ar = 'x86_64-w64-mingw32-ar'\n\
+strip = 'x86_64-w64-mingw32-strip'\n\
+pkgconfig = 'pkg-config'\n\
+\n\
+[host_machine]\n\
+system = 'windows'\n\
+cpu_family = 'x86_64'\n\
+cpu = 'x86_64'\n\
+endian = 'little'" > /build/mingw-cross.txt
+
+# Build zlib for Windows
+RUN wget https://zlib.net/zlib-1.3.tar.gz && \
+    tar xzf zlib-1.3.tar.gz && cd zlib-1.3 && \
+    CC=x86_64-w64-mingw32-gcc AR=x86_64-w64-mingw32-ar RANLIB=x86_64-w64-mingw32-ranlib \
+    ./configure --prefix=${MINGW_PREFIX} --static && \
+    make && make install && \
+    cd .. && rm -rf zlib-1.3*
+
+# Build OpenSSL for Windows
+RUN wget https://www.openssl.org/source/openssl-3.0.12.tar.gz && \
+    tar xzf openssl-3.0.12.tar.gz && cd openssl-3.0.12 && \
+    ./Configure mingw64 --prefix=${MINGW_PREFIX} --cross-compile-prefix=x86_64-w64-mingw32- no-shared && \
+    make && make install_sw && \
+    cd .. && rm -rf openssl-3.0.12*
+
+# Build libcurl for Windows
+RUN wget https://curl.se/download/curl-8.5.0.tar.gz && \
+    tar xzf curl-8.5.0.tar.gz && cd curl-8.5.0 && \
+    ./configure --host=x86_64-w64-mingw32 --prefix=${MINGW_PREFIX} \
+        --with-openssl --enable-static --disable-shared \
+        --with-ca-bundle=/etc/ssl/certs/ca-certificates.crt && \
+    make && make install && \
+    cd .. && rm -rf curl-8.5.0*
+
+# Build json-c for Windows
+RUN git clone https://github.com/json-c/json-c.git && cd json-c && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=/build/mingw-toolchain.cmake \
+        -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+        -DBUILD_SHARED_LIBS=OFF && \
+    make && make install && \
+    cd ../.. && rm -rf json-c
+
+# Build SQLite for Windows
+RUN wget https://www.sqlite.org/2023/sqlite-autoconf-3440200.tar.gz && \
+    tar xzf sqlite-autoconf-3440200.tar.gz && cd sqlite-autoconf-3440200 && \
+    ./configure --host=x86_64-w64-mingw32 --prefix=${MINGW_PREFIX} --enable-static --disable-shared && \
+    make && make install && \
+    cd .. && rm -rf sqlite-autoconf-3440200*
+
+# Build msgpack for Windows
+RUN git clone https://github.com/msgpack/msgpack-c.git && cd msgpack-c && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=/build/mingw-toolchain.cmake \
+        -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+        -DMSGPACK_BUILD_TESTS=OFF -DMSGPACK_BUILD_EXAMPLES=OFF && \
+    make && make install && \
+    cd ../.. && rm -rf msgpack-c
+
+# Build GLFW for Windows (ImGui dependency)
+RUN git clone https://github.com/glfw/glfw.git && cd glfw && \
+    mkdir build && cd build && \
+    cmake .. -DCMAKE_TOOLCHAIN_FILE=/build/mingw-toolchain.cmake \
+        -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+        -DBUILD_SHARED_LIBS=OFF -DGLFW_BUILD_EXAMPLES=OFF -DGLFW_BUILD_TESTS=OFF && \
+    make && make install && \
+    cd ../.. && rm -rf glfw
+
+# Build GLEW for Windows
+RUN wget https://github.com/nigels-com/glew/releases/download/glew-2.2.0/glew-2.2.0.tgz && \
+    tar xzf glew-2.2.0.tgz && cd glew-2.2.0 && \
+    cd build/cmake && \
+    cmake ./cmake -DCMAKE_TOOLCHAIN_FILE=/build/mingw-toolchain.cmake \
+        -DCMAKE_INSTALL_PREFIX=${MINGW_PREFIX} \
+        -DBUILD_UTILS=OFF && \
+    make && make install && \
+    cd ../../.. && rm -rf glew-2.2.0*
+
+# Build FreeType for Windows
+RUN wget https://download.savannah.gnu.org/releases/freetype/freetype-2.13.2.tar.gz && \
+    tar xzf freetype-2.13.2.tar.gz && cd freetype-2.13.2 && \
+    ./configure --host=x86_64-w64-mingw32 --prefix=${MINGW_PREFIX} \
+        --enable-static --disable-shared --without-harfbuzz && \
+    make && make install && \
+    cd .. && rm -rf freetype-2.13.2*
+
+# Note: GLib, libnice, and OpenDHT are complex - skip for initial version
+# These would require significant effort to cross-compile properly
+# For a working Windows build, we'd need to either:
+# 1. Build these dependencies (very complex)
+# 2. Use vcpkg or another package manager
+# 3. Build natively on Windows
+
+WORKDIR /workspace
+
+# Set environment for easy building
+ENV CMAKE_TOOLCHAIN_FILE=/build/mingw-toolchain.cmake
+
+CMD ["/bin/bash"]
