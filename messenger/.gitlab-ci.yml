@@ -26,13 +26,13 @@ build:linux-x64:
     - apt-get update -qq
     - apt-get install -y -qq build-essential cmake git pkg-config xxd
     # ImGui GUI dependencies
-    - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libglew-dev libfreetype6-dev
-    # OpenDHT dependencies
-    - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev
-    # Crypto and network dependencies
-    - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev
-    # P2P/ICE dependencies
-    - apt-get install -y -qq libnice-dev
+    - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libglew-dev libfreetype6-dev libgtk-3-dev
+    # Core dependencies
+    - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev
+    # P2P/ICE dependencies  
+    - apt-get install -y -qq libnice-dev libglib2.0-dev
+    # OpenDHT and its dependencies
+    - apt-get install -y -qq libopendht-dev libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev
   script:
     - mkdir -p build
     - cd build
