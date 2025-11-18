@@ -51,26 +51,29 @@ build:linux-x64:
     when: on_success  # Only keep artifacts from successful builds
 
 # Windows x86_64 build (MinGW cross-compile)
-build:windows-x64:
-  stage: build
-  tags:
-    - linux
-  image: ubuntu:24.04
-  timeout: 30m
-  before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq build-essential cmake git pkg-config xxd
-    - apt-get install -y -qq mingw-w64 g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64
-  script:
-    # Use the existing cross-compile script
-    - chmod +x build-cross-compile.sh
-    - ./build-cross-compile.sh windows-x64
-  artifacts:
-    name: "dna-messenger-windows-x64-${CI_COMMIT_SHORT_SHA}"
-    paths:
-      - dist/*.zip
-      - dist/*.tar.gz
-      - dist/windows-x64/
-    expire_in: 2 days  # Short expiry to avoid spam, latest successful build is kept
-    when: on_success  # Only keep artifacts from successful builds
-  allow_failure: true
+# Disabled: Requires Windows-compiled versions of OpenDHT, OpenSSL, libnice, glib, etc.
+# These dependencies are not available as pre-built MinGW packages.
+# Windows builds should be done natively on Windows for now.
+#
+# build:windows-x64:
+#   stage: build
+#   tags:
+#     - linux
+#   image: ubuntu:24.04
+#   timeout: 30m
+#   before_script:
+#     - apt-get update -qq
+#     - apt-get install -y -qq build-essential cmake git pkg-config xxd
+#     - apt-get install -y -qq mingw-w64 g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64
+#   script:
+#     - chmod +x build-cross-compile.sh
+#     - ./build-cross-compile.sh windows-x64
+#   artifacts:
+#     name: "dna-messenger-windows-x64-${CI_COMMIT_SHORT_SHA}"
+#     paths:
+#       - dist/*.zip
+#       - dist/*.tar.gz
+#       - dist/windows-x64/
+#     expire_in: 2 days
+#     when: on_success
+#   allow_failure: true
