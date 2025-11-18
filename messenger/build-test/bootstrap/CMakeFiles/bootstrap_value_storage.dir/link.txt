@@ -1,2 +1,0 @@
-/usr/bin/ar qc libbootstrap_value_storage.a CMakeFiles/bootstrap_value_storage.dir/services/value_storage/dht_value_storage.cpp.o
-/usr/bin/ranlib libbootstrap_value_storage.a
