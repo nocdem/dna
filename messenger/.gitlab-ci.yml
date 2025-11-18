@@ -59,6 +59,8 @@ build:windows-x64:
   image: ubuntu:20.04
   timeout: 3h
   before_script:
+    # Disable interactive prompts
+    - export DEBIAN_FRONTEND=noninteractive
     - apt-get update -qq
     # MXE build dependencies
     - apt-get install -y -qq build-essential cmake git pkg-config xxd autoconf automake libtool libtool-bin
