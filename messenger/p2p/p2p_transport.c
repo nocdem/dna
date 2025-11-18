@@ -45,6 +45,16 @@ p2p_transport_t* p2p_transport_init(
     memcpy(ctx->my_public_key, my_pubkey_dilithium, 2592);  // Dilithium5 public key size
     memcpy(ctx->my_kyber_key, my_kyber_key, 2400);
 
+    // Compute my fingerprint (SHA3-512 hex) for ICE DHT keys
+    uint8_t my_dht_key[64];  // SHA3-512 = 64 bytes
+    sha3_512_hash(my_pubkey_dilithium, 2592, my_dht_key);
+    for (int i = 0; i < 64; i++) {
+        snprintf(ctx->my_fingerprint + (i * 2), 3, "%02x", my_dht_key[i]);
+    }
+    ctx->my_fingerprint[128] = '\0';
+
+    printf("[P2P] My fingerprint: %.32s...\n", ctx->my_fingerprint);
+
     // Callbacks
     ctx->message_callback = message_callback;
     ctx->connection_callback = connection_callback;
@@ -53,6 +63,10 @@ p2p_transport_t* p2p_transport_init(
     // Initialize mutexes
     pthread_mutex_init(&ctx->connections_mutex, NULL);
     pthread_mutex_init(&ctx->callback_mutex, NULL);
+
+    // Initialize ICE state (Phase 11 FIX)
+    ctx->ice_context = NULL;
+    ctx->ice_ready = false;
 
     // Use global DHT singleton (initialized at app startup)
     // No need to create/start DHT here - it's already running
@@ -94,6 +108,16 @@ int p2p_transport_start(p2p_transport_t *ctx) {
         return -1;
     }
 
+    // Phase 11 FIX: Initialize persistent ICE context
+    printf("[P2P] Initializing persistent ICE for NAT traversal...\n");
+    if (ice_init_persistent(ctx) != 0) {
+        fprintf(stderr, "[P2P] WARNING: ICE initialization failed (NAT traversal unavailable)\n");
+        fprintf(stderr, "[P2P] Continuing with TCP-only mode...\n");
+        // Not fatal - continue with TCP-only mode
+    } else {
+        printf("[P2P] ✓ ICE ready for NAT traversal\n");
+    }
+
     return 0;
 }
 
@@ -103,6 +127,12 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
     }
 
     printf("[P2P] Stopping transport...\n");
+
+    // Phase 11 FIX: Shutdown persistent ICE
+    if (ctx->ice_ready) {
+        printf("[P2P] Shutting down persistent ICE...\n");
+        ice_shutdown_persistent(ctx);
+    }
 
     // Stop TCP listener and close connections
     tcp_stop_listener(ctx);

@@ -9,7 +9,10 @@
 /**
  * Register presence in DHT
  * Publishes IP:port information for peer discovery
- * Also publishes ICE candidates for NAT traversal (Phase 11)
+ *
+ * Phase 11 FIX: ICE candidates now published by persistent ICE context
+ * (no longer done here - see ice_init_persistent() in p2p_transport_start)
+ *
  * @param ctx: P2P transport context
  * @return: 0 on success, -1 on error
  */
@@ -54,65 +57,17 @@ int p2p_register_presence(p2p_transport_t *ctx) {
         return result;
     }
 
-    // ========================================================================
-    // Phase 11: ICE NAT Traversal - Publish ICE candidates
-    // ========================================================================
+    // Phase 11 FIX: ICE candidates are now published by ice_init_persistent()
+    // during p2p_transport_start(), not here. This prevents Bug #2
+    // (destroying ICE context after publishing candidates).
 
-    printf("[P2P] [ICE] Starting ICE candidate gathering for NAT traversal...\n");
-
-    // Create ICE context
-    ice_context_t *ice_ctx = ice_context_new();
-    if (!ice_ctx) {
-        printf("[P2P] [ICE] Failed to create ICE context (skipping ICE)\n");
-        return 0;  // Not fatal - presence already registered
-    }
-
-    // Gather local ICE candidates (STUN servers: Google, Cloudflare)
-    // Try multiple STUN servers in case one is unreachable
-    int gathered = 0;
-    const char *stun_servers[] = {
-        "stun.l.google.com",
-        "stun1.l.google.com",
-        "stun.cloudflare.com"
-    };
-    const uint16_t stun_ports[] = {19302, 19302, 3478};
-
-    for (size_t i = 0; i < 3 && !gathered; i++) {
-        printf("[P2P] [ICE] Trying STUN server: %s:%d\n", stun_servers[i], stun_ports[i]);
-        if (ice_gather_candidates(ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
-            gathered = 1;
-            printf("[P2P] [ICE] ✓ Successfully gathered ICE candidates\n");
-            break;
-        }
-    }
-
-    if (!gathered) {
-        printf("[P2P] [ICE] Failed to gather candidates from all STUN servers (skipping ICE)\n");
-        ice_context_free(ice_ctx);
-        return 0;  // Not fatal
-    }
-
-    // Compute fingerprint (hex string) from public key hash for ICE DHT key
-    char fingerprint_hex[129];  // SHA3-512 = 64 bytes * 2 hex chars + null
-    for (int i = 0; i < 64; i++) {
-        snprintf(fingerprint_hex + (i * 2), 3, "%02x", dht_key[i]);  // Fixed: use snprintf with size 3
-    }
-    fingerprint_hex[128] = '\0';
-
-    // Publish ICE candidates to DHT
-    if (ice_publish_to_dht(ice_ctx, fingerprint_hex) == 0) {
-        printf("[P2P] [ICE] ✓ Published ICE candidates to DHT (7-day TTL)\n");
-        printf("[P2P] [ICE] Key: %s:ice_candidates\n", fingerprint_hex);
+    if (ctx->ice_ready) {
+        printf("[P2P] ✓ Presence and ICE candidates both registered (ICE ready for NAT traversal)\n");
     } else {
-        printf("[P2P] [ICE] Failed to publish ICE candidates (continuing anyway)\n");
+        printf("[P2P] ✓ Presence registered (ICE unavailable, TCP-only mode)\n");
     }
 
-    // Clean up ICE context (candidates already published)
-    ice_context_free(ice_ctx);
-
-    printf("[P2P] [ICE] ICE candidate publishing complete\n");
-
-    return 0;  // Success - both presence and ICE candidates published
+    return 0;
 }
 
 /**
@@ -176,11 +131,16 @@ int p2p_lookup_peer(
 }
 
 /**
- * Send message to peer with 3-tier fallback (Phase 11: ICE NAT Traversal)
+ * Send message to peer with 3-tier fallback (Phase 11 FIX: Connection Reuse)
  *
  * Tier 1: LAN DHT lookup + Direct TCP connection
- * Tier 2: ICE NAT traversal (STUN-assisted P2P)
+ * Tier 2: ICE NAT traversal (PERSISTENT, REUSED connections)
  * Tier 3: DHT offline queue (handled by caller)
+ *
+ * FIXES:
+ * - Bug #1: ICE connections now reused (not created per-message)
+ * - Bug #3: ICE connections cached in connections[] array
+ * - Bug #4: Bidirectional communication via receive threads
  *
  * @param ctx: P2P transport context
  * @param peer_pubkey: Peer's Dilithium5 public key (2592 bytes)
@@ -282,80 +242,44 @@ int p2p_send_message(
     printf("[P2P] [TIER 1] Failed - peer unreachable via direct TCP\n");
 
     // ========================================================================
-    // TIER 2: ICE NAT Traversal (STUN-assisted P2P)
+    // TIER 2: ICE NAT Traversal (PERSISTENT - Phase 11 FIX)
     // ========================================================================
 
-    printf("[P2P] [TIER 2] Attempting ICE NAT traversal...\n");
+    // FIX: Check if ICE is available first
+    if (!ctx->ice_ready) {
+        printf("[P2P] [TIER 2] ICE unavailable (initialization failed or disabled)\n");
+        goto tier3_fallback;
+    }
 
-    // Compute peer fingerprint (hex string) from public key hash for ICE lookup
+    printf("[P2P] [TIER 2] Attempting ICE NAT traversal (persistent connections)...\n");
+
+    // Compute peer fingerprint (hex string) from public key hash
     uint8_t peer_dht_key[64];  // SHA3-512 = 64 bytes
     sha3_512_hash(peer_pubkey, 2592, peer_dht_key);  // Dilithium5 public key size
 
     char peer_fingerprint_hex[129];  // SHA3-512 = 64 bytes * 2 hex chars + null
     for (int i = 0; i < 64; i++) {
-        snprintf(peer_fingerprint_hex + (i * 2), 3, "%02x", peer_dht_key[i]);  // Fixed: use snprintf with size 3
+        snprintf(peer_fingerprint_hex + (i * 2), 3, "%02x", peer_dht_key[i]);
     }
     peer_fingerprint_hex[128] = '\0';
 
-    // Create ICE context
-    ice_context_t *ice_ctx = ice_context_new();
-    if (!ice_ctx) {
-        printf("[P2P] [TIER 2] Failed to create ICE context\n");
+    // FIX: Find or create ICE connection (reuse existing, Bug #1 #3)
+    p2p_connection_t *ice_conn = ice_get_or_create_connection(ctx, peer_pubkey, peer_fingerprint_hex);
+    if (!ice_conn) {
+        printf("[P2P] [TIER 2] Failed to establish ICE connection\n");
         goto tier3_fallback;
     }
 
-    // Gather local ICE candidates (try multiple STUN servers)
-    int gathered = 0;
-    const char *stun_servers[] = {
-        "stun.l.google.com",
-        "stun1.l.google.com",
-        "stun.cloudflare.com"
-    };
-    const uint16_t stun_ports[] = {19302, 19302, 3478};
+    printf("[P2P] [TIER 2] ✓ Using ICE connection to peer %.32s...\n", peer_fingerprint_hex);
 
-    for (size_t i = 0; i < 3 && !gathered; i++) {
-        if (ice_gather_candidates(ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
-            gathered = 1;
-            printf("[P2P] [TIER 2] ✓ Gathered ICE candidates via %s:%d\n",
-                   stun_servers[i], stun_ports[i]);
-            break;
-        }
-    }
-
-    if (!gathered) {
-        printf("[P2P] [TIER 2] Failed to gather ICE candidates\n");
-        ice_context_free(ice_ctx);
-        goto tier3_fallback;
-    }
-
-    // Fetch peer's ICE candidates from DHT
-    if (ice_fetch_from_dht(ice_ctx, peer_fingerprint_hex) != 0) {
-        printf("[P2P] [TIER 2] Peer ICE candidates not found in DHT\n");
-        ice_context_free(ice_ctx);
-        goto tier3_fallback;
-    }
-
-    printf("[P2P] [TIER 2] ✓ Fetched peer ICE candidates from DHT\n");
-
-    // Perform ICE connectivity checks
-    if (ice_connect(ice_ctx) != 0) {
-        printf("[P2P] [TIER 2] ICE connectivity checks failed\n");
-        ice_context_free(ice_ctx);
-        goto tier3_fallback;
-    }
-
-    printf("[P2P] [TIER 2] ✓ ICE connection established!\n");
-
-    // Send message via ICE
-    int ice_sent = ice_send(ice_ctx, message, message_len);
+    // FIX: Send via existing ICE connection (Bug #1 - no more per-message context creation)
+    int ice_sent = ice_send(ice_conn->ice_ctx, message, message_len);
     if (ice_sent > 0) {
-        printf("[P2P] [TIER 2] ✓✓ SUCCESS - Sent %d bytes via ICE!\n", ice_sent);
-        ice_context_free(ice_ctx);
+        printf("[P2P] [TIER 2] ✓✓ SUCCESS - Sent %d bytes via ICE (connection cached)!\n", ice_sent);
         return 0;  // SUCCESS - Tier 2 worked!
     }
 
     printf("[P2P] [TIER 2] Failed to send message via ICE\n");
-    ice_context_free(ice_ctx);
 
     // ========================================================================
     // TIER 3: DHT Offline Queue (handled by caller - messenger_p2p.c)

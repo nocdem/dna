@@ -32,7 +32,8 @@ add_library(p2p_transport STATIC
     transport/transport_tcp.c
     transport/transport_discovery.c
     transport/transport_offline.c
-    transport/transport_ice.c  # Phase 11: NAT traversal (STUN+ICE)
+    transport/transport_ice.c              # Phase 11: NAT traversal (STUN+ICE - low-level)
+    transport/transport_ice_persistent.c   # Phase 11 FIX: Persistent ICE connections
 )
 
 target_include_directories(p2p_transport PUBLIC
