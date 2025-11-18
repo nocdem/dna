@@ -56,12 +56,12 @@ build:windows-x64:
   stage: build
   tags:
     - linux
-  image: ubuntu:22.04
+  image: ubuntu:20.04
   timeout: 3h
   before_script:
     - apt-get update -qq
     # MXE build dependencies
-    - apt-get install -y -qq build-essential cmake git pkg-config xxd autoconf automake libtool
+    - apt-get install -y -qq build-essential cmake git pkg-config xxd autoconf automake libtool libtool-bin
     - apt-get install -y -qq bison flex gperf ruby unzip p7zip-full lzip intltool xz-utils
     - apt-get install -y -qq gettext autopoint libssl-dev zlib1g-dev bzip2 libgdk-pixbuf2.0-dev
     - apt-get install -y -qq python3 python3-mako perl libxml-parser-perl
