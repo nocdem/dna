@@ -31,6 +31,8 @@ build:linux-x64:
     - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev
     # Crypto and network dependencies
     - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev
+    # P2P/ICE dependencies
+    - apt-get install -y -qq libnice-dev
   script:
     - mkdir -p build
     - cd build
