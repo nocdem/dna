@@ -566,13 +566,6 @@ void renderCreateIdentityStep2(AppState& state) {
 }
 
 
-void renderCreateIdentityStep3(AppState& state) {
-    // Step 3: This step is now handled by the spinner overlay
-    // The modal will close and spinner will show until creation completes
-    // This function should never actually render since we trigger async task immediately
-}
-
-
 void createIdentityWithSeed(AppState& state, const char* mnemonic) {
     printf("[Identity] Creating identity (fingerprint-only, no name registration)\n");
 

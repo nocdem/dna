@@ -10,7 +10,6 @@ namespace IdentitySelectionScreen {
     // Create identity wizard steps
     void renderCreateIdentityStep1(AppState& state);
     void renderCreateIdentityStep2(AppState& state);
-    void renderCreateIdentityStep3(AppState& state);
 
     // Identity creation
     void createIdentityWithSeed(AppState& state, const char* mnemonic);
