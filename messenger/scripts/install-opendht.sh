@@ -144,7 +144,7 @@ sudo apt install -y \
     libssl-dev \
     libfmt-dev \
     libmsgpack-dev \
-    asio-dev \
+    libasio-dev \
     libcppunit-dev
 
 print_success "Dependencies installed"
