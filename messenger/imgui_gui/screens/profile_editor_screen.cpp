@@ -300,16 +300,14 @@ void render(AppState& state) {
                 ImGui::Spacing();
                 
                 if (ThemedButton(ICON_FA_FOLDER_OPEN " Browse Image File", ImVec2(200, 30), false)) {
-                    // Use zenity for file selection (bypasses GTK pathbar crash)
                     char *selected_path = nullptr;
 
                     #ifndef _WIN32
-                    // Use zenity on Linux to avoid GTK pathbar crash
+                    // Linux: Use zenity (avoids GTK pathbar crash)
                     FILE *fp = popen("zenity --file-selection --title='Select Avatar Image' --file-filter='Image files | *.png *.jpg *.jpeg *.bmp *.gif' 2>/dev/null", "r");
                     if (fp) {
                         char path_buffer[4096];
                         if (fgets(path_buffer, sizeof(path_buffer), fp)) {
-                            // Remove trailing newline
                             size_t len = strlen(path_buffer);
                             if (len > 0 && path_buffer[len-1] == '\n') {
                                 path_buffer[len-1] = '\0';
@@ -321,7 +319,7 @@ void render(AppState& state) {
                         pclose(fp);
                     }
                     #else
-                    // Use NFD on Windows
+                    // Windows: Use NFD (no GTK on Windows)
                     nfdchar_t *outPath = nullptr;
                     nfdfilteritem_t filters[1] = { { "Image Files", "png,jpg,jpeg,bmp,gif" } };
                     nfdresult_t result = NFD_OpenDialog(&outPath, filters, 1, nullptr);
