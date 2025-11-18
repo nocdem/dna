@@ -682,7 +682,6 @@ int messenger_sync_groups(messenger_context_t *ctx) {
             size_t sender_pubkey_len = 0;
             uint8_t *signature = NULL;
             size_t signature_len = 0;
-            uint64_t sender_timestamp = 0;
 
             dna_error_t err = dna_decrypt_message_raw(
                 ctx->dna_ctx,
@@ -694,8 +693,7 @@ int messenger_sync_groups(messenger_context_t *ctx) {
                 &sender_pubkey,
                 &sender_pubkey_len,
                 &signature,
-                &signature_len,
-                &sender_timestamp  // v0.08: Extract sender's timestamp
+                &signature_len
             );
 
             if (err != DNA_OK || !plaintext) {

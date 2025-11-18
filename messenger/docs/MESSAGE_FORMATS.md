@@ -1,6 +1,6 @@
 # DNA Messenger Message Format Specification
 
-**Version:** 0.08
+**Version:** 0.07
 **Date:** 2025-11-18
 **Status:** Production
 
@@ -14,7 +14,6 @@ DNA Messenger uses a custom message format with **Category 5 post-quantum crypto
 
 | Version | Date | Changes | Breaking |
 |---------|------|---------|----------|
-| **0x08** | 2025-11-18 | Encrypted sender timestamp in payload | ✅ Yes |
 | **0x07** | 2025-11-18 | Fingerprint privacy: sender FP encrypted, pubkey removed from signature | ✅ Yes |
 | **0x06** | 2025-11-04 | Category 5 upgrade: Kyber1024, Dilithium5, SHA3-512 | ✅ Yes |
 | **0x05** | 2025-10-23 | Multi-recipient support | No |
@@ -22,7 +21,7 @@ DNA Messenger uses a custom message format with **Category 5 post-quantum crypto
 
 ---
 
-## Message Format v0.08 (Current)
+##Message Format v0.07 (Current)
 
 ### Binary Structure
 
@@ -30,7 +29,7 @@ DNA Messenger uses a custom message format with **Category 5 post-quantum crypto
 ┌──────────────────────────────────────────────────────────┐
 │ Header (20 bytes)                                        │
 │  - magic[8]:         "PQSIGENC"                          │
-│  - version:          0x08                                │
+│  - version:          0x07                                │
 │  - enc_key_type:     23 (Kyber1024)                      │
 │  - recipient_count:  1-255                               │
 │  - reserved:         0x00                                │
@@ -45,10 +44,9 @@ DNA Messenger uses a custom message format with **Category 5 post-quantum crypto
 │ Nonce (12 bytes)                                         │
 │  - Random AES-256-GCM initialization vector              │
 ├──────────────────────────────────────────────────────────┤
-│ Ciphertext (variable = 64 + 8 + plaintext_len)           │
+│ Ciphertext (variable = 64 + plaintext_len)               │
 │  AES-256-GCM encrypted:                                  │
 │    - sender_fingerprint[64]:  SHA3-512(sender pubkey)    │
-│    - timestamp[8]:            uint64 Unix epoch (big-endian) │
 │    - plaintext:               Actual message content     │
 ├──────────────────────────────────────────────────────────┤
 │ Tag (16 bytes)                                           │
@@ -69,32 +67,31 @@ For a **100-byte plaintext message**:
 Header:             20 bytes
 Recipients (1):   1608 bytes
 Nonce:              12 bytes
-Ciphertext:        172 bytes  (64 fingerprint + 8 timestamp + 100 plaintext)
+Ciphertext:        164 bytes  (64 fingerprint + 100 plaintext)
 Tag:                16 bytes
 Signature:        4598 bytes  (type + size + ~4595 sig)
 ──────────────────────────────
-Total:            6426 bytes
+Total:            6418 bytes
 
-Overhead: 6326 bytes (63x)
+Overhead: 6318 bytes (63x)
 ```
 
-### Comparison with Previous Versions
+### Comparison with v0.06
 
-| Component | v0.06 | v0.07 | v0.08 |
-|-----------|-------|-------|-------|
-| Header | 20 B | 20 B | 20 B |
-| Recipients | 1608 B | 1608 B | 1608 B |
-| Nonce | 12 B | 12 B | 12 B |
-| Ciphertext | 100 B | 164 B | **172 B** |
-| Tag | 16 B | 16 B | 16 B |
-| Signature | 7195 B | 4598 B | 4598 B |
-| **Total** | **8951 B** | **6418 B** | **6426 B** |
+| Component | v0.06 | v0.07 | Savings |
+|-----------|-------|-------|---------|
+| Header | 20 B | 20 B | 0 |
+| Recipients | 1608 B | 1608 B | 0 |
+| Nonce | 12 B | 12 B | 0 |
+| Ciphertext | 100 B | 164 B | **-64 B** |
+| Tag | 16 B | 16 B | 0 |
+| Signature | **7195 B** | **4598 B** | **+2597 B** |
+| **Total** | **8951 B** | **6418 B** | **+2533 B (28%)** |
 
-**Key improvements (v0.08 vs v0.06):**
+**Key improvements:**
 - ✅ Sender fingerprint encrypted (64 bytes inside ciphertext)
-- ✅ Sender timestamp encrypted (8 bytes inside ciphertext)
 - ✅ Public key removed from signature (2592 bytes saved)
-- ✅ Net reduction: 2525 bytes per message (28.2%)
+- ✅ Net reduction: 2533 bytes per message
 
 ---
 
@@ -105,7 +102,7 @@ Overhead: 6326 bytes (63x)
 ```c
 typedef struct {
     char magic[8];          // "PQSIGENC" (0x50 0x51 0x53 0x49 0x47 0x45 0x4E 0x43)
-    uint8_t version;        // 0x08
+    uint8_t version;        // 0x07
     uint8_t enc_key_type;   // 23 = Kyber1024
     uint8_t recipient_count;// 1-255
     uint8_t reserved;       // 0x00
@@ -116,7 +113,7 @@ typedef struct {
 
 **Validation:**
 - `magic` must be "PQSIGENC"
-- `version` must be `0x08` for v0.08 clients
+- `version` must be `0x07` for v0.07 clients
 - `enc_key_type` must be `23` (Kyber1024)
 - `recipient_count` must be ≥ 1
 
@@ -145,11 +142,11 @@ typedef struct {
 - Generated using `qgp_randombytes()`
 - Must be unique per message (never reused with same DEK)
 
-### Ciphertext (64 + 8 + plaintext_len bytes)
+### Ciphertext (64 + plaintext_len bytes)
 
-**Structure (v0.08):**
+**Structure:**
 ```
-[sender_fingerprint(64)] || [timestamp(8)] || [plaintext]
+[sender_fingerprint(64)] || [plaintext]
 ```
 
 **Encryption:**
@@ -164,16 +161,9 @@ typedef struct {
 - Binary format (64 bytes, not hex)
 - Used for keyserver lookup during verification
 
-**timestamp:**
-- Unix epoch timestamp (uint64_t, 8 bytes)
-- Big-endian byte order (network byte order)
-- Sender's time when message was created
-- Encrypted inside payload (privacy-preserving)
-- Used for correct message ordering
-
 **plaintext:**
 - Actual message content (UTF-8 text or binary data)
-- No length prefix (derived from `encrypted_size - 64 - 8`)
+- No length prefix (derived from `encrypted_size - 64`)
 
 ### Tag (16 bytes)
 
@@ -183,7 +173,7 @@ typedef struct {
 
 ### Signature (3 + ~4595 bytes)
 
-**v0.08 Format:**
+**v0.07 Format:**
 ```
 [type(1)] [sig_size(2)] [signature_bytes]
 ```
@@ -192,7 +182,6 @@ typedef struct {
 - ❌ Removed: `pkey_size` (2 bytes)
 - ❌ Removed: `public_key` (2592 bytes for Dilithium5)
 - ✅ Sender public key now inside encrypted payload (as fingerprint)
-- ✅ Timestamp added to encrypted payload (v0.08)
 
 **Dilithium5 Parameters:**
 - Public key size: 2592 bytes (no longer in signature)
@@ -208,21 +197,20 @@ typedef struct {
 ```
 1. Generate random DEK (32 bytes)
 2. Compute sender_fingerprint = SHA3-512(sender_dilithium_pubkey)
-3. Get current timestamp = time(NULL) (Unix epoch, uint64_t)
-4. Build payload = fingerprint(64) || timestamp(8, big-endian) || plaintext
-5. Create signature = Dilithium5.sign(plaintext, sender_sign_privkey)
-6. Encrypt payload:
+3. Build payload = fingerprint(64) || plaintext
+4. Create signature = Dilithium5.sign(plaintext, sender_sign_privkey)
+5. Encrypt payload:
    ciphertext, tag = AES-256-GCM.encrypt(
        key=DEK,
        plaintext=payload,
        aad=header,
        nonce=random(12)
    )
-7. For each recipient:
+6. For each recipient:
    a. kek, kyber_ct = Kyber1024.encapsulate(recipient_enc_pubkey)
    b. wrapped_dek = AES_KeyWrap(DEK, kek)
-8. Serialize signature (no public key in v0.08)
-9. Assemble message:
+7. Serialize signature (no public key in v0.07)
+8. Assemble message:
    [header][recipients][nonce][ciphertext][tag][signature]
 ```
 
@@ -243,14 +231,13 @@ typedef struct {
        tag=tag
    )
 4. Extract sender_fingerprint = payload[0:64]
-5. Extract timestamp = be64toh(payload[64:72])  // Big-endian to host
-6. Extract plaintext = payload[72:]
-7. Query keyserver for pubkey:
+5. Extract plaintext = payload[64:]
+6. Query keyserver for pubkey:
    dilithium_pubkey = keyserver_lookup(sender_fingerprint)
    (Cache-first, then DHT, 7-day TTL)
-8. Verify signature:
+7. Verify signature:
    verified = Dilithium5.verify(signature, plaintext, dilithium_pubkey)
-9. If verified, return plaintext + timestamp
+8. If verified, return plaintext
 ```
 
 ---
@@ -278,14 +265,13 @@ typedef struct {
 **What's Encrypted:**
 - ✅ Message plaintext (AES-256-GCM)
 - ✅ Sender fingerprint (inside ciphertext)
-- ✅ Sender timestamp (inside ciphertext, v0.08)
 - ✅ DEK (Kyber1024 + AES key wrap)
 
 **What's Plaintext:**
 - ⚠️ Message size (encrypted_size field)
 - ⚠️ Recipient count
-- ⚠️ Signature (but no sender pubkey in v0.08)
-- ⚠️ Queue timestamp (in DHT offline queue metadata, separate from message timestamp)
+- ⚠️ Signature (but no sender pubkey in v0.07)
+- ⚠️ Timestamp (in DHT offline queue)
 
 **Network Observer Can See:**
 - IP addresses (source, destination)
@@ -294,15 +280,13 @@ typedef struct {
 - Protocol fingerprint ("PQSIGENC" magic)
 
 **Network Observer CANNOT See:**
-- Sender identity (fingerprint encrypted in v0.08)
-- Sender timestamp (encrypted in v0.08)
+- Sender identity (fingerprint encrypted in v0.07)
 - Message content
 - Full sender public key
 
 **Privacy Improvement vs v0.06:**
 - v0.06: Sender's 2592-byte Dilithium5 pubkey in plaintext → linkable
 - v0.07: Only 64-byte fingerprint, encrypted → not linkable from network traffic
-- v0.08: Timestamp also encrypted → no timing metadata leak
 
 ---
 
@@ -350,11 +334,9 @@ TTL: 7 days
 
 **Privacy Note:**
 - Fingerprints in queue metadata are **plaintext** (DHT sees them)
-- Fingerprint inside v0.08 message is **encrypted** (better privacy for P2P)
-- Timestamp in queue metadata is **plaintext** (when message was queued)
-- Timestamp inside v0.08 message is **encrypted** (when message was sent)
+- Fingerprint inside v0.07 message is **encrypted** (better privacy for P2P)
 - DHT queue privacy same as v0.06
-- Direct P2P privacy improved in v0.08
+- Direct P2P privacy improved in v0.07
 
 ---
 
@@ -370,28 +352,16 @@ if (version == 0x06) {
     return decrypt_v06(ciphertext);
 }
 else if (version == 0x07) {
-    // v0.07: fingerprint in ciphertext, no timestamp
+    // v0.07: fingerprint in ciphertext, no pubkey in signature
     return decrypt_v07(ciphertext);
-}
-else if (version == 0x08) {
-    // v0.08: fingerprint + timestamp in ciphertext
-    return decrypt_v08(ciphertext);
 }
 else {
     return ERROR_UNSUPPORTED_VERSION;
 }
 ```
 
-### Breaking Changes
+### Breaking Changes (v0.06 → v0.07)
 
-**v0.07 → v0.08:**
-| Change | Impact | Mitigation |
-|--------|--------|------------|
-| **Timestamp in ciphertext** | Decryption must extract timestamp | Update decrypt function |
-| **Ciphertext +8 bytes** | Slightly larger payload | Minimal overhead |
-| **Message ordering** | Now uses sender time, not receive time | UI must use extracted timestamp |
-
-**v0.06 → v0.07:**
 | Change | Impact | Mitigation |
 |--------|--------|------------|
 | **Fingerprint inside ciphertext** | Decryption must extract FP first | Update decrypt function |
@@ -407,16 +377,8 @@ else {
 
 ### Upgrade Checklist
 
-**v0.07 → v0.08:**
-- [ ] Update encryption: Add timestamp to payload (fingerprint + timestamp + plaintext)
-- [ ] Update decryption: Extract timestamp from payload (bytes 64-71)
-- [ ] Update version constant: DNA_ENC_VERSION = 0x08
-- [ ] Update all callers: Pass/receive timestamp parameter
-- [ ] Update UI: Display sender timestamp, not receive time
-- [ ] Test roundtrip: Verify timestamp survives encryption/decryption
-- [ ] Update documentation
+For implementations upgrading from v0.06 to v0.07:
 
-**v0.06 → v0.07:**
 - [ ] Update encryption: Prepend fingerprint to plaintext
 - [ ] Update decryption: Extract fingerprint from payload
 - [ ] Update signature serialization: Remove pubkey
@@ -432,20 +394,15 @@ else {
 
 ### Memory Management
 
-**Encryption (v0.08):**
+**Encryption:**
 ```c
 // Allocate payload buffer
-size_t payload_len = 64 + 8 + plaintext_len;  // fingerprint + timestamp + plaintext
+size_t payload_len = 64 + plaintext_len;
 uint8_t *payload = malloc(payload_len);
 
 // Build payload
 memcpy(payload, fingerprint, 64);
-
-// Add timestamp (big-endian)
-uint64_t timestamp_be = htobe64(timestamp);
-memcpy(payload + 64, &timestamp_be, 8);
-
-memcpy(payload + 64 + 8, plaintext, plaintext_len);
+memcpy(payload + 64, plaintext, plaintext_len);
 
 // Encrypt
 aes256_gcm_encrypt(dek, payload, payload_len, ...);
@@ -455,7 +412,7 @@ memset(payload, 0, payload_len);
 free(payload);
 ```
 
-**Decryption (v0.08):**
+**Decryption:**
 ```c
 // Decrypt
 uint8_t *decrypted = malloc(encrypted_size);
@@ -465,15 +422,10 @@ aes256_gcm_decrypt(dek, ciphertext, encrypted_size, decrypted, ...);
 uint8_t *fingerprint = malloc(64);
 memcpy(fingerprint, decrypted, 64);
 
-// Extract timestamp (big-endian to host)
-uint64_t timestamp_be;
-memcpy(&timestamp_be, decrypted + 64, 8);
-uint64_t timestamp = be64toh(timestamp_be);
-
 // Extract plaintext
-size_t plaintext_len = encrypted_size - 72;  // 64 + 8
+size_t plaintext_len = encrypted_size - 64;
 uint8_t *plaintext = malloc(plaintext_len);
-memcpy(plaintext, decrypted + 72, plaintext_len);
+memcpy(plaintext, decrypted + 64, plaintext_len);
 
 // Clean up decrypted buffer
 memset(decrypted, 0, encrypted_size);
@@ -491,11 +443,10 @@ free(decrypted);
 | `DNA_ERROR_VERSION` | Unsupported version | Upgrade client |
 | `DNA_ERROR_MEMORY` | malloc() failed | Check system resources |
 
-**Verification in v0.08:**
+**Verification in v0.07:**
 ```c
 // After decryption
 uint8_t *fingerprint = extract_fingerprint(decrypted);
-uint64_t timestamp = extract_timestamp(decrypted);
 
 // Query keyserver (cache-first)
 uint8_t *pubkey = NULL;
@@ -512,10 +463,6 @@ if (keyserver_cache_get(fingerprint, &pubkey) != 0) {
 if (dilithium5_verify(signature, plaintext, pubkey) != 0) {
     return DNA_ERROR_VERIFY;
 }
-
-// Return plaintext + timestamp
-*plaintext_out = plaintext;
-*timestamp_out = timestamp;
 ```
 
 ### Performance Considerations
@@ -549,24 +496,19 @@ Recipient: alice (Kyber1024 pubkey: 1568 bytes)
 1. sender_fingerprint = SHA3-512(nocdem_dilithium_pubkey)
    = a3f5e2d1c8b4... (64 bytes)
 
-2. timestamp = time(NULL)
-   = 1763472712 (Unix epoch)
-   = 0x00000000691A0CC8 (64-bit big-endian)
+2. payload = fingerprint || plaintext
+   = [a3f5...c8b4][48656c6c6f2c207468697320697320...] (164 bytes)
 
-3. payload = fingerprint || timestamp || plaintext
-   = [a3f5...c8b4][00 00 00 00 69 1A 0C C8][48656c6c6f2c207468697320697320...]
-   = 64 + 8 + 100 = 172 bytes
-
-4. DEK = random(32)
+3. DEK = random(32)
    = 7a3f2e1d9c8b5a4f3e2d1c0b9a8f7e6d5c4b3a2f1e0d9c8b7a6f5e4d3c2b1a0f
 
-5. signature = Dilithium5.sign(plaintext, nocdem_privkey)
+4. signature = Dilithium5.sign(plaintext, nocdem_privkey)
    = [type:01][size:11F3][sig_bytes:4595 bytes]
 
-6. kyber_ct, kek = Kyber1024.encapsulate(alice_pubkey)
-7. wrapped_dek = AES_KeyWrap(DEK, kek)
+5. kyber_ct, kek = Kyber1024.encapsulate(alice_pubkey)
+6. wrapped_dek = AES_KeyWrap(DEK, kek)
 
-8. ciphertext, tag = AES-256-GCM.encrypt(
+7. ciphertext, tag = AES-256-GCM.encrypt(
        payload,
        dek,
        header_aad,
@@ -574,25 +516,25 @@ Recipient: alice (Kyber1024 pubkey: 1568 bytes)
    )
 ```
 
-**Output Message (v0.08):**
+**Output Message:**
 ```
 Offset  | Field               | Size    | Value (hex)
 --------|---------------------|---------|-------------
 0       | magic               | 8       | 50 51 53 49 47 45 4E 43
-8       | version             | 1       | 08
+8       | version             | 1       | 07
 9       | enc_key_type        | 1       | 17
 10      | recipient_count     | 1       | 01
 11      | reserved            | 1       | 00
-12      | encrypted_size      | 4       | 00 00 00 AC (172)
+12      | encrypted_size      | 4       | 00 00 00 A4 (164)
 16      | signature_size      | 4       | 00 00 11 F6 (4598)
 20      | kyber_ct[0]         | 1568    | ...
 1588    | wrapped_dek[0]      | 40      | ...
 1628    | nonce               | 12      | ...
-1640    | ciphertext          | 172     | ... (fingerprint + timestamp + plaintext encrypted)
-1812    | tag                 | 16      | ...
-1828    | signature           | 4598    | [01][11F3][sig_bytes]
+1640    | ciphertext          | 164     | ... (fingerprint + plaintext encrypted)
+1804    | tag                 | 16      | ...
+1820    | signature           | 4598    | [01][11F3][sig_bytes]
 --------|---------------------|---------|-------------
-        | TOTAL               | 6426    |
+        | TOTAL               | 6418    |
 ```
 
 ---
@@ -624,14 +566,6 @@ Offset  | Field               | Size    | Value (hex)
 ---
 
 ## Changelog
-
-### v0.08 (2025-11-18)
-- **Added:** Encrypted sender timestamp inside payload (8 bytes, big-endian uint64)
-- **Changed:** Payload format: `fingerprint(64) || plaintext` → `fingerprint(64) || timestamp(8) || plaintext`
-- **Result:** 8-byte increase per message (minimal overhead)
-- **Privacy:** Sender timestamp no longer exposed in network traffic
-- **Benefit:** Correct message ordering using sender's time, not receive time
-- **Breaking:** v0.07 clients cannot decrypt v0.08 messages
 
 ### v0.07 (2025-11-18)
 - **Added:** Sender fingerprint inside encrypted payload (64 bytes)

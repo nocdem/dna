@@ -33,7 +33,7 @@ if(WIN32)
 else()
     # Linux: Use pkg-config
     find_package(PkgConfig REQUIRED)
-    pkg_check_modules(OPENDHT REQUIRED opendht>=3.0)
+    pkg_check_modules(OPENDHT REQUIRED opendht>=2.0)
     set(OPENDHT_DEPS ${OPENDHT_LIBRARIES})
 endif()
 

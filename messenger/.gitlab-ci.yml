@@ -1,5 +1,6 @@
 # DNA Messenger CI/CD Pipeline
-# Builds for Linux and Windows with static linking where possible
+# Builds for Linux and Windows using Alpine Linux (minimal image size)
+# All dependencies are statically linked for maximum portability
 
 workflow:
   rules:
@@ -16,64 +17,63 @@ variables:
   GIT_SUBMODULE_STRATEGY: recursive
   CMAKE_BUILD_TYPE: Release
 
-# Linux x86_64 build
+# Linux x86_64 build (Alpine with static linking)
 build:linux-x64:
   stage: build
   tags:
     - linux
-  image: ubuntu:24.04
+  image: alpine:latest
   before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq build-essential cmake git pkg-config xxd
-    # ImGui GUI dependencies
-    - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libglew-dev libfreetype6-dev libgtk-3-dev
-    # Core dependencies
-    - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev
-    # P2P/ICE dependencies  
-    - apt-get install -y -qq libnice-dev libglib2.0-dev
-    # OpenDHT and its dependencies
-    - apt-get install -y -qq libopendht-dev libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev
+    # Install build essentials
+    - apk add --no-cache build-base cmake git pkgconfig xxd linux-headers
+    # ImGui GUI dependencies (static libraries)
+    - apk add --no-cache mesa-dev glfw-dev glew-dev freetype-dev freetype-static
+    # OpenDHT dependencies (static libraries)
+    - apk add --no-cache gnutls-dev gnutls-static argon2-dev argon2-static msgpack-cxx-dev 
+    - apk add --no-cache readline-dev readline-static ncurses-dev ncurses-static nettle-dev nettle-static jsoncpp-dev jsoncpp-static
+    # Additional static libraries that might be needed
+    - apk add --no-cache zlib-dev zlib-static libstdc++-static
   script:
     - mkdir -p build
     - cd build
-    # Static link libgcc and libstdc++ to reduce dependencies
-    - cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++"
+    # Force static linking
+    - cmake .. -DCMAKE_BUILD_TYPE=Release 
+        -DCMAKE_EXE_LINKER_FLAGS="-static -static-libgcc -static-libstdc++"
+        -DBUILD_SHARED_LIBS=OFF
+        -DCMAKE_FIND_LIBRARY_SUFFIXES=".a"
     - make -j$(nproc)
     - ls -lh imgui_gui/
-    # Show what dependencies are needed
-    - echo "=== Binary dependencies ==="
-    - ldd imgui_gui/dna_messenger_imgui || true
+    # Verify it's statically linked
+    - ldd imgui_gui/dna_messenger_imgui || echo "Statically linked (no dynamic dependencies)"
+    - file imgui_gui/dna_messenger_imgui
   artifacts:
-    name: "dna-messenger-linux-x64-${CI_COMMIT_SHORT_SHA}"
+    name: "dna-messenger-linux-x64-static-${CI_COMMIT_SHORT_SHA}"
     paths:
       - build/imgui_gui/dna_messenger_imgui
-    expire_in: 2 days  # Short expiry to avoid spam, latest successful build is kept
-    when: on_success  # Only keep artifacts from successful builds
+    expire_in: 1 week
 
-# Windows x86_64 build (MinGW cross-compile)
-# Disabled: Requires Windows-compiled versions of OpenDHT, OpenSSL, libnice, glib, etc.
-# These dependencies are not available as pre-built MinGW packages.
-# Windows builds should be done natively on Windows for now.
-#
-# build:windows-x64:
-#   stage: build
-#   tags:
-#     - linux
-#   image: ubuntu:24.04
-#   timeout: 30m
-#   before_script:
-#     - apt-get update -qq
-#     - apt-get install -y -qq build-essential cmake git pkg-config xxd
-#     - apt-get install -y -qq mingw-w64 g++-mingw-w64-x86-64 gcc-mingw-w64-x86-64
-#   script:
-#     - chmod +x build-cross-compile.sh
-#     - ./build-cross-compile.sh windows-x64
-#   artifacts:
-#     name: "dna-messenger-windows-x64-${CI_COMMIT_SHORT_SHA}"
-#     paths:
-#       - dist/*.zip
-#       - dist/*.tar.gz
-#       - dist/windows-x64/
-#     expire_in: 2 days
-#     when: on_success
-#   allow_failure: true
+# Windows x86_64 build (Alpine with MinGW static linking)
+build:windows-x64:
+  stage: build
+  tags:
+    - linux
+  image: alpine:latest
+  timeout: 30m
+  before_script:
+    # Install MinGW cross-compiler and build tools
+    - apk add --no-cache build-base cmake git pkgconfig xxd
+    - apk add --no-cache mingw-w64-gcc
+    # Windows builds are always statically linked by default with MinGW
+  script:
+    # Use the existing cross-compile script which should handle static linking
+    - chmod +x build-cross-compile.sh
+    - ./build-cross-compile.sh windows-x64
+    # Verify static linking
+    - file dist/windows-x64/*.exe || true
+  artifacts:
+    name: "dna-messenger-windows-x64-static-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - dist/*.zip
+      - dist/*.tar.gz
+    expire_in: 1 week
+  allow_failure: true

@@ -148,15 +148,12 @@ dna_error_t dna_encrypt_message(
 /**
  * Encrypt message with raw keys (for PostgreSQL integration)
  *
- * v0.08: Added timestamp parameter (encrypted in payload)
- *
  * @param ctx: DNA context
  * @param plaintext: Plaintext message buffer
  * @param plaintext_len: Plaintext length
  * @param recipient_enc_pubkey: Recipient's Kyber1024 public key (1568 bytes)
  * @param sender_sign_pubkey: Sender's Dilithium5 public key (2592 bytes)
  * @param sender_sign_privkey: Sender's Dilithium5 private key (4896 bytes)
- * @param timestamp: Message timestamp (Unix time, uint64_t, encrypted in payload)
  * @param ciphertext_out: Output ciphertext buffer (caller must free)
  * @param ciphertext_len_out: Output ciphertext length
  * @return: DNA_OK on success, error code otherwise
@@ -168,7 +165,6 @@ dna_error_t dna_encrypt_message_raw(
     const uint8_t *recipient_enc_pubkey,
     const uint8_t *sender_sign_pubkey,
     const uint8_t *sender_sign_privkey,
-    uint64_t timestamp,
     uint8_t **ciphertext_out,
     size_t *ciphertext_len_out
 );
@@ -214,7 +210,6 @@ dna_error_t dna_decrypt_message(
  * Decrypt message with raw keys (for PostgreSQL integration)
  *
  * v0.07: sender_sign_pubkey_out now contains 64-byte SHA3-512 fingerprint (not full pubkey)
- * v0.08: Added timestamp_out parameter (extracted from encrypted payload)
  * Caller must query keyserver to get actual public key for signature verification
  *
  * @param ctx: DNA context
@@ -227,7 +222,6 @@ dna_error_t dna_decrypt_message(
  * @param sender_sign_pubkey_len_out: Sender's fingerprint length (64)
  * @param signature_out: Signature bytes (caller must free, can be NULL if not needed)
  * @param signature_len_out: Signature length (can be NULL if not needed)
- * @param timestamp_out: v0.08: Message timestamp (can be NULL if not needed)
  * @return: DNA_OK on success, error code otherwise
  */
 dna_error_t dna_decrypt_message_raw(
@@ -240,8 +234,7 @@ dna_error_t dna_decrypt_message_raw(
     uint8_t **sender_sign_pubkey_out,
     size_t *sender_sign_pubkey_len_out,
     uint8_t **signature_out,
-    size_t *signature_len_out,
-    uint64_t *timestamp_out
+    size_t *signature_len_out
 );
 
 // ============================================================================
