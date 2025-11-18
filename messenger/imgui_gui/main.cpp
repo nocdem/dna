@@ -365,7 +365,10 @@ int main(int argc, char** argv) {
                     printf("[MAIN] Preloading identity names...\n");
                     AppState& state = app.getState();
                     DataLoader::scanIdentities(state);
-                    
+
+                    // BUGFIX: Always mark identities as scanned, even if empty
+                    state.identities_scanned = true;
+
                     dht_context_t *dht_ctx = dht_singleton_get();
                     if (dht_ctx && !state.identities.empty()) {
                         // Track completed lookups with atomic counter
@@ -425,12 +428,10 @@ int main(int argc, char** argv) {
                                 waited_ms += poll_interval_ms;
                             }
                             
-                            printf("[MAIN] Completed %zu/%zu lookups in %dms\n", 
+                            printf("[MAIN] Completed %zu/%zu lookups in %dms\n",
                                    completed_lookups.load(), total_lookups, waited_ms);
                         }
-                        
-                        state.identities_scanned = true;
-                        
+
                         // Preload wallet data asynchronously (non-blocking)
                         printf("[MAIN] Preloading wallet data...\n");
                         state.wallet_preload_task.start([&state](AsyncTask* task) {
