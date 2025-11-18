@@ -357,10 +357,12 @@ void render(AppState& state) {
 
 
     if (CenteredModal::Begin("Message Wall", &state.show_message_wall, ImGuiWindowFlags_NoResize, true, false, 600)) {
-        // Title
-
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 100);
-        if (ThemedButton(ICON_FA_ROTATE " Refresh", ImVec2(100, 30))) {
+        // Refresh button (right-aligned with padding matching left side)
+        float refresh_width = 100.0f;
+        float left_padding = ImGui::GetCursorPosX();
+        
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - refresh_width - left_padding);
+        if (ThemedButton(ICON_FA_ROTATE " Refresh", ImVec2(refresh_width, 30))) {
             loadMessageWall(state);
         }
 
@@ -659,11 +661,14 @@ void render(AppState& state) {
         // Character counter
         int len = strlen(state.wall_message_input);
         ImGui::Text("%d / 1024", len);
-        ImGui::SameLine();
 
-        // Post button
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 150);
-        if (ThemedButton(ICON_FA_PAPER_PLANE " Post Message", ImVec2(150, 35))) {
+        // Post button (right-aligned with padding matching left side)
+        float post_width = 150.0f;
+        float window_padding = ImGui::GetStyle().WindowPadding.x;
+        
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - post_width - window_padding);
+        if (ThemedButton(ICON_FA_PAPER_PLANE " Post Message", ImVec2(post_width, 35))) {
             postToMessageWall(state);
         }
 

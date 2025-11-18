@@ -350,12 +350,23 @@ void render(AppState& state) {
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", state.profile_status.c_str());
         ImGui::Spacing();
 
-        // Buttons
-        if (ThemedButton("Cancel", ImVec2(100, 40))) {
+        // Buttons - left and right aligned with equal padding
+        float cancel_width = 100.0f;
+        float save_width = 200.0f;
+        
+        // Get the left padding by checking cursor X position
+        float left_padding = ImGui::GetCursorPosX();
+        
+        // Draw Cancel button (it will use the natural left padding)
+        if (ThemedButton("Cancel", ImVec2(cancel_width, 40))) {
             state.show_profile_editor = false;
         }
-        ImGui::SameLine(ImGui::GetContentRegionAvail().x - 200);
-        if (ThemedButton(ICON_FA_FLOPPY_DISK " Save Profile to DHT", ImVec2(200, 40))) {
+        
+        // Position Save button from the right with same padding as left
+        ImGui::SameLine();
+        ImGui::SetCursorPosX(ImGui::GetWindowWidth() - save_width - left_padding);
+        
+        if (ThemedButton(ICON_FA_FLOPPY_DISK " Save Profile to DHT", ImVec2(save_width, 40))) {
             saveProfile(state);
         }
 
