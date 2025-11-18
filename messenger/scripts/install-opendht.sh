@@ -1,16 +1,16 @@
 #!/bin/bash
 #
-# OpenDHT 3.5.5 Installation Script
+# OpenDHT 3.5.4 Installation Script
 # DNA Messenger - Post-Quantum Encrypted Messenger
 #
-# This script installs OpenDHT 3.5.5 from source when the system repository
+# This script installs OpenDHT 3.5.4 from source when the system repository
 # provides an outdated version (< 3.0).
 #
 # Tested on:
 #   - Debian 11 (Bullseye) - repo has 2.4.x
 #   - Debian 12 (Bookworm) - repo has 2.4.12
 #   - Ubuntu 20.04 (Focal) - repo has 2.4.x
-#   - Ubuntu 22.04 (Jammy) - repo has 3.1.x (this script still upgrades to 3.5.5)
+#   - Ubuntu 22.04 (Jammy) - repo has 3.1.x (this script still upgrades to 3.5.4)
 #
 # Usage:
 #   ./scripts/install-opendht.sh
@@ -29,7 +29,7 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration
-OPENDHT_VERSION="3.5.5"
+OPENDHT_VERSION="3.5.4"
 OPENDHT_TAG="v${OPENDHT_VERSION}"
 BUILD_DIR="/tmp/opendht-build-$$"
 INSTALL_PREFIX="/usr/local"
