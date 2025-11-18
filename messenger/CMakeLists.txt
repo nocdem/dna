@@ -494,7 +494,29 @@ if(BUILD_TESTS)
         ${OPENDHT_INCLUDE_DIRS}
     )
 
-    message(STATUS "Building unit tests: test_dna_profile, test_simple, test_identity_backup")
+    # v0.08 Timestamp Test
+    add_executable(test_timestamp_v08
+        tests/test_timestamp_v08.c
+    )
+
+    target_link_libraries(test_timestamp_v08
+        dna_lib        # Main DNA library with v0.08 encrypt/decrypt
+        dht_lib        # DHT library
+        kem            # Kyber1024 KEM
+        dsa            # Dilithium5 DSA
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+        ${OPENSSL_LIBRARIES}
+        m              # Math library
+        pthread        # POSIX threads
+    )
+
+    target_include_directories(test_timestamp_v08 PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${OPENDHT_INCLUDE_DIRS}
+    )
+
+    message(STATUS "Building unit tests: test_dna_profile, test_simple, test_identity_backup, test_timestamp_v08")
 endif()
 
 # ImGui GUI (Phase 11: Modern GUI)

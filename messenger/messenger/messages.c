@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <endian.h>
 
 #include "../dna_api.h"
 #include "../crypto/utils/qgp_types.h"
@@ -18,6 +19,7 @@
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_dilithium.h"
 #include "../crypto/utils/qgp_kyber.h"
+#include "../crypto/utils/qgp_sha3.h"
 #include "../crypto/utils/qgp_aes.h"
 #include "../crypto/utils/qgp_random.h"
 #include "../crypto/utils/aes_keywrap.h"
@@ -64,11 +66,13 @@ static int messenger_encrypt_multi_recipient(
     uint8_t **recipient_enc_pubkeys,
     size_t recipient_count,
     qgp_key_t *sender_sign_key,
+    uint64_t timestamp,
     uint8_t **ciphertext_out,
     size_t *ciphertext_len_out
 ) {
     uint8_t *dek = NULL;
     uint8_t *encrypted_data = NULL;
+    uint8_t *payload = NULL;
     messenger_recipient_entry_t *recipient_entries = NULL;
     uint8_t *signature_data = NULL;
     uint8_t *output_buffer = NULL;
@@ -137,29 +141,58 @@ static int messenger_encrypt_multi_recipient(
     }
     qgp_signature_free(signature);
 
-    // Step 3: Encrypt plaintext with AES-256-GCM using DEK
+    // Step 3a: Compute sender fingerprint (SHA3-512 of Dilithium5 pubkey)
+    uint8_t sender_fingerprint[64];
+    if (qgp_sha3_512(sender_sign_key->public_key, QGP_DSA87_PUBLICKEYBYTES, sender_fingerprint) != 0) {
+        fprintf(stderr, "Error: Failed to compute fingerprint\n");
+        goto cleanup;
+    }
+
+    // Step 3b: Build v0.08 payload = fingerprint(64) || timestamp(8) || plaintext
+    size_t payload_len = 64 + 8 + plaintext_len;
+    payload = malloc(payload_len);
+    if (!payload) {
+        fprintf(stderr, "Error: Memory allocation failed for payload\n");
+        goto cleanup;
+    }
+
+    // Copy fingerprint
+    memcpy(payload, sender_fingerprint, 64);
+
+    // Copy timestamp (big-endian)
+    uint64_t timestamp_be = htobe64(timestamp);
+    memcpy(payload + 64, &timestamp_be, 8);
+
+    // Copy plaintext
+    memcpy(payload + 64 + 8, plaintext, plaintext_len);
+
+    // Step 3c: Encrypt payload with AES-256-GCM using DEK
     messenger_enc_header_t header_for_aad;
     memset(&header_for_aad, 0, sizeof(header_for_aad));
     memcpy(header_for_aad.magic, "PQSIGENC", 8);
-    header_for_aad.version = 0x06;
+    header_for_aad.version = 0x08;  // v0.08: encrypted timestamp
     header_for_aad.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header_for_aad.recipient_count = (uint8_t)recipient_count;
-    header_for_aad.encrypted_size = (uint32_t)plaintext_len;
+    header_for_aad.encrypted_size = (uint32_t)payload_len;  // fingerprint + timestamp + plaintext
     header_for_aad.signature_size = (uint32_t)signature_size;
 
-    encrypted_data = malloc(plaintext_len);
+    encrypted_data = malloc(payload_len);
     if (!encrypted_data) {
         fprintf(stderr, "Error: Memory allocation failed for ciphertext\n");
         goto cleanup;
     }
 
-    if (qgp_aes256_encrypt(dek, (const uint8_t*)plaintext, plaintext_len,
+    if (qgp_aes256_encrypt(dek, payload, payload_len,
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            encrypted_data, &encrypted_size,
                            nonce, tag) != 0) {
         fprintf(stderr, "Error: AES-256-GCM encryption failed\n");
         goto cleanup;
     }
+
+    // Payload encrypted, can free now
+    free(payload);
+    payload = NULL;
 
     // Step 4: Create recipient entries (wrap DEK for each recipient)
     recipient_entries = calloc(recipient_count, sizeof(messenger_recipient_entry_t));
@@ -252,6 +285,7 @@ cleanup:
         memset(dek, 0, 32);
         free(dek);
     }
+    if (payload) free(payload);
     if (encrypted_data) free(encrypted_data);
     if (recipient_entries) free(recipient_entries);
     if (signature_data) free(signature_data);
@@ -358,10 +392,12 @@ int messenger_send_message(
     // Multi-recipient encryption implementation
     uint8_t *ciphertext = NULL;
     size_t ciphertext_len = 0;
+    uint64_t send_timestamp = (uint64_t)time(NULL);
     int ret = messenger_encrypt_multi_recipient(
         message, strlen(message),
         enc_pubkeys, total_recipients,
         sender_sign_key,
+        send_timestamp,
         &ciphertext, &ciphertext_len
     );
 
@@ -606,6 +642,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     size_t sender_sign_pubkey_len = 0;
     uint8_t *signature = NULL;
     size_t signature_len = 0;
+    uint64_t sender_timestamp = 0;
 
     dna_error_t err = dna_decrypt_message_raw(
         ctx->dna_ctx,
@@ -617,7 +654,8 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
         &sender_sign_pubkey_from_msg,  // v0.07: This is now 64-byte fingerprint, not pubkey
         &sender_sign_pubkey_len,
         &signature,
-        &signature_len
+        &signature_len,
+        &sender_timestamp  // v0.08: Extract sender's timestamp
     );
 
     // Free Kyber key (secure wipes private key internally)
@@ -672,6 +710,13 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     printf("----------------------------------------\n");
     printf("%.*s\n", (int)plaintext_len, plaintext);
     printf("----------------------------------------\n");
+
+    // Display sender timestamp (v0.08)
+    struct tm *tm_info = localtime((time_t*)&sender_timestamp);
+    char time_str[64];
+    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", tm_info);
+    printf("Sent: %s (sender's time)\n", time_str);
+
     if (sig_verified) {
         printf("✓ Signature verified from %s\n", sender);
         printf("✓ Sender identity verified against keyserver\n");
@@ -749,6 +794,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     size_t sender_sign_pubkey_len = 0;
     uint8_t *signature = NULL;
     size_t signature_len = 0;
+    uint64_t sender_timestamp = 0;
 
     dna_error_t err = dna_decrypt_message_raw(
         ctx->dna_ctx,
@@ -760,7 +806,8 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
         &sender_sign_pubkey_from_msg,  // v0.07: Now 64-byte fingerprint
         &sender_sign_pubkey_len,
         &signature,
-        &signature_len
+        &signature_len,
+        &sender_timestamp  // v0.08: Extract sender's timestamp
     );
 
     // Free Kyber key (secure wipes private key internally)
