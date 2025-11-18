@@ -218,15 +218,26 @@ int main(int argc, char** argv) {
     // Workaround for GTK3 file chooser pathbar crash (VULN-GTK-001)
     // See: https://gitlab.gnome.org/GNOME/gtk/-/issues/4829
     // GTK pathbar has threading issues with cancellable operations
+    // Solution: Use XDG Portal backend instead of GTK directly
     #ifndef _WIN32
-    setenv("GDK_SYNCHRONIZE", "1", 0);  // Synchronous X11 operations prevent race conditions
-    printf("[MAIN] GTK file dialog workaround applied (GDK_SYNCHRONIZE=1)\n");
+    setenv("NFD_PORTAL", "1", 0);  // Use XDG desktop portal (bypasses GTK entirely)
+    printf("[MAIN] Using XDG Portal for file dialogs (GTK crash workaround)\n");
     #endif
 
     // Initialize NFD
     if (NFD_Init() != NFD_OKAY) {
         fprintf(stderr, "[MAIN] NFD initialization failed: %s\n", NFD_GetError());
+        #ifndef _WIN32
+        // Fallback: Try without portal if it fails
+        unsetenv("NFD_PORTAL");
+        printf("[MAIN] Portal init failed, trying GTK backend...\n");
+        if (NFD_Init() != NFD_OKAY) {
+            fprintf(stderr, "[MAIN] NFD initialization failed again: %s\n", NFD_GetError());
+            return 1;
+        }
+        #else
         return 1;
+        #endif
     }
     printf("[MAIN] NFD initialized successfully\n");
 

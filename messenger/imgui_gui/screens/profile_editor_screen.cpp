@@ -300,46 +300,65 @@ void render(AppState& state) {
                 ImGui::Spacing();
                 
                 if (ThemedButton(ICON_FA_FOLDER_OPEN " Browse Image File", ImVec2(200, 30), false)) {
-                    // Use NFD to select image file (GTK workaround applied in main.cpp)
+                    // Use zenity for file selection (bypasses GTK pathbar crash)
+                    char *selected_path = nullptr;
+
+                    #ifndef _WIN32
+                    // Use zenity on Linux to avoid GTK pathbar crash
+                    FILE *fp = popen("zenity --file-selection --title='Select Avatar Image' --file-filter='Image files | *.png *.jpg *.jpeg *.bmp *.gif' 2>/dev/null", "r");
+                    if (fp) {
+                        char path_buffer[4096];
+                        if (fgets(path_buffer, sizeof(path_buffer), fp)) {
+                            // Remove trailing newline
+                            size_t len = strlen(path_buffer);
+                            if (len > 0 && path_buffer[len-1] == '\n') {
+                                path_buffer[len-1] = '\0';
+                            }
+                            if (strlen(path_buffer) > 0) {
+                                selected_path = strdup(path_buffer);
+                            }
+                        }
+                        pclose(fp);
+                    }
+                    #else
+                    // Use NFD on Windows
                     nfdchar_t *outPath = nullptr;
                     nfdfilteritem_t filters[1] = { { "Image Files", "png,jpg,jpeg,bmp,gif" } };
                     nfdresult_t result = NFD_OpenDialog(&outPath, filters, 1, nullptr);
-
-                    if (result == NFD_ERROR) {
-                        state.profile_status = std::string("File dialog error: ") + NFD_GetError();
-                        printf("[ProfileEditor] NFD error: %s\n", NFD_GetError());
+                    if (result == NFD_OKAY) {
+                        selected_path = outPath;
                     }
-                    else if (result == NFD_OKAY) {
+                    #endif
+
+                    if (selected_path) {
                         // Process avatar file immediately (larger buffer for safety)
                         char *base64_out = (char*)malloc(65536); // 64KB buffer for base64
                         if (!base64_out) {
                             state.profile_status = "Failed to allocate memory";
-                            NFD_FreePath(outPath);
+                            free(selected_path);
                             return;
                         }
-                        
-                        int ret = avatar_load_and_encode(outPath, base64_out, 65536);
+
+                        int ret = avatar_load_and_encode(selected_path, base64_out, 65536);
 
                         if (ret == 0) {
                             // Remove old texture from cache before loading new one
                             messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
                             std::string cache_key = ctx ? std::string(ctx->identity) : "preview";
                             TextureManager::getInstance().removeTexture(cache_key);
-                            
+
                             state.profile_avatar_base64 = std::string(base64_out);
                             state.profile_avatar_loaded = true;
                             state.profile_status = "Avatar uploaded successfully! (64x64)";
-                            printf("[ProfileEditor] Avatar loaded from: %s\n", outPath);
+                            printf("[ProfileEditor] Avatar loaded from: %s\n", selected_path);
                         } else {
                             state.profile_status = "Failed to load/resize avatar image";
                         }
-                        
+
                         free(base64_out);
-                        NFD_FreePath(outPath);
-                    } else if (result == NFD_CANCEL) {
-                        printf("[ProfileEditor] User cancelled file selection\n");
+                        free(selected_path);
                     } else {
-                        printf("[ProfileEditor] NFD Error: %s\n", NFD_GetError());
+                        printf("[ProfileEditor] No file selected\n");
                         state.profile_status = "Error opening file dialog";
                     }
                 }
