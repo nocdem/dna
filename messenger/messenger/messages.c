@@ -35,7 +35,7 @@
 // Multi-recipient encryption header and entry structures
 typedef struct {
     char magic[8];              // "PQSIGENC"
-    uint8_t version;            // 0x06 (Category 5: Kyber1024 + Dilithium5)
+    uint8_t version;            // 0x08 (Category 5 + encrypted timestamp)
     uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t reserved;

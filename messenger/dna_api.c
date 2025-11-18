@@ -631,7 +631,7 @@ dna_error_t dna_encrypt_message_raw(
     header_for_aad.version = DNA_ENC_VERSION;
     header_for_aad.enc_key_type = DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header_for_aad.recipient_count = 1;
-    header_for_aad.encrypted_size = (uint32_t)payload_len;  // v0.07: encrypt fingerprint + plaintext
+    header_for_aad.encrypted_size = (uint32_t)payload_len;  // v0.08: encrypt fingerprint + timestamp + plaintext
     header_for_aad.signature_size = (uint32_t)signature_size;
 
     encrypted_data = malloc(payload_len);
