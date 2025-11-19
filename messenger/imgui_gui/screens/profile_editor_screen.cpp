@@ -303,8 +303,16 @@ void render(AppState& state) {
                     char *selected_path = nullptr;
 
                     #ifndef _WIN32
-                    // Linux: Use zenity (avoids GTK pathbar crash)
-                    FILE *fp = popen("zenity --file-selection --title='Select Avatar Image' --file-filter='Image files | *.png *.jpg *.jpeg *.bmp *.gif' 2>/dev/null", "r");
+                    // Linux: Detect KDE and use kdialog, otherwise use zenity
+                    const char *desktop_env = getenv("XDG_CURRENT_DESKTOP");
+                    const char *kde_session = getenv("KDE_SESSION_VERSION");
+                    bool is_kde = (desktop_env && strstr(desktop_env, "KDE")) || kde_session;
+                    
+                    const char *dialog_cmd = is_kde
+                        ? "kdialog --getopenfilename . 'Image files (*.png *.jpg *.jpeg *.bmp *.gif)|All files (*)' --title 'Select Avatar Image' 2>/dev/null"
+                        : "zenity --file-selection --title='Select Avatar Image' --file-filter='Image files | *.png *.jpg *.jpeg *.bmp *.gif' 2>/dev/null";
+                    
+                    FILE *fp = popen(dialog_cmd, "r");
                     if (fp) {
                         char path_buffer[4096];
                         if (fgets(path_buffer, sizeof(path_buffer), fp)) {
@@ -316,7 +324,16 @@ void render(AppState& state) {
                                 selected_path = strdup(path_buffer);
                             }
                         }
-                        pclose(fp);
+                        int status = pclose(fp);
+                        if (status != 0 && !selected_path) {
+                            state.profile_status = is_kde 
+                                ? "Error: kdialog not found. Install kdialog package."
+                                : "Error: zenity not found. Install zenity package.";
+                        }
+                    } else {
+                        state.profile_status = is_kde
+                            ? "Error: Failed to launch kdialog"
+                            : "Error: Failed to launch zenity";
                     }
                     #else
                     // Windows: Use NFD (no GTK on Windows)
