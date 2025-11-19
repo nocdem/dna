@@ -15,7 +15,20 @@ set(OpenGL_GL_PREFERENCE GLVND)
 
 # Find required packages
 find_package(OpenGL REQUIRED)
-find_package(glfw3 REQUIRED)
+
+if(WIN32)
+    # Windows cross-compile: Use manually-installed GLFW prebuilt binaries
+    set(MXE_PREFIX "$ENV{HOME}/.cache/mxe/usr/x86_64-w64-mingw32.static")
+    set(GLFW3_INCLUDE_DIRS "${MXE_PREFIX}/include")
+    set(GLFW3_LIBRARIES "${MXE_PREFIX}/lib/libglfw3.a")
+    message(STATUS "Using manually-installed GLFW for Windows")
+    message(STATUS "GLFW include: ${GLFW3_INCLUDE_DIRS}")
+    message(STATUS "GLFW library: ${GLFW3_LIBRARIES}")
+else()
+    # Linux/Mac: Use find_package
+    find_package(glfw3 REQUIRED)
+endif()
+
 find_package(Freetype REQUIRED)
 
 # ImGui source files
@@ -88,12 +101,23 @@ target_include_directories(dna_messenger_imgui PRIVATE
     ${NFD_DIR}/include
 )
 
+# Add GLFW include directories for Windows (manually set)
+if(WIN32)
+    target_include_directories(dna_messenger_imgui PRIVATE ${GLFW3_INCLUDE_DIRS})
+endif()
+
 target_link_libraries(dna_messenger_imgui PRIVATE
     OpenGL::GL
-    glfw
     dna_lib  # DNA Messenger core library
     cellframe_minimal  # Transaction building and signing
 )
+
+# Link GLFW library (platform-specific)
+if(WIN32)
+    target_link_libraries(dna_messenger_imgui PRIVATE ${GLFW3_LIBRARIES})
+else()
+    target_link_libraries(dna_messenger_imgui PRIVATE glfw)
+endif()
 
 # Platform-specific settings
 if(WIN32)

@@ -238,6 +238,37 @@ build_windows_x64() {
     export MXE_DIR
     "${PROJECT_ROOT}/build-opendht-windows.sh"
 
+    # Download and install GLFW 3.4 prebuilt binaries for Windows
+    GLFW_VERSION="3.4"
+    GLFW_DIR="${HOME}/.cache/glfw-${GLFW_VERSION}"
+    GLFW_INSTALLED="${MXE_PREFIX}/include/GLFW/glfw3.h"
+
+    if [ ! -f "${GLFW_INSTALLED}" ]; then
+        echo -e "${BLUE}Downloading GLFW ${GLFW_VERSION} prebuilt binaries...${NC}"
+        mkdir -p "${GLFW_DIR}"
+        cd "${GLFW_DIR}"
+
+        if [ ! -f "glfw-${GLFW_VERSION}.bin.WIN64.zip" ]; then
+            wget "https://github.com/glfw/glfw/releases/download/${GLFW_VERSION}/glfw-${GLFW_VERSION}.bin.WIN64.zip"
+        fi
+
+        echo -e "${BLUE}Extracting GLFW ${GLFW_VERSION}...${NC}"
+        unzip -o "glfw-${GLFW_VERSION}.bin.WIN64.zip"
+
+        echo -e "${BLUE}Installing GLFW ${GLFW_VERSION} to ${MXE_PREFIX}...${NC}"
+        # Copy headers
+        mkdir -p "${MXE_PREFIX}/include"
+        cp -r "glfw-${GLFW_VERSION}.bin.WIN64/include/GLFW" "${MXE_PREFIX}/include/"
+
+        # Copy static library (lib-mingw-w64 is for 64-bit MinGW)
+        mkdir -p "${MXE_PREFIX}/lib"
+        cp "glfw-${GLFW_VERSION}.bin.WIN64/lib-mingw-w64/libglfw3.a" "${MXE_PREFIX}/lib/"
+
+        echo -e "${GREEN}✓${NC} GLFW ${GLFW_VERSION} installed"
+    else
+        echo -e "${GREEN}✓${NC} GLFW ${GLFW_VERSION} already installed"
+    fi
+
     # Set up environment
     # Add both the general bin dir and the target-specific bin dir to PATH
     # The target bin dir contains the actual binutils (as, ld, etc.)
