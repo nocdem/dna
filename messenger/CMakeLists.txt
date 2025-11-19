@@ -126,19 +126,30 @@ else()
 endif()
 
 # libnice for NAT traversal (STUN+ICE, no TURN for decentralization)
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(NICE REQUIRED nice)
-pkg_check_modules(GLIB2 REQUIRED glib-2.0)
-
-if(NICE_FOUND)
-    message(STATUS "libnice found: ${NICE_VERSION}")
-    message(STATUS "libnice include: ${NICE_INCLUDE_DIRS}")
-    message(STATUS "libnice libraries: ${NICE_LIBRARIES}")
-endif()
-
-if(GLIB2_FOUND)
-    message(STATUS "glib-2.0 found: ${GLIB2_VERSION}")
-    message(STATUS "glib-2.0 include: ${GLIB2_INCLUDE_DIRS}")
+if(WIN32)
+    # Windows: Use MXE-built libnice and glib
+    set(MXE_PREFIX "$ENV{HOME}/.cache/mxe/usr/x86_64-w64-mingw32.static")
+    set(NICE_INCLUDE_DIRS "${MXE_PREFIX}/include/nice")
+    set(GLIB2_INCLUDE_DIRS "${MXE_PREFIX}/include/glib-2.0" "${MXE_PREFIX}/lib/glib-2.0/include")
+    set(NICE_LIBRARIES "${MXE_PREFIX}/lib/libnice.a")
+    set(GLIB2_LIBRARIES "${MXE_PREFIX}/lib/libgio-2.0.a" "${MXE_PREFIX}/lib/libgobject-2.0.a" "${MXE_PREFIX}/lib/libglib-2.0.a")
+    message(STATUS "Using MXE-built libnice for Windows")
+else()
+    # Linux: Use pkg-config
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(NICE REQUIRED nice)
+    pkg_check_modules(GLIB2 REQUIRED glib-2.0)
+    
+    if(NICE_FOUND)
+        message(STATUS "libnice found: ${NICE_VERSION}")
+        message(STATUS "libnice include: ${NICE_INCLUDE_DIRS}")
+        message(STATUS "libnice libraries: ${NICE_LIBRARIES}")
+    endif()
+    
+    if(GLIB2_FOUND)
+        message(STATUS "glib-2.0 found: ${GLIB2_VERSION}")
+        message(STATUS "glib-2.0 include: ${GLIB2_INCLUDE_DIRS}")
+    endif()
 endif()
 
 # NOTE: PostgreSQL removed 2025-11-03 - migrated to SQLite for decentralization
