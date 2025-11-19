@@ -78,6 +78,7 @@ if [ ! -f "${MXE_PREFIX}/lib/libfmt.a" ]; then
         git clone --depth 1 --branch 10.2.1 https://github.com/fmtlib/fmt.git
     fi
     cd fmt
+    rm -rf build-win
     mkdir -p build-win && cd build-win
     cmake .. \
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
@@ -99,6 +100,7 @@ if [ ! -f "${MXE_PREFIX}/lib/libjsoncpp.a" ]; then
         git clone --depth 1 --branch 1.9.5 https://github.com/open-source-parsers/jsoncpp.git
     fi
     cd jsoncpp
+    rm -rf build-win
     mkdir -p build-win && cd build-win
     cmake .. \
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
@@ -163,6 +165,7 @@ if [ ! -f "${MXE_PREFIX}/include/msgpack.hpp" ]; then
         git clone --depth 1 --branch cpp-6.1.0 https://github.com/msgpack/msgpack-c.git
     fi
     cd msgpack-c
+    rm -rf build-win
     mkdir -p build-win && cd build-win
     cmake .. \
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
