@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Build OpenDHT and ALL dependencies for Windows (MXE cross-compilation)
+# Build OpenDHT and ALL dependencies for Windows (llvm-mingw cross-compilation)
 # This builds a complete P2P stack for Windows
 #
 
@@ -13,21 +13,26 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
 
-MXE_DIR="${MXE_DIR:-$HOME/.cache/mxe}"
-MXE_TARGET="x86_64-w64-mingw32.static"
-MXE_PREFIX="${MXE_DIR}/usr/${MXE_TARGET}"
+# llvm-mingw setup (replaces MXE)
+LLVM_MINGW_VERSION="20251118"
+LLVM_MINGW_DIR="${MXE_DIR:-$HOME/.cache/llvm-mingw}"
+LLVM_MINGW_RELEASE="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-x86_64-linux"
+MINGW_PREFIX="${LLVM_MINGW_DIR}/${LLVM_MINGW_RELEASE}"
+
+MXE_TARGET="x86_64-w64-mingw32"
+MXE_PREFIX="${MINGW_PREFIX}/${MXE_TARGET}"
 BUILD_DIR="/tmp/dna-win-deps"
 
-export PATH="${MXE_DIR}/usr/bin:${MXE_PREFIX}/bin:$PATH"
+export PATH="${MINGW_PREFIX}/bin:$PATH"
 export PKG_CONFIG_PATH="${MXE_PREFIX}/lib/pkgconfig"
 export CMAKE_PREFIX_PATH="${MXE_PREFIX}"
 
 echo -e "${BLUE}=========================================${NC}"
 echo -e "${BLUE} Building Full P2P Stack for Windows${NC}"
 echo -e "${BLUE}=========================================${NC}"
-echo -e "MXE Directory: ${MXE_DIR}"
-echo -e "MXE Target: ${MXE_TARGET}"
-echo -e "MXE Prefix: ${MXE_PREFIX}"
+echo -e "llvm-mingw: ${MINGW_PREFIX}"
+echo -e "Target: ${MXE_TARGET}"
+echo -e "Prefix: ${MXE_PREFIX}"
 echo ""
 
 # Check if already built

@@ -15,9 +15,12 @@ if(WIN32)
         # Static linking for MinGW
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++")
     endif()
-    
+
     # Prefer static libraries on Windows
     set(CMAKE_FIND_LIBRARY_SUFFIXES .lib .a)
+
+    # Fix msgpack boost dependency: use msgpack's own predef headers
+    add_definitions(-DMSGPACK_NO_BOOST)
 endif()
 
 # Version (DNA Messenger starts fresh)
