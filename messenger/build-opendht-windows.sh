@@ -25,16 +25,6 @@ BUILD_DIR="/tmp/dna-win-deps"
 
 export PATH="${MINGW_PREFIX}/bin:$PATH"
 export PKG_CONFIG_PATH="${MXE_PREFIX}/lib/pkgconfig"
-export CMAKE_PREFIX_PATH="${MXE_PREFIX}"
-
-# Set compilers for cmake (llvm-mingw doesn't provide cmake wrappers like MXE)
-export CC="${MINGW_PREFIX}/bin/${MXE_TARGET}-clang"
-export CXX="${MINGW_PREFIX}/bin/${MXE_TARGET}-clang++"
-export AR="${MINGW_PREFIX}/bin/${MXE_TARGET}-ar"
-export RANLIB="${MINGW_PREFIX}/bin/${MXE_TARGET}-ranlib"
-export CMAKE_SYSTEM_NAME=Windows
-export CMAKE_C_COMPILER="$CC"
-export CMAKE_CXX_COMPILER="$CXX"
 
 echo -e "${BLUE}=========================================${NC}"
 echo -e "${BLUE} Building Full P2P Stack for Windows${NC}"
@@ -53,6 +43,34 @@ fi
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
+# Create CMake toolchain file for llvm-mingw
+TOOLCHAIN_FILE="$BUILD_DIR/toolchain-mingw64.cmake"
+cat > "$TOOLCHAIN_FILE" << EOF
+set(CMAKE_SYSTEM_NAME Windows)
+set(CMAKE_SYSTEM_PROCESSOR x86_64)
+
+# Use llvm-mingw compilers (Clang-based cross-compiler)
+set(CMAKE_C_COMPILER ${MINGW_PREFIX}/bin/${MXE_TARGET}-clang)
+set(CMAKE_CXX_COMPILER ${MINGW_PREFIX}/bin/${MXE_TARGET}-clang++)
+set(CMAKE_RC_COMPILER ${MINGW_PREFIX}/bin/${MXE_TARGET}-windres)
+set(CMAKE_AR ${MINGW_PREFIX}/bin/${MXE_TARGET}-ar)
+set(CMAKE_RANLIB ${MINGW_PREFIX}/bin/${MXE_TARGET}-ranlib)
+
+set(CMAKE_FIND_ROOT_PATH ${MXE_PREFIX})
+set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
+set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
+set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
+set(WIN32 TRUE)
+set(MINGW TRUE)
+
+# Force static linking
+set(CMAKE_EXE_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")
+set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
+set(BUILD_SHARED_LIBS OFF)
+EOF
+
+echo -e "${GREEN}✓${NC} Created CMake toolchain file: $TOOLCHAIN_FILE"
+
 # 1. Build fmt (formatting library)
 echo -e "${BLUE}[1/5] Building fmt...${NC}"
 if [ ! -f "${MXE_PREFIX}/lib/libfmt.a" ]; then
@@ -62,6 +80,7 @@ if [ ! -f "${MXE_PREFIX}/lib/libfmt.a" ]; then
     cd fmt
     mkdir -p build-win && cd build-win
     cmake .. \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
         -DCMAKE_INSTALL_PREFIX="${MXE_PREFIX}" \
         -DFMT_TEST=OFF \
         -DFMT_DOC=OFF
@@ -82,6 +101,7 @@ if [ ! -f "${MXE_PREFIX}/lib/libjsoncpp.a" ]; then
     cd jsoncpp
     mkdir -p build-win && cd build-win
     cmake .. \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
         -DCMAKE_INSTALL_PREFIX="${MXE_PREFIX}" \
         -DJSONCPP_WITH_TESTS=OFF \
         -DJSONCPP_WITH_POST_BUILD_UNITTEST=OFF \
@@ -145,6 +165,7 @@ if [ ! -f "${MXE_PREFIX}/include/msgpack.hpp" ]; then
     cd msgpack-c
     mkdir -p build-win && cd build-win
     cmake .. \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
         -DCMAKE_INSTALL_PREFIX="${MXE_PREFIX}" \
         -DMSGPACK_BUILD_EXAMPLES=OFF \
         -DMSGPACK_BUILD_TESTS=OFF \
@@ -168,6 +189,7 @@ rm -rf build-win
 mkdir -p build-win && cd build-win
 
 cmake .. \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
     -DCMAKE_INSTALL_PREFIX="${MXE_PREFIX}" \
     -DCMAKE_PREFIX_PATH="${MXE_PREFIX}" \
     -DOPENDHT_PYTHON=OFF \
