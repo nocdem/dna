@@ -157,32 +157,9 @@ else()
     endif()
 endif()
 
-# libnice for NAT traversal (STUN+ICE, no TURN for decentralization)
-if(WIN32)
-    # Windows: Use MXE-built libnice and glib
-    set(MXE_PREFIX "$ENV{HOME}/.cache/mxe/usr/x86_64-w64-mingw32.static")
-    set(NICE_INCLUDE_DIRS "${MXE_PREFIX}/include/nice")
-    set(GLIB2_INCLUDE_DIRS "${MXE_PREFIX}/include/glib-2.0" "${MXE_PREFIX}/lib/glib-2.0/include")
-    set(NICE_LIBRARIES "${MXE_PREFIX}/lib/libnice.a")
-    set(GLIB2_LIBRARIES "${MXE_PREFIX}/lib/libgio-2.0.a" "${MXE_PREFIX}/lib/libgobject-2.0.a" "${MXE_PREFIX}/lib/libglib-2.0.a")
-    message(STATUS "Using MXE-built libnice for Windows")
-else()
-    # Linux: Use pkg-config
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(NICE REQUIRED nice)
-    pkg_check_modules(GLIB2 REQUIRED glib-2.0)
-    
-    if(NICE_FOUND)
-        message(STATUS "libnice found: ${NICE_VERSION}")
-        message(STATUS "libnice include: ${NICE_INCLUDE_DIRS}")
-        message(STATUS "libnice libraries: ${NICE_LIBRARIES}")
-    endif()
-    
-    if(GLIB2_FOUND)
-        message(STATUS "glib-2.0 found: ${GLIB2_VERSION}")
-        message(STATUS "glib-2.0 include: ${GLIB2_INCLUDE_DIRS}")
-    endif()
-endif()
+# libnice + glib REMOVED (2025-11-19)
+# Replaced with libjuice (no glib dependency, simpler cross-compilation)
+# See docs/LIBJUICE_MIGRATION.md for details
 
 # NOTE: PostgreSQL removed 2025-11-03 - migrated to SQLite for decentralization
 # SQLite3 for all local storage (messages, keyserver cache)
@@ -277,13 +254,11 @@ target_link_libraries(dna_lib
     kem
     dsa
     dht_lib        # Phase 9.1: DHT library (MUST come BEFORE p2p_transport for Windows stub symbols)
-    p2p_transport  # Phase 9.1b: P2P transport layer (links OpenDHT, needs dht_lib stubs first)
+    p2p_transport  # Phase 9.1b: P2P transport layer (links libjuice for NAT traversal)
     dht_lib        # Link dht_lib again to resolve circular deps with p2p_transport
     p2p_transport  # Link p2p_transport again for static linking order
     stdc++         # C++ standard library (required by dht_lib and OpenDHT)
     ${JSONC_LIBRARIES}
-    ${NICE_LIBRARIES}   # Phase 11: libnice for NAT traversal (STUN+ICE)
-    ${GLIB2_LIBRARIES}  # Phase 11: glib-2.0 (required by libnice)
     ${PLATFORM_LIBS}
     CURL::libcurl  # Phase 8: CURL for RPC calls
 )
@@ -337,8 +312,7 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/p2p  # Phase 9.1b: P2P transport headers
     ${CMAKE_SOURCE_DIR}/dht  # Phase 9.1: DHT headers
     ${OPENSSL_INCLUDE_DIR}
-    ${NICE_INCLUDE_DIRS}   # Phase 11: libnice headers
-    ${GLIB2_INCLUDE_DIRS}  # Phase 11: glib-2.0 headers
+    ${JUICE_INCLUDE_DIRS}  # Phase 11: libjuice headers (replaces libnice + glib)
 )
 
 # Add json-c include directories if found
