@@ -36,11 +36,9 @@ set(QRCODEGEN_SOURCES
     ${QRCODEGEN_DIR}/qrcodegen.cpp
 )
 
-# Native File Dialog Extended
+# Native File Dialog Extended (Windows only, Linux uses zenity/kdialog)
 set(NFD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/nativefiledialog-extended/src)
-if(UNIX AND NOT APPLE)
-    set(NFD_SOURCES ${NFD_DIR}/nfd_gtk.cpp)
-elseif(APPLE)
+if(APPLE)
     set(NFD_SOURCES ${NFD_DIR}/nfd_cocoa.m)
 elseif(WIN32)
     set(NFD_SOURCES ${NFD_DIR}/nfd_win.cpp)
@@ -74,8 +72,12 @@ add_executable(dna_messenger_imgui
     screens/layout_manager.cpp
     ${IMGUI_SOURCES}
     ${QRCODEGEN_SOURCES}
-    ${NFD_SOURCES}
 )
+
+# Add NFD sources only on Windows
+if(WIN32)
+    target_sources(dna_messenger_imgui PRIVATE ${NFD_SOURCES})
+endif()
 
 target_include_directories(dna_messenger_imgui PRIVATE
     ${IMGUI_DIR}
@@ -108,15 +110,9 @@ if(WIN32)
         uuid  # Required for NFD on Windows
     )
 else()
-    # Find GTK3 for NFD on Linux
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
-    
     target_link_libraries(dna_messenger_imgui PRIVATE
         ${FREETYPE_LIBRARIES}
-        ${GTK3_LIBRARIES}
     )
-    target_include_directories(dna_messenger_imgui PRIVATE ${GTK3_INCLUDE_DIRS})
 endif()
 
 # Install emoji font to ~/.dna/fonts (Linux) or %APPDATA%\.dna\fonts (Windows)
