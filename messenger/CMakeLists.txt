@@ -95,6 +95,10 @@ endif()
 # libjuice for NAT traversal (ICE/STUN) - replaces libnice + glib
 # Vendored as ExternalProject to ensure availability across all platforms
 include(ExternalProject)
+
+# Create include directory at configure time to avoid CMake errors
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/vendor/libjuice/install/include)
+
 ExternalProject_Add(libjuice_external
     GIT_REPOSITORY https://github.com/paullouisageneau/libjuice.git
     GIT_TAG v1.7.0

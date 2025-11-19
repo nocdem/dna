@@ -30,6 +30,7 @@
 #include <string.h>
 #include <pthread.h>
 #include <time.h>
+#include <errno.h>
 
 #ifdef _WIN32
 #include <windows.h>
@@ -532,20 +533,20 @@ int ice_publish_to_dht(ice_context_t *ctx, const char *my_fingerprint) {
     char key_input[256];
     snprintf(key_input, sizeof(key_input), "%s:ice_candidates", my_fingerprint);
 
-    uint8_t dht_key[64];
-    if (sha3_512((const uint8_t*)key_input, strlen(key_input), dht_key) != 0) {
-        fprintf(stderr, "[ICE] Failed to compute DHT key\n");
+    // Hash key with SHA3-512 and get hex output (128 hex chars)
+    char hex_key[129];  // 128 hex chars + null terminator
+    if (qgp_sha3_512_hex((uint8_t*)key_input, strlen(key_input),
+                         hex_key, sizeof(hex_key)) != 0) {
+        fprintf(stderr, "[ICE] Failed to hash DHT key\n");
         pthread_mutex_unlock(&ctx->candidates_mutex);
         return -1;
     }
 
-    // Publish to DHT (7-day TTL)
+    // Publish to DHT
     printf("[ICE] Publishing %zu bytes of candidates to DHT\n", ctx->candidates_len);
 
-    int ret = dht_put_signed(dht, dht_key, sizeof(dht_key),
-                             (const uint8_t*)ctx->local_candidates,
-                             ctx->candidates_len,
-                             7 * 24 * 60 * 60);  // 7 days
+    int ret = dht_put(dht, (uint8_t*)hex_key, strlen(hex_key),
+                      (uint8_t*)ctx->local_candidates, ctx->candidates_len);
 
     pthread_mutex_unlock(&ctx->candidates_mutex);
 
@@ -575,9 +576,11 @@ int ice_fetch_from_dht(ice_context_t *ctx, const char *peer_fingerprint) {
     char key_input[256];
     snprintf(key_input, sizeof(key_input), "%s:ice_candidates", peer_fingerprint);
 
-    uint8_t dht_key[64];
-    if (sha3_512((const uint8_t*)key_input, strlen(key_input), dht_key) != 0) {
-        fprintf(stderr, "[ICE] Failed to compute DHT key\n");
+    // Hash key with SHA3-512 and get hex output (128 hex chars)
+    char hex_key[129];  // 128 hex chars + null terminator
+    if (qgp_sha3_512_hex((uint8_t*)key_input, strlen(key_input),
+                         hex_key, sizeof(hex_key)) != 0) {
+        fprintf(stderr, "[ICE] Failed to hash DHT key\n");
         return -1;
     }
 
@@ -587,8 +590,8 @@ int ice_fetch_from_dht(ice_context_t *ctx, const char *peer_fingerprint) {
     uint8_t *value_data = NULL;
     size_t value_len = 0;
 
-    int ret = dht_get_signed(dht, dht_key, sizeof(dht_key), &value_data, &value_len);
-    if (ret < 0 || !value_data || value_len == 0) {
+    int ret = dht_get(dht, (uint8_t*)hex_key, strlen(hex_key), &value_data, &value_len);
+    if (ret != 0 || !value_data) {
         fprintf(stderr, "[ICE] No candidates found in DHT for peer\n");
         if (value_data) free(value_data);
         return -1;
