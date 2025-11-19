@@ -27,6 +27,15 @@ export PATH="${MINGW_PREFIX}/bin:$PATH"
 export PKG_CONFIG_PATH="${MXE_PREFIX}/lib/pkgconfig"
 export CMAKE_PREFIX_PATH="${MXE_PREFIX}"
 
+# Set compilers for cmake (llvm-mingw doesn't provide cmake wrappers like MXE)
+export CC="${MINGW_PREFIX}/bin/${MXE_TARGET}-clang"
+export CXX="${MINGW_PREFIX}/bin/${MXE_TARGET}-clang++"
+export AR="${MINGW_PREFIX}/bin/${MXE_TARGET}-ar"
+export RANLIB="${MINGW_PREFIX}/bin/${MXE_TARGET}-ranlib"
+export CMAKE_SYSTEM_NAME=Windows
+export CMAKE_C_COMPILER="$CC"
+export CMAKE_CXX_COMPILER="$CXX"
+
 echo -e "${BLUE}=========================================${NC}"
 echo -e "${BLUE} Building Full P2P Stack for Windows${NC}"
 echo -e "${BLUE}=========================================${NC}"
@@ -52,7 +61,7 @@ if [ ! -f "${MXE_PREFIX}/lib/libfmt.a" ]; then
     fi
     cd fmt
     mkdir -p build-win && cd build-win
-    ${MXE_TARGET}-cmake .. \
+    cmake .. \
         -DCMAKE_INSTALL_PREFIX="${MXE_PREFIX}" \
         -DFMT_TEST=OFF \
         -DFMT_DOC=OFF
@@ -72,7 +81,7 @@ if [ ! -f "${MXE_PREFIX}/lib/libjsoncpp.a" ]; then
     fi
     cd jsoncpp
     mkdir -p build-win && cd build-win
-    ${MXE_TARGET}-cmake .. \
+    cmake .. \
         -DCMAKE_INSTALL_PREFIX="${MXE_PREFIX}" \
         -DJSONCPP_WITH_TESTS=OFF \
         -DJSONCPP_WITH_POST_BUILD_UNITTEST=OFF \
@@ -135,7 +144,7 @@ if [ ! -f "${MXE_PREFIX}/include/msgpack.hpp" ]; then
     fi
     cd msgpack-c
     mkdir -p build-win && cd build-win
-    ${MXE_TARGET}-cmake .. \
+    cmake .. \
         -DCMAKE_INSTALL_PREFIX="${MXE_PREFIX}" \
         -DMSGPACK_BUILD_EXAMPLES=OFF \
         -DMSGPACK_BUILD_TESTS=OFF \
@@ -158,7 +167,7 @@ cd opendht
 rm -rf build-win
 mkdir -p build-win && cd build-win
 
-${MXE_TARGET}-cmake .. \
+cmake .. \
     -DCMAKE_INSTALL_PREFIX="${MXE_PREFIX}" \
     -DCMAKE_PREFIX_PATH="${MXE_PREFIX}" \
     -DOPENDHT_PYTHON=OFF \
