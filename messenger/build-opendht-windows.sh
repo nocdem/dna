@@ -125,8 +125,9 @@ if [ ! -f "${MXE_PREFIX}/lib/libargon2.a" ]; then
     cd phc-winner-argon2
 
     # Cross-compile argon2 (it uses Makefile, not CMake)
+    # Only build static library to avoid lld linker issues with -soname
     make clean || true
-    make CC="${MXE_TARGET}-gcc" \
+    make libargon2.a CC="${MXE_TARGET}-gcc" \
          AR="${MXE_TARGET}-ar" \
          RANLIB="${MXE_TARGET}-ranlib" \
          LIBRARY_REL=lib \
