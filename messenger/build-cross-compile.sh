@@ -172,7 +172,7 @@ build_windows_x64() {
     # Download and setup llvm-mingw (replaces MXE)
     LLVM_MINGW_VERSION="20251118"
     LLVM_MINGW_DIR="${HOME}/.cache/llvm-mingw"
-    LLVM_MINGW_RELEASE="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-x86_64-linux"
+    LLVM_MINGW_RELEASE="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64"
     LLVM_MINGW_URL="https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/${LLVM_MINGW_RELEASE}.tar.xz"
     MINGW_PREFIX="${LLVM_MINGW_DIR}/${LLVM_MINGW_RELEASE}"
 

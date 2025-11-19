@@ -16,7 +16,7 @@ NC='\033[0m'
 # llvm-mingw setup (replaces MXE)
 LLVM_MINGW_VERSION="20251118"
 LLVM_MINGW_DIR="${MXE_DIR:-$HOME/.cache/llvm-mingw}"
-LLVM_MINGW_RELEASE="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-x86_64-linux"
+LLVM_MINGW_RELEASE="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64"
 MINGW_PREFIX="${LLVM_MINGW_DIR}/${LLVM_MINGW_RELEASE}"
 
 MXE_TARGET="x86_64-w64-mingw32"
