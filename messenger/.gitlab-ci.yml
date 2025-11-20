@@ -56,6 +56,8 @@ build:linux-x64:
         cd "${CI_PROJECT_DIR}"
       fi
     - export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig:$PKG_CONFIG_PATH"
+    - export CMAKE_PREFIX_PATH="$HOME/.local:$CMAKE_PREFIX_PATH"
+    - export LD_LIBRARY_PATH="$HOME/.local/lib:$LD_LIBRARY_PATH"
   script:
     - chmod +x build-cross-compile.sh
     - ./build-cross-compile.sh linux-x64
@@ -112,6 +114,8 @@ build:linux-arm64:
         cd "${CI_PROJECT_DIR}"
       fi
     - export PKG_CONFIG_PATH="$HOME/.local-arm64/lib/pkgconfig:$PKG_CONFIG_PATH"
+    - export CMAKE_PREFIX_PATH="$HOME/.local-arm64:$CMAKE_PREFIX_PATH"
+    - export LD_LIBRARY_PATH="$HOME/.local-arm64/lib:$LD_LIBRARY_PATH"
   script:
     - chmod +x build-cross-compile.sh
     - ./build-cross-compile.sh linux-arm64
