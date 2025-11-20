@@ -139,7 +139,7 @@ build:windows-x64:
   before_script:
     - apt-get update -qq
     # Basic build tools
-    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget tar xz-utils
+    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget tar xz-utils zip
     # llvm-mingw and dependency build tools
     - apt-get install -y -qq autoconf automake libtool python3 perl unzip p7zip-full
   cache:
