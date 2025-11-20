@@ -322,6 +322,7 @@ if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libtss2-esys.a" ]; then
     cd tpm2-tss
 
     ./bootstrap
+    ac_cv_func_strndup=yes \
     ./configure \
         --host=${MINGW_TARGET} \
         --prefix="${MINGW_TARGET_PREFIX}" \
