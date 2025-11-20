@@ -471,7 +471,10 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
         return -1;
     }
 
-    printf("[ICE] libjuice agent created\n");
+    // Enable verbose logging for debugging ICE issues
+    juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
+
+    printf("[ICE] libjuice agent created (debug logging enabled)\n");
 
     // Start gathering candidates
     int ret = juice_gather_candidates(ctx->agent);
@@ -968,12 +971,14 @@ static p2p_connection_t* ice_create_connection(
 
     // Gather local candidates for this peer connection
     int gathered = 0;
+    // Try STUN servers in order of reliability
+    // stunprotocol.org and Cloudflare are generally more reliable than Google
     const char *stun_servers[] = {
-        "stun.l.google.com",
-        "stun1.l.google.com",
-        "stun.cloudflare.com"
+        "stun.stunprotocol.org",  // OpenSTUN - very reliable
+        "stun.cloudflare.com",    // Cloudflare - fast and reliable
+        "stun.l.google.com"       // Google - fallback
     };
-    const uint16_t stun_ports[] = {19302, 19302, 3478};
+    const uint16_t stun_ports[] = {3478, 3478, 19302};
 
     for (size_t i = 0; i < 3 && !gathered; i++) {
         if (ice_gather_candidates(peer_ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
