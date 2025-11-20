@@ -334,7 +334,8 @@ if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgnutls.a" ]; then
         --disable-guile \
         --with-included-libtasn1 \
         --with-included-unistring \
-        --without-p11-kit
+        --without-p11-kit \
+        --without-tpm
 
     make -j$(nproc)
     make install
