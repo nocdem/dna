@@ -212,10 +212,10 @@ curl_easy_setopt(curl, CURLOPT_MAXREDIRS, 3L);
 ## Network Security Assessment
 
 ### ICE NAT Traversal (Phase 11 - Audited)
-**File:** `p2p/transport/transport_ice.c`
+**File:** `p2p/transport/transport_juice.c`
 
 **Security Features:**
-- Uses libnice (RFC5245 compliant)
+- Uses libjuice (RFC5245 compliant)
 - STUN servers: stun.l.google.com:19302, stun1.l.google.com:19302, stun.cloudflare.com:3478
 - No TURN relays (fully decentralized)
 - Post-quantum encryption still via Kyber1024 (ICE only for connectivity)

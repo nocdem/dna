@@ -30,7 +30,9 @@ extern "C" {
 #include "helpers/data_loader.h"
 #include "screens/wallet_screen.h"
 #include "screens/profile_editor_screen.h"
+#ifdef _WIN32
 #include <nfd.h>
+#endif
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
@@ -215,31 +217,14 @@ int main(int argc, char** argv) {
     if (!glfwInit())
         return 1;
 
-    // Workaround for GTK3 file chooser pathbar crash (VULN-GTK-001)
-    // See: https://gitlab.gnome.org/GNOME/gtk/-/issues/4829
-    // GTK pathbar has threading issues with cancellable operations
-    // Solution: Use XDG Portal backend instead of GTK directly
-    #ifndef _WIN32
-    setenv("NFD_PORTAL", "1", 0);  // Use XDG desktop portal (bypasses GTK entirely)
-    printf("[MAIN] Using XDG Portal for file dialogs (GTK crash workaround)\n");
-    #endif
-
-    // Initialize NFD
+    #ifdef _WIN32
+    // Initialize NFD (Windows only - Linux uses zenity/kdialog)
     if (NFD_Init() != NFD_OKAY) {
         fprintf(stderr, "[MAIN] NFD initialization failed: %s\n", NFD_GetError());
-        #ifndef _WIN32
-        // Fallback: Try without portal if it fails
-        unsetenv("NFD_PORTAL");
-        printf("[MAIN] Portal init failed, trying GTK backend...\n");
-        if (NFD_Init() != NFD_OKAY) {
-            fprintf(stderr, "[MAIN] NFD initialization failed again: %s\n", NFD_GetError());
-            return 1;
-        }
-        #else
         return 1;
-        #endif
     }
     printf("[MAIN] NFD initialized successfully\n");
+    #endif
 
     const char* glsl_version = "#version 130";
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
@@ -552,8 +537,10 @@ int main(int argc, char** argv) {
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
+    #ifdef _WIN32
     printf("[MAIN] Shutting down NFD...\n");
     NFD_Quit();
+    #endif
 
     printf("[MAIN] Destroying window...\n");
     glfwDestroyWindow(window);

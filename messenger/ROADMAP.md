@@ -291,7 +291,7 @@ _(Phase 6 (Mobile Applications) and Phase 7 (Advanced Security) merged into Phas
   - EU-2: dna-bootstrap-eu-2 @ 164.68.116.180:4000
 - [x] Auto-start systemd services on all bootstrap nodes
 - [x] Connection management and DHT presence registration
-- [ ] NAT traversal using libnice (ICE/STUN/TURN) - **Deferred to future**
+- [x] NAT traversal using libjuice (ICE/STUN) - **COMPLETE** (Phase 11, 2025-11-19)
 
 #### Phase 5.2: Offline Message Queueing ✅ COMPLETE
 **Completed:** 2025-11-02 | **Bug Fix:** 2025-11-10
@@ -449,7 +449,7 @@ Implemented P2P invitation delivery system for group membership:
 |-----------|-----------|---------|
 | **P2P Networking** | libp2p (C++) | Peer connections, multiplexing |
 | **DHT** | OpenDHT or Kad-DHT | Distributed storage & discovery |
-| **NAT Traversal** | libnice (C) | ICE/STUN/TURN hole punching |
+| **NAT Traversal** | libjuice (C) | ICE/STUN hole punching |
 | **Local Cache** | SQLite + DNA PQ crypto | Encrypted offline storage |
 | **Crypto** | Kyber512 + Dilithium3 + AES-256-GCM | Post-quantum (existing) |
 
@@ -613,7 +613,7 @@ Fully **quantum-safe voice and video calls** using custom architecture that bypa
 ### Architecture
 
 ```
-Signaling (DNA Messaging) → NAT Traversal (libnice) → Media (SRTP + AES-256-GCM)
+Signaling (DNA Messaging) → NAT Traversal (libjuice) → Media (SRTP + AES-256-GCM)
     ↓                           ↓                         ↓
 Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 ```
@@ -628,7 +628,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - SAS verification for MITM protection
 
 **Technology Stack:**
-- **libnice** - ICE/STUN/TURN (NAT traversal)
+- **libjuice** - ICE/STUN (NAT traversal)
 - **libsrtp2** - Secure RTP with AES-256-GCM
 - **libopus** - Audio codec (48kHz stereo)
 - **libvpx/libx264** - Video codec (VP8 or H.264)
@@ -647,7 +647,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 ### Implementation Sub-Phases
 
 - **Weeks 1-4:** Signaling via DNA messaging
-- **Weeks 5-8:** NAT traversal (libnice integration)
+- **Weeks 5-8:** NAT traversal (libjuice integration)
 - **Weeks 9-12:** Audio calls (Opus + PortAudio + SRTP)
 - **Weeks 13-16:** Video calls (VP8/H.264 + camera)
 - **Weeks 17-20:** Polish & testing

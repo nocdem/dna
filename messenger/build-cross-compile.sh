@@ -40,6 +40,9 @@ GIT_HASH=$(git log -1 --format=%h 2>/dev/null || echo "unknown")
 BUILD_DATE=$(date +%Y-%m-%d)
 FULL_VERSION="0.1.${VERSION}-${GIT_HASH}"
 
+# Dependency versions
+GLFW_VERSION="3.4"
+
 echo -e "${BLUE}=========================================${NC}"
 echo -e "${BLUE} DNA Messenger - Cross-Compilation${NC}"
 echo -e "${BLUE}=========================================${NC}"
@@ -77,17 +80,26 @@ build_linux_x64() {
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
 
-    cmake "${PROJECT_ROOT}" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_FLAGS="-O3 -march=x86-64 -mtune=generic" \
-        -DCMAKE_CXX_FLAGS="-O3 -march=x86-64 -mtune=generic" \
+    # Build with optional CMAKE_PREFIX_PATH for custom dependencies
+    CMAKE_ARGS=(
+        "${PROJECT_ROOT}"
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_C_FLAGS="-O3 -march=x86-64 -mtune=generic"
+        -DCMAKE_CXX_FLAGS="-O3 -march=x86-64 -mtune=generic"
         -DBUILD_GUI=ON
+    )
+
+    if [ -n "${CMAKE_PREFIX_PATH}" ]; then
+        CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}")
+    fi
+
+    cmake "${CMAKE_ARGS[@]}"
 
     make -j$(nproc)
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64"
-    # CLI is disabled, only package GUI
+    # Package GUI executable (CLI was removed)
     if [ -f gui/dna_messenger_gui ]; then
         cp gui/dna_messenger_gui "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
     else
@@ -135,22 +147,31 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 EOF
 
-    cmake "${PROJECT_ROOT}" \
-        -DCMAKE_TOOLCHAIN_FILE=toolchain-arm64.cmake \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_GUI=OFF
+    # Build with optional CMAKE_PREFIX_PATH for custom dependencies
+    CMAKE_ARGS=(
+        "${PROJECT_ROOT}"
+        -DCMAKE_TOOLCHAIN_FILE=toolchain-arm64.cmake
+        -DCMAKE_BUILD_TYPE=Release
+        -DBUILD_GUI=ON
+    )
+
+    if [ -n "${CMAKE_PREFIX_PATH}" ]; then
+        CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}")
+    fi
+
+    cmake "${CMAKE_ARGS[@]}"
 
     make -j$(nproc)
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64"
-    # CLI is disabled, GUI not supported on ARM64 cross-compile yet
-    if [ -f dna_messenger ]; then
-        cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
-    elif [ -f gui/dna_messenger_gui ]; then
-        cp gui/dna_messenger_gui "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
+    # Package GUI executable
+    if [ -f imgui_gui/dna_messenger_imgui ]; then
+        cp imgui_gui/dna_messenger_imgui "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
+        echo -e "${GREEN}✓${NC} Packaged GUI executable"
     else
-        echo -e "${YELLOW}Warning: No executable found to package${NC}"
+        echo -e "${RED}Error: GUI executable not found${NC}"
+        return 1
     fi
 
     # Create tarball
@@ -162,137 +183,119 @@ EOF
     echo ""
 }
 
-# Build Windows x86_64 (MXE static cross-compile)
+# Build Windows x86_64 (llvm-mingw cross-compile)
 build_windows_x64() {
     echo -e "${BLUE}=========================================${NC}"
     echo -e "${BLUE} Building: Windows x86_64${NC}"
     echo -e "${BLUE}=========================================${NC}"
 
-    # MXE directory - configurable via environment variable
-    # Priority: MXE_DIR env var > ~/.cache/mxe > project/mxe
-    if [ -n "$MXE_DIR" ]; then
-        echo -e "${BLUE}Using MXE_DIR from environment: ${MXE_DIR}${NC}"
-    elif [ -d "$HOME/.cache/mxe" ] || [ -z "${MXE_USE_PROJECT_DIR}" ]; then
-        MXE_DIR="$HOME/.cache/mxe"
-        echo -e "${BLUE}Using cached MXE directory: ${MXE_DIR}${NC}"
-    else
-        MXE_DIR="${PROJECT_ROOT}/mxe"
-        echo -e "${BLUE}Using project MXE directory: ${MXE_DIR}${NC}"
-    fi
+    # llvm-mingw directory - configurable via environment variable
+    # Download and setup llvm-mingw
+    LLVM_MINGW_VERSION="20251118"
+    LLVM_MINGW_DIR="${HOME}/.cache/llvm-mingw"
+    LLVM_MINGW_RELEASE="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64"
+    LLVM_MINGW_URL="https://github.com/mstorsjo/llvm-mingw/releases/download/${LLVM_MINGW_VERSION}/${LLVM_MINGW_RELEASE}.tar.xz"
+    MINGW_PREFIX="${LLVM_MINGW_DIR}/${LLVM_MINGW_RELEASE}"
 
-    MXE_PREFIX="${MXE_DIR}/usr/x86_64-w64-mingw32.static"
+    if [ ! -d "${MINGW_PREFIX}" ]; then
+        echo -e "${BLUE}Downloading llvm-mingw ${LLVM_MINGW_VERSION} (~200MB)...${NC}"
+        mkdir -p "${LLVM_MINGW_DIR}"
+        cd "${LLVM_MINGW_DIR}"
 
-    # Check if MXE is already built
-    if [ ! -d "$MXE_DIR" ]; then
-        echo -e "${YELLOW}MXE not found, cloning to ${MXE_DIR}...${NC}"
-        mkdir -p "$(dirname "$MXE_DIR")"
-        cd "$(dirname "$MXE_DIR")"
-        git clone https://github.com/mxe/mxe.git "$(basename "$MXE_DIR")"
-    else
-        echo -e "${GREEN}✓${NC} MXE directory found at ${MXE_DIR}"
-    fi
-
-    # Check if MXE is already built (check for gcc as indicator)
-    if [ ! -f "${MXE_PREFIX}/bin/x86_64-w64-mingw32.static-gcc" ]; then
-        echo -e "${YELLOW}MXE build incomplete or missing, building dependencies...${NC}"
-        echo -e "${YELLOW}This will take a while on first run (1-2 hours)${NC}"
-
-        # Check for required build dependencies
-        echo -e "${BLUE}Checking build dependencies...${NC}"
-        MISSING_DEPS=""
-        for dep in git make gcc g++ cmake autoconf automake libtool pkg-config bison flex gperf ruby unzip; do
-            if ! command -v "$dep" &> /dev/null; then
-                MISSING_DEPS="$MISSING_DEPS $dep"
-            fi
-        done
-
-        # Check for 7z (command from p7zip package)
-        if ! command -v 7z &> /dev/null && ! command -v 7za &> /dev/null; then
-            MISSING_DEPS="$MISSING_DEPS p7zip"
+        if [ ! -f "${LLVM_MINGW_RELEASE}.tar.xz" ]; then
+            wget "${LLVM_MINGW_URL}"
         fi
 
-        if [ -n "$MISSING_DEPS" ]; then
-            echo -e "${RED}Error: Missing dependencies:${MISSING_DEPS}${NC}"
-            echo -e "Arch Linux: ${YELLOW}sudo pacman -S base-devel git cmake autoconf automake libtool pkg-config perl python bison flex gperf ruby unzip p7zip lzip intltool xz gettext${NC}"
-            echo -e "Ubuntu/Debian: ${YELLOW}sudo apt install git make gcc g++ cmake autoconf automake libtool libtool-bin pkg-config perl libxml-parser-perl python3 python3-mako bison flex gperf ruby unzip p7zip-full lzip intltool xz-utils libgdk-pixbuf2.0-dev gettext autopoint libssl-dev zlib1g-dev bzip2${NC}"
-            return 1
-        fi
-
-        # Create python symlink if needed (MXE expects 'python' not 'python3')
-        if [ ! -e /usr/bin/python ] && [ -e /usr/bin/python3 ]; then
-            echo -e "${YELLOW}Creating python symlink...${NC}"
-            sudo ln -sf /usr/bin/python3 /usr/bin/python || true
-        fi
-
-        cd "$MXE_DIR"
-        echo -e "${BLUE}Building MXE dependencies: gcc openssl json-c curl libnice glib freetype${NC}"
-        make MXE_TARGETS=x86_64-w64-mingw32.static gcc openssl json-c curl libnice glib freetype -j$(nproc)
-        echo -e "${GREEN}✓${NC} MXE build complete"
+        echo -e "${BLUE}Extracting llvm-mingw...${NC}"
+        tar -xJf "${LLVM_MINGW_RELEASE}.tar.xz"
+        echo -e "${GREEN}✓${NC} llvm-mingw installed to ${MINGW_PREFIX}"
     else
-        echo -e "${GREEN}✓${NC} MXE build already complete, skipping build step"
+        echo -e "${GREEN}✓${NC} llvm-mingw already installed"
     fi
+
+    # Set up environment for llvm-mingw
+    export PATH="${MINGW_PREFIX}/bin:$PATH"
+    export MINGW_TARGET="x86_64-w64-mingw32"
+    export MINGW_TARGET_PREFIX="${MINGW_PREFIX}/${MINGW_TARGET}"
+    export LLVM_MINGW_DIR
+
+    echo -e "${BLUE}Using llvm-mingw toolchain:${NC}"
+    echo -e "  Toolchain: ${MINGW_PREFIX}/bin"
+    echo -e "  Target: ${MINGW_TARGET}"
+    echo -e "  Prefix: ${MINGW_TARGET_PREFIX}"
 
     # Build OpenDHT and msgpack for Windows
     echo -e "${BLUE}Building P2P dependencies (OpenDHT, msgpack)...${NC}"
-    export MXE_DIR
-    "${PROJECT_ROOT}/build-opendht-windows.sh"
+    "${PROJECT_ROOT}/setup-windows-build.sh"
 
-    # Set up environment
-    # Add both the general bin dir and the target-specific bin dir to PATH
-    # The target bin dir contains the actual binutils (as, ld, etc.)
-    export PATH="${MXE_DIR}/usr/bin:${MXE_PREFIX}/bin:$PATH"
-    export MXE_PREFIX
+    # Download and install GLFW prebuilt binaries for Windows
+    GLFW_DIR="${HOME}/.cache/glfw-${GLFW_VERSION}"
+    GLFW_INSTALLED="${MINGW_TARGET_PREFIX}/include/GLFW/glfw3.h"
+
+    if [ ! -f "${GLFW_INSTALLED}" ]; then
+        echo -e "${BLUE}Downloading GLFW ${GLFW_VERSION} prebuilt binaries...${NC}"
+        mkdir -p "${GLFW_DIR}"
+        cd "${GLFW_DIR}"
+
+        if [ ! -f "glfw-${GLFW_VERSION}.bin.WIN64.zip" ]; then
+            wget "https://github.com/glfw/glfw/releases/download/${GLFW_VERSION}/glfw-${GLFW_VERSION}.bin.WIN64.zip"
+        fi
+
+        echo -e "${BLUE}Extracting GLFW ${GLFW_VERSION}...${NC}"
+        unzip -o "glfw-${GLFW_VERSION}.bin.WIN64.zip"
+
+        echo -e "${BLUE}Installing GLFW ${GLFW_VERSION} to ${MINGW_TARGET_PREFIX}...${NC}"
+        # Copy headers
+        mkdir -p "${MINGW_TARGET_PREFIX}/include"
+        cp -r "glfw-${GLFW_VERSION}.bin.WIN64/include/GLFW" "${MINGW_TARGET_PREFIX}/include/"
+
+        # Copy static library (lib-mingw-w64 is for 64-bit MinGW)
+        mkdir -p "${MINGW_TARGET_PREFIX}/lib"
+        cp "glfw-${GLFW_VERSION}.bin.WIN64/lib-mingw-w64/libglfw3.a" "${MINGW_TARGET_PREFIX}/lib/"
+
+        echo -e "${GREEN}✓${NC} GLFW ${GLFW_VERSION} installed"
+    else
+        echo -e "${GREEN}✓${NC} GLFW ${GLFW_VERSION} already installed"
+    fi
 
     BUILD_PATH="${PROJECT_ROOT}/${BUILD_DIR}/windows-x64"
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
 
-    # Create a wrapper bin directory with unprefixed symlinks for binutils
-    # This allows GCC to find tools like 'as', 'ld', etc. without the target prefix
-    WRAPPER_BIN="${BUILD_PATH}/mxe-wrapper-bin"
-    mkdir -p "$WRAPPER_BIN"
-
-    # Create symlinks for common binutils
-    for tool in as ld ar nm objcopy objdump ranlib strip; do
-        ln -sf "${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-${tool}" "${WRAPPER_BIN}/${tool}"
-    done
-
-    # Create toolchain file
+    # Create toolchain file for llvm-mingw
     cat > toolchain-mingw64.cmake << EOF
 set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
-# Use full paths to compilers to ensure proper toolchain discovery
-set(CMAKE_C_COMPILER ${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-gcc)
-set(CMAKE_CXX_COMPILER ${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-g++)
-set(CMAKE_RC_COMPILER ${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-windres)
+# Use llvm-mingw compilers (Clang-based cross-compiler)
+set(CMAKE_C_COMPILER ${MINGW_PREFIX}/bin/${MINGW_TARGET}-clang)
+set(CMAKE_CXX_COMPILER ${MINGW_PREFIX}/bin/${MINGW_TARGET}-clang++)
+set(CMAKE_RC_COMPILER ${MINGW_PREFIX}/bin/${MINGW_TARGET}-windres)
+set(CMAKE_AR ${MINGW_PREFIX}/bin/${MINGW_TARGET}-ar)
+set(CMAKE_RANLIB ${MINGW_PREFIX}/bin/${MINGW_TARGET}-ranlib)
 
-# Tell GCC where to find binutils (assembler, linker, etc.) using -B flag
-# This points to a wrapper directory with unprefixed symlinks to the MXE tools
-set(CMAKE_C_FLAGS_INIT "-B${BUILD_PATH}/mxe-wrapper-bin")
-set(CMAKE_CXX_FLAGS_INIT "-B${BUILD_PATH}/mxe-wrapper-bin")
-
-set(CMAKE_FIND_ROOT_PATH ${MXE_PREFIX})
+set(CMAKE_FIND_ROOT_PATH ${MINGW_TARGET_PREFIX})
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(WIN32 TRUE)
 set(MINGW TRUE)
+
 # Force static linking
 set(CMAKE_EXE_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")
 set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
 set(BUILD_SHARED_LIBS OFF)
-set(PKG_CONFIG_EXECUTABLE ${MXE_DIR}/usr/bin/x86_64-w64-mingw32.static-pkg-config)
 EOF
 
     echo -e "${BLUE}Configuring CMake...${NC}"
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-mingw64.cmake \
+        -DCMAKE_PREFIX_PATH="${MINGW_TARGET_PREFIX};${MINGW_TARGET_PREFIX}/lib64" \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_GUI=ON
 
     echo -e "${BLUE}Building...${NC}"
-    make -j$(nproc) VERBOSE=1
+    make -j$(nproc)
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64"
@@ -474,16 +477,14 @@ show_usage() {
     echo "  clean         - Clean build directories"
     echo ""
     echo "Environment Variables:"
-    echo "  MXE_DIR                - Custom MXE installation directory"
-    echo "                           (default: ~/.cache/mxe)"
-    echo "  MXE_USE_PROJECT_DIR=1  - Force MXE to be in project/mxe directory"
+    echo "  LLVM_MINGW_DIR         - Custom llvm-mingw installation directory"
+    echo "                           (default: ~/.cache/llvm-mingw)"
     echo ""
     echo "Examples:"
     echo "  $0 all                                    # Build everything"
     echo "  $0 linux-x64                              # Build Linux only"
     echo "  $0 windows-x64                            # Build Windows only"
-    echo "  MXE_DIR=/opt/mxe $0 windows-x64           # Use custom MXE location"
-    echo "  MXE_USE_PROJECT_DIR=1 $0 windows-x64      # Use project/mxe directory"
+    echo "  LLVM_MINGW_DIR=/opt/llvm-mingw $0 windows-x64  # Use custom llvm-mingw location"
     echo ""
 }
 

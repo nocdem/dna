@@ -108,16 +108,56 @@ int p2p_transport_start(p2p_transport_t *ctx) {
         return -1;
     }
 
-    // Phase 11 FIX: Initialize persistent ICE context
-    printf("[P2P] Initializing persistent ICE for NAT traversal...\n");
-    if (ice_init_persistent(ctx) != 0) {
+    // Initialize ICE context for NAT traversal (libjuice)
+    printf("[P2P] Initializing ICE for NAT traversal (libjuice)...\n");
+
+    pthread_mutex_init(&ctx->ice_mutex, NULL);
+    pthread_mutex_lock(&ctx->ice_mutex);
+
+    ctx->ice_context = ice_context_new();
+    if (!ctx->ice_context) {
         fprintf(stderr, "[P2P] WARNING: ICE initialization failed (NAT traversal unavailable)\n");
         fprintf(stderr, "[P2P] Continuing with TCP-only mode...\n");
-        // Not fatal - continue with TCP-only mode
-    } else {
-        printf("[P2P] ✓ ICE ready for NAT traversal\n");
+        pthread_mutex_unlock(&ctx->ice_mutex);
+        return 0;  // Not fatal - continue with TCP-only mode
     }
 
+    // Gather ICE candidates (try multiple STUN servers)
+    int gathered = 0;
+    const char *stun_servers[] = {"stun.l.google.com", "stun1.l.google.com", "stun.cloudflare.com"};
+    const uint16_t stun_ports[] = {19302, 19302, 3478};
+
+    for (size_t i = 0; i < 3 && !gathered; i++) {
+        printf("[P2P] Trying STUN server: %s:%d\n", stun_servers[i], stun_ports[i]);
+        if (ice_gather_candidates(ctx->ice_context, stun_servers[i], stun_ports[i]) == 0) {
+            gathered = 1;
+            printf("[P2P] ✓ Successfully gathered ICE candidates via %s:%d\n", stun_servers[i], stun_ports[i]);
+            break;
+        }
+    }
+
+    if (!gathered) {
+        fprintf(stderr, "[P2P] WARNING: Failed to gather candidates from all STUN servers\n");
+        ice_context_free(ctx->ice_context);
+        ctx->ice_context = NULL;
+        pthread_mutex_unlock(&ctx->ice_mutex);
+        return 0;  // Not fatal - continue with TCP-only mode
+    }
+
+    // Publish ICE candidates to DHT
+    if (ice_publish_to_dht(ctx->ice_context, ctx->my_fingerprint) != 0) {
+        fprintf(stderr, "[P2P] WARNING: Failed to publish ICE candidates to DHT\n");
+        ice_context_free(ctx->ice_context);
+        ctx->ice_context = NULL;
+        pthread_mutex_unlock(&ctx->ice_mutex);
+        return 0;  // Not fatal - continue with TCP-only mode
+    }
+
+    printf("[P2P] ✓ Published ICE candidates to DHT (key: %s:ice_candidates)\n", ctx->my_fingerprint);
+    ctx->ice_ready = true;
+    pthread_mutex_unlock(&ctx->ice_mutex);
+
+    printf("[P2P] ✓ ICE ready for NAT traversal\n");
     return 0;
 }
 
@@ -128,10 +168,17 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
 
     printf("[P2P] Stopping transport...\n");
 
-    // Phase 11 FIX: Shutdown persistent ICE
+    // Shutdown ICE context
     if (ctx->ice_ready) {
-        printf("[P2P] Shutting down persistent ICE...\n");
-        ice_shutdown_persistent(ctx);
+        printf("[P2P] Shutting down ICE...\n");
+        pthread_mutex_lock(&ctx->ice_mutex);
+        if (ctx->ice_context) {
+            ice_shutdown(ctx->ice_context);
+            ice_context_free(ctx->ice_context);
+            ctx->ice_context = NULL;
+        }
+        ctx->ice_ready = false;
+        pthread_mutex_unlock(&ctx->ice_mutex);
     }
 
     // Stop TCP listener and close connections

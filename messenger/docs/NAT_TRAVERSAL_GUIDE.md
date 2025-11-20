@@ -2,16 +2,21 @@
 
 **Phase 11: Decentralized NAT Traversal (ICE + STUN)**
 
-**Last Updated:** 2025-11-18
+**Last Updated:** 2025-11-19
 
-**Status:** ✅ **PRODUCTION-READY** (Critical fixes applied)
+**Status:** ✅ **PRODUCTION-READY** (Migrated to libjuice)
 
-**Recent Updates (2025-11-18):**
-- ✅ **Fixed**: `ice_recv()` now fully functional with libnice callbacks (~40 LOC)
-- ✅ **Fixed**: `ice_shutdown()` properly cleans up resources (~10 LOC)
-- ✅ **Added**: Thread-safe receive buffer (65KB) with GMutex synchronization
-- ✅ **Result**: Bidirectional ICE communication now works correctly
-- ✅ **Result**: No resource leaks, clean reconnection support
+**Recent Updates (2025-11-19):**
+- ✅ **MIGRATION COMPLETE**: Migrated from libnice+glib to libjuice v1.7.0
+- ✅ **Dependencies Reduced**: No longer requires glib2 (~50MB dependency removed)
+- ✅ **Simpler Build**: libjuice built from source automatically via CMake
+- ✅ **Windows Support**: Native pthread support with llvm-mingw (no custom macros)
+- ✅ **Architecture**: Callback-based (no glib event loop thread)
+
+**Legacy Updates (2025-11-18 - libnice implementation):**
+- Fixed `ice_recv()` with libnice callbacks
+- Fixed `ice_shutdown()` resource cleanup
+- Added thread-safe receive buffer with GMutex synchronization
 
 ---
 
@@ -280,7 +285,8 @@ If one fails, the next is tried automatically (max 5 seconds per server).
 
 **Linux:**
 ```bash
-sudo apt install libnice-dev libglib2.0-dev
+# No additional dependencies needed - libjuice v1.7.0 is built from source automatically
+# Only standard build tools required (cmake, gcc, libssl-dev)
 ```
 
 **Windows (MXE cross-compile):**
@@ -322,10 +328,11 @@ const uint16_t stun_ports[] = {3478, 19302, 3478};
 
 **Possible Causes:**
 
-1. **libnice not installed** (Linux)
+1. **libjuice build failed** (Linux)
    ```bash
-   dpkg -l | grep libnice
-   sudo apt install libnice-dev libglib2.0-dev
+   # libjuice is built automatically via CMake ExternalProject
+   # Check build logs: build-release/linux-x64/vendor/libjuice/
+   # Ensure you have: cmake, gcc, git
    ```
 
 2. **STUN servers blocked by firewall**
@@ -418,10 +425,10 @@ const uint16_t stun_ports[] = {3478, 19302, 3478};
 **Solution:**
 ```bash
 # Linux
-sudo apt install libnice-dev libglib2.0-dev
-pkg-config --modversion nice  # Should show version >= 0.1.21
+# libjuice is built from source - check CMake ExternalProject logs
+# Ensure: cmake >= 3.10, gcc, git are installed
 
-# Windows (MXE)
+# Windows (llvm-mingw)
 cd ~/.cache/mxe
 make MXE_TARGETS=x86_64-w64-mingw32.static libnice glib -j$(nproc)
 ```

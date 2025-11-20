@@ -15,7 +15,21 @@ set(OpenGL_GL_PREFERENCE GLVND)
 
 # Find required packages
 find_package(OpenGL REQUIRED)
-find_package(glfw3 REQUIRED)
+
+if(WIN32)
+    # Windows cross-compile: GLFW found via CMAKE_PREFIX_PATH (llvm-mingw)
+    # CMAKE_PREFIX_PATH is set in main CMakeLists.txt to point to llvm-mingw x86_64-w64-mingw32/
+    find_library(GLFW3_LIB glfw3 REQUIRED)
+    set(GLFW3_INCLUDE_DIRS "${CMAKE_PREFIX_PATH}/include")
+    set(GLFW3_LIBRARIES "${GLFW3_LIB}")
+    message(STATUS "Using GLFW from CMAKE_PREFIX_PATH for Windows (GUI)")
+    message(STATUS "GLFW include: ${GLFW3_INCLUDE_DIRS}")
+    message(STATUS "GLFW library: ${GLFW3_LIBRARIES}")
+else()
+    # Linux/Mac: Use find_package
+    find_package(glfw3 REQUIRED)
+endif()
+
 find_package(Freetype REQUIRED)
 
 # ImGui source files
@@ -36,11 +50,9 @@ set(QRCODEGEN_SOURCES
     ${QRCODEGEN_DIR}/qrcodegen.cpp
 )
 
-# Native File Dialog Extended
+# Native File Dialog Extended (Windows only, Linux uses zenity/kdialog)
 set(NFD_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../vendor/nativefiledialog-extended/src)
-if(UNIX AND NOT APPLE)
-    set(NFD_SOURCES ${NFD_DIR}/nfd_gtk.cpp)
-elseif(APPLE)
+if(APPLE)
     set(NFD_SOURCES ${NFD_DIR}/nfd_cocoa.m)
 elseif(WIN32)
     set(NFD_SOURCES ${NFD_DIR}/nfd_win.cpp)
@@ -74,8 +86,12 @@ add_executable(dna_messenger_imgui
     screens/layout_manager.cpp
     ${IMGUI_SOURCES}
     ${QRCODEGEN_SOURCES}
-    ${NFD_SOURCES}
 )
+
+# Add NFD sources only on Windows
+if(WIN32)
+    target_sources(dna_messenger_imgui PRIVATE ${NFD_SOURCES})
+endif()
 
 target_include_directories(dna_messenger_imgui PRIVATE
     ${IMGUI_DIR}
@@ -86,37 +102,38 @@ target_include_directories(dna_messenger_imgui PRIVATE
     ${NFD_DIR}/include
 )
 
+# Add GLFW include directories for Windows (manually set)
+if(WIN32)
+    target_include_directories(dna_messenger_imgui PRIVATE ${GLFW3_INCLUDE_DIRS})
+endif()
+
 target_link_libraries(dna_messenger_imgui PRIVATE
     OpenGL::GL
-    glfw
     dna_lib  # DNA Messenger core library
     cellframe_minimal  # Transaction building and signing
 )
+
+# Link GLFW library (platform-specific)
+if(WIN32)
+    target_link_libraries(dna_messenger_imgui PRIVATE ${GLFW3_LIBRARIES})
+else()
+    target_link_libraries(dna_messenger_imgui PRIVATE glfw)
+endif()
 
 # Platform-specific settings
 if(WIN32)
     target_link_libraries(dna_messenger_imgui PRIVATE
         opengl32
         gdi32
-        harfbuzz
         ${FREETYPE_LIBRARIES}
-        harfbuzz
-        png
-        z
-        bz2
+        z  # zlib (required by Freetype for gzip support)
         ole32  # Required for NFD on Windows
         uuid  # Required for NFD on Windows
     )
 else()
-    # Find GTK3 for NFD on Linux
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(GTK3 REQUIRED gtk+-3.0)
-    
     target_link_libraries(dna_messenger_imgui PRIVATE
         ${FREETYPE_LIBRARIES}
-        ${GTK3_LIBRARIES}
     )
-    target_include_directories(dna_messenger_imgui PRIVATE ${GTK3_INCLUDE_DIRS})
 endif()
 
 # Install emoji font to ~/.dna/fonts (Linux) or %APPDATA%\.dna\fonts (Windows)

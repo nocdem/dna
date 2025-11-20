@@ -1,5 +1,5 @@
 # DNA Messenger CI/CD Pipeline
-# Builds for Linux and Windows with static linking where possible
+# Builds for Linux (x64, ARM64) and Windows x64 with static linking
 
 workflow:
   rules:
@@ -15,77 +15,147 @@ stages:
 variables:
   GIT_SUBMODULE_STRATEGY: recursive
   CMAKE_BUILD_TYPE: Release
+  DEBIAN_FRONTEND: noninteractive
 
 # Linux x86_64 build
 build:linux-x64:
   stage: build
   tags:
     - linux
-  image: ubuntu:24.04
+  image: ubuntu:22.04
+  cache:
+    key: opendht-3.2.0-linux-x64
+    paths:
+      - .cache/opendht-build/
   before_script:
     - apt-get update -qq
-    - apt-get install -y -qq build-essential cmake git pkg-config xxd
+    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget tar
     # Core dependencies
     - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev
-    # P2P/DHT dependencies
-    - apt-get install -y -qq libnice-dev libglib2.0-dev
-    # OpenDHT dependencies
-    - apt-get install -y -qq libopendht-dev libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev
+    # OpenDHT build dependencies (not the package itself - we build from source)
+    - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev libfmt-dev libasio-dev libhttp-parser-dev libcppunit-dev
     # ImGui GUI dependencies
     - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libfreetype6-dev
     # Native file dialog (GTK3)
     - apt-get install -y -qq libgtk-3-dev
+    # Build OpenDHT 3.2.0 from source (same version as Windows)
+    - |
+      if [ ! -f "$HOME/.local/lib/libopendht.a" ]; then
+        export HOME="${CI_PROJECT_DIR}"
+        mkdir -p .cache/opendht-build && cd .cache/opendht-build
+        git clone --depth 1 --branch v3.2.0 https://github.com/savoirfairelinux/opendht.git || true
+        cd opendht
+        mkdir -p build && cd build
+        cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/.local \
+                 -DCMAKE_BUILD_TYPE=Release \
+                 -DOPENDHT_PYTHON=OFF \
+                 -DOPENDHT_TOOLS=OFF \
+                 -DBUILD_SHARED_LIBS=OFF
+        make -j$(nproc)
+        make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    - export PKG_CONFIG_PATH="$HOME/.local/lib/pkgconfig:$PKG_CONFIG_PATH"
+    - export CMAKE_PREFIX_PATH="$HOME/.local:$CMAKE_PREFIX_PATH"
+    - export LD_LIBRARY_PATH="$HOME/.local/lib:$LD_LIBRARY_PATH"
   script:
-    - mkdir -p build
-    - cd build
-    # Static link libgcc and libstdc++ to reduce dependencies
-    - cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXE_LINKER_FLAGS="-static-libgcc -static-libstdc++"
-    - make -j$(nproc)
-    - ls -lh imgui_gui/
-    # Show what dependencies are needed
-    - echo "=== Binary dependencies ==="
-    - ldd imgui_gui/dna_messenger_imgui || true
+    - chmod +x build-cross-compile.sh
+    - ./build-cross-compile.sh linux-x64
   artifacts:
     name: "dna-messenger-linux-x64-${CI_COMMIT_SHORT_SHA}"
     paths:
-      - build/imgui_gui/dna_messenger_imgui
+      - dist/*.tar.gz
+      - dist/linux-x64/
     expire_in: 1 week
 
-# Windows x86_64 build (MinGW cross-compile)
+# Linux ARM64 build (cross-compile)
+build:linux-arm64:
+  stage: build
+  tags:
+    - linux
+  image: ubuntu:22.04
+  cache:
+    key: opendht-3.2.0-linux-arm64
+    paths:
+      - .cache/opendht-build-arm64/
+  before_script:
+    - apt-get update -qq
+    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget tar
+    # ARM64 cross-compiler
+    - apt-get install -y -qq gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+    # Enable ARM64 architecture
+    - dpkg --add-architecture arm64
+    - apt-get update -qq
+    # Core dependencies (ARM64)
+    - apt-get install -y -qq libssl-dev:arm64 libcurl4-openssl-dev:arm64 libjson-c-dev:arm64 libsqlite3-dev:arm64
+    # OpenDHT build dependencies (ARM64) - build from source for same version
+    - apt-get install -y -qq libgnutls28-dev:arm64 libargon2-dev:arm64 libmsgpack-dev:arm64 nettle-dev:arm64 libjsoncpp-dev:arm64 libfmt-dev:arm64 libasio-dev libhttp-parser-dev:arm64 libcppunit-dev:arm64
+    # GUI dependencies (ARM64)
+    - apt-get install -y -qq libgl1-mesa-dev:arm64 libglfw3-dev:arm64 libfreetype6-dev:arm64 libgtk-3-dev:arm64
+    # Build OpenDHT 3.2.0 from source for ARM64 (same version as Windows/Linux x64)
+    - |
+      if [ ! -f "$HOME/.local-arm64/lib/libopendht.a" ]; then
+        export HOME="${CI_PROJECT_DIR}"
+        mkdir -p .cache/opendht-build-arm64 && cd .cache/opendht-build-arm64
+        git clone --depth 1 --branch v3.2.0 https://github.com/savoirfairelinux/opendht.git || true
+        cd opendht
+        mkdir -p build && cd build
+        cmake .. -DCMAKE_INSTALL_PREFIX=$HOME/.local-arm64 \
+                 -DCMAKE_BUILD_TYPE=Release \
+                 -DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc \
+                 -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ \
+                 -DCMAKE_SYSTEM_NAME=Linux \
+                 -DCMAKE_SYSTEM_PROCESSOR=aarch64 \
+                 -DOPENDHT_PYTHON=OFF \
+                 -DOPENDHT_TOOLS=OFF \
+                 -DBUILD_SHARED_LIBS=OFF
+        make -j$(nproc)
+        make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    - export PKG_CONFIG_PATH="$HOME/.local-arm64/lib/pkgconfig:$PKG_CONFIG_PATH"
+    - export CMAKE_PREFIX_PATH="$HOME/.local-arm64:$CMAKE_PREFIX_PATH"
+    - export LD_LIBRARY_PATH="$HOME/.local-arm64/lib:$LD_LIBRARY_PATH"
+  script:
+    - chmod +x build-cross-compile.sh
+    - ./build-cross-compile.sh linux-arm64
+  artifacts:
+    name: "dna-messenger-linux-arm64-${CI_COMMIT_SHORT_SHA}"
+    paths:
+      - dist/*.tar.gz
+      - dist/linux-arm64/
+    expire_in: 1 week
+  allow_failure: true  # Allow failure until ARM64 dependencies are verified
+
+# Windows x86_64 build (llvm-mingw cross-compile)
 build:windows-x64:
   stage: build
   tags:
     - linux
-  image: ubuntu:20.04
+  image: ubuntu:22.04
   timeout: 3h
   before_script:
-    # Disable interactive prompts
-    - export DEBIAN_FRONTEND=noninteractive
     - apt-get update -qq
-    # MXE build dependencies
-    - apt-get install -y -qq build-essential cmake git pkg-config xxd autoconf automake libtool libtool-bin
-    - apt-get install -y -qq bison flex gperf ruby unzip p7zip-full lzip intltool xz-utils
-    - apt-get install -y -qq gettext autopoint libssl-dev zlib1g-dev bzip2 libgdk-pixbuf2.0-dev
-    - apt-get install -y -qq python3 python3-mako perl libxml-parser-perl
-    # Create python symlink for MXE
-    - ln -sf /usr/bin/python3 /usr/bin/python || true
-    # Set up MXE cache directory
-    - export MXE_DIR="${CI_PROJECT_DIR}/.mxe-cache"
-    - mkdir -p "${MXE_DIR}"
+    # Basic build tools
+    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget tar xz-utils
+    # llvm-mingw and dependency build tools
+    - apt-get install -y -qq autoconf automake libtool python3 perl unzip p7zip-full
   cache:
-    key: mxe-windows-static-v1
+    key: llvm-mingw-windows-deps-v1
     paths:
-      - .mxe-cache/
+      - .cache/llvm-mingw/
+      - .cache/glfw-3.4/
   script:
-    # Use the existing cross-compile script
-    - chmod +x build-cross-compile.sh
-    - export MXE_DIR="${CI_PROJECT_DIR}/.mxe-cache"
+    # Set up HOME to use cache directory
+    - export HOME="${CI_PROJECT_DIR}"
+    - mkdir -p "${HOME}/.cache"
+    # Make scripts executable
+    - chmod +x build-cross-compile.sh setup-windows-build.sh
+    # Build Windows with cached dependencies
     - ./build-cross-compile.sh windows-x64
   artifacts:
     name: "dna-messenger-windows-x64-${CI_COMMIT_SHORT_SHA}"
     paths:
       - dist/*.zip
-      - dist/*.tar.gz
       - dist/windows-x64/
     expire_in: 1 week
-  allow_failure: true
