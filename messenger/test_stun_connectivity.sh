@@ -18,11 +18,11 @@ echo -e "${BLUE} DNA Messenger - STUN Connectivity Test${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo ""
 
-# STUN servers to test (same order as DNA Messenger - verified working)
+# STUN servers to test (same order as DNA Messenger - STUN protocol verified)
 STUN_SERVERS=(
-    "stun.cloudflare.com:3478"
     "stun.l.google.com:19302"
     "stun1.l.google.com:19302"
+    "stun.cloudflare.com:3478"
 )
 
 # 1. Check basic network connectivity
