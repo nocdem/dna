@@ -80,11 +80,20 @@ build_linux_x64() {
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
 
-    cmake "${PROJECT_ROOT}" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_C_FLAGS="-O3 -march=x86-64 -mtune=generic" \
-        -DCMAKE_CXX_FLAGS="-O3 -march=x86-64 -mtune=generic" \
+    # Build with optional CMAKE_PREFIX_PATH for custom dependencies
+    CMAKE_ARGS=(
+        "${PROJECT_ROOT}"
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_C_FLAGS="-O3 -march=x86-64 -mtune=generic"
+        -DCMAKE_CXX_FLAGS="-O3 -march=x86-64 -mtune=generic"
         -DBUILD_GUI=ON
+    )
+
+    if [ -n "${CMAKE_PREFIX_PATH}" ]; then
+        CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}")
+    fi
+
+    cmake "${CMAKE_ARGS[@]}"
 
     make -j$(nproc)
 
@@ -138,10 +147,19 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 EOF
 
-    cmake "${PROJECT_ROOT}" \
-        -DCMAKE_TOOLCHAIN_FILE=toolchain-arm64.cmake \
-        -DCMAKE_BUILD_TYPE=Release \
+    # Build with optional CMAKE_PREFIX_PATH for custom dependencies
+    CMAKE_ARGS=(
+        "${PROJECT_ROOT}"
+        -DCMAKE_TOOLCHAIN_FILE=toolchain-arm64.cmake
+        -DCMAKE_BUILD_TYPE=Release
         -DBUILD_GUI=ON
+    )
+
+    if [ -n "${CMAKE_PREFIX_PATH}" ]; then
+        CMAKE_ARGS+=(-DCMAKE_PREFIX_PATH="${CMAKE_PREFIX_PATH}")
+    fi
+
+    cmake "${CMAKE_ARGS[@]}"
 
     make -j$(nproc)
 
