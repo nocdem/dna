@@ -34,6 +34,8 @@ else()
     find_package(PkgConfig REQUIRED)
     pkg_check_modules(OPENDHT REQUIRED opendht>=3.0)
     set(OPENDHT_DEPS ${OPENDHT_LIBRARIES})
+    # Add library directories so linker can find libopendht.a
+    link_directories(${OPENDHT_LIBRARY_DIRS})
 endif()
 
 # DHT library
