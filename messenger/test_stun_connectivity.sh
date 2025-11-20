@@ -78,28 +78,30 @@ echo ""
 # 4. Check firewall rules
 echo -e "${YELLOW}[4/5] Checking firewall rules...${NC}"
 if command -v iptables > /dev/null 2>&1; then
-    # Check if running as root
+    # Try to run iptables (with or without sudo)
     if [ "$EUID" -eq 0 ]; then
-        # Check for UDP blocks
-        blocked=$(iptables -L -n -v | grep -E "DROP|REJECT" | grep -i udp | wc -l)
-        if [ $blocked -gt 0 ]; then
-            echo -e "${YELLOW}⚠${NC}  Found $blocked firewall rules blocking UDP"
-            echo "   Review with: sudo iptables -L -n -v | grep UDP"
-        else
-            echo -e "${GREEN}✓${NC} No obvious UDP blocks in iptables"
-        fi
-
-        # Check for port-specific blocks
-        for port in 3478 19302; do
-            blocked=$(iptables -L -n -v | grep -E "DROP|REJECT" | grep "dpt:$port" | wc -l)
-            if [ $blocked -gt 0 ]; then
-                echo -e "${RED}✗${NC} Port $port is blocked by iptables"
-            fi
-        done
+        IPTABLES_CMD="iptables"
     else
-        echo -e "${YELLOW}⚠${NC}  Not running as root - cannot check iptables"
-        echo "   Run with sudo to check firewall: sudo $0"
+        IPTABLES_CMD="sudo iptables"
+        echo -e "${BLUE}Using sudo for iptables...${NC}"
     fi
+
+    # Check for UDP blocks
+    blocked=$($IPTABLES_CMD -L -n -v 2>/dev/null | grep -E "DROP|REJECT" | grep -i udp | wc -l)
+    if [ $blocked -gt 0 ]; then
+        echo -e "${YELLOW}⚠${NC}  Found $blocked firewall rules blocking UDP"
+        echo "   Review with: sudo iptables -L -n -v | grep UDP"
+    else
+        echo -e "${GREEN}✓${NC} No obvious UDP blocks in iptables"
+    fi
+
+    # Check for port-specific blocks
+    for port in 3478 19302; do
+        blocked=$($IPTABLES_CMD -L -n -v 2>/dev/null | grep -E "DROP|REJECT" | grep "dpt:$port" | wc -l)
+        if [ $blocked -gt 0 ]; then
+            echo -e "${RED}✗${NC} Port $port is blocked by iptables"
+        fi
+    done
 else
     echo -e "${YELLOW}⚠${NC}  iptables not found (using firewalld or ufw?)"
 fi
@@ -117,9 +119,16 @@ if command -v stun > /dev/null 2>&1; then
         # Run STUN client (timeout after 3 seconds)
         output=$(timeout 3 stun $host -p $port 2>&1 || true)
 
-        if echo "$output" | grep -q "MappedAddress"; then
+        # Check for success indicators (NAT info means STUN worked!)
+        if echo "$output" | grep -q "Independent Mapping"; then
+            nat_type=$(echo "$output" | grep "Primary:" | cut -d: -f2 | xargs)
+            echo -e "${GREEN}SUCCESS${NC}"
+            echo "   NAT Type: $nat_type"
+        elif echo "$output" | grep -q "MappedAddress"; then
             ext_ip=$(echo "$output" | grep "MappedAddress" | awk '{print $3}')
             echo -e "${GREEN}SUCCESS${NC} (External IP: $ext_ip)"
+        elif echo "$output" | grep -q "Blocked"; then
+            echo -e "${RED}BLOCKED${NC} (Cannot reach STUN server)"
         else
             echo -e "${RED}FAILED${NC}"
             echo "   Output: $output"
@@ -130,7 +139,7 @@ else
     echo "   Install with: sudo apt-get install stun-client"
     echo ""
     echo -e "${BLUE}Manual STUN test:${NC}"
-    echo "   stun stun.stunprotocol.org -p 3478"
+    echo "   stun stun.l.google.com -p 19302"
 fi
 echo ""
 
