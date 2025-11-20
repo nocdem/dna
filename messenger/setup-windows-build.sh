@@ -322,9 +322,6 @@ if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgnutls.a" ]; then
     fi
     cd gnutls-3.8.3
 
-    # Force configure to skip TPM detection
-    ac_cv_lib_tss2_esys_Esys_GetCapability=no \
-    ac_cv_header_tss2_tss2_esys_h=no \
     ./configure \
         --host=${MINGW_TARGET} \
         --prefix="${MINGW_TARGET_PREFIX}" \
@@ -338,7 +335,8 @@ if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgnutls.a" ]; then
         --with-included-libtasn1 \
         --with-included-unistring \
         --without-p11-kit \
-        --without-tpm
+        --without-tpm \
+        --with-tpm2=no
 
     make -j$(nproc)
     make install
