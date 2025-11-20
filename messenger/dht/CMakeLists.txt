@@ -9,8 +9,7 @@ if(WIN32)
     find_library(JSONCPP_LIB jsoncpp REQUIRED)
     find_library(FMT_LIB fmt REQUIRED)
     find_library(ARGON2_LIB argon2 REQUIRED)
-    find_library(SSL_LIB ssl REQUIRED PATHS ${CMAKE_PREFIX_PATH}/lib64 ${CMAKE_PREFIX_PATH}/lib)
-    find_library(CRYPTO_LIB crypto REQUIRED PATHS ${CMAKE_PREFIX_PATH}/lib64 ${CMAKE_PREFIX_PATH}/lib)
+    # Note: SSL and crypto libraries are handled by ${OPENSSL_LIBRARIES} in target_link_libraries
     find_library(JSONC_LIB json-c REQUIRED)
     find_library(CURL_LIB curl REQUIRED)
 
@@ -19,12 +18,11 @@ if(WIN32)
 
     # OpenDHT dependencies for Windows (order matters for static linking!)
     # Dependencies must come AFTER the libraries that use them
+    # Note: OpenSSL (ssl/crypto) is linked via ${OPENSSL_LIBRARIES} in target_link_libraries below
     set(OPENDHT_DEPS
         "${JSONCPP_LIB}"
         "${FMT_LIB}"
         "${ARGON2_LIB}"
-        "${SSL_LIB}"                         # OpenSSL (replaces GnuTLS)
-        "${CRYPTO_LIB}"                      # OpenSSL crypto
         "${JSONC_LIB}"                       # json-c for contact lists
         "${CURL_LIB}"                        # CURL for HTTP
         ws2_32 crypt32 bcrypt ncrypt         # Windows system libraries
@@ -116,9 +114,9 @@ target_include_directories(dht_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../crypto)
 if(WIN32)
-    target_link_libraries(dht_lib crypto dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES})
+    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES})
 else()
-    target_link_libraries(dht_lib crypto dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} json-c curl)
+    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} json-c curl)
 endif()
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD 17)
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD_REQUIRED ON)

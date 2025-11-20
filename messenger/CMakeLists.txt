@@ -15,10 +15,8 @@ if(WIN32)
         # Static linking for MinGW
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++")
 
-        # MinGW sometimes installs to lib64 instead of lib (e.g., OpenSSL)
-        # Add lib64 to library search paths
-        list(APPEND CMAKE_LIBRARY_PATH "${CMAKE_PREFIX_PATH}/lib64")
-        list(APPEND CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH}/lib64")
+        # Note: CMAKE_PREFIX_PATH already includes lib64 (set by build-cross-compile.sh)
+        # No need to append lib64 here as it would create invalid paths
     endif()
 
     # Prefer static libraries on Windows
@@ -473,7 +471,6 @@ if(BUILD_TESTS)
         dht_lib
         ${JSONC_LIBRARIES}
         ${SQLite3_LIBRARIES}
-        crypto
         ${OPENSSL_LIBRARIES}
     )
 
@@ -491,7 +488,6 @@ if(BUILD_TESTS)
         dht_lib
         ${JSONC_LIBRARIES}
         ${SQLite3_LIBRARIES}
-        crypto
         ${OPENSSL_LIBRARIES}
     )
 
