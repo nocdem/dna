@@ -170,72 +170,90 @@ int p2p_send_message(
     int tier1_lookup_success = (p2p_lookup_peer(ctx, peer_pubkey, &peer_info) == 0);
 
     if (tier1_lookup_success && peer_info.is_online) {
-        printf("[P2P] [TIER 1] Peer found at %s:%d, attempting TCP connection...\n",
+        printf("[P2P] [TIER 1] Peer found with IPs: %s (port %d)\n",
                peer_info.ip, peer_info.port);
 
-        // Step 2: Establish TCP connection
-        int sockfd = socket(AF_INET, SOCK_STREAM, 0);
-        if (sockfd >= 0) {
-            // Set connection timeout (3 seconds)
-            struct timeval timeout;
-            timeout.tv_sec = 3;
-            timeout.tv_usec = 0;
+        // Step 2: Try ALL peer IPs (comma-separated) until one works
+        char ips_copy[64];
+        snprintf(ips_copy, sizeof(ips_copy), "%s", peer_info.ip);
+
+        char *ip_token = strtok(ips_copy, ",");
+        while (ip_token) {
+            // Trim whitespace
+            while (*ip_token == ' ') ip_token++;
+
+            printf("[P2P] [TIER 1] Trying IP: %s:%d...\n", ip_token, peer_info.port);
+
+            int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+            if (sockfd >= 0) {
+                // Set connection timeout (1 second per IP - faster fallback)
+                struct timeval timeout;
+                timeout.tv_sec = 1;
+                timeout.tv_usec = 0;
 #ifdef _WIN32
-            DWORD timeout_ms = 3000;
-            setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout_ms, sizeof(timeout_ms));
-            setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout_ms, sizeof(timeout_ms));
+                DWORD timeout_ms = 1000;
+                setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout_ms, sizeof(timeout_ms));
+                setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, (const char*)&timeout_ms, sizeof(timeout_ms));
 #else
-            setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-            setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
+                setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+                setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 #endif
 
-            struct sockaddr_in peer_addr;
-            memset(&peer_addr, 0, sizeof(peer_addr));
-            peer_addr.sin_family = AF_INET;
-            peer_addr.sin_port = htons(peer_info.port);
+                struct sockaddr_in peer_addr;
+                memset(&peer_addr, 0, sizeof(peer_addr));
+                peer_addr.sin_family = AF_INET;
+                peer_addr.sin_port = htons(peer_info.port);
 
-            if (inet_pton(AF_INET, peer_info.ip, &peer_addr.sin_addr) > 0) {
-                if (connect(sockfd, (struct sockaddr*)&peer_addr, sizeof(peer_addr)) == 0) {
-                    printf("[P2P] [TIER 1] ✓ TCP connected to %s:%d\n", peer_info.ip, peer_info.port);
+                if (inet_pton(AF_INET, ip_token, &peer_addr.sin_addr) > 0) {
+                    if (connect(sockfd, (struct sockaddr*)&peer_addr, sizeof(peer_addr)) == 0) {
+                        printf("[P2P] [TIER 1] ✓ TCP connected to %s:%d\n", ip_token, peer_info.port);
 
-                    // Step 3: Send message (format: [4-byte length][message data])
-                    uint32_t msg_len_network = htonl((uint32_t)message_len);
+                        // Step 3: Send message (format: [4-byte length][message data])
+                        uint32_t msg_len_network = htonl((uint32_t)message_len);
 
-                    // Send length header
-                    ssize_t sent = send(sockfd, (char*)&msg_len_network, sizeof(msg_len_network), 0);
-                    if (sent == sizeof(msg_len_network)) {
-                        // Send message data
-                        size_t total_sent = 0;
-                        int send_error = 0;
-                        while (total_sent < message_len && !send_error) {
-                            sent = send(sockfd, (char*)message + total_sent, message_len - total_sent, 0);
-                            if (sent <= 0) {
-                                send_error = 1;
-                            } else {
-                                total_sent += sent;
+                        // Send length header
+                        ssize_t sent = send(sockfd, (char*)&msg_len_network, sizeof(msg_len_network), 0);
+                        if (sent == sizeof(msg_len_network)) {
+                            // Send message data
+                            size_t total_sent = 0;
+                            int send_error = 0;
+                            while (total_sent < message_len && !send_error) {
+                                sent = send(sockfd, (char*)message + total_sent, message_len - total_sent, 0);
+                                if (sent <= 0) {
+                                    send_error = 1;
+                                } else {
+                                    total_sent += sent;
+                                }
+                            }
+
+                            if (!send_error) {
+                                printf("[P2P] [TIER 1] ✓ Sent %zu bytes\n", message_len);
+
+                                // Step 4: Wait for ACK
+                                uint8_t ack;
+                                ssize_t ack_received = recv(sockfd, (char*)&ack, 1, 0);
+
+                                if (ack_received == 1 && ack == 0x01) {
+                                    printf("[P2P] [TIER 1] ✓✓ SUCCESS - ACK received from %s!\n", ip_token);
+                                    close(sockfd);
+                                    return 0;  // SUCCESS - Tier 1 worked!
+                                }
                             }
                         }
 
-                        if (!send_error) {
-                            printf("[P2P] [TIER 1] ✓ Sent %zu bytes\n", message_len);
-
-                            // Step 4: Wait for ACK
-                            uint8_t ack;
-                            ssize_t ack_received = recv(sockfd, (char*)&ack, 1, 0);
-
-                            if (ack_received == 1 && ack == 0x01) {
-                                printf("[P2P] [TIER 1] ✓✓ SUCCESS - ACK received, message delivered!\n");
-                                close(sockfd);
-                                return 0;  // SUCCESS - Tier 1 worked!
-                            }
-                        }
+                        close(sockfd);
+                    } else {
+                        printf("[P2P] [TIER 1] Connection to %s:%d failed\n", ip_token, peer_info.port);
+                        close(sockfd);
                     }
-
+                } else {
+                    printf("[P2P] [TIER 1] Invalid IP: %s\n", ip_token);
                     close(sockfd);
                 }
-            } else {
-                close(sockfd);
             }
+
+            // Try next IP
+            ip_token = strtok(NULL, ",");
         }
     }
 
