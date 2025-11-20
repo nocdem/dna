@@ -313,34 +313,8 @@ else
     echo -e "${GREEN}✓${NC} libidn2 already installed"
 fi
 
-# 10. Build tpm2-tss (TPM2 Software Stack - required by GnuTLS)
-echo -e "${BLUE}[10/18] Building tpm2-tss...${NC}"
-if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libtss2-esys.a" ]; then
-    if [ ! -d "tpm2-tss" ]; then
-        git clone --depth 1 --branch 4.1.3 https://github.com/tpm2-software/tpm2-tss.git
-    fi
-    cd tpm2-tss
-
-    ./bootstrap
-    ac_cv_func_strndup=yes \
-    ./configure \
-        --host=${MINGW_TARGET} \
-        --prefix="${MINGW_TARGET_PREFIX}" \
-        --enable-static \
-        --disable-shared \
-        --disable-doxygen-doc \
-        --disable-defaultflags
-
-    make -j$(nproc)
-    make install
-    cd "$BUILD_DIR"
-    echo -e "${GREEN}✓${NC} tpm2-tss installed"
-else
-    echo -e "${GREEN}✓${NC} tpm2-tss already installed"
-fi
-
-# 11. Build GnuTLS (TLS library - required by OpenDHT)
-echo -e "${BLUE}[11/18] Building GnuTLS...${NC}"
+# 10. Build GnuTLS (TLS library - required by OpenDHT)
+echo -e "${BLUE}[10/17] Building GnuTLS...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgnutls.a" ]; then
     if [ ! -d "gnutls-3.8.3" ]; then
         wget https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.3.tar.xz
@@ -348,6 +322,9 @@ if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgnutls.a" ]; then
     fi
     cd gnutls-3.8.3
 
+    # Force configure to skip TPM detection
+    ac_cv_lib_tss2_esys_Esys_GetCapability=no \
+    ac_cv_header_tss2_tss2_esys_h=no \
     ./configure \
         --host=${MINGW_TARGET} \
         --prefix="${MINGW_TARGET_PREFIX}" \
@@ -371,8 +348,8 @@ else
     echo -e "${GREEN}✓${NC} GnuTLS already installed"
 fi
 
-# 12. Build zlib (compression library)
-echo -e "${BLUE}[12/18] Building zlib...${NC}"
+# 11. Build zlib (compression library)
+echo -e "${BLUE}[11/17] Building zlib...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libz.a" ]; then
     if [ ! -d "zlib-1.3.1" ]; then
         wget https://zlib.net/zlib-1.3.1.tar.gz
@@ -396,8 +373,8 @@ else
     echo -e "${GREEN}✓${NC} zlib already installed"
 fi
 
-# 13. Build Freetype (font rendering)
-echo -e "${BLUE}[13/18] Building Freetype...${NC}"
+# 12. Build Freetype (font rendering)
+echo -e "${BLUE}[12/17] Building Freetype...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libfreetype.a" ]; then
     if [ ! -d "freetype-2.13.3" ]; then
         wget https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz
@@ -423,8 +400,8 @@ else
     echo -e "${GREEN}✓${NC} Freetype already installed"
 fi
 
-# 14. Build SQLite3 (database library)
-echo -e "${BLUE}[14/18] Building SQLite3...${NC}"
+# 13. Build SQLite3 (database library)
+echo -e "${BLUE}[13/17] Building SQLite3...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libsqlite3.a" ]; then
     if [ ! -d "sqlite-autoconf-3470200" ]; then
         wget https://www.sqlite.org/2024/sqlite-autoconf-3470200.tar.gz
@@ -446,8 +423,8 @@ else
     echo -e "${GREEN}✓${NC} SQLite3 already installed"
 fi
 
-# 15. Build OpenSSL (TLS library)
-echo -e "${BLUE}[15/18] Building OpenSSL...${NC}"
+# 14. Build OpenSSL (TLS library)
+echo -e "${BLUE}[14/17] Building OpenSSL...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libssl.a" ]; then
     if [ ! -d "openssl-3.0.15" ]; then
         wget https://www.openssl.org/source/openssl-3.0.15.tar.gz
@@ -473,8 +450,8 @@ else
     echo -e "${GREEN}✓${NC} OpenSSL already installed"
 fi
 
-# 16. Build json-c (JSON library)
-echo -e "${BLUE}[16/18] Building json-c...${NC}"
+# 15. Build json-c (JSON library)
+echo -e "${BLUE}[15/17] Building json-c...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libjson-c.a" ]; then
     if [ ! -d "json-c-0.17" ]; then
         wget https://github.com/json-c/json-c/archive/refs/tags/json-c-0.17-20230812.tar.gz
@@ -501,8 +478,8 @@ else
     echo -e "${GREEN}✓${NC} json-c already installed"
 fi
 
-# 17. Build CURL (HTTP library)
-echo -e "${BLUE}[17/18] Building CURL...${NC}"
+# 16. Build CURL (HTTP library)
+echo -e "${BLUE}[16/17] Building CURL...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libcurl.a" ]; then
     if [ ! -d "curl-8.11.0" ]; then
         wget https://curl.se/download/curl-8.11.0.tar.gz
@@ -535,8 +512,8 @@ else
     echo -e "${GREEN}✓${NC} CURL already installed"
 fi
 
-# 18. Build OpenDHT (finally!)
-echo -e "${BLUE}[18/18] Building OpenDHT...${NC}"
+# 17. Build OpenDHT (finally!)
+echo -e "${BLUE}[17/17] Building OpenDHT...${NC}"
 if [ ! -d "opendht" ]; then
     git clone --depth 1 --branch v3.2.0 https://github.com/savoirfairelinux/opendht.git
 fi
