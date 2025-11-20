@@ -15,7 +15,21 @@ set(OpenGL_GL_PREFERENCE GLVND)
 
 # Find required packages
 find_package(OpenGL REQUIRED)
-find_package(glfw3 REQUIRED)
+
+if(WIN32)
+    # Windows cross-compile: GLFW found via CMAKE_PREFIX_PATH (llvm-mingw)
+    # CMAKE_PREFIX_PATH is set in main CMakeLists.txt to point to llvm-mingw x86_64-w64-mingw32/
+    find_library(GLFW3_LIB glfw3 REQUIRED)
+    set(GLFW3_INCLUDE_DIRS "${CMAKE_PREFIX_PATH}/include")
+    set(GLFW3_LIBRARIES "${GLFW3_LIB}")
+    message(STATUS "Using GLFW from CMAKE_PREFIX_PATH for Windows (GUI)")
+    message(STATUS "GLFW include: ${GLFW3_INCLUDE_DIRS}")
+    message(STATUS "GLFW library: ${GLFW3_LIBRARIES}")
+else()
+    # Linux/Mac: Use find_package
+    find_package(glfw3 REQUIRED)
+endif()
+
 find_package(Freetype REQUIRED)
 
 # ImGui source files
@@ -88,24 +102,31 @@ target_include_directories(dna_messenger_imgui PRIVATE
     ${NFD_DIR}/include
 )
 
+# Add GLFW include directories for Windows (manually set)
+if(WIN32)
+    target_include_directories(dna_messenger_imgui PRIVATE ${GLFW3_INCLUDE_DIRS})
+endif()
+
 target_link_libraries(dna_messenger_imgui PRIVATE
     OpenGL::GL
-    glfw
     dna_lib  # DNA Messenger core library
     cellframe_minimal  # Transaction building and signing
 )
+
+# Link GLFW library (platform-specific)
+if(WIN32)
+    target_link_libraries(dna_messenger_imgui PRIVATE ${GLFW3_LIBRARIES})
+else()
+    target_link_libraries(dna_messenger_imgui PRIVATE glfw)
+endif()
 
 # Platform-specific settings
 if(WIN32)
     target_link_libraries(dna_messenger_imgui PRIVATE
         opengl32
         gdi32
-        harfbuzz
         ${FREETYPE_LIBRARIES}
-        harfbuzz
-        png
-        z
-        bz2
+        z  # zlib (required by Freetype for gzip support)
         ole32  # Required for NFD on Windows
         uuid  # Required for NFD on Windows
     )

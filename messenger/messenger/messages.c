@@ -7,14 +7,25 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+// Windows byte order conversion macros (be64toh, htobe64 not available)
+#ifdef _WIN32
+#include <winsock2.h>
+#include <windows.h>
+
+// 64-bit big-endian conversions for Windows
+#define htobe64(x) ( \
+    ((uint64_t)(htonl((uint32_t)((x) & 0xFFFFFFFF))) << 32) | \
+    ((uint64_t)(htonl((uint32_t)((x) >> 32)))) \
+)
+#define be64toh(x) htobe64(x)  // Same operation for bidirectional conversion
+
+#else
 #include <endian.h>
+#endif
 
 #include "../dna_api.h"
 #include "../crypto/utils/qgp_types.h"
-
-#ifdef _WIN32
-#include <windows.h>
-#endif
 
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_dilithium.h"

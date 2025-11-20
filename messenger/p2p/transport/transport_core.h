@@ -29,17 +29,8 @@
     typedef int socklen_t;
     #define sleep(x) Sleep((x)*1000)
 
-    // Windows threading (use CRITICAL_SECTION instead of mutex)
-    typedef HANDLE pthread_t;
-    typedef CRITICAL_SECTION pthread_mutex_t;
-    typedef void* (*pthread_func_t)(void*);
-
-    #define pthread_create(thread, attr, func, arg) (*(thread) = CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)(func), (arg), 0, NULL), 0)
-    #define pthread_join(thread, retval) (WaitForSingleObject((thread), INFINITE), 0)
-    #define pthread_mutex_init(mutex, attr) (InitializeCriticalSection(mutex), 0)
-    #define pthread_mutex_lock(mutex) (EnterCriticalSection(mutex), 0)
-    #define pthread_mutex_unlock(mutex) (LeaveCriticalSection(mutex), 0)
-    #define pthread_mutex_destroy(mutex) (DeleteCriticalSection(mutex), 0)
+    // llvm-mingw provides proper pthread support - use it
+    #include <pthread.h>
 #else
     #include <unistd.h>
     #include <pthread.h>

@@ -14,10 +14,16 @@ if(WIN32)
     elseif(MINGW)
         # Static linking for MinGW
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++")
+
+        # Note: CMAKE_PREFIX_PATH already includes lib64 (set by build-cross-compile.sh)
+        # No need to append lib64 here as it would create invalid paths
     endif()
-    
+
     # Prefer static libraries on Windows
     set(CMAKE_FIND_LIBRARY_SUFFIXES .lib .a)
+
+    # Fix msgpack boost dependency: use msgpack's own predef headers
+    add_definitions(-DMSGPACK_NO_BOOST)
 endif()
 
 # Version (DNA Messenger starts fresh)
@@ -70,6 +76,7 @@ if(WIN32)
         crypto/utils/qgp_platform_windows.c
         win32/getopt.c      # POSIX getopt for Windows
         win32/dirent.c      # POSIX dirent for Windows
+        win32/strndup.c     # POSIX strndup for Windows
     )
     set(PLATFORM_LIBS bcrypt)  # Windows CNG for random number generation
 else()
@@ -92,13 +99,44 @@ if(CURL_FOUND)
     message(STATUS "CURL found: ${CURL_VERSION_STRING}")
 endif()
 
-# json-c for JSON parsing (keyserver API)
-# Support for static linking on Windows
-if(WIN32)
-    # On Windows, prefer static libraries
-    set(CMAKE_FIND_LIBRARY_SUFFIXES .lib .a)
-endif()
+# libjuice for NAT traversal (ICE/STUN) - replaces libnice + glib
+# Vendored as ExternalProject to ensure availability across all platforms
+include(ExternalProject)
 
+# Create include directory at configure time to avoid CMake errors
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/vendor/libjuice/install/include)
+
+ExternalProject_Add(libjuice_external
+    GIT_REPOSITORY https://github.com/paullouisageneau/libjuice.git
+    GIT_TAG v1.7.0
+    PREFIX ${CMAKE_BINARY_DIR}/vendor/libjuice
+    CMAKE_ARGS
+        -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/vendor/libjuice/install
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+        -DBUILD_SHARED_LIBS=OFF
+        -DUSE_NETTLE=OFF
+        -DNO_TESTS=ON
+        $<$<BOOL:${CMAKE_TOOLCHAIN_FILE}>:-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}>
+    BUILD_BYPRODUCTS ${CMAKE_BINARY_DIR}/vendor/libjuice/install/lib/${CMAKE_STATIC_LIBRARY_PREFIX}juice${CMAKE_STATIC_LIBRARY_SUFFIX}
+    LOG_DOWNLOAD ON
+    LOG_CONFIGURE ON
+    LOG_BUILD ON
+)
+
+# Create imported target for libjuice
+add_library(libjuice STATIC IMPORTED GLOBAL)
+add_dependencies(libjuice libjuice_external)
+set_target_properties(libjuice PROPERTIES
+    IMPORTED_LOCATION ${CMAKE_BINARY_DIR}/vendor/libjuice/install/lib/${CMAKE_STATIC_LIBRARY_PREFIX}juice${CMAKE_STATIC_LIBRARY_SUFFIX}
+    INTERFACE_INCLUDE_DIRECTORIES ${CMAKE_BINARY_DIR}/vendor/libjuice/install/include
+)
+
+set(JUICE_INCLUDE_DIRS ${CMAKE_BINARY_DIR}/vendor/libjuice/install/include)
+set(JUICE_LIBRARIES libjuice)
+message(STATUS "libjuice will be built from source (v1.7.0)")
+
+# json-c for JSON parsing (keyserver API)
 find_package(json-c CONFIG QUIET)
 if(json-c_FOUND)
     message(STATUS "json-c found via CMake config")
@@ -121,36 +159,13 @@ else()
             message(STATUS "json-c include: ${JSONC_INCLUDE_DIRS}")
         endif()
     else()
-        message(FATAL_ERROR "json-c not found. Install: apt install libjson-c-dev (Linux) or build with MXE for Windows cross-compilation")
+        message(FATAL_ERROR "json-c not found. Install: apt install libjson-c-dev (Linux) or use llvm-mingw for Windows cross-compilation")
     endif()
 endif()
 
-# libnice for NAT traversal (STUN+ICE, no TURN for decentralization)
-if(WIN32)
-    # Windows: Use MXE-built libnice and glib
-    set(MXE_PREFIX "$ENV{HOME}/.cache/mxe/usr/x86_64-w64-mingw32.static")
-    set(NICE_INCLUDE_DIRS "${MXE_PREFIX}/include/nice")
-    set(GLIB2_INCLUDE_DIRS "${MXE_PREFIX}/include/glib-2.0" "${MXE_PREFIX}/lib/glib-2.0/include")
-    set(NICE_LIBRARIES "${MXE_PREFIX}/lib/libnice.a")
-    set(GLIB2_LIBRARIES "${MXE_PREFIX}/lib/libgio-2.0.a" "${MXE_PREFIX}/lib/libgobject-2.0.a" "${MXE_PREFIX}/lib/libglib-2.0.a")
-    message(STATUS "Using MXE-built libnice for Windows")
-else()
-    # Linux: Use pkg-config
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(NICE REQUIRED nice)
-    pkg_check_modules(GLIB2 REQUIRED glib-2.0)
-    
-    if(NICE_FOUND)
-        message(STATUS "libnice found: ${NICE_VERSION}")
-        message(STATUS "libnice include: ${NICE_INCLUDE_DIRS}")
-        message(STATUS "libnice libraries: ${NICE_LIBRARIES}")
-    endif()
-    
-    if(GLIB2_FOUND)
-        message(STATUS "glib-2.0 found: ${GLIB2_VERSION}")
-        message(STATUS "glib-2.0 include: ${GLIB2_INCLUDE_DIRS}")
-    endif()
-endif()
+# libnice + glib REMOVED (2025-11-19)
+# Replaced with libjuice (no glib dependency, simpler cross-compilation)
+# See docs/LIBJUICE_MIGRATION.md for details
 
 # NOTE: PostgreSQL removed 2025-11-03 - migrated to SQLite for decentralization
 # SQLite3 for all local storage (messages, keyserver cache)
@@ -175,7 +190,6 @@ add_subdirectory(bootstrap)         # Bootstrap server (minimal deps)
 
 # Utility programs (export_pubkey, sign_json, verify_json) - DISABLED
 # These are no longer needed as keyserver_register.c uses inline functions
-# add_subdirectory(utils)
 
 # Common source files (shared between CLI and library)
 set(COMMON_SOURCES
@@ -245,46 +259,25 @@ target_link_libraries(dna_lib
     kem
     dsa
     dht_lib        # Phase 9.1: DHT library (MUST come BEFORE p2p_transport for Windows stub symbols)
-    p2p_transport  # Phase 9.1b: P2P transport layer (links OpenDHT, needs dht_lib stubs first)
+    p2p_transport  # Phase 9.1b: P2P transport layer (links libjuice for NAT traversal)
     dht_lib        # Link dht_lib again to resolve circular deps with p2p_transport
     p2p_transport  # Link p2p_transport again for static linking order
     stdc++         # C++ standard library (required by dht_lib and OpenDHT)
     ${JSONC_LIBRARIES}
-    ${NICE_LIBRARIES}   # Phase 11: libnice for NAT traversal (STUN+ICE)
-    ${GLIB2_LIBRARIES}  # Phase 11: glib-2.0 (required by libnice)
     ${PLATFORM_LIBS}
     CURL::libcurl  # Phase 8: CURL for RPC calls
 )
 
 # On Windows with static linking, link Windows system libs
 if(WIN32)
-    # Windows system libraries (required by OpenSSL and DHT)
+    # Windows system libraries (required by OpenSSL, OpenDHT and GnuTLS)
     # IMPORTANT: Link order matters! Libraries must come AFTER libraries that depend on them
     target_link_libraries(dna_lib
-        # HTTP client library and dependencies
-        curl        # CURL for RPC calls
-        nghttp2     # HTTP/2 support for CURL
-        ssh2        # SSH support for CURL
-        psl         # Public suffix list for CURL
-        wldap32     # Windows LDAP support
-        iconv       # Character encoding conversion
-        charset     # Character set support
-        z           # zlib compression
-        # OpenDHT direct dependencies (MUST come before GnuTLS)
-        fmt         # Formatting library (required by OpenDHT)
-        jsoncpp     # JSON library (required by OpenDHT)
-        # GnuTLS and its dependencies
-        gnutls
-        nettle
-        hogweed
-        gmp
-        tasn1
-        idn2
-        unistring
-        brotlienc
-        brotlidec
-        zstd
-        argon2      # Required by OpenDHT
+        # GnuTLS and its dependencies (required by OpenDHT on Windows)
+        gnutls      # TLS library used by OpenDHT
+        nettle      # Crypto library (required by GnuTLS)
+        hogweed     # Public-key crypto (required by GnuTLS)
+        gmp         # Big integer library (required by GnuTLS)
         # Windows system libraries
         ws2_32      # Windows Sockets
         crypt32     # Cryptography
@@ -305,8 +298,7 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/p2p  # Phase 9.1b: P2P transport headers
     ${CMAKE_SOURCE_DIR}/dht  # Phase 9.1: DHT headers
     ${OPENSSL_INCLUDE_DIR}
-    ${NICE_INCLUDE_DIRS}   # Phase 11: libnice headers
-    ${GLIB2_INCLUDE_DIRS}  # Phase 11: glib-2.0 headers
+    ${JUICE_INCLUDE_DIRS}  # Phase 11: libjuice headers (replaces libnice + glib)
 )
 
 # Add json-c include directories if found
@@ -453,7 +445,6 @@ if(BUILD_TESTS)
         dht_lib
         ${JSONC_LIBRARIES}
         ${SQLite3_LIBRARIES}
-        crypto
         ${OPENSSL_LIBRARIES}
     )
 
@@ -471,7 +462,6 @@ if(BUILD_TESTS)
         dht_lib
         ${JSONC_LIBRARIES}
         ${SQLite3_LIBRARIES}
-        crypto
         ${OPENSSL_LIBRARIES}
     )
 
