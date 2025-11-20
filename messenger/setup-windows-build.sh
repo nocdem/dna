@@ -188,7 +188,7 @@ fi
 echo -e "${BLUE}[5/14] Building GMP...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgmp.a" ]; then
     if [ ! -d "gmp-6.3.0" ]; then
-        wget https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+        wget https://ftp.gnu.org/gnu/gmp/gmp-6.3.0.tar.xz
         tar -xf gmp-6.3.0.tar.xz
     fi
     cd gmp-6.3.0
@@ -317,7 +317,7 @@ fi
 echo -e "${BLUE}[10/17] Building GnuTLS...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgnutls.a" ]; then
     if [ ! -d "gnutls-3.8.3" ]; then
-        wget https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.3.tar.xz
+        wget https://ftp.gnu.org/gnu/gnutls/gnutls-3.8.3.tar.xz
         tar -xf gnutls-3.8.3.tar.xz
     fi
     cd gnutls-3.8.3
