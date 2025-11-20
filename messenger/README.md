@@ -168,7 +168,7 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ Desktop notifications
 - ✅ cpunk Wallet integration (view balances, send/receive CPUNK/CELL/KEL tokens)
 - ✅ P2P messaging with DHT-based peer discovery (3 bootstrap nodes)
-- ✅ ICE NAT traversal (libnice + STUN, 3-tier fallback: LAN → ICE → DHT queue)
+- ✅ ICE NAT traversal (libjuice + STUN, 3-tier fallback: LAN → ICE → DHT queue)
 - ✅ Offline message queueing (messages stored in DHT for 7 days)
 - ✅ Free DNA name registration (no costs in alpha)
 - ✅ DNA Board Alpha (decentralized censorship-resistant wall with community voting)
@@ -313,7 +313,7 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 **Full decentralized NAT traversal without relays or signaling servers:**
 
 **Implemented:**
-- ✅ libnice integration (ICE RFC5245 compatibility)
+- ✅ libjuice integration (ICE RFC5245 compatibility)
 - ✅ STUN-based server-reflexive candidate discovery
 - ✅ DHT-based ICE candidate exchange (no signaling servers)
 - ✅ 3-tier fallback system:

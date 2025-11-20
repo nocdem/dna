@@ -4,7 +4,7 @@
 /**
  * transport_ice.h - ICE (Interactive Connectivity Establishment) Transport
  *
- * Provides NAT traversal using libnice (STUN+ICE, no TURN for decentralization)
+ * Provides NAT traversal using libjuice (STUN+ICE, no TURN for decentralization)
  *
  * Part of Phase 11: Decentralized NAT Traversal
  * - Uses public STUN servers (stun.l.google.com, stun.cloudflare.com)
@@ -28,10 +28,10 @@ typedef struct ice_context ice_context_t;
 /**
  * Initialize ICE context
  *
- * Creates a new NiceAgent with:
+ * Creates a new libjuice agent with:
  * - RFC5245 compatibility (full ICE)
  * - STUN-only mode (no TURN relays)
- * - glib main loop in separate thread
+ * - Callback-based event handling (no event loop thread)
  *
  * @return New ICE context, or NULL on error
  */
@@ -40,7 +40,7 @@ ice_context_t* ice_context_new(void);
 /**
  * Free ICE context
  *
- * Stops glib main loop, destroys NiceAgent, frees memory
+ * Destroys libjuice agent, frees memory
  *
  * @param ctx ICE context to free
  */
@@ -119,12 +119,12 @@ int ice_send(ice_context_t *ctx, const uint8_t *data, size_t len);
  * Receive data from ICE connection with timeout (PHASE 2 FIX)
  *
  * Blocks until data is available or timeout expires.
- * Uses GCond for efficient waiting (no busy-wait polling).
+ * Uses pthread condition variables for efficient waiting (no busy-wait polling).
  *
  * Message queue implementation (PHASE 1 FIX):
  * - Up to 16 messages buffered
  * - Oldest message dropped if queue full
- * - Thread-safe with GMutex
+ * - Thread-safe with pthread mutex
  *
  * @param ctx ICE context
  * @param buf Buffer to store received data
