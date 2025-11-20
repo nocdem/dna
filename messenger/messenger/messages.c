@@ -38,7 +38,7 @@ typedef struct {
     uint8_t version;            // 0x08 (Category 5 + encrypted timestamp)
     uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512
     uint8_t recipient_count;    // Number of recipients (1-255)
-    uint8_t reserved;
+    uint8_t message_type;       // MSG_TYPE_DIRECT_PQC or MSG_TYPE_GROUP_GSK
     uint32_t encrypted_size;    // Size of encrypted data
     uint32_t signature_size;    // Size of signature
 } messenger_enc_header_t;
@@ -249,6 +249,7 @@ static int messenger_encrypt_multi_recipient(
     header.version = 0x08;  // v0.08: fingerprint + timestamp + plaintext
     header.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header.recipient_count = (uint8_t)recipient_count;
+    header.message_type = MSG_TYPE_DIRECT_PQC;  // Per-recipient Kyber1024
     header.encrypted_size = (uint32_t)encrypted_size;
     header.signature_size = (uint32_t)signature_size;
 

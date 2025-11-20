@@ -107,6 +107,21 @@ typedef struct {
 #define qgp_signature_total_size(sig) (3 + (sig)->signature_size)  // v0.07: type(1) + sig_size(2) + sig
 
 // ============================================================================
+// MESSAGE TYPE
+// ============================================================================
+
+/**
+ * Message Type (header byte 11)
+ *
+ * Defines the encryption/delivery method used for the message.
+ * v0.08+: Replaces the reserved field in message header.
+ */
+typedef enum {
+    MSG_TYPE_DIRECT_PQC = 0x00,  // Per-recipient Kyber1024 (current system)
+    MSG_TYPE_GROUP_GSK  = 0x01   // Group symmetric key (future)
+} message_type_t;
+
+// ============================================================================
 // HASH STRUCTURE
 // ============================================================================
 

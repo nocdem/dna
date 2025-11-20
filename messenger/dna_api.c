@@ -45,7 +45,7 @@ typedef struct {
     uint8_t version;
     uint8_t enc_key_type;
     uint8_t recipient_count;
-    uint8_t reserved;
+    uint8_t message_type;
     uint32_t encrypted_size;
     uint32_t signature_size;
 }
@@ -422,6 +422,7 @@ dna_error_t dna_encrypt_message(
     header_for_aad.version = DNA_ENC_VERSION;
     header_for_aad.enc_key_type = DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header_for_aad.recipient_count = (uint8_t)recipient_count;
+    header_for_aad.message_type = MSG_TYPE_DIRECT_PQC;
     header_for_aad.encrypted_size = (uint32_t)plaintext_len;
     header_for_aad.signature_size = (uint32_t)signature_size;
 
@@ -631,6 +632,7 @@ dna_error_t dna_encrypt_message_raw(
     header_for_aad.version = DNA_ENC_VERSION;
     header_for_aad.enc_key_type = DAP_ENC_KEY_TYPE_KEM_KYBER512;
     header_for_aad.recipient_count = 1;
+    header_for_aad.message_type = MSG_TYPE_DIRECT_PQC;
     header_for_aad.encrypted_size = (uint32_t)payload_len;  // v0.08: encrypt fingerprint + timestamp + plaintext
     header_for_aad.signature_size = (uint32_t)signature_size;
 
@@ -789,7 +791,11 @@ dna_error_t dna_decrypt_message_raw(
         fprintf(stderr, "[DEBUG] Version mismatch: got 0x%02x, expected 0x%02x\n", header.version, DNA_ENC_VERSION);
         return DNA_ERROR_DECRYPT;
     }
-    fprintf(stderr, "[DEBUG] Header validated: version 0x%02x, %u recipients\n", header.version, header.recipient_count);
+    if (header.message_type != MSG_TYPE_DIRECT_PQC) {
+        fprintf(stderr, "[DEBUG] Unsupported message type: 0x%02x (expected MSG_TYPE_DIRECT_PQC)\n", header.message_type);
+        return DNA_ERROR_DECRYPT;
+    }
+    fprintf(stderr, "[DEBUG] Header validated: version 0x%02x, %u recipients, type 0x%02x\n", header.version, header.recipient_count, header.message_type);
 
     uint8_t recipient_count = header.recipient_count;
     size_t encrypted_size = header.encrypted_size;
@@ -1014,7 +1020,11 @@ dna_error_t dna_decrypt_message(
         fprintf(stderr, "[DEBUG] Version mismatch: got 0x%02x, expected 0x%02x\n", header.version, DNA_ENC_VERSION);
         return DNA_ERROR_DECRYPT;
     }
-    fprintf(stderr, "[DEBUG] Header validated: version 0x%02x, %u recipients\n", header.version, header.recipient_count);
+    if (header.message_type != MSG_TYPE_DIRECT_PQC) {
+        fprintf(stderr, "[DEBUG] Unsupported message type: 0x%02x (expected MSG_TYPE_DIRECT_PQC)\n", header.message_type);
+        return DNA_ERROR_DECRYPT;
+    }
+    fprintf(stderr, "[DEBUG] Header validated: version 0x%02x, %u recipients, type 0x%02x\n", header.version, header.recipient_count, header.message_type);
 
     uint8_t recipient_count = header.recipient_count;
     size_t encrypted_size = header.encrypted_size;
