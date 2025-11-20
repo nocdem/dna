@@ -18,11 +18,11 @@ echo -e "${BLUE} DNA Messenger - STUN Connectivity Test${NC}"
 echo -e "${BLUE}=========================================${NC}"
 echo ""
 
-# STUN servers to test (same order as DNA Messenger)
+# STUN servers to test (same order as DNA Messenger - verified working)
 STUN_SERVERS=(
-    "stun.stunprotocol.org:3478"
     "stun.cloudflare.com:3478"
     "stun.l.google.com:19302"
+    "stun1.l.google.com:19302"
 )
 
 # 1. Check basic network connectivity
@@ -57,31 +57,22 @@ if [ $DNS_OK -eq 0 ]; then
 fi
 echo ""
 
-# 3. Check UDP connectivity (requires netcat)
-echo -e "${YELLOW}[3/5] Checking UDP connectivity...${NC}"
-if command -v nc > /dev/null 2>&1; then
-    for stun_addr in "${STUN_SERVERS[@]}"; do
-        host=$(echo $stun_addr | cut -d: -f1)
-        port=$(echo $stun_addr | cut -d: -f2)
+# 3. Check UDP connectivity (ping test instead of netcat)
+echo -e "${YELLOW}[3/5] Checking UDP connectivity (ping test)...${NC}"
+for stun_addr in "${STUN_SERVERS[@]}"; do
+    host=$(echo $stun_addr | cut -d: -f1)
+    port=$(echo $stun_addr | cut -d: -f2)
 
-        # Try to connect (timeout after 2 seconds)
-        echo -n "Testing $host:$port (UDP)... "
+    echo -n "Ping $host... "
 
-        # UDP test - just check if port is not filtered
-        timeout 2 nc -u -z -v $host $port > /dev/null 2>&1
-        result=$?
-
-        if [ $result -eq 0 ] || [ $result -eq 124 ]; then
-            # 0 = success, 124 = timeout (expected for UDP)
-            echo -e "${GREEN}OK${NC} (UDP port reachable)"
-        else
-            echo -e "${YELLOW}UNKNOWN${NC} (nc returned $result)"
-        fi
-    done
-else
-    echo -e "${YELLOW}⚠${NC}  netcat (nc) not installed - skipping UDP tests"
-    echo "   Install with: sudo apt-get install netcat-openbsd"
-fi
+    # Simple ICMP ping test (not UDP, but shows host is reachable)
+    if ping -c 1 -W 1 $host > /dev/null 2>&1; then
+        echo -e "${GREEN}OK${NC} (host reachable)"
+    else
+        echo -e "${YELLOW}NO ICMP${NC} (may still work via UDP)"
+    fi
+done
+echo -e "${BLUE}Note: UDP STUN traffic cannot be tested with ping (ICMP only)${NC}"
 echo ""
 
 # 4. Check firewall rules
