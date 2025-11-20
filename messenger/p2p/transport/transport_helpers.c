@@ -123,11 +123,10 @@ int create_presence_json(const char *ips, uint16_t port, char *json_out, size_t 
 
 /**
  * Parse JSON presence data
- * Simple manual parsing (no json-c dependency for minimal build)
- * Supports both old "ip" and new "ips" (comma-separated) formats for backwards compatibility
+ * Format: {"ips":"192.168.0.111,10.0.0.5","port":4001,"timestamp":1234567890}
  */
 int parse_presence_json(const char *json_str, peer_info_t *peer_info) {
-    // Extract IPs (try "ips" first, fallback to "ip" for backwards compatibility)
+    // Extract IPs (comma-separated)
     const char *ips_start = strstr(json_str, "\"ips\":\"");
     if (ips_start) {
         ips_start += 7;  // Skip "ips":"
@@ -137,20 +136,6 @@ int parse_presence_json(const char *json_str, peer_info_t *peer_info) {
             if (ips_len < sizeof(peer_info->ip)) {
                 memcpy(peer_info->ip, ips_start, ips_len);
                 peer_info->ip[ips_len] = '\0';
-            }
-        }
-    } else {
-        // Fallback to old "ip" format
-        const char *ip_start = strstr(json_str, "\"ip\":\"");
-        if (ip_start) {
-            ip_start += 6;
-            const char *ip_end = strchr(ip_start, '"');
-            if (ip_end) {
-                size_t ip_len = ip_end - ip_start;
-                if (ip_len < sizeof(peer_info->ip)) {
-                    memcpy(peer_info->ip, ip_start, ip_len);
-                    peer_info->ip[ip_len] = '\0';
-                }
             }
         }
     }
