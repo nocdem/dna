@@ -125,12 +125,8 @@ if(WIN32)
     target_link_libraries(dna_messenger_imgui PRIVATE
         opengl32
         gdi32
-        harfbuzz
         ${FREETYPE_LIBRARIES}
-        harfbuzz
-        png
-        z
-        bz2
+        z  # zlib (required by Freetype for gzip support)
         ole32  # Required for NFD on Windows
         uuid  # Required for NFD on Windows
     )

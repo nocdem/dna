@@ -40,6 +40,9 @@ GIT_HASH=$(git log -1 --format=%h 2>/dev/null || echo "unknown")
 BUILD_DATE=$(date +%Y-%m-%d)
 FULL_VERSION="0.1.${VERSION}-${GIT_HASH}"
 
+# Dependency versions
+GLFW_VERSION="3.4"
+
 echo -e "${BLUE}=========================================${NC}"
 echo -e "${BLUE} DNA Messenger - Cross-Compilation${NC}"
 echo -e "${BLUE}=========================================${NC}"
@@ -87,7 +90,7 @@ build_linux_x64() {
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64"
-    # CLI is disabled, only package GUI
+    # Package GUI executable (CLI was removed)
     if [ -f gui/dna_messenger_gui ]; then
         cp gui/dna_messenger_gui "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
     else
@@ -138,19 +141,19 @@ EOF
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-arm64.cmake \
         -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_GUI=OFF
+        -DBUILD_GUI=ON
 
     make -j$(nproc)
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64"
-    # CLI is disabled, GUI not supported on ARM64 cross-compile yet
-    if [ -f dna_messenger ]; then
-        cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
-    elif [ -f gui/dna_messenger_gui ]; then
-        cp gui/dna_messenger_gui "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
+    # Package GUI executable
+    if [ -f imgui_gui/dna_messenger_imgui ]; then
+        cp imgui_gui/dna_messenger_imgui "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
+        echo -e "${GREEN}✓${NC} Packaged GUI executable"
     else
-        echo -e "${YELLOW}Warning: No executable found to package${NC}"
+        echo -e "${RED}Error: GUI executable not found${NC}"
+        return 1
     fi
 
     # Create tarball
@@ -162,14 +165,14 @@ EOF
     echo ""
 }
 
-# Build Windows x86_64 (MXE static cross-compile)
+# Build Windows x86_64 (llvm-mingw cross-compile)
 build_windows_x64() {
     echo -e "${BLUE}=========================================${NC}"
     echo -e "${BLUE} Building: Windows x86_64${NC}"
     echo -e "${BLUE}=========================================${NC}"
 
-    # MXE directory - configurable via environment variable
-    # Download and setup llvm-mingw (replaces MXE)
+    # llvm-mingw directory - configurable via environment variable
+    # Download and setup llvm-mingw
     LLVM_MINGW_VERSION="20251118"
     LLVM_MINGW_DIR="${HOME}/.cache/llvm-mingw"
     LLVM_MINGW_RELEASE="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64"
@@ -194,24 +197,22 @@ build_windows_x64() {
 
     # Set up environment for llvm-mingw
     export PATH="${MINGW_PREFIX}/bin:$PATH"
-    MXE_TARGET="x86_64-w64-mingw32"
-    MXE_PREFIX="${MINGW_PREFIX}/${MXE_TARGET}"
-    MXE_DIR="${LLVM_MINGW_DIR}"  # For compatibility with build-opendht-windows.sh
+    export MINGW_TARGET="x86_64-w64-mingw32"
+    export MINGW_TARGET_PREFIX="${MINGW_PREFIX}/${MINGW_TARGET}"
+    export LLVM_MINGW_DIR
 
     echo -e "${BLUE}Using llvm-mingw toolchain:${NC}"
     echo -e "  Toolchain: ${MINGW_PREFIX}/bin"
-    echo -e "  Target: ${MXE_TARGET}"
-    echo -e "  Prefix: ${MXE_PREFIX}"
+    echo -e "  Target: ${MINGW_TARGET}"
+    echo -e "  Prefix: ${MINGW_TARGET_PREFIX}"
 
     # Build OpenDHT and msgpack for Windows
     echo -e "${BLUE}Building P2P dependencies (OpenDHT, msgpack)...${NC}"
-    export MXE_DIR
-    "${PROJECT_ROOT}/build-opendht-windows.sh"
+    "${PROJECT_ROOT}/setup-windows-build.sh"
 
-    # Download and install GLFW 3.4 prebuilt binaries for Windows
-    GLFW_VERSION="3.4"
+    # Download and install GLFW prebuilt binaries for Windows
     GLFW_DIR="${HOME}/.cache/glfw-${GLFW_VERSION}"
-    GLFW_INSTALLED="${MXE_PREFIX}/include/GLFW/glfw3.h"
+    GLFW_INSTALLED="${MINGW_TARGET_PREFIX}/include/GLFW/glfw3.h"
 
     if [ ! -f "${GLFW_INSTALLED}" ]; then
         echo -e "${BLUE}Downloading GLFW ${GLFW_VERSION} prebuilt binaries...${NC}"
@@ -225,23 +226,19 @@ build_windows_x64() {
         echo -e "${BLUE}Extracting GLFW ${GLFW_VERSION}...${NC}"
         unzip -o "glfw-${GLFW_VERSION}.bin.WIN64.zip"
 
-        echo -e "${BLUE}Installing GLFW ${GLFW_VERSION} to ${MXE_PREFIX}...${NC}"
+        echo -e "${BLUE}Installing GLFW ${GLFW_VERSION} to ${MINGW_TARGET_PREFIX}...${NC}"
         # Copy headers
-        mkdir -p "${MXE_PREFIX}/include"
-        cp -r "glfw-${GLFW_VERSION}.bin.WIN64/include/GLFW" "${MXE_PREFIX}/include/"
+        mkdir -p "${MINGW_TARGET_PREFIX}/include"
+        cp -r "glfw-${GLFW_VERSION}.bin.WIN64/include/GLFW" "${MINGW_TARGET_PREFIX}/include/"
 
         # Copy static library (lib-mingw-w64 is for 64-bit MinGW)
-        mkdir -p "${MXE_PREFIX}/lib"
-        cp "glfw-${GLFW_VERSION}.bin.WIN64/lib-mingw-w64/libglfw3.a" "${MXE_PREFIX}/lib/"
+        mkdir -p "${MINGW_TARGET_PREFIX}/lib"
+        cp "glfw-${GLFW_VERSION}.bin.WIN64/lib-mingw-w64/libglfw3.a" "${MINGW_TARGET_PREFIX}/lib/"
 
         echo -e "${GREEN}✓${NC} GLFW ${GLFW_VERSION} installed"
     else
         echo -e "${GREEN}✓${NC} GLFW ${GLFW_VERSION} already installed"
     fi
-
-    # Set up environment for llvm-mingw
-    export PATH="${MINGW_PREFIX}/bin:$PATH"
-    export MXE_PREFIX
 
     BUILD_PATH="${PROJECT_ROOT}/${BUILD_DIR}/windows-x64"
     mkdir -p "$BUILD_PATH"
@@ -253,13 +250,13 @@ set(CMAKE_SYSTEM_NAME Windows)
 set(CMAKE_SYSTEM_PROCESSOR x86_64)
 
 # Use llvm-mingw compilers (Clang-based cross-compiler)
-set(CMAKE_C_COMPILER ${MINGW_PREFIX}/bin/${MXE_TARGET}-clang)
-set(CMAKE_CXX_COMPILER ${MINGW_PREFIX}/bin/${MXE_TARGET}-clang++)
-set(CMAKE_RC_COMPILER ${MINGW_PREFIX}/bin/${MXE_TARGET}-windres)
-set(CMAKE_AR ${MINGW_PREFIX}/bin/${MXE_TARGET}-ar)
-set(CMAKE_RANLIB ${MINGW_PREFIX}/bin/${MXE_TARGET}-ranlib)
+set(CMAKE_C_COMPILER ${MINGW_PREFIX}/bin/${MINGW_TARGET}-clang)
+set(CMAKE_CXX_COMPILER ${MINGW_PREFIX}/bin/${MINGW_TARGET}-clang++)
+set(CMAKE_RC_COMPILER ${MINGW_PREFIX}/bin/${MINGW_TARGET}-windres)
+set(CMAKE_AR ${MINGW_PREFIX}/bin/${MINGW_TARGET}-ar)
+set(CMAKE_RANLIB ${MINGW_PREFIX}/bin/${MINGW_TARGET}-ranlib)
 
-set(CMAKE_FIND_ROOT_PATH ${MXE_PREFIX})
+set(CMAKE_FIND_ROOT_PATH ${MINGW_TARGET_PREFIX})
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
@@ -275,12 +272,12 @@ EOF
     echo -e "${BLUE}Configuring CMake...${NC}"
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-mingw64.cmake \
-        -DCMAKE_PREFIX_PATH="${MXE_PREFIX};${MXE_PREFIX}/lib64" \
+        -DCMAKE_PREFIX_PATH="${MINGW_TARGET_PREFIX};${MINGW_TARGET_PREFIX}/lib64" \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_GUI=ON
 
     echo -e "${BLUE}Building...${NC}"
-    make -j$(nproc) VERBOSE=1
+    make -j$(nproc)
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64"
@@ -462,16 +459,14 @@ show_usage() {
     echo "  clean         - Clean build directories"
     echo ""
     echo "Environment Variables:"
-    echo "  MXE_DIR                - Custom MXE installation directory"
-    echo "                           (default: ~/.cache/mxe)"
-    echo "  MXE_USE_PROJECT_DIR=1  - Force MXE to be in project/mxe directory"
+    echo "  LLVM_MINGW_DIR         - Custom llvm-mingw installation directory"
+    echo "                           (default: ~/.cache/llvm-mingw)"
     echo ""
     echo "Examples:"
     echo "  $0 all                                    # Build everything"
     echo "  $0 linux-x64                              # Build Linux only"
     echo "  $0 windows-x64                            # Build Windows only"
-    echo "  MXE_DIR=/opt/mxe $0 windows-x64           # Use custom MXE location"
-    echo "  MXE_USE_PROJECT_DIR=1 $0 windows-x64      # Use project/mxe directory"
+    echo "  LLVM_MINGW_DIR=/opt/llvm-mingw $0 windows-x64  # Use custom llvm-mingw location"
     echo ""
 }
 

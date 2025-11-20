@@ -25,6 +25,12 @@
 #include "../../dht/core/dht_context.h"
 #include "../../dht/client/dht_singleton.h"
 #include "../../crypto/utils/qgp_sha3.h"
+
+// Windows static linking: define JUICE_STATIC to avoid dllimport declarations
+#ifdef _WIN32
+#define JUICE_STATIC
+#endif
+
 #include <juice/juice.h>
 #include <stdio.h>
 #include <stdlib.h>

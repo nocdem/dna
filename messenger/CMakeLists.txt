@@ -137,12 +137,6 @@ set(JUICE_LIBRARIES libjuice)
 message(STATUS "libjuice will be built from source (v1.7.0)")
 
 # json-c for JSON parsing (keyserver API)
-# Support for static linking on Windows
-if(WIN32)
-    # On Windows, prefer static libraries
-    set(CMAKE_FIND_LIBRARY_SUFFIXES .lib .a)
-endif()
-
 find_package(json-c CONFIG QUIET)
 if(json-c_FOUND)
     message(STATUS "json-c found via CMake config")
@@ -165,7 +159,7 @@ else()
             message(STATUS "json-c include: ${JSONC_INCLUDE_DIRS}")
         endif()
     else()
-        message(FATAL_ERROR "json-c not found. Install: apt install libjson-c-dev (Linux) or build with MXE for Windows cross-compilation")
+        message(FATAL_ERROR "json-c not found. Install: apt install libjson-c-dev (Linux) or use llvm-mingw for Windows cross-compilation")
     endif()
 endif()
 
@@ -196,7 +190,6 @@ add_subdirectory(bootstrap)         # Bootstrap server (minimal deps)
 
 # Utility programs (export_pubkey, sign_json, verify_json) - DISABLED
 # These are no longer needed as keyserver_register.c uses inline functions
-# add_subdirectory(utils)
 
 # Common source files (shared between CLI and library)
 set(COMMON_SOURCES
@@ -277,33 +270,14 @@ target_link_libraries(dna_lib
 
 # On Windows with static linking, link Windows system libs
 if(WIN32)
-    # Windows system libraries (required by OpenSSL and DHT)
+    # Windows system libraries (required by OpenSSL, OpenDHT and GnuTLS)
     # IMPORTANT: Link order matters! Libraries must come AFTER libraries that depend on them
     target_link_libraries(dna_lib
-        # HTTP client library and dependencies
-        curl        # CURL for RPC calls
-        nghttp2     # HTTP/2 support for CURL
-        ssh2        # SSH support for CURL
-        psl         # Public suffix list for CURL
-        wldap32     # Windows LDAP support
-        iconv       # Character encoding conversion
-        charset     # Character set support
-        z           # zlib compression
-        # OpenDHT direct dependencies (MUST come before GnuTLS)
-        fmt         # Formatting library (required by OpenDHT)
-        jsoncpp     # JSON library (required by OpenDHT)
-        # GnuTLS and its dependencies
-        gnutls
-        nettle
-        hogweed
-        gmp
-        tasn1
-        idn2
-        unistring
-        brotlienc
-        brotlidec
-        zstd
-        argon2      # Required by OpenDHT
+        # GnuTLS and its dependencies (required by OpenDHT on Windows)
+        gnutls      # TLS library used by OpenDHT
+        nettle      # Crypto library (required by GnuTLS)
+        hogweed     # Public-key crypto (required by GnuTLS)
+        gmp         # Big integer library (required by GnuTLS)
         # Windows system libraries
         ws2_32      # Windows Sockets
         crypt32     # Cryptography
