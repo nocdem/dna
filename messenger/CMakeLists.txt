@@ -14,6 +14,11 @@ if(WIN32)
     elseif(MINGW)
         # Static linking for MinGW
         set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -static -static-libgcc -static-libstdc++")
+
+        # MinGW sometimes installs to lib64 instead of lib (e.g., OpenSSL)
+        # Add lib64 to library search paths
+        list(APPEND CMAKE_LIBRARY_PATH "${CMAKE_PREFIX_PATH}/lib64")
+        list(APPEND CMAKE_PREFIX_PATH "${CMAKE_PREFIX_PATH}/lib64")
     endif()
 
     # Prefer static libraries on Windows
@@ -73,6 +78,7 @@ if(WIN32)
         crypto/utils/qgp_platform_windows.c
         win32/getopt.c      # POSIX getopt for Windows
         win32/dirent.c      # POSIX dirent for Windows
+        win32/strndup.c     # POSIX strndup for Windows
     )
     set(PLATFORM_LIBS bcrypt)  # Windows CNG for random number generation
 else()
@@ -113,7 +119,8 @@ ExternalProject_Add(libjuice_external
         -DBUILD_SHARED_LIBS=OFF
         -DUSE_NETTLE=OFF
         -DNO_TESTS=ON
-    BUILD_BYPRODUCTS ${CMAKE_BINARY_DIR}/vendor/libjuice/install/lib/${CMAKE_STATIC_LIBRARY_PREFIX}juice-static${CMAKE_STATIC_LIBRARY_SUFFIX}
+        $<$<BOOL:${CMAKE_TOOLCHAIN_FILE}>:-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}>
+    BUILD_BYPRODUCTS ${CMAKE_BINARY_DIR}/vendor/libjuice/install/lib/${CMAKE_STATIC_LIBRARY_PREFIX}juice${CMAKE_STATIC_LIBRARY_SUFFIX}
     LOG_DOWNLOAD ON
     LOG_CONFIGURE ON
     LOG_BUILD ON
@@ -123,7 +130,7 @@ ExternalProject_Add(libjuice_external
 add_library(libjuice STATIC IMPORTED GLOBAL)
 add_dependencies(libjuice libjuice_external)
 set_target_properties(libjuice PROPERTIES
-    IMPORTED_LOCATION ${CMAKE_BINARY_DIR}/vendor/libjuice/install/lib/${CMAKE_STATIC_LIBRARY_PREFIX}juice-static${CMAKE_STATIC_LIBRARY_SUFFIX}
+    IMPORTED_LOCATION ${CMAKE_BINARY_DIR}/vendor/libjuice/install/lib/${CMAKE_STATIC_LIBRARY_PREFIX}juice${CMAKE_STATIC_LIBRARY_SUFFIX}
     INTERFACE_INCLUDE_DIRECTORIES ${CMAKE_BINARY_DIR}/vendor/libjuice/install/include
 )
 

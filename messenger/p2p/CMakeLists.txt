@@ -7,11 +7,8 @@ set(CMAKE_C_STANDARD 11)
 find_package(OpenSSL REQUIRED)
 
 if(WIN32)
-    # Windows cross-compile: Use manually-built OpenDHT
-    set(MXE_PREFIX "$ENV{HOME}/.cache/mxe/usr/x86_64-w64-mingw32.static")
-    set(OPENDHT_INCLUDE_DIRS "${MXE_PREFIX}/include")
-    set(OPENDHT_LIBRARIES "${MXE_PREFIX}/lib/libopendht.a")
-    message(STATUS "Using manually-built OpenDHT for Windows (P2P)")
+    # Windows cross-compile: OpenDHT found via CMAKE_PREFIX_PATH
+    message(STATUS "Using OpenDHT from CMAKE_PREFIX_PATH for Windows (P2P)")
 else()
     # Linux: Use pkg-config
     find_package(PkgConfig REQUIRED)
@@ -32,8 +29,7 @@ add_library(p2p_transport STATIC
     transport/transport_tcp.c
     transport/transport_discovery.c
     transport/transport_offline.c
-    transport/transport_juice.c            # Phase 11: NAT traversal (libjuice - replaces libnice)
-    transport/transport_ice_persistent.c   # Phase 11 FIX: Persistent ICE connections
+    transport/transport_juice.c            # NAT traversal (libjuice - replaces libnice)
 )
 
 target_include_directories(p2p_transport PUBLIC
@@ -53,7 +49,7 @@ target_link_libraries(p2p_transport
 
 # Platform-specific libraries
 if(WIN32)
-    target_link_libraries(p2p_transport ws2_32 iphlpapi)
+    target_link_libraries(p2p_transport ws2_32 iphlpapi pthread)
 else()
     target_link_libraries(p2p_transport pthread)
 endif()

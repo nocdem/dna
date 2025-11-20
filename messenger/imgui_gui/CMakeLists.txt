@@ -17,11 +17,12 @@ set(OpenGL_GL_PREFERENCE GLVND)
 find_package(OpenGL REQUIRED)
 
 if(WIN32)
-    # Windows cross-compile: Use manually-installed GLFW prebuilt binaries
-    set(MXE_PREFIX "$ENV{HOME}/.cache/mxe/usr/x86_64-w64-mingw32.static")
-    set(GLFW3_INCLUDE_DIRS "${MXE_PREFIX}/include")
-    set(GLFW3_LIBRARIES "${MXE_PREFIX}/lib/libglfw3.a")
-    message(STATUS "Using manually-installed GLFW for Windows")
+    # Windows cross-compile: GLFW found via CMAKE_PREFIX_PATH (llvm-mingw)
+    # CMAKE_PREFIX_PATH is set in main CMakeLists.txt to point to llvm-mingw x86_64-w64-mingw32/
+    find_library(GLFW3_LIB glfw3 REQUIRED)
+    set(GLFW3_INCLUDE_DIRS "${CMAKE_PREFIX_PATH}/include")
+    set(GLFW3_LIBRARIES "${GLFW3_LIB}")
+    message(STATUS "Using GLFW from CMAKE_PREFIX_PATH for Windows (GUI)")
     message(STATUS "GLFW include: ${GLFW3_INCLUDE_DIRS}")
     message(STATUS "GLFW library: ${GLFW3_LIBRARIES}")
 else()

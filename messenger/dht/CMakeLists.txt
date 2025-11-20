@@ -3,32 +3,33 @@ project(dna_dht C CXX)
 
 # Find OpenDHT
 if(WIN32)
-    # Windows cross-compile: Use manually-built OpenDHT
-    set(MXE_PREFIX "$ENV{HOME}/.cache/mxe/usr/x86_64-w64-mingw32.static")
-    set(OPENDHT_INCLUDE_DIRS "${MXE_PREFIX}/include")
-    set(OPENDHT_LIBRARIES "${MXE_PREFIX}/lib/libopendht.a")
+    # Windows cross-compile: OpenDHT found via CMAKE_PREFIX_PATH (llvm-mingw)
+    # CMAKE_PREFIX_PATH is set in main CMakeLists.txt to point to llvm-mingw x86_64-w64-mingw32/
+    find_library(OPENDHT_LIB opendht REQUIRED)
+    find_library(JSONCPP_LIB jsoncpp REQUIRED)
+    find_library(FMT_LIB fmt REQUIRED)
+    find_library(ARGON2_LIB argon2 REQUIRED)
+    find_library(SSL_LIB ssl REQUIRED PATHS ${CMAKE_PREFIX_PATH}/lib64 ${CMAKE_PREFIX_PATH}/lib)
+    find_library(CRYPTO_LIB crypto REQUIRED PATHS ${CMAKE_PREFIX_PATH}/lib64 ${CMAKE_PREFIX_PATH}/lib)
+    find_library(JSONC_LIB json-c REQUIRED)
+    find_library(CURL_LIB curl REQUIRED)
+
+    set(OPENDHT_LIBRARIES "${OPENDHT_LIB}")
+    set(OPENDHT_INCLUDE_DIRS "${CMAKE_PREFIX_PATH}/include")
 
     # OpenDHT dependencies for Windows (order matters for static linking!)
     # Dependencies must come AFTER the libraries that use them
     set(OPENDHT_DEPS
-        "${MXE_PREFIX}/lib/libjsoncpp.a"
-        "${MXE_PREFIX}/lib/libfmt.a"
-        "${MXE_PREFIX}/lib/libargon2.a"
-        "${MXE_PREFIX}/lib/libgnutls.a"
-        "${MXE_PREFIX}/lib/libhogweed.a"
-        "${MXE_PREFIX}/lib/libnettle.a"
-        "${MXE_PREFIX}/lib/libtasn1.a"       # ASN.1 parsing (gnutls dependency)
-        "${MXE_PREFIX}/lib/libidn2.a"        # IDN support (needs libunistring)
-        "${MXE_PREFIX}/lib/libunistring.a"   # Unicode strings (needs libiconv)
-        "${MXE_PREFIX}/lib/libiconv.a"       # Character encoding (must be AFTER libunistring)
-        "${MXE_PREFIX}/lib/libzstd.a"        # ZSTD compression (gnutls dependency)
-        "${MXE_PREFIX}/lib/libbrotlidec.a"   # Brotli decompression (gnutls dependency)
-        "${MXE_PREFIX}/lib/libbrotlienc.a"   # Brotli compression (gnutls dependency)
-        "${MXE_PREFIX}/lib/libbrotlicommon.a" # Brotli common (must be AFTER enc/dec)
-        "${MXE_PREFIX}/lib/libgmp.a"
-        ws2_32 crypt32 bcrypt ncrypt        # Windows system libraries
+        "${JSONCPP_LIB}"
+        "${FMT_LIB}"
+        "${ARGON2_LIB}"
+        "${SSL_LIB}"                         # OpenSSL (replaces GnuTLS)
+        "${CRYPTO_LIB}"                      # OpenSSL crypto
+        "${JSONC_LIB}"                       # json-c for contact lists
+        "${CURL_LIB}"                        # CURL for HTTP
+        ws2_32 crypt32 bcrypt ncrypt         # Windows system libraries
     )
-    message(STATUS "Using manually-built OpenDHT for Windows")
+    message(STATUS "Using OpenDHT from CMAKE_PREFIX_PATH for Windows (DHT)")
     message(STATUS "OpenDHT library: ${OPENDHT_LIBRARIES}")
 else()
     # Linux: Use pkg-config
@@ -114,7 +115,11 @@ target_include_directories(dht_lib PUBLIC
     ${OPENDHT_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../crypto)
-target_link_libraries(dht_lib crypto dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} gnutls json-c curl)
+if(WIN32)
+    target_link_libraries(dht_lib crypto dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES})
+else()
+    target_link_libraries(dht_lib crypto dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} json-c curl)
+endif()
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD 17)
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD_REQUIRED ON)
 

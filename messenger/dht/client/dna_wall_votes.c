@@ -14,6 +14,7 @@
 
 #ifdef _WIN32
     #include <winsock2.h>
+    #include "../../win32/strndup.h"
 #else
     #include <arpa/inet.h>
 #endif

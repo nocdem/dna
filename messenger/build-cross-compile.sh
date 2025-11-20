@@ -275,6 +275,7 @@ EOF
     echo -e "${BLUE}Configuring CMake...${NC}"
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-mingw64.cmake \
+        -DCMAKE_PREFIX_PATH="${MXE_PREFIX};${MXE_PREFIX}/lib64" \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_GUI=ON
 
