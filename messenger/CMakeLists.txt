@@ -275,6 +275,12 @@ if(WIN32)
     target_link_libraries(dna_lib
         # GnuTLS and its dependencies (required by OpenDHT on Windows)
         gnutls      # TLS library used by OpenDHT
+        idn2        # Internationalized Domain Names (required by GnuTLS)
+        brotlienc   # Brotli encoder (required by GnuTLS)
+        brotlidec   # Brotli decoder (required by GnuTLS)
+        brotlicommon # Brotli common (required by brotlienc/dec)
+        zstd        # Zstandard compression (required by GnuTLS)
+        z           # zlib compression (required by GnuTLS)
         nettle      # Crypto library (required by GnuTLS)
         hogweed     # Public-key crypto (required by GnuTLS)
         gmp         # Big integer library (required by GnuTLS)

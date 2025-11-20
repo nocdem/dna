@@ -171,6 +171,7 @@ if [ ! -f "${MINGW_TARGET_PREFIX}/include/msgpack.hpp" ]; then
     cmake .. \
         -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
         -DCMAKE_INSTALL_PREFIX="${MINGW_TARGET_PREFIX}" \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DMSGPACK_BUILD_EXAMPLES=OFF \
         -DMSGPACK_BUILD_TESTS=OFF \
         -DMSGPACK_USE_BOOST=OFF \
@@ -183,8 +184,168 @@ else
     echo -e "${GREEN}✓${NC} msgpack-cxx already installed"
 fi
 
-# 5. Build zlib (compression library)
-echo -e "${BLUE}[5/10] Building zlib...${NC}"
+# 5. Build GMP (GNU Multiple Precision library - required by Nettle)
+echo -e "${BLUE}[5/14] Building GMP...${NC}"
+if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgmp.a" ]; then
+    if [ ! -d "gmp-6.3.0" ]; then
+        wget https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+        tar -xf gmp-6.3.0.tar.xz
+    fi
+    cd gmp-6.3.0
+
+    ./configure \
+        --host=${MINGW_TARGET} \
+        --prefix="${MINGW_TARGET_PREFIX}" \
+        --enable-static \
+        --disable-shared
+
+    make -j$(nproc)
+    make install
+    cd "$BUILD_DIR"
+    echo -e "${GREEN}✓${NC} GMP installed"
+else
+    echo -e "${GREEN}✓${NC} GMP already installed"
+fi
+
+# 6. Build Nettle (low-level crypto library - required by GnuTLS)
+echo -e "${BLUE}[6/14] Building Nettle...${NC}"
+if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libnettle.a" ]; then
+    if [ ! -d "nettle-3.9.1" ]; then
+        wget https://ftp.gnu.org/gnu/nettle/nettle-3.9.1.tar.gz
+        tar -xzf nettle-3.9.1.tar.gz
+    fi
+    cd nettle-3.9.1
+
+    ./configure \
+        --host=${MINGW_TARGET} \
+        --prefix="${MINGW_TARGET_PREFIX}" \
+        --enable-static \
+        --disable-shared \
+        --disable-documentation
+
+    make -j$(nproc)
+    make install
+    cd "$BUILD_DIR"
+    echo -e "${GREEN}✓${NC} Nettle installed"
+else
+    echo -e "${GREEN}✓${NC} Nettle already installed"
+fi
+
+# 7. Build Brotli (compression library - required by GnuTLS)
+echo -e "${BLUE}[7/15] Building Brotli...${NC}"
+if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libbrotlicommon.a" ]; then
+    if [ ! -d "brotli" ]; then
+        git clone --depth 1 --branch v1.1.0 https://github.com/google/brotli.git
+    fi
+    cd brotli
+    rm -rf build-win
+    mkdir -p build-win && cd build-win
+
+    cmake .. \
+        -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
+        -DCMAKE_INSTALL_PREFIX="${MINGW_TARGET_PREFIX}" \
+        -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF
+
+    make -j$(nproc)
+    make install
+    cd "$BUILD_DIR"
+    echo -e "${GREEN}✓${NC} Brotli installed"
+else
+    echo -e "${GREEN}✓${NC} Brotli already installed"
+fi
+
+# 8. Build zstd (compression library - required by GnuTLS)
+echo -e "${BLUE}[8/16] Building zstd...${NC}"
+if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libzstd.a" ]; then
+    if [ ! -d "zstd-1.5.6" ]; then
+        wget https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz
+        tar -xzf zstd-1.5.6.tar.gz
+    fi
+    cd zstd-1.5.6
+
+    # zstd uses make with custom variables
+    # Build only static library to avoid lld soname issues
+    cd lib
+    make -j$(nproc) \
+        CC="${MINGW_TARGET}-gcc" \
+        CXX="${MINGW_TARGET}-g++" \
+        AR="${MINGW_TARGET}-ar" \
+        RANLIB="${MINGW_TARGET}-ranlib" \
+        PREFIX="${MINGW_TARGET_PREFIX}" \
+        MOREFLAGS="-DZSTD_MULTITHREAD" \
+        libzstd.a
+
+    # Install manually
+    mkdir -p "${MINGW_TARGET_PREFIX}/lib"
+    mkdir -p "${MINGW_TARGET_PREFIX}/include"
+    cp libzstd.a "${MINGW_TARGET_PREFIX}/lib/"
+    cp zstd.h zdict.h zstd_errors.h "${MINGW_TARGET_PREFIX}/include/"
+    cd ..
+
+    cd "$BUILD_DIR"
+    echo -e "${GREEN}✓${NC} zstd installed"
+else
+    echo -e "${GREEN}✓${NC} zstd already installed"
+fi
+
+# 9. Build libidn2 (Internationalized Domain Names - required by GnuTLS)
+echo -e "${BLUE}[9/17] Building libidn2...${NC}"
+if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libidn2.a" ]; then
+    if [ ! -d "libidn2-2.3.7" ]; then
+        wget https://ftp.gnu.org/gnu/libidn/libidn2-2.3.7.tar.gz
+        tar -xzf libidn2-2.3.7.tar.gz
+    fi
+    cd libidn2-2.3.7
+
+    ./configure \
+        --host=${MINGW_TARGET} \
+        --prefix="${MINGW_TARGET_PREFIX}" \
+        --enable-static \
+        --disable-shared \
+        --disable-doc
+
+    make -j$(nproc)
+    make install
+    cd "$BUILD_DIR"
+    echo -e "${GREEN}✓${NC} libidn2 installed"
+else
+    echo -e "${GREEN}✓${NC} libidn2 already installed"
+fi
+
+# 10. Build GnuTLS (TLS library - required by OpenDHT)
+echo -e "${BLUE}[10/17] Building GnuTLS...${NC}"
+if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libgnutls.a" ]; then
+    if [ ! -d "gnutls-3.8.3" ]; then
+        wget https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.3.tar.xz
+        tar -xf gnutls-3.8.3.tar.xz
+    fi
+    cd gnutls-3.8.3
+
+    ./configure \
+        --host=${MINGW_TARGET} \
+        --prefix="${MINGW_TARGET_PREFIX}" \
+        --enable-static \
+        --disable-shared \
+        --disable-doc \
+        --disable-tests \
+        --disable-tools \
+        --disable-cxx \
+        --disable-guile \
+        --with-included-libtasn1 \
+        --with-included-unistring \
+        --without-p11-kit
+
+    make -j$(nproc)
+    make install
+    cd "$BUILD_DIR"
+    echo -e "${GREEN}✓${NC} GnuTLS installed"
+else
+    echo -e "${GREEN}✓${NC} GnuTLS already installed"
+fi
+
+# 8. Build zlib (compression library)
+echo -e "${BLUE}[11/17] Building zlib...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libz.a" ]; then
     if [ ! -d "zlib-1.3.1" ]; then
         wget https://zlib.net/zlib-1.3.1.tar.gz
@@ -209,7 +370,7 @@ else
 fi
 
 # 6. Build Freetype (font rendering)
-echo -e "${BLUE}[6/10] Building Freetype...${NC}"
+echo -e "${BLUE}[12/17] Building Freetype...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libfreetype.a" ]; then
     if [ ! -d "freetype-2.13.3" ]; then
         wget https://download.savannah.gnu.org/releases/freetype/freetype-2.13.3.tar.gz
@@ -236,7 +397,7 @@ else
 fi
 
 # 7. Build SQLite3 (database library)
-echo -e "${BLUE}[7/10] Building SQLite3...${NC}"
+echo -e "${BLUE}[13/17] Building SQLite3...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libsqlite3.a" ]; then
     if [ ! -d "sqlite-autoconf-3470200" ]; then
         wget https://www.sqlite.org/2024/sqlite-autoconf-3470200.tar.gz
@@ -259,7 +420,7 @@ else
 fi
 
 # 8. Build OpenSSL (TLS library)
-echo -e "${BLUE}[8/10] Building OpenSSL...${NC}"
+echo -e "${BLUE}[14/17] Building OpenSSL...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libssl.a" ]; then
     if [ ! -d "openssl-3.0.15" ]; then
         wget https://www.openssl.org/source/openssl-3.0.15.tar.gz
@@ -286,7 +447,7 @@ else
 fi
 
 # 9. Build json-c (JSON library)
-echo -e "${BLUE}[9/11] Building json-c...${NC}"
+echo -e "${BLUE}[15/17] Building json-c...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libjson-c.a" ]; then
     if [ ! -d "json-c-0.17" ]; then
         wget https://github.com/json-c/json-c/archive/refs/tags/json-c-0.17-20230812.tar.gz
@@ -314,7 +475,7 @@ else
 fi
 
 # 10. Build CURL (HTTP library)
-echo -e "${BLUE}[10/11] Building CURL...${NC}"
+echo -e "${BLUE}[16/17] Building CURL...${NC}"
 if [ ! -f "${MINGW_TARGET_PREFIX}/lib/libcurl.a" ]; then
     if [ ! -d "curl-8.11.0" ]; then
         wget https://curl.se/download/curl-8.11.0.tar.gz
@@ -348,7 +509,7 @@ else
 fi
 
 # 11. Build OpenDHT (finally!)
-echo -e "${BLUE}[11/11] Building OpenDHT...${NC}"
+echo -e "${BLUE}[17/17] Building OpenDHT...${NC}"
 if [ ! -d "opendht" ]; then
     git clone --depth 1 --branch v3.2.0 https://github.com/savoirfairelinux/opendht.git
 fi
@@ -368,8 +529,7 @@ cmake .. \
     -DOPENDHT_HTTP=OFF \
     -DOPENDHT_PEER_DISCOVERY=OFF \
     -DOPENDHT_STATIC=ON \
-    -DBUILD_SHARED_LIBS=OFF \
-    -DCMAKE_CXX_FLAGS="-DGNUTLS_STATIC"
+    -DBUILD_SHARED_LIBS=OFF
 
 make -j$(nproc)
 make install
