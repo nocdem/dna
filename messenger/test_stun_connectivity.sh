@@ -6,6 +6,9 @@
 
 set -e
 
+# Add common sbin directories to PATH for iptables detection
+export PATH="/usr/sbin:/sbin:$PATH"
+
 # Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
