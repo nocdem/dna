@@ -971,14 +971,13 @@ static p2p_connection_t* ice_create_connection(
 
     // Gather local candidates for this peer connection
     int gathered = 0;
-    // Try STUN servers in order of reliability
-    // stunprotocol.org and Cloudflare are generally more reliable than Google
+    // Try STUN servers in order of reliability (tested and verified)
     const char *stun_servers[] = {
-        "stun.stunprotocol.org",  // OpenSTUN - very reliable
-        "stun.cloudflare.com",    // Cloudflare - fast and reliable
-        "stun.l.google.com"       // Google - fallback
+        "stun.cloudflare.com",    // Cloudflare - most reliable (verified working)
+        "stun.l.google.com",      // Google primary - reliable fallback
+        "stun1.l.google.com"      // Google secondary - additional fallback
     };
-    const uint16_t stun_ports[] = {3478, 3478, 19302};
+    const uint16_t stun_ports[] = {3478, 19302, 19302};
 
     for (size_t i = 0; i < 3 && !gathered; i++) {
         if (ice_gather_candidates(peer_ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
