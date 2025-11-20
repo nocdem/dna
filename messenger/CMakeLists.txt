@@ -436,6 +436,11 @@ endif()
 # ===== TESTS =====
 option(BUILD_TESTS "Build unit tests" ON)
 if(BUILD_TESTS)
+    # Add OpenDHT library directories for test executables (Linux only)
+    if(OPENDHT_LIBRARY_DIRS)
+        link_directories(${OPENDHT_LIBRARY_DIRS})
+    endif()
+
     # DNA Profile Tests
     add_executable(test_dna_profile
         tests/test_dna_profile.c

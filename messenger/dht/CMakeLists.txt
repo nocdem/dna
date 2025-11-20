@@ -36,6 +36,8 @@ else()
     set(OPENDHT_DEPS ${OPENDHT_LIBRARIES})
     # Add library directories so linker can find libopendht.a
     link_directories(${OPENDHT_LIBRARY_DIRS})
+    # Export to parent scope so test executables can find the library
+    set(OPENDHT_LIBRARY_DIRS ${OPENDHT_LIBRARY_DIRS} PARENT_SCOPE)
 endif()
 
 # DHT library

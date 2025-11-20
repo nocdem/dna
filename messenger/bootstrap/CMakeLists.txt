@@ -3,6 +3,11 @@
 
 cmake_minimum_required(VERSION 3.10)
 
+# Add OpenDHT library directories for bootstrap executables (Linux only)
+if(OPENDHT_LIBRARY_DIRS)
+    link_directories(${OPENDHT_LIBRARY_DIRS})
+endif()
+
 # Bootstrap Value Storage Library (SQLite persistence)
 add_library(bootstrap_value_storage STATIC
     services/value_storage/dht_value_storage.cpp
