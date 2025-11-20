@@ -86,7 +86,7 @@ git clone https://github.com/mxe/mxe.git ~/.cache/mxe
 sudo apt install cmake gcc libssl-dev libsqlite3-dev libcurl4-openssl-dev libopendht-dev
 
 # NAT traversal dependencies (Phase 11):
-sudo apt install libnice-dev libglib2.0-dev
+# libjuice v1.7.0 is built from source automatically (no extra packages needed)
 
 # ImGui dependencies (active GUI):
 sudo apt install libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev

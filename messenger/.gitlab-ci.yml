@@ -27,8 +27,7 @@ build:linux-x64:
     - apt-get install -y -qq build-essential cmake git pkg-config xxd
     # Core dependencies
     - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev
-    # P2P/DHT dependencies
-    - apt-get install -y -qq libnice-dev libglib2.0-dev
+    # P2P/DHT dependencies (libjuice built from source, no extra deps needed)
     # OpenDHT dependencies
     - apt-get install -y -qq libopendht-dev libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev
     # ImGui GUI dependencies
