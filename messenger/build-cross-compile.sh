@@ -281,6 +281,10 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(WIN32 TRUE)
 set(MINGW TRUE)
 
+# Prevent system header inclusion
+set(CMAKE_C_FLAGS "-nostdinc -isystem ${MINGW_TARGET_PREFIX}/include")
+set(CMAKE_CXX_FLAGS "-nostdinc++ -nostdinc -isystem ${MINGW_TARGET_PREFIX}/include/c++/v1 -isystem ${MINGW_TARGET_PREFIX}/include")
+
 # Force static linking
 set(CMAKE_EXE_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")
 set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
