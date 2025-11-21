@@ -63,11 +63,6 @@ set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 set(WIN32 TRUE)
 set(MINGW TRUE)
 
-# Prevent system header inclusion - use sysroot
-set(CMAKE_SYSROOT ${MINGW_TARGET_PREFIX})
-set(CMAKE_C_FLAGS "--sysroot=${MINGW_TARGET_PREFIX}")
-set(CMAKE_CXX_FLAGS "--sysroot=${MINGW_TARGET_PREFIX}")
-
 # Force static linking
 set(CMAKE_EXE_LINKER_FLAGS "-static -static-libgcc -static-libstdc++")
 set(CMAKE_FIND_LIBRARY_SUFFIXES ".a")
@@ -524,16 +519,10 @@ cd opendht
 rm -rf build-win
 mkdir -p build-win && cd build-win
 
-# Prevent pkg-config from finding system packages
-export PKG_CONFIG_PATH="${MINGW_TARGET_PREFIX}/lib/pkgconfig"
-export PKG_CONFIG_LIBDIR="${MINGW_TARGET_PREFIX}/lib/pkgconfig"
-
 cmake .. \
     -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
     -DCMAKE_INSTALL_PREFIX="${MINGW_TARGET_PREFIX}" \
     -DCMAKE_PREFIX_PATH="${MINGW_TARGET_PREFIX}" \
-    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=ONLY \
-    -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=ONLY \
     -DOPENDHT_PYTHON=OFF \
     -DOPENDHT_TOOLS=OFF \
     -DOPENDHT_DOCUMENTATION=OFF \
