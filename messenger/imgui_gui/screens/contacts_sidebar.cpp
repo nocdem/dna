@@ -211,12 +211,12 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
                                    state.profile_registered_name != "Error loading";
         
         if (has_registered_name) {
-            // User is registered - show round icon buttons for Edit Profile and Post to Wall
-            // Center the buttons
+            // User is registered - show all 4 round icon buttons in a single row
+            // Edit Profile, Post to Wall, Wallet, Settings
             float button_spacing = 8.0f;
-            float total_width = 32.0f + button_spacing + 32.0f;
+            float total_width = (32.0f * 4) + (button_spacing * 3);  // 4 buttons, 3 spaces
             float start_x = (250 - total_width) * 0.5f;
-            
+
             ImGui::SetCursorPosX(start_x);
             if (ThemedRoundButton(ICON_FA_USER)) {
                 state.show_profile_editor = true;
@@ -224,7 +224,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
                 ImGui::SetTooltip("Edit your profile information");
             }
-            
+
             ImGui::SameLine(0, button_spacing);
             if (ThemedRoundButton(ICON_FA_NEWSPAPER)) {
                 state.wall_fingerprint = state.current_identity;
@@ -235,6 +235,22 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
                 ImGui::SetTooltip("Post messages to your public wall");
             }
+
+            ImGui::SameLine(0, button_spacing);
+            if (ThemedRoundButton(ICON_FA_CREDIT_CARD)) {
+                state.current_view = VIEW_WALLET;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                ImGui::SetTooltip("Manage your cryptocurrency wallet");
+            }
+
+            ImGui::SameLine(0, button_spacing);
+            if (ThemedRoundButton(ICON_FA_GEAR)) {
+                state.current_view = VIEW_SETTINGS;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                ImGui::SetTooltip("Configure application settings");
+            }
         } else {
             // User not registered - show Register DNA button
             if (ThemedButton(ICON_FA_ID_CARD " Register DNA", ImVec2(-1, 40))) {
@@ -243,29 +259,29 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
                 ImGui::SetTooltip("Register a human-readable DNA name");
             }
-        }
-        
-        ImGui::Spacing();
 
-        // Wallet and Settings round icon buttons (centered, side-by-side)
-        float button_spacing = 8.0f;
-        float total_width = 32.0f + button_spacing + 32.0f;
-        float start_x = (250 - total_width) * 0.5f;
+            ImGui::Spacing();
 
-        ImGui::SetCursorPosX(start_x);
-        if (ThemedRoundButton(ICON_FA_CREDIT_CARD)) {
-            state.current_view = VIEW_WALLET;
-        }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-            ImGui::SetTooltip("Manage your cryptocurrency wallet");
-        }
+            // Show Wallet and Settings buttons for unregistered users too
+            float button_spacing = 8.0f;
+            float total_width = 32.0f + button_spacing + 32.0f;
+            float start_x = (250 - total_width) * 0.5f;
 
-        ImGui::SameLine(0, button_spacing);
-        if (ThemedRoundButton(ICON_FA_GEAR)) {
-            state.current_view = VIEW_SETTINGS;
-        }
-        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-            ImGui::SetTooltip("Configure application settings");
+            ImGui::SetCursorPosX(start_x);
+            if (ThemedRoundButton(ICON_FA_CREDIT_CARD)) {
+                state.current_view = VIEW_WALLET;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                ImGui::SetTooltip("Manage your cryptocurrency wallet");
+            }
+
+            ImGui::SameLine(0, button_spacing);
+            if (ThemedRoundButton(ICON_FA_GEAR)) {
+                state.current_view = VIEW_SETTINGS;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                ImGui::SetTooltip("Configure application settings");
+            }
         }
 
         ImGui::Spacing();
