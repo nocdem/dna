@@ -246,33 +246,32 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         }
         
         ImGui::Spacing();
+
+        // Wallet and Settings round icon buttons (centered, side-by-side)
+        float button_spacing = 8.0f;
+        float total_width = 32.0f + button_spacing + 32.0f;
+        float start_x = (250 - total_width) * 0.5f;
+
+        ImGui::SetCursorPosX(start_x);
+        if (ThemedRoundButton(ICON_FA_CREDIT_CARD)) {
+            state.current_view = VIEW_WALLET;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+            ImGui::SetTooltip("Manage your cryptocurrency wallet");
+        }
+
+        ImGui::SameLine(0, button_spacing);
+        if (ThemedRoundButton(ICON_FA_GEAR)) {
+            state.current_view = VIEW_SETTINGS;
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+            ImGui::SetTooltip("Configure application settings");
+        }
+
+        ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();
     }
-
-    // Navigation buttons (40px each)
-    if (ThemedButton(ICON_FA_COMMENTS " Chat", ImVec2(-1, 40), state.current_view == VIEW_CONTACTS || state.current_view == VIEW_CHAT)) {
-        state.current_view = VIEW_CONTACTS;
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-        ImGui::SetTooltip("View conversations and messages");
-    }
-    
-    if (ThemedButton(ICON_FA_WALLET " Wallet", ImVec2(-1, 40), state.current_view == VIEW_WALLET)) {
-        state.current_view = VIEW_WALLET;
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-        ImGui::SetTooltip("Manage your cryptocurrency wallet");
-    }
-    
-    if (ThemedButton(ICON_FA_GEAR " Settings", ImVec2(-1, 40), state.current_view == VIEW_SETTINGS)) {
-        state.current_view = VIEW_SETTINGS;
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-        ImGui::SetTooltip("Configure application settings");
-    }
-
-    ImGui::Spacing();
 
     // Groups and Contacts in a single scrollable child
     // Calculate available height: total sidebar height minus fixed elements at top and bottom
