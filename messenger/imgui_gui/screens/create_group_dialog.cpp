@@ -140,6 +140,27 @@ void render(AppState& state) {
                            state.create_group_name_input, group_id,
                            member_ptrs.size());
 
+                    // Reload groups list to show the new group
+                    printf("[Create Group] Reloading groups list...\n");
+                    state.groups.clear();
+                    dht_group_cache_entry_t *groups_array = nullptr;
+                    int groups_count = 0;
+                    if (dht_groups_list_for_user(state.current_identity.c_str(), &groups_array, &groups_count) == 0 && groups_count > 0) {
+                        for (int i = 0; i < groups_count; i++) {
+                            Group group;
+                            group.local_id = groups_array[i].local_id;
+                            group.group_uuid = groups_array[i].group_uuid;
+                            group.name = groups_array[i].name;
+                            group.creator = groups_array[i].creator;
+                            group.member_count = 0;
+                            group.created_at = groups_array[i].created_at;
+                            group.last_sync = groups_array[i].last_sync;
+                            state.groups.push_back(group);
+                        }
+                        dht_groups_free_cache_entries(groups_array, groups_count);
+                        printf("[Create Group] Reloaded %d groups\n", groups_count);
+                    }
+
                     // Close dialog
                     state.show_create_group_dialog = false;
 
