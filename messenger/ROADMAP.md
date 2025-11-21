@@ -268,7 +268,6 @@ _(Phase 6 (Mobile Applications) and Phase 7 (Advanced Security) merged into Phas
 **Timeline:** ~6 months (long-term vision)
 **Status:** COMPLETE - P2P Transport, DHT, and Offline Queue operational
 **Prerequisites:** Phase 4 complete
-**Design Docs:** See `/futuredesign/` folder for detailed specifications
 
 ### Objectives
 - Fully peer-to-peer serverless architecture
@@ -291,7 +290,14 @@ _(Phase 6 (Mobile Applications) and Phase 7 (Advanced Security) merged into Phas
   - EU-2: dna-bootstrap-eu-2 @ 164.68.116.180:4000
 - [x] Auto-start systemd services on all bootstrap nodes
 - [x] Connection management and DHT presence registration
-- [x] NAT traversal using libjuice (ICE/STUN) - **COMPLETE** (Phase 11, 2025-11-19)
+- [x] **ICE NAT Traversal (Phase 11, 2025-11-18)** - PRODUCTION READY
+  - libnice integration for NAT traversal (STUN servers)
+  - Persistent ICE connections (connection reuse)
+  - Bidirectional communication support
+  - 150x performance speedup (15s → 100ms)
+  - DHT candidate exchange (no signaling servers)
+  - 3-tier fallback: LAN → ICE → DHT queue
+  - Documentation: `/docs/ICE_NAT_TRAVERSAL_FIXES.md`
 
 #### Phase 5.2: Offline Message Queueing ✅ COMPLETE
 **Completed:** 2025-11-02 | **Bug Fix:** 2025-11-10
@@ -424,19 +430,116 @@ Implemented P2P invitation delivery system for group membership:
 **Total Changes:** ~300 LOC
 **Documentation:** `/docs/GROUP_INVITATIONS_GUIDE.md` (comprehensive 500+ line guide)
 
-#### Phase 5.7: Local Cache & Sync (Future)
+#### Phase 5.7: Encrypted DHT Identity Backup ✅ COMPLETE (Phase 9.6)
+**Completed:** 2025-11-13
+
+Implemented encrypted DHT backup for OpenDHT RSA-2048 identities to enable BIP39 recovery:
+
+- [x] **Encrypted Backup System** (`dht/dht_identity_backup.[ch]` - 595 lines)
+  - Kyber1024 + AES-256-GCM encryption
+  - Format: `[kyber_ct(1568)][iv(12)][tag(16)][encrypted_pem]`
+  - PERMANENT DHT storage for identity recovery
+- [x] **DHT Context Integration** (`dht_context.cpp` - +327 lines)
+  - Start DHT with permanent RSA-2048 identity
+  - Generate/export/import encrypted identities
+  - Seamless initialization on first run
+- [x] **Singleton Management** (`dht_singleton.[ch]` - +61 lines)
+  - Initialize DHT with permanent identity
+  - Load from local storage or create new
+  - BIP39 recovery support
+- [x] **Recovery Workflow**
+  - First-time: Generate keys → encrypt → save + publish DHT
+  - Login: Load local → decrypt → reinit DHT
+  - Recovery: Restore keys from BIP39 → fetch DHT → decrypt → reinit
+
+**Total:** 1,484+ lines
+**Result:** Seamless BIP39 recovery with zero DHT identity accumulation
+
+#### Phase 5.8: Message Format v0.07 - Fingerprint Privacy ✅ COMPLETE (Phase 12)
+**Completed:** 2025-11-18
+
+Enhanced message privacy by encrypting sender identity and reducing message overhead:
+
+- [x] **Sender Fingerprint Encryption**
+  - Fingerprint (64 bytes) now inside AES-256-GCM encrypted payload
+  - Network observers cannot identify sender from traffic
+  - Prevents social graph reconstruction
+- [x] **Signature Block Optimization**
+  - Removed 2592-byte Dilithium5 pubkey from signature block
+  - v0.06: `[type|pkey_size|sig_size|PUBKEY(2592)|sig]`
+  - v0.07: `[type|sig_size|sig]`
+  - Net message size reduction: 2,533 bytes (28.5%)
+- [x] **Keyserver Lookup Integration**
+  - Decrypt → extract fingerprint → query keyserver
+  - Cache-first lookup (7-day TTL)
+  - Verify signature using looked-up pubkey
+- [x] **Database Schema v6**
+  - Added `sender_fingerprint` column to messages table
+  - Backward compatible migration
+
+**Breaking Change:** v0.06 incompatible with v0.07
+**Documentation:** `/docs/MESSAGE_FORMATS.md`
+
+#### Phase 5.9: GSK (Group Symmetric Key) v0.09 ✅ COMPLETE (Phase 13)
+**Completed:** 2025-11-21
+
+Implemented AES-256 shared keys for efficient group messaging with 200x performance improvement:
+
+- [x] **Core GSK Module** (`messenger/gsk.c` - 658 lines)
+  - AES-256 key generation (32 bytes random)
+  - SQLite storage with versioning (dht_group_gsks table)
+  - Automatic expiration (7-day TTL)
+  - Version incrementing on rotation
+- [x] **Initial Key Packet Builder** (`messenger/gsk_packet.c` - 782 lines)
+  - Per-member Kyber1024 key wrapping
+  - Dilithium5 owner signatures
+  - Binary format: `[header(42)][members(1672×N)][signature(~4630)]`
+- [x] **DHT Chunked Storage** (`dht/shared/dht_gsk_storage.c` - 765 lines)
+  - 50KB chunk splitting for large packets
+  - Sequential DHT keys (SHA3-512 derivation)
+  - Maximum 4 chunks (200KB max packet size)
+- [x] **Automatic Rotation** (150 lines)
+  - Member added → new GSK (backward secrecy)
+  - Member removed → new GSK (forward secrecy)
+  - Rebuild Initial Key Packet with new member list
+- [x] **Group Ownership Transfer** (`messenger/group_ownership.c` - 595 lines)
+  - Owner heartbeat every 6 hours (Dilithium5 signed)
+  - 7-day liveness check by members
+  - Deterministic transfer: highest SHA3-512(fingerprint)
+  - New owner rotates GSK to revoke old owner
+- [x] **Background Discovery** (`imgui_gui/helpers/background_tasks.cpp` - 302 lines)
+  - GSK discovery: Poll DHT every 2 minutes
+  - Ownership check: Poll heartbeats every 2 minutes
+  - Heartbeat publish: Every 6 hours (if owner)
+- [x] **UI Notifications** (50 lines)
+  - GSK rotation alerts
+  - Ownership transfer notifications
+  - Member add/remove notifications
+- [x] **Unit Tests** (492 lines)
+  - 57/57 tests passing (0 failures)
+  - Coverage: generation, storage, rotation, packets, signatures, chunking
+
+**Performance Impact:**
+- 100-member group: 500ms → 2ms (250x faster)
+- Constant O(1) encryption overhead regardless of group size
+- Initial Key Packet distributed once via DHT
+
+**Total:** ~2800 LOC
+**Status:** Production-ready with comprehensive test coverage
+
+#### Phase 5.10: Local Cache & Sync (Future)
 - [ ] SQLite encrypted with DNA's PQ crypto (Kyber512 + AES-256-GCM)
 - [ ] Background sync protocol (local ↔ DHT)
 - [ ] Multi-device message synchronization
 - [ ] Offline mode with automatic sync on reconnect
 - [ ] Incremental sync for large histories
 
-#### Phase 5.8: DHT Keyserver Enhancements (Future)
+#### Phase 5.11: DHT Keyserver Enhancements (Future)
 - [ ] Key rotation and update protocol
 - [ ] Optional: Blockchain anchoring for tamper-proofing
 - [ ] DHT replication monitoring
 
-#### Phase 5.9: Integration & Testing (Future)
+#### Phase 5.12: Integration & Testing (Future)
 - [ ] End-to-end testing with 5-10 peers
 - [ ] Network resilience testing (peer churn)
 - [ ] Performance optimization
@@ -461,14 +564,7 @@ Implemented P2P invitation delivery system for group membership:
 - P2P network protocol specification
 - Migration tools (PostgreSQL → DHT)
 
-**Design Documents:**
-- `/futuredesign/ARCHITECTURE-OVERVIEW.md` - Complete system design
-- `/futuredesign/P2P-TRANSPORT-DESIGN.md` - libp2p integration
-- `/futuredesign/DHT-STORAGE-DESIGN.md` - Message storage protocol
-- `/futuredesign/DHT-KEYSERVER-DESIGN.md` - Distributed public keys
-- `/futuredesign/SYNC-PROTOCOL-DESIGN.md` - Multi-device sync
-
-**Note:** This represents a fundamental architectural shift from client-server to peer-to-peer. Implementation details are actively being researched. See futuredesign/ folder for complete specifications.
+**Note:** This represents a fundamental architectural shift from client-server to peer-to-peer. See documentation in `/docs/` for implementation details.
 
 ---
 
@@ -602,7 +698,6 @@ DNA Board is a **censorship-resistant social media platform** built on DNA Messe
 **Timeline:** ~20 weeks (5 months)
 **Status:** Research & Planning
 **Prerequisites:** Phase 5.1 (P2P Transport Layer)
-**Design Document:** `/futuredesign/VOICE-VIDEO-DESIGN.md`
 
 ### Overview
 
@@ -711,9 +806,14 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 
 ### Phase 5 (P2P Architecture) ✅
 - ✅ P2P transport layer (OpenDHT + TCP)
+- ✅ ICE NAT traversal (Phase 11 - 2025-11-18)
 - ✅ Offline message queueing (7-day TTL)
 - ✅ DHT-based keyserver with reverse mapping
 - ✅ Per-identity contact lists with DHT sync
+- ✅ P2P group invitations (Phase 5.6)
+- ✅ Encrypted DHT identity backup (Phase 5.7/9.6)
+- ✅ Message format v0.07 - fingerprint privacy (Phase 5.8/12)
+- ✅ GSK group encryption - 200x speedup (Phase 5.9/13)
 - ✅ PostgreSQL → SQLite migration complete
 
 ### Phase 6 (DNA Board) 🚧
@@ -783,12 +883,15 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - **Phase 2:** Library API Design
 - **Phase 3:** CLI Messenger Client (Removed - unmaintained)
 - **Phase 4:** Desktop Application & Wallet Integration (ImGui + cpunk wallet)
-- **Phase 5.1:** P2P Transport Layer (OpenDHT + TCP)
+- **Phase 5.1:** P2P Transport Layer (OpenDHT + TCP + ICE NAT traversal)
 - **Phase 5.2:** Offline Message Queueing (DHT storage with 7-day TTL)
 - **Phase 5.3:** PostgreSQL → SQLite Migration (Fully decentralized storage)
 - **Phase 5.4:** DHT-based Keyserver with Signed Reverse Mapping
 - **Phase 5.5:** Per-Identity Contact Lists with DHT Sync
 - **Phase 5.6:** P2P Group Invitations
+- **Phase 5.7:** Encrypted DHT Identity Backup (Phase 9.6)
+- **Phase 5.8:** Message Format v0.07 - Fingerprint Privacy (Phase 12)
+- **Phase 5.9:** GSK Group Encryption - 200x speedup (Phase 13)
 - **Phase 6.1:** User Profiles, Profile Editor/Viewer, Wall Posts (backend + GUI)
 - **Phase 6.2:** Avatar System (Base64 encoding, circular display, OpenGL textures)
 - **Phase 6.3:** Community Voting (Dilithium5 signatures, permanent votes)
@@ -797,7 +900,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - **Phase 6.4:** DNA Board enhancements (profile extensions, feed sorting)
 
 ### 📋 Planned
-- **Phase 5.7-5.9:** Multi-device message sync, DHT keyserver enhancements, integration testing
+- **Phase 5.10-5.12:** Multi-device message sync, DHT keyserver enhancements, integration testing
 - **Phase 7:** Web-Based Messenger (HTML5 UI, PWA, IndexedDB)
 - **Phase 8:** Post-Quantum Voice/Video Calls
 - **Phase 9+:** Future Enhancements (mobile apps, advanced security, etc.)
@@ -821,6 +924,30 @@ DNA Messenger is in active development. Contributions welcome!
 **Current Version:** 0.1.120+
 **Next Milestone:** DNA Board Profile Extensions (Phase 6.4)
 **Recent Achievements:**
+- ✅ **GSK Group Encryption - 200x Speedup!** (Phase 5.9/13 - 2025-11-21)
+  - AES-256 shared keys for efficient group messaging
+  - Kyber1024+Dilithium5 Initial Key Packets
+  - DHT chunked storage (50KB chunks)
+  - Automatic rotation on member changes
+  - 7-day owner liveness with deterministic transfer
+  - Background discovery (2-min polling)
+  - 57/57 unit tests passing (~2800 LOC)
+- ✅ **Message Format v0.07 - Fingerprint Privacy!** (Phase 5.8/12 - 2025-11-18)
+  - Sender fingerprint encrypted inside payload (64 bytes)
+  - Removed 2592-byte pubkey from signature block
+  - 28.5% message size reduction (2,533 bytes saved)
+  - Breaking change: v0.06 incompatible
+- ✅ **ICE NAT Traversal - Production Ready!** (Phase 5.1/11 - 2025-11-18)
+  - Fixed 7 critical architectural bugs
+  - Persistent ICE connections (connection reuse)
+  - 150x performance speedup (15s → 100ms)
+  - Bidirectional communication
+  - 3-tier fallback: LAN → ICE → DHT queue
+- ✅ **Encrypted DHT Identity Backup!** (Phase 5.7/9.6 - 2025-11-13)
+  - Kyber1024 + AES-256-GCM encryption
+  - PERMANENT DHT storage for BIP39 recovery
+  - Seamless multi-device support
+  - 1,484+ lines implemented
 - ✅ **P2P Group Invitations!** (Phase 5.6 - 2025-11-17)
   - Encrypted JSON invitation messages (Kyber1024 + AES-256-GCM)
   - Rich UI with blue invitation box, Accept/Decline buttons

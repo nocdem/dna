@@ -193,14 +193,14 @@ add_subdirectory(bootstrap)         # Bootstrap server (minimal deps)
 
 # Common source files (shared between CLI and library)
 set(COMMON_SOURCES
-    legacy-tools/keygen.c
-    legacy-tools/sign.c
-    legacy-tools/verify.c
-    legacy-tools/export.c
-    legacy-tools/encrypt.c
-    legacy-tools/decrypt.c
-    legacy-tools/keyring.c
-    legacy-tools/utils.c
+    archive/legacy-tools/keygen.c
+    archive/legacy-tools/sign.c
+    archive/legacy-tools/verify.c
+    archive/legacy-tools/export.c
+    archive/legacy-tools/encrypt.c
+    archive/legacy-tools/decrypt.c
+    archive/legacy-tools/keyring.c
+    archive/legacy-tools/utils.c
     crypto/utils/armor.c
     crypto/utils/aes_keywrap.c
     crypto/bip39/bip39.c
@@ -234,6 +234,9 @@ add_library(dna_lib STATIC
     messenger/contacts.c
     messenger/keygen.c
     messenger/messages.c
+    messenger/gsk.c  # Phase 13: Group Symmetric Key (v0.09)
+    messenger/gsk_packet.c  # Phase 13: GSK packet builder
+    messenger/group_ownership.c  # Phase 13: Ownership transfer (v0.09)
     # Messenger facade (delegates to messenger/ modules)
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer
@@ -345,7 +348,7 @@ if(NOT WIN32)
 endif()
 
 # Qt GUI removed - migrated to ImGui (see imgui_gui/ subdirectory)
-# Old Qt GUI code archived in legacy-gui/ directory (deprecated, not maintained)
+# Old Qt GUI code archived in archive/legacy-gui/ directory (deprecated, not maintained)
 
 # Build type configuration
 if(CMAKE_BUILD_TYPE STREQUAL "Debug")
@@ -528,7 +531,97 @@ if(BUILD_TESTS)
         ${OPENDHT_INCLUDE_DIRS}
     )
 
-    message(STATUS "Building unit tests: test_dna_profile, test_simple, test_identity_backup, test_timestamp_v08")
+    # GSK Unit Tests (Phase 9: v0.09 Testing - Simple Version)
+    add_executable(test_gsk_simple
+        tests/test_gsk_simple.c
+    )
+
+    target_link_libraries(test_gsk_simple
+        dna_lib        # Main DNA library with GSK functions
+        dht_lib        # DHT library
+        kem            # Kyber1024 KEM
+        dsa            # Dilithium5 DSA
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+        ${OPENSSL_LIBRARIES}
+        m              # Math library
+        pthread        # POSIX threads
+    )
+
+    target_include_directories(test_gsk_simple PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${OPENDHT_INCLUDE_DIRS}
+    )
+
+    # Phase 11: ICE candidate lookup test
+    add_executable(test_ice_lookup
+        tests/test_ice_lookup.c
+    )
+
+    target_link_libraries(test_ice_lookup
+        dna_lib        # Main DNA library
+        dht_lib        # DHT library
+        kem            # Kyber1024 KEM
+        dsa            # Dilithium5 DSA
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+        ${OPENSSL_LIBRARIES}
+        m              # Math library
+        pthread        # POSIX threads
+    )
+
+    target_include_directories(test_ice_lookup PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${OPENDHT_INCLUDE_DIRS}
+    )
+
+    # GSK Unit Tests (Phase 9: v0.09 Testing - Full Version)
+    add_executable(test_gsk
+        tests/test_gsk.c
+    )
+
+    target_link_libraries(test_gsk
+        dna_lib        # Main DNA library with GSK functions
+        dht_lib        # DHT library
+        kem            # Kyber1024 KEM
+        dsa            # Dilithium5 DSA
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+        ${OPENSSL_LIBRARIES}
+        m              # Math library
+        pthread        # POSIX threads
+    )
+
+    target_include_directories(test_gsk PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${OPENDHT_INCLUDE_DIRS}
+    )
+
+    # Group Messaging Integration Tests (Phase 9: v0.09 Testing)
+    add_executable(test_group_messaging
+        tests/test_group_messaging.c
+    )
+
+    target_link_libraries(test_group_messaging
+        dna_lib        # Main DNA library with GSK and group functions
+        dht_lib        # DHT library
+        p2p_transport  # P2P transport
+        kem            # Kyber1024 KEM
+        dsa            # Dilithium5 DSA
+        stdc++         # C++ standard library (required by OpenDHT)
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+        ${OPENSSL_LIBRARIES}
+        m              # Math library
+        pthread        # POSIX threads
+    )
+
+    target_include_directories(test_group_messaging PRIVATE
+        ${CMAKE_SOURCE_DIR}
+        ${OPENDHT_INCLUDE_DIRS}
+    )
+
+    message(STATUS "Building unit tests: test_dna_profile, test_simple, test_identity_backup, test_timestamp_v08, test_gsk, test_group_messaging")
 endif()
 
 # ImGui GUI (Phase 11: Modern GUI)

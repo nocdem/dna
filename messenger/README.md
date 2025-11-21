@@ -342,7 +342,6 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 - libsrtp2 + AES-256-GCM media encryption
 - libopus audio, libvpx/libx264 video
 - Timeline: ~20 weeks
-- Design: `/futuredesign/VOICE-VIDEO-DESIGN.md`
 
 ### 📋 Phase 9+: Future Enhancements (Planned)
 **Advanced Features:**
