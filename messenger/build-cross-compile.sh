@@ -99,9 +99,9 @@ build_linux_x64() {
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64"
-    # Package GUI executable (CLI was removed)
-    if [ -f gui/dna_messenger_gui ]; then
-        cp gui/dna_messenger_gui "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
+    # Package ImGui GUI executable
+    if [ -f imgui_gui/dna_messenger_imgui ]; then
+        cp imgui_gui/dna_messenger_imgui "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
     else
         echo -e "${RED}Error: GUI executable not found${NC}"
         return 1
@@ -143,9 +143,9 @@ build_linux_x64_debug() {
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug"
-    # Package GUI executable
-    if [ -f gui/dna_messenger_gui ]; then
-        cp gui/dna_messenger_gui "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug/"
+    # Package ImGui GUI executable
+    if [ -f imgui_gui/dna_messenger_imgui ]; then
+        cp imgui_gui/dna_messenger_imgui "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug/"
     else
         echo -e "${RED}Error: GUI executable not found${NC}"
         return 1
@@ -351,10 +351,6 @@ EOF
         return 1
     fi
 
-    # Create zip
-    cd "${PROJECT_ROOT}/${DIST_DIR}"
-    zip -r "${PROJECT_NAME}-${FULL_VERSION}-windows-x64.zip" windows-x64/
-
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Windows x86_64 build complete${NC}"
     echo ""
@@ -483,10 +479,6 @@ EOF
         echo -e "${RED}Error: GUI executable not found${NC}"
         return 1
     fi
-
-    # Create zip
-    cd "${PROJECT_ROOT}/${DIST_DIR}"
-    zip -r "${PROJECT_NAME}-${FULL_VERSION}-windows-x64-debug.zip" windows-x64-debug/
 
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Windows x86_64 Debug build complete${NC}"
@@ -636,7 +628,7 @@ build_all() {
     echo -e "${GREEN}=========================================${NC}"
     echo ""
     echo "Release artifacts in: ${DIST_DIR}/"
-    ls -lh "${DIST_DIR}/"*.{tar.gz,zip} 2>/dev/null || echo "No archives created"
+    ls -lh "${DIST_DIR}/"*.tar.gz 2>/dev/null || echo "No archives created"
     echo ""
 }
 
