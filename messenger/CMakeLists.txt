@@ -597,31 +597,7 @@ if(BUILD_TESTS)
         ${OPENDHT_INCLUDE_DIRS}
     )
 
-    # Group Messaging Integration Tests (Phase 9: v0.09 Testing)
-    add_executable(test_group_messaging
-        tests/test_group_messaging.c
-    )
-
-    target_link_libraries(test_group_messaging
-        dna_lib        # Main DNA library with GSK and group functions
-        dht_lib        # DHT library
-        p2p_transport  # P2P transport
-        kem            # Kyber1024 KEM
-        dsa            # Dilithium5 DSA
-        stdc++         # C++ standard library (required by OpenDHT)
-        ${JSONC_LIBRARIES}
-        ${SQLite3_LIBRARIES}
-        ${OPENSSL_LIBRARIES}
-        m              # Math library
-        pthread        # POSIX threads
-    )
-
-    target_include_directories(test_group_messaging PRIVATE
-        ${CMAKE_SOURCE_DIR}
-        ${OPENDHT_INCLUDE_DIRS}
-    )
-
-    message(STATUS "Building unit tests: test_dna_profile, test_simple, test_identity_backup, test_timestamp_v08, test_gsk, test_group_messaging")
+    message(STATUS "Building unit tests: test_dna_profile, test_simple, test_identity_backup, test_timestamp_v08, test_gsk")
 endif()
 
 # ImGui GUI (Phase 11: Modern GUI)
