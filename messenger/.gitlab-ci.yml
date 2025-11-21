@@ -161,3 +161,31 @@ build:windows-x64:
       - dist/*.zip
       - dist/windows-x64/
     expire_in: 1 week
+
+# Linux x86_64 Debug build with ASAN (disabled by default)
+# Uncomment to enable debug builds with AddressSanitizer for memory safety testing
+#build:linux-x64-debug:
+#  stage: build
+#  tags:
+#    - linux
+#  image: ubuntu:22.04
+#  before_script:
+#    - apt-get update -qq
+#    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget tar
+#    # Core dependencies
+#    - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev
+#    # OpenDHT dependencies
+#    - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev libfmt-dev libasio-dev libhttp-parser-dev
+#    # ImGui GUI dependencies
+#    - apt-get install -y -qq libgl1-mesa-dev libglfw3-dev libfreetype6-dev
+#    # Native file dialog (GTK3)
+#    - apt-get install -y -qq libgtk-3-dev
+#  script:
+#    - chmod +x build-cross-compile.sh
+#    - ./build-cross-compile.sh linux-x64-debug
+#  artifacts:
+#    name: "dna-messenger-linux-x64-debug-${CI_COMMIT_SHORT_SHA}"
+#    paths:
+#      - dist/*.tar.gz
+#      - dist/linux-x64-debug/
+#    expire_in: 1 week
