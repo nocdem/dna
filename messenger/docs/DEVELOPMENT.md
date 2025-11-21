@@ -4,6 +4,16 @@
 
 ---
 
+## Team Development
+
+DNA Messenger is developed by a **collaborative team**. Our workflow emphasizes:
+- **Communication** - Document changes, discuss architecture decisions
+- **Code reviews** - Review each other's code for quality and security
+- **Merge over rebase** - Preserve commit history for team visibility
+- **Testing** - Test on both platforms before committing
+
+---
+
 ## Code Style
 
 | Area | Guidelines |
@@ -96,7 +106,7 @@
 - Windows (MXE cross-compile)
 - CMake build system
 - Avoid platform-specific code
-- Test both platforms before commit
+- **Test both platforms before commit** (team responsibility)
 
 ---
 
@@ -154,6 +164,15 @@ cmake .. && make -j$(nproc)
 ```bash
 ./build/imgui_gui/dna_messenger_imgui
 ```
+
+---
+
+## Documentation Structure
+
+**Documentation Files:**
+- **ALL documentation MUST be in `docs/` directory**
+- **Exceptions:** Only `CLAUDE.md`, `README.md`, and `ROADMAP.md` stay in root
+- Keep documentation organized and discoverable
 
 ---
 
