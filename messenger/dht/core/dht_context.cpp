@@ -850,14 +850,15 @@ extern "C" int dht_get(dht_context_t *ctx,
             return -1;
         }
 
-        // Allocate C buffer and copy data
-        *value_out = (uint8_t*)malloc(val->data.size());
+        // Allocate C buffer and copy data (+ 1 for null terminator)
+        *value_out = (uint8_t*)malloc(val->data.size() + 1);
         if (!*value_out) {
             std::cerr << "[DHT] ERROR: malloc failed" << std::endl;
             return -1;
         }
 
         memcpy(*value_out, val->data.data(), val->data.size());
+        (*value_out)[val->data.size()] = '\0';  // Null-terminate for string safety
         *value_len_out = val->data.size();
 
         std::cout << "[DHT] GET successful: " << val->data.size() << " bytes" << std::endl;
