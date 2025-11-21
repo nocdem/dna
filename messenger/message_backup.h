@@ -247,6 +247,16 @@ int message_backup_delete(message_backup_context_t *ctx, int message_id);
 void message_backup_free_messages(backup_message_t *messages, int count);
 
 /**
+ * Get database handle from backup context
+ *
+ * Used by modules that need direct database access (e.g., GSK subsystem).
+ *
+ * @param ctx Backup context
+ * @return SQLite database handle or NULL if ctx is NULL
+ */
+void* message_backup_get_db(message_backup_context_t *ctx);
+
+/**
  * Close backup context
  *
  * @param ctx Backup context

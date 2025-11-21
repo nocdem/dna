@@ -68,6 +68,8 @@ add_executable(dna_messenger_imgui
     core/app_state.cpp
     helpers/data_loader.cpp
     helpers/avatar_helpers.cpp
+    helpers/notification_manager.cpp
+    helpers/background_tasks.cpp
     screens/register_name_screen.cpp
     screens/message_wall_screen.cpp
     screens/profile_editor_screen.cpp

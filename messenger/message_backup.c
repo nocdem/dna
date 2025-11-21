@@ -229,6 +229,19 @@ message_backup_context_t* message_backup_init(const char *identity) {
         sqlite3_free(err_msg);
     }
 
+    // Migration: Add gsk_version column if it doesn't exist (v6 -> v7, Phase 13 - GSK)
+    const char *migration_sql_v7 = "ALTER TABLE messages ADD COLUMN gsk_version INTEGER DEFAULT 0;";
+    rc = sqlite3_exec(ctx->db, migration_sql_v7, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        // Column might already exist (not an error)
+        if (strstr(err_msg, "duplicate column") == NULL) {
+            fprintf(stderr, "[Backup] Migration warning (v7): %s\n", err_msg);
+        }
+        sqlite3_free(err_msg);
+    } else {
+        printf("[Backup] Migrated database schema to v7 (added gsk_version column)\n");
+    }
+
     printf("[Backup] Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
     return ctx;
 }
@@ -812,6 +825,13 @@ void message_backup_free_messages(backup_message_t *messages, int count) {
         }
         free(messages);
     }
+}
+
+/**
+ * Get database handle from backup context
+ */
+void* message_backup_get_db(message_backup_context_t *ctx) {
+    return ctx ? ctx->db : NULL;
 }
 
 /**

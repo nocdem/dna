@@ -5,6 +5,7 @@
 
 #include "messenger.h"
 #include "messenger_p2p.h"  // For messenger_p2p_check_offline_messages
+#include "messenger/gsk.h"  // GSK rotation (Phase 5 - v0.09)
 #include "dht/shared/dht_groups.h"
 #include "dht/core/dht_context.h"
 #include "dht/client/dht_singleton.h"  // For dht_singleton_get
@@ -281,6 +282,13 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
     // Sync back to local cache
     dht_groups_sync_from_dht(dht_ctx, group_uuid);
 
+    // Phase 5 (v0.09): Rotate GSK when member is added
+    printf("[MESSENGER] Rotating GSK for group %s after adding member...\n", group_uuid);
+    if (gsk_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
+        fprintf(stderr, "[MESSENGER] Warning: GSK rotation failed (non-fatal)\n");
+        // Continue - member is still added, but GSK rotation failed
+    }
+
     // Fetch group metadata to get name and member count for invitation
     dht_group_metadata_t *meta = NULL;
     ret = dht_groups_get(dht_ctx, group_uuid, &meta);
@@ -332,6 +340,13 @@ int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const 
 
     // Sync back to local cache
     dht_groups_sync_from_dht(dht_ctx, group_uuid);
+
+    // Phase 5 (v0.09): Rotate GSK when member is removed
+    printf("[MESSENGER] Rotating GSK for group %s after removing member...\n", group_uuid);
+    if (gsk_rotate_on_member_remove(dht_ctx, group_uuid, ctx->identity) != 0) {
+        fprintf(stderr, "[MESSENGER] Warning: GSK rotation failed (non-fatal)\n");
+        // Continue - member is still removed, but GSK rotation failed
+    }
 
     printf("[MESSENGER] Removed member %s from group %d\n", identity, group_id);
     return 0;

@@ -4,6 +4,7 @@
 
 #include "init.h"
 #include "identity.h"
+#include "gsk.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -109,6 +110,15 @@ messenger_context_t* messenger_init(const char *identity) {
     ctx->backup_ctx = message_backup_init(identity);
     if (!ctx->backup_ctx) {
         fprintf(stderr, "Error: Failed to initialize SQLite message storage\n");
+        free(ctx->identity);
+        free(ctx);
+        return NULL;
+    }
+
+    // Initialize GSK subsystem (Phase 13 - Group Symmetric Key)
+    if (gsk_init(ctx->backup_ctx) != 0) {
+        fprintf(stderr, "Error: Failed to initialize GSK subsystem\n");
+        message_backup_close(ctx->backup_ctx);
         free(ctx->identity);
         free(ctx);
         return NULL;

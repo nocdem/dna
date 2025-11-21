@@ -52,6 +52,7 @@ if(WIN32)
         shared/dht_offline_queue.c
         shared/dht_groups.c
         shared/dht_profile.c
+        shared/dht_gsk_storage.c  # Phase 13: GSK chunked storage
         # Client modules (Phase 3/4)
         client/dht_identity.cpp
         client/dht_singleton.c
@@ -86,6 +87,7 @@ else()
         shared/dht_offline_queue.c
         shared/dht_groups.c
         shared/dht_profile.c
+        shared/dht_gsk_storage.c  # Phase 13: GSK chunked storage
         # Client modules (Phase 3/4)
         client/dht_identity.cpp
         client/dht_singleton.c
