@@ -107,10 +107,6 @@ build_linux_x64() {
         return 1
     fi
 
-    # Create tarball
-    cd "${PROJECT_ROOT}/${DIST_DIR}"
-    tar -czf "${PROJECT_NAME}-${FULL_VERSION}-linux-x64.tar.gz" linux-x64/
-
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Linux x86_64 build complete${NC}"
     echo ""
@@ -150,10 +146,6 @@ build_linux_x64_debug() {
         echo -e "${RED}Error: GUI executable not found${NC}"
         return 1
     fi
-
-    # Create tarball
-    cd "${PROJECT_ROOT}/${DIST_DIR}"
-    tar -czf "${PROJECT_NAME}-${FULL_VERSION}-linux-x64-debug.tar.gz" linux-x64-debug/
 
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Linux x86_64 Debug build complete${NC}"
@@ -217,10 +209,6 @@ EOF
         echo -e "${RED}Error: GUI executable not found${NC}"
         return 1
     fi
-
-    # Create tarball
-    cd "${PROJECT_ROOT}/${DIST_DIR}"
-    tar -czf "${PROJECT_NAME}-${FULL_VERSION}-linux-arm64.tar.gz" linux-arm64/
 
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ Linux ARM64 build complete${NC}"
@@ -537,10 +525,6 @@ EOF
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/macos-x64"
     cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/macos-x64/"
 
-    # Create tarball
-    cd "${PROJECT_ROOT}/${DIST_DIR}"
-    tar -czf "${PROJECT_NAME}-${FULL_VERSION}-macos-x64.tar.gz" macos-x64/
-
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ macOS x86_64 build complete${NC}"
     echo ""
@@ -598,10 +582,6 @@ EOF
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/macos-arm64"
     cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/macos-arm64/"
 
-    # Create tarball
-    cd "${PROJECT_ROOT}/${DIST_DIR}"
-    tar -czf "${PROJECT_NAME}-${FULL_VERSION}-macos-arm64.tar.gz" macos-arm64/
-
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ macOS ARM64 build complete${NC}"
     echo ""
@@ -627,8 +607,8 @@ build_all() {
     echo -e "${GREEN} Build Summary${NC}"
     echo -e "${GREEN}=========================================${NC}"
     echo ""
-    echo "Release artifacts in: ${DIST_DIR}/"
-    ls -lh "${DIST_DIR}/"*.tar.gz 2>/dev/null || echo "No archives created"
+    echo "Build artifacts staged in: ${DIST_DIR}/"
+    ls -lh "${DIST_DIR}/" 2>/dev/null || echo "No builds completed"
     echo ""
 }
 
