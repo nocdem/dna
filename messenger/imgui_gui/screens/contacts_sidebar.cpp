@@ -199,8 +199,8 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     }
 
     ImGui::SameLine(0, button_spacing);
-    bool is_syncing = state.contact_sync_task.isRunning();
-    
+    bool is_syncing = state.contact_sync_task.isRunning() || state.contacts_synced_from_dht;
+
     // Disable button while syncing  
     ImGui::BeginDisabled(is_syncing);
     if (ThemedRoundButton(ICON_FA_ARROWS_ROTATE)) {
@@ -275,7 +275,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         ImGui::Dummy(ImVec2(0, vertical_center));
         
         // Center spinner horizontally - use dummy + sameline approach like text
-        float spinner_center = (available.x - spinner_size) * 0.5f;
+        float spinner_center = (available.x - (spinner_size * 2)) * 0.5f;
         ImGui::Dummy(ImVec2(spinner_center, 0));
         ImGui::SameLine(0, 0);
         ThemedSpinner("##refresh_spinner", spinner_size, 4.0f);
