@@ -24,7 +24,7 @@ public:
         bool is_mobile = io.DisplaySize.x < 600;
         float modal_width = is_mobile ? io.DisplaySize.x * 0.9f : desktop_width;
         float modal_height = desktop_height > 0 ? (is_mobile ? io.DisplaySize.y * 0.9f : desktop_height) : 0.0f;
-        ImGui::SetNextWindowSize(ImVec2(modal_width, modal_height), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(modal_width, modal_height), ImGuiCond_Appearing);
         
         // Apply standard modal styling with border
         ImVec4 border_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();

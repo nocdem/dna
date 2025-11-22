@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 # ImGui GUI for DNA Messenger
-project(dna_messenger_imgui CXX)
+project(dna-messenger CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 
@@ -59,7 +59,7 @@ elseif(WIN32)
 endif()
 
 # Main application
-add_executable(dna_messenger_imgui
+add_executable(dna-messenger
     main.cpp
     app.cpp
     settings_manager.cpp
@@ -92,10 +92,10 @@ add_executable(dna_messenger_imgui
 
 # Add NFD sources only on Windows
 if(WIN32)
-    target_sources(dna_messenger_imgui PRIVATE ${NFD_SOURCES})
+    target_sources(dna-messenger PRIVATE ${NFD_SOURCES})
 endif()
 
-target_include_directories(dna_messenger_imgui PRIVATE
+target_include_directories(dna-messenger PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${IMGUI_DIR}/misc/freetype
@@ -106,10 +106,10 @@ target_include_directories(dna_messenger_imgui PRIVATE
 
 # Add GLFW include directories for Windows (manually set)
 if(WIN32)
-    target_include_directories(dna_messenger_imgui PRIVATE ${GLFW3_INCLUDE_DIRS})
+    target_include_directories(dna-messenger PRIVATE ${GLFW3_INCLUDE_DIRS})
 endif()
 
-target_link_libraries(dna_messenger_imgui PRIVATE
+target_link_libraries(dna-messenger PRIVATE
     OpenGL::GL
     dna_lib  # DNA Messenger core library
     cellframe_minimal  # Transaction building and signing
@@ -117,14 +117,14 @@ target_link_libraries(dna_messenger_imgui PRIVATE
 
 # Link GLFW library (platform-specific)
 if(WIN32)
-    target_link_libraries(dna_messenger_imgui PRIVATE ${GLFW3_LIBRARIES})
+    target_link_libraries(dna-messenger PRIVATE ${GLFW3_LIBRARIES})
 else()
-    target_link_libraries(dna_messenger_imgui PRIVATE glfw)
+    target_link_libraries(dna-messenger PRIVATE glfw)
 endif()
 
 # Platform-specific settings
 if(WIN32)
-    target_link_libraries(dna_messenger_imgui PRIVATE
+    target_link_libraries(dna-messenger PRIVATE
         opengl32
         gdi32
         ${FREETYPE_LIBRARIES}
@@ -133,7 +133,7 @@ if(WIN32)
         uuid  # Required for NFD on Windows
     )
 else()
-    target_link_libraries(dna_messenger_imgui PRIVATE
+    target_link_libraries(dna-messenger PRIVATE
         ${FREETYPE_LIBRARIES}
     )
 endif()
@@ -148,4 +148,4 @@ else()
 endif()
 
 # Install
-install(TARGETS dna_messenger_imgui DESTINATION bin)
+install(TARGETS dna-messenger DESTINATION bin)

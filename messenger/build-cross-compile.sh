@@ -100,8 +100,8 @@ build_linux_x64() {
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64"
     # Package ImGui GUI executable
-    if [ -f imgui_gui/dna_messenger_imgui ]; then
-        cp imgui_gui/dna_messenger_imgui "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
+    if [ -f imgui_gui/dna-messenger ]; then
+        cp imgui_gui/dna-messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
     else
         echo -e "${RED}Error: GUI executable not found${NC}"
         return 1
@@ -140,8 +140,8 @@ build_linux_x64_debug() {
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug"
     # Package ImGui GUI executable
-    if [ -f imgui_gui/dna_messenger_imgui ]; then
-        cp imgui_gui/dna_messenger_imgui "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug/"
+    if [ -f imgui_gui/dna-messenger ]; then
+        cp imgui_gui/dna-messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug/"
     else
         echo -e "${RED}Error: GUI executable not found${NC}"
         return 1
@@ -202,8 +202,8 @@ EOF
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64"
     # Package GUI executable
-    if [ -f imgui_gui/dna_messenger_imgui ]; then
-        cp imgui_gui/dna_messenger_imgui "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
+    if [ -f imgui_gui/dna-messenger ]; then
+        cp imgui_gui/dna-messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
         echo -e "${GREEN}✓${NC} Packaged GUI executable"
     else
         echo -e "${RED}Error: GUI executable not found${NC}"
@@ -332,8 +332,8 @@ EOF
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64"
     # ImGui GUI executable
-    if [ -f imgui_gui/dna_messenger_imgui.exe ]; then
-        cp imgui_gui/dna_messenger_imgui.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
+    if [ -f imgui_gui/dna-messenger.exe ]; then
+        cp imgui_gui/dna-messenger.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
     else
         echo -e "${RED}Error: GUI executable not found${NC}"
         return 1
@@ -461,8 +461,8 @@ EOF
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64-debug"
     # ImGui GUI executable
-    if [ -f imgui_gui/dna_messenger_imgui.exe ]; then
-        cp imgui_gui/dna_messenger_imgui.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64-debug/"
+    if [ -f imgui_gui/dna-messenger.exe ]; then
+        cp imgui_gui/dna-messenger.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64-debug/"
     else
         echo -e "${RED}Error: GUI executable not found${NC}"
         return 1

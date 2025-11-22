@@ -182,7 +182,7 @@ if [ ! -f "build-cross-compile.sh" ]; then
     cmake .. -DCMAKE_BUILD_TYPE=${BUILD_TYPE}
     make -j$(nproc)
 
-    BINARY_PATH="$INSTALL_DIR/build/imgui_gui/dna_messenger_imgui"
+    BINARY_PATH="$INSTALL_DIR/build/imgui_gui/dna-messenger"
 else
     # Use new build system
     chmod +x build-cross-compile.sh
@@ -190,7 +190,7 @@ else
     echo -e "${YELLOW}Building for Linux x86_64...${NC}"
     ./build-cross-compile.sh linux-x64
 
-    BINARY_PATH="$INSTALL_DIR/dist/linux-x64/dna_messenger_imgui"
+    BINARY_PATH="$INSTALL_DIR/dist/linux-x64/dna-messenger"
 fi
 
 # Check if build succeeded
