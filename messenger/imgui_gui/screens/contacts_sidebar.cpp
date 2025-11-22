@@ -274,13 +274,13 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         
         ImGui::Dummy(ImVec2(0, vertical_center));
         
-        // Center spinner horizontally
-        float horizontal_center = (available.x - spinner_size) * 0.5f;
-        ImGui::Dummy(ImVec2(horizontal_center, 0));
+        // Center spinner horizontally - use dummy + sameline approach like text
+        float spinner_center = (available.x - spinner_size) * 0.5f;
+        ImGui::Dummy(ImVec2(spinner_center, 0));
         ImGui::SameLine(0, 0);
         ThemedSpinner("##refresh_spinner", spinner_size, 4.0f);
         
-        // Center text horizontally on next line
+        // Center text horizontally on next line (using exact same method as spinner)
         const char* text = "Refreshing...";
         ImVec2 text_size = ImGui::CalcTextSize(text);
         float text_center = (available.x - text_size.x) * 0.5f;
