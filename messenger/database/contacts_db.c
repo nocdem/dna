@@ -156,6 +156,21 @@ int contacts_db_init(const char *owner_identity) {
         return -1;
     }
 
+    // Set performance pragmas to avoid UI blocking
+    const char *pragmas = 
+        "PRAGMA synchronous = NORMAL;"     // Faster than FULL, still safe
+        "PRAGMA journal_mode = WAL;"       // Write-Ahead Logging for better concurrency
+        "PRAGMA temp_store = MEMORY;"      // Store temp data in memory
+        "PRAGMA cache_size = -2000;";     // 2MB cache
+
+    char *err_msg = NULL;
+    rc = sqlite3_exec(g_db, pragmas, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[CONTACTS_DB] Failed to set pragmas: %s\n", err_msg);
+        sqlite3_free(err_msg);
+        // Continue anyway - not fatal
+    }
+
     // Create table if not exists
     const char *sql =
         "CREATE TABLE IF NOT EXISTS contacts ("
@@ -164,7 +179,6 @@ int contacts_db_init(const char *owner_identity) {
         "    notes TEXT"
         ");";
 
-    char *err_msg = NULL;
     rc = sqlite3_exec(g_db, sql, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "[CONTACTS_DB] Failed to create table: %s\n", err_msg);

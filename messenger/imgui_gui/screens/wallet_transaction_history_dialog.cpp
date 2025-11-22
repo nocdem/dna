@@ -243,7 +243,7 @@ void render(AppState& state) {
     bool is_mobile = IsMobileLayout();
 
 
-    if (CenteredModal::Begin("Transaction History", &state.show_transaction_history, ImGuiWindowFlags_NoResize, true, false, 600, 500)) {
+    if (CenteredModal::Begin("Transaction History", &state.show_transaction_history, ImGuiWindowFlags_NoResize, true, false, 600, 590)) {
         ImGui::Spacing();
         ImGui::Separator();
         ImGui::Spacing();

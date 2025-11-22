@@ -1,4 +1,5 @@
 #include "layout_manager.h"
+#include "profile_sidebar.h"
 #include "contacts_sidebar.h"
 #include "chat_screen.h"
 #include "wallet_screen.h"
@@ -51,12 +52,20 @@ void renderMobileLayout(AppState& state) {
 
 void renderDesktopLayout(AppState& state,
                          std::function<void(int)> load_messages_callback) {
-    // Sidebar (state.contacts + navigation)
+    // Left column with profile sidebar on top and contacts/groups below
+    ImGui::BeginChild("LeftColumn", ImVec2(250, 0), false, ImGuiWindowFlags_NoScrollbar);
+    
+    // Profile sidebar (top part)
+    ProfileSidebar::renderSidebar(state);
+    
+    // Contacts and groups sidebar (bottom part)
     ContactsSidebar::renderSidebar(state, load_messages_callback);
+    
+    ImGui::EndChild();
 
     ImGui::SameLine();
 
-    // Main content area
+    // Main content area (right)
     ImGui::BeginChild("MainContent", ImVec2(0, 0), true);
 
     switch(state.current_view) {

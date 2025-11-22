@@ -43,7 +43,7 @@ void render(AppState& state) {
         first_render = false;
     }
 
-    if (CenteredModal::Begin("DNA Messenger - Select Identity", nullptr, ImGuiWindowFlags_NoResize, false, true, 500, 500)) {  // 500x500, disable ESC
+    if (CenteredModal::Begin("DNA Messenger - Select Identity", nullptr, ImGuiWindowFlags_NoResize, false, true, 500, 590)) {  // 500x590, disable ESC
         // Add padding at top
         ImGui::Spacing();
         ImGui::Spacing();
@@ -314,13 +314,13 @@ void render(AppState& state) {
     }
 
     // Restore from seed popup - single step (just seed phrase, username not required)
-    if (CenteredModal::Begin("Restore from Seed")) {
+    if (CenteredModal::Begin("Restore from Seed", nullptr, ImGuiWindowFlags_NoResize, true, true, 600, 590)) {
         renderRestoreStep2_Seed(state);
         CenteredModal::End();
     }
 
         // Create identity popup - show seed phrase (name step removed)
-        if (CenteredModal::Begin("Create New Identity")) {
+        if (CenteredModal::Begin("Create New Identity", nullptr, ImGuiWindowFlags_NoResize, true, true, 600, 590)) {
             if (state.create_identity_step == STEP_SEED_PHRASE) {
                 renderCreateIdentityStep2(state);
             }

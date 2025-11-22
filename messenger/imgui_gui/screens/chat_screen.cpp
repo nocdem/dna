@@ -1142,7 +1142,7 @@ void render(AppState& state) {
     ImGui::PopStyleColor(); // FrameBg
 
     // Queue Full modal
-    if (CenteredModal::Begin("Queue Full", NULL, ImGuiWindowFlags_AlwaysAutoResize)) {
+    if (CenteredModal::Begin("Queue Full", NULL, ImGuiWindowFlags_NoResize, true, true, 400, 590)) {
         ImGui::Text("Message queue is full (20 pending messages).");
         ImGui::Text("Please wait for messages to send before adding more.");
         ImGui::Spacing();

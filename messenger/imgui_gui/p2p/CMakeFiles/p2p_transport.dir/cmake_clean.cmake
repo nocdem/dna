@@ -5,6 +5,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/p2p_transport.dir/transport/transport_discovery.c.o.d"
   "CMakeFiles/p2p_transport.dir/transport/transport_helpers.c.o"
   "CMakeFiles/p2p_transport.dir/transport/transport_helpers.c.o.d"
+  "CMakeFiles/p2p_transport.dir/transport/transport_juice.c.o"
+  "CMakeFiles/p2p_transport.dir/transport/transport_juice.c.o.d"
   "CMakeFiles/p2p_transport.dir/transport/transport_offline.c.o"
   "CMakeFiles/p2p_transport.dir/transport/transport_offline.c.o.d"
   "CMakeFiles/p2p_transport.dir/transport/transport_tcp.c.o"

@@ -7,6 +7,7 @@
 #include "../font_awesome.h"
 #include "../texture_manager.h"
 #include "../helpers/avatar_helpers.h"
+#include "../helpers/file_browser.h"
 #include <nfd.h>
 
 extern "C" {
@@ -205,7 +206,7 @@ void render(AppState& state) {
     bool is_mobile = IsMobileLayout();
 
 
-    if (CenteredModal::Begin("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize, true, false, 600, 500)) {  // 600x500 with scrolling
+    if (CenteredModal::Begin("Edit DNA Profile", &state.show_profile_editor, ImGuiWindowFlags_NoResize, true, false, 600, 590)) {  // 600x590 with scrolling
 
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(), "Edit your public DNA profile. All changes are stored in the DHT.");
         ImGui::Spacing();
@@ -300,61 +301,17 @@ void render(AppState& state) {
                 ImGui::Spacing();
                 
                 if (ThemedButton(ICON_FA_FOLDER_OPEN " Browse Image File", ImVec2(200, 30), false)) {
-                    char *selected_path = nullptr;
-
-                    #ifndef _WIN32
-                    // Linux: Detect KDE and use kdialog, otherwise use zenity
-                    const char *desktop_env = getenv("XDG_CURRENT_DESKTOP");
-                    const char *kde_session = getenv("KDE_SESSION_VERSION");
-                    bool is_kde = (desktop_env && strstr(desktop_env, "KDE")) || kde_session;
+                    std::string selected_path = FileBrowser::openFileDialog("Select Avatar Image", FileBrowser::FILE_TYPE_IMAGES);
                     
-                    const char *dialog_cmd = is_kde
-                        ? "kdialog --getopenfilename . 'Image files (*.png *.jpg *.jpeg *.bmp *.gif)|All files (*)' --title 'Select Avatar Image' 2>/dev/null"
-                        : "zenity --file-selection --title='Select Avatar Image' --file-filter='Image files | *.png *.jpg *.jpeg *.bmp *.gif' 2>/dev/null";
-                    
-                    FILE *fp = popen(dialog_cmd, "r");
-                    if (fp) {
-                        char path_buffer[4096];
-                        if (fgets(path_buffer, sizeof(path_buffer), fp)) {
-                            size_t len = strlen(path_buffer);
-                            if (len > 0 && path_buffer[len-1] == '\n') {
-                                path_buffer[len-1] = '\0';
-                            }
-                            if (strlen(path_buffer) > 0) {
-                                selected_path = strdup(path_buffer);
-                            }
-                        }
-                        int status = pclose(fp);
-                        if (status != 0 && !selected_path) {
-                            state.profile_status = is_kde 
-                                ? "Error: kdialog not found. Install kdialog package."
-                                : "Error: zenity not found. Install zenity package.";
-                        }
-                    } else {
-                        state.profile_status = is_kde
-                            ? "Error: Failed to launch kdialog"
-                            : "Error: Failed to launch zenity";
-                    }
-                    #else
-                    // Windows: Use NFD (no GTK on Windows)
-                    nfdchar_t *outPath = nullptr;
-                    nfdfilteritem_t filters[1] = { { "Image Files", "png,jpg,jpeg,bmp,gif" } };
-                    nfdresult_t result = NFD_OpenDialog(&outPath, filters, 1, nullptr);
-                    if (result == NFD_OKAY) {
-                        selected_path = outPath;
-                    }
-                    #endif
-
-                    if (selected_path) {
+                    if (!selected_path.empty()) {
                         // Process avatar file immediately (larger buffer for safety)
                         char *base64_out = (char*)malloc(65536); // 64KB buffer for base64
                         if (!base64_out) {
                             state.profile_status = "Failed to allocate memory";
-                            free(selected_path);
                             return;
                         }
 
-                        int ret = avatar_load_and_encode(selected_path, base64_out, 65536);
+                        int ret = avatar_load_and_encode(selected_path.c_str(), base64_out, 65536);
 
                         if (ret == 0) {
                             // Remove old texture from cache before loading new one
@@ -365,16 +322,21 @@ void render(AppState& state) {
                             state.profile_avatar_base64 = std::string(base64_out);
                             state.profile_avatar_loaded = true;
                             state.profile_status = "Avatar uploaded successfully! (64x64)";
-                            printf("[ProfileEditor] Avatar loaded from: %s\n", selected_path);
+                            printf("[ProfileEditor] Avatar loaded from: %s\n", selected_path.c_str());
                         } else {
                             state.profile_status = "Failed to load/resize avatar image";
                         }
 
                         free(base64_out);
-                        free(selected_path);
                     } else {
-                        printf("[ProfileEditor] No file selected\n");
-                        state.profile_status = "Error opening file dialog";
+                        // Check for file browser error
+                        const std::string& error = FileBrowser::getLastError();
+                        if (!error.empty()) {
+                            state.profile_status = error;
+                        } else {
+                            state.profile_status = "No file selected";
+                        }
+                        printf("[ProfileEditor] No file selected or error occurred\n");
                     }
                 }
             }
@@ -390,7 +352,9 @@ void render(AppState& state) {
 
         ImGui::EndChild();
 
-        ImGui::Spacing();
+        // Position buttons at bottom
+        CenteredModal::BottomSection();
+        
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", state.profile_status.c_str());
         ImGui::Spacing();
 

@@ -3,6 +3,7 @@
  */
 
 #include "dht_singleton.h"
+#include "../core/dht_context.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -74,17 +75,26 @@ int dht_singleton_init(void)
 
     printf("[DHT_SINGLETON] DHT started, bootstrapping to network...\n");
 
-    // Wait for DHT to bootstrap (asynchronous operation takes 3-5 seconds)
-    // This ensures DHT is ready for immediate use by identity creation, etc.
-    printf("[DHT_SINGLETON] Waiting 5 seconds for DHT bootstrap...\n");
-
-    #ifdef _WIN32
-    Sleep(5000);  // Windows: milliseconds
-    #else
-    sleep(5);     // Unix: seconds
-    #endif
-
-    printf("[DHT_SINGLETON] ✓ Global DHT ready!\n");
+    // Wait for DHT to be ready with faster polling for better responsiveness
+    // Check every 100ms for up to 3 seconds maximum
+    int max_attempts = 30;  // 30 * 100ms = 3s max
+    int attempts = 0;
+    
+    while (!dht_context_is_ready(g_dht_context) && attempts < max_attempts) {
+        #ifdef _WIN32
+        Sleep(100);  // Windows: 100ms
+        #else
+        usleep(100000);  // Unix: 100ms
+        #endif
+        attempts++;
+    }
+    
+    if (dht_context_is_ready(g_dht_context)) {
+        printf("[DHT_SINGLETON] ✓ Global DHT ready! (took %dms)\n", attempts * 100);
+    } else {
+        printf("[DHT_SINGLETON] ⚠ DHT bootstrap timeout, continuing anyway...\n");
+        // Don't return error - DHT may still work for some operations
+    }
     return 0;
 }
 
@@ -147,16 +157,26 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 
     printf("[DHT_SINGLETON] DHT started, bootstrapping to network...\n");
 
-    // Wait for DHT to bootstrap
-    printf("[DHT_SINGLETON] Waiting 5 seconds for DHT bootstrap...\n");
-
-    #ifdef _WIN32
-    Sleep(5000);
-    #else
-    sleep(5);
-    #endif
-
-    printf("[DHT_SINGLETON] ✓ Global DHT ready with user identity!\n");
+    // Wait for DHT to be ready with faster polling for better responsiveness
+    // Check every 100ms for up to 3 seconds maximum
+    int max_attempts = 30;  // 30 * 100ms = 3s max
+    int attempts = 0;
+    
+    while (!dht_context_is_ready(g_dht_context) && attempts < max_attempts) {
+        #ifdef _WIN32
+        Sleep(100);  // Windows: 100ms
+        #else
+        usleep(100000);  // Unix: 100ms
+        #endif
+        attempts++;
+    }
+    
+    if (dht_context_is_ready(g_dht_context)) {
+        printf("[DHT_SINGLETON] ✓ Global DHT ready with user identity! (took %dms)\n", attempts * 100);
+    } else {
+        printf("[DHT_SINGLETON] ⚠ DHT bootstrap timeout, continuing anyway...\n");
+        // Don't return error - DHT may still work for some operations
+    }
     return 0;
 }
 

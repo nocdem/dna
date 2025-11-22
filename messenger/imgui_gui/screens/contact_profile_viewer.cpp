@@ -122,7 +122,7 @@ void render(AppState& state) {
     bool is_mobile = IsMobileLayout();
 
 
-    if (CenteredModal::Begin("Contact Profile", &state.show_contact_profile, ImGuiWindowFlags_NoResize, true, false, 600)) {
+    if (CenteredModal::Begin("Contact Profile", &state.show_contact_profile, ImGuiWindowFlags_NoResize, true, false, 600, 590)) {
         // Header
 
         ImGui::Spacing();

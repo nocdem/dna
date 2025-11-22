@@ -71,7 +71,7 @@ static void reloadGroupsAndInvitations(AppState& state) {
 }
 
 void render(AppState& state) {
-    if (!CenteredModal::Begin("Group Invitation", &state.show_group_invitation_dialog, ImGuiWindowFlags_NoResize, true, false, 500)) {
+    if (!CenteredModal::Begin("Group Invitation", &state.show_group_invitation_dialog, ImGuiWindowFlags_NoResize, true, false, 500, 590)) {
         // Reset state when dialog closes
         if (!state.show_group_invitation_dialog) {
             state.selected_invitation_index = -1;

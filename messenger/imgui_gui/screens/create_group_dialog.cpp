@@ -30,7 +30,7 @@ void render(AppState& state) {
     bool is_mobile = IsMobileLayout();
 
     if (CenteredModal::Begin("Create Group", &state.show_create_group_dialog,
-                              ImGuiWindowFlags_NoResize, is_mobile, false, 500)) {
+                              ImGuiWindowFlags_NoResize, is_mobile, false, 500, 590)) {
 
         // Group name input
         ImGui::Text(ICON_FA_USERS " Group Name");
@@ -96,6 +96,9 @@ void render(AppState& state) {
             ImGui::TextColored(color, "%s", state.create_group_status.c_str());
             ImGui::Spacing();
         }
+
+        // Position buttons at bottom
+        CenteredModal::BottomSection();
 
         // Buttons - horizontal layout like add contact dialog
         bool can_create = strlen(state.create_group_name_input) > 0 &&

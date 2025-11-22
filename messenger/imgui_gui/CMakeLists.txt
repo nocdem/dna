@@ -70,6 +70,7 @@ add_executable(dna-messenger
     helpers/avatar_helpers.cpp
     helpers/notification_manager.cpp
     helpers/background_tasks.cpp
+    helpers/file_browser.cpp
     screens/register_name_screen.cpp
     screens/message_wall_screen.cpp
     screens/profile_editor_screen.cpp
@@ -83,6 +84,7 @@ add_executable(dna-messenger
     screens/create_group_dialog.cpp
     screens/group_invitation_dialog.cpp
     screens/chat_screen.cpp
+    screens/profile_sidebar.cpp
     screens/contacts_sidebar.cpp
     screens/identity_selection_screen.cpp
     screens/layout_manager.cpp

@@ -11,6 +11,7 @@ set(CMAKE_DEPENDS_DEPENDENCY_FILES
   "/home/mika/dev/dna-messenger/p2p/p2p_transport.c" "p2p/CMakeFiles/p2p_transport.dir/p2p_transport.c.o" "gcc" "p2p/CMakeFiles/p2p_transport.dir/p2p_transport.c.o.d"
   "/home/mika/dev/dna-messenger/p2p/transport/transport_discovery.c" "p2p/CMakeFiles/p2p_transport.dir/transport/transport_discovery.c.o" "gcc" "p2p/CMakeFiles/p2p_transport.dir/transport/transport_discovery.c.o.d"
   "/home/mika/dev/dna-messenger/p2p/transport/transport_helpers.c" "p2p/CMakeFiles/p2p_transport.dir/transport/transport_helpers.c.o" "gcc" "p2p/CMakeFiles/p2p_transport.dir/transport/transport_helpers.c.o.d"
+  "/home/mika/dev/dna-messenger/p2p/transport/transport_juice.c" "p2p/CMakeFiles/p2p_transport.dir/transport/transport_juice.c.o" "gcc" "p2p/CMakeFiles/p2p_transport.dir/transport/transport_juice.c.o.d"
   "/home/mika/dev/dna-messenger/p2p/transport/transport_offline.c" "p2p/CMakeFiles/p2p_transport.dir/transport/transport_offline.c.o" "gcc" "p2p/CMakeFiles/p2p_transport.dir/transport/transport_offline.c.o.d"
   "/home/mika/dev/dna-messenger/p2p/transport/transport_tcp.c" "p2p/CMakeFiles/p2p_transport.dir/transport/transport_tcp.c.o" "gcc" "p2p/CMakeFiles/p2p_transport.dir/transport/transport_tcp.c.o.d"
   )

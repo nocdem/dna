@@ -4,6 +4,7 @@
 #include "../theme_colors.h"
 #include "../settings_manager.h"
 #include "../font_awesome.h"
+#include "../helpers/file_browser.h"
 #include "wallet_transaction_history_dialog.h"
 #include "../../blockchain/wallet.h"
 #include "../../blockchain/blockchain_rpc.h"
@@ -189,14 +190,77 @@ void render(AppState& state) {
         ImVec2 available_size = ImGui::GetContentRegionAvail();
         ImVec2 center = ImVec2(available_size.x * 0.5f, available_size.y * 0.5f);
 
-        const char* error_icon = ICON_FA_TRIANGLE_EXCLAMATION " Wallet Error";
-        ImVec2 text_size = ImGui::CalcTextSize(error_icon);
-        ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y - 60));
-        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(), "%s", error_icon);
+        // Large wallet icon
+        ImGui::PushStyleColor(ImGuiCol_Text, g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text());
+        ImGui::SetWindowFontScale(4.0f);  // Make icon 4x larger
+        
+        // Calculate icon size and center it properly
+        ImVec2 icon_size = ImGui::CalcTextSize(ICON_FA_WALLET);
+        ImGui::SetCursorPos(ImVec2(center.x - icon_size.x * 0.5f, center.y - 150));
+        ImGui::Text(ICON_FA_WALLET);
+        
+        ImGui::SetWindowFontScale(1.0f);
+        ImGui::PopStyleColor();
 
-        ImVec2 desc_size = ImGui::CalcTextSize(state.wallet_error.c_str());
-        ImGui::SetCursorPos(ImVec2(center.x - desc_size.x * 0.5f, center.y - 20));
-        ImGui::TextDisabled("%s", state.wallet_error.c_str());
+        // Error message
+        const char* error_text = "No wallets found";
+        ImVec2 text_size = ImGui::CalcTextSize(error_text);
+        ImGui::SetCursorPos(ImVec2(center.x - text_size.x * 0.5f, center.y - 70));
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(), "%s", error_text);
+
+        // Description
+        const char* desc_text = "Create one with cellframe-node-cli or browse for existing wallet files";
+        ImVec2 desc_size = ImGui::CalcTextSize(desc_text);
+        ImGui::SetCursorPos(ImVec2(center.x - desc_size.x * 0.5f, center.y - 10));
+        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", desc_text);
+
+        // Browse button
+        ImGui::SetCursorPos(ImVec2(center.x - 100, center.y + 30));
+        
+        // Show different button text based on file browser task state
+        const char* button_text = ICON_FA_FOLDER_OPEN " Browse Wallet Files";
+        if (state.file_browser_task.isRunning()) {
+            button_text = ICON_FA_SPINNER " Opening File Browser...";
+        }
+        
+        bool button_disabled = state.file_browser_task.isRunning();
+        if (button_disabled) {
+            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.6f);
+        }
+        
+        if (ThemedButton(button_text, ImVec2(200, 40)) && !button_disabled) {
+            // Start async file browser
+            state.file_browser_task.start([](AsyncTask* task) {
+                FileBrowser::openFileDialogAsync(task, "Select Wallet File", FileBrowser::FILE_TYPE_WALLETS);
+            });
+        }
+        
+        if (button_disabled) {
+            ImGui::PopStyleVar();
+        }
+        
+        // Check if file browser task completed
+        if (state.file_browser_task.isCompleted() && !state.file_browser_task.isRunning()) {
+            std::string walletPath = FileBrowser::getAsyncResult();
+            
+            if (!walletPath.empty()) {
+                // TODO: Load the selected wallet file
+                // For now, just show the path in the error message
+                state.wallet_error = "Selected wallet: " + walletPath + " (Loading not yet implemented)";
+                printf("[Wallet] Selected wallet file: %s\n", walletPath.c_str());
+            } else {
+                // Check for file browser error
+                const std::string& error = FileBrowser::getLastError();
+                if (!error.empty()) {
+                    state.wallet_error = "File browser error: " + error;
+                } else {
+                    // User cancelled, don't show error
+                    printf("[Wallet] File selection cancelled\n");
+                }
+            }
+            
+            // Task will auto-reset on next start() call
+        }
 
         ImGui::EndChild();
         return;

@@ -356,7 +356,7 @@ void render(AppState& state) {
     bool is_mobile = IsMobileLayout();
 
 
-    if (CenteredModal::Begin("Message Wall", &state.show_message_wall, ImGuiWindowFlags_NoResize, true, false, 600)) {
+    if (CenteredModal::Begin("Message Wall", &state.show_message_wall, ImGuiWindowFlags_NoResize, true, false, 600, 590)) {
         // Refresh button (right-aligned with padding matching left side)
         float refresh_width = 100.0f;
         float left_padding = ImGui::GetCursorPosX();

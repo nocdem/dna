@@ -30,7 +30,7 @@ static void cleanupProfile(AppState& state) {
 }
 
 void render(AppState& state, std::function<void()> reload_contacts_callback) {
-    if (!CenteredModal::Begin("Add Contact", &state.show_add_contact_dialog, ImGuiWindowFlags_NoResize, true, false, 450)) {
+    if (!CenteredModal::Begin("Add Contact", &state.show_add_contact_dialog, ImGuiWindowFlags_NoResize, true, false, 450, 590)) {
         return;
     }
 
@@ -268,7 +268,8 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
         ImGui::TextDisabled("Type at least 3 characters to search");
     }
 
-    ImGui::Spacing();
+    // Position buttons at bottom
+    CenteredModal::BottomSection();
 
     // Buttons - properly aligned with equal spacing from edges
     float button_width_left = 100.0f;

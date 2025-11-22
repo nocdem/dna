@@ -19,6 +19,7 @@
 #include "screens/add_contact_dialog.h"
 #include "screens/create_group_dialog.h"
 #include "screens/group_invitation_dialog.h"
+#include "screens/profile_sidebar.h"
 #include "screens/contacts_sidebar.h"
 #include "screens/chat_screen.h"
 #include "screens/layout_manager.h"

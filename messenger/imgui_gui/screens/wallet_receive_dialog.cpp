@@ -67,7 +67,7 @@ void render(AppState& state) {
     bool is_mobile = IsMobileLayout();
 
 
-    if (CenteredModal::Begin("Receive Tokens", &state.show_receive_dialog, ImGuiWindowFlags_NoResize, true, false, 500)) {
+    if (CenteredModal::Begin("Receive Tokens", &state.show_receive_dialog, ImGuiWindowFlags_NoResize, true, false, 500, 590)) {
         // Wallet name
         ImGui::Text(ICON_FA_WALLET " %s", state.wallet_name.c_str());
         ImGui::Spacing();

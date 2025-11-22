@@ -12,6 +12,8 @@
 
 #include <cstring>
 #include <cstdio>
+#include <thread>
+#include <chrono>
 #include <GLFW/glfw3.h>  // For GLuint
 
 // External settings variable
@@ -158,147 +160,136 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     ImVec4 sidebar_bg = (g_app_settings.theme == 0) ? DNATheme::InputBackground() : ClubTheme::InputBackground();
     ImGui::PushStyleColor(ImGuiCol_ChildBg, sidebar_bg);
 
-    ImGui::BeginChild("Sidebar", ImVec2(250, 0), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("ContactsSidebar", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar);
 
-    // Show current identity name centered at top
-    if (!state.current_identity.empty()) {
-        ImGui::Spacing();
-        
-        // Get display name from cache, or use shortened fingerprint
-        std::string display_name = state.current_identity.substr(0, 10) + "...";
-        auto it = state.identity_name_cache.find(state.current_identity);
-        if (it != state.identity_name_cache.end()) {
-            display_name = it->second;
-        }
-        
-        // Show avatar if available
-        if (state.profile_avatar_loaded && !state.profile_avatar_base64.empty()) {
-            int avatar_width = 0, avatar_height = 0;
-            GLuint texture_id = TextureManager::getInstance().loadAvatar(
-                state.current_identity,
-                state.profile_avatar_base64,
-                &avatar_width,
-                &avatar_height
-            );
-            
-            if (texture_id != 0) {
-                // Center avatar (64x64)
-                float avatar_size = 64.0f;
-                float center_x = (250 - avatar_size) * 0.5f;
-                ImGui::SetCursorPosX(center_x);
-                
-                // Render circular avatar with border
-                ImVec4 border_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
-                AvatarHelpers::renderCircularAvatar(texture_id, avatar_size, border_col, 0.5f);
-                
-                ImGui::Spacing();
-            }
-        }
-        
-        // Center the identity name
-        float text_width = ImGui::CalcTextSize(display_name.c_str()).x;
-        float center_x = (250 - text_width) * 0.5f;
-        ImGui::SetCursorPosX(center_x);
-        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text(), "%s", display_name.c_str());
-        
-        ImGui::Spacing();
-        
-        // Show Register DNA or Edit Profile button based on registration status
-        bool has_registered_name = !state.profile_registered_name.empty() &&
-                                   state.profile_registered_name != "Loading..." &&
-                                   state.profile_registered_name != "N/A (DHT not connected)" &&
-                                   state.profile_registered_name != "Not registered" &&
-                                   state.profile_registered_name != "Error loading";
-        
-        if (has_registered_name) {
-            // User is registered - show all 4 round icon buttons in a single row
-            // Edit Profile, Post to Wall, Wallet, Settings
-            float button_spacing = 8.0f;
-            float total_width = (32.0f * 4) + (button_spacing * 3);  // 4 buttons, 3 spaces
-            float start_x = (250 - total_width) * 0.5f;
+    ImGui::Spacing();
+    
+    // Action buttons at top - similar to profile sidebar style
+    float button_spacing = 8.0f;
+    float total_width = (32.0f * 3) + (button_spacing * 2);  // 3 buttons, 2 spaces
+    float available_width = ImGui::GetContentRegionAvail().x;
+    float start_x = (available_width - total_width) * 0.5f;
 
-            ImGui::SetCursorPosX(start_x);
-            if (ThemedRoundButton(ICON_FA_USER)) {
-                state.show_profile_editor = true;
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-                ImGui::SetTooltip("Edit your profile information");
-            }
-
-            ImGui::SameLine(0, button_spacing);
-            if (ThemedRoundButton(ICON_FA_NEWSPAPER)) {
-                state.wall_fingerprint = state.current_identity;
-                state.wall_display_name = "My Wall";
-                state.wall_is_own = true;
-                state.show_message_wall = true;
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-                ImGui::SetTooltip("Post messages to your public wall");
-            }
-
-            ImGui::SameLine(0, button_spacing);
-            if (ThemedRoundButton(ICON_FA_CREDIT_CARD)) {
-                state.current_view = VIEW_WALLET;
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-                ImGui::SetTooltip("Manage your cryptocurrency wallet");
-            }
-
-            ImGui::SameLine(0, button_spacing);
-            if (ThemedRoundButton(ICON_FA_GEAR)) {
-                state.current_view = VIEW_SETTINGS;
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-                ImGui::SetTooltip("Configure application settings");
-            }
-        } else {
-            // User not registered - show Register DNA button
-            if (ThemedButton(ICON_FA_ID_CARD " Register DNA", ImVec2(-1, 40))) {
-                state.show_register_name = true;
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-                ImGui::SetTooltip("Register a human-readable DNA name");
-            }
-
-            ImGui::Spacing();
-
-            // Show Wallet and Settings buttons for unregistered users too
-            float button_spacing = 8.0f;
-            float total_width = 32.0f + button_spacing + 32.0f;
-            float start_x = (250 - total_width) * 0.5f;
-
-            ImGui::SetCursorPosX(start_x);
-            if (ThemedRoundButton(ICON_FA_CREDIT_CARD)) {
-                state.current_view = VIEW_WALLET;
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-                ImGui::SetTooltip("Manage your cryptocurrency wallet");
-            }
-
-            ImGui::SameLine(0, button_spacing);
-            if (ThemedRoundButton(ICON_FA_GEAR)) {
-                state.current_view = VIEW_SETTINGS;
-            }
-            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-                ImGui::SetTooltip("Configure application settings");
-            }
-        }
-
-        ImGui::Spacing();
-        ImGui::Separator();
-        ImGui::Spacing();
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + start_x);
+    if (ThemedRoundButton(ICON_FA_CIRCLE_PLUS)) {
+        state.show_add_contact_dialog = true;
+        state.add_contact_lookup_in_progress = false;
+        state.add_contact_error_message.clear();
+        state.add_contact_found_name.clear();
+        state.add_contact_found_fingerprint.clear();
+        state.add_contact_last_searched_input.clear();
+        memset(state.add_contact_input, 0, sizeof(state.add_contact_input));
+        ImGui::OpenPopup("Add Contact");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+        ImGui::SetTooltip("Add a new contact by DNA name or fingerprint");
     }
 
+    ImGui::SameLine(0, button_spacing);
+    if (ThemedRoundButton(ICON_FA_USERS)) {
+        state.show_create_group_dialog = true;
+        state.create_group_in_progress = false;
+        state.create_group_status.clear();
+        state.create_group_selected_members.clear();
+        memset(state.create_group_name_input, 0, sizeof(state.create_group_name_input));
+        ImGui::OpenPopup("Create Group");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+        ImGui::SetTooltip("Create a new group conversation");
+    }
+
+    ImGui::SameLine(0, button_spacing);
+    bool is_syncing = state.contact_sync_task.isRunning();
+    
+    // Disable button while syncing  
+    ImGui::BeginDisabled(is_syncing);
+    if (ThemedRoundButton(ICON_FA_ARROWS_ROTATE)) {
+        messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+        if (ctx && !is_syncing) {
+            printf("[Contacts] Starting truly async DHT sync...\n");
+            
+            printf("[Contacts] Using truly async DHT operations!\n");
+            
+            // Just trigger the existing automatic sync mechanism that already uses async DHT
+            // This is what happens on startup and works without blocking
+            messenger_context_t *ctx_copy = ctx;  // Copy for safety
+            
+            // Use the same mechanism as startup - let main thread handle reload
+            state.contacts_synced_from_dht = false;
+            
+            // Start the same async task that DataLoader uses (which must be non-blocking since startup works)
+            state.contact_sync_task.start([&state, ctx_copy](AsyncTask* task) {
+                task->addMessage("Connecting to DHT...");
+                printf("[Contacts] Starting async DHT operations (like on startup)...\n");
+                
+                // First: Fetch contacts from DHT (merge with local)
+                task->addMessage("Fetching contacts from DHT...");
+                int result = messenger_sync_contacts_from_dht(ctx_copy);
+                if (result == 0) {
+                    task->addMessage("✓ Synced from DHT");
+                    printf("[Contacts] [OK] Synced from DHT successfully\n");
+                    state.contacts_synced_from_dht = true;
+                } else {
+                    task->addMessage("DHT sync failed or no data found");
+                    printf("[Contacts] DHT sync failed or no data found\n");
+                }
+                
+                // Second: Push local contacts back to DHT (ensure DHT is up-to-date)
+                task->addMessage("Publishing contacts to DHT...");
+                printf("[Contacts] Publishing local contacts to DHT...\n");
+                messenger_sync_contacts_to_dht(ctx_copy);
+                task->addMessage("✓ Published to DHT");
+                printf("[Contacts] [OK] Local contacts published to DHT\n");
+                
+                task->addMessage("Sync complete!");
+                printf("[Contacts] Manual sync completed - reload will happen on main thread\n");
+            });
+        }
+    }
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+        ImGui::SetTooltip("Refresh contacts from DHT network");
+    }
+
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+
     // Groups and Contacts in a single scrollable child
-    // Calculate available height: total sidebar height minus fixed elements at top and bottom
-    float add_button_height = 40.0f;
-    float num_buttons = 3.0f;
-    float spacing = ImGui::GetStyle().ItemSpacing.y;
-    float available_height = ImGui::GetContentRegionAvail().y - (add_button_height * num_buttons) - (spacing * num_buttons);
+    // No need to reserve space at bottom since buttons are now at top
+    float available_height = ImGui::GetContentRegionAvail().y;
 
     // Set scrollbar background to match sidebar background
     ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, sidebar_bg);
     ImGui::BeginChild("GroupsAndContactsScroll", ImVec2(0, available_height), false);
+    
+    // Show spinner if syncing, otherwise show normal content
+    if (is_syncing) {
+        // Get available space and center everything
+        ImVec2 available = ImGui::GetContentRegionAvail();
+        
+        // Move to vertical center
+        float spinner_size = 30.0f;
+        float vertical_center = available.y * 0.5f - 25.0f; // Offset for spinner + text
+        
+        ImGui::Dummy(ImVec2(0, vertical_center));
+        
+        // Center spinner horizontally
+        float horizontal_center = (available.x - spinner_size) * 0.5f;
+        ImGui::Dummy(ImVec2(horizontal_center, 0));
+        ImGui::SameLine(0, 0);
+        ThemedSpinner("##refresh_spinner", spinner_size, 4.0f);
+        
+        // Center text horizontally on next line
+        const char* text = "Refreshing...";
+        ImVec2 text_size = ImGui::CalcTextSize(text);
+        float text_center = (available.x - text_size.x) * 0.5f;
+        
+        ImGui::Spacing();
+        ImGui::Dummy(ImVec2(text_center, 0));
+        ImGui::SameLine(0, 0);
+        ImGui::TextDisabled("%s", text);
+    } else {
     
     // Groups section header with pending invitations badge
     char groups_header[64];
@@ -576,57 +567,11 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
 
         ImGui::PopID();
     }
+    
+    } // End else block for normal content
 
     ImGui::EndChild(); // GroupsAndContactsScroll
     ImGui::PopStyleColor(); // ScrollbarBg
-
-    // Action buttons at bottom (40px each to match main buttons)
-    float button_width = ImGui::GetContentRegionAvail().x;
-    if (ThemedButton(ICON_FA_CIRCLE_PLUS " Add Contact", ImVec2(button_width, add_button_height), false)) {
-        state.show_add_contact_dialog = true;
-        state.add_contact_lookup_in_progress = false;
-        state.add_contact_error_message.clear();
-        state.add_contact_found_name.clear();
-        state.add_contact_found_fingerprint.clear();
-        state.add_contact_last_searched_input.clear();
-        memset(state.add_contact_input, 0, sizeof(state.add_contact_input));
-        ImGui::OpenPopup("Add Contact");
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-        ImGui::SetTooltip("Add a new contact by DNA name or fingerprint");
-    }
-
-    if (ThemedButton(ICON_FA_USERS " Create Group", ImVec2(button_width, add_button_height), false)) {
-        // Phase 1.3: Open create group dialog
-        state.show_create_group_dialog = true;
-        state.create_group_in_progress = false;
-        state.create_group_status.clear();
-        state.create_group_selected_members.clear();
-        memset(state.create_group_name_input, 0, sizeof(state.create_group_name_input));
-        ImGui::OpenPopup("Create Group");
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-        ImGui::SetTooltip("Create a new group conversation");
-    }
-
-    if (ThemedButton(ICON_FA_ARROWS_ROTATE " Refresh", ImVec2(button_width, add_button_height), false)) {
-        // Phase 1.4: Trigger DHT contact sync
-        messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
-        if (ctx) {
-            printf("[Contacts] Refreshing contacts from DHT...\n");
-            int result = messenger_sync_contacts_from_dht(ctx);
-            if (result == 0) {
-                printf("[Contacts] ✓ Successfully synced from DHT\n");
-                // Reload contacts from database to update UI
-                DataLoader::reloadContactsFromDatabase(state);
-            } else {
-                fprintf(stderr, "[Contacts] ✗ Failed to sync from DHT\n");
-            }
-        }
-    }
-    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-        ImGui::SetTooltip("Sync contacts from the DHT network");
-    }
 
     ImGui::EndChild(); // Sidebar
 

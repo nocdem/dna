@@ -151,7 +151,7 @@ void render(AppState& state) {
     bool is_mobile = IsMobileLayout();
 
 
-    if (CenteredModal::Begin("Register DNA", &state.show_register_name, ImGuiWindowFlags_NoResize, true, false, 500)) {
+    if (CenteredModal::Begin("Register DNA", &state.show_register_name, ImGuiWindowFlags_NoResize, true, false, 500, 590)) {
         
         // Check if registration task completed
         if (state.register_name_task.isCompleted() && !state.register_name_task.isRunning()) {

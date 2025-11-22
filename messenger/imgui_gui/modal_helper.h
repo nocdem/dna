@@ -14,6 +14,25 @@ private:
     static inline bool* s_esc_close_target = nullptr;  // Store pointer for ESC handling
     
 public:
+    // Helper to position content at bottom of modal with margin
+    static void BottomSection(float button_height = 40.0f, float margin = 20.0f) {
+        // Calculate needed space for buttons (button height + spacing + margin)
+        float needed_height = button_height + margin + ImGui::GetStyle().ItemSpacing.y * 2;
+        
+        // Get current window size and position cursor at bottom minus needed space
+        ImVec2 window_size = ImGui::GetWindowSize();
+        float content_region_start_y = ImGui::GetCursorStartPos().y;
+        float target_y = window_size.y - needed_height - ImGui::GetStyle().WindowPadding.y;
+        
+        // Only move if we have space
+        float current_y = ImGui::GetCursorPosY();
+        if (target_y > current_y) {
+            ImGui::SetCursorPosY(target_y);
+        }
+        
+        ImGui::Separator();
+        ImGui::Spacing();
+    }
     static bool Begin(const char* name, bool* p_open = nullptr, ImGuiWindowFlags flags = 0, bool allow_esc_close = true, bool show_close_button = true, float desktop_width = 500.0f, float desktop_height = 0.0f) {
         // Center modal before opening
         ImGuiIO& io = ImGui::GetIO();
