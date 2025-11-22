@@ -5,6 +5,7 @@
 #include "../theme_colors.h"
 #include "../settings_manager.h"
 #include "../font_awesome.h"
+#include "../texture_manager.h"
 #include "../../messenger.h"
 #include "../../database/contacts_db.h"
 #include "../../database/profile_manager.h"
@@ -13,6 +14,7 @@
 
 #include <cstring>
 #include <cstdio>
+#include <GLFW/glfw3.h>  // For GLuint
 
 // External settings variable
 extern AppSettings g_app_settings;
@@ -231,9 +233,66 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
             ImGui::TextDisabled("Loading profile...");
             ImGui::Spacing();
         } else if (state.add_contact_profile_loaded && state.add_contact_profile) {
-            // Display profile information (bio only for simplicity)
+            // Display profile information with avatar and bio
             ImGui::Separator();
             ImGui::Spacing();
+            
+            // Show avatar if available (centered above bio)
+            if (state.add_contact_profile->avatar_base64[0] != '\0') {
+                float avatar_size = 96.0f;  // Match profile sidebar size
+                float available_width = ImGui::GetContentRegionAvail().x;
+                float avatar_center_x = (available_width - avatar_size) * 0.5f;
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avatar_center_x);
+                
+                // Load avatar texture
+                int avatar_width = 0, avatar_height = 0;
+                GLuint texture_id = TextureManager::getInstance().loadAvatar(
+                    state.add_contact_found_fingerprint,
+                    state.add_contact_profile->avatar_base64,
+                    &avatar_width,
+                    &avatar_height
+                );
+                
+                if (texture_id != 0) {
+                    // Draw the avatar as a simple image (no interaction needed)
+                    ImVec2 avatar_pos = ImGui::GetCursorScreenPos();
+                    ImDrawList* draw_list = ImGui::GetWindowDrawList();
+                    
+                    // Calculate center position for circular avatar
+                    ImVec2 center = ImVec2(avatar_pos.x + avatar_size * 0.5f, avatar_pos.y + avatar_size * 0.5f);
+                    float radius = avatar_size * 0.5f;
+                    
+                    // Draw circular avatar
+                    draw_list->AddImageRounded((ImTextureID)(intptr_t)texture_id, avatar_pos, 
+                                             ImVec2(avatar_pos.x + avatar_size, avatar_pos.y + avatar_size), 
+                                             ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, radius);
+                    
+                    // Add subtle border
+                    ImVec4 border_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+                    ImU32 border_color = IM_COL32((int)(border_col.x * 255), (int)(border_col.y * 255), (int)(border_col.z * 255), 128);
+                    draw_list->AddCircle(center, radius, border_color, 0, 1.0f);
+                    
+                    // Move cursor down past the avatar
+                    ImGui::SetCursorScreenPos(ImVec2(avatar_pos.x, avatar_pos.y + avatar_size));
+                    ImGui::Spacing();
+                    ImGui::Spacing();
+                } else {
+                    // Avatar failed to load, show placeholder icon
+                    ImVec4 placeholder_color = (g_app_settings.theme == 0) ? DNATheme::TextDisabled() : ClubTheme::TextDisabled();
+                    ImGui::PushStyleColor(ImGuiCol_Text, placeholder_color);
+                    ImGui::SetWindowFontScale(3.0f);  // Large icon
+                    
+                    // Center the placeholder icon
+                    ImVec2 icon_size = ImGui::CalcTextSize(ICON_FA_USER);
+                    float icon_center_x = (available_width - icon_size.x) * 0.5f;
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + icon_center_x);
+                    ImGui::Text("%s", ICON_FA_USER);
+                    
+                    ImGui::SetWindowFontScale(1.0f);
+                    ImGui::PopStyleColor();
+                    ImGui::Spacing();
+                }
+            }
             
             // Show bio if available
             if (state.add_contact_profile->bio[0] != '\0') {
@@ -244,9 +303,6 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
             } else {
                 ImGui::TextDisabled("No bio available");
             }
-
-            // NOTE: Profile pictures now use Base64 avatar system (Phase 10.3)
-            // See avatar_base64 field in dna_unified_identity_t
 
             ImGui::Spacing();
             ImGui::Separator();

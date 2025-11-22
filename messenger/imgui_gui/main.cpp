@@ -51,11 +51,32 @@ extern "C" {
 
 // Global flag for clean shutdown
 static volatile bool g_should_quit = false;
+static volatile bool g_glfw_initialized = false;
+static std::chrono::steady_clock::time_point g_shutdown_start_time;
 
 // Signal handler for Ctrl+C and other termination signals
 void signal_handler(int signum) {
-    printf("\n[MAIN] Received signal %d, shutting down gracefully...\n", signum);
-    g_should_quit = true;
+    static int signal_count = 0;
+    signal_count++;
+    
+    if (signal_count == 1) {
+        printf("\n[MAIN] Received signal %d, shutting down gracefully...\n", signum);
+        g_should_quit = true;
+        g_shutdown_start_time = std::chrono::steady_clock::now();
+        
+        // Wake up the event loop immediately to process the shutdown (only if GLFW is ready)
+        if (g_glfw_initialized) {
+            glfwPostEmptyEvent();
+        } else {
+            // If GLFW not ready yet, force exit immediately
+            printf("[MAIN] GLFW not initialized, forcing immediate exit...\n");
+            exit(0);
+        }
+    } else {
+        // Multiple Ctrl+C presses - force immediate exit
+        printf("\n[MAIN] Received signal %d again, forcing immediate exit...\n", signum);
+        exit(1);
+    }
 }
 
 // Backend includes for full functionality
@@ -216,6 +237,8 @@ int main(int argc, char** argv) {
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
         return 1;
+    
+    g_glfw_initialized = true;  // Mark GLFW as ready for signal handling
 
     #ifdef _WIN32
     // Initialize NFD (Windows only - Linux uses zenity/kdialog)
@@ -318,11 +341,23 @@ int main(int argc, char** argv) {
     static bool f11_was_pressed = false;
 
     while (!glfwWindowShouldClose(window) && !g_should_quit) {
+        // Always use PollEvents + sleep for reliable signal handling
         glfwPollEvents();
+        
+        // Small sleep to prevent busy waiting but allow responsive signal handling
+        std::this_thread::sleep_for(std::chrono::milliseconds(16)); // ~60 FPS
         
         // Check if signal was received
         if (g_should_quit) {
             printf("[MAIN] Shutdown signal received, breaking main loop...\n");
+            
+            // Check if shutdown is taking too long (force exit after 3 seconds)
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - g_shutdown_start_time);
+            if (elapsed.count() > 3000) {
+                printf("[MAIN] Shutdown timeout exceeded, forcing exit...\n");
+                exit(1);
+            }
             break;
         }
         
@@ -528,9 +563,31 @@ int main(int argc, char** argv) {
     g_app_settings.window_height = height;
     SettingsManager::Save(g_app_settings);
 
-    // Cleanup global DHT singleton on app shutdown
+    // Cleanup global DHT singleton on app shutdown with timeout
     printf("[MAIN] Cleaning up DHT singleton...\n");
-    dht_singleton_cleanup();
+    auto cleanup_start = std::chrono::steady_clock::now();
+    
+    // Run cleanup in a separate thread with timeout
+    std::atomic<bool> cleanup_done{false};
+    std::thread cleanup_thread([&cleanup_done]() {
+        dht_singleton_cleanup();
+        cleanup_done = true;
+    });
+    
+    // Wait for cleanup with timeout
+    while (!cleanup_done) {
+        auto now = std::chrono::steady_clock::now();
+        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - cleanup_start);
+        if (elapsed.count() > 2000) { // 2 second timeout
+            printf("[MAIN] DHT cleanup timeout, forcing exit...\n");
+            cleanup_thread.detach(); // Let it finish in background
+            exit(0);
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    
+    cleanup_thread.join();
+    printf("[MAIN] DHT cleanup completed\n");
 
     printf("[MAIN] Shutting down ImGui...\n");
     ImGui_ImplOpenGL3_Shutdown();

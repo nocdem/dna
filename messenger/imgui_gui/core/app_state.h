@@ -206,8 +206,11 @@ public:
     char profile_pic_cid[256];
     char profile_bio[513];  // 512 + null terminator
     char profile_avatar_path[512];  // Path to avatar file for upload
-    std::string profile_avatar_base64;  // Base64-encoded avatar data
-    bool profile_avatar_loaded;  // Track if avatar is loaded
+    std::string profile_avatar_base64;  // Base64-encoded avatar data from DHT
+    bool profile_avatar_loaded;  // Track if DHT avatar is loaded
+    std::string profile_avatar_preview_base64;  // Base64-encoded local preview (before save)
+    bool profile_avatar_preview_loaded;  // Track if local preview is loaded
+    bool profile_avatar_marked_for_removal;  // Mark DHT avatar for removal (deleted on save)
     std::string profile_status;
     std::string profile_registered_name;
     bool profile_loading;

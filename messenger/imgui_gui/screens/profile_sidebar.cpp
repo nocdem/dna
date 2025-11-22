@@ -15,15 +15,11 @@ extern AppSettings g_app_settings;
 namespace ProfileSidebar {
 
 void renderSidebar(AppState& state) {
-    // Push border color before creating child
-    ImVec4 border_col = (g_app_settings.theme == 0) ? DNATheme::Separator() : ClubTheme::Separator();
-    ImGui::PushStyleColor(ImGuiCol_Border, border_col);
-    
-    // Set sidebar background to button color (InputBackground)
-    ImVec4 sidebar_bg = (g_app_settings.theme == 0) ? DNATheme::InputBackground() : ClubTheme::InputBackground();
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, sidebar_bg);
+    // Remove background and border - make it transparent
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0)); // Transparent background
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));  // Transparent border
 
-    ImGui::BeginChild("ProfileSidebar", ImVec2(0, 200), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("ProfileSidebar", ImVec2(0, 200), false, ImGuiWindowFlags_NoScrollbar);
 
     // Show current identity name centered at top
     if (!state.current_identity.empty()) {
@@ -36,8 +32,8 @@ void renderSidebar(AppState& state) {
             display_name = it->second;
         }
         
-        // Show avatar or placeholder
-        float avatar_size = 64.0f;
+        // Show avatar or placeholder - 96x96 size
+        float avatar_size = 96.0f;
         float available_width = ImGui::GetContentRegionAvail().x;
         float avatar_center_x = (available_width - avatar_size) * 0.5f;
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + avatar_center_x);
@@ -52,13 +48,23 @@ void renderSidebar(AppState& state) {
             );
             
             if (texture_id != 0) {
-                // Make avatar clickable - use invisible button approach
-                if (ImGui::InvisibleButton("avatar_click", ImVec2(avatar_size, avatar_size))) {
+                // Check registration status before making avatar clickable
+                bool has_registered_name = !state.profile_registered_name.empty() &&
+                                           state.profile_registered_name != "Loading..." &&
+                                           state.profile_registered_name != "N/A (DHT not connected)" &&
+                                           state.profile_registered_name != "Not registered" &&
+                                           state.profile_registered_name != "Error loading";
+                
+                // Make avatar clickable only if user is registered
+                if (has_registered_name && ImGui::InvisibleButton("avatar_click", ImVec2(avatar_size, avatar_size))) {
                     state.show_profile_editor = true;
                 }
                 
-                // Draw the avatar over the invisible button
-                ImVec2 button_min = ImGui::GetItemRectMin();
+                // Draw the avatar over the invisible button (or just draw it if not registered)
+                ImVec2 button_min = has_registered_name ? ImGui::GetItemRectMin() : ImGui::GetCursorScreenPos();
+                if (!has_registered_name) {
+                    ImGui::SetCursorScreenPos(ImVec2(button_min.x, button_min.y + avatar_size)); // Move cursor down
+                }
                 ImDrawList* draw_list = ImGui::GetWindowDrawList();
                 
                 // Calculate center position for circular avatar
@@ -75,7 +81,7 @@ void renderSidebar(AppState& state) {
                 ImU32 border_color = IM_COL32((int)(border_col.x * 255), (int)(border_col.y * 255), (int)(border_col.z * 255), 255);
                 draw_list->AddCircle(center, radius, border_color, 0, 2.0f);
                 
-                if (ImGui::IsItemHovered()) {
+                if (has_registered_name && ImGui::IsItemHovered()) {
                     ImGui::SetTooltip("Click to edit your profile picture");
                 }
                 
@@ -103,13 +109,24 @@ void renderSidebar(AppState& state) {
                 ImGui::PopStyleVar(1);
                 ImGui::PopStyleColor(4);
                 
-                if (clicked) {
+                // Check registration status before handling click
+                bool has_registered_name = !state.profile_registered_name.empty() &&
+                                           state.profile_registered_name != "Loading..." &&
+                                           state.profile_registered_name != "N/A (DHT not connected)" &&
+                                           state.profile_registered_name != "Not registered" &&
+                                           state.profile_registered_name != "Error loading";
+                
+                if (clicked && has_registered_name) {
                     state.show_profile_editor = true;
                 }
                 
                 ImGui::PopID();
                 if (ImGui::IsItemHovered()) {
-                    ImGui::SetTooltip("Click to add a profile picture");
+                    if (has_registered_name) {
+                        ImGui::SetTooltip("Click to add a profile picture");
+                    } else {
+                        ImGui::SetTooltip("Register a DNA name to add a profile picture");
+                    }
                 }
                 ImGui::Spacing();
             }
@@ -136,13 +153,24 @@ void renderSidebar(AppState& state) {
             ImGui::PopStyleVar(1);
             ImGui::PopStyleColor(4);
             
-            if (clicked) {
+            // Check registration status before handling click
+            bool has_registered_name = !state.profile_registered_name.empty() &&
+                                       state.profile_registered_name != "Loading..." &&
+                                       state.profile_registered_name != "N/A (DHT not connected)" &&
+                                       state.profile_registered_name != "Not registered" &&
+                                       state.profile_registered_name != "Error loading";
+            
+            if (clicked && has_registered_name) {
                 state.show_profile_editor = true;
             }
             
             ImGui::PopID();
             if (ImGui::IsItemHovered()) {
-                ImGui::SetTooltip("Click to add a profile picture");
+                if (has_registered_name) {
+                    ImGui::SetTooltip("Click to add a profile picture");
+                } else {
+                    ImGui::SetTooltip("Register a DNA name to add a profile picture");
+                }
             }
             ImGui::Spacing();
         }
@@ -236,6 +264,10 @@ void renderSidebar(AppState& state) {
             }
         }
     }
+
+    // Add separator at the bottom
+    ImGui::Spacing();
+    ImGui::Separator();
 
     ImGui::EndChild();
 

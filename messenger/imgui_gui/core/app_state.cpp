@@ -89,6 +89,10 @@ AppState::AppState() {
     memset(profile_website, 0, sizeof(profile_website));
     memset(profile_pic_cid, 0, sizeof(profile_pic_cid));
     memset(profile_bio, 0, sizeof(profile_bio));
+    memset(profile_avatar_path, 0, sizeof(profile_avatar_path));
+    profile_avatar_loaded = false;
+    profile_avatar_preview_loaded = false;
+    profile_avatar_marked_for_removal = false;
 
     // Initialize register name dialog state
     show_register_name = false;

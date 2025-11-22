@@ -66,16 +66,21 @@ void renderGroupChat(AppState& state, bool is_mobile) {
         messages_copy = state.group_messages[state.selected_group];
     }
 
-    // Render all group messages
+    // Render all group messages (matching contact chat styling)
     for (size_t i = 0; i < messages_copy.size(); i++) {
         const auto& msg = messages_copy[i];
 
-        // Calculate bubble width
+        // Calculate bubble width based on current window size
         float available_width = ImGui::GetContentRegionAvail().x;
-        float bubble_width = available_width;
+        float bubble_width = available_width;  // 100% of available width (padding inside bubble prevents overflow)
 
-        // Bubble background (theme-aware)
+        // All bubbles aligned left (Telegram-style)
+
+        // Draw bubble background with proper padding (theme-aware)
         ImVec4 base_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+
+        // Recipient bubble: much lighter (0.12 opacity)
+        // Own bubble: normal opacity (0.25)
         ImVec4 bg_color;
         if (msg.is_outgoing) {
             bg_color = ImVec4(base_color.x, base_color.y, base_color.z, 0.25f);
@@ -84,38 +89,112 @@ void renderGroupChat(AppState& state, bool is_mobile) {
         }
 
         ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
-        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f);
+        ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0)); // No border
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 0.0f); // Square corners
 
         char bubble_id[32];
         snprintf(bubble_id, sizeof(bubble_id), "group_bubble%zu", i);
 
-        // Calculate dimensions
+        // Calculate padding and dimensions
         float padding_horizontal = 15.0f;
         float padding_vertical = 12.0f;
         float content_width = bubble_width - (padding_horizontal * 2);
 
         ImVec2 text_size = ImGui::CalcTextSize(msg.content.c_str(), NULL, false, content_width);
+
         float bubble_height = text_size.y + (padding_vertical * 2);
 
-        ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false, ImGuiWindowFlags_NoScrollbar);
+        ImGui::BeginChild(bubble_id, ImVec2(bubble_width, bubble_height), false,
+            ImGuiWindowFlags_NoScrollbar);
 
-        // Padding
+        // Right-click context menu - set compact style BEFORE opening
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.0f, 0.0f)); // No vertical padding
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 0.0f)); // No vertical spacing
+
+        if (ImGui::BeginPopupContextWindow()) {
+            if (ImGui::MenuItem(ICON_FA_COPY " Copy")) {
+                ImGui::SetClipboardText(msg.content.c_str());
+            }
+            ImGui::EndPopup();
+        }
+
+        ImGui::PopStyleVar(2);
+
+        // Apply padding
         ImGui::SetCursorPos(ImVec2(padding_horizontal, padding_vertical));
 
-        // Message content
-        ImGui::PushStyleColor(ImGuiCol_Text, (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text());
-        ImGui::PushTextWrapPos(content_width + padding_horizontal);
+        // Use TextWrapped for better text rendering
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + content_width);
         ImGui::TextWrapped("%s", msg.content.c_str());
         ImGui::PopTextWrapPos();
-        ImGui::PopStyleColor();
+
+        // Status indicator (bottom-right corner) for outgoing messages
+        if (msg.is_outgoing) {
+            const char* status_icon;
+            ImVec4 status_color = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
+
+            switch (msg.status) {
+                case STATUS_PENDING:
+                    status_icon = ICON_FA_CLOCK;
+                    break;
+                case STATUS_SENT:
+                    status_icon = ICON_FA_CHECK;
+                    break;
+                case STATUS_FAILED:
+                    status_icon = ICON_FA_CIRCLE_EXCLAMATION;
+                    break;
+            }
+
+            status_color.w = 0.6f; // Subtle opacity for all states
+            float icon_size = 12.0f;
+            ImVec2 status_pos = ImVec2(content_width - icon_size, bubble_height - padding_vertical - icon_size);
+
+            ImGui::SetCursorPos(status_pos);
+            ImGui::PushStyleColor(ImGuiCol_Text, status_color);
+            ImGui::Text("%s", status_icon);
+            ImGui::PopStyleColor();
+
+            // Add retry hover tooltip and click handler for failed messages
+            if (msg.status == STATUS_FAILED) {
+                if (ImGui::IsItemHovered()) {
+                    ImGui::SetTooltip("Send failed - click to retry");
+                }
+                if (ImGui::IsItemClicked()) {
+                    // TODO: Add group message retry functionality
+                    // retryGroupMessage(state, state.selected_group, i);
+                }
+            }
+        }
 
         ImGui::EndChild();
 
-        ImGui::PopStyleVar();
-        ImGui::PopStyleColor(2);
+        // Get bubble position for arrow (AFTER EndChild)
+        ImVec2 bubble_min = ImGui::GetItemRectMin();
+        ImVec2 bubble_max = ImGui::GetItemRectMax();
 
-        // Sender name and timestamp (below bubble)
+        ImGui::PopStyleVar(1); // ChildRounding
+        ImGui::PopStyleColor(2); // ChildBg, Border
+
+        // Draw triangle arrow pointing DOWN from bubble to username
+        ImDrawList* draw_list = ImGui::GetWindowDrawList();
+        ImVec4 arrow_color = ImVec4(base_color.x, base_color.y, base_color.z, msg.is_outgoing ? 0.25f : 0.12f);
+        ImU32 arrow_col_u32 = IM_COL32(
+            (int)(arrow_color.x * 255), (int)(arrow_color.y * 255), 
+            (int)(arrow_color.z * 255), (int)(arrow_color.w * 255)
+        );
+
+        // Arrow pointing down from left side of bubble
+        float arrow_x = bubble_min.x + 20.0f;  // Small offset from left edge
+        float arrow_y = bubble_max.y;          // Bottom of bubble
+        float arrow_size = 8.0f;
+
+        ImVec2 p1 = ImVec2(arrow_x - arrow_size * 0.5f, arrow_y);
+        ImVec2 p2 = ImVec2(arrow_x + arrow_size * 0.5f, arrow_y);
+        ImVec2 p3 = ImVec2(arrow_x, arrow_y + arrow_size);
+
+        draw_list->AddTriangleFilled(p1, p2, p3, arrow_col_u32);
+
+        // Username and timestamp (below arrow)
         ImGui::Spacing();
         ImVec4 meta_color = ImVec4(0.6f, 0.6f, 0.6f, 1.0f);
         ImGui::PushStyleColor(ImGuiCol_Text, meta_color);

@@ -102,6 +102,9 @@ void loadProfile(AppState& state, bool force_reload) {
 
         state.profile_status = "Profile loaded from DHT";
         state.profile_cached = true;  // Mark as cached
+        
+        // Reset any local editor state
+        state.profile_avatar_marked_for_removal = false;
         dna_identity_free(profile);
     } else if (ret == -2) {
         state.profile_registered_name = "Not registered";
@@ -151,17 +154,31 @@ void saveProfile(AppState& state) {
     // Bio
     if (state.profile_bio[0]) strncpy(profile_data.bio, state.profile_bio, sizeof(profile_data.bio) - 1);
 
-    // Avatar
-    if (!state.profile_avatar_base64.empty()) {
-        size_t avatar_len = state.profile_avatar_base64.length();
-        printf("[ProfileEditor] Saving avatar: %zu bytes\n", avatar_len);
+    // Avatar - handle preview, removal, or keep existing
+    std::string avatar_to_save;
+    if (state.profile_avatar_preview_loaded && !state.profile_avatar_preview_base64.empty()) {
+        // Save the new preview avatar
+        avatar_to_save = state.profile_avatar_preview_base64;
+        printf("[ProfileEditor] Saving new avatar from preview: %zu bytes\n", avatar_to_save.length());
+    } else if (state.profile_avatar_marked_for_removal) {
+        // Avatar is marked for removal - save empty avatar (delete from DHT)
+        avatar_to_save = "";
+        printf("[ProfileEditor] Removing avatar from DHT (marked for removal)\n");
+    } else if (!state.profile_avatar_base64.empty()) {
+        // Keep existing DHT avatar
+        avatar_to_save = state.profile_avatar_base64;
+        printf("[ProfileEditor] Keeping existing avatar: %zu bytes\n", avatar_to_save.length());
+    }
+    
+    if (!avatar_to_save.empty()) {
+        size_t avatar_len = avatar_to_save.length();
         
         if (avatar_len >= sizeof(profile_data.avatar_base64)) {
             printf("[ProfileEditor] WARNING: Avatar too large (%zu bytes), truncating to %zu\n", 
                    avatar_len, sizeof(profile_data.avatar_base64) - 1);
         }
         
-        strncpy(profile_data.avatar_base64, state.profile_avatar_base64.c_str(), sizeof(profile_data.avatar_base64) - 1);
+        strncpy(profile_data.avatar_base64, avatar_to_save.c_str(), sizeof(profile_data.avatar_base64) - 1);
         profile_data.avatar_base64[sizeof(profile_data.avatar_base64) - 1] = '\0';  // Ensure null termination
     }
 
@@ -183,6 +200,38 @@ void saveProfile(AppState& state) {
 
     if (ret == 0) {
         state.profile_status = "Profile saved to DHT successfully!";
+        
+        // Handle different avatar update scenarios after successful save
+        if (state.profile_avatar_preview_loaded && !state.profile_avatar_preview_base64.empty()) {
+            // Transfer preview avatar to DHT avatar 
+            state.profile_avatar_base64 = state.profile_avatar_preview_base64;
+            state.profile_avatar_loaded = true;
+            
+            // Clear preview and any removal marks
+            state.profile_avatar_preview_base64.clear();
+            state.profile_avatar_preview_loaded = false;
+            state.profile_avatar_marked_for_removal = false;
+            
+            // Update texture cache - move preview to main identity cache
+            TextureManager::getInstance().removeTexture("preview");
+            if (ctx) {
+                TextureManager::getInstance().removeTexture(std::string(ctx->identity));
+            }
+        } else if (state.profile_avatar_marked_for_removal) {
+            // Avatar was removed from DHT - clear all local data
+            state.profile_avatar_base64.clear();
+            state.profile_avatar_loaded = false;
+            state.profile_avatar_marked_for_removal = false;
+            
+            // Remove from texture cache
+            if (ctx) {
+                TextureManager::getInstance().removeTexture(std::string(ctx->identity));
+            }
+        } else {
+            // No avatar changes, just clear any removal marks
+            state.profile_avatar_marked_for_removal = false;
+        }
+        
         // Keep cache valid since we already have the current data in memory
         // state.profile_cached is already true, no need to invalidate
         state.show_profile_editor = false;
@@ -193,7 +242,16 @@ void saveProfile(AppState& state) {
 
 // Render profile editor dialog
 void render(AppState& state) {
-    if (!state.show_profile_editor) return;
+    if (!state.show_profile_editor) {
+        // Reset any local editor state when dialog is closed
+        static bool was_open = false;
+        if (was_open) {
+            state.profile_avatar_marked_for_removal = false;
+            was_open = false;
+        }
+        return;
+    }
+    static bool was_open = true;
 
 
     // Open popup on first show (MUST be before BeginPopupModal!)
@@ -251,16 +309,20 @@ void render(AppState& state) {
 
         // Avatar Upload (NEW in Phase 4.3)
         if (ImGui::CollapsingHeader("Avatar Upload (64x64)")) {
-            // Avatar preview and controls
-            if (state.profile_avatar_loaded && !state.profile_avatar_base64.empty()) {
+            // Avatar preview and controls - show preview if available, otherwise show DHT version (unless marked for removal)
+            bool show_preview = state.profile_avatar_preview_loaded && !state.profile_avatar_preview_base64.empty();
+            bool show_dht_avatar = !show_preview && state.profile_avatar_loaded && !state.profile_avatar_base64.empty() && !state.profile_avatar_marked_for_removal;
+            
+            if (show_preview || show_dht_avatar) {
                 // Load and display avatar texture
                 messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
-                std::string cache_key = ctx ? std::string(ctx->identity) : "preview";
+                std::string cache_key = show_preview ? "preview" : (ctx ? std::string(ctx->identity) : "dht");
+                std::string avatar_data = show_preview ? state.profile_avatar_preview_base64 : state.profile_avatar_base64;
 
                 int avatar_width = 0, avatar_height = 0;
                 GLuint texture_id = TextureManager::getInstance().loadAvatar(
                     cache_key,
-                    state.profile_avatar_base64,
+                    avatar_data,
                     &avatar_width,
                     &avatar_height
                 );
@@ -275,29 +337,42 @@ void render(AppState& state) {
                     ImVec4 border_col = (g_app_settings.theme == 0) ? DNATheme::Text() : ClubTheme::Text();
                     AvatarHelpers::renderCircularAvatar(texture_id, avatar_display_size, border_col, 0.5f);
 
+
+
                     // Remove button (centered below avatar) - round icon button
                     ImGui::Spacing();
                     float remove_button_size = 32.0f;
                     float button_center_x = (ImGui::GetContentRegionAvail().x - remove_button_size) * 0.5f;
                     ImGui::SetCursorPosX(ImGui::GetCursorPosX() + button_center_x);
                     if (ThemedRoundButton(ICON_FA_TRASH, remove_button_size, false)) {
-                        state.profile_avatar_base64.clear();
-                        state.profile_avatar_loaded = false;
-                        state.profile_status = "Avatar removed";
-                        // Remove from texture cache
-                        TextureManager::getInstance().removeTexture(cache_key);
+                        if (show_preview) {
+                            // Remove local preview
+                            state.profile_avatar_preview_base64.clear();
+                            state.profile_avatar_preview_loaded = false;
+                            state.profile_status = "Avatar preview removed";
+                            TextureManager::getInstance().removeTexture("preview");
+                        } else {
+                            // Hide DHT avatar from editor view - will be removed from DHT on save
+                            state.profile_avatar_marked_for_removal = true;
+                            state.profile_status = "Avatar will be removed when saved";
+                        }
                     }
                     if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
-                        ImGui::SetTooltip("Remove avatar");
+                        ImGui::SetTooltip(show_preview ? "Remove preview" : "Remove avatar");
                     }
                 } else {
                     ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(),
                                      "Failed to load avatar preview");
                 }
             } else {
-                // No avatar uploaded - show browse button
-                ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
-                                 "No avatar uploaded");
+                // No avatar visible - either none uploaded or marked for removal
+                if (state.profile_avatar_marked_for_removal) {
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextWarning() : ClubTheme::TextWarning(),
+                                     "Avatar will be removed when saved");
+                } else {
+                    ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(),
+                                     "No avatar uploaded");
+                }
                 ImGui::Spacing();
                 
                 if (ThemedButton(ICON_FA_FOLDER_OPEN " Browse Image File", ImVec2(200, 30), false)) {
@@ -314,15 +389,14 @@ void render(AppState& state) {
                         int ret = avatar_load_and_encode(selected_path.c_str(), base64_out, 65536);
 
                         if (ret == 0) {
-                            // Remove old texture from cache before loading new one
-                            messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
-                            std::string cache_key = ctx ? std::string(ctx->identity) : "preview";
-                            TextureManager::getInstance().removeTexture(cache_key);
+                            // Remove old preview texture from cache before loading new one
+                            TextureManager::getInstance().removeTexture("preview");
 
-                            state.profile_avatar_base64 = std::string(base64_out);
-                            state.profile_avatar_loaded = true;
-                            state.profile_status = "Avatar uploaded successfully! (64x64)";
-                            printf("[ProfileEditor] Avatar loaded from: %s\n", selected_path.c_str());
+                            // Store as local preview, not DHT data
+                            state.profile_avatar_preview_base64 = std::string(base64_out);
+                            state.profile_avatar_preview_loaded = true;
+                            state.profile_status = "Avatar preview loaded! Save to publish to DHT.";
+                            printf("[ProfileEditor] Avatar preview loaded from: %s\n", selected_path.c_str());
                         } else {
                             state.profile_status = "Failed to load/resize avatar image";
                         }
@@ -367,6 +441,8 @@ void render(AppState& state) {
         
         // Draw Cancel button (it will use the natural left padding)
         if (ThemedButton("Cancel", ImVec2(cancel_width, 40))) {
+            // Reset any local editor state when cancelling
+            state.profile_avatar_marked_for_removal = false;
             state.show_profile_editor = false;
         }
         

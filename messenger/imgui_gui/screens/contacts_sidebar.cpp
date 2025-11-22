@@ -28,7 +28,7 @@ void renderContactsList(AppState& state) {
     float full_width = ImGui::GetContentRegionAvail().x;
 
     // Top bar with title and add button
-    ImGui::BeginChild("ContactsHeader", ImVec2(full_width, 60), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("ContactsHeader", ImVec2(full_width, 60), false, ImGuiWindowFlags_NoScrollbar);
     ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 10);
 
     ImGui::Text("  DNA Messenger");
@@ -152,15 +152,11 @@ void renderContactsList(AppState& state) {
 
 
 void renderSidebar(AppState& state, std::function<void(int)> load_messages_callback) {
-    // Push border color before creating child
-    ImVec4 border_col = (g_app_settings.theme == 0) ? DNATheme::Separator() : ClubTheme::Separator();
-    ImGui::PushStyleColor(ImGuiCol_Border, border_col);
-    
-    // Set sidebar background to button color (InputBackground)
-    ImVec4 sidebar_bg = (g_app_settings.theme == 0) ? DNATheme::InputBackground() : ClubTheme::InputBackground();
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, sidebar_bg);
+    // Remove background and border - make it transparent like profile sidebar
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0, 0, 0, 0)); // Transparent background
+    ImGui::PushStyleColor(ImGuiCol_Border, ImVec4(0, 0, 0, 0));  // Transparent border
 
-    ImGui::BeginChild("ContactsSidebar", ImVec2(0, 0), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::BeginChild("ContactsSidebar", ImVec2(0, 0), false, ImGuiWindowFlags_NoScrollbar);
 
     ImGui::Spacing();
     
@@ -259,8 +255,8 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
     // No need to reserve space at bottom since buttons are now at top
     float available_height = ImGui::GetContentRegionAvail().y;
 
-    // Set scrollbar background to match sidebar background
-    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, sidebar_bg);
+    // Set scrollbar background to transparent
+    ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0, 0, 0, 0));
     ImGui::BeginChild("GroupsAndContactsScroll", ImVec2(0, available_height), false);
     
     // Show spinner if syncing, otherwise show normal content
