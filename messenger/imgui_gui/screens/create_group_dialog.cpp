@@ -97,13 +97,30 @@ void render(AppState& state) {
             ImGui::Spacing();
         }
 
-        // Buttons
+        // Buttons - horizontal layout like add contact dialog
         bool can_create = strlen(state.create_group_name_input) > 0 &&
                          !state.create_group_selected_members.empty() &&
                          !state.create_group_in_progress;
 
+        float button_width_left = 100.0f;
+        float button_width_right = 140.0f;
+        float content_width = ImGui::GetContentRegionAvail().x;
+        
+        // Left button (Cancel)
+        if (ThemedButton(ICON_FA_XMARK " Cancel", ImVec2(button_width_left, 40))) {
+            state.show_create_group_dialog = false;
+            // Clear state
+            memset(state.create_group_name_input, 0, sizeof(state.create_group_name_input));
+            state.create_group_selected_members.clear();
+            state.create_group_status.clear();
+            state.create_group_in_progress = false;
+        }
+        
+        // Right button (Create Group) - position to align with right edge
+        ImGui::SameLine(0.0f, content_width - button_width_left - button_width_right);
+        
         ImGui::BeginDisabled(!can_create);
-        if (ThemedButton(ICON_FA_CHECK " Create Group", ImVec2(-1, 40))) {
+        if (ThemedButton(ICON_FA_CHECK " Create Group", ImVec2(button_width_right, 40))) {
             state.create_group_in_progress = true;
             state.create_group_status = "Creating group...";
 
@@ -173,17 +190,6 @@ void render(AppState& state) {
             }
         }
         ImGui::EndDisabled();
-
-        ImGui::Spacing();
-
-        if (ThemedButton(ICON_FA_XMARK " Cancel", ImVec2(-1, 40))) {
-            state.show_create_group_dialog = false;
-            // Clear state
-            memset(state.create_group_name_input, 0, sizeof(state.create_group_name_input));
-            state.create_group_selected_members.clear();
-            state.create_group_status.clear();
-            state.create_group_in_progress = false;
-        }
 
         CenteredModal::End();
     }

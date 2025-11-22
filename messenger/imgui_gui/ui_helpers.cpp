@@ -64,8 +64,10 @@ bool ThemedRoundButton(const char* icon, float size, bool is_active) {
 
     ImGui::PushStyleColor(ImGuiCol_Text, text_color);
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, size * 0.5f);
+    ImGui::PushStyleVar(ImGuiStyleVar_ButtonTextAlign, ImVec2(0.5f, 0.5f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(0, 0));
     bool result = ImGui::Button(icon, ImVec2(size, size));
-    ImGui::PopStyleVar();
+    ImGui::PopStyleVar(3);
     ImGui::PopStyleColor(4);
     return result;
 }

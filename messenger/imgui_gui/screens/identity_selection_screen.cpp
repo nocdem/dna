@@ -220,6 +220,37 @@ void render(AppState& state) {
                     state.selected_identity_idx = i;
                 }
             }
+            
+            // Handle double-click to proceed with selection
+            if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                state.selected_identity_idx = i;
+                
+                // Same logic as "Select Identity" button
+                if (state.selected_identity_idx >= 0 && state.selected_identity_idx < (int)state.identities.size()) {
+                    // Close identity selection modal immediately
+                    ImGui::CloseCurrentPopup();
+                    state.show_identity_selection = false;
+
+                    // Show spinner overlay with "Connecting..." message
+                    state.show_operation_spinner = true;
+                    snprintf(state.operation_spinner_message, sizeof(state.operation_spinner_message),
+                             "Connecting...");
+
+                    state.current_identity = state.identities[state.selected_identity_idx];
+
+                    // Load identity asynchronously
+                    state.dht_publish_task.start([&state](AsyncTask* task) {
+                        task->addMessage("Loading identity...");
+                        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+
+                        task->addMessage("Connecting...");
+                        DataLoader::loadIdentity(state, state.current_identity, [&state](int i) { DataLoader::loadMessagesForContact(state, i); });
+
+                        task->addMessage(ICON_FA_CIRCLE_CHECK " Connected successfully!");
+                        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                    });
+                }
+            }
 
             ImGui::PopID();
         }
