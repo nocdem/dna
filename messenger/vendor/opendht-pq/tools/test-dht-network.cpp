@@ -190,29 +190,58 @@ void testSignedPut(DhtRunner& node, const crypto::Identity& identity) {
 
     // Now try to retrieve it
     TEST_INFO("Verifying signed value can be retrieved...");
+    TEST_INFO("Stored data: " + test_data);
+    TEST_INFO("Key hash: " + test_key.toString().substr(0, 16) + "...");
     bool retrieved = false;
+    int value_count = 0;
 
     node.get(
         test_key,
         [&](const std::shared_ptr<Value>& value) {
-            if (value && value->checkSignature()) {
-                std::string data(value->data.begin(), value->data.end());
-                if (data == test_data) {
-                    TEST_PASS("Retrieved and verified signed value");
-                    TEST_INFO("Data: " + data);
-                    retrieved = true;
-                    tests_passed++;
-                } else {
-                    TEST_FAIL("Retrieved value doesn't match stored value");
-                    tests_failed++;
-                }
-            } else if (value) {
-                TEST_FAIL("Retrieved value failed signature verification");
-                tests_failed++;
+            value_count++;
+            TEST_INFO("Retrieved value #" + std::to_string(value_count));
+
+            if (!value) {
+                TEST_WARN("Received null value");
+                return true; // Continue
             }
-            return false; // Stop after first value
+
+            // Unpack msgpack-encoded data
+            std::string data;
+            try {
+                data = value->unpack<std::string>();
+            } catch (const std::exception& e) {
+                TEST_WARN("Failed to unpack data: " + std::string(e.what()));
+                return true;
+            }
+
+            TEST_INFO("Retrieved data: " + data);
+            TEST_INFO("Data length: stored=" + std::to_string(test_data.size()) +
+                     " retrieved=" + std::to_string(data.size()));
+
+            if (!value->checkSignature()) {
+                TEST_WARN("Value #" + std::to_string(value_count) + " failed signature verification");
+                return true; // Continue looking
+            }
+
+            TEST_INFO("Signature verification: PASSED");
+
+            if (data == test_data) {
+                TEST_PASS("Retrieved and verified signed value");
+                retrieved = true;
+                tests_passed++;
+                return false; // Found it, stop
+            } else {
+                TEST_WARN("Data mismatch for value #" + std::to_string(value_count));
+                TEST_INFO("Expected: " + test_data.substr(0, 50));
+                TEST_INFO("Got:      " + data.substr(0, 50));
+                return true; // Continue looking for our value
+            }
         },
-        [](bool /*success*/) {} // Done callback
+        [&](bool success) {
+            TEST_INFO("Get operation completed. Success: " + std::string(success ? "true" : "false"));
+            TEST_INFO("Total values retrieved: " + std::to_string(value_count));
+        }
     );
 
     sleep_ms(5000);  // Increased to 5 seconds for network propagation
