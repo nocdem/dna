@@ -67,11 +67,15 @@ extern "C" int dht_identity_export_to_buffer(
         // Serialize private key (Dilithium5 - 4896 bytes)
         auto key_data = id.first->serialize();
 
+        // Serialize public key (Dilithium5 - 2592 bytes)
+        dht::Blob pk_data;
+        id.second->getPublicKey().pack(pk_data);
+
         // Serialize certificate (Dilithium5)
         auto cert_data = id.second->getPacked();
 
-        // Calculate total size: 4 + key.size + 4 + cert.size
-        size_t total_size = 4 + key_data.size() + 4 + cert_data.size();
+        // Calculate total size: 4 + key.size + 4 + pk.size + 4 + cert.size
+        size_t total_size = 4 + key_data.size() + 4 + pk_data.size() + 4 + cert_data.size();
         uint8_t *buffer = (uint8_t*)malloc(total_size);
         if (!buffer) {
             std::cerr << "[DHT Identity] Failed to allocate buffer" << std::endl;
@@ -90,6 +94,16 @@ extern "C" int dht_identity_export_to_buffer(
         memcpy(ptr, key_data.data(), key_data.size());
         ptr += key_data.size();
 
+        // Write pk_size (network byte order)
+        uint32_t pk_size = (uint32_t)pk_data.size();
+        uint32_t pk_size_be = htonl(pk_size);
+        memcpy(ptr, &pk_size_be, 4);
+        ptr += 4;
+
+        // Write pk data
+        memcpy(ptr, pk_data.data(), pk_data.size());
+        ptr += pk_data.size();
+
         // Write cert_size (network byte order)
         uint32_t cert_size = (uint32_t)cert_data.size();
         uint32_t cert_size_be = htonl(cert_size);
@@ -104,6 +118,7 @@ extern "C" int dht_identity_export_to_buffer(
 
         std::cout << "[DHT Identity] Exported to buffer (" << total_size << " bytes)" << std::endl;
         std::cout << "[DHT Identity] Dilithium5 key: " << key_data.size() << " bytes" << std::endl;
+        std::cout << "[DHT Identity] Public key: " << pk_data.size() << " bytes" << std::endl;
         std::cout << "[DHT Identity] Certificate: " << cert_data.size() << " bytes" << std::endl;
         return 0;
     } catch (const std::exception& e) {
@@ -134,7 +149,7 @@ extern "C" int dht_identity_import_from_buffer(
         uint32_t key_size = ntohl(key_size_be);
         ptr += 4;
 
-        if (key_size > buffer_size - 8) {
+        if (key_size > buffer_size - 12) {
             std::cerr << "[DHT Identity] Invalid key size in buffer" << std::endl;
             return -1;
         }
@@ -143,13 +158,28 @@ extern "C" int dht_identity_import_from_buffer(
         std::vector<uint8_t> key_data(ptr, ptr + key_size);
         ptr += key_size;
 
+        // Read pk_size
+        uint32_t pk_size_be;
+        memcpy(&pk_size_be, ptr, 4);
+        uint32_t pk_size = ntohl(pk_size_be);
+        ptr += 4;
+
+        if (pk_size > buffer_size - 12 - key_size) {
+            std::cerr << "[DHT Identity] Invalid pk size in buffer" << std::endl;
+            return -1;
+        }
+
+        // Read pk data
+        std::vector<uint8_t> pk_data(ptr, ptr + pk_size);
+        ptr += pk_size;
+
         // Read cert_size
         uint32_t cert_size_be;
         memcpy(&cert_size_be, ptr, 4);
         uint32_t cert_size = ntohl(cert_size_be);
         ptr += 4;
 
-        if (cert_size > buffer_size - 8 - key_size) {
+        if (cert_size > buffer_size - 12 - key_size - pk_size) {
             std::cerr << "[DHT Identity] Invalid cert size in buffer" << std::endl;
             return -1;
         }
@@ -160,8 +190,10 @@ extern "C" int dht_identity_import_from_buffer(
         // Import private key (Dilithium5) - use 3-argument constructor (data, size, password)
         auto priv = std::make_shared<dht::crypto::PrivateKey>(key_data.data(), key_data.size(), nullptr);
 
-        // Extract and cache public key from private key
-        auto pubkey = std::make_shared<dht::crypto::PublicKey>(priv->getPublicKey());
+        // Import public key (Dilithium5) from saved data
+        auto pubkey = std::make_shared<dht::crypto::PublicKey>(pk_data.data(), pk_data.size());
+
+        // Set public key cache on private key (required for OpenDHT validation)
         priv->setPublicKeyCache(pubkey);
 
         // Import certificate (Dilithium5) - use unpack() method
@@ -174,6 +206,7 @@ extern "C" int dht_identity_import_from_buffer(
 
         std::cout << "[DHT Identity] Imported from buffer (" << buffer_size << " bytes)" << std::endl;
         std::cout << "[DHT Identity] Dilithium5 key: " << key_size << " bytes" << std::endl;
+        std::cout << "[DHT Identity] Public key: " << pk_size << " bytes" << std::endl;
         std::cout << "[DHT Identity] Certificate: " << cert_size << " bytes" << std::endl;
         return 0;
     } catch (const std::exception& e) {
