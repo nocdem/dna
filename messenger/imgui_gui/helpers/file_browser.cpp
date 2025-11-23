@@ -12,13 +12,14 @@ namespace FileBrowser {
 
 static std::string last_error;
 static std::string async_result;
+static std::vector<std::string> async_multiple_results;
 
 const FileFilter IMAGE_FILTERS[] = {
     {"Image Files", "png,jpg,jpeg,bmp,gif"}
 };
 
 const FileFilter WALLET_FILTERS[] = {
-    {"Wallet Files", "dat,wallet,json"},
+    {"Wallet Files", "dwallet"},
     {"All Files", "*"}
 };
 
@@ -271,6 +272,160 @@ void openFileDialogAsync(AsyncTask* task, const std::string& title, FileType typ
 
 std::string getAsyncResult() {
     return async_result;
+}
+
+std::vector<std::string> openMultipleFileDialog(const std::string& title, FileType type) {
+    switch (type) {
+        case FILE_TYPE_IMAGES:
+            return openMultipleFileDialog(title, IMAGE_FILTERS, 1);
+        case FILE_TYPE_WALLETS:
+            return openMultipleFileDialog(title, WALLET_FILTERS, 2);
+        default:
+            return openMultipleFileDialog(title, nullptr, 0);
+    }
+}
+
+std::vector<std::string> openMultipleFileDialog(const std::string& title, const FileFilter* filters, int filter_count) {
+    last_error.clear();
+    std::vector<std::string> results;
+    
+#ifdef _WIN32
+    // Windows: Use NFD for multiple selection
+    // TODO: Implement NFD multiple selection
+    last_error = "Multiple file selection not yet implemented on Windows";
+    return results;
+    
+#else
+    // Linux/macOS: Use zenity or kdialog with multiple selection
+    std::string dialog_cmd;
+    
+    const char* desktop = getenv("XDG_CURRENT_DESKTOP");
+    bool is_kde = (desktop && strstr(desktop, "KDE"));
+    
+    if (is_kde) {
+        // KDE: Use kdialog with multiple selection
+        dialog_cmd = "kdialog --getopenfilename . --multiple ";
+        
+        if (filters && filter_count > 0) {
+            dialog_cmd += "'";
+            for (int i = 0; i < filter_count; i++) {
+                if (i > 0) dialog_cmd += "|";
+                dialog_cmd += filters[i].name;
+                dialog_cmd += " (";
+                
+                // Convert extensions to kdialog format
+                std::string exts = filters[i].extensions;
+                if (exts != "*") {
+                    size_t pos = 0;
+                    std::string token;
+                    bool first = true;
+                    while ((pos = exts.find(',')) != std::string::npos) {
+                        token = exts.substr(0, pos);
+                        if (!first) dialog_cmd += " ";
+                        dialog_cmd += "*." + token;
+                        first = false;
+                        exts.erase(0, pos + 1);
+                    }
+                    if (!exts.empty()) {
+                        if (!first) dialog_cmd += " ";
+                        dialog_cmd += "*." + exts;
+                    }
+                } else {
+                    dialog_cmd += "*";
+                }
+                dialog_cmd += ")";
+            }
+            dialog_cmd += "'";
+        } else {
+            dialog_cmd += "'All files (*)'";
+        }
+        
+        dialog_cmd += " --title '" + title + "' 2>/dev/null";
+    } else {
+        // GNOME/others: Use zenity with multiple selection
+        // Use $'\n' for proper newline in bash
+        dialog_cmd = "zenity --file-selection --multiple --separator=$'\\n' --title='" + title + "'";
+        
+        if (filters && filter_count > 0) {
+            for (int i = 0; i < filter_count; i++) {
+                dialog_cmd += " --file-filter='" + std::string(filters[i].name) + " | ";
+                
+                // Convert extensions to zenity format
+                std::string exts = filters[i].extensions;
+                if (exts != "*") {
+                    size_t pos = 0;
+                    std::string token;
+                    while ((pos = exts.find(',')) != std::string::npos) {
+                        token = exts.substr(0, pos);
+                        dialog_cmd += "*." + token + " ";
+                        exts.erase(0, pos + 1);
+                    }
+                    if (!exts.empty()) {
+                        dialog_cmd += "*." + exts;
+                    }
+                } else {
+                    dialog_cmd += "*";
+                }
+                dialog_cmd += "'";
+            }
+        }
+        
+        dialog_cmd += " 2>/dev/null";
+    }
+    
+    printf("[FileBrowser] Running multiple selection command: %s\n", dialog_cmd.c_str());
+    
+    FILE* fp = popen(dialog_cmd.c_str(), "r");
+    if (fp) {
+        char path_buffer[4096];
+        std::string all_paths;
+        
+        // Read all output
+        while (fgets(path_buffer, sizeof(path_buffer), fp)) {
+            all_paths += path_buffer;
+        }
+        
+        int exit_code = pclose(fp);
+        if (exit_code == 0 && !all_paths.empty()) {
+            // Parse multiple paths (separated by newlines)
+            size_t pos = 0;
+            std::string path;
+            while ((pos = all_paths.find('\n')) != std::string::npos) {
+                path = all_paths.substr(0, pos);
+                if (!path.empty()) {
+                    results.push_back(path);
+                }
+                all_paths.erase(0, pos + 1);
+            }
+            // Don't forget the last path if it doesn't end with newline
+            if (!all_paths.empty()) {
+                // Remove any trailing whitespace
+                while (!all_paths.empty() && (all_paths.back() == '\n' || all_paths.back() == '\r')) {
+                    all_paths.pop_back();
+                }
+                if (!all_paths.empty()) {
+                    results.push_back(all_paths);
+                }
+            }
+            
+            printf("[FileBrowser] Selected %zu file(s)\n", results.size());
+            for (const auto& file : results) {
+                printf("[FileBrowser] - %s\n", file.c_str());
+            }
+        }
+    }
+#endif
+    
+    return results;
+}
+
+void openMultipleFileDialogAsync(AsyncTask* task, const std::string& title, FileType type) {
+    async_multiple_results.clear();
+    async_multiple_results = openMultipleFileDialog(title, type);
+}
+
+std::vector<std::string> getAsyncMultipleResults() {
+    return async_multiple_results;
 }
 
 } // namespace FileBrowser

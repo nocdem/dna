@@ -4,6 +4,7 @@
 #include "../font_awesome.h"
 #include "../settings_manager.h"
 #include "../theme_colors.h"
+#include "../../blockchain/wallet.h"
 
 #include <cmath>
 

@@ -295,6 +295,30 @@ helpers/data_loader.cpp.s:
 	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f imgui_gui/CMakeFiles/dna-messenger.dir/build.make imgui_gui/CMakeFiles/dna-messenger.dir/helpers/data_loader.cpp.s
 .PHONY : helpers/data_loader.cpp.s
 
+helpers/file_browser.o: helpers/file_browser.cpp.o
+.PHONY : helpers/file_browser.o
+
+# target to build an object file
+helpers/file_browser.cpp.o:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f imgui_gui/CMakeFiles/dna-messenger.dir/build.make imgui_gui/CMakeFiles/dna-messenger.dir/helpers/file_browser.cpp.o
+.PHONY : helpers/file_browser.cpp.o
+
+helpers/file_browser.i: helpers/file_browser.cpp.i
+.PHONY : helpers/file_browser.i
+
+# target to preprocess a source file
+helpers/file_browser.cpp.i:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f imgui_gui/CMakeFiles/dna-messenger.dir/build.make imgui_gui/CMakeFiles/dna-messenger.dir/helpers/file_browser.cpp.i
+.PHONY : helpers/file_browser.cpp.i
+
+helpers/file_browser.s: helpers/file_browser.cpp.s
+.PHONY : helpers/file_browser.s
+
+# target to generate assembly for a file
+helpers/file_browser.cpp.s:
+	cd /home/mika/dev/dna-messenger/imgui_gui && $(MAKE) $(MAKESILENT) -f imgui_gui/CMakeFiles/dna-messenger.dir/build.make imgui_gui/CMakeFiles/dna-messenger.dir/helpers/file_browser.cpp.s
+.PHONY : helpers/file_browser.cpp.s
+
 helpers/notification_manager.o: helpers/notification_manager.cpp.o
 .PHONY : helpers/notification_manager.o
 
@@ -1043,6 +1067,9 @@ help:
 	@echo "... helpers/data_loader.o"
 	@echo "... helpers/data_loader.i"
 	@echo "... helpers/data_loader.s"
+	@echo "... helpers/file_browser.o"
+	@echo "... helpers/file_browser.i"
+	@echo "... helpers/file_browser.s"
 	@echo "... helpers/notification_manager.o"
 	@echo "... helpers/notification_manager.i"
 	@echo "... helpers/notification_manager.s"

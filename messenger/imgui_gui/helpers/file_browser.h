@@ -2,6 +2,7 @@
 #define FILE_BROWSER_H
 
 #include <string>
+#include <vector>
 
 // Forward declaration
 class AsyncTask;
@@ -32,9 +33,15 @@ namespace FileBrowser {
     // Get last error message
     const std::string& getLastError();
     
+    // Multiple file selection
+    std::vector<std::string> openMultipleFileDialog(const std::string& title, FileType type = FILE_TYPE_ANY);
+    std::vector<std::string> openMultipleFileDialog(const std::string& title, const FileFilter* filters, int filter_count);
+    
     // Async versions (requires AsyncTask from async_helpers.h)
     void openFileDialogAsync(AsyncTask* task, const std::string& title, FileType type = FILE_TYPE_ANY);
+    void openMultipleFileDialogAsync(AsyncTask* task, const std::string& title, FileType type = FILE_TYPE_ANY);
     std::string getAsyncResult(); // Get result after async completion
+    std::vector<std::string> getAsyncMultipleResults(); // Get multiple results after async completion
     
 } // namespace FileBrowser
 
