@@ -1,2 +1,0 @@
-/usr/bin/ar qc libp2p_transport.a CMakeFiles/p2p_transport.dir/p2p_transport.c.o CMakeFiles/p2p_transport.dir/transport/transport_helpers.c.o CMakeFiles/p2p_transport.dir/transport/transport_tcp.c.o CMakeFiles/p2p_transport.dir/transport/transport_discovery.c.o CMakeFiles/p2p_transport.dir/transport/transport_offline.c.o CMakeFiles/p2p_transport.dir/transport/transport_juice.c.o
-/usr/bin/ranlib libp2p_transport.a

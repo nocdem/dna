@@ -42,6 +42,46 @@ dist/
 *.o
 *.so
 
+# CMake build artifacts
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!*.cmake.in
+CTestTestfile.cmake
+Testing/
+_deps/
+
+# CMake generated binaries
+dna-messenger
+test_*
+*_test
+migrate_storage_once
+persistent_bootstrap
+
+# CMake dependency files
+*.d
+
+# Compiler/linker artifacts
+*.exe
+*.dll
+*.dylib
+link.txt
+progress.marks
+compiler_depend.internal
+compiler_depend.make
+flags.make
+progress.make
+
+# libjuice external project
+vendor/libjuice/src/
+vendor/libjuice/install/
+*-stamp/
+*-complete
+*-build/
+
 # Cross-compilation toolchains
 mxe/
 
@@ -82,14 +122,50 @@ FOLDER_ANALYSIS.md
 *.asc
 *.sig
 *.enc
-*.dsa
-*.kem
 *.dcert
 *_test.*
-# Build artifacts
+
+# Additional build artifacts 
 p2p/test_p2p_basic
 p2p/build/
 dht/build/
-*.o
-CMakeCache.txt
+
+# CMake build artifacts (comprehensive)
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.cmake
+!CMakeLists.txt
+!*.cmake.in
+CTestTestfile.cmake
+Testing/
+_deps/
+
+# CMake generated binaries
+dna-messenger
+test_*
+*_test
+migrate_storage_once
+persistent_bootstrap
+
+# CMake dependency and build files
+*.d
+link.txt
+progress.marks
+compiler_depend.internal
+compiler_depend.make
+flags.make
+progress.make
+DependInfo.cmake
+build.make
+cmake_clean.cmake
+
+# External project artifacts
+vendor/libjuice/src/
+vendor/libjuice/install/
+*-stamp/
+*-complete
+*-build/
+
+# Development notes
 CLAUDE.md
