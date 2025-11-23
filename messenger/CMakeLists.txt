@@ -187,7 +187,7 @@ add_subdirectory(crypto/cellframe_dilithium)  # Cellframe-compatible Dilithium (
 # Force OpenDHT-PQ to build as static library (not shared)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build static OpenDHT-PQ library" FORCE)
 set(BUILD_TESTING OFF CACHE BOOL "Disable OpenDHT-PQ tests (not updated for Dilithium5)" FORCE)
-set(OPENDHT_TOOLS OFF CACHE BOOL "Disable OpenDHT-PQ tools (not updated for Dilithium5)" FORCE)
+set(OPENDHT_TOOLS ON CACHE BOOL "Enable OpenDHT-PQ tools for dna-nodus" FORCE)
 set(SKIP_INSTALL_ALL ON CACHE BOOL "Skip install for vendored opendht-pq" FORCE)
 add_subdirectory(vendor/opendht-pq)  # OpenDHT-PQ with Dilithium5 support
 add_subdirectory(dht)               # DHT integration (uses vendor/opendht-pq)
