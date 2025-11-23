@@ -264,10 +264,10 @@ Value::sign(const crypto::PrivateKey& key)
 }
 
 Value
-Value::encrypt(const crypto::PrivateKey& from, const crypto::PublicKey& to)
+Value::encrypt(const crypto::PrivateKey& /* from */, const crypto::PublicKey& /* to */)
 {
     // DILITHIUM5: Encryption not supported (Dilithium5 is signature-only)
-    // Use Kyber1024 for encryption if needed
+    // Parameters unused - use Kyber1024 for encryption if needed
     throw DhtException("Value encryption not supported with Dilithium5 (signature-only algorithm). Use Kyber1024 for encryption.");
 }
 
@@ -286,10 +286,10 @@ Value::checkSignature()
 }
 
 Sp<Value>
-Value::decrypt(const crypto::PrivateKey& key)
+Value::decrypt(const crypto::PrivateKey& /* key */)
 {
     // DILITHIUM5: Decryption not supported (Dilithium5 is signature-only)
-    // Use Kyber1024 for encryption/decryption if needed
+    // Parameter unused - use Kyber1024 for encryption/decryption if needed
     throw crypto::DecryptError("Value decryption not supported with Dilithium5 (signature-only algorithm). Use Kyber1024 for encryption/decryption.");
 
     #if 0  // OLD: RSA encryption/decryption code

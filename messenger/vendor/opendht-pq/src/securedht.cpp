@@ -594,9 +594,10 @@ SecureDht::encrypt(Value& v, const crypto::PublicKey& to) const
 }
 
 Value
-SecureDht::decrypt(const Value& v)
+SecureDht::decrypt(const Value& /* v */)
 {
     // DILITHIUM5: Decryption not supported (Dilithium5 is signature-only)
+    // Parameter unused - use Kyber1024 for encryption/decryption if needed
     // Use Kyber1024 for encryption/decryption if needed
     throw crypto::DecryptError("Value decryption not supported with Dilithium5 (signature-only algorithm). Use Kyber1024 for encryption/decryption.");
 

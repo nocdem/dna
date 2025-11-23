@@ -277,10 +277,10 @@ PrivateKey::PrivateKey()
 }
 
 // DILITHIUM5: Constructor from raw bytes (4896 bytes)
-PrivateKey::PrivateKey(const uint8_t* src, size_t src_size, const char* password_ptr)
+PrivateKey::PrivateKey(const uint8_t* src, size_t src_size, const char* /* password_ptr */)
     : PrivateKey()
 {
-    // For now, ignore password (Dilithium5 keys are raw binary)
+    // Password parameter unused (Dilithium5 keys are raw binary)
     // TODO: Add password-based encryption if needed
     if (src_size != pqcrystals_dilithium5_SECRETKEYBYTES)
         throw CryptoException(fmt::format(
@@ -394,12 +394,12 @@ PrivateKey::decrypt(const uint8_t* cypher, size_t cypher_len) const
 
 // DILITHIUM5: Serialize secret key to binary blob (4896 bytes)
 Blob
-PrivateKey::serialize(const std::string& password) const
+PrivateKey::serialize(const std::string& /* password */) const
 {
     if (!valid_)
         return {};
 
-    // TODO: Add password-based encryption if needed
+    // Password parameter unused - TODO: Add password-based encryption if needed
     // For now, just return raw binary
     Blob buffer(dilithium_sk_, dilithium_sk_ + pqcrystals_dilithium5_SECRETKEYBYTES);
     return buffer;
@@ -407,7 +407,7 @@ PrivateKey::serialize(const std::string& password) const
 
 // DILITHIUM5: Serialize to raw buffer
 int
-PrivateKey::serialize(uint8_t* out, size_t* out_len, const std::string& password) const
+PrivateKey::serialize(uint8_t* out, size_t* out_len, const std::string& /* password */) const
 {
     if (!valid_)
         return -1;
