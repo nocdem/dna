@@ -596,9 +596,7 @@ else()
             PRIVATE
                 PkgConfig::argon2
                 PkgConfig::Nettle
-                /opt/dna-messenger/build/crypto/dsa/libdsa.a
-                /opt/dna-messenger/build/qgp_random_pic.o
-                /opt/dna-messenger/build/qgp_platform_linux_pic.o
+                dsa  # Dilithium5 implementation from crypto/dsa
             PUBLIC
                 ${CMAKE_THREAD_LIBS_INIT}
                 PkgConfig::GnuTLS
@@ -622,9 +620,7 @@ else()
             PRIVATE
                 argon2
                 nettle
-                /opt/dna-messenger/build/crypto/dsa/libdsa.a
-                /opt/dna-messenger/build/qgp_random_pic.o
-                /opt/dna-messenger/build/qgp_platform_linux_pic.o
+                dsa  # Dilithium5 implementation from crypto/dsa
             PUBLIC
                 ${CMAKE_THREAD_LIBS_INIT}
                 ${GNUTLS_LIBRARIES}
@@ -822,11 +818,11 @@ configure_file (
     @ONLY
 )
 
-# Install targets
-install (DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
-install (FILES ${CMAKE_CURRENT_BINARY_DIR}/opendht.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
-install (EXPORT opendht DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/opendht FILE opendhtConfig.cmake)
-install (FILES ${CMAKE_CURRENT_BINARY_DIR}/opendhtConfigVersion.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/opendht)
+# Install targets (disabled for vendored build)
+# install (DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+# install (FILES ${CMAKE_CURRENT_BINARY_DIR}/opendht.pc DESTINATION ${CMAKE_INSTALL_LIBDIR}/pkgconfig)
+# install (EXPORT opendht DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/opendht FILE opendhtConfig.cmake)
+# install (FILES ${CMAKE_CURRENT_BINARY_DIR}/opendhtConfigVersion.cmake DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/opendht)
 if(MSVC AND BUILD_SHARED_LIBS)
     install(FILES $<TARGET_PDB_FILE:opendht> CONFIGURATIONS "RelWithDebInfo" "Debug" DESTINATION ${CMAKE_INSTALL_LIBDIR})
 endif()

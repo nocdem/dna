@@ -1,44 +1,14 @@
 cmake_minimum_required(VERSION 3.10)
 project(dna_dht C CXX)
 
-# Find OpenDHT
-if(WIN32)
-    # Windows cross-compile: OpenDHT found via CMAKE_PREFIX_PATH (llvm-mingw)
-    # CMAKE_PREFIX_PATH is set in main CMakeLists.txt to point to llvm-mingw x86_64-w64-mingw32/
-    find_library(OPENDHT_LIB opendht REQUIRED)
-    find_library(JSONCPP_LIB jsoncpp REQUIRED)
-    find_library(FMT_LIB fmt REQUIRED)
-    find_library(ARGON2_LIB argon2 REQUIRED)
-    # Note: SSL and crypto libraries are handled by ${OPENSSL_LIBRARIES} in target_link_libraries
-    find_library(JSONC_LIB json-c REQUIRED)
-    find_library(CURL_LIB curl REQUIRED)
+# Use vendor/opendht-pq (Dilithium5 post-quantum DHT)
+# The library is built by add_subdirectory(vendor/opendht-pq) in root CMakeLists.txt
+set(OPENDHT_LIBRARIES opendht)
+set(OPENDHT_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/vendor/opendht-pq/include")
+set(OPENDHT_DEPS "")  # Dependencies are handled by opendht target
 
-    set(OPENDHT_LIBRARIES "${OPENDHT_LIB}")
-    set(OPENDHT_INCLUDE_DIRS "${CMAKE_PREFIX_PATH}/include")
-
-    # OpenDHT dependencies for Windows (order matters for static linking!)
-    # Dependencies must come AFTER the libraries that use them
-    # Note: OpenSSL (ssl/crypto) is linked via ${OPENSSL_LIBRARIES} in target_link_libraries below
-    set(OPENDHT_DEPS
-        "${JSONCPP_LIB}"
-        "${FMT_LIB}"
-        "${ARGON2_LIB}"
-        "${JSONC_LIB}"                       # json-c for contact lists
-        "${CURL_LIB}"                        # CURL for HTTP
-        ws2_32 crypt32 bcrypt ncrypt         # Windows system libraries
-    )
-    message(STATUS "Using OpenDHT from CMAKE_PREFIX_PATH for Windows (DHT)")
-    message(STATUS "OpenDHT library: ${OPENDHT_LIBRARIES}")
-else()
-    # Linux: Use pkg-config
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(OPENDHT REQUIRED opendht>=3.0)
-    set(OPENDHT_DEPS ${OPENDHT_LIBRARIES})
-    # Add library directories so linker can find libopendht.a
-    link_directories(${OPENDHT_LIBRARY_DIRS})
-    # Export to parent scope so test executables can find the library
-    set(OPENDHT_LIBRARY_DIRS ${OPENDHT_LIBRARY_DIRS} PARENT_SCOPE)
-endif()
+message(STATUS "Using vendor/opendht-pq (Dilithium5 post-quantum DHT)")
+message(STATUS "OpenDHT-PQ include: ${OPENDHT_INCLUDE_DIRS}")
 
 # DHT library
 if(WIN32)

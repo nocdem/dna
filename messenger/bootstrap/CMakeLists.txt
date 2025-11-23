@@ -8,23 +8,9 @@ if(OPENDHT_LIBRARY_DIRS)
     link_directories(${OPENDHT_LIBRARY_DIRS})
 endif()
 
-# Bootstrap Value Storage Library (SQLite persistence)
-add_library(bootstrap_value_storage STATIC
-    services/value_storage/dht_value_storage.cpp
-    services/value_storage/dht_value_storage.h
-)
-
-target_include_directories(bootstrap_value_storage PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/services/value_storage
-    ${CMAKE_SOURCE_DIR}/dht
-    ${CMAKE_SOURCE_DIR}/dht/core
-    ${CMAKE_SOURCE_DIR}/dht/shared
-)
-
-target_link_libraries(bootstrap_value_storage
-    SQLite::SQLite3
-    pthread
-)
+# Bootstrap Value Storage Library - REMOVED (now in dht_lib/shared)
+# The dht_value_storage is now part of dht_lib (dht/shared/dht_value_storage.cpp)
+# No need for separate bootstrap_value_storage library
 
 # Bootstrap binary
 if(NOT WIN32)
@@ -42,8 +28,11 @@ if(NOT WIN32)
     )
 
     target_link_libraries(persistent_bootstrap
-        bootstrap_value_storage
-        dht_lib
+        -Wl,--start-group
+        dht_lib    # Contains qgp_randombytes
+        opendht    # Dilithium5 DHT (needs dsa)
+        dsa        # Dilithium5 crypto (needs qgp_randombytes from dht_lib)
+        -Wl,--end-group
     )
 
     # Installation
@@ -69,7 +58,8 @@ if(NOT WIN32)
     )
 
     target_link_libraries(migrate_storage_once
-        bootstrap_value_storage
-        dht_lib
+        -Wl,--start-group
+        dht_lib  # Circular dependency with opendht/dsa
+        -Wl,--end-group
     )
 endif()
