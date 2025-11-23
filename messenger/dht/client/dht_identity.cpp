@@ -157,11 +157,16 @@ extern "C" int dht_identity_import_from_buffer(
         // Read cert data
         std::vector<uint8_t> cert_data(ptr, ptr + cert_size);
 
-        // Import private key (Dilithium5)
-        auto priv = std::make_shared<dht::crypto::PrivateKey>(key_data);
+        // Import private key (Dilithium5) - use 3-argument constructor (data, size, password)
+        auto priv = std::make_shared<dht::crypto::PrivateKey>(key_data.data(), key_data.size(), nullptr);
 
-        // Import certificate (Dilithium5)
-        auto certificate = std::make_shared<dht::crypto::Certificate>(cert_data);
+        // Extract and cache public key from private key
+        auto pubkey = std::make_shared<dht::crypto::PublicKey>(priv->getPublicKey());
+        priv->setPublicKeyCache(pubkey);
+
+        // Import certificate (Dilithium5) - use unpack() method
+        auto certificate = std::make_shared<dht::crypto::Certificate>();
+        certificate->unpack(cert_data.data(), cert_data.size());
 
         dht::crypto::Identity id(priv, certificate);
 
