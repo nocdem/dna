@@ -30,27 +30,13 @@ enum class NotificationType {
     SUCCESS,        // Green - Successful operation
     WARNING,        // Yellow - Warning/attention needed
     ERROR,          // Red - Error occurred
-    OWNERSHIP       // Purple - Ownership change
+    OWNERSHIP,      // Purple - Ownership change
+    MESSAGE,        // Cyan - New message notification
+    CONTACT,        // Orange - Contact-related notification
+    WALLET          // Gold - Wallet/transaction notification
 };
 
-/**
- * Notification structure
- */
-struct Notification {
-    uint64_t id;                    // Unique notification ID
-    NotificationType type;          // Notification type (color)
-    std::string title;              // Short title (e.g., "GSK Rotated")
-    std::string message;            // Detailed message
-    std::string group_name;         // Associated group name (optional)
-    uint64_t timestamp;             // Unix timestamp when created
-    bool dismissable;               // Can user dismiss this?
-    bool auto_dismiss;              // Auto-dismiss after timeout?
-    uint32_t auto_dismiss_seconds;  // Seconds until auto-dismiss (default: 10)
-
-    // Internal state
-    bool dismissed;                 // User dismissed this notification
-    uint64_t dismissed_at;          // When was it dismissed
-};
+// REMOVED: In-app notification structure - not needed for native OS notifications
 
 /**
  * Notification Manager
@@ -64,121 +50,45 @@ public:
      */
     static NotificationManager& getInstance();
 
+    // DEPRECATED: In-app notifications removed - use showNativeNotification() instead
+
+    // DEPRECATED: Old convenience methods removed - use showNativeNotification() directly
+
     /**
-     * Add a new notification
+     * Show native OS notification (cross-platform)
      *
-     * @param type Notification type (determines color)
-     * @param title Short title
-     * @param message Detailed message
-     * @param group_name Associated group (optional)
-     * @param dismissable Can user dismiss? (default: true)
-     * @param auto_dismiss Auto-dismiss after timeout? (default: true)
-     * @param auto_dismiss_seconds Timeout in seconds (default: 10)
-     * @return Notification ID
+     * This is the PRIMARY notification method - always shows native OS notifications.
+     * Use this for messages, transactions, errors, etc.
+     *
+     * @param title Notification title
+     * @param body Notification body
+     * @param type Notification type (determines icon/urgency)
+     * @param force_show If true, shows even when app is focused
      */
-    uint64_t addNotification(
-        NotificationType type,
+    static void showNativeNotification(
         const std::string& title,
-        const std::string& message,
-        const std::string& group_name = "",
-        bool dismissable = true,
-        bool auto_dismiss = true,
-        uint32_t auto_dismiss_seconds = 10
+        const std::string& body,
+        NotificationType type = NotificationType::INFO,
+        bool force_show = false
     );
 
     /**
-     * Add GSK rotation notification
-     *
-     * Convenience helper for GSK rotations.
-     *
-     * @param group_name Group name
-     * @param new_version New GSK version
-     * @param reason Reason for rotation (e.g., "Member added")
-     * @return Notification ID
+     * Check if app window has focus
+     * @return true if app window is focused, false otherwise
      */
-    uint64_t addGSKRotationNotification(
-        const std::string& group_name,
-        uint32_t new_version,
-        const std::string& reason
-    );
+    static bool isAppFocused();
 
-    /**
-     * Add ownership transfer notification
-     *
-     * Convenience helper for ownership changes.
-     *
-     * @param group_name Group name
-     * @param new_owner_name New owner's name
-     * @param i_am_new_owner Did I become the new owner?
-     * @return Notification ID
-     */
-    uint64_t addOwnershipTransferNotification(
-        const std::string& group_name,
-        const std::string& new_owner_name,
-        bool i_am_new_owner
-    );
-
-    /**
-     * Add member change notification
-     *
-     * Convenience helper for member add/remove.
-     *
-     * @param group_name Group name
-     * @param member_name Member's name
-     * @param was_added true if added, false if removed
-     * @return Notification ID
-     */
-    uint64_t addMemberChangeNotification(
-        const std::string& group_name,
-        const std::string& member_name,
-        bool was_added
-    );
-
-    /**
-     * Dismiss a notification
-     *
-     * @param notification_id Notification ID to dismiss
-     */
-    void dismissNotification(uint64_t notification_id);
-
-    /**
-     * Dismiss all notifications
-     */
-    void dismissAll();
-
-    /**
-     * Get all active (non-dismissed) notifications
-     *
-     * @return Vector of active notifications
-     */
-    std::vector<Notification> getActiveNotifications();
-
-    /**
-     * Update notification state (call every frame)
-     *
-     * Handles auto-dismiss logic.
-     */
-    void update();
-
-    /**
-     * Render notifications (call from ImGui render loop)
-     *
-     * Displays notifications as banners at the top of the screen.
-     *
-     * @param window_width Current window width (for positioning)
-     */
-    void render(float window_width);
+    // DEPRECATED: In-app notification methods removed
 
 private:
-    NotificationManager() : next_id_(1) {}
+    NotificationManager() = default;
     ~NotificationManager() = default;
 
     // Prevent copying
     NotificationManager(const NotificationManager&) = delete;
     NotificationManager& operator=(const NotificationManager&) = delete;
 
-    std::vector<Notification> notifications_;
-    uint64_t next_id_;
+    // No member variables needed - all methods are now static
 };
 
 } // namespace DNA

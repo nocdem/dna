@@ -169,11 +169,11 @@ void BackgroundTaskManager::pollGSKDiscovery() {
                 printf("[BACKGROUND] GSK v%u stored for group %s\n",
                        extracted_version, cached_group->name);
 
-                // Trigger UI notification
-                NotificationManager::getInstance().addGSKRotationNotification(
-                    cached_group->name,
-                    extracted_version,
-                    "Automatic rotation"
+                // Show native OS notification
+                NotificationManager::showNativeNotification(
+                    "Group Security Key Rotated",
+                    "Group '" + std::string(cached_group->name) + "' security key updated to version " + std::to_string(extracted_version),
+                    NotificationType::SUCCESS
                 );
             } else {
                 fprintf(stderr, "[BACKGROUND] Failed to store GSK\n");
@@ -263,10 +263,10 @@ void BackgroundTaskManager::checkOwnershipLiveness() {
                             printf("[BACKGROUND] I became owner of group %s!\n", cached_group->name);
 
                             // Notify user
-                            NotificationManager::getInstance().addOwnershipTransferNotification(
-                                cached_group->name,
-                                identity_,
-                                true  // I am new owner
+                            NotificationManager::showNativeNotification(
+                                "You Are Now Group Owner",
+                                "You became owner of group '" + std::string(cached_group->name) + "' (previous owner offline for 7+ days)",
+                                NotificationType::SUCCESS
                             );
 
                             // Rotate GSK as new owner (for security - old owner is gone)
@@ -282,10 +282,10 @@ void BackgroundTaskManager::checkOwnershipLiveness() {
                             // Fetch updated metadata to get new owner
                             dht_group_metadata_t* updated_meta = nullptr;
                             if (dht_groups_get(dht_ctx, cached_group->group_uuid, &updated_meta) == 0) {
-                                NotificationManager::getInstance().addOwnershipTransferNotification(
-                                    cached_group->name,
-                                    updated_meta->creator,  // Creator field holds owner
-                                    false  // Not me
+                                NotificationManager::showNativeNotification(
+                                    "Group Owner Changed",
+                                    "Group '" + std::string(cached_group->name) + "' now owned by " + std::string(updated_meta->creator),
+                                    NotificationType::INFO
                                 );
                                 dht_groups_free_metadata(updated_meta);
                             }

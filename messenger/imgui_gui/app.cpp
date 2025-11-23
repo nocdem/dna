@@ -25,6 +25,7 @@
 #include "screens/layout_manager.h"
 #include "screens/identity_selection_screen.h"
 #include "helpers/data_loader.h"
+#include "helpers/notification_manager.h"
 #include <cstring>
 #include <cstdio>
 #include <algorithm>
@@ -120,6 +121,14 @@ void DNAMessengerApp::render() {
     // First frame initialization
     if (state.is_first_frame) {
         state.is_first_frame = false;
+        
+        // Show native notification on startup (for testing)
+        DNA::NotificationManager::showNativeNotification(
+            "DNA Messenger",
+            "Welcome! Native OS notifications are now active.",
+            DNA::NotificationType::INFO,
+            true  // Force show even if app has focus (for demo)
+        );
     }
 
     // Handle post-login events (new messages, contact sync)
@@ -160,6 +169,8 @@ void DNAMessengerApp::render() {
         ImGui::End();
         ImGui::PopStyleVar(); // Pop WindowPadding
     }
+
+    // No notification updates needed - using native OS notifications only
 
     // Render operation spinner overlay (must be after all windows/modals)
     renderOperationSpinner();

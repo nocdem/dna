@@ -9,10 +9,21 @@
 
 #include "notification_manager.h"
 #include "../vendor/imgui/imgui.h"
+#include "../font_awesome.h"
 #include <ctime>
 #include <algorithm>
 #include <sstream>
 #include <iomanip>
+#include <cstdlib>
+#ifdef _WIN32
+#include <windows.h>
+#include <shellapi.h>
+#elif defined(__APPLE__)
+#include <objc/objc-runtime.h>
+#else
+// Linux - use libnotify if available, fallback to notify-send
+#include <cstdio>
+#endif
 
 namespace DNA {
 
@@ -24,286 +35,141 @@ NotificationManager& NotificationManager::getInstance() {
     return instance;
 }
 
+// REMOVED: In-app notifications - use showNativeNotification() instead
+
+// REMOVED: All in-app notification methods - use showNativeNotification() instead
+
+// REMOVED: Old convenience methods - use showNativeNotification() directly
+
 /**
- * Add a new notification
+ * Check if app window has focus
  */
-uint64_t NotificationManager::addNotification(
-    NotificationType type,
+bool NotificationManager::isAppFocused() {
+#ifdef __linux__
+    // On Linux, check if our window has focus using xdotool
+    FILE* pipe = popen("xdotool getwindowfocus getwindowname 2>/dev/null", "r");
+    if (pipe) {
+        char buffer[256];
+        if (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+            pclose(pipe);
+            // Check if our app name is in the focused window title
+            std::string focused_window(buffer);
+            return focused_window.find("DNA Messenger") != std::string::npos;
+        }
+        pclose(pipe);
+    }
+    return false; // Default to unfocused if we can't determine
+#else
+    // For now, assume unfocused on other platforms to always show notifications
+    // TODO: Implement proper focus detection for Windows/macOS
+    return false;
+#endif
+}
+
+/**
+ * Show native OS notification (cross-platform)
+ */
+void NotificationManager::showNativeNotification(
     const std::string& title,
-    const std::string& message,
-    const std::string& group_name,
-    bool dismissable,
-    bool auto_dismiss,
-    uint32_t auto_dismiss_seconds
+    const std::string& body,
+    NotificationType type,
+    bool force_show
 ) {
-    Notification notif;
-    notif.id = next_id_++;
-    notif.type = type;
-    notif.title = title;
-    notif.message = message;
-    notif.group_name = group_name;
-    notif.timestamp = static_cast<uint64_t>(std::time(nullptr));
-    notif.dismissable = dismissable;
-    notif.auto_dismiss = auto_dismiss;
-    notif.auto_dismiss_seconds = auto_dismiss_seconds;
-    notif.dismissed = false;
-    notif.dismissed_at = 0;
-
-    notifications_.push_back(notif);
-
-    return notif.id;
-}
-
-/**
- * Add GSK rotation notification
- */
-uint64_t NotificationManager::addGSKRotationNotification(
-    const std::string& group_name,
-    uint32_t new_version,
-    const std::string& reason
-) {
-    std::stringstream msg;
-    msg << "Group security key rotated to version " << new_version;
-    if (!reason.empty()) {
-        msg << " (" << reason << ")";
-    }
-    msg << ". Messages are now encrypted with the new key.";
-
-    return addNotification(
-        NotificationType::SUCCESS,
-        "🔐 Security Key Rotated",
-        msg.str(),
-        group_name,
-        true,   // dismissable
-        true,   // auto_dismiss
-        15      // 15 seconds
-    );
-}
-
-/**
- * Add ownership transfer notification
- */
-uint64_t NotificationManager::addOwnershipTransferNotification(
-    const std::string& group_name,
-    const std::string& new_owner_name,
-    bool i_am_new_owner
-) {
-    std::string title;
-    std::string message;
-    NotificationType type;
-
-    if (i_am_new_owner) {
-        title = "👑 You Are Now Group Owner";
-        message = "Previous owner was offline for 7+ days. You can now manage members and rotate security keys.";
-        type = NotificationType::OWNERSHIP;
-    } else {
-        title = "👑 New Group Owner";
-        message = "Group ownership transferred to " + new_owner_name + " (previous owner offline for 7+ days).";
-        type = NotificationType::INFO;
-    }
-
-    return addNotification(
-        type,
-        title,
-        message,
-        group_name,
-        true,   // dismissable
-        !i_am_new_owner,  // auto-dismiss only if not me
-        20      // 20 seconds
-    );
-}
-
-/**
- * Add member change notification
- */
-uint64_t NotificationManager::addMemberChangeNotification(
-    const std::string& group_name,
-    const std::string& member_name,
-    bool was_added
-) {
-    std::string title = was_added ? "➕ Member Added" : "➖ Member Removed";
-    std::string message = member_name + (was_added ? " joined " : " left ") + "the group.";
-
-    return addNotification(
-        NotificationType::INFO,
-        title,
-        message,
-        group_name,
-        true,   // dismissable
-        true,   // auto_dismiss
-        10      // 10 seconds
-    );
-}
-
-/**
- * Dismiss a notification
- */
-void NotificationManager::dismissNotification(uint64_t notification_id) {
-    for (auto& notif : notifications_) {
-        if (notif.id == notification_id && !notif.dismissed) {
-            notif.dismissed = true;
-            notif.dismissed_at = static_cast<uint64_t>(std::time(nullptr));
-            break;
-        }
-    }
-}
-
-/**
- * Dismiss all notifications
- */
-void NotificationManager::dismissAll() {
-    uint64_t now = static_cast<uint64_t>(std::time(nullptr));
-    for (auto& notif : notifications_) {
-        if (!notif.dismissed) {
-            notif.dismissed = true;
-            notif.dismissed_at = now;
-        }
-    }
-}
-
-/**
- * Get all active (non-dismissed) notifications
- */
-std::vector<Notification> NotificationManager::getActiveNotifications() {
-    std::vector<Notification> active;
-    for (const auto& notif : notifications_) {
-        if (!notif.dismissed) {
-            active.push_back(notif);
-        }
-    }
-    return active;
-}
-
-/**
- * Update notification state (call every frame)
- */
-void NotificationManager::update() {
-    uint64_t now = static_cast<uint64_t>(std::time(nullptr));
-
-    // Auto-dismiss expired notifications
-    for (auto& notif : notifications_) {
-        if (!notif.dismissed && notif.auto_dismiss) {
-            uint64_t age = now - notif.timestamp;
-            if (age >= notif.auto_dismiss_seconds) {
-                notif.dismissed = true;
-                notif.dismissed_at = now;
-            }
-        }
-    }
-
-    // Cleanup old dismissed notifications (keep last 50)
-    if (notifications_.size() > 50) {
-        // Remove oldest dismissed notifications
-        notifications_.erase(
-            std::remove_if(notifications_.begin(), notifications_.end(),
-                [now](const Notification& n) {
-                    return n.dismissed && (now - n.dismissed_at > 300);  // 5 minutes
-                }),
-            notifications_.end()
-        );
-    }
-}
-
-/**
- * Render notifications (call from ImGui render loop)
- */
-void NotificationManager::render(float window_width) {
-    auto active = getActiveNotifications();
-    if (active.empty()) {
+    // Only show if app is not focused OR force_show is true
+    if (!force_show && isAppFocused()) {
+        printf("[Notifications] App has focus, skipping native notification: %s\n", title.c_str());
         return;
     }
 
-    // Display notifications as stacked banners at the top
-    ImGuiIO& io = ImGui::GetIO();
-    const float banner_width = std::min(window_width * 0.9f, 600.0f);
-    const float banner_x = (window_width - banner_width) * 0.5f;
-    float banner_y = 10.0f;  // Start 10px from top
+    printf("[Notifications] Showing native notification: %s - %s\n", title.c_str(), body.c_str());
 
-    ImGui::SetNextWindowPos(ImVec2(banner_x, banner_y));
-    ImGui::SetNextWindowSize(ImVec2(banner_width, 0));  // Auto height
-
-    ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar |
-                              ImGuiWindowFlags_NoResize |
-                              ImGuiWindowFlags_NoMove |
-                              ImGuiWindowFlags_NoScrollbar |
-                              ImGuiWindowFlags_NoCollapse |
-                              ImGuiWindowFlags_AlwaysAutoResize;
-
-    ImGui::Begin("##Notifications", nullptr, flags);
-
-    // Render each notification
-    for (const auto& notif : active) {
-        // Choose color based on type
-        ImVec4 bg_color, text_color;
-        switch (notif.type) {
-            case NotificationType::INFO:
-                bg_color = ImVec4(0.2f, 0.5f, 0.9f, 0.95f);  // Blue
-                text_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-                break;
-            case NotificationType::SUCCESS:
-                bg_color = ImVec4(0.2f, 0.8f, 0.3f, 0.95f);  // Green
-                text_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-                break;
-            case NotificationType::WARNING:
-                bg_color = ImVec4(0.9f, 0.7f, 0.2f, 0.95f);  // Yellow
-                text_color = ImVec4(0.0f, 0.0f, 0.0f, 1.0f);
-                break;
-            case NotificationType::ERROR:
-                bg_color = ImVec4(0.9f, 0.2f, 0.2f, 0.95f);  // Red
-                text_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-                break;
-            case NotificationType::OWNERSHIP:
-                bg_color = ImVec4(0.7f, 0.3f, 0.9f, 0.95f);  // Purple
-                text_color = ImVec4(1.0f, 1.0f, 1.0f, 1.0f);
-                break;
-        }
-
-        // Notification banner
-        ImGui::PushStyleColor(ImGuiCol_ChildBg, bg_color);
-        ImGui::PushStyleColor(ImGuiCol_Text, text_color);
-
-        std::string child_id = "##notif_" + std::to_string(notif.id);
-        ImGui::BeginChild(child_id.c_str(), ImVec2(banner_width - 20, 0), true, ImGuiWindowFlags_AlwaysAutoResize);
-
-        // Title
-        ImGui::PushFont(io.Fonts->Fonts[0]);  // Bold font (if available)
-        ImGui::TextWrapped("%s", notif.title.c_str());
-        ImGui::PopFont();
-
-        // Group name (if present)
-        if (!notif.group_name.empty()) {
-            ImGui::SameLine();
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 0.7f));
-            ImGui::TextWrapped("(%s)", notif.group_name.c_str());
-            ImGui::PopStyleColor();
-        }
-
-        // Message
-        ImGui::Spacing();
-        ImGui::TextWrapped("%s", notif.message.c_str());
-
-        // Dismiss button (if dismissable)
-        if (notif.dismissable) {
-            ImGui::Spacing();
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0, 0, 0, 0.3f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0, 0, 0, 0.5f));
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0, 0, 0, 0.7f));
-
-            std::string button_id = "Dismiss##" + std::to_string(notif.id);
-            if (ImGui::Button(button_id.c_str())) {
-                dismissNotification(notif.id);
-            }
-
-            ImGui::PopStyleColor(3);
-        }
-
-        ImGui::EndChild();
-        ImGui::PopStyleColor(2);
-
-        ImGui::Spacing();
+#ifdef _WIN32
+    // Windows: Use proper toast notifications (Windows 10+)
+    std::string ps_script = 
+        "Add-Type -AssemblyName System.Windows.Forms; "
+        "$notify = New-Object System.Windows.Forms.NotifyIcon; "
+        "$notify.Icon = [System.Drawing.SystemIcons]::Information; "
+        "$notify.BalloonTipTitle = '" + title + "'; "
+        "$notify.BalloonTipText = '" + body + "'; "
+        "$notify.Visible = $true; "
+        "$notify.ShowBalloonTip(5000); "
+        "Start-Sleep -Seconds 6; "
+        "$notify.Dispose()";
+    
+    std::string command = "powershell -WindowStyle Hidden -Command \"" + ps_script + "\"";
+    std::system(command.c_str());
+    
+#elif defined(__APPLE__)
+    // macOS: Use proper NSUserNotification
+    std::string safe_title = title;
+    std::string safe_body = body;
+    std::replace(safe_title.begin(), safe_title.end(), '"', '\\\"');
+    std::replace(safe_body.begin(), safe_body.end(), '"', '\\\"');
+    
+    std::string script = "display notification \"" + safe_body + "\" with title \"" + safe_title + "\" sound name \"Ping\"";
+    std::string command = "osascript -e '" + script + "'";
+    std::system(command.c_str());
+    
+#else
+    // Linux: Use libnotify (notify-send) with proper icons and urgency
+    std::string icon;
+    std::string urgency = "normal";
+    
+    switch (type) {
+        case NotificationType::MESSAGE:
+            icon = "mail-message-new";
+            urgency = "normal";
+            break;
+        case NotificationType::ERROR:
+            icon = "dialog-error";
+            urgency = "critical";
+            break;
+        case NotificationType::SUCCESS:
+            icon = "dialog-information";
+            urgency = "low";
+            break;
+        case NotificationType::WARNING:
+            icon = "dialog-warning";
+            urgency = "normal";
+            break;
+        case NotificationType::WALLET:
+            icon = "applications-office";
+            urgency = "normal";
+            break;
+        default:
+            icon = "dialog-information";
+            urgency = "low";
+            break;
     }
-
-    ImGui::End();
+    
+    // Escape quotes and special characters
+    std::string safe_title = title;
+    std::string safe_body = body;
+    std::replace(safe_title.begin(), safe_title.end(), '"', '\'');
+    std::replace(safe_body.begin(), safe_body.end(), '"', '\'');
+    std::replace(safe_title.begin(), safe_title.end(), '`', '\'');
+    std::replace(safe_body.begin(), safe_body.end(), '`', '\'');
+    
+    // Build notify-send command with proper options
+    std::string command = "notify-send"
+        " --urgency=" + urgency +
+        " --icon=" + icon +
+        " --app-name=\"DNA Messenger\"" +
+        " --expire-time=5000" +
+        " \"" + safe_title + "\"" +
+        " \"" + safe_body + "\"";
+    
+    printf("[Notifications] Running: %s\n", command.c_str());
+    int result = std::system(command.c_str());
+    
+    if (result != 0) {
+        // Fallback to zenity if notify-send fails
+        printf("[Notifications] notify-send failed, trying zenity fallback\n");
+        std::string zenity_cmd = "zenity --info --no-wrap --timeout=5 --title=\"" + 
+                               safe_title + "\" --text=\"" + safe_body + "\"";
+        std::system(zenity_cmd.c_str());
+    }
+#endif
 }
 
 } // namespace DNA

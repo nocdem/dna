@@ -1,4 +1,5 @@
 #include "data_loader.h"
+#include "notification_manager.h"
 #include "../../messenger.h"
 #include "../../messenger_p2p.h"
 #include "../../database/contacts_db.h"
@@ -546,6 +547,14 @@ void checkForNewMessages(AppState& state) {
 
         if (result == 0 && messages_received > 0) {
             printf("[Poll] [OK] Received %zu new message(s) from DHT offline queue\n", messages_received);
+            
+            // Show native OS notification for new message
+            DNA::NotificationManager::showNativeNotification(
+                "New Message - DNA Messenger",
+                "You have received " + std::to_string(messages_received) + " new message(s)",
+                DNA::NotificationType::MESSAGE
+            );
+            
             // Set flag for main thread to reload messages
             state.new_messages_received = true;
         } else if (result != 0) {
