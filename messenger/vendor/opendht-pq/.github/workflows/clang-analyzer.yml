@@ -1,0 +1,42 @@
+name: Clang Static Analysis
+on: [push, pull_request]
+
+jobs:
+  clang-analyzer:
+    name: Clang Static Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: deps
+        run: |
+          sudo apt update && \
+          sudo apt install libncurses5-dev libreadline-dev nettle-dev \
+          libgnutls28-dev libuv1-dev python3-dev python3-setuptools libcppunit-dev libjsoncpp-dev \
+          autotools-dev autoconf libfmt-dev libmsgpack-dev libargon2-dev libasio-dev \
+          llvm llvm-dev clang clang-tools && \
+          sudo apt remove gcc g++
+
+      - name: expected-lite
+        run: |
+          sudo mkdir /usr/include/nonstd && \
+          sudo wget https://raw.githubusercontent.com/martinmoene/expected-lite/master/include/nonstd/expected.hpp \
+            -O /usr/include/nonstd/expected.hpp
+
+      - name: restinio
+        run: |
+          mkdir restinio && cd restinio
+          wget https://github.com/Stiffstream/restinio/releases/download/v.0.7.3/restinio-0.7.3.tar.bz2
+          ls -l && tar -xjf restinio-0.7.3.tar.bz2
+          cd restinio-0.7.3/dev
+          cmake -DCMAKE_INSTALL_PREFIX=/usr -DRESTINIO_TEST=Off -DRESTINIO_SAMPLE=Off -DRESTINIO_BENCHMARK=Off \
+                  -DRESTINIO_WITH_SOBJECTIZER=Off -DRESTINIO_DEP_STANDALONE_ASIO=system -DRESTINIO_DEP_LLHTTP=system \
+                  -DRESTINIO_DEP_FMT=system -DRESTINIO_DEP_EXPECTED_LITE=system .
+          make -j2 && sudo make install
+          cd ../../ && rm -rf restinio*
+
+      - name: cmake
+        run: |
+          mkdir build && cd build && \
+          cmake .. -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_BUILD_TYPE=Debug -DOPENDHT_C=On -DOPENDHT_DOWNLOAD_DEPS=ON -DOPENDHT_PEER_DISCOVERY=On -DOPENDHT_PYTHON=Off -DOPENDHT_TOOLS=On -DOPENDHT_PROXY_SERVER=On -DOPENDHT_PROXY_CLIENT=On -DOPENDHT_PUSH_NOTIFICATIONS=On
+      - name: scan-build
+        run: cd build && scan-build --status-bugs make

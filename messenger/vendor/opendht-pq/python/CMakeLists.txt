@@ -1,0 +1,49 @@
+set(CURRENT_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
+set(CURRENT_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
+
+configure_file(setup.py.in setup.py)
+configure_file(pyproject.toml pyproject.toml COPYONLY)
+configure_file(README.md README.md COPYONLY)
+
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+add_custom_target(python
+    COMMAND ${Python3_EXECUTABLE} -m build "${CMAKE_CURRENT_BINARY_DIR}"
+    DEPENDS opendht opendht_cpp.pxd opendht.pyx pyproject.toml
+            ${CURRENT_SOURCE_DIR}/opendht/__init__.py
+            ${CURRENT_SOURCE_DIR}/opendht/aio.py)
+            
+install(CODE [[
+    if(NOT Python3_EXECUTABLE)
+        find_package(Python3 COMPONENTS Interpreter)
+    endif()
+    if(NOT Python3_EXECUTABLE)
+        message(WARNING "Skipping Python package install: Python interpreter not found.")
+    else()
+        execute_process(
+            COMMAND ${Python3_EXECUTABLE} -m pip --version
+            OUTPUT_QUIET
+            ERROR_QUIET
+            RESULT_VARIABLE _pip_check)
+        if(NOT _pip_check EQUAL 0)
+            message(WARNING "Skipping Python package install: pip not available for ${Python3_EXECUTABLE}.")
+        else()
+            execute_process(
+                COMMAND ${Python3_EXECUTABLE} -m pip install --no-deps --break-system-packages .
+                WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}/python
+                OUTPUT_VARIABLE _pip_output
+                ERROR_VARIABLE _pip_error
+                RESULT_VARIABLE _pip_result)
+
+            if(_pip_result EQUAL 0)
+                message(STATUS "Successfully installed Python package")
+                message(STATUS "Output: ${_pip_output}")
+            else()
+                message(WARNING "pip install failed (code: ${_pip_result})\nOutput: ${_pip_output}\nError: ${_pip_error}")
+            endif()
+        endif()
+    endif()
+]])
+if (OPENDHT_TOOLS)
+	install(PROGRAMS tools/dhtcluster.py DESTINATION ${CMAKE_INSTALL_BINDIR} RENAME dhtcluster)
+endif()

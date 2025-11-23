@@ -1,0 +1,470 @@
+name: Release actions
+
+on:
+  push:
+    tags:
+    - 'v*'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME_DEPS: ${{ github.repository }}/opendht-deps
+  IMAGE_NAME: ${{ github.repository }}/opendht
+  IMAGE_NAME_DEPS_LLVM: ${{ github.repository }}/opendht-deps-llvm
+  IMAGE_NAME_LLVM: ${{ github.repository }}/opendht-llvm
+  IMAGE_NAME_DHTNODE: ${{ github.repository }}/dhtnode
+  IMAGE_NAME_ALPINE: ${{ github.repository }}/opendht-alpine
+  IMAGE_NAME_ALPINE_DEPS: ${{ github.repository }}/opendht-deps-alpine
+
+jobs:
+  build-and-push-deps-image:
+    name: Dependency Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_DEPS }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/DockerfileDeps
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  build-and-push-image:
+    name: OpenDHT Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  build-and-push-deps-image-llvm:
+    name: Dependency Docker image (LLVM)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_DEPS_LLVM }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/DockerfileDepsLlvm
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  build-and-push-image-llvm:
+    name: OpenDHT Docker image (LLVM)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LLVM }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/DockerfileLlvm
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  build-and-push-image-dhtnode:
+    name: dhtnode Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_DHTNODE }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/DockerfileDhtnode
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  build-and-push-image-alpine-deps:
+    name: Alpine Deps Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_ALPINE_DEPS }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/DockerfileDepsAlpine
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  build-and-push-image-alpine:
+    name: Alpine Docker image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_ALPINE }}
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/DockerfileAlpine
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  build-windows-msi:
+    name: Build Windows MSI Installer
+    runs-on: windows-latest
+    env:
+      VCPKG_VERSION: "2025.07.25"
+      VCPKG_INSTALLATION_ROOT: "C:\\vcpkg"
+      VCPKG_DISABLE_METRICS: "1"
+      VCPKG_DEFAULT_TRIPLET: x64-windows
+      VCPKG_INSTALLED_DIR: ${{ github.workspace }}\vcpkg_installed
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg_binary_cache
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Set up MSVC developer environment
+        uses: microsoft/setup-msbuild@v2
+      
+      - name: Install WIX using .net tools
+        run: |
+          dotnet tool install --global wix --version 6.0.1
+          wix extension add --global WixToolset.UI.wixext/6.0.1
+        shell: pwsh
+
+      - name: Cache vcpkg installed packages
+        id: cache-vcpkg
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.VCPKG_INSTALLED_DIR }}
+            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ runner.os }}-vcpkg-${{ env.VCPKG_VERSION }}-x64-shared-${{ hashFiles('**/vcpkg.json', '**/vcpkg-configuration.json') }}-${{ hashFiles('.github/workflows/windows-build.yml') }}
+
+      - name: Setup vcpkg and install dependencies
+        if: steps.cache-vcpkg.outputs.cache-hit != 'true'
+        run: |
+          New-Item -Path "${{ env.VCPKG_INSTALLED_DIR }}" -ItemType Directory -Force
+          New-Item -Path "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}" -ItemType Directory -Force
+          vcpkg install `
+            --recurse `
+            --clean-after-build `
+            --triplet=x64-windows `
+            --x-install-root=${{ env.VCPKG_INSTALLED_DIR }} `
+            --x-feature=test
+        shell: pwsh
+
+      - name: Configure CMake for MSI
+        shell: pwsh
+        run: |
+          mkdir build -ErrorAction SilentlyContinue
+          cmake -B build `
+            -S . `
+            -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_INSTALLATION_ROOT }}/scripts/buildsystems/vcpkg.cmake `
+            -DVCPKG_TARGET_TRIPLET=x64-windows `
+            -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }} `
+            -DVCPKG_MANIFEST_FEATURES=test `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DOPENDHT_C=On `
+            -DOPENDHT_TOOLS=On `
+            -DOPENDHT_PYTHON=Off `
+            -DOPENDHT_DOCUMENTATION=OFF `
+            -DOPENDHT_PEER_DISCOVERY=On `
+            -DOPENDHT_PROXY_SERVER=On `
+            -DOPENDHT_PROXY_CLIENT=On `
+            -DOPENDHT_HTTP=On `
+            -DBUILD_TESTING=Off `
+            -DOPENDHT_CPACK=On `
+            -A x64
+
+      - name: Build with MSVC
+        shell: pwsh
+        run: |
+          cmake --build build --config Release --parallel $([System.Environment]::ProcessorCount)
+          # Copy vcpkg installed libraries to the build directory
+          Copy-Item -Path "${{ env.VCPKG_INSTALLED_DIR }}\x64-windows\lib\*.lib" -Destination "build" -Force
+          Copy-Item -Path "${{ env.VCPKG_INSTALLED_DIR }}\x64-windows\bin\*.dll" -Destination "build" -Force
+
+      - name: Package MSI with CPack
+        shell: pwsh
+        id: cpack_msi
+        run: |
+          cd build
+          cpack -C Release -G WIX
+          $msiFile = Get-ChildItem -Path . -Recurse -Filter *.msi | Select-Object -First 1
+          if ($msiFile) {
+            $msiOutputPath = "opendht-installer.msi" # Standardized artifact name
+            Copy-Item $msiFile.FullName -Destination $msiOutputPath
+            echo "msi_path=$msiOutputPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            Write-Host "MSI created at build/$msiOutputPath"
+          } else {
+            Write-Error "MSI file not found after cpack execution!"
+            exit 1
+          }
+
+      - name: Upload MSI Artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: opendht-windows-msi
+          path: build/${{ steps.cpack_msi.outputs.msi_path }} # Path to the MSI in the build directory
+          retention-days: 7
+
+  build-windows-dhtnode:
+    name: Build Windows dhtnode
+    runs-on: windows-latest
+    env:
+      VCPKG_VERSION: "2025.07.25"
+      VCPKG_INSTALLATION_ROOT: "C:\\vcpkg"
+      VCPKG_DISABLE_METRICS: "1"
+      VCPKG_DEFAULT_TRIPLET: x64-windows-static-release
+      VCPKG_INSTALLED_DIR: ${{ github.workspace }}\vcpkg_installed
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ github.workspace }}\vcpkg_binary_cache
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+        with:
+          submodules: recursive
+
+      - name: Set up MSVC developer environment
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Cache vcpkg static installed packages
+        id: cache-vcpkg-static
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.VCPKG_INSTALLED_DIR }}
+            ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: ${{ runner.os }}-vcpkg-${{ env.VCPKG_VERSION }}-x64-static-${{ hashFiles('**/vcpkg.json', '**/vcpkg-configuration.json') }}-${{ hashFiles('.github/workflows/windows-build.yml') }}
+          restore-keys: |
+            ${{ runner.os }}-vcpkg-${{ env.VCPKG_VERSION }}-x64-static-${{ hashFiles('**/vcpkg.json', '**/vcpkg-configuration.json') }}
+            ${{ runner.os }}-vcpkg-${{ env.VCPKG_VERSION }}-x64-static-
+
+      - name: Setup vcpkg and install static dependencies
+        if: steps.cache-vcpkg-static.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          New-Item -Path "${{ env.VCPKG_INSTALLED_DIR }}" -ItemType Directory -Force
+          New-Item -Path "${{ env.VCPKG_DEFAULT_BINARY_CACHE }}" -ItemType Directory -Force
+          vcpkg install `
+            --recurse `
+            --clean-after-build `
+            --triplet=x64-windows-static-release `
+            --x-install-root=${{ env.VCPKG_INSTALLED_DIR }} `
+            --x-feature=test
+
+      - name: Configure CMake for Static Build
+        shell: pwsh
+        run: |
+          mkdir build_static -ErrorAction SilentlyContinue
+          cmake -B build_static `
+            -S . `
+            -DCMAKE_TOOLCHAIN_FILE=${{ env.VCPKG_INSTALLATION_ROOT }}/scripts/buildsystems/vcpkg.cmake `
+            -DVCPKG_TARGET_TRIPLET=x64-windows-static-release `
+            -DVCPKG_INSTALLED_DIR=${{ env.VCPKG_INSTALLED_DIR }} `
+            -DVCPKG_MANIFEST_FEATURES=test `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_SHARED_LIBS=OFF `
+            -DOPENDHT_PROXY_CLIENT=ON `
+            -DOPENDHT_PROXY_SERVER=ON `
+            -DOPENDHT_C=ON `
+            -DOPENDHT_TOOLS=ON `
+            -DOPENDHT_DOCUMENTATION=OFF `
+            -DOPENDHT_PYTHON=OFF `
+            -DOPENDHT_PEER_DISCOVERY=ON `
+            -DOPENDHT_HTTP=ON `
+            -A x64
+
+      - name: Build Static dhtnode
+        shell: pwsh
+        run: |
+          cmake --build build_static --config Release --parallel $([System.Environment]::ProcessorCount)
+
+      - name: Upload Static dhtnode Artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: opendht-windows-dhtnode
+          path: |
+            build_static/**/*dhtnode.exe
+          retention-days: 7
+
+  create-github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build-windows-msi, build-windows-dhtnode]
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Download Windows MSI artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: opendht-windows-msi
+          path: downloaded_artifacts/windows_msi
+
+      - name: Download Static dhtnode artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: opendht-windows-dhtnode
+          path: downloaded_artifacts/static_dhtnode
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v2
+        with:
+          draft: true
+          files: |
+            downloaded_artifacts/windows_msi/*.msi
+            downloaded_artifacts/static_dhtnode/**/*dhtnode.exe
