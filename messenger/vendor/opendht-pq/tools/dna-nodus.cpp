@@ -197,17 +197,19 @@ int main(int argc, char** argv) {
             auto value = std::make_shared<Value>(info.str());
             value->sign(*id.first);
 
+            // Put with 30-day TTL
+            auto expire_time = dht::clock::now() + std::chrono::hours(24 * 30);
             dht.put(BOOTSTRAP_REGISTRY_KEY, value, [](bool success) {
                 if (success)
                     std::cout << "[Registry] Published bootstrap node info" << std::endl;
                 else
                     std::cerr << "[Registry] Failed to publish bootstrap node info" << std::endl;
-            });
+            }, expire_time);
         };
 
-        // Initial publish (wait a bit for DHT to stabilize)
+        // Initial publish (wait for DHT to stabilize and connect to network)
         if (!public_ip.empty()) {
-            std::this_thread::sleep_for(std::chrono::seconds(5));
+            std::this_thread::sleep_for(std::chrono::seconds(15));
             publish_bootstrap_info();
         }
 
