@@ -496,12 +496,14 @@ if(BUILD_TESTS)
     )
 
     target_link_libraries(test_identity_backup
+        -Wl,--start-group
         dna_lib        # Main DNA library with platform and AES functions
-        dht_lib        # DHT library (first time - for dna_lib dependencies)
+        dht_lib        # DHT library
         p2p_transport  # P2P transport layer
-        dht_lib        # DHT library (second time - for circular deps)
+        opendht        # Dilithium5 DHT (circular dep with dsa)
+        dsa            # Dilithium5 DSA (needs qgp_randombytes from dht_lib)
+        -Wl,--end-group
         kem            # Kyber1024 KEM
-        dsa            # Dilithium5 DSA
         stdc++         # C++ standard library (required by OpenDHT)
         ${JSONC_LIBRARIES}
         ${SQLite3_LIBRARIES}
@@ -521,10 +523,13 @@ if(BUILD_TESTS)
     )
 
     target_link_libraries(test_timestamp_v08
+        -Wl,--start-group
         dna_lib        # Main DNA library with v0.08 encrypt/decrypt
         dht_lib        # DHT library
+        opendht        # Dilithium5 DHT (circular dep with dsa)
+        dsa            # Dilithium5 DSA (needs qgp_randombytes from dht_lib)
+        -Wl,--end-group
         kem            # Kyber1024 KEM
-        dsa            # Dilithium5 DSA
         ${JSONC_LIBRARIES}
         ${SQLite3_LIBRARIES}
         ${OPENSSL_LIBRARIES}
@@ -543,10 +548,13 @@ if(BUILD_TESTS)
     )
 
     target_link_libraries(test_gsk_simple
+        -Wl,--start-group
         dna_lib        # Main DNA library with GSK functions
         dht_lib        # DHT library
+        opendht        # Dilithium5 DHT (circular dep with dsa)
+        dsa            # Dilithium5 DSA (needs qgp_randombytes from dht_lib)
+        -Wl,--end-group
         kem            # Kyber1024 KEM
-        dsa            # Dilithium5 DSA
         ${JSONC_LIBRARIES}
         ${SQLite3_LIBRARIES}
         ${OPENSSL_LIBRARIES}
@@ -565,10 +573,13 @@ if(BUILD_TESTS)
     )
 
     target_link_libraries(test_ice_lookup
+        -Wl,--start-group
         dna_lib        # Main DNA library
         dht_lib        # DHT library
+        opendht        # Dilithium5 DHT (circular dep with dsa)
+        dsa            # Dilithium5 DSA (needs qgp_randombytes from dht_lib)
+        -Wl,--end-group
         kem            # Kyber1024 KEM
-        dsa            # Dilithium5 DSA
         ${JSONC_LIBRARIES}
         ${SQLite3_LIBRARIES}
         ${OPENSSL_LIBRARIES}
@@ -587,10 +598,13 @@ if(BUILD_TESTS)
     )
 
     target_link_libraries(test_gsk
+        -Wl,--start-group
         dna_lib        # Main DNA library with GSK functions
         dht_lib        # DHT library
+        opendht        # Dilithium5 DHT (circular dep with dsa)
+        dsa            # Dilithium5 DSA (needs qgp_randombytes from dht_lib)
+        -Wl,--end-group
         kem            # Kyber1024 KEM
-        dsa            # Dilithium5 DSA
         ${JSONC_LIBRARIES}
         ${SQLite3_LIBRARIES}
         ${OPENSSL_LIBRARIES}
