@@ -20,6 +20,8 @@ endfunction ()
 configure_tool (dhtnode tools_common.h)
 # DNA Nodus - Post-Quantum Bootstrap Node
 configure_tool (dna-nodus "")
+# DNA DHT Network Test Suite
+configure_tool (test-dht-network "")
 if (OPENDHT_EXAMPLES)
     configure_tool (dhtscanner tools_common.h)
     configure_tool (dhtchat tools_common.h)
@@ -50,7 +52,7 @@ if (NOT DEFINED CMAKE_INSTALL_BINDIR)
     set(CMAKE_INSTALL_BINDIR bin)
 endif ()
 
-install (TARGETS dhtnode dna-nodus RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install (TARGETS dhtnode dna-nodus test-dht-network RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 if (OPENDHT_EXAMPLES)
     install (TARGETS dhtscanner dhtchat RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif ()
