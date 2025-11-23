@@ -59,6 +59,7 @@ else()
         -Wall
         -Wextra
         -O3
+        -fPIC  # Position Independent Code for shared library linking
     )
     # DILITHIUM_MODE now defined in config.h (Category 5: ML-DSA-87)
 endif()
