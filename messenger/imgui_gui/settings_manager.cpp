@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <algorithm>
 
 #ifndef _WIN32
 #include <unistd.h>
@@ -72,6 +73,10 @@ bool SettingsManager::Load(AppSettings& settings) {
             settings.window_width = atoi(line + 13);
         } else if (strncmp(line, "window_height=", 14) == 0) {
             settings.window_height = atoi(line + 14);
+        } else if (strncmp(line, "custom_wallet_path=", 19) == 0) {
+            settings.custom_wallet_paths.push_back(std::string(line + 19));
+        } else if (strncmp(line, "prefer_custom_wallets=", 22) == 0) {
+            settings.prefer_custom_wallets = (atoi(line + 22) != 0);
         }
     }
     
@@ -91,6 +96,53 @@ bool SettingsManager::Save(const AppSettings& settings) {
     fprintf(f, "window_width=%d\n", settings.window_width);
     fprintf(f, "window_height=%d\n", settings.window_height);
     
+    // Save wallet settings
+    fprintf(f, "prefer_custom_wallets=%d\n", settings.prefer_custom_wallets ? 1 : 0);
+    for (const auto& path : settings.custom_wallet_paths) {
+        fprintf(f, "custom_wallet_path=%s\n", path.c_str());
+    }
+    
     fclose(f);
     return true;
+}
+
+// Global settings instance for wallet path management
+extern AppSettings g_app_settings;
+
+void SettingsManager::AddWalletPath(const std::string& path) {
+    // Check if path already exists
+    for (const auto& existing : g_app_settings.custom_wallet_paths) {
+        if (existing == path) {
+            return; // Already exists
+        }
+    }
+    
+    g_app_settings.custom_wallet_paths.push_back(path);
+    Save(g_app_settings);
+    printf("[Settings] Added wallet path: %s\n", path.c_str());
+}
+
+void SettingsManager::RemoveWalletPath(const std::string& path) {
+    auto it = std::find(g_app_settings.custom_wallet_paths.begin(), 
+                       g_app_settings.custom_wallet_paths.end(), path);
+    if (it != g_app_settings.custom_wallet_paths.end()) {
+        g_app_settings.custom_wallet_paths.erase(it);
+        Save(g_app_settings);
+        printf("[Settings] Removed wallet path: %s\n", path.c_str());
+    }
+}
+
+void SettingsManager::ClearWalletPaths() {
+    g_app_settings.custom_wallet_paths.clear();
+    Save(g_app_settings);
+    printf("[Settings] Cleared all wallet paths\n");
+}
+
+bool SettingsManager::HasWalletPath(const std::string& path) {
+    for (const auto& existing : g_app_settings.custom_wallet_paths) {
+        if (existing == path) {
+            return true;
+        }
+    }
+    return false;
 }

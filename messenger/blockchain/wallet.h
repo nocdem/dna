@@ -77,6 +77,11 @@ int wallet_read_cellframe(const char *filename, cellframe_wallet_t **wallet_out)
 int wallet_list_cellframe(wallet_list_t **list_out);
 
 /**
+ * List wallets from ~/.dna/wallets directory
+ */
+int wallet_list_from_dna_dir(wallet_list_t **list_out);
+
+/**
  * Get wallet address for specific network using cellframe-node-cli
  */
 int wallet_get_address(const cellframe_wallet_t *wallet, const char *network_name, char *address_out);

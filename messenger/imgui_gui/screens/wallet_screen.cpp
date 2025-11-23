@@ -10,8 +10,73 @@
 #include "../../blockchain/blockchain_rpc.h"
 
 #include <cstdio>
+#include <cstdlib>
+#include <sys/stat.h>
+#include <sys/types.h>
+
+#ifdef _WIN32
+#include <direct.h>
+#define mkdir(path, mode) _mkdir(path)
+#else
+#include <unistd.h>
+#include <pwd.h>
+#endif
+
+// Global settings instance
+extern AppSettings g_app_settings;
 
 namespace WalletScreen {
+
+static const char* get_home_dir() {
+#ifdef _WIN32
+    return getenv("USERPROFILE");
+#else
+    const char* home = getenv("HOME");
+    if (!home) {
+        struct passwd *pw = getpwuid(getuid());
+        home = pw ? pw->pw_dir : "/tmp";
+    }
+    return home;
+#endif
+}
+
+static void ensure_dna_wallets_dir() {
+    const char *home = get_home_dir();
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+    mkdir(dna_dir, 0755);
+    
+    char wallets_dir[512];
+    snprintf(wallets_dir, sizeof(wallets_dir), "%s/.dna/wallets", home);
+    mkdir(wallets_dir, 0755);
+}
+
+static int copy_wallet_file(const char *src, const char *dst) {
+    FILE *src_file = fopen(src, "rb");
+    if (!src_file) {
+        return -1;
+    }
+    
+    FILE *dst_file = fopen(dst, "wb");
+    if (!dst_file) {
+        fclose(src_file);
+        return -1;
+    }
+    
+    char buffer[4096];
+    size_t bytes;
+    while ((bytes = fread(buffer, 1, sizeof(buffer), src_file)) > 0) {
+        if (fwrite(buffer, 1, bytes, dst_file) != bytes) {
+            fclose(src_file);
+            fclose(dst_file);
+            return -1;
+        }
+    }
+    
+    fclose(src_file);
+    fclose(dst_file);
+    return 0;
+}
 
 void loadWallet(AppState& state) {
     if (state.wallet_loading) return;  // Already loading
@@ -19,26 +84,70 @@ void loadWallet(AppState& state) {
     state.wallet_loading = true;
     state.wallet_error.clear();
 
-    wallet_list_t *wallets = nullptr;
-    int ret = wallet_list_cellframe(&wallets);
-
-    if (ret != 0 || !wallets || wallets->count == 0) {
-        state.wallet_error = "No wallets found. Create one with cellframe-node-cli.";
+    wallet_list_t *cellframe_wallets = nullptr;
+    wallet_list_t *dna_wallets = nullptr;
+    
+    // Load from cellframe node directory
+    int ret1 = wallet_list_cellframe(&cellframe_wallets);
+    
+    // Load from DNA directory
+    int ret2 = wallet_list_from_dna_dir(&dna_wallets);
+    
+    // Count total wallets
+    size_t total_count = 0;
+    if (ret1 == 0 && cellframe_wallets) total_count += cellframe_wallets->count;
+    if (ret2 == 0 && dna_wallets) total_count += dna_wallets->count;
+    
+    if (total_count == 0) {
+        state.wallet_error = "No wallets found. Create one with cellframe-node-cli or browse for existing wallet files.";
         state.wallet_loaded = false;
         state.wallet_loading = false;
+        if (cellframe_wallets) wallet_list_free(cellframe_wallets);
+        if (dna_wallets) wallet_list_free(dna_wallets);
         return;
     }
+    
+    // Merge wallet lists
+    wallet_list_t *merged = (wallet_list_t*)malloc(sizeof(wallet_list_t));
+    merged->count = total_count;
+    merged->wallets = (cellframe_wallet_t*)malloc(sizeof(cellframe_wallet_t) * total_count);
+    
+    size_t index = 0;
+    
+    // Copy cellframe wallets
+    if (ret1 == 0 && cellframe_wallets) {
+        for (size_t i = 0; i < cellframe_wallets->count; i++) {
+            merged->wallets[index++] = cellframe_wallets->wallets[i];
+        }
+        printf("[Wallet] Loaded %zu wallet(s) from cellframe-node\n", cellframe_wallets->count);
+    }
+    
+    // Copy DNA wallets
+    if (ret2 == 0 && dna_wallets) {
+        for (size_t i = 0; i < dna_wallets->count; i++) {
+            merged->wallets[index++] = dna_wallets->wallets[i];
+        }
+        printf("[Wallet] Loaded %zu wallet(s) from DNA directory\n", dna_wallets->count);
+    }
+    
+    // Free original lists (but not the wallet data which we copied)
+    if (cellframe_wallets) {
+        free(cellframe_wallets->wallets);
+        free(cellframe_wallets);
+    }
+    if (dna_wallets) {
+        free(dna_wallets->wallets);
+        free(dna_wallets);
+    }
 
-    // Store wallet list and use first wallet
-    state.wallet_list = wallets;
+    // Store merged wallet list
+    state.wallet_list = merged;
     state.current_wallet_index = 0;
-    state.wallet_name = std::string(wallets->wallets[0].name);
+    state.wallet_name = std::string(merged->wallets[0].name);
     state.wallet_loaded = true;
     state.wallet_loading = false;
 
-    printf("[Wallet] Loaded wallet: %s\n", state.wallet_name.c_str());
-
-    // Don't automatically refresh - will be done by preloadAllBalances
+    printf("[Wallet] Total: %zu wallet(s) loaded\n", total_count);
 }
 
 void preloadAllBalances(AppState& state) {
@@ -229,9 +338,9 @@ void render(AppState& state) {
         }
         
         if (ThemedButton(button_text, ImVec2(200, 40)) && !button_disabled) {
-            // Start async file browser
+            // Start async file browser for multiple selection
             state.file_browser_task.start([](AsyncTask* task) {
-                FileBrowser::openFileDialogAsync(task, "Select Wallet File", FileBrowser::FILE_TYPE_WALLETS);
+                FileBrowser::openMultipleFileDialogAsync(task, "Select Wallet Files (multiple selection supported)", FileBrowser::FILE_TYPE_WALLETS);
             });
         }
         
@@ -241,25 +350,82 @@ void render(AppState& state) {
         
         // Check if file browser task completed
         if (state.file_browser_task.isCompleted() && !state.file_browser_task.isRunning()) {
-            std::string walletPath = FileBrowser::getAsyncResult();
+            std::vector<std::string> walletPaths = FileBrowser::getAsyncMultipleResults();
             
-            if (!walletPath.empty()) {
-                // TODO: Load the selected wallet file
-                // For now, just show the path in the error message
-                state.wallet_error = "Selected wallet: " + walletPath + " (Loading not yet implemented)";
-                printf("[Wallet] Selected wallet file: %s\n", walletPath.c_str());
+            if (!walletPaths.empty()) {
+                ensure_dna_wallets_dir();
+                
+                int successful_wallets = 0;
+                int failed_wallets = 0;
+                std::string last_error;
+                
+                const char *home = get_home_dir();
+                char wallets_dir[512];
+                snprintf(wallets_dir, sizeof(wallets_dir), "%s/.dna/wallets", home);
+                
+                // Process each selected wallet file
+                for (const std::string& walletPath : walletPaths) {
+                    // Test if the wallet can be loaded
+                    cellframe_wallet_t *test_wallet = nullptr;
+                    if (wallet_read_cellframe_path(walletPath.c_str(), &test_wallet) == 0 && test_wallet) {
+                        // Extract filename
+                        const char *filename = strrchr(walletPath.c_str(), '/');
+                        if (!filename) {
+                            filename = strrchr(walletPath.c_str(), '\\');
+                        }
+                        filename = filename ? filename + 1 : walletPath.c_str();
+                        
+                        // Build destination path
+                        char dest_path[1024];
+                        snprintf(dest_path, sizeof(dest_path), "%s/%s", wallets_dir, filename);
+                        
+                        // Copy the wallet file
+                        if (copy_wallet_file(walletPath.c_str(), dest_path) == 0) {
+                            successful_wallets++;
+                            printf("[Wallet] Copied wallet to DNA directory: %s\n", filename);
+                        } else {
+                            failed_wallets++;
+                            last_error = "Failed to copy: " + std::string(filename);
+                            printf("[Wallet] Failed to copy wallet file: %s\n", walletPath.c_str());
+                        }
+                        
+                        wallet_free(test_wallet);
+                    } else {
+                        failed_wallets++;
+                        last_error = "Failed to load: " + walletPath;
+                        printf("[Wallet] Failed to load wallet file: %s\n", walletPath.c_str());
+                    }
+                }
+                
+                // Update UI based on results
+                if (successful_wallets > 0) {
+                    state.wallet_error.clear();
+                    
+                    // Reload wallets to include the new ones
+                    state.wallet_loading = false;
+                    loadWallet(state);
+                    
+                    // Immediately cache balances for all wallets
+                    preloadAllBalances(state);
+                    
+                    // Show success message
+                    if (failed_wallets > 0) {
+                        state.wallet_error = "Added " + std::to_string(successful_wallets) + " wallet(s), " + 
+                                           std::to_string(failed_wallets) + " failed. " + last_error;
+                    }
+                } else {
+                    // All wallets failed
+                    state.wallet_error = "Failed to process any of the selected wallet files. " + last_error;
+                }
             } else {
                 // Check for file browser error
                 const std::string& error = FileBrowser::getLastError();
                 if (!error.empty()) {
                     state.wallet_error = "File browser error: " + error;
                 } else {
-                    // User cancelled, don't show error
                     printf("[Wallet] File selection cancelled\n");
                 }
             }
-            
-            // Task will auto-reset on next start() call
         }
 
         ImGui::EndChild();
