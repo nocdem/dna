@@ -61,7 +61,7 @@ int main(void) {
                         (uint8_t*)TEST_KEY, strlen(TEST_KEY),
                         (uint8_t*)TEST_VALUE, strlen(TEST_VALUE),
                         value_id,
-                        0);  // 0 = default TTL (7 days)
+                        365 * 24 * 3600);  // 365 days TTL (persisted to disk)
 
     assert(ret == 0 && "DHT put_signed failed");
     printf("   ✓ Signed value written to DHT\n\n");
