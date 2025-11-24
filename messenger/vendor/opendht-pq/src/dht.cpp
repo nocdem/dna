@@ -2549,9 +2549,11 @@ Dht::onAnnounce(Sp<Node> n,
             }
         } else {
             std::cout << "[DEBUG] Value doesn't exist locally, checking storePolicy..." << std::endl;
+            std::cout << "[DEBUG] Value type ID: 0x" << std::hex << vc->type << std::dec << std::endl;
             // Allow the value to be edited by the storage policy
             const auto& type = getType(vc->type);
-            std::cout << "[DEBUG] Got type, calling storePolicy..." << std::endl;
+            std::cout << "[DEBUG] Got type: id=0x" << std::hex << type.id << std::dec << " name=" << type.name << std::endl;
+            std::cout << "[DEBUG] Calling storePolicy..." << std::endl;
             if (type.storePolicy(hash, vc, node.id, node.getAddr())) {
                 // if (logger_)
                 //     logger_->d(hash, node.id, "[store %s] Storing %s", hash.toString().c_str(), std::to_string(vc->id).c_str());
