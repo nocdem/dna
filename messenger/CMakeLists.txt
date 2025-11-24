@@ -621,4 +621,7 @@ if(BUILD_TESTS)
 endif()
 
 # ImGui GUI (Phase 11: Modern GUI)
-add_subdirectory(imgui_gui)
+option(BUILD_GUI "Build ImGui GUI" ON)
+if(BUILD_GUI)
+    add_subdirectory(imgui_gui)
+endif()
