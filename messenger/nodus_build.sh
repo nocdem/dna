@@ -47,6 +47,22 @@ if [ -f vendor/opendht-pq/tools/dna-nodus ]; then
     SIZE=$(ls -lh vendor/opendht-pq/tools/dna-nodus | awk '{print $5}')
     echo "✓ Build SUCCESS"
     echo "Binary: /opt/dna-messenger/build/vendor/opendht-pq/tools/dna-nodus ($SIZE)"
+    echo ""
+
+    # Install to /usr/local/bin/
+    echo "Installing dna-nodus to /usr/local/bin/..."
+    sudo cp vendor/opendht-pq/tools/dna-nodus /usr/local/bin/dna-nodus
+    sudo chmod +x /usr/local/bin/dna-nodus
+    echo "✓ Installed to /usr/local/bin/dna-nodus"
+    echo ""
+
+    # Restart service if running
+    if systemctl is-active --quiet dna-nodus; then
+        echo "Restarting dna-nodus service..."
+        sudo systemctl restart dna-nodus
+        sleep 2
+        echo "✓ Service restarted"
+    fi
 else
     echo "✗ Build FAILED - Binary not found"
     exit 1
