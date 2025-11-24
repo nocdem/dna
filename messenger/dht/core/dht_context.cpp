@@ -290,6 +290,27 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
 
         std::cout << "[DHT] Node started on port " << ctx->config.port << std::endl;
 
+        // Initialize value storage BEFORE ValueTypes (bootstrap nodes only)
+        // CRITICAL: Storage must be initialized before ValueTypes so storeCallback can use it
+        if (ctx->config.persistence_path[0] != '\0') {
+            std::string storage_path = std::string(ctx->config.persistence_path) + ".values.db";
+            std::cout << "[DHT] Initializing value storage: " << storage_path << std::endl;
+
+            ctx->storage = dht_value_storage_new(storage_path.c_str());
+            if (ctx->storage) {
+                std::cout << "[DHT] ✓ Value storage initialized" << std::endl;
+
+                // Launch async republish in background
+                if (dht_value_storage_restore_async(ctx->storage, ctx) == 0) {
+                    std::cout << "[DHT] ✓ Async value republish started" << std::endl;
+                } else {
+                    std::cerr << "[DHT] WARNING: Failed to start async republish" << std::endl;
+                }
+            } else {
+                std::cerr << "[DHT] WARNING: Value storage initialization failed" << std::endl;
+            }
+        }
+
         // Register custom ValueTypes (CRITICAL: all nodes must know these types!)
         std::cout << "[DHT] Registering custom ValueTypes..." << std::endl;
 
@@ -330,26 +351,6 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
             }
         } else {
             std::cout << "[DHT] No bootstrap nodes (first node in network)" << std::endl;
-        }
-
-        // Initialize value storage (bootstrap nodes only)
-        if (ctx->config.persistence_path[0] != '\0') {
-            std::string storage_path = std::string(ctx->config.persistence_path) + ".values.db";
-            std::cout << "[DHT] Initializing value storage: " << storage_path << std::endl;
-
-            ctx->storage = dht_value_storage_new(storage_path.c_str());
-            if (ctx->storage) {
-                std::cout << "[DHT] ✓ Value storage initialized (captured in ValueTypes)" << std::endl;
-
-                // Launch async republish in background
-                if (dht_value_storage_restore_async(ctx->storage, ctx) == 0) {
-                    std::cout << "[DHT] ✓ Async value republish started" << std::endl;
-                } else {
-                    std::cerr << "[DHT] WARNING: Failed to start async republish" << std::endl;
-                }
-            } else {
-                std::cerr << "[DHT] WARNING: Value storage initialization failed" << std::endl;
-            }
         }
 
         ctx->running = true;
