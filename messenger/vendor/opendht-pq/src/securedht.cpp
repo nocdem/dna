@@ -89,8 +89,14 @@ ValueType
 SecureDht::secureType(ValueType&& type)
 {
     type.storePolicy = [type](InfoHash id, Sp<Value>& v, const InfoHash& nid, const SockAddr& a) {
-        if (v->isSigned())
-            return v->checkSignature();
+        if (v->isSigned()) {
+            // Check signature first (security)
+            bool sig_valid = v->checkSignature();
+            if (!sig_valid)
+                return false;  // Reject invalid signatures
+            // Signature is valid, now call custom storePolicy for persistence
+            return type.storePolicy(id, v, nid, a);
+        }
         return type.storePolicy(id, v, nid, a);
     };
     type.editPolicy = [this,type](InfoHash id, const Sp<Value>& o, Sp<Value>& n, const InfoHash& nid, const SockAddr& a) {
