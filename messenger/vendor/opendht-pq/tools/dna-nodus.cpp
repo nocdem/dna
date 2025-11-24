@@ -80,6 +80,7 @@ int main(int argc, char** argv) {
     // Default settings
     int port = 4000;
     std::string identity_path = "/root/.nodus/identity";
+    std::string persist_path = "/var/lib/dna-dht/bootstrap.state";  // Default persistence path
     std::string bootstrap_host = "";
     int bootstrap_port = 4000;
     std::string public_ip = "";
@@ -103,6 +104,8 @@ int main(int argc, char** argv) {
             }
         } else if (arg == "--public-ip" && i + 1 < argc) {
             public_ip = argv[++i];
+        } else if (arg == "-s" && i + 1 < argc) {
+            persist_path = argv[++i];
         } else if (arg == "-v") {
             verbose = true;
         } else if (arg == "-h" || arg == "--help") {
@@ -110,6 +113,7 @@ int main(int argc, char** argv) {
             std::cout << "Options:" << std::endl;
             std::cout << "  -p <port>           Port to listen on (default: 4000)" << std::endl;
             std::cout << "  -i <path>           Identity file path (default: /root/.nodus/identity)" << std::endl;
+            std::cout << "  -s <path>           Persistence file path (default: /var/lib/dna-dht/bootstrap.state)" << std::endl;
             std::cout << "  -b <host>[:port]    Bootstrap from host (default port: 4000)" << std::endl;
             std::cout << "  --public-ip <ip>    Public IP address for DHT registry" << std::endl;
             std::cout << "  -v                  Verbose logging" << std::endl;
@@ -155,12 +159,15 @@ int main(int argc, char** argv) {
         // Create DHT node configuration
         DhtRunner::Config config;
         config.dht_config.node_config.network = 0;  // Default network
+        config.dht_config.node_config.maintain_storage = false;
+        config.dht_config.node_config.persist_path = persist_path;  // Enable persistence
         config.dht_config.id = id;
         config.threaded = true;
 
         // Create and start DHT runner
         DhtRunner dht;
         std::cout << "Starting DHT node on port " << port << "..." << std::endl;
+        std::cout << "Persistence: " << persist_path << std::endl;
         dht.run(port, config);
 
         // Bootstrap if host specified
