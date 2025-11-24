@@ -14,6 +14,7 @@
 
 #include "../../dht/core/dht_context.h"
 #include "../../dht/shared/dht_value_storage.h"
+#include "../../dht/core/dht_bootstrap_registry.h"
 
 #include <iostream>
 #include <fstream>
@@ -191,11 +192,35 @@ int main(int argc, char** argv) {
     }
     std::cout << "Press Ctrl+C to stop" << std::endl << std::endl;
 
-    // Main loop - print stats every 60 seconds
+    // Register this bootstrap node in DHT registry
+    {
+        char node_id[129];
+        if (dht_get_node_id(global_ctx, node_id) == 0) {
+            std::cout << "[REGISTRY] Node ID: " << std::string(node_id).substr(0, 16) << "..." << std::endl;
+
+            if (dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), port,
+                                                node_id, "v0.2", 0) == 0) {
+                std::cout << "[REGISTRY] ✓ Registered in bootstrap registry" << std::endl;
+            } else {
+                std::cerr << "[REGISTRY] WARNING: Failed to register in bootstrap registry" << std::endl;
+            }
+        }
+    }
+
+    // Main loop - print stats every 60 seconds, refresh registry every 5 minutes
     int seconds = 0;
     while (true) {
         sleep(1);
         seconds++;
+
+        // Refresh bootstrap registry every 5 minutes
+        if (seconds % 300 == 0) {
+            char node_id[129];
+            if (dht_get_node_id(global_ctx, node_id) == 0) {
+                dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), port,
+                                                node_id, "v0.2", seconds);
+            }
+        }
 
         if (seconds % 60 == 0) {
             size_t node_count = 0;

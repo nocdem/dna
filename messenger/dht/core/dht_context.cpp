@@ -1060,5 +1060,31 @@ extern "C" int dht_delete(dht_context_t *ctx,
     }
 }
 
+/**
+ * Get this DHT node's ID (SHA3-512 hash of public key)
+ */
+extern "C" int dht_get_node_id(dht_context_t *ctx, char *node_id_out) {
+    if (!ctx || !node_id_out) {
+        return -1;
+    }
+
+    try {
+        // Get the node's public key from OpenDHT
+        auto node_id = ctx->runner.getId();
+
+        // Convert to hex string
+        std::string id_hex = node_id.toString();
+
+        // Copy to output (OpenDHT node IDs are already hex strings)
+        strncpy(node_id_out, id_hex.c_str(), 128);
+        node_id_out[128] = '\0';
+
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[DHT] Exception in dht_get_node_id: " << e.what() << std::endl;
+        return -1;
+    }
+}
+
 // NOTE: dht_get_stats() and dht_get_storage() moved to dht/core/dht_stats.cpp (Phase 3)
 // NOTE: dht_identity_* functions moved to dht/client/dht_identity.cpp (Phase 3)

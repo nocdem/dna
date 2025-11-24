@@ -17,6 +17,7 @@ if(WIN32)
         core/dht_context.cpp
         core/dht_stats.cpp
         core/dht_keyserver.c
+        core/dht_bootstrap_registry.c
         # Shared modules (Phase 4)
         shared/dht_value_storage.cpp
         shared/dht_offline_queue.c
@@ -52,6 +53,7 @@ else()
         core/dht_context.cpp
         core/dht_stats.cpp
         core/dht_keyserver.c
+        core/dht_bootstrap_registry.c
         # Shared modules (Phase 4)
         shared/dht_value_storage.cpp
         shared/dht_offline_queue.c

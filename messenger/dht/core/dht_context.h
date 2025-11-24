@@ -274,6 +274,16 @@ int dht_delete(dht_context_t *ctx,
 // NOTE: dht_get_stats() and dht_get_storage() moved to dht/core/dht_stats.h (Phase 3)
 // NOTE: dht_identity_* functions moved to dht/client/dht_identity.h (Phase 3)
 
+/**
+ * Get this DHT node's ID (SHA3-512 hash of public key)
+ * Used for bootstrap node registry
+ *
+ * @param ctx DHT context
+ * @param node_id_out Output buffer (must be at least 129 bytes for hex string + null)
+ * @return 0 on success, -1 on error
+ */
+int dht_get_node_id(dht_context_t *ctx, char *node_id_out);
+
 #ifdef __cplusplus
 }
 #endif
