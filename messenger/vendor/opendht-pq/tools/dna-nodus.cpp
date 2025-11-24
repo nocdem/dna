@@ -23,6 +23,7 @@
 #include <iomanip>
 #include <ctime>
 #include <sys/types.h>
+#include <sys/stat.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -70,6 +71,27 @@ std::string get_interface_ip() {
 
     freeifaddrs(ifaddr);
     return ip;
+}
+
+// Get file size and format as human-readable string
+std::string get_file_size(const std::string& path) {
+    struct stat st;
+    if (stat(path.c_str(), &st) != 0) {
+        return "0 B";
+    }
+
+    double size = st.st_size;
+    const char* units[] = {"B", "KB", "MB", "GB", "TB"};
+    int unit = 0;
+
+    while (size >= 1024 && unit < 4) {
+        size /= 1024;
+        unit++;
+    }
+
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(2) << size << " " << units[unit];
+    return ss.str();
 }
 
 int main(int argc, char** argv) {
@@ -168,6 +190,12 @@ int main(int argc, char** argv) {
         DhtRunner dht;
         std::cout << "Starting DHT node on port " << port << "..." << std::endl;
         std::cout << "Persistence: " << persist_path << std::endl;
+
+        // Display database size (the blockchain of the ecosystem)
+        std::string db_path = persist_path + ".values.db";
+        std::string db_size = get_file_size(db_path);
+        std::cout << "Database:    " << db_path << " (" << db_size << ")" << std::endl;
+
         dht.run(port, config);
 
         // Bootstrap if host specified
