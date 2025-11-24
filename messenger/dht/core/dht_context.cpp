@@ -30,6 +30,11 @@ struct dht_identity {
     dht_identity(const dht::crypto::Identity& id) : identity(id) {}
 };
 
+// Global storage pointer (accessed from ValueType store callbacks)
+// Using the old working approach: global pointer set after storage init
+static dht_value_storage_t *g_global_storage = nullptr;
+static std::mutex g_storage_mutex;
+
 // Helper functions for persistent Dilithium5 identity
 namespace {
     // Save Dilithium5 identity to binary files
@@ -94,10 +99,11 @@ namespace {
             0x1001,                      // Type ID
             "DNA_7DAY",                  // Type name
             std::chrono::hours(7 * 24),  // 7 days TTL
-            [ctx](dht::InfoHash key, std::shared_ptr<dht::Value>& value,
+            [](dht::InfoHash key, std::shared_ptr<dht::Value>& value,
                   const dht::InfoHash&, const dht::SockAddr&) -> bool {
-                // Store to persistent storage if available (ctx->storage may be NULL)
-                if (ctx && ctx->storage && value) {
+                // Store to persistent storage if available (using global storage pointer)
+                std::lock_guard<std::mutex> lock(g_storage_mutex);
+                if (g_global_storage && value) {
                     uint64_t now = time(NULL);
                     uint64_t expires_at = now + (7 * 24 * 3600);
 
@@ -112,7 +118,7 @@ namespace {
                         metadata.created_at = now;
                         metadata.expires_at = expires_at;
 
-                        if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
+                        if (dht_value_storage_put(g_global_storage, &metadata) == 0) {
                             std::cout << "[Storage] ✓ Persisted 7-day value ("
                                       << value->data.size() << " bytes)" << std::endl;
                         }
@@ -129,10 +135,11 @@ namespace {
             0x1003,                      // Type ID
             "DNA_30DAY",                 // Type name
             std::chrono::hours(30 * 24), // 30 days TTL
-            [ctx](dht::InfoHash key, std::shared_ptr<dht::Value>& value,
+            [](dht::InfoHash key, std::shared_ptr<dht::Value>& value,
                   const dht::InfoHash&, const dht::SockAddr&) -> bool {
-                // Store to persistent storage if available
-                if (ctx && ctx->storage && value) {
+                // Store to persistent storage if available (using global storage pointer)
+                std::lock_guard<std::mutex> lock(g_storage_mutex);
+                if (g_global_storage && value) {
                     uint64_t now = time(NULL);
                     uint64_t expires_at = now + (30 * 24 * 3600);
 
@@ -147,7 +154,7 @@ namespace {
                         metadata.created_at = now;
                         metadata.expires_at = expires_at;
 
-                        if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
+                        if (dht_value_storage_put(g_global_storage, &metadata) == 0) {
                             std::cout << "[Storage] ✓ Persisted 30-day value ("
                                       << value->data.size() << " bytes)" << std::endl;
                         }
@@ -164,10 +171,11 @@ namespace {
             0x1002,                       // Type ID
             "DNA_365DAY",                 // Type name
             std::chrono::hours(365 * 24), // 365 days TTL
-            [ctx](dht::InfoHash key, std::shared_ptr<dht::Value>& value,
+            [](dht::InfoHash key, std::shared_ptr<dht::Value>& value,
                   const dht::InfoHash&, const dht::SockAddr&) -> bool {
-                // Store to persistent storage if available
-                if (ctx && ctx->storage && value) {
+                // Store to persistent storage if available (using global storage pointer)
+                std::lock_guard<std::mutex> lock(g_storage_mutex);
+                if (g_global_storage && value) {
                     uint64_t now = time(NULL);
                     uint64_t expires_at = now + (365 * 24 * 3600);
 
@@ -182,7 +190,7 @@ namespace {
                         metadata.created_at = now;
                         metadata.expires_at = expires_at;
 
-                        if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
+                        if (dht_value_storage_put(g_global_storage, &metadata) == 0) {
                             std::cout << "[Storage] ✓ Persisted 365-day value ("
                                       << value->data.size() << " bytes)" << std::endl;
                         }
@@ -299,6 +307,13 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
             ctx->storage = dht_value_storage_new(storage_path.c_str());
             if (ctx->storage) {
                 std::cout << "[DHT] ✓ Value storage initialized" << std::endl;
+
+                // Set global storage pointer (used by ValueType store callbacks)
+                {
+                    std::lock_guard<std::mutex> lock(g_storage_mutex);
+                    g_global_storage = ctx->storage;
+                }
+                std::cout << "[DHT] ✓ Storage callbacks enabled in ValueTypes" << std::endl;
 
                 // Launch async republish in background
                 if (dht_value_storage_restore_async(ctx->storage, ctx) == 0) {
