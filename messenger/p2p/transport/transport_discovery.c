@@ -46,12 +46,15 @@ int p2p_register_presence(p2p_transport_t *ctx) {
            dht_key[4], dht_key[5], dht_key[6], dht_key[7]);
     printf("[P2P] Presence data: %s\n", presence_data);
 
-    // Store in DHT
-    int result = dht_put(ctx->dht, dht_key, sizeof(dht_key),
-                        (const uint8_t*)presence_data, strlen(presence_data));
+    // Store in DHT (signed, 7-day TTL, value_id=1 for replacement)
+    // Presence data is ephemeral and refreshed regularly
+    unsigned int ttl_7days = 7 * 24 * 3600;  // 604800 seconds
+    int result = dht_put_signed(ctx->dht, dht_key, sizeof(dht_key),
+                                (const uint8_t*)presence_data, strlen(presence_data),
+                                1, ttl_7days);
 
     if (result == 0) {
-        printf("[P2P] Presence registered successfully\n");
+        printf("[P2P] Presence registered successfully (signed)\n");
     } else {
         printf("[P2P] Failed to register presence in DHT\n");
         return result;

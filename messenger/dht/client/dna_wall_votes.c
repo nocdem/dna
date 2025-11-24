@@ -469,11 +469,13 @@ int dna_cast_vote(dht_context_t *dht_ctx,
         return -1;
     }
 
-    printf("[DNA_VOTES] → DHT PUT: Publishing votes (up=%d, down=%d, total=%zu)\n",
+    printf("[DNA_VOTES] → DHT PUT_SIGNED: Publishing votes (up=%d, down=%d, total=%zu)\n",
            votes->upvote_count, votes->downvote_count, votes->vote_count);
 
-    ret = dht_put(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                  (const uint8_t *)json_data, strlen(json_data));
+    unsigned int ttl_30days = 30 * 24 * 3600;  // Votes persist for 30 days
+    ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
+                         (const uint8_t *)json_data, strlen(json_data),
+                         1, ttl_30days);
 
     free(json_data);
     dna_wall_votes_free(votes);
@@ -483,7 +485,7 @@ int dna_cast_vote(dht_context_t *dht_ctx,
         return -1;
     }
 
-    printf("[DNA_VOTES] ✓ Vote cast successfully (post=%s, voter=%s, value=%+d)\n",
+    printf("[DNA_VOTES] ✓ Vote cast successfully (signed, post=%s, voter=%s, value=%+d)\n",
            post_id, voter_fingerprint, vote_value);
 
     return 0;

@@ -303,8 +303,9 @@ int dht_groups_create(
     char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
-    // Store in DHT
-    int ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json));
+    // Store in DHT (signed, 30-day TTL for group metadata, value_id=1 for replacement)
+    unsigned int ttl_30days = 30 * 24 * 3600;
+    int ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json), 1, ttl_30days);
     if (ret != 0) {
         fprintf(stderr, "[DHT GROUPS] Failed to store in DHT\n");
         free(json);
@@ -452,7 +453,8 @@ int dht_groups_update(
     char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
-    ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json));
+    unsigned int ttl_30days = 30 * 24 * 3600;
+    ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json), 1, ttl_30days);
     free(json);
     dht_groups_free_metadata(meta);
 
@@ -461,7 +463,7 @@ int dht_groups_update(
         return -1;
     }
 
-    printf("[DHT GROUPS] Updated group %s\n", group_uuid);
+    printf("[DHT GROUPS] Updated group %s (signed)\n", group_uuid);
     return 0;
 }
 
@@ -531,7 +533,8 @@ int dht_groups_add_member(
     char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
-    ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json));
+    unsigned int ttl_30days = 30 * 24 * 3600;
+    ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json), 1, ttl_30days);
     free(json);
     dht_groups_free_metadata(meta);
 
@@ -540,7 +543,7 @@ int dht_groups_add_member(
         return -1;
     }
 
-    printf("[DHT GROUPS] Added member %s to group %s\n", new_member, group_uuid);
+    printf("[DHT GROUPS] Added member %s to group %s (signed)\n", new_member, group_uuid);
     return 0;
 }
 
@@ -605,7 +608,8 @@ int dht_groups_remove_member(
     char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
-    ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json));
+    unsigned int ttl_30days = 30 * 24 * 3600;
+    ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json), 1, ttl_30days);
     free(json);
     dht_groups_free_metadata(meta);
 
@@ -614,7 +618,7 @@ int dht_groups_remove_member(
         return -1;
     }
 
-    printf("[DHT GROUPS] Removed member %s from group %s\n", member, group_uuid);
+    printf("[DHT GROUPS] Removed member %s from group %s (signed)\n", member, group_uuid);
     return 0;
 }
 
@@ -649,9 +653,10 @@ int dht_groups_delete(
     char dht_key[129];
     compute_dht_key(group_uuid, dht_key);
 
-    // OpenDHT doesn't have explicit delete, so store a tombstone
+    // OpenDHT doesn't have explicit delete, so store a tombstone (signed)
     const char *tombstone = "{\"deleted\":true}";
-    ret = dht_put(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)tombstone, strlen(tombstone));
+    unsigned int ttl_30days = 30 * 24 * 3600;
+    ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)tombstone, strlen(tombstone), 1, ttl_30days);
 
     if (ret != 0) {
         fprintf(stderr, "[DHT GROUPS] Failed to delete from DHT\n");

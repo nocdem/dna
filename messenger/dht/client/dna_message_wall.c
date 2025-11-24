@@ -667,9 +667,11 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
         return -1;
     }
 
-    printf("[DNA_WALL] → DHT PUT: Publishing message wall (%zu messages)\n", wall->message_count);
-    ret = dht_put(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                  (const uint8_t *)json_data, strlen(json_data));
+    printf("[DNA_WALL] → DHT PUT_SIGNED: Publishing message wall (%zu messages)\n", wall->message_count);
+    unsigned int ttl_30days = 30 * 24 * 3600;  // Wall posts persist for 30 days
+    ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
+                         (const uint8_t *)json_data, strlen(json_data),
+                         1, ttl_30days);
     free(json_data);
 
     if (ret != 0) {
@@ -678,7 +680,7 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
         return -1;
     }
 
-    printf("[DNA_WALL] Successfully posted message to wall (wall_owner=%s, poster=%s)\n",
+    printf("[DNA_WALL] Successfully posted message to wall (signed, wall_owner=%s, poster=%s)\n",
            wall_owner_fingerprint, poster_fingerprint);
 
     dna_message_wall_free(wall);

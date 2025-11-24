@@ -552,11 +552,14 @@ int ice_publish_to_dht(ice_context_t *ctx, const char *my_fingerprint) {
         return -1;
     }
 
-    // Publish to DHT
+    // Publish to DHT (signed, 7-day TTL, value_id=1 for replacement)
+    // ICE candidates are ephemeral and refreshed regularly
     printf("[ICE] Publishing %zu bytes of candidates to DHT\n", ctx->candidates_len);
 
-    int ret = dht_put(dht, (uint8_t*)hex_key, strlen(hex_key),
-                      (uint8_t*)ctx->local_candidates, ctx->candidates_len);
+    unsigned int ttl_7days = 7 * 24 * 3600;  // 604800 seconds
+    int ret = dht_put_signed(dht, (uint8_t*)hex_key, strlen(hex_key),
+                             (uint8_t*)ctx->local_candidates, ctx->candidates_len,
+                             1, ttl_7days);
 
     pthread_mutex_unlock(&ctx->candidates_mutex);
 
@@ -565,7 +568,7 @@ int ice_publish_to_dht(ice_context_t *ctx, const char *my_fingerprint) {
         return -1;
     }
 
-    printf("[ICE] Candidates published to DHT\n");
+    printf("[ICE] Candidates published to DHT (signed)\n");
     return 0;
 }
 
