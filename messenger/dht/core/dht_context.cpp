@@ -173,6 +173,7 @@ namespace {
             std::chrono::hours(365 * 24), // 365 days TTL
             [](dht::InfoHash key, std::shared_ptr<dht::Value>& value,
                   const dht::InfoHash&, const dht::SockAddr&) -> bool {
+                std::cout << "[DEBUG] 365-day storePolicy called! value_type=" << value->type << std::endl;
                 // Store to persistent storage if available (using global storage pointer)
                 std::lock_guard<std::mutex> lock(g_storage_mutex);
                 if (g_global_storage && value) {
