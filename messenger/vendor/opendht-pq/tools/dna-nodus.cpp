@@ -198,16 +198,29 @@ int main(int argc, char** argv) {
 
         dht.run(port, config);
 
-        // Register custom ValueTypes (CRITICAL: must match client-side types)
-        dht::ValueType type_7day(0x1001, "DNA_TYPE_7DAY", std::chrono::hours(7 * 24));
-        dht::ValueType type_30day(0x1003, "DNA_TYPE_30DAY", std::chrono::hours(30 * 24));
-        dht::ValueType type_365day(0x1002, "DNA_TYPE_365DAY", std::chrono::hours(365 * 24));
+        // Mandatory Dilithium5 signature enforcement policy
+        auto signature_policy = [](InfoHash, std::shared_ptr<dht::Value>& value, const InfoHash&, const dht::SockAddr&) -> bool {
+            if (!value->isSigned()) {
+                std::cerr << "[NODUS] REJECT: Unsigned value (signature required)" << std::endl;
+                return false;
+            }
+            if (!value->checkSignature()) {
+                std::cerr << "[NODUS] REJECT: Invalid Dilithium5 signature" << std::endl;
+                return false;
+            }
+            return true;  // Valid signature, accept
+        };
+
+        // Register custom ValueTypes with mandatory signature enforcement
+        dht::ValueType type_7day(0x1001, "DNA_TYPE_7DAY", std::chrono::hours(7 * 24), signature_policy);
+        dht::ValueType type_30day(0x1003, "DNA_TYPE_30DAY", std::chrono::hours(30 * 24), signature_policy);
+        dht::ValueType type_365day(0x1002, "DNA_TYPE_365DAY", std::chrono::hours(365 * 24), signature_policy);
         dht.registerType(type_7day);
         dht.registerType(type_30day);
         dht.registerType(type_365day);
-        std::cout << "Registered DNA_TYPE_7DAY (0x1001, TTL=7 days)" << std::endl;
-        std::cout << "Registered DNA_TYPE_30DAY (0x1003, TTL=30 days)" << std::endl;
-        std::cout << "Registered DNA_TYPE_365DAY (0x1002, TTL=365 days)" << std::endl;
+        std::cout << "Registered DNA_TYPE_7DAY (0x1001, TTL=7 days, SIGNED)" << std::endl;
+        std::cout << "Registered DNA_TYPE_30DAY (0x1003, TTL=30 days, SIGNED)" << std::endl;
+        std::cout << "Registered DNA_TYPE_365DAY (0x1002, TTL=365 days, SIGNED)" << std::endl;
 
         // Bootstrap if host specified
         if (!bootstrap_host.empty()) {
