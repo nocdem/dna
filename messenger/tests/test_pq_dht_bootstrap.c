@@ -63,18 +63,20 @@ int main(void) {
     }
 
     // Test basic DHT operations
-    printf("4. Testing basic DHT operations...\n");
+    printf("4. Testing basic DHT SIGNED put operation...\n");
     const char* test_key = "test_bootstrap_key";
     const char* test_value = "test_value_pq_dht";
 
-    ret = dht_put(ctx,
-                  (uint8_t*)test_key, strlen(test_key),
-                  (uint8_t*)test_value, strlen(test_value));
+    ret = dht_put_signed(ctx,
+                        (uint8_t*)test_key, strlen(test_key),
+                        (uint8_t*)test_value, strlen(test_value),
+                        1,  // value_id
+                        0); // default TTL
 
     if (ret == 0) {
-        printf("   ✓ DHT put operation successful\n");
+        printf("   ✓ DHT put_signed operation successful (Dilithium5)\n");
     } else {
-        printf("   ⚠ DHT put operation failed (may be expected if not ready)\n");
+        printf("   ⚠ DHT put_signed operation failed (may be expected if not ready)\n");
     }
     printf("\n");
 

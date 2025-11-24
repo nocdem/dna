@@ -50,21 +50,25 @@ int main(void) {
     }
     printf("   ✓ DHT ready (connected to bootstrap nodes)\n\n");
 
-    // Put value to DHT
-    printf("3. Writing value to PQ DHT...\n");
+    // Put SIGNED value to DHT
+    printf("3. Writing SIGNED value to PQ DHT...\n");
     printf("   Key: %s\n", TEST_KEY);
     printf("   Value: %s\n", TEST_VALUE);
+    printf("   Using: dht_put_signed (Dilithium5)\n");
 
-    ret = dht_put(ctx,
-                  (uint8_t*)TEST_KEY, strlen(TEST_KEY),
-                  (uint8_t*)TEST_VALUE, strlen(TEST_VALUE));
+    uint64_t value_id = 1;  // Fixed value ID for replaceability
+    ret = dht_put_signed(ctx,
+                        (uint8_t*)TEST_KEY, strlen(TEST_KEY),
+                        (uint8_t*)TEST_VALUE, strlen(TEST_VALUE),
+                        value_id,
+                        0);  // 0 = default TTL (7 days)
 
-    assert(ret == 0 && "DHT put failed");
-    printf("   ✓ Value written to DHT\n\n");
+    assert(ret == 0 && "DHT put_signed failed");
+    printf("   ✓ Signed value written to DHT\n\n");
 
     // Wait for value to propagate
-    printf("4. Waiting for value to propagate (5 seconds)...\n");
-    sleep(5);
+    printf("4. Waiting for value to propagate (10 seconds)...\n");
+    sleep(10);
     printf("   ✓ Propagation time elapsed\n\n");
 
     // Get value from DHT
