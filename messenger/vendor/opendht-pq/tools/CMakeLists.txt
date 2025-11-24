@@ -6,7 +6,7 @@ endif()
 
 function (configure_tool name extra_files)
     add_executable (${name} ${name}.cpp ${extra_files})
-    add_dependencies(${name} opendht)
+    add_dependencies(${name} opendht dht_lib dsa)
     if (MSVC)
         target_sources(${name} PRIVATE ${MSC_COMPAT_SOURCES})
         target_link_libraries (${name} PUBLIC opendht)
@@ -19,17 +19,13 @@ function (configure_tool name extra_files)
     else()
         # DNA Messenger: Add linker group to resolve circular deps (dsa <-> dht_lib)
         # opendht depends on dsa (Dilithium5), dsa needs qgp_randombytes from dht_lib
-        # Problem: opendht's CMake config automatically links dsa, causing duplicates
-        # Solution: Link everything together in proper order with linker group
-        set(DHT_LIB_PATH "${CMAKE_CURRENT_BINARY_DIR}/../../../dht/libdht_lib.a")
-        set(DSA_LIB_PATH "${CMAKE_CURRENT_BINARY_DIR}/../../../crypto/dsa/libdsa.a")
-
+        # Solution: Link everything together using CMake targets with linker group
         # Link all libraries in order with proper grouping
         target_link_libraries (${name} LINK_PUBLIC
             opendht
             -Wl,--start-group
-            ${DSA_LIB_PATH}
-            ${DHT_LIB_PATH}
+            dsa
+            dht_lib
             -Wl,--end-group
             ${READLINE_LIBRARIES}
         )
