@@ -2507,11 +2507,14 @@ Dht::onAnnounce(Sp<Node> n,
         // We store a value only if we think we're part of the
         // SEARCH_NODES nodes around the target id.
         auto closest_nodes = buckets(node.getFamily()).findClosestNodes(hash, scheduler.time(), SEARCH_NODES);
+        std::cout << "[DEBUG] Checking distance: closest_nodes=" << closest_nodes.size() << " TARGET_NODES=" << TARGET_NODES << std::endl;
         if (closest_nodes.size() >= TARGET_NODES and hash.xorCmp(closest_nodes.back()->id, myid) < 0) {
+            std::cout << "[DEBUG] Too far from target! Dropping value." << std::endl;
             if (logger_)
                 logger_->w(hash, node.id, "[node %s] Announce too far from the target. Dropping value.", node.toString().c_str());
             return {};
         }
+        std::cout << "[DEBUG] Close enough to target, continuing..." << std::endl;
     }
 
     auto created = std::min(creation_date, scheduler.time());
@@ -2545,8 +2548,10 @@ Dht::onAnnounce(Sp<Node> n,
                 }
             }
         } else {
+            std::cout << "[DEBUG] Value doesn't exist locally, checking storePolicy..." << std::endl;
             // Allow the value to be edited by the storage policy
             const auto& type = getType(vc->type);
+            std::cout << "[DEBUG] Got type, calling storePolicy..." << std::endl;
             if (type.storePolicy(hash, vc, node.id, node.getAddr())) {
                 // if (logger_)
                 //     logger_->d(hash, node.id, "[store %s] Storing %s", hash.toString().c_str(), std::to_string(vc->id).c_str());
