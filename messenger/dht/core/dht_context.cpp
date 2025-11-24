@@ -769,13 +769,21 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
         // Permanent flag controls whether value expires based on ValueType
+        // Capture key for debugging failures
+        char key_hex_debug[41];
+        for (int i = 0; i < 20 && i < 64; i++) {
+            sprintf(&key_hex_debug[i * 2], "%02x", key[i]);
+        }
+        key_hex_debug[40] = '\0';
+
         ctx->runner.putSigned(hash, dht_value,
-                             [](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                             [key_hex_debug](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
                                      std::cout << "[DHT] PUT_SIGNED: ✓ Stored/updated on "
                                                << nodes.size() << " remote node(s)" << std::endl;
                                  } else {
                                      std::cout << "[DHT] PUT_SIGNED: ✗ Failed to store on any node" << std::endl;
+                                     std::cout << "[DHT] DEBUG Failed PUT key: " << key_hex_debug << "..." << std::endl;
                                  }
                              },
                              false);  // permanent=false to use ValueType's expiration

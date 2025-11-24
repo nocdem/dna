@@ -338,6 +338,14 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
 
     printf("[Identity] Identity loaded successfully: %s (%zu contacts)\n",
            identity.c_str(), state.contacts.size());
+
+    // Preload user profile asynchronously (AFTER identity loaded and DHT reinitialized)
+    // This ensures DHT is fully stabilized before attempting profile operations
+    printf("[Identity] Preloading user profile...\n");
+    state.profile_preload_task.start([&state](AsyncTask* task) {
+        ProfileEditorScreen::loadProfile(state, false);
+        printf("[Identity] User profile preloaded\n");
+    });
 }
 
 void reloadContactsFromDatabase(AppState& state) {

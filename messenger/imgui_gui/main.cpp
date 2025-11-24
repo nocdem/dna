@@ -482,13 +482,10 @@ int main(int argc, char** argv) {
                                 printf("[MAIN] No wallets found to preload\n");
                             }
                         });
-                        
-                        // Preload user profile asynchronously (non-blocking)
-                        printf("[MAIN] Preloading user profile...\n");
-                        state.profile_preload_task.start([&state](AsyncTask* task) {
-                            ProfileEditorScreen::loadProfile(state, false);
-                            printf("[MAIN] User profile preloaded\n");
-                        });
+
+                        // NOTE: Profile preload moved to after identity is loaded and DHT reinitializes
+                        // with user identity. This prevents race condition with DHT stabilization.
+                        // See app.cpp loadIdentity() for profile preload invocation.
                     }
                 }
             });
