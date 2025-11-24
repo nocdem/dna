@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
         // Create DHT node configuration
         DhtRunner::Config config;
         config.dht_config.node_config.network = 0;  // Default network
-        config.dht_config.node_config.maintain_storage = false;
+        config.dht_config.node_config.maintain_storage = true;  // Bootstrap nodes must maintain storage
         config.dht_config.node_config.persist_path = persist_path;  // Enable persistence
         config.dht_config.id = id;
         config.threaded = true;
