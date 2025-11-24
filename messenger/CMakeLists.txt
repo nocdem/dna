@@ -654,8 +654,21 @@ if(BUILD_TESTS)
     )
     target_include_directories(test_pq_dht_bootstrap PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
 
+    # PQ DHT Test 4: Check Persistence
+    add_executable(test_check_persistence tests/test_check_persistence.c)
+    target_link_libraries(test_check_persistence
+        -Wl,--start-group
+        dht_lib
+        dsa
+        ${OPENDHT_LIBRARIES}
+        -Wl,--end-group
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+    )
+    target_include_directories(test_check_persistence PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
+
     message(STATUS "Building unit tests: test_dna_profile, test_simple, test_identity_backup, test_timestamp_v08, test_gsk")
-    message(STATUS "Building PQ DHT tests: test_dilithium5_signature, test_pq_put_get, test_pq_dht_bootstrap")
+    message(STATUS "Building PQ DHT tests: test_dilithium5_signature, test_pq_put_get, test_pq_dht_bootstrap, test_check_persistence")
 endif()
 
 # ImGui GUI (Phase 11: Modern GUI)
