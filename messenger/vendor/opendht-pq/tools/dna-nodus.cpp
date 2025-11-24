@@ -1,9 +1,10 @@
 /*
- * DNA Nodus - Post-Quantum DHT Bootstrap Node
+ * DNA Nodus - Post-Quantum DHT Bootstrap Node with SQL Persistence
  *
  * Dilithium5 (FIPS 204 / ML-DSA-87) enforced bootstrap node for DNA Messenger
  *
  * Features:
+ * - SQLite value persistence (survives restarts)
  * - Mandatory Dilithium5 signature enforcement
  * - Binary identity files (.dsa, .pub, .cert)
  * - Public bootstrap node (no rate limiting)
@@ -11,34 +12,30 @@
  * - Listens on port 4000
  */
 
-#include <opendht/dhtrunner.h>
-#include <opendht/log.h>
-#include <opendht/crypto.h>
+#include "../../dht/core/dht_context.h"
+#include "../../dht/shared/dht_value_storage.h"
 
 #include <iostream>
 #include <fstream>
 #include <csignal>
 #include <unistd.h>
-#include <sstream>
-#include <iomanip>
-#include <ctime>
-#include <sys/types.h>
+#include <cstring>
 #include <sys/stat.h>
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-using namespace dht;
-
-static std::atomic_bool running{true};
+static dht_context_t *global_ctx = NULL;
 
 void signal_handler(int sig) {
     (void)sig;
-    running = false;
+    std::cout << "\nShutting down..." << std::endl;
+    if (global_ctx) {
+        dht_context_stop(global_ctx);
+        dht_context_free(global_ctx);
+    }
+    exit(0);
 }
-
-// Bootstrap registry key - all nodus nodes publish to this key
-const InfoHash BOOTSTRAP_REGISTRY_KEY = InfoHash::get("dna:bootstrap:registry:v1");
 
 // Get the first non-loopback IPv4 address
 std::string get_interface_ip() {
@@ -50,20 +47,18 @@ std::string get_interface_ip() {
         return "";
     }
 
-    for (ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr == nullptr)
+    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == NULL)
             continue;
 
-        // Check for IPv4 address
         if (ifa->ifa_addr->sa_family == AF_INET) {
-            void* addr = &((struct sockaddr_in*)ifa->ifa_addr)->sin_addr;
-            char addressBuffer[INET_ADDRSTRLEN];
-            inet_ntop(AF_INET, addr, addressBuffer, INET_ADDRSTRLEN);
+            struct sockaddr_in *addr = (struct sockaddr_in *)ifa->ifa_addr;
+            char ip_str[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &addr->sin_addr, ip_str, INET_ADDRSTRLEN);
 
             // Skip loopback
-            std::string addr_str(addressBuffer);
-            if (addr_str != "127.0.0.1" && addr_str.substr(0, 4) != "127.") {
-                ip = addr_str;
+            if (std::string(ip_str) != "127.0.0.1") {
+                ip = ip_str;
                 break;
             }
         }
@@ -89,22 +84,22 @@ std::string get_file_size(const std::string& path) {
         unit++;
     }
 
-    std::stringstream ss;
-    ss << std::fixed << std::setprecision(2) << size << " " << units[unit];
-    return ss.str();
+    char buf[64];
+    snprintf(buf, sizeof(buf), "%.2f %s", size, units[unit]);
+    return std::string(buf);
 }
 
 int main(int argc, char** argv) {
-    std::cout << "DNA Nodus v0.1 - Post-Quantum DHT Bootstrap Node" << std::endl;
+    std::cout << "DNA Nodus v0.2 - Post-Quantum DHT Bootstrap Node" << std::endl;
     std::cout << "FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5 Security" << std::endl;
-    std::cout << "Mandatory signature enforcement enabled" << std::endl << std::endl;
+    std::cout << "SQLite value persistence enabled" << std::endl << std::endl;
 
     // Default settings
     int port = 4000;
-    std::string identity_path = "/root/.nodus/identity";
-    std::string persist_path = "/var/lib/dna-dht/bootstrap.state";  // Default persistence path
-    std::string bootstrap_host = "";
-    int bootstrap_port = 4000;
+    std::string identity_path = "dna-bootstrap-node";
+    std::string persist_path = "/var/lib/dna-dht/bootstrap.state";
+    std::string bootstrap_hosts[3];
+    int bootstrap_count = 0;
     std::string public_ip = "";
     bool verbose = false;
 
@@ -116,13 +111,8 @@ int main(int argc, char** argv) {
         } else if (arg == "-i" && i + 1 < argc) {
             identity_path = argv[++i];
         } else if (arg == "-b" && i + 1 < argc) {
-            std::string bootstrap = argv[++i];
-            size_t colon_pos = bootstrap.find(':');
-            if (colon_pos != std::string::npos) {
-                bootstrap_host = bootstrap.substr(0, colon_pos);
-                bootstrap_port = std::stoi(bootstrap.substr(colon_pos + 1));
-            } else {
-                bootstrap_host = bootstrap;
+            if (bootstrap_count < 3) {
+                bootstrap_hosts[bootstrap_count++] = argv[++i];
             }
         } else if (arg == "--public-ip" && i + 1 < argc) {
             public_ip = argv[++i];
@@ -134,10 +124,10 @@ int main(int argc, char** argv) {
             std::cout << "Usage: dna-nodus [options]" << std::endl;
             std::cout << "Options:" << std::endl;
             std::cout << "  -p <port>           Port to listen on (default: 4000)" << std::endl;
-            std::cout << "  -i <path>           Identity file path (default: /root/.nodus/identity)" << std::endl;
-            std::cout << "  -s <path>           Persistence file path (default: /var/lib/dna-dht/bootstrap.state)" << std::endl;
-            std::cout << "  -b <host>[:port]    Bootstrap from host (default port: 4000)" << std::endl;
-            std::cout << "  --public-ip <ip>    Public IP address for DHT registry" << std::endl;
+            std::cout << "  -i <path>           Identity name (default: dna-bootstrap-node)" << std::endl;
+            std::cout << "  -s <path>           Persistence path (default: /var/lib/dna-dht/bootstrap.state)" << std::endl;
+            std::cout << "  -b <host>:port      Bootstrap from host (can specify multiple times)" << std::endl;
+            std::cout << "  --public-ip <ip>    Public IP address" << std::endl;
             std::cout << "  -v                  Verbose logging" << std::endl;
             std::cout << "  -h, --help          Show this help" << std::endl;
             return 0;
@@ -155,140 +145,82 @@ int main(int argc, char** argv) {
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    try {
-        // Load or generate Dilithium5 identity
-        crypto::Identity id;
-        std::cout << "Identity path: " << identity_path << std::endl;
+    // Configure DHT context for bootstrap node
+    dht_config_t config;
+    memset(&config, 0, sizeof(config));
+    config.port = port;
+    config.is_bootstrap = true;  // Enable bootstrap mode + value storage
+    strncpy(config.identity, identity_path.c_str(), sizeof(config.identity) - 1);
+    strncpy(config.persistence_path, persist_path.c_str(), sizeof(config.persistence_path) - 1);
 
-        std::ifstream sk_test(identity_path + ".dsa");
-        if (sk_test.good()) {
-            sk_test.close();
-            std::cout << "Loading existing Dilithium5 identity..." << std::endl;
-            id = crypto::loadDilithiumIdentity(identity_path);
-            std::cout << "Identity loaded: " << id.second->getId() << std::endl;
-        } else {
-            std::cout << "Generating new Dilithium5 identity (FIPS 204 / ML-DSA-87)..." << std::endl;
-            id = crypto::generateDilithiumIdentity("dna-nodus");
-
-            // Create directory if it doesn't exist
-            std::string dir_path = identity_path.substr(0, identity_path.find_last_of('/'));
-            system(("mkdir -p " + dir_path).c_str());
-
-            crypto::saveDilithiumIdentity(id, identity_path);
-            std::cout << "New identity saved: " << id.second->getId() << std::endl;
-        }
-
-        // Create DHT node configuration
-        DhtRunner::Config config;
-        config.dht_config.node_config.network = 0;  // Default network
-        config.dht_config.node_config.maintain_storage = true;  // Bootstrap nodes must maintain storage
-        config.dht_config.node_config.persist_path = persist_path;  // Enable persistence
-        config.dht_config.id = id;
-        config.threaded = true;
-
-        // Create and start DHT runner
-        DhtRunner dht;
-        std::cout << "Starting DHT node on port " << port << "..." << std::endl;
-        std::cout << "Persistence: " << persist_path << std::endl;
-
-        // Display database size (the blockchain of the ecosystem)
-        std::string db_path = persist_path + ".values.db";
-        std::string db_size = get_file_size(db_path);
-        std::cout << "Database:    " << db_path << " (" << db_size << ")" << std::endl;
-
-        dht.run(port, config);
-
-        // Register custom ValueTypes with TTL
-        dht::ValueType type_7day(0x1001, "DNA_TYPE_7DAY", std::chrono::hours(7 * 24));
-        dht::ValueType type_30day(0x1003, "DNA_TYPE_30DAY", std::chrono::hours(30 * 24));
-        dht::ValueType type_365day(0x1002, "DNA_TYPE_365DAY", std::chrono::hours(365 * 24));
-        dht.registerType(type_7day);
-        dht.registerType(type_30day);
-        dht.registerType(type_365day);
-        std::cout << "Registered DNA_TYPE_7DAY (0x1001, TTL=7 days)" << std::endl;
-        std::cout << "Registered DNA_TYPE_30DAY (0x1003, TTL=30 days)" << std::endl;
-        std::cout << "Registered DNA_TYPE_365DAY (0x1002, TTL=365 days)" << std::endl;
-
-        // Bootstrap if host specified
-        if (!bootstrap_host.empty()) {
-            std::cout << "Bootstrapping from " << bootstrap_host << ":" << bootstrap_port << "..." << std::endl;
-            dht.bootstrap(bootstrap_host, std::to_string(bootstrap_port));
-        }
-
-        std::cout << std::endl;
-        std::cout << "=== DNA Nodus Running ===" << std::endl;
-        std::cout << "Node ID:  " << dht.getNodeId() << std::endl;
-        std::cout << "Cert ID:  " << id.second->getId() << std::endl;
-        std::cout << "Port:     " << port << std::endl;
-        std::cout << "Security: Dilithium5 (ML-DSA-87) - Mandatory Signatures" << std::endl;
-        if (!public_ip.empty())
-            std::cout << "Public IP: " << public_ip << std::endl;
-        std::cout << "Press Ctrl+C to stop" << std::endl << std::endl;
-
-        // Publish bootstrap node info to DHT registry (if public IP specified)
-        auto publish_bootstrap_info = [&]() {
-            if (public_ip.empty())
-                return;
-
-            // Create bootstrap info value
-            std::stringstream info;
-            info << "{";
-            info << "\"ip\":\"" << public_ip << "\",";
-            info << "\"port\":" << port << ",";
-            info << "\"fingerprint\":\"" << id.second->getId() << "\",";
-            info << "\"node_id\":\"" << dht.getNodeId() << "\",";
-            info << "\"timestamp\":" << std::time(nullptr);
-            info << "}";
-
-            auto value = std::make_shared<Value>(info.str());
-            value->sign(*id.first);
-
-            // Put with 30-day TTL
-            auto expire_time = dht::clock::now() + std::chrono::hours(24 * 30);
-            dht.put(BOOTSTRAP_REGISTRY_KEY, value, [](bool success) {
-                if (success)
-                    std::cout << "[Registry] Published bootstrap node info" << std::endl;
-                else
-                    std::cerr << "[Registry] Failed to publish bootstrap node info" << std::endl;
-            }, expire_time);
-        };
-
-        // Initial publish (wait for DHT to stabilize and connect to network)
-        if (!public_ip.empty()) {
-            std::this_thread::sleep_for(std::chrono::seconds(15));
-            publish_bootstrap_info();
-        }
-
-        // Main loop
-        int counter = 0;
-        int registry_counter = 0;
-        while (running) {
-            std::this_thread::sleep_for(std::chrono::seconds(1));
-
-            // Print stats every 60 seconds if verbose
-            if (verbose && ++counter >= 60) {
-                counter = 0;
-                auto store_size = dht.getStoreSize();
-                std::cout << "[" << dht.getNodesStats(AF_INET).good_nodes
-                          << " nodes] [" << store_size.first
-                          << " values]" << std::endl;
-            }
-
-            // Refresh bootstrap registry every 30 minutes (DHT values expire after ~1 hour)
-            if (!public_ip.empty() && ++registry_counter >= 1800) {
-                registry_counter = 0;
-                publish_bootstrap_info();
-            }
-        }
-
-        std::cout << std::endl << "Shutting down..." << std::endl;
-        dht.join();
-
-    } catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
-        return 1;
+    // Add bootstrap nodes
+    config.bootstrap_count = bootstrap_count;
+    for (int i = 0; i < bootstrap_count; i++) {
+        strncpy(config.bootstrap_nodes[i], bootstrap_hosts[i].c_str(),
+                sizeof(config.bootstrap_nodes[i]) - 1);
     }
 
-    std::cout << "DNA Nodus stopped" << std::endl;
+    std::cout << "Creating DHT context (bootstrap mode)..." << std::endl;
+    global_ctx = dht_context_new(&config);
+    if (!global_ctx) {
+        std::cerr << "ERROR: Failed to create DHT context" << std::endl;
+        return 1;
+    }
+    std::cout << "✓ DHT context created" << std::endl << std::endl;
+
+    std::cout << "Starting DHT node on port " << port << "..." << std::endl;
+    std::cout << "Persistence: " << persist_path << std::endl;
+
+    // Check database size
+    std::string db_path = persist_path + ".values.db";
+    std::string db_size = get_file_size(db_path);
+    std::cout << "Database:    " << db_path << " (" << db_size << ")" << std::endl;
+
+    if (dht_context_start(global_ctx) != 0) {
+        std::cerr << "ERROR: Failed to start DHT node" << std::endl;
+        dht_context_free(global_ctx);
+        return 1;
+    }
+    std::cout << "✓ DHT node started" << std::endl << std::endl;
+
+    std::cout << "=== DNA Nodus Running ===" << std::endl;
+    std::cout << "Port:     " << port << std::endl;
+    std::cout << "Security: Dilithium5 (ML-DSA-87) - Mandatory Signatures" << std::endl;
+    if (!public_ip.empty()) {
+        std::cout << "Public IP: " << public_ip << std::endl;
+    }
+    std::cout << "Press Ctrl+C to stop" << std::endl << std::endl;
+
+    // Main loop - print stats every 60 seconds
+    int seconds = 0;
+    while (true) {
+        sleep(1);
+        seconds++;
+
+        if (seconds % 60 == 0) {
+            size_t node_count = 0;
+            size_t stored_values = 0;
+            if (dht_get_stats(global_ctx, &node_count, &stored_values) == 0) {
+                std::cout << "[" << seconds / 60 << " min] ";
+                std::cout << "[" << node_count << " nodes] ";
+                std::cout << "[" << stored_values << " values]";
+
+                // Print storage stats if available
+                dht_value_storage_t *storage = dht_get_storage(global_ctx);
+                if (storage) {
+                    dht_storage_stats_t storage_stats;
+                    if (dht_value_storage_get_stats(storage, &storage_stats) == 0) {
+                        std::cout << " | DB: " << storage_stats.total_values << " values";
+
+                        if (storage_stats.republish_in_progress) {
+                            std::cout << " (republishing...)";
+                        }
+                    }
+                }
+                std::cout << std::endl;
+            }
+        }
+    }
+
     return 0;
 }

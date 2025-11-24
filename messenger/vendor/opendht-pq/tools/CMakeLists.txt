@@ -26,11 +26,12 @@ function (configure_tool name extra_files)
 
         # Link all libraries in order with proper grouping
         target_link_libraries (${name} LINK_PUBLIC
-            opendht
             -Wl,--start-group
+            opendht
             ${DSA_LIB_PATH}
             ${DHT_LIB_PATH}
             -Wl,--end-group
+            ${SQLite3_LIBRARIES}
             ${READLINE_LIBRARIES}
         )
         # Add crypto/dsa include path for Dilithium5 api.h header

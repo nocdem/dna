@@ -641,6 +641,19 @@ if(BUILD_TESTS)
     )
     target_include_directories(test_pq_put_get PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
 
+    # PQ DHT Test: Read-Only Persistence Check
+    add_executable(test_read_only tests/test_read_only.c)
+    target_link_libraries(test_read_only
+        -Wl,--start-group
+        dht_lib
+        dsa
+        ${OPENDHT_LIBRARIES}
+        -Wl,--end-group
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+    )
+    target_include_directories(test_read_only PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
+
     # PQ DHT Test 3: Bootstrap Connectivity
     add_executable(test_pq_dht_bootstrap tests/test_pq_dht_bootstrap.c)
     target_link_libraries(test_pq_dht_bootstrap
