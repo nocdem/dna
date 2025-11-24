@@ -73,7 +73,7 @@ int main(void) {
     const uint8_t *pubkey = dht_identity_get_public_key(loaded_identity);
     assert(pubkey != NULL && "Public key extraction failed");
     printf("   ✓ Public key extracted\n");
-    printf("   Public key size: %d bytes\n\n", PQCLEAN_DILITHIUM5_CLEAN_CRYPTO_PUBLICKEYBYTES);
+    printf("   Public key size: %d bytes\n\n", pqcrystals_dilithium5_PUBLICKEYBYTES);
 
     // Test sign/verify with identity
     printf("5. Testing sign/verify with identity...\n");
@@ -84,7 +84,7 @@ int main(void) {
     ret = dht_identity_sign(loaded_identity, (uint8_t*)test_msg,
                            strlen(test_msg), &signature, &sig_len);
     assert(ret == 0 && "Signing failed");
-    assert(sig_len == PQCLEAN_DILITHIUM5_CLEAN_CRYPTO_BYTES && "Signature size mismatch");
+    assert(sig_len == pqcrystals_dilithium5_BYTES && "Signature size mismatch");
     printf("   ✓ Message signed\n");
     printf("   Signature size: %zu bytes\n", sig_len);
 
@@ -118,9 +118,9 @@ int main(void) {
     printf("=== All Node Identity Tests Passed ===\n");
     printf("Identity Properties:\n");
     printf("  - Algorithm: Dilithium5 (ML-DSA-87)\n");
-    printf("  - Public Key: %d bytes\n", PQCLEAN_DILITHIUM5_CLEAN_CRYPTO_PUBLICKEYBYTES);
-    printf("  - Secret Key: %d bytes\n", PQCLEAN_DILITHIUM5_CLEAN_CRYPTO_SECRETKEYBYTES);
-    printf("  - Signature: %d bytes\n", PQCLEAN_DILITHIUM5_CLEAN_CRYPTO_BYTES);
+    printf("  - Public Key: %d bytes\n", pqcrystals_dilithium5_PUBLICKEYBYTES);
+    printf("  - Secret Key: %d bytes\n", pqcrystals_dilithium5_SECRETKEYBYTES);
+    printf("  - Signature: %d bytes\n", pqcrystals_dilithium5_BYTES);
     printf("  - Security: NIST Category 5 (256-bit quantum)\n");
 
     return 0;

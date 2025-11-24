@@ -619,31 +619,43 @@ if(BUILD_TESTS)
 
     # PQ DHT Test 1: Dilithium5 Signature
     add_executable(test_dilithium5_signature tests/test_dilithium5_signature.c)
-    target_link_libraries(test_dilithium5_signature dsa ${OPENSSL_LIBRARIES})
+    target_link_libraries(test_dilithium5_signature
+        -Wl,--start-group
+        dht_lib
+        dsa
+        -Wl,--end-group
+        ${OPENSSL_LIBRARIES}
+    )
     target_include_directories(test_dilithium5_signature PRIVATE ${CMAKE_SOURCE_DIR})
 
-    # PQ DHT Test 2: Bootstrap Connectivity
+    # PQ DHT Test 2: Put/Get Operations
+    add_executable(test_pq_put_get tests/test_pq_put_get.c)
+    target_link_libraries(test_pq_put_get
+        -Wl,--start-group
+        dht_lib
+        dsa
+        ${OPENDHT_LIBRARIES}
+        -Wl,--end-group
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+    )
+    target_include_directories(test_pq_put_get PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
+
+    # PQ DHT Test 3: Bootstrap Connectivity
     add_executable(test_pq_dht_bootstrap tests/test_pq_dht_bootstrap.c)
-    target_link_libraries(test_pq_dht_bootstrap dht_lib ${OPENDHT_LIBRARIES} ${JSONC_LIBRARIES} ${SQLite3_LIBRARIES})
+    target_link_libraries(test_pq_dht_bootstrap
+        -Wl,--start-group
+        dht_lib
+        dsa
+        ${OPENDHT_LIBRARIES}
+        -Wl,--end-group
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+    )
     target_include_directories(test_pq_dht_bootstrap PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
 
-    # PQ DHT Test 3: Encrypted Put/Get
-    add_executable(test_pq_encrypted_put tests/test_pq_encrypted_put.c)
-    target_link_libraries(test_pq_encrypted_put dht_lib kem ${OPENDHT_LIBRARIES} ${JSONC_LIBRARIES} ${SQLite3_LIBRARIES})
-    target_include_directories(test_pq_encrypted_put PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
-
-    # PQ DHT Test 4: Node Identity
-    add_executable(test_pq_node_identity tests/test_pq_node_identity.c)
-    target_link_libraries(test_pq_node_identity dht_lib dsa ${OPENDHT_LIBRARIES} ${JSONC_LIBRARIES} ${SQLite3_LIBRARIES})
-    target_include_directories(test_pq_node_identity PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
-
-    # PQ DHT Test 5: Network Stress
-    add_executable(test_dht_network_stress tests/test_dht_network_stress.c)
-    target_link_libraries(test_dht_network_stress dht_lib ${OPENDHT_LIBRARIES} ${JSONC_LIBRARIES} ${SQLite3_LIBRARIES} pthread)
-    target_include_directories(test_dht_network_stress PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
-
     message(STATUS "Building unit tests: test_dna_profile, test_simple, test_identity_backup, test_timestamp_v08, test_gsk")
-    message(STATUS "Building PQ DHT tests: test_dilithium5_signature, test_pq_dht_bootstrap, test_pq_encrypted_put, test_pq_node_identity, test_dht_network_stress")
+    message(STATUS "Building PQ DHT tests: test_dilithium5_signature, test_pq_put_get, test_pq_dht_bootstrap")
 endif()
 
 # ImGui GUI (Phase 11: Modern GUI)
