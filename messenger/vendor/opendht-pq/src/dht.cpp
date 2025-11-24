@@ -2488,6 +2488,7 @@ Dht::onAnnounce(Sp<Node> n,
         const std::vector<Sp<Value>>& values,
         const time_point& creation_date)
 {
+    std::cout << "[DEBUG onAnnounce] Called! hash=" << hash.toString() << " values=" << values.size() << std::endl;
     auto& node = *n;
     if (not hash) {
         if (logger_)
