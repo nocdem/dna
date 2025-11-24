@@ -136,12 +136,12 @@ int dht_singleton_init(void)
         // RACE CONDITION FIX: Wait for nodes to establish stable connections
         // Even though dht_context_is_ready() returns true (good_nodes > 0),
         // the DHT may not be ready to accept PUT operations yet.
-        // Give it 500ms to stabilize connections before allowing PUT operations.
-        printf("[DHT_SINGLETON] Waiting for DHT connections to stabilize (500ms)...\n");
+        // Give it 1 second to fully stabilize all connections before allowing PUT operations.
+        printf("[DHT_SINGLETON] Waiting for DHT connections to stabilize (1000ms)...\n");
         #ifdef _WIN32
-        Sleep(500);
+        Sleep(1000);
         #else
-        usleep(500000);  // 500ms
+        usleep(1000000);  // 1000ms = 1 second
         #endif
     } else {
         printf("[DHT_SINGLETON] ⚠ DHT bootstrap timeout, continuing anyway...\n");
@@ -269,12 +269,12 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
         // RACE CONDITION FIX: Wait for nodes to establish stable connections
         // Even though dht_context_is_ready() returns true (good_nodes > 0),
         // the DHT may not be ready to accept PUT operations yet.
-        // Give it 500ms to stabilize connections before allowing PUT operations.
-        printf("[DHT_SINGLETON] Waiting for DHT connections to stabilize (500ms)...\n");
+        // Give it 1 second to fully stabilize all connections before allowing PUT operations.
+        printf("[DHT_SINGLETON] Waiting for DHT connections to stabilize (1000ms)...\n");
         #ifdef _WIN32
-        Sleep(500);
+        Sleep(1000);
         #else
-        usleep(500000);  // 500ms
+        usleep(1000000);  // 1000ms = 1 second
         #endif
     } else {
         printf("[DHT_SINGLETON] ⚠ DHT bootstrap timeout, continuing anyway...\n");
