@@ -10,7 +10,12 @@ function (configure_tool name extra_files)
     if (MSVC)
         target_sources(${name} PRIVATE ${MSC_COMPAT_SOURCES})
         target_link_libraries (${name} PUBLIC opendht)
-        target_include_directories (${name} PRIVATE SYSTEM ${MSC_COMPAT_DIR} ${MSVC_COMPAT_DIR})
+        # Add crypto/dsa include path for Dilithium5 api.h header
+        target_include_directories (${name} PRIVATE SYSTEM
+            ${MSC_COMPAT_DIR}
+            ${MSVC_COMPAT_DIR}
+            ${CMAKE_CURRENT_BINARY_DIR}/../../../crypto/dsa
+        )
     else()
         # DNA Messenger: Add linker group to resolve circular deps (dsa <-> dht_lib)
         # opendht depends on dsa (Dilithium5), dsa needs qgp_randombytes from dht_lib
@@ -28,7 +33,11 @@ function (configure_tool name extra_files)
             -Wl,--end-group
             ${READLINE_LIBRARIES}
         )
-        target_include_directories (${name} PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
+        # Add crypto/dsa include path for Dilithium5 api.h header
+        target_include_directories (${name} PRIVATE
+            ${CMAKE_CURRENT_BINARY_DIR}
+            ${CMAKE_CURRENT_BINARY_DIR}/../../../crypto/dsa
+        )
     endif ()
 endfunction ()
 
