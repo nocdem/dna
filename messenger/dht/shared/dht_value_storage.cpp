@@ -538,14 +538,6 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
         uint8_t key_bytes[256];
         size_t key_len = hex_to_bytes(key_hex, key_bytes, sizeof(key_bytes));
 
-        // For signed PUTs: OpenDHT handles republishing automatically with maintain_storage=true
-        // Custom republish would cause double-hashing (InfoHash → hash again → wrong key)
-        // Skip all values - let OpenDHT's internal persistence handle it
-        size_t hex_len = strlen(key_hex);
-        std::cout << "[Storage] Skipping value (hex_len=" << hex_len << ") - OpenDHT auto-republish handles signed values" << std::endl;
-        free(value_copy);
-        continue;
-
         // Calculate TTL
         unsigned int ttl_seconds = UINT_MAX;  // Default: permanent
         if (expires_at > 0) {
