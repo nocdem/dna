@@ -132,6 +132,17 @@ int dht_singleton_init(void)
         } else {
             printf("[DHT_SINGLETON] ⚠ Failed to query registry, using fallback nodes\n");
         }
+
+        // RACE CONDITION FIX: Wait for nodes to establish stable connections
+        // Even though dht_context_is_ready() returns true (good_nodes > 0),
+        // the DHT may not be ready to accept PUT operations yet.
+        // Give it 500ms to stabilize connections before allowing PUT operations.
+        printf("[DHT_SINGLETON] Waiting for DHT connections to stabilize (500ms)...\n");
+        #ifdef _WIN32
+        Sleep(500);
+        #else
+        usleep(500000);  // 500ms
+        #endif
     } else {
         printf("[DHT_SINGLETON] ⚠ DHT bootstrap timeout, continuing anyway...\n");
         // Don't return error - DHT may still work for some operations
@@ -254,6 +265,17 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
         } else {
             printf("[DHT_SINGLETON] ⚠ Failed to query registry, using fallback nodes\n");
         }
+
+        // RACE CONDITION FIX: Wait for nodes to establish stable connections
+        // Even though dht_context_is_ready() returns true (good_nodes > 0),
+        // the DHT may not be ready to accept PUT operations yet.
+        // Give it 500ms to stabilize connections before allowing PUT operations.
+        printf("[DHT_SINGLETON] Waiting for DHT connections to stabilize (500ms)...\n");
+        #ifdef _WIN32
+        Sleep(500);
+        #else
+        usleep(500000);  // 500ms
+        #endif
     } else {
         printf("[DHT_SINGLETON] ⚠ DHT bootstrap timeout, continuing anyway...\n");
         // Don't return error - DHT may still work for some operations
