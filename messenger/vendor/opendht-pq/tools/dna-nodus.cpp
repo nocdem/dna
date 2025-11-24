@@ -198,6 +198,14 @@ int main(int argc, char** argv) {
 
         dht.run(port, config);
 
+        // Register custom ValueTypes (CRITICAL: must match client-side types)
+        dht::ValueType type_7day(0x1001, "DNA_TYPE_7DAY", std::chrono::hours(7 * 24));
+        dht::ValueType type_365day(0x1002, "DNA_TYPE_365DAY", std::chrono::hours(365 * 24));
+        dht.registerType(type_7day);
+        dht.registerType(type_365day);
+        std::cout << "Registered DNA_TYPE_7DAY (0x1001, TTL=7 days)" << std::endl;
+        std::cout << "Registered DNA_TYPE_365DAY (0x1002, TTL=365 days)" << std::endl;
+
         // Bootstrap if host specified
         if (!bootstrap_host.empty()) {
             std::cout << "Bootstrapping from " << bootstrap_host << ":" << bootstrap_port << "..." << std::endl;
