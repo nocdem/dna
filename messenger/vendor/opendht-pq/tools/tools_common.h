@@ -164,11 +164,10 @@ std::pair<dht::DhtRunner::Config, dht::DhtRunner::Context>
 getDhtConfig(dht_params& params)
 {
     if (not params.id.first and params.generate_identity) {
-        auto node_ca = std::make_unique<dht::crypto::Identity>(dht::crypto::generateEcIdentity("DHT Node CA"));
-        params.id = dht::crypto::generateIdentity("DHT Node", *node_ca);
+        // DILITHIUM5: Generate post-quantum identity (no CA needed for self-signed)
+        params.id = dht::crypto::generateDilithiumIdentity("DHT Node");
         if (not params.save_identity.empty()) {
-            dht::crypto::saveIdentity(*node_ca, params.save_identity + "_ca", params.privkey_pwd);
-            dht::crypto::saveIdentity(params.id, params.save_identity, params.privkey_pwd);
+            dht::crypto::saveDilithiumIdentity(params.id, params.save_identity);
         }
     }
 
