@@ -11,9 +11,11 @@ int dna_update_profile(
     dht_context_t *dht_ctx,
     const char *fingerprint,
     const dna_profile_data_t *profile,
-    const uint8_t *dilithium_privkey
+    const uint8_t *dilithium_privkey,
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *kyber_pubkey
 ) {
-    if (!dht_ctx || !fingerprint || !profile || !dilithium_privkey) {
+    if (!dht_ctx || !fingerprint || !profile || !dilithium_privkey || !dilithium_pubkey || !kyber_pubkey) {
         fprintf(stderr, "[DNA] Invalid arguments to dna_update_profile\n");
         return -1;
     }
@@ -29,9 +31,21 @@ int dna_update_profile(
             return -1;
         }
 
-        // Set fingerprint and keys (keys must be provided separately)
+        // Set fingerprint and public keys
         strncpy(identity->fingerprint, fingerprint, sizeof(identity->fingerprint) - 1);
-        // Note: Keys must be set by caller before calling this function
+        memcpy(identity->dilithium_pubkey, dilithium_pubkey, sizeof(identity->dilithium_pubkey));
+        memcpy(identity->kyber_pubkey, kyber_pubkey, sizeof(identity->kyber_pubkey));
+
+        // Initialize name registration fields
+        identity->has_registered_name = false;
+        memset(identity->registered_name, 0, sizeof(identity->registered_name));
+        identity->name_registered_at = 0;
+        identity->name_expires_at = 0;
+        memset(identity->registration_tx_hash, 0, sizeof(identity->registration_tx_hash));
+        memset(identity->registration_network, 0, sizeof(identity->registration_network));
+        identity->name_version = 0;
+
+        printf("[DNA] Created new identity (old profile signature verification failed)\n");
     }
 
     // Update profile data

@@ -220,7 +220,9 @@ int dna_update_profile(
     dht_context_t *dht_ctx,
     const char *fingerprint,
     const dna_profile_data_t *profile,
-    const uint8_t *dilithium_privkey
+    const uint8_t *dilithium_privkey,
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *kyber_pubkey
 );
 
 /**

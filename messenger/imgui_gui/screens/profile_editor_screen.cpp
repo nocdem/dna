@@ -193,10 +193,22 @@ void saveProfile(AppState& state) {
         return;
     }
 
-    // Update profile in DHT
-    int ret = dna_update_profile(dht_ctx, ctx->fingerprint, &profile_data, key->private_key);
+    // Also load encryption key for kyber public key
+    char enc_key_path[512];
+    snprintf(enc_key_path, sizeof(enc_key_path), "%s/.dna/%s.kem", home, ctx->identity);
+    qgp_key_t *enc_key = NULL;
+    if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
+        state.profile_status = "Failed to load encryption key";
+        qgp_key_free(key);
+        return;
+    }
+
+    // Update profile in DHT (pass public keys to prevent signature verification loop)
+    int ret = dna_update_profile(dht_ctx, ctx->fingerprint, &profile_data,
+                                   key->private_key, key->public_key, enc_key->public_key);
 
     qgp_key_free(key);
+    qgp_key_free(enc_key);
 
     if (ret == 0) {
         state.profile_status = "Profile saved to DHT successfully!";
