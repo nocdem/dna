@@ -284,6 +284,17 @@ int dht_delete(dht_context_t *ctx,
  */
 int dht_get_node_id(dht_context_t *ctx, char *node_id_out);
 
+/**
+ * Bootstrap to additional DHT nodes at runtime
+ * Used for dynamic bootstrap node discovery
+ *
+ * @param ctx DHT context
+ * @param ip Bootstrap node IP address
+ * @param port Bootstrap node port
+ * @return 0 on success, -1 on error
+ */
+int dht_context_bootstrap_runtime(dht_context_t *ctx, const char *ip, uint16_t port);
+
 #ifdef __cplusplus
 }
 #endif

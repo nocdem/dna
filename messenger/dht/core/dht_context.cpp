@@ -1086,5 +1086,27 @@ extern "C" int dht_get_node_id(dht_context_t *ctx, char *node_id_out) {
     }
 }
 
+/**
+ * Bootstrap to additional DHT nodes at runtime
+ */
+extern "C" int dht_context_bootstrap_runtime(dht_context_t *ctx, const char *ip, uint16_t port) {
+    if (!ctx || !ip) {
+        return -1;
+    }
+
+    try {
+        // Convert port to string
+        std::string port_str = std::to_string(port);
+
+        // Add bootstrap node at runtime
+        ctx->runner.bootstrap(ip, port_str);
+
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[DHT] Exception in dht_context_bootstrap_runtime: " << e.what() << std::endl;
+        return -1;
+    }
+}
+
 // NOTE: dht_get_stats() and dht_get_storage() moved to dht/core/dht_stats.cpp (Phase 3)
 // NOTE: dht_identity_* functions moved to dht/client/dht_identity.cpp (Phase 3)

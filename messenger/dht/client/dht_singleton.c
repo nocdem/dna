@@ -4,6 +4,7 @@
 
 #include "dht_singleton.h"
 #include "../core/dht_context.h"
+#include "../core/dht_bootstrap_registry.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -22,13 +23,14 @@
 // Global DHT context (singleton)
 static dht_context_t *g_dht_context = NULL;
 
-// Bootstrap node addresses
-static const char *BOOTSTRAP_NODES[] = {
+// Bootstrap node addresses (SEED NODE for cold start + fallback)
+static const char *SEED_NODE = "154.38.182.161:4000";  // US-1 (always available)
+static const char *FALLBACK_NODES[] = {
     "154.38.182.161:4000",  // dna-bootstrap-us-1
     "164.68.105.227:4000",  // dna-bootstrap-eu-1
     "164.68.116.180:4000"   // dna-bootstrap-eu-2
 };
-static const size_t BOOTSTRAP_COUNT = 3;
+static const size_t FALLBACK_COUNT = 3;
 
 int dht_singleton_init(void)
 {
@@ -45,12 +47,11 @@ int dht_singleton_init(void)
     dht_config.is_bootstrap = false;
     strncpy(dht_config.identity, "dna-global", sizeof(dht_config.identity) - 1);
 
-    // Add bootstrap nodes
-    for (size_t i = 0; i < BOOTSTRAP_COUNT; i++) {
-        strncpy(dht_config.bootstrap_nodes[i], BOOTSTRAP_NODES[i],
-                sizeof(dht_config.bootstrap_nodes[i]) - 1);
-    }
-    dht_config.bootstrap_count = BOOTSTRAP_COUNT;
+    // STEP 1: Bootstrap to seed node for cold start
+    printf("[DHT_SINGLETON] Using seed node for cold start: %s\n", SEED_NODE);
+    strncpy(dht_config.bootstrap_nodes[0], SEED_NODE,
+            sizeof(dht_config.bootstrap_nodes[0]) - 1);
+    dht_config.bootstrap_count = 1;
 
     // NO PERSISTENCE for client DHT (only bootstrap nodes need persistence)
     // Client DHT is temporary and should not republish stored values
@@ -91,10 +92,51 @@ int dht_singleton_init(void)
     
     if (dht_context_is_ready(g_dht_context)) {
         printf("[DHT_SINGLETON] ✓ Global DHT ready! (took %dms)\n", attempts * 100);
+
+        // STEP 2: Query bootstrap registry for dynamic node discovery
+        printf("[DHT_SINGLETON] Querying bootstrap registry for active nodes...\n");
+        bootstrap_registry_t registry;
+
+        if (dht_bootstrap_registry_fetch(g_dht_context, &registry) == 0) {
+            // Filter stale nodes (last_seen > 15 minutes)
+            dht_bootstrap_registry_filter_active(&registry);
+
+            if (registry.node_count > 0) {
+                printf("[DHT_SINGLETON] ✓ Discovered %zu active bootstrap nodes from registry\n",
+                       registry.node_count);
+
+                // Bootstrap to discovered nodes for better connectivity
+                for (size_t i = 0; i < registry.node_count && i < 10; i++) {
+                    char node_addr[128];
+                    snprintf(node_addr, sizeof(node_addr), "%s:%d",
+                             registry.nodes[i].ip, registry.nodes[i].port);
+
+                    printf("[DHT_SINGLETON]   → %s (node_id: %.16s..., uptime: %lus)\n",
+                           node_addr, registry.nodes[i].node_id,
+                           (unsigned long)registry.nodes[i].uptime);
+
+                    // Bootstrap to this node at runtime
+                    if (dht_context_bootstrap_runtime(g_dht_context, registry.nodes[i].ip,
+                                                      registry.nodes[i].port) == 0) {
+                        printf("[DHT_SINGLETON]     ✓ Bootstrapped to %s\n", node_addr);
+                    } else {
+                        printf("[DHT_SINGLETON]     ✗ Failed to bootstrap to %s\n", node_addr);
+                    }
+                }
+
+                printf("[DHT_SINGLETON] ✓ Using %zu dynamically discovered nodes\n",
+                       registry.node_count < 10 ? registry.node_count : 10);
+            } else {
+                printf("[DHT_SINGLETON] ⚠ Registry has no active nodes, using fallback nodes\n");
+            }
+        } else {
+            printf("[DHT_SINGLETON] ⚠ Failed to query registry, using fallback nodes\n");
+        }
     } else {
         printf("[DHT_SINGLETON] ⚠ DHT bootstrap timeout, continuing anyway...\n");
         // Don't return error - DHT may still work for some operations
     }
+
     return 0;
 }
 
@@ -128,12 +170,11 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     dht_config.is_bootstrap = false;
     strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
 
-    // Add bootstrap nodes
-    for (size_t i = 0; i < BOOTSTRAP_COUNT; i++) {
-        strncpy(dht_config.bootstrap_nodes[i], BOOTSTRAP_NODES[i],
-                sizeof(dht_config.bootstrap_nodes[i]) - 1);
-    }
-    dht_config.bootstrap_count = BOOTSTRAP_COUNT;
+    // STEP 1: Bootstrap to seed node for cold start
+    printf("[DHT_SINGLETON] Using seed node for cold start: %s\n", SEED_NODE);
+    strncpy(dht_config.bootstrap_nodes[0], SEED_NODE,
+            sizeof(dht_config.bootstrap_nodes[0]) - 1);
+    dht_config.bootstrap_count = 1;
 
     // NO PERSISTENCE for client DHT
     dht_config.persistence_path[0] = '\0';
@@ -173,6 +214,46 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     
     if (dht_context_is_ready(g_dht_context)) {
         printf("[DHT_SINGLETON] ✓ Global DHT ready with user identity! (took %dms)\n", attempts * 100);
+
+        // STEP 2: Query bootstrap registry for dynamic node discovery
+        printf("[DHT_SINGLETON] Querying bootstrap registry for active nodes...\n");
+        bootstrap_registry_t registry;
+
+        if (dht_bootstrap_registry_fetch(g_dht_context, &registry) == 0) {
+            // Filter stale nodes (last_seen > 15 minutes)
+            dht_bootstrap_registry_filter_active(&registry);
+
+            if (registry.node_count > 0) {
+                printf("[DHT_SINGLETON] ✓ Discovered %zu active bootstrap nodes from registry\n",
+                       registry.node_count);
+
+                // Bootstrap to discovered nodes for better connectivity
+                for (size_t i = 0; i < registry.node_count && i < 10; i++) {
+                    char node_addr[128];
+                    snprintf(node_addr, sizeof(node_addr), "%s:%d",
+                             registry.nodes[i].ip, registry.nodes[i].port);
+
+                    printf("[DHT_SINGLETON]   → %s (node_id: %.16s..., uptime: %lus)\n",
+                           node_addr, registry.nodes[i].node_id,
+                           (unsigned long)registry.nodes[i].uptime);
+
+                    // Bootstrap to this node at runtime
+                    if (dht_context_bootstrap_runtime(g_dht_context, registry.nodes[i].ip,
+                                                      registry.nodes[i].port) == 0) {
+                        printf("[DHT_SINGLETON]     ✓ Bootstrapped to %s\n", node_addr);
+                    } else {
+                        printf("[DHT_SINGLETON]     ✗ Failed to bootstrap to %s\n", node_addr);
+                    }
+                }
+
+                printf("[DHT_SINGLETON] ✓ Using %zu dynamically discovered nodes\n",
+                       registry.node_count < 10 ? registry.node_count : 10);
+            } else {
+                printf("[DHT_SINGLETON] ⚠ Registry has no active nodes, using fallback nodes\n");
+            }
+        } else {
+            printf("[DHT_SINGLETON] ⚠ Failed to query registry, using fallback nodes\n");
+        }
     } else {
         printf("[DHT_SINGLETON] ⚠ DHT bootstrap timeout, continuing anyway...\n");
         // Don't return error - DHT may still work for some operations
