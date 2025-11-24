@@ -273,6 +273,30 @@ int dna_load_identity(
                      sizeof(identity->timestamp) +
                      sizeof(identity->version);
 
+    // DEBUG: Print message length calculation
+    printf("[DNA] DEBUG Verification message length: %zu bytes\n", msg_len);
+    printf("[DNA] DEBUG Field sizes:\n");
+    printf("[DNA]   fingerprint: %zu\n", sizeof(identity->fingerprint));
+    printf("[DNA]   dilithium_pubkey: %zu\n", sizeof(identity->dilithium_pubkey));
+    printf("[DNA]   kyber_pubkey: %zu\n", sizeof(identity->kyber_pubkey));
+    printf("[DNA]   bool: %zu\n", sizeof(bool));
+    printf("[DNA]   registered_name: %zu\n", sizeof(identity->registered_name));
+    printf("[DNA]   name_registered_at: %zu\n", sizeof(identity->name_registered_at));
+    printf("[DNA]   name_expires_at: %zu\n", sizeof(identity->name_expires_at));
+    printf("[DNA]   registration_tx_hash: %zu\n", sizeof(identity->registration_tx_hash));
+    printf("[DNA]   registration_network: %zu\n", sizeof(identity->registration_network));
+    printf("[DNA]   name_version: %zu\n", sizeof(identity->name_version));
+    printf("[DNA]   wallets: %zu\n", sizeof(identity->wallets));
+    printf("[DNA]   socials: %zu\n", sizeof(identity->socials));
+    printf("[DNA]   bio: %zu\n", sizeof(identity->bio));
+    printf("[DNA]   profile_picture_ipfs: %zu\n", sizeof(identity->profile_picture_ipfs));
+    printf("[DNA]   timestamp: %zu\n", sizeof(identity->timestamp));
+    printf("[DNA]   version: %zu\n", sizeof(identity->version));
+    printf("[DNA] DEBUG Profile values:\n");
+    printf("[DNA]   has_registered_name: %d\n", identity->has_registered_name);
+    printf("[DNA]   timestamp: %lu\n", (unsigned long)identity->timestamp);
+    printf("[DNA]   version: %u\n", identity->version);
+
     uint8_t *msg = malloc(msg_len);
     if (!msg) {
         dna_identity_free(identity);
