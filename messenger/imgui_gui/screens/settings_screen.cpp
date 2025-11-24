@@ -103,30 +103,6 @@ void render(AppState& state) {
     ImGui::Separator();
     ImGui::Spacing();
 
-    float btn_height = is_mobile ? 50.0f : 40.0f;
-
-    // Check if user has registered name
-    bool has_registered_name = !state.profile_registered_name.empty() && 
-                               state.profile_registered_name != "Not registered" &&
-                               state.profile_registered_name != "N/A (DHT not connected)" &&
-                               state.profile_registered_name != "Error loading";
-
-    if (is_mobile) {
-        // Only show Edit Profile if registered
-        if (has_registered_name) {
-            if (ThemedButton(ICON_FA_USER " Edit DNA Profile", ImVec2(-1, btn_height))) {
-                state.show_profile_editor = true;
-            }
-            ImGui::Spacing();
-        }
-    } else {
-        // Desktop mode - Register DNA/Edit Profile and Post to Wall are in sidebar
-    }
-
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-
     // App info
     ImGui::TextDisabled("DNA Messenger v0.1");
     ImGui::TextDisabled("Post-Quantum Encrypted Messaging");
