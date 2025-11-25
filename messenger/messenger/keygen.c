@@ -157,12 +157,11 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
 }
 
 int messenger_generate_keys_from_seeds(
-    messenger_context_t *ctx,
     const uint8_t *signing_seed,
     const uint8_t *encryption_seed,
     char *fingerprint_out)
 {
-    if (!ctx || !signing_seed || !encryption_seed || !fingerprint_out) {
+    if (!signing_seed || !encryption_seed || !fingerprint_out) {
         return -1;
     }
 

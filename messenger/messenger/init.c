@@ -54,9 +54,8 @@ static int resolve_identity_to_fingerprint(const char *identity_input, char *fin
     char key_path[512];
     snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, identity_input);
 
-    // Check if key file exists
+    // Check if key file exists (no error message - expected for new identities)
     if (!file_exists(key_path)) {
-        fprintf(stderr, "Error: Key file not found: %s\n", key_path);
         return -1;
     }
 

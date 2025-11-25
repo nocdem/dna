@@ -630,16 +630,9 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
     mkdir(dna_dir.c_str(), 0700);
 #endif
 
-    // Create temporary messenger context for key generation
-    messenger_context_t *ctx = messenger_init("temp");
-    if (!ctx) {
-        printf("[Identity] ERROR: Failed to initialize messenger context\n");
-        return;
-    }
-
     // Generate keys from seeds (returns fingerprint)
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(ctx, signing_seed, encryption_seed, fingerprint);
+    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
@@ -647,7 +640,6 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
 
     if (result != 0) {
         printf("[Identity] ERROR: Failed to generate keys\n");
-        messenger_free(ctx);
         return;
     }
 
@@ -670,7 +662,6 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
     state.seed_confirmed = false;
     // Modal will be closed when async task completes (in render())
 
-    messenger_free(ctx);
     printf("[Identity] Identity created successfully\n");
 }
 
@@ -866,22 +857,11 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
     }
 
     printf("[Identity] Derived seeds from mnemonic\n");
-
-    // Create temporary messenger context
-    messenger_context_t *ctx = messenger_init("temp");
-    if (!ctx) {
-        printf("[Identity] ERROR: Failed to initialize messenger context\n");
-        // Securely wipe seeds
-        memset(signing_seed, 0, sizeof(signing_seed));
-        memset(encryption_seed, 0, sizeof(encryption_seed));
-        return;
-    }
-
     printf("[Identity] Generating keys from seeds...\n");
 
     // Generate keys from seeds (fingerprint-first, no name required)
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(ctx, signing_seed, encryption_seed, fingerprint);
+    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
@@ -889,7 +869,6 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
 
     if (result != 0) {
         printf("[Identity] ERROR: Failed to generate keys from seeds\n");
-        messenger_free(ctx);
         return;
     }
 
@@ -925,9 +904,6 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
 
     // Load identity state (contacts, etc)
     DataLoader::loadIdentity(state, fingerprint, [&state](int i) { DataLoader::loadMessagesForContact(state, i); });
-
-    // Cleanup
-    messenger_free(ctx);
 
     // Reset UI state
     memset(state.generated_mnemonic, 0, sizeof(state.generated_mnemonic));

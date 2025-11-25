@@ -332,8 +332,6 @@ int main(int argc, char** argv) {
     AsyncTask dht_init_task;
     float dht_loading_start_time = 0.0f;
     bool dht_loading_started = false;
-    
-    printf("[MAIN] DHT initialization will happen asynchronously...\n");
 
     // Track fullscreen state
     static bool is_fullscreen = false;

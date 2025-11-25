@@ -134,14 +134,12 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
  * Keys are saved as ~/.dna/<fingerprint>.dsa and ~/.dna/<fingerprint>.kem
  * To allow others to find you, register a name separately using messenger_register_name().
  *
- * @param ctx: Messenger context
  * @param signing_seed: 32-byte seed for Dilithium5 key generation
  * @param encryption_seed: 32-byte seed for Kyber1024 key generation
  * @param fingerprint_out: Output buffer for 128-char fingerprint (must be 129 bytes for null terminator)
  * @return: 0 on success, -1 on error
  */
 int messenger_generate_keys_from_seeds(
-    messenger_context_t *ctx,
     const uint8_t *signing_seed,
     const uint8_t *encryption_seed,
     char *fingerprint_out
