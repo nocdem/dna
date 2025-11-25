@@ -789,6 +789,139 @@ dna_request_id_t dna_engine_get_transactions(
 );
 
 /* ============================================================================
+ * 7. P2P & PRESENCE (4 async functions)
+ * ============================================================================ */
+
+/**
+ * Refresh presence in DHT (announce we're online)
+ *
+ * Call periodically to maintain online status visibility.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_refresh_presence(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Check if a peer is online
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Peer fingerprint
+ * @return            true if peer is online, false otherwise
+ */
+bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint);
+
+/**
+ * Sync contacts to DHT (publish local contacts)
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_sync_contacts_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Sync contacts from DHT (merge with local)
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_sync_contacts_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Sync groups from DHT
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_sync_groups(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Subscribe to contacts for push notifications
+ *
+ * Enables real-time message delivery via DHT.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_subscribe_to_contacts(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get registered name for current identity
+ *
+ * Performs DHT reverse lookup (fingerprint -> name).
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with display name (or empty if not registered)
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_registered_name(
+    dna_engine_t *engine,
+    dna_display_name_cb callback,
+    void *user_data
+);
+
+/* ============================================================================
+ * 8. BACKWARD COMPATIBILITY (for gradual GUI migration)
+ * ============================================================================ */
+
+/**
+ * Get underlying messenger context
+ *
+ * For backward compatibility during GUI migration.
+ * Returns NULL if no identity loaded.
+ *
+ * WARNING: Use sparingly - prefer engine API functions.
+ *
+ * @param engine    Engine instance
+ * @return          messenger_context_t* (opaque, cast as needed)
+ */
+void* dna_engine_get_messenger_context(dna_engine_t *engine);
+
+/**
+ * Get DHT context
+ *
+ * For backward compatibility during GUI migration.
+ * Returns NULL if DHT not initialized.
+ *
+ * WARNING: Use sparingly - prefer engine API functions.
+ *
+ * @param engine    Engine instance
+ * @return          dht_context_t* (opaque, cast as needed)
+ */
+void* dna_engine_get_dht_context(dna_engine_t *engine);
+
+/* ============================================================================
  * MEMORY MANAGEMENT
  * ============================================================================ */
 

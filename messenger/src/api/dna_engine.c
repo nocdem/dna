@@ -313,6 +313,26 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_GET_TRANSACTIONS:
             dna_handle_get_transactions(engine, task);
             break;
+
+        /* P2P & Presence */
+        case TASK_REFRESH_PRESENCE:
+            dna_handle_refresh_presence(engine, task);
+            break;
+        case TASK_SYNC_CONTACTS_TO_DHT:
+            dna_handle_sync_contacts_to_dht(engine, task);
+            break;
+        case TASK_SYNC_CONTACTS_FROM_DHT:
+            dna_handle_sync_contacts_from_dht(engine, task);
+            break;
+        case TASK_SYNC_GROUPS:
+            dna_handle_sync_groups(engine, task);
+            break;
+        case TASK_SUBSCRIBE_TO_CONTACTS:
+            dna_handle_subscribe_to_contacts(engine, task);
+            break;
+        case TASK_GET_REGISTERED_NAME:
+            dna_handle_get_registered_name(engine, task);
+            break;
     }
 }
 
@@ -1604,6 +1624,230 @@ dna_request_id_t dna_engine_get_transactions(
 
     dna_task_callback_t cb = { .transactions = callback };
     return dna_submit_task(engine, TASK_GET_TRANSACTIONS, &params, cb, user_data);
+}
+
+/* ============================================================================
+ * P2P & PRESENCE PUBLIC API
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_refresh_presence(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_REFRESH_PRESENCE, NULL, cb, user_data);
+}
+
+bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine || !fingerprint || !engine->messenger) {
+        return false;
+    }
+
+    return messenger_p2p_peer_online(engine->messenger, fingerprint);
+}
+
+dna_request_id_t dna_engine_sync_contacts_to_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_CONTACTS_TO_DHT, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_sync_contacts_from_dht(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_CONTACTS_FROM_DHT, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_sync_groups(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SYNC_GROUPS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_subscribe_to_contacts(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SUBSCRIBE_TO_CONTACTS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_registered_name(
+    dna_engine_t *engine,
+    dna_display_name_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_callback_t cb = { .display_name = callback };
+    return dna_submit_task(engine, TASK_GET_REGISTERED_NAME, NULL, cb, user_data);
+}
+
+/* ============================================================================
+ * P2P & PRESENCE HANDLERS
+ * ============================================================================ */
+
+void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else {
+        if (messenger_p2p_refresh_presence(engine->messenger) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+    }
+
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_sync_contacts_to_dht(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else {
+        if (messenger_sync_contacts_to_dht(engine->messenger) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+    }
+
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_sync_contacts_from_dht(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else {
+        if (messenger_sync_contacts_from_dht(engine->messenger) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+    }
+
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else {
+        if (messenger_sync_groups(engine->messenger) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+    }
+
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_subscribe_to_contacts(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else {
+        if (messenger_p2p_subscribe_to_contacts(engine->messenger) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+    }
+
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+    char *name = NULL;
+
+    if (!engine->messenger || !engine->identity_loaded) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else {
+        dht_context_t *dht_ctx = dht_singleton_get();
+        if (dht_ctx) {
+            char *registered_name = NULL;
+            if (dht_keyserver_reverse_lookup(dht_ctx, engine->fingerprint, &registered_name) == 0 && registered_name) {
+                name = registered_name; /* Transfer ownership */
+            }
+            /* Not found is not an error - just returns NULL name */
+        }
+    }
+
+    if (task->callback.display_name) {
+        task->callback.display_name(task->request_id, error, name, task->user_data);
+    }
+
+    free(name);
+}
+
+/* ============================================================================
+ * BACKWARD COMPATIBILITY
+ * ============================================================================ */
+
+void* dna_engine_get_messenger_context(dna_engine_t *engine) {
+    if (!engine) return NULL;
+    return engine->messenger;
+}
+
+void* dna_engine_get_dht_context(dna_engine_t *engine) {
+    (void)engine; /* DHT is global singleton */
+    return dht_singleton_get();
 }
 
 /* ============================================================================

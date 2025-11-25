@@ -66,7 +66,15 @@ typedef enum {
     TASK_LIST_WALLETS,
     TASK_GET_BALANCES,
     TASK_SEND_TOKENS,
-    TASK_GET_TRANSACTIONS
+    TASK_GET_TRANSACTIONS,
+
+    /* P2P & Presence */
+    TASK_REFRESH_PRESENCE,
+    TASK_SYNC_CONTACTS_TO_DHT,
+    TASK_SYNC_CONTACTS_FROM_DHT,
+    TASK_SYNC_GROUPS,
+    TASK_SUBSCRIBE_TO_CONTACTS,
+    TASK_GET_REGISTERED_NAME
 } dna_task_type_t;
 
 /* ============================================================================
@@ -348,6 +356,14 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task);
+
+/* P2P & Presence */
+void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_sync_contacts_to_dht(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_sync_contacts_from_dht(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_subscribe_to_contacts(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers
