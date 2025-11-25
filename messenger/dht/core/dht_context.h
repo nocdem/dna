@@ -195,6 +195,27 @@ int dht_put_signed_permanent(dht_context_t *ctx,
                               uint64_t value_id);
 
 /**
+ * Republish a serialized (packed) Value to DHT exactly as-is
+ *
+ * This function deserializes a msgpack-encoded dht::Value and publishes it
+ * back to the DHT network. Unlike dht_put_ttl(), this preserves the original
+ * signature and all other Value fields (owner, seq, id, etc.).
+ *
+ * Used by republish_worker() to restore signed values after bootstrap restart.
+ * The value_data must be from Value::getPacked() serialization.
+ *
+ * @param ctx DHT context
+ * @param key_hex InfoHash as hex string (40 chars, from key.toString())
+ * @param packed_data Serialized Value from Value::getPacked()
+ * @param packed_len Length of packed data
+ * @return 0 on success, -1 on error
+ */
+int dht_republish_packed(dht_context_t *ctx,
+                         const char *key_hex,
+                         const uint8_t *packed_data,
+                         size_t packed_len);
+
+/**
  * Get value from DHT (returns first value only)
  *
  * @param ctx DHT context

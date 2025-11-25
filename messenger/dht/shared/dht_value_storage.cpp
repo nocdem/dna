@@ -459,9 +459,13 @@ int dht_value_storage_cleanup(dht_value_storage_t *storage) {
 
 /**
  * @brief Background republish worker function
+ *
+ * CRITICAL FIX (2025-11-25): Now uses dht_republish_packed() to preserve signatures.
+ * Previously used dht_put_ttl() which created NEW unsigned values, losing signatures.
+ * The stored value_data is now a full serialized dht::Value (from getPacked()).
  */
 static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
-    std::cout << "[Storage] Republish thread started" << std::endl;
+    std::cout << "[Storage] Republish thread started (signature-preserving mode)" << std::endl;
 
     pthread_mutex_lock(&storage->mutex);
     storage->republish_in_progress = true;
@@ -498,6 +502,7 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
     pthread_mutex_unlock(&storage->mutex);
 
     size_t count = 0;
+    size_t skipped = 0;
 
     // Republish each value
     while (true) {
@@ -512,8 +517,8 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
         pthread_mutex_lock(&storage->mutex);
 
         const char *key_hex = (const char*)sqlite3_column_text(stmt, 0);
-        const void *value_blob = sqlite3_column_blob(stmt, 1);
-        int value_len = sqlite3_column_bytes(stmt, 1);
+        const void *packed_blob = sqlite3_column_blob(stmt, 1);
+        int packed_len = sqlite3_column_bytes(stmt, 1);
         uint32_t value_type = sqlite3_column_int(stmt, 2);
         uint64_t expires_at = 0;
 
@@ -521,45 +526,46 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
             expires_at = sqlite3_column_int64(stmt, 4);
         }
 
-        // Copy data (need to free mutex before DHT operation)
-        uint8_t *value_copy = (uint8_t*)malloc(value_len);
-        if (value_copy) {
-            memcpy(value_copy, value_blob, value_len);
+        // Copy key and packed data (need to free mutex before DHT operation)
+        char key_hex_copy[256] = {0};
+        strncpy(key_hex_copy, key_hex, sizeof(key_hex_copy) - 1);
+
+        uint8_t *packed_copy = (uint8_t*)malloc(packed_len);
+        if (packed_copy) {
+            memcpy(packed_copy, packed_blob, packed_len);
         }
 
         pthread_mutex_unlock(&storage->mutex);
 
-        if (!value_copy) {
+        if (!packed_copy) {
             std::cerr << "[Storage] Memory allocation failed during republish" << std::endl;
             continue;
         }
 
-        // Convert hex key back to bytes
-        uint8_t key_bytes[256];
-        size_t key_len = hex_to_bytes(key_hex, key_bytes, sizeof(key_bytes));
-
-        // Calculate TTL
-        unsigned int ttl_seconds = UINT_MAX;  // Default: permanent
+        // Check if value has expired
         if (expires_at > 0) {
             uint64_t current_time = time(NULL);
-            if (expires_at > current_time) {
-                ttl_seconds = (unsigned int)(expires_at - current_time);
-            } else {
+            if (expires_at <= current_time) {
                 // Value expired, skip it
-                free(value_copy);
+                free(packed_copy);
+                skipped++;
                 continue;
             }
         }
 
-        // Republish to DHT (only new format 64+ byte keys reach here)
-        int put_result = dht_put_ttl(ctx, key_bytes, key_len, value_copy, value_len, ttl_seconds);
+        // CRITICAL FIX: Use dht_republish_packed() to preserve signatures
+        // The packed_copy contains a full serialized dht::Value including signature
+        // key_hex is already the InfoHash as hex string (from key.toString() in store callback)
+        int put_result = dht_republish_packed(ctx, key_hex_copy,
+                                               packed_copy, packed_len);
 
-        free(value_copy);
+        free(packed_copy);
 
         if (put_result == 0) {
             count++;
         } else {
-            std::cerr << "[Storage] Failed to republish value (error " << put_result << ")" << std::endl;
+            std::cerr << "[Storage] Failed to republish value type=0x" << std::hex << value_type
+                      << std::dec << " (error " << put_result << ")" << std::endl;
             pthread_mutex_lock(&storage->mutex);
             storage->error_count++;
             pthread_mutex_unlock(&storage->mutex);
@@ -575,7 +581,7 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
     storage->republish_in_progress = false;
     pthread_mutex_unlock(&storage->mutex);
 
-    std::cout << "[Storage] Republish complete: " << count << " values" << std::endl;
+    std::cout << "[Storage] Republish complete: " << count << " values (skipped " << skipped << " expired)" << std::endl;
 }
 
 int dht_value_storage_restore_async(dht_value_storage_t *storage, dht_context_t *ctx) {

@@ -109,18 +109,23 @@ namespace {
 
                     if (dht_value_storage_should_persist(value->type, expires_at)) {
                         std::string key_str = key.toString();
+
+                        // CRITICAL FIX: Store full serialized Value (including signature)
+                        // Previously stored only value->data, losing signature on republish
+                        dht::Blob packed = value->getPacked();
+
                         dht_value_metadata_t metadata;
                         metadata.key_hash = (const uint8_t*)key_str.data();
                         metadata.key_hash_len = key_str.size();
-                        metadata.value_data = value->data.data();
-                        metadata.value_data_len = value->data.size();
+                        metadata.value_data = packed.data();
+                        metadata.value_data_len = packed.size();
                         metadata.value_type = value->type;
                         metadata.created_at = now;
                         metadata.expires_at = expires_at;
 
                         if (dht_value_storage_put(g_global_storage, &metadata) == 0) {
-                            std::cout << "[Storage] ✓ Persisted 7-day value ("
-                                      << value->data.size() << " bytes)" << std::endl;
+                            std::cout << "[Storage] ✓ Persisted 7-day value (packed "
+                                      << packed.size() << " bytes, data " << value->data.size() << " bytes)" << std::endl;
                         }
                     }
                 }
@@ -145,18 +150,22 @@ namespace {
 
                     if (dht_value_storage_should_persist(value->type, expires_at)) {
                         std::string key_str = key.toString();
+
+                        // CRITICAL FIX: Store full serialized Value (including signature)
+                        dht::Blob packed = value->getPacked();
+
                         dht_value_metadata_t metadata;
                         metadata.key_hash = (const uint8_t*)key_str.data();
                         metadata.key_hash_len = key_str.size();
-                        metadata.value_data = value->data.data();
-                        metadata.value_data_len = value->data.size();
+                        metadata.value_data = packed.data();
+                        metadata.value_data_len = packed.size();
                         metadata.value_type = value->type;
                         metadata.created_at = now;
                         metadata.expires_at = expires_at;
 
                         if (dht_value_storage_put(g_global_storage, &metadata) == 0) {
-                            std::cout << "[Storage] ✓ Persisted 30-day value ("
-                                      << value->data.size() << " bytes)" << std::endl;
+                            std::cout << "[Storage] ✓ Persisted 30-day value (packed "
+                                      << packed.size() << " bytes, data " << value->data.size() << " bytes)" << std::endl;
                         }
                     }
                 }
@@ -182,18 +191,22 @@ namespace {
 
                     if (dht_value_storage_should_persist(value->type, expires_at)) {
                         std::string key_str = key.toString();
+
+                        // CRITICAL FIX: Store full serialized Value (including signature)
+                        dht::Blob packed = value->getPacked();
+
                         dht_value_metadata_t metadata;
                         metadata.key_hash = (const uint8_t*)key_str.data();
                         metadata.key_hash_len = key_str.size();
-                        metadata.value_data = value->data.data();
-                        metadata.value_data_len = value->data.size();
+                        metadata.value_data = packed.data();
+                        metadata.value_data_len = packed.size();
                         metadata.value_type = value->type;
                         metadata.created_at = now;
                         metadata.expires_at = expires_at;
 
                         if (dht_value_storage_put(g_global_storage, &metadata) == 0) {
-                            std::cout << "[Storage] ✓ Persisted 365-day value ("
-                                      << value->data.size() << " bytes)" << std::endl;
+                            std::cout << "[Storage] ✓ Persisted 365-day value (packed "
+                                      << packed.size() << " bytes, data " << value->data.size() << " bytes)" << std::endl;
                         }
                     }
                 }
@@ -819,6 +832,77 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         return 0;
     } catch (const std::exception& e) {
         std::cerr << "[DHT] Exception in dht_put_signed: " << e.what() << std::endl;
+        return -1;
+    }
+}
+
+/**
+ * Republish a serialized (packed) Value to DHT exactly as-is
+ *
+ * This function deserializes a msgpack-encoded dht::Value and publishes it
+ * back to the DHT network. Unlike dht_put_ttl(), this preserves the original
+ * signature and all other Value fields (owner, seq, id, etc.).
+ *
+ * Used by republish_worker() to restore signed values after bootstrap restart.
+ *
+ * @param ctx DHT context
+ * @param key_hex InfoHash as hex string (40 chars)
+ * @param packed_data Serialized Value from Value::getPacked()
+ * @param packed_len Length of packed data
+ * @return 0 on success, -1 on error
+ */
+extern "C" int dht_republish_packed(dht_context_t *ctx,
+                                     const char *key_hex,
+                                     const uint8_t *packed_data,
+                                     size_t packed_len) {
+    if (!ctx || !key_hex || !packed_data || packed_len == 0) {
+        std::cerr << "[DHT] ERROR: NULL parameter in dht_republish_packed" << std::endl;
+        return -1;
+    }
+
+    if (!ctx->running) {
+        std::cerr << "[DHT] ERROR: Node not running" << std::endl;
+        return -1;
+    }
+
+    try {
+        // Parse InfoHash from hex string
+        dht::InfoHash hash(key_hex);
+        if (!hash) {
+            std::cerr << "[DHT] ERROR: Invalid InfoHash hex: " << key_hex << std::endl;
+            return -1;
+        }
+
+        // Deserialize the packed Value using msgpack
+        auto msg = msgpack::unpack((const char*)packed_data, packed_len);
+        auto value = std::make_shared<dht::Value>();
+        value->msgpack_unpack(msg.get());
+
+        // Log details about what we're republishing
+        bool is_signed = value->owner && !value->signature.empty();
+        std::cout << "[DHT] REPUBLISH_PACKED: " << hash
+                  << " (type=0x" << std::hex << value->type << std::dec
+                  << ", id=" << value->id
+                  << ", data=" << value->data.size() << " bytes"
+                  << ", signed=" << (is_signed ? "YES" : "no")
+                  << ")" << std::endl;
+
+        // Put the value back to the DHT network exactly as-is
+        // permanent=true so it maintains storage behavior
+        ctx->runner.put(hash, value,
+                       [hash](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                           if (success) {
+                               std::cout << "[DHT] REPUBLISH_PACKED: ✓ " << hash << " stored on "
+                                         << nodes.size() << " node(s)" << std::endl;
+                           } else {
+                               std::cerr << "[DHT] REPUBLISH_PACKED: ✗ " << hash << " failed" << std::endl;
+                           }
+                       },
+                       dht::time_point::max(), true);  // permanent=true
+
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[DHT] Exception in dht_republish_packed: " << e.what() << std::endl;
         return -1;
     }
 }
