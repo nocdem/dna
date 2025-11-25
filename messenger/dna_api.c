@@ -394,7 +394,7 @@ dna_error_t dna_encrypt_message(
     }
     free(sign_key_path);
 
-    // Verify it's Dilithium3
+    // Verify it's Dilithium5 (ML-DSA-87)
     if (sign_key->type != QGP_KEY_TYPE_DSA87) {
         result = DNA_ERROR_KEY_INVALID;
         goto cleanup;

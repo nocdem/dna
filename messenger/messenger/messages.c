@@ -66,7 +66,7 @@ typedef struct {
  * @param plaintext_len: Message length
  * @param recipient_enc_pubkeys: Array of recipient Kyber1024 public keys (1568 bytes each)
  * @param recipient_count: Number of recipients (including sender)
- * @param sender_sign_key: Sender's Dilithium3 signing key
+ * @param sender_sign_key: Sender's Dilithium5 signing key (ML-DSA-87)
  * @param ciphertext_out: Output ciphertext (caller must free)
  * @param ciphertext_len_out: Output ciphertext length
  * @return: 0 on success, -1 on error
@@ -105,7 +105,7 @@ static int messenger_encrypt_multi_recipient(
         goto cleanup;
     }
 
-    // Step 2: Sign plaintext with Dilithium3
+    // Step 2: Sign plaintext with Dilithium5 (ML-DSA-87)
     qgp_signature_t *signature = qgp_signature_new(QGP_SIG_TYPE_DILITHIUM,
                                                      QGP_DSA87_PUBLICKEYBYTES,
                                                      QGP_DSA87_SIGNATURE_BYTES);
@@ -216,7 +216,7 @@ static int messenger_encrypt_multi_recipient(
         uint8_t kyber_ciphertext[1568];  // Kyber1024 ciphertext size
         uint8_t kek[32];  // KEK = shared secret from Kyber
 
-        // Kyber512 encapsulation
+        // Kyber1024 encapsulation (ML-KEM-1024)
         if (qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_enc_pubkeys[i]) != 0) {
             fprintf(stderr, "Error: KEM-1024 encapsulation failed for recipient %zu\n", i+1);
             memset(kek, 0, 32);
@@ -627,7 +627,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     printf(" Message #%d from %s\n", message_id, sender);
     printf("========================================\n\n");
 
-    // Load recipient's private Kyber512 key from filesystem
+    // Load recipient's private Kyber1024 key (ML-KEM-1024) from filesystem
     const char *home = qgp_platform_home_dir();
     char kyber_path[512];
     snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
@@ -782,7 +782,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     const uint8_t *ciphertext = target_msg->encrypted_message;
     size_t ciphertext_len = target_msg->encrypted_len;
 
-    // Load recipient's private Kyber512 key from filesystem
+    // Load recipient's private Kyber1024 key (ML-KEM-1024) from filesystem
     const char *home = qgp_platform_home_dir();
     char kyber_path[512];
     snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);

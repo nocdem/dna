@@ -100,10 +100,10 @@ struct p2p_transport {
     // DHT layer
     dht_context_t *dht;
 
-    // My cryptographic keys
-    uint8_t my_private_key[4016];       // Dilithium3 private key
-    uint8_t my_public_key[2592];        // Dilithium5 public key
-    uint8_t my_kyber_key[2400];         // Kyber512 private key
+    // My cryptographic keys (NIST Category 5: ML-DSA-87 + ML-KEM-1024)
+    uint8_t my_private_key[4896];       // Dilithium5 private key (ML-DSA-87)
+    uint8_t my_public_key[2592];        // Dilithium5 public key (ML-DSA-87)
+    uint8_t my_kyber_key[3168];         // Kyber1024 private key (ML-KEM-1024)
     char my_fingerprint[129];           // My fingerprint (SHA3-512 hex)
 
     // TCP listener

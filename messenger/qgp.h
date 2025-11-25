@@ -3,7 +3,7 @@
  * Copyright (c) 2025 QGP contributors
  *
  * Post-quantum file signing and encryption tool with vendored
- * pq-crystals implementations (Dilithium3, Kyber512)
+ * pq-crystals implementations (Dilithium5/ML-DSA-87, Kyber1024/ML-KEM-1024)
  */
 
 #ifndef QGP_H

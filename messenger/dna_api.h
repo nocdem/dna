@@ -119,7 +119,7 @@ void dna_buffer_free(dna_buffer_t *buffer);
  * 3. Sign plaintext message
  * 4. Generate random DEK
  * 5. Encrypt message with AES-256-GCM
- * 6. Wrap DEK for each recipient with Kyber512
+ * 6. Wrap DEK for each recipient with Kyber1024 (ML-KEM-1024)
  * 7. Return ciphertext buffer
  *
  * Format: [header | recipient_entries | nonce | ciphertext | tag | signature]
@@ -183,7 +183,7 @@ dna_error_t dna_encrypt_message_raw(
  * Memory-based decryption workflow:
  * 1. Load recipient's private key (from keyring by name)
  * 2. Parse ciphertext header
- * 3. Try each recipient entry (Kyber512 decapsulation)
+ * 3. Try each recipient entry (Kyber1024 decapsulation)
  * 4. Unwrap DEK with KEK
  * 5. Decrypt with AES-256-GCM (verifies authentication tag)
  * 6. Verify signature

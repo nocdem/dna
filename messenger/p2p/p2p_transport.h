@@ -16,7 +16,8 @@ extern "C" {
  * Architecture:
  * - DHT-based peer discovery (OpenDHT via dht_context.h)
  * - TCP socket connections for peer-to-peer messaging
- * - Post-quantum encryption: Kyber512 + Dilithium3 + AES-256-GCM
+ * - Post-quantum encryption: Kyber1024 (ML-KEM-1024) + Dilithium5 (ML-DSA-87) + AES-256-GCM
+ * - NIST Category 5 security (256-bit quantum)
  * - Offline message queuing in DHT
  *
  * Port Usage:
@@ -93,9 +94,9 @@ typedef void (*p2p_connection_callback_t)(
  * Initialize P2P transport layer
  *
  * @param config Configuration (will be copied)
- * @param my_privkey_dilithium Dilithium3 private key (4016 bytes)
- * @param my_pubkey_dilithium Dilithium5 public key (2592 bytes)
- * @param my_kyber_key Kyber512 private key (2400 bytes) for encryption
+ * @param my_privkey_dilithium Dilithium5 private key (ML-DSA-87, 4896 bytes)
+ * @param my_pubkey_dilithium Dilithium5 public key (ML-DSA-87, 2592 bytes)
+ * @param my_kyber_key Kyber1024 private key (ML-KEM-1024, 3168 bytes) for encryption
  * @param message_callback Called when message received (can be NULL)
  * @param connection_callback Called on peer connect/disconnect (can be NULL)
  * @param callback_user_data User data for callbacks
@@ -200,8 +201,8 @@ int p2p_lookup_peer(
  * Steps:
  * 1. Look up peer in DHT (if not already connected)
  * 2. Establish TCP connection (if not already connected)
- * 3. Encrypt message with Kyber512 + AES-256-GCM
- * 4. Sign with Dilithium3
+ * 3. Encrypt message with Kyber1024 (ML-KEM-1024) + AES-256-GCM
+ * 4. Sign with Dilithium5 (ML-DSA-87)
  * 5. Send over TCP connection
  *
  * If peer is offline and offline_queue is enabled, stores in DHT

@@ -265,29 +265,30 @@ static int load_my_privkey(
         return -1;
     }
 
-    // Dilithium3 private key is 4016 bytes
-    uint8_t *privkey = malloc(4016);
+    // Dilithium5 private key (ML-DSA-87) is 4896 bytes
+    // NOTE: Legacy keys may be 4016 bytes (Dilithium3) - migration needed
+    uint8_t *privkey = malloc(4896);
     if (!privkey) {
         fclose(f);
         return -1;
     }
 
-    size_t read = fread(privkey, 1, 4016, f);
+    size_t read = fread(privkey, 1, 4896, f);
     fclose(f);
 
-    if (read != 4016) {
-        fprintf(stderr, "[P2P] Invalid private key size: %zu (expected 4016)\n", read);
+    if (read != 4896) {
+        fprintf(stderr, "[P2P] Invalid private key size: %zu (expected 4896 for Dilithium5)\n", read);
         free(privkey);
         return -1;
     }
 
     *privkey_out = privkey;
-    *privkey_len_out = 4016;
+    *privkey_len_out = 4896;
     return 0;
 }
 
 /**
- * Load my own Kyber512 private key from ~/.dna/
+ * Load my own Kyber1024 private key (ML-KEM-1024) from ~/.dna/
  *
  * @return: 0 on success, -1 on error
  */
@@ -338,24 +339,25 @@ static int load_my_kyber_key(
         return -1;
     }
 
-    // Kyber512 private key is 2400 bytes
-    uint8_t *kyber = malloc(2400);
+    // Kyber1024 private key (ML-KEM-1024) is 3168 bytes
+    // NOTE: Legacy keys may be 2400 bytes (Kyber768) - migration needed
+    uint8_t *kyber = malloc(3168);
     if (!kyber) {
         fclose(f);
         return -1;
     }
 
-    size_t read = fread(kyber, 1, 2400, f);
+    size_t read = fread(kyber, 1, 3168, f);
     fclose(f);
 
-    if (read != 2400) {
-        fprintf(stderr, "[P2P] Invalid Kyber key size: %zu (expected 2400)\n", read);
+    if (read != 3168) {
+        fprintf(stderr, "[P2P] Invalid Kyber key size: %zu (expected 3168 for Kyber1024)\n", read);
         free(kyber);
         return -1;
     }
 
     *kyber_key_out = kyber;
-    *kyber_key_len_out = 2400;
+    *kyber_key_len_out = 3168;
     return 0;
 }
 
@@ -610,7 +612,7 @@ int messenger_p2p_init(messenger_context_t *ctx)
         return -1;
     }
 
-    // Load Kyber512 key
+    // Load Kyber1024 key (ML-KEM-1024)
     if (load_my_kyber_key(ctx, &kyber_key, &kyber_key_len) != 0) {
         fprintf(stderr, "[P2P] Failed to load KEM-1024 key\n");
         free(dilithium_privkey);

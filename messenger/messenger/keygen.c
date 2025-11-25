@@ -840,7 +840,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
         }
     }
 
-    // Generate Dilithium3 signing key from seed
+    // Generate Dilithium5 signing key (ML-DSA-87) from seed
     char dilithium_path[512];
     snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, identity);
 
@@ -898,7 +898,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
 
     qgp_key_free(sign_key);
 
-    // Generate Kyber512 encryption key from seed
+    // Generate Kyber1024 encryption key (ML-KEM-1024) from seed
     char kyber_path[512];
     snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, identity);
 
