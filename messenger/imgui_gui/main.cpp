@@ -13,6 +13,7 @@
 #include "ui_helpers.h"
 #include "app.h"
 #include "helpers/async_helpers.h"
+#include "helpers/engine_wrapper.h"
 #include <GLFW/glfw3.h>
 #include <stdio.h>
 #include <string.h>
@@ -389,14 +390,15 @@ int main(int argc, char** argv) {
             dht_loading_started = true;
             dht_loading_start_time = (float)glfwGetTime();
             
-            // Start DHT init in background thread
+            // Start engine init in background thread (engine manages DHT internally)
             dht_init_task.start([&app](AsyncTask* task) {
-                printf("[MAIN] DHT initialization will happen asynchronously...\n");
-                
-                if (dht_singleton_init() != 0) {
-                    fprintf(stderr, "[MAIN] ERROR: Failed to initialize DHT network\n");
+                printf("[MAIN] Engine initialization will happen asynchronously...\n");
+
+                // Initialize the global engine singleton (manages DHT internally)
+                if (!DNA::GetEngine().init()) {
+                    fprintf(stderr, "[MAIN] ERROR: Failed to initialize DNA Engine\n");
                 } else {
-                    printf("[MAIN] [OK] DHT ready!\n");
+                    printf("[MAIN] [OK] DNA Engine ready!\n");
                     
                     // Preload identity names while still on loading screen
                     printf("[MAIN] Preloading identity names...\n");
