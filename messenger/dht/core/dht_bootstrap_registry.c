@@ -229,7 +229,20 @@ int dht_bootstrap_registry_register(
 }
 
 /**
+ * Helper: Check if node already exists in registry (by IP:port)
+ */
+static int find_node_by_ip_port(const bootstrap_registry_t *reg, const char *ip, uint16_t port) {
+    for (size_t i = 0; i < reg->node_count; i++) {
+        if (strcmp(reg->nodes[i].ip, ip) == 0 && reg->nodes[i].port == port) {
+            return (int)i;
+        }
+    }
+    return -1;
+}
+
+/**
  * Fetch the bootstrap registry from DHT
+ * Gets ALL values from all owners and merges them
  */
 int dht_bootstrap_registry_fetch(dht_context_t *dht_ctx, bootstrap_registry_t *registry_out) {
     if (!dht_ctx || !registry_out) return -1;
@@ -237,31 +250,68 @@ int dht_bootstrap_registry_fetch(dht_context_t *dht_ctx, bootstrap_registry_t *r
     char dht_key[129];
     dht_bootstrap_registry_get_key(dht_key);
 
-    printf("[REGISTRY] Fetching bootstrap registry from DHT...\n");
+    printf("[REGISTRY] Fetching bootstrap registry from DHT (all owners)...\n");
 
-    uint8_t *value = NULL;
-    size_t value_len = 0;
+    // Get ALL values at this key (from all owners/signers)
+    uint8_t **values = NULL;
+    size_t *values_len = NULL;
+    size_t count = 0;
 
-    if (dht_get(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), &value, &value_len) != 0 || !value) {
+    if (dht_get_all(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
+                    &values, &values_len, &count) != 0 || count == 0) {
         fprintf(stderr, "[REGISTRY] No registry found in DHT\n");
         return -1;
     }
 
-    char *json_str = strndup((char*)value, value_len);
-    int ret = dht_bootstrap_registry_from_json(json_str, registry_out);
+    printf("[REGISTRY] Found %zu registry version(s) from different owners\n", count);
 
-    free(json_str);
-    free(value);
+    // Initialize output registry
+    memset(registry_out, 0, sizeof(bootstrap_registry_t));
 
-    if (ret != 0) {
-        fprintf(stderr, "[REGISTRY] Failed to parse registry\n");
-        return -1;
+    // Parse each registry JSON and merge nodes
+    for (size_t i = 0; i < count; i++) {
+        if (!values[i] || values_len[i] == 0) continue;
+
+        char *json_str = strndup((char*)values[i], values_len[i]);
+        if (!json_str) continue;
+
+        bootstrap_registry_t temp_reg;
+        memset(&temp_reg, 0, sizeof(temp_reg));
+
+        if (dht_bootstrap_registry_from_json(json_str, &temp_reg) == 0) {
+            // Merge nodes from temp_reg into registry_out
+            for (size_t j = 0; j < temp_reg.node_count; j++) {
+                bootstrap_node_entry_t *node = &temp_reg.nodes[j];
+                int existing = find_node_by_ip_port(registry_out, node->ip, node->port);
+
+                if (existing >= 0) {
+                    // Update if this entry is newer
+                    if (node->last_seen > registry_out->nodes[existing].last_seen) {
+                        registry_out->nodes[existing] = *node;
+                    }
+                } else if (registry_out->node_count < DHT_BOOTSTRAP_MAX_NODES) {
+                    // Add new node
+                    registry_out->nodes[registry_out->node_count++] = *node;
+                }
+            }
+
+            // Track highest version
+            if (temp_reg.registry_version > registry_out->registry_version) {
+                registry_out->registry_version = temp_reg.registry_version;
+            }
+        }
+
+        free(json_str);
+        free(values[i]);
     }
 
-    printf("[REGISTRY] ✓ Fetched registry: %zu nodes (version %lu)\n",
+    free(values);
+    free(values_len);
+
+    printf("[REGISTRY] ✓ Merged registry: %zu unique nodes (version %lu)\n",
            registry_out->node_count, registry_out->registry_version);
 
-    return 0;
+    return (registry_out->node_count > 0) ? 0 : -1;
 }
 
 /**
