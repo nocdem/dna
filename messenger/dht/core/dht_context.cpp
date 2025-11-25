@@ -778,6 +778,9 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         }
         key_hex_debug[40] = '\0';
 
+        // Use permanent flag when TTL is UINT_MAX (never expires)
+        bool is_permanent = (ttl_seconds == UINT_MAX);
+
         ctx->runner.putSigned(hash, dht_value,
                              [key_hex_debug](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
@@ -788,7 +791,7 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
                                      std::cout << "[DHT] DEBUG Failed PUT key: " << key_hex_debug << "..." << std::endl;
                                  }
                              },
-                             false);  // permanent=false to use ValueType's expiration
+                             is_permanent);
 
         // Store value to persistent storage (if enabled)
         if (ctx->storage) {
