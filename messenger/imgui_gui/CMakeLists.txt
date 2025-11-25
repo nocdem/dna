@@ -71,6 +71,7 @@ add_executable(dna-messenger
     helpers/notification_manager.cpp
     helpers/background_tasks.cpp
     helpers/file_browser.cpp
+    helpers/engine_wrapper.cpp
     screens/register_name_screen.cpp
     screens/message_wall_screen.cpp
     screens/profile_editor_screen.cpp
@@ -104,6 +105,7 @@ target_include_directories(dna-messenger PRIVATE
     ${FREETYPE_INCLUDE_DIRS}
     ${QRCODEGEN_DIR}
     ${NFD_DIR}/include
+    ${CMAKE_SOURCE_DIR}/include  # DNA Engine API headers
 )
 
 # Add GLFW include directories for Windows (manually set)

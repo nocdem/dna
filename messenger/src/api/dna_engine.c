@@ -6,6 +6,7 @@
 
 #include "dna_engine_internal.h"
 #include "dna_api.h"
+#include "messenger_p2p.h"
 #include "dht/client/dht_singleton.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/client/dht_contactlist.h"
