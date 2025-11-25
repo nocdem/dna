@@ -205,20 +205,25 @@ bool dht_value_storage_should_persist(uint32_t value_type, uint64_t expires_at) 
         return true;
     }
 
-    // Persist 365-day values
+    // Persist 365-day values (profiles, avatars, etc.)
     if (value_type == DNA_TYPE_365DAY_ID) {
         return true;
     }
 
-    // Skip 7-day ephemeral values
+    // Persist 30-day values (wall posts, name registrations)
+    if (value_type == 0x1003) {  // DNA_TYPE_30DAY
+        return true;
+    }
+
+    // Skip 7-day ephemeral values (messages, etc.)
     if (value_type == DNA_TYPE_7DAY_ID) {
         return false;
     }
 
-    // For unknown types, persist if TTL > 30 days
+    // For unknown types, persist if TTL >= 7 days
     uint64_t now = time(NULL);
     uint64_t ttl_seconds = (expires_at > now) ? (expires_at - now) : 0;
-    return (ttl_seconds > 30 * 24 * 3600);
+    return (ttl_seconds >= 7 * 24 * 3600);
 }
 
 int dht_value_storage_put(dht_value_storage_t *storage,
