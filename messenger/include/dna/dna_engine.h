@@ -1,0 +1,839 @@
+/*
+ * DNA Messenger Engine - Public API
+ *
+ * Unified async C API for DNA Messenger core functionality.
+ * Provides clean separation between engine and UI layers.
+ *
+ * Features:
+ * - Async operations with callbacks (non-blocking)
+ * - Engine-managed threading (DHT, P2P, RPC)
+ * - Event system for pushed notifications
+ * - Post-quantum cryptography (Kyber1024, Dilithium5)
+ * - Cellframe blockchain wallet integration
+ *
+ * Version: 1.0.0
+ */
+
+#ifndef DNA_ENGINE_H
+#define DNA_ENGINE_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ============================================================================
+ * VERSION
+ * ============================================================================ */
+
+#define DNA_ENGINE_VERSION_MAJOR 1
+#define DNA_ENGINE_VERSION_MINOR 0
+#define DNA_ENGINE_VERSION_PATCH 0
+#define DNA_ENGINE_VERSION_STRING "1.0.0"
+
+/* ============================================================================
+ * OPAQUE TYPES
+ * ============================================================================ */
+
+typedef struct dna_engine dna_engine_t;
+typedef uint64_t dna_request_id_t;
+
+/* ============================================================================
+ * ERROR CODES (Engine-specific additions to base dna_error_t)
+ *
+ * Base error codes are in dna_api.h (DNA_OK, DNA_ERROR_CRYPTO, etc.)
+ * These engine-specific codes extend the base enum with negative values
+ * that don't conflict with the base codes (-1 to -99 reserved by dna_api.h)
+ * ============================================================================ */
+
+/* Engine-specific error codes (start at -100 to avoid conflicts) */
+#define DNA_ENGINE_ERROR_INIT           (-100)
+#define DNA_ENGINE_ERROR_NOT_INITIALIZED (-101)
+#define DNA_ENGINE_ERROR_NETWORK        (-102)
+#define DNA_ENGINE_ERROR_DATABASE       (-103)
+#define DNA_ENGINE_ERROR_TIMEOUT        (-104)
+#define DNA_ENGINE_ERROR_BUSY           (-105)
+#define DNA_ENGINE_ERROR_NO_IDENTITY    (-106)
+#define DNA_ENGINE_ERROR_ALREADY_EXISTS (-107)
+#define DNA_ENGINE_ERROR_PERMISSION     (-108)
+
+/**
+ * Get human-readable error message for engine errors
+ */
+const char* dna_engine_error_string(int error);
+
+/* ============================================================================
+ * PUBLIC DATA TYPES
+ * ============================================================================ */
+
+/**
+ * Contact information
+ */
+typedef struct {
+    char fingerprint[129];      /* 128 hex chars + null */
+    char display_name[256];     /* Registered name or shortened fingerprint */
+    bool is_online;             /* Current online status */
+    uint64_t last_seen;         /* Unix timestamp of last activity */
+} dna_contact_t;
+
+/**
+ * Message information
+ */
+typedef struct {
+    int id;                     /* Local message ID */
+    char sender[129];           /* Sender fingerprint */
+    char recipient[129];        /* Recipient fingerprint */
+    char *plaintext;            /* Decrypted message text (caller must free via dna_free_messages) */
+    uint64_t timestamp;         /* Unix timestamp */
+    bool is_outgoing;           /* true if sent by current identity */
+    int status;                 /* 0=pending, 1=sent, 2=delivered, 3=read */
+    int message_type;           /* 0=chat, 1=group_invitation */
+} dna_message_t;
+
+/**
+ * Group information
+ */
+typedef struct {
+    char uuid[37];              /* UUID v4 string */
+    char name[256];             /* Group name */
+    char creator[129];          /* Creator fingerprint */
+    int member_count;           /* Number of members */
+    uint64_t created_at;        /* Unix timestamp */
+} dna_group_t;
+
+/**
+ * Group invitation
+ */
+typedef struct {
+    char group_uuid[37];        /* Group UUID */
+    char group_name[256];       /* Group name */
+    char inviter[129];          /* Inviter fingerprint */
+    int member_count;           /* Current member count */
+    uint64_t invited_at;        /* Unix timestamp */
+} dna_invitation_t;
+
+/**
+ * Wallet information (Cellframe)
+ */
+typedef struct {
+    char name[256];             /* Wallet name */
+    char address[120];          /* Primary address */
+    int sig_type;               /* 0=Dilithium, 1=Picnic, 2=Bliss, 3=Tesla */
+    bool is_protected;          /* Password protected */
+} dna_wallet_t;
+
+/**
+ * Token balance
+ */
+typedef struct {
+    char token[32];             /* Token ticker (CPUNK, CELL, KEL) */
+    char balance[64];           /* Formatted balance string */
+    char network[64];           /* Network name (Backbone, KelVPN) */
+} dna_balance_t;
+
+/**
+ * Transaction record
+ */
+typedef struct {
+    char tx_hash[128];          /* Transaction hash */
+    char direction[16];         /* "sent" or "received" */
+    char amount[64];            /* Formatted amount */
+    char token[32];             /* Token ticker */
+    char other_address[120];    /* Other party's address */
+    char timestamp[32];         /* Formatted timestamp */
+    char status[32];            /* ACCEPTED, DECLINED, PENDING */
+} dna_transaction_t;
+
+/* ============================================================================
+ * ASYNC CALLBACK TYPES
+ * ============================================================================ */
+
+/**
+ * Generic completion callback (success/error only)
+ * Error is 0 (DNA_OK) on success, negative on error
+ */
+typedef void (*dna_completion_cb)(
+    dna_request_id_t request_id,
+    int error,
+    void *user_data
+);
+
+/**
+ * Identity list callback
+ */
+typedef void (*dna_identities_cb)(
+    dna_request_id_t request_id,
+    int error,
+    char **fingerprints,        /* Array of fingerprint strings */
+    int count,
+    void *user_data
+);
+
+/**
+ * Identity created callback
+ */
+typedef void (*dna_identity_created_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const char *fingerprint,    /* New identity fingerprint (129 chars) */
+    void *user_data
+);
+
+/**
+ * Display name callback
+ */
+typedef void (*dna_display_name_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const char *display_name,
+    void *user_data
+);
+
+/**
+ * Contacts list callback
+ */
+typedef void (*dna_contacts_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_contact_t *contacts,
+    int count,
+    void *user_data
+);
+
+/**
+ * Messages callback
+ */
+typedef void (*dna_messages_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_message_t *messages,
+    int count,
+    void *user_data
+);
+
+/**
+ * Groups callback
+ */
+typedef void (*dna_groups_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_group_t *groups,
+    int count,
+    void *user_data
+);
+
+/**
+ * Group created callback
+ */
+typedef void (*dna_group_created_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const char *group_uuid,     /* New group UUID (37 chars) */
+    void *user_data
+);
+
+/**
+ * Invitations callback
+ */
+typedef void (*dna_invitations_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_invitation_t *invitations,
+    int count,
+    void *user_data
+);
+
+/**
+ * Wallets callback
+ */
+typedef void (*dna_wallets_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_wallet_t *wallets,
+    int count,
+    void *user_data
+);
+
+/**
+ * Balances callback
+ */
+typedef void (*dna_balances_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_balance_t *balances,
+    int count,
+    void *user_data
+);
+
+/**
+ * Transactions callback
+ */
+typedef void (*dna_transactions_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_transaction_t *transactions,
+    int count,
+    void *user_data
+);
+
+/* ============================================================================
+ * EVENT TYPES (pushed by engine)
+ * ============================================================================ */
+
+typedef enum {
+    DNA_EVENT_DHT_CONNECTED,
+    DNA_EVENT_DHT_DISCONNECTED,
+    DNA_EVENT_MESSAGE_RECEIVED,
+    DNA_EVENT_MESSAGE_SENT,
+    DNA_EVENT_MESSAGE_DELIVERED,
+    DNA_EVENT_MESSAGE_READ,
+    DNA_EVENT_CONTACT_ONLINE,
+    DNA_EVENT_CONTACT_OFFLINE,
+    DNA_EVENT_GROUP_INVITATION_RECEIVED,
+    DNA_EVENT_GROUP_MEMBER_JOINED,
+    DNA_EVENT_GROUP_MEMBER_LEFT,
+    DNA_EVENT_IDENTITY_LOADED,
+    DNA_EVENT_ERROR
+} dna_event_type_t;
+
+/**
+ * Event data structure
+ */
+typedef struct {
+    dna_event_type_t type;
+    union {
+        struct {
+            dna_message_t message;
+        } message_received;
+        struct {
+            int message_id;
+            int new_status;
+        } message_status;
+        struct {
+            char fingerprint[129];
+        } contact_status;
+        struct {
+            dna_invitation_t invitation;
+        } group_invitation;
+        struct {
+            char group_uuid[37];
+            char member[129];
+        } group_member;
+        struct {
+            char fingerprint[129];
+        } identity_loaded;
+        struct {
+            int code;
+            char message[256];
+        } error;
+    } data;
+} dna_event_t;
+
+/**
+ * Event callback (called from engine thread, must be thread-safe)
+ */
+typedef void (*dna_event_cb)(const dna_event_t *event, void *user_data);
+
+/* ============================================================================
+ * 1. LIFECYCLE (4 functions)
+ * ============================================================================ */
+
+/**
+ * Create DNA engine instance
+ *
+ * Initializes engine and spawns internal worker threads for:
+ * - DHT network operations
+ * - P2P transport
+ * - Offline message polling
+ * - RPC queries
+ *
+ * @param data_dir  Path to data directory (NULL for default ~/.dna)
+ * @return          Engine instance or NULL on error
+ */
+dna_engine_t* dna_engine_create(const char *data_dir);
+
+/**
+ * Set event callback for pushed events
+ *
+ * Events are called from engine thread - callback must be thread-safe.
+ * Only one callback can be active at a time.
+ *
+ * @param engine    Engine instance
+ * @param callback  Event callback function (NULL to disable)
+ * @param user_data User data passed to callback
+ */
+void dna_engine_set_event_callback(
+    dna_engine_t *engine,
+    dna_event_cb callback,
+    void *user_data
+);
+
+/**
+ * Destroy engine and release all resources
+ *
+ * Stops all worker threads, closes network connections,
+ * and frees all allocated memory.
+ *
+ * @param engine    Engine instance (can be NULL)
+ */
+void dna_engine_destroy(dna_engine_t *engine);
+
+/**
+ * Get current identity fingerprint
+ *
+ * @param engine    Engine instance
+ * @return          Fingerprint string (128 hex chars) or NULL if no identity loaded
+ */
+const char* dna_engine_get_fingerprint(dna_engine_t *engine);
+
+/* ============================================================================
+ * 2. IDENTITY (5 async functions)
+ * ============================================================================ */
+
+/**
+ * List available identities
+ *
+ * Scans ~/.dna for .dsa key files and returns fingerprints.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with list of fingerprints
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_list_identities(
+    dna_engine_t *engine,
+    dna_identities_cb callback,
+    void *user_data
+);
+
+/**
+ * Create new identity from BIP39 seeds
+ *
+ * Generates Dilithium5 + Kyber1024 keypairs deterministically
+ * from provided seeds. Saves keys to ~/.dna/<fingerprint>.dsa/.kem
+ *
+ * @param engine          Engine instance
+ * @param signing_seed    32-byte seed for Dilithium5
+ * @param encryption_seed 32-byte seed for Kyber1024
+ * @param callback        Called with new fingerprint
+ * @param user_data       User data for callback
+ * @return                Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_create_identity(
+    dna_engine_t *engine,
+    const uint8_t signing_seed[32],
+    const uint8_t encryption_seed[32],
+    dna_identity_created_cb callback,
+    void *user_data
+);
+
+/**
+ * Load and activate identity
+ *
+ * Loads keypairs, bootstraps DHT, registers presence,
+ * starts P2P listener, and subscribes to contacts.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Identity fingerprint (128 hex chars)
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_load_identity(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Register human-readable name in DHT
+ *
+ * Associates a name with current identity's fingerprint.
+ * Name must be 3-20 chars, alphanumeric + underscore.
+ *
+ * @param engine    Engine instance
+ * @param name      Desired name
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_register_name(
+    dna_engine_t *engine,
+    const char *name,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Lookup display name for fingerprint
+ *
+ * Checks DHT for registered name, returns shortened
+ * fingerprint if no name registered.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Identity fingerprint
+ * @param callback    Called with display name
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_display_name(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_display_name_cb callback,
+    void *user_data
+);
+
+/* ============================================================================
+ * 3. CONTACTS (3 async functions)
+ * ============================================================================ */
+
+/**
+ * Get contact list
+ *
+ * Returns contacts from local database.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with contacts array
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_contacts(
+    dna_engine_t *engine,
+    dna_contacts_cb callback,
+    void *user_data
+);
+
+/**
+ * Add contact by fingerprint or registered name
+ *
+ * Looks up public keys in DHT if needed.
+ *
+ * @param engine     Engine instance
+ * @param identifier Fingerprint or registered name
+ * @param callback   Called on completion
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_add_contact(
+    dna_engine_t *engine,
+    const char *identifier,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Remove contact
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Contact fingerprint
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_remove_contact(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/* ============================================================================
+ * 4. MESSAGING (3 async functions)
+ * ============================================================================ */
+
+/**
+ * Send message to contact
+ *
+ * Encrypts with Kyber1024 + AES-256-GCM, signs with Dilithium5.
+ * Tries P2P delivery first, falls back to DHT offline queue.
+ *
+ * @param engine               Engine instance
+ * @param recipient_fingerprint Recipient fingerprint
+ * @param message              Message text
+ * @param callback             Called on completion
+ * @param user_data            User data for callback
+ * @return                     Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_send_message(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *message,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get conversation with contact
+ *
+ * Returns all messages exchanged with contact.
+ *
+ * @param engine              Engine instance
+ * @param contact_fingerprint Contact fingerprint
+ * @param callback            Called with messages array
+ * @param user_data           User data for callback
+ * @return                    Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_conversation(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    dna_messages_cb callback,
+    void *user_data
+);
+
+/**
+ * Force check for offline messages
+ *
+ * Normally automatic - only needed if you want immediate check.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_check_offline_messages(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/* ============================================================================
+ * 5. GROUPS (6 async functions)
+ * ============================================================================ */
+
+/**
+ * Get groups current identity belongs to
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with groups array
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_groups(
+    dna_engine_t *engine,
+    dna_groups_cb callback,
+    void *user_data
+);
+
+/**
+ * Create new group
+ *
+ * Creates group with GSK (Group Symmetric Key) encryption.
+ *
+ * @param engine              Engine instance
+ * @param name                Group name
+ * @param member_fingerprints Array of member fingerprints
+ * @param member_count        Number of members
+ * @param callback            Called with new group UUID
+ * @param user_data           User data for callback
+ * @return                    Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_create_group(
+    dna_engine_t *engine,
+    const char *name,
+    const char **member_fingerprints,
+    int member_count,
+    dna_group_created_cb callback,
+    void *user_data
+);
+
+/**
+ * Send message to group
+ *
+ * Encrypts with GSK (AES-256-GCM), signs with Dilithium5.
+ *
+ * @param engine     Engine instance
+ * @param group_uuid Group UUID
+ * @param message    Message text
+ * @param callback   Called on completion
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_send_group_message(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    const char *message,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get pending group invitations
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with invitations array
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_invitations(
+    dna_engine_t *engine,
+    dna_invitations_cb callback,
+    void *user_data
+);
+
+/**
+ * Accept group invitation
+ *
+ * @param engine     Engine instance
+ * @param group_uuid Group UUID
+ * @param callback   Called on completion
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_accept_invitation(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Reject group invitation
+ *
+ * @param engine     Engine instance
+ * @param group_uuid Group UUID
+ * @param callback   Called on completion
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_reject_invitation(
+    dna_engine_t *engine,
+    const char *group_uuid,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/* ============================================================================
+ * 6. WALLET (4 async functions) - Cellframe /opt/cellframe-node
+ * ============================================================================ */
+
+/**
+ * List Cellframe wallets
+ *
+ * Scans /opt/cellframe-node/var/lib/wallet for .dwallet files.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with wallets array
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_list_wallets(
+    dna_engine_t *engine,
+    dna_wallets_cb callback,
+    void *user_data
+);
+
+/**
+ * Get token balances for wallet
+ *
+ * Queries Cellframe RPC for balance info.
+ *
+ * @param engine       Engine instance
+ * @param wallet_index Index from list_wallets result
+ * @param callback     Called with balances array
+ * @param user_data    User data for callback
+ * @return             Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_balances(
+    dna_engine_t *engine,
+    int wallet_index,
+    dna_balances_cb callback,
+    void *user_data
+);
+
+/**
+ * Send tokens
+ *
+ * Builds transaction, signs with Dilithium, submits via RPC.
+ *
+ * @param engine            Engine instance
+ * @param wallet_index      Source wallet index
+ * @param recipient_address Destination address
+ * @param amount            Amount to send (string)
+ * @param token             Token ticker (CPUNK, CELL, KEL)
+ * @param network           Network name (Backbone, KelVPN)
+ * @param callback          Called on completion
+ * @param user_data         User data for callback
+ * @return                  Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_send_tokens(
+    dna_engine_t *engine,
+    int wallet_index,
+    const char *recipient_address,
+    const char *amount,
+    const char *token,
+    const char *network,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get transaction history
+ *
+ * @param engine       Engine instance
+ * @param wallet_index Wallet index
+ * @param network      Network name
+ * @param callback     Called with transactions array
+ * @param user_data    User data for callback
+ * @return             Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_transactions(
+    dna_engine_t *engine,
+    int wallet_index,
+    const char *network,
+    dna_transactions_cb callback,
+    void *user_data
+);
+
+/* ============================================================================
+ * MEMORY MANAGEMENT
+ * ============================================================================ */
+
+/**
+ * Free string array returned by callbacks
+ */
+void dna_free_strings(char **strings, int count);
+
+/**
+ * Free contacts array returned by callbacks
+ */
+void dna_free_contacts(dna_contact_t *contacts, int count);
+
+/**
+ * Free messages array returned by callbacks
+ */
+void dna_free_messages(dna_message_t *messages, int count);
+
+/**
+ * Free groups array returned by callbacks
+ */
+void dna_free_groups(dna_group_t *groups, int count);
+
+/**
+ * Free invitations array returned by callbacks
+ */
+void dna_free_invitations(dna_invitation_t *invitations, int count);
+
+/**
+ * Free wallets array returned by callbacks
+ */
+void dna_free_wallets(dna_wallet_t *wallets, int count);
+
+/**
+ * Free balances array returned by callbacks
+ */
+void dna_free_balances(dna_balance_t *balances, int count);
+
+/**
+ * Free transactions array returned by callbacks
+ */
+void dna_free_transactions(dna_transaction_t *transactions, int count);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* DNA_ENGINE_H */

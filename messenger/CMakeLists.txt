@@ -232,6 +232,8 @@ set(COMMON_SOURCES
 # DNA Messenger Library (libdna)
 add_library(dna_lib STATIC
     dna_api.c
+    # Unified Engine API (Core/GUI separation)
+    src/api/dna_engine.c
     # Modular messenger components (Phase: Modularization)
     messenger/identity.c
     messenger/init.c
@@ -310,6 +312,8 @@ endif()
 
 target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/include  # Unified Engine API headers
+    ${CMAKE_SOURCE_DIR}/src/api  # Internal API headers
     ${CMAKE_SOURCE_DIR}/p2p  # Phase 9.1b: P2P transport headers
     ${CMAKE_SOURCE_DIR}/dht  # Phase 9.1: DHT headers
     ${OPENSSL_INCLUDE_DIR}
