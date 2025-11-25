@@ -58,6 +58,8 @@ extern "C" int dht_get_stats(dht_context_t *ctx,
         *node_count = ipv4_nodes + ipv6_nodes;
         *stored_values = node_info.storage_size;
 
+        std::cout << "[STATS_DEBUG] node_info.storage_size=" << node_info.storage_size
+                  << ", node_info.storage_values=" << node_info.storage_values << std::endl;
         std::cout << "[DHT] Stats: " << *node_count << " nodes, "
                   << *stored_values << " stored values" << std::endl;
 

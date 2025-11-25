@@ -280,8 +280,8 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
             config.dht_config.node_config.maintain_storage = true;
             config.dht_config.node_config.persist_path = persist_path;
             config.dht_config.node_config.max_store_size = -1;  // Unlimited storage (default 0 = no storage!)
-            // NOTE: is_bootstrap flag PREVENTS value storage! Only use for routing-only nodes.
-            // config.dht_config.node_config.is_bootstrap = ctx->config.is_bootstrap;
+            // NOTE: Testing with is_bootstrap = true
+            config.dht_config.node_config.is_bootstrap = ctx->config.is_bootstrap;
             config.dht_config.node_config.public_stable = ctx->config.is_bootstrap;  // Public bootstrap nodes are stable
             config.dht_config.id = identity;
             config.threaded = true;
@@ -289,6 +289,7 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
             std::cout << "[DHT] Configured persistence:" << std::endl;
             std::cout << "[DHT]   maintain_storage = " << config.dht_config.node_config.maintain_storage << std::endl;
             std::cout << "[DHT]   persist_path = " << config.dht_config.node_config.persist_path << std::endl;
+            std::cout << "[DHT]   max_store_size = " << config.dht_config.node_config.max_store_size << std::endl;
             std::cout << "[DHT]   is_bootstrap = " << config.dht_config.node_config.is_bootstrap << std::endl;
             std::cout << "[DHT]   public_stable = " << config.dht_config.node_config.public_stable << std::endl;
 
