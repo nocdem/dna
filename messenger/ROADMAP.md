@@ -309,7 +309,7 @@ _(Phase 6 (Mobile Applications) and Phase 7 (Advanced Security) merged into Phas
 - [x] Message retrieval via DHT queries
 - [x] Automatic polling (2-minute timer in GUI)
 - [x] Queue clearing after successful delivery
-- [x] SHA256-based DHT keys (recipient + ":offline_queue")
+- [x] SHA3-512-based DHT keys (recipient + ":offline_queue")
 - [x] Single-queue-per-recipient architecture
 - [x] Cross-platform support (Windows/Linux network byte order)
 - [x] Hybrid delivery: P2P direct → DHT queue → ~~PostgreSQL~~ SQLite fallback
@@ -326,7 +326,7 @@ Complete migration from centralized PostgreSQL to local SQLite storage:
 - [x] **Messages:** Migrated from PostgreSQL to local SQLite (`~/.dna/messages.db`)
 - [x] **Groups:** Migrated from PostgreSQL to DHT-based storage with local SQLite cache
   - UUID v4 group identification (36-character format)
-  - SHA256-based DHT keys for decentralized group metadata
+  - SHA3-512-based DHT keys for decentralized group metadata
   - JSON serialization for group data
   - Local SQLite cache for offline access
   - Full CRUD operations (create, get, update, add/remove members, delete)
@@ -349,8 +349,8 @@ Complete migration from centralized PostgreSQL to local SQLite storage:
 
 Implemented cryptographically signed reverse mappings for sender identification without requiring pre-added contacts:
 
-- [x] **Forward Mapping:** `SHA256(identity + ":pubkey")` → signed public key entry
-- [x] **Reverse Mapping:** `SHA256(fingerprint + ":reverse")` → signed identity entry
+- [x] **Forward Mapping:** `SHA3-512(identity + ":pubkey")` → signed public key entry
+- [x] **Reverse Mapping:** `SHA3-512(fingerprint + ":reverse")` → signed identity entry
   - Stores: dilithium_pubkey, identity, timestamp, fingerprint, signature
   - Signature covers: dilithium_pubkey || identity || timestamp
   - Prevents identity spoofing attacks
@@ -455,7 +455,7 @@ Implemented encrypted DHT backup for OpenDHT RSA-2048 identities to enable BIP39
 **Total:** 1,484+ lines
 **Result:** Seamless BIP39 recovery with zero DHT identity accumulation
 
-#### Phase 5.8: Message Format v0.07 - Fingerprint Privacy ✅ COMPLETE (Phase 12)
+#### Phase 5.8: Message Format v0.08 - Fingerprint Privacy ✅ COMPLETE (Phase 12)
 **Completed:** 2025-11-18
 
 Enhanced message privacy by encrypting sender identity and reducing message overhead:
@@ -467,7 +467,7 @@ Enhanced message privacy by encrypting sender identity and reducing message over
 - [x] **Signature Block Optimization**
   - Removed 2592-byte Dilithium5 pubkey from signature block
   - v0.06: `[type|pkey_size|sig_size|PUBKEY(2592)|sig]`
-  - v0.07: `[type|sig_size|sig]`
+  - v0.08: `[type|sig_size|sig]`
   - Net message size reduction: 2,533 bytes (28.5%)
 - [x] **Keyserver Lookup Integration**
   - Decrypt → extract fingerprint → query keyserver
@@ -477,7 +477,7 @@ Enhanced message privacy by encrypting sender identity and reducing message over
   - Added `sender_fingerprint` column to messages table
   - Backward compatible migration
 
-**Breaking Change:** v0.06 incompatible with v0.07
+**Breaking Change:** v0.06 incompatible with v0.08
 **Documentation:** `/docs/MESSAGE_FORMATS.md`
 
 #### Phase 5.9: GSK (Group Symmetric Key) v0.09 ✅ COMPLETE (Phase 13)
@@ -583,14 +583,14 @@ Implemented AES-256 shared keys for efficient group messaging with 200x performa
 - [x] Profile editor screen (edit own profile) - `profile_editor_screen.cpp` (229 lines)
 - [x] Contact profile viewer (view others' profiles) - `contact_profile_viewer.cpp` (232 lines)
 - [x] Auto-integration (contact add, message receive, app startup)
-- [x] Wall post backend - `dna_message_wall.c/h` (614 lines)
-- [x] Wall post GUI screen - `message_wall_screen.cpp` (291 lines)
+- [x] Wall post backend - `dna_message_wall.c/h`
+- [x] Wall post GUI screen - `message_wall_screen.cpp`
 - [x] Wall viewing ("Wall" button functional in chat)
 - [x] Dilithium5 signatures for wall posts
 - [x] 30-day TTL with rotation (100 messages max)
 
 **Phase 6.2 ✅ Complete (2025-11-17 - Avatar System):**
-- [x] Avatar support (Base64 encoding, 64x64 PNG, 20KB limit)
+- [x] Avatar support (Base64 encoding, 64x64 JPEG)
 - [x] Avatar upload with auto-resize (stb_image integration)
 - [x] OpenGL texture loading (TextureManager singleton)
 - [x] Circular avatar clipping (ImDrawList::AddImageRounded)
@@ -603,8 +603,8 @@ Implemented AES-256 shared keys for efficient group messaging with 200x performa
 
 **Phase 6.3 ✅ Complete (2025-11-17 - Community Voting):**
 - [x] Community voting system (thumbs up/down on wall posts)
-- [x] Vote backend with Dilithium5 signatures (dna_wall_votes.c/h - 650 lines)
-- [x] Separate DHT storage per post (SHA256 key derivation)
+- [x] Vote backend with Dilithium5 signatures (dna_wall_votes.c/h)
+- [x] Separate DHT storage per post (SHA3-512 key derivation)
 - [x] Aggregated vote counts (upvote_count, downvote_count)
 - [x] One vote per fingerprint enforcement (permanent votes)
 - [x] Vote UI with emoji buttons (👍 👎) and real-time counts
@@ -640,14 +640,14 @@ DNA Board is a **censorship-resistant social media platform** built on DNA Messe
 - [x] Profile manager (profile_manager.c/h - 235 lines)
 - [x] Profile editor screen (profile_editor_screen.cpp - 229 lines)
 - [x] Contact profile viewer (contact_profile_viewer.cpp - 232 lines)
-- [x] Wall posting backend (dna_message_wall.c/h - 614 lines)
-- [x] Wall post GUI screen (message_wall_screen.cpp - 291 lines)
+- [x] Wall posting backend (dna_message_wall.c/h)
+- [x] Wall post GUI screen (message_wall_screen.cpp)
 - [x] Wall viewing button in chat interface
 - [x] Dilithium5 signatures for posts
 - [x] 30-day TTL with 100 message rotation
 
 #### ✅ Completed (Phase 6.2 - Avatar & Threading):
-- [x] Avatar support (Base64 encoding, 64x64 PNG, 20KB limit)
+- [x] Avatar support (Base64 encoding, 64x64 JPEG)
 - [x] Avatar upload/resize (avatar_utils.c - stb_image integration)
 - [x] OpenGL texture loading (TextureManager singleton)
 - [x] Circular avatar display (profiles, wall, chat)
@@ -655,13 +655,10 @@ DNA Board is a **censorship-resistant social media platform** built on DNA Messe
 - [x] Thread sorting (forum bump - latest activity)
 - [x] Wall poster identification fix (post_id fingerprint)
 
-#### 🚧 In Progress (Phase 6.3):
-- [ ] Community voting (thumbs up/down UI)
+#### 📋 Planned (Phase 6.4):
 - [ ] Profile schema extensions (social links)
 - [ ] Crypto addresses for tipping
 - [ ] Feed sorting and filtering
-
-#### 📋 Planned (Phase 6.4):
 - [ ] Image/video embedding
 - [ ] Feed rendering with pagination
 - [ ] Client-side blocking/filtering
@@ -812,7 +809,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - ✅ Per-identity contact lists with DHT sync
 - ✅ P2P group invitations (Phase 5.6)
 - ✅ Encrypted DHT identity backup (Phase 5.7/9.6)
-- ✅ Message format v0.07 - fingerprint privacy (Phase 5.8/12)
+- ✅ Message format v0.08 - fingerprint privacy (Phase 5.8/12)
 - ✅ GSK group encryption - 200x speedup (Phase 5.9/13)
 - ✅ PostgreSQL → SQLite migration complete
 
@@ -890,7 +887,7 @@ Kyber512 + Dilithium3     ICE/STUN/TURN           Opus audio / VP8 video
 - **Phase 5.5:** Per-Identity Contact Lists with DHT Sync
 - **Phase 5.6:** P2P Group Invitations
 - **Phase 5.7:** Encrypted DHT Identity Backup (Phase 9.6)
-- **Phase 5.8:** Message Format v0.07 - Fingerprint Privacy (Phase 12)
+- **Phase 5.8:** Message Format v0.08 - Fingerprint Privacy (Phase 12)
 - **Phase 5.9:** GSK Group Encryption - 200x speedup (Phase 13)
 - **Phase 6.1:** User Profiles, Profile Editor/Viewer, Wall Posts (backend + GUI)
 - **Phase 6.2:** Avatar System (Base64 encoding, circular display, OpenGL textures)
@@ -932,7 +929,7 @@ DNA Messenger is in active development. Contributions welcome!
   - 7-day owner liveness with deterministic transfer
   - Background discovery (2-min polling)
   - 57/57 unit tests passing (~2800 LOC)
-- ✅ **Message Format v0.07 - Fingerprint Privacy!** (Phase 5.8/12 - 2025-11-18)
+- ✅ **Message Format v0.08 - Fingerprint Privacy!** (Phase 5.8/12 - 2025-11-18)
   - Sender fingerprint encrypted inside payload (64 bytes)
   - Removed 2592-byte pubkey from signature block
   - 28.5% message size reduction (2,533 bytes saved)
@@ -958,9 +955,9 @@ DNA Messenger is in active development. Contributions welcome!
   - Thumbs up/down voting on wall posts with Dilithium5 signatures
   - Permanent votes (one per fingerprint, cannot be changed)
   - Net score display with color coding (green/red/gray)
-  - Vote backend: 650 lines with full cryptographic verification
+  - Vote backend with full cryptographic verification
 - ✅ **Avatar System!** (Phase 6.2 - 2025-11-17)
-  - Base64-encoded PNG avatars (64x64, 20KB limit)
+  - Base64-encoded JPEG avatars (64x64)
   - OpenGL texture loading with TextureManager singleton
   - Circular display in profiles (64px), wall posts (24px), chat (20px)
   - Auto-resize via stb_image integration
@@ -973,7 +970,7 @@ DNA Messenger is in active development. Contributions welcome!
 - ✅ **DNA Board Phase 6.1 Complete!** (2025-11-12 to 2025-11-16)
   - User profiles with DHT storage (7-day cache, cache-first)
   - Profile editor and contact profile viewer
-  - Wall posts backend (614 lines) + GUI (291 lines)
+  - Wall posts backend + GUI
   - Dilithium5 signatures, 30-day TTL, 100 message rotation
 - ✅ **GUI Migration: Qt → ImGui!** (2025-11-10)
   - Modern immediate-mode rendering (OpenGL3 + GLFW3)
@@ -991,7 +988,7 @@ DNA Messenger is in active development. Contributions welcome!
   - Sender identification without pre-added contacts
 - ✅ **PostgreSQL → SQLite Migration Complete!** (Phase 5.3 - 2025-11-03)
   - Fully decentralized storage (NO centralized database)
-  - DHT-based groups with UUID v4 + SHA256 keys
+  - DHT-based groups with UUID v4 + SHA3-512 keys
 - ✅ **Offline Message Queueing** (Phase 5.2 - 2025-11-02)
   - 7-day DHT storage for offline recipients
   - Automatic 2-minute polling

@@ -102,7 +102,7 @@ cmake ..
 make
 
 # Run ImGui GUI
-./imgui_gui/dna_messenger_imgui
+./imgui_gui/dna-messenger
 
 # Optional: Run DHT bootstrap server (for running your own bootstrap node)
 ./dht/persistent_bootstrap
@@ -154,7 +154,7 @@ make MXE_TARGETS=x86_64-w64-mingw32.static qtbase qtmultimedia postgresql openss
 - ✅ Persistent group chats with member management
 - ✅ Per-identity contact lists with DHT sync (multi-device support via BIP39)
 - ✅ User profiles with DHT storage (display name, bio, avatar, location, website)
-- ✅ Avatar system (64x64 PNG upload, Base64 encoding, circular display)
+- ✅ Avatar system (64x64 JPEG, Base64 encoding, circular display)
 - ✅ Profile cache system (7-day TTL, cache-first architecture)
 - ✅ 24-word BIP39 recovery phrases
 - ✅ Cross-platform (Linux & Windows)
@@ -274,7 +274,7 @@ _CLI messenger was removed as unmaintained. All functionality is available in th
 - [x] 30-day TTL with rotation (100 messages max)
 
 **Completed (Phase 6.2 - Avatar System):**
-- [x] Avatar upload with auto-resize (64x64 PNG, 20KB limit)
+- [x] Avatar upload with auto-resize (64x64 JPEG)
 - [x] Base64 encoding for DHT storage
 - [x] OpenGL texture loading (TextureManager singleton)
 - [x] Circular avatar clipping (profiles, wall, chat)
