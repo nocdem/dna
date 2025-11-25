@@ -212,10 +212,11 @@ int dht_bootstrap_registry_register(
     printf("[REGISTRY] Publishing registry (%zu nodes, version %lu)\n",
            registry.node_count, registry.registry_version);
 
-    // Use 30-day TTL, value_id=1 for replacement
-    unsigned int ttl_30days = 30 * 24 * 3600;
+    // Use 7-day TTL, value_id=1 for replacement
+    // Nodes refresh every 5 minutes, so 7 days is plenty
+    unsigned int ttl_7days = 7 * 24 * 3600;
     int ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                             (uint8_t*)json, strlen(json), 1, ttl_30days);
+                             (uint8_t*)json, strlen(json), 1, ttl_7days);
 
     free(json);
 
