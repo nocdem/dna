@@ -55,12 +55,17 @@ void loadProfile(AppState& state, bool force_reload) {
     int ret = dna_load_identity(dht_ctx, ctx->fingerprint, &profile);
 
     if (ret == 0 && profile) {
-        // Display registered name
+        // Display registered name (only update if not already set by reverse lookup)
         if (profile->registered_name && strlen(profile->registered_name) > 0) {
             state.profile_registered_name = std::string(profile->registered_name);
-        } else {
+        } else if (state.profile_registered_name.empty() ||
+                   state.profile_registered_name == "Loading..." ||
+                   state.profile_registered_name == "N/A (DHT not connected)" ||
+                   state.profile_registered_name == "Error loading") {
+            // Only set to "Not registered" if we don't already have a valid name from reverse lookup
             state.profile_registered_name = "Not registered";
         }
+        // Otherwise keep the existing value (from reverse lookup)
 
         // Load wallet addresses
         if (profile->wallets.backbone[0] != '\0') strncpy(state.profile_backbone, profile->wallets.backbone, sizeof(state.profile_backbone) - 1);
