@@ -1342,6 +1342,7 @@ Dht::storageStore(const InfoHash& id, const Sp<Value>& value, time_point created
     if (auto vs = store.first) {
         total_store_size += store.second.size_diff;
         total_values += store.second.values_diff;
+        std::cout << "[STORAGE] Dht ptr = " << (void*)this << std::endl;
         std::cout << "[DEBUG] ✓ Internal storage updated: total_store_size=" << total_store_size
                   << ", total_values=" << total_values << std::endl;
         scheduler.cancel(vs->expiration_job);

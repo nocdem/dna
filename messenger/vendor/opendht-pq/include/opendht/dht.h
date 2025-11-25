@@ -310,6 +310,7 @@ public:
      * of stored values.
      */
     std::pair<size_t, size_t> getStoreSize() const override {
+        std::cout << "[STATS] Dht ptr = " << (void*)this << std::endl;
         std::cout << "[getStoreSize] Returning total_store_size=" << total_store_size
                   << ", total_values=" << total_values << std::endl;
         return {total_store_size, total_values};
