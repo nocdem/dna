@@ -108,15 +108,15 @@ namespace {
                     uint64_t expires_at = now + (7 * 24 * 3600);
 
                     if (dht_value_storage_should_persist(value->type, expires_at)) {
-                        std::string key_str = key.toString();
-
                         // CRITICAL FIX: Store full serialized Value (including signature)
                         // Previously stored only value->data, losing signature on republish
                         dht::Blob packed = value->getPacked();
 
                         dht_value_metadata_t metadata;
-                        metadata.key_hash = (const uint8_t*)key_str.data();
-                        metadata.key_hash_len = key_str.size();
+                        // Use binary InfoHash (20 bytes) - hash_to_hex() will convert to 40 hex chars
+                        // Previously used key.toString() which was then double-encoded to 80 hex chars
+                        metadata.key_hash = key.data();
+                        metadata.key_hash_len = key.size();  // 20 bytes
                         metadata.value_data = packed.data();
                         metadata.value_data_len = packed.size();
                         metadata.value_type = value->type;
@@ -149,14 +149,13 @@ namespace {
                     uint64_t expires_at = now + (30 * 24 * 3600);
 
                     if (dht_value_storage_should_persist(value->type, expires_at)) {
-                        std::string key_str = key.toString();
-
                         // CRITICAL FIX: Store full serialized Value (including signature)
                         dht::Blob packed = value->getPacked();
 
                         dht_value_metadata_t metadata;
-                        metadata.key_hash = (const uint8_t*)key_str.data();
-                        metadata.key_hash_len = key_str.size();
+                        // Use binary InfoHash (20 bytes) - hash_to_hex() will convert to 40 hex chars
+                        metadata.key_hash = key.data();
+                        metadata.key_hash_len = key.size();  // 20 bytes
                         metadata.value_data = packed.data();
                         metadata.value_data_len = packed.size();
                         metadata.value_type = value->type;
@@ -190,14 +189,13 @@ namespace {
                     uint64_t expires_at = now + (365 * 24 * 3600);
 
                     if (dht_value_storage_should_persist(value->type, expires_at)) {
-                        std::string key_str = key.toString();
-
                         // CRITICAL FIX: Store full serialized Value (including signature)
                         dht::Blob packed = value->getPacked();
 
                         dht_value_metadata_t metadata;
-                        metadata.key_hash = (const uint8_t*)key_str.data();
-                        metadata.key_hash_len = key_str.size();
+                        // Use binary InfoHash (20 bytes) - hash_to_hex() will convert to 40 hex chars
+                        metadata.key_hash = key.data();
+                        metadata.key_hash_len = key.size();  // 20 bytes
                         metadata.value_data = packed.data();
                         metadata.value_data_len = packed.size();
                         metadata.value_type = value->type;
