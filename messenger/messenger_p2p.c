@@ -11,6 +11,7 @@
 #include "dht/shared/dht_groups.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/core/dht_context.h"
+#include "dht/core/dht_listen.h"
 #include "database/keyserver_cache.h"
 #include "database/contacts_db.h"
 #include "database/group_invitations.h"
@@ -24,6 +25,7 @@
 #include <string.h>
 #include <openssl/sha.h>
 #include <json-c/json.h>
+#include <pthread.h>
 
 // Platform-specific headers for home directory detection
 #ifndef _WIN32
@@ -39,6 +41,33 @@ static const char *BOOTSTRAP_NODES[] = {
     "164.68.116.180:4000"     // dna-bootstrap-eu-2
 };
 #define BOOTSTRAP_COUNT 3
+
+// ============================================================================
+// PUSH NOTIFICATION SUBSCRIPTION MANAGEMENT (Phase 10.1)
+// ============================================================================
+
+// Subscription entry for tracking DHT listen() tokens
+typedef struct {
+    char *contact_fingerprint;  // Contact whose outbox we're watching
+    size_t listen_token;         // DHT listen() token
+} subscription_entry_t;
+
+// Global subscription manager
+typedef struct {
+    subscription_entry_t *subscriptions;
+    size_t count;
+    size_t capacity;
+    pthread_mutex_t mutex;
+    messenger_context_t *messenger_ctx;  // Context for message delivery
+} subscription_manager_t;
+
+static subscription_manager_t g_subscription_manager = {
+    .subscriptions = NULL,
+    .count = 0,
+    .capacity = 0,
+    .mutex = PTHREAD_MUTEX_INITIALIZER,
+    .messenger_ctx = NULL
+};
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -671,6 +700,9 @@ void messenger_p2p_shutdown(messenger_context_t *ctx)
 
     printf("[P2P] Shutting down P2P transport for identity: %s\n", ctx->identity);
 
+    // Cancel all push notification subscriptions
+    messenger_p2p_unsubscribe_all(ctx);
+
     p2p_transport_free(ctx->p2p_transport);
     ctx->p2p_transport = NULL;
     ctx->p2p_enabled = false;
@@ -1012,6 +1044,265 @@ int messenger_p2p_refresh_presence(messenger_context_t *ctx)
 
     printf("[P2P] Presence refreshed successfully\n");
     return 0;
+}
+
+// ============================================================================
+// PUSH NOTIFICATION CALLBACKS (Phase 10.1)
+// ============================================================================
+
+/**
+ * Push notification callback - invoked when DHT listen() receives values
+ * Runs on DHT worker thread, must be thread-safe
+ */
+static bool messenger_push_notification_callback(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data)
+{
+    messenger_context_t *ctx = (messenger_context_t*)user_data;
+
+    if (expired) {
+        printf("[P2P Push] Received expiration notification\n");
+        return true;  // Continue listening
+    }
+
+    if (!value || value_len == 0) {
+        return true;  // Continue listening
+    }
+
+    printf("[P2P Push] Received notification (%zu bytes)\n", value_len);
+
+    // Deserialize offline messages
+    dht_offline_message_t *messages = NULL;
+    size_t count = 0;
+    int result = dht_deserialize_messages(value, value_len, &messages, &count);
+
+    if (result != 0 || count == 0) {
+        fprintf(stderr, "[P2P Push] Failed to deserialize messages\n");
+        return true;  // Continue listening despite error
+    }
+
+    printf("[P2P Push] Deserialized %zu message(s)\n", count);
+
+    // Deliver each message via P2P callback (same path as polling)
+    if (ctx->p2p_transport) {
+        for (size_t i = 0; i < count; i++) {
+            dht_offline_message_t *msg = &messages[i];
+
+            printf("[P2P Push] Delivering message %zu/%zu from %s (%zu bytes)\n",
+                   i + 1, count, msg->sender, msg->ciphertext_len);
+
+            p2p_transport_deliver_message(
+                ctx->p2p_transport,
+                NULL,  // peer_pubkey (unknown for offline messages)
+                msg->ciphertext,
+                msg->ciphertext_len
+            );
+        }
+    }
+
+    dht_offline_messages_free(messages, count);
+    return true;  // Continue listening
+}
+
+/**
+ * Subscribe to a single contact's outbox for push notifications
+ */
+int messenger_p2p_subscribe_to_contact(
+    messenger_context_t *ctx,
+    const char *contact_fingerprint)
+{
+    if (!ctx || !contact_fingerprint) {
+        return -1;
+    }
+
+    // Generate outbox key
+    uint8_t outbox_key[64];
+    dht_generate_outbox_key(contact_fingerprint, ctx->fingerprint, outbox_key);
+
+    // Start listening
+    dht_context_t *dht = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (!dht) {
+        fprintf(stderr, "[P2P Push] Failed to get DHT context\n");
+        return -1;
+    }
+
+    size_t token = dht_listen(
+        dht,
+        outbox_key,
+        64,
+        messenger_push_notification_callback,
+        ctx
+    );
+
+    if (token == 0) {
+        fprintf(stderr, "[P2P Push] Failed to subscribe to %s\n", contact_fingerprint);
+        return -1;
+    }
+
+    // Add to subscription manager
+    pthread_mutex_lock(&g_subscription_manager.mutex);
+
+    // Expand array if needed
+    if (g_subscription_manager.count >= g_subscription_manager.capacity) {
+        size_t new_capacity = g_subscription_manager.capacity == 0 ? 16 : g_subscription_manager.capacity * 2;
+        subscription_entry_t *new_subs = (subscription_entry_t*)realloc(
+            g_subscription_manager.subscriptions,
+            new_capacity * sizeof(subscription_entry_t)
+        );
+
+        if (!new_subs) {
+            pthread_mutex_unlock(&g_subscription_manager.mutex);
+            dht_cancel_listen(dht, token);
+            return -1;
+        }
+
+        g_subscription_manager.subscriptions = new_subs;
+        g_subscription_manager.capacity = new_capacity;
+    }
+
+    // Add entry
+    subscription_entry_t *entry = &g_subscription_manager.subscriptions[g_subscription_manager.count];
+    entry->contact_fingerprint = strdup(contact_fingerprint);
+    entry->listen_token = token;
+    g_subscription_manager.count++;
+
+    pthread_mutex_unlock(&g_subscription_manager.mutex);
+
+    printf("[P2P Push] ✓ Subscribed to %s (token: %zu)\n", contact_fingerprint, token);
+    return 0;
+}
+
+/**
+ * Subscribe to all contacts' outboxes for push notifications
+ */
+int messenger_p2p_subscribe_to_contacts(messenger_context_t *ctx)
+{
+    if (!ctx || !ctx->p2p_enabled || !ctx->p2p_transport) {
+        fprintf(stderr, "[P2P Push] P2P not enabled\n");
+        return -1;
+    }
+
+    printf("[P2P Push] Subscribing to all contacts' outboxes...\n");
+
+    // Store messenger context for callback
+    pthread_mutex_lock(&g_subscription_manager.mutex);
+    g_subscription_manager.messenger_ctx = ctx;
+    pthread_mutex_unlock(&g_subscription_manager.mutex);
+
+    // Load contacts from database
+    contact_list_t *contacts = NULL;
+    if (contacts_db_list(&contacts) != 0 || !contacts || contacts->count == 0) {
+        printf("[P2P Push] No contacts in database, nothing to subscribe to\n");
+        return 0;
+    }
+
+    printf("[P2P Push] Found %zu contacts\n", contacts->count);
+
+    // Subscribe to each contact
+    size_t success_count = 0;
+    for (size_t i = 0; i < contacts->count; i++) {
+        const char *contact_fp = contacts->contacts[i].identity;
+
+        if (messenger_p2p_subscribe_to_contact(ctx, contact_fp) == 0) {
+            success_count++;
+        }
+    }
+
+    contacts_db_free_list(contacts);
+
+    printf("[P2P Push] ✓ Subscribed to %zu/%zu contacts\n", success_count, contacts->count);
+    return 0;
+}
+
+/**
+ * Unsubscribe from a single contact's outbox
+ */
+int messenger_p2p_unsubscribe_from_contact(
+    messenger_context_t *ctx,
+    const char *contact_fingerprint)
+{
+    if (!ctx || !contact_fingerprint) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&g_subscription_manager.mutex);
+
+    // Find subscription
+    size_t found_index = (size_t)-1;
+    for (size_t i = 0; i < g_subscription_manager.count; i++) {
+        if (strcmp(g_subscription_manager.subscriptions[i].contact_fingerprint, contact_fingerprint) == 0) {
+            found_index = i;
+            break;
+        }
+    }
+
+    if (found_index == (size_t)-1) {
+        pthread_mutex_unlock(&g_subscription_manager.mutex);
+        printf("[P2P Push] No subscription found for %s\n", contact_fingerprint);
+        return -1;
+    }
+
+    // Cancel DHT subscription
+    subscription_entry_t *entry = &g_subscription_manager.subscriptions[found_index];
+    dht_context_t *dht = p2p_transport_get_dht_context(ctx->p2p_transport);
+    if (dht) {
+        dht_cancel_listen(dht, entry->listen_token);
+    }
+
+    // Free resources
+    free(entry->contact_fingerprint);
+
+    // Remove from array (swap with last element)
+    if (found_index < g_subscription_manager.count - 1) {
+        g_subscription_manager.subscriptions[found_index] =
+            g_subscription_manager.subscriptions[g_subscription_manager.count - 1];
+    }
+    g_subscription_manager.count--;
+
+    pthread_mutex_unlock(&g_subscription_manager.mutex);
+
+    printf("[P2P Push] ✓ Unsubscribed from %s\n", contact_fingerprint);
+    return 0;
+}
+
+/**
+ * Unsubscribe from all contacts' outboxes
+ */
+void messenger_p2p_unsubscribe_all(messenger_context_t *ctx)
+{
+    if (!ctx) {
+        return;
+    }
+
+    pthread_mutex_lock(&g_subscription_manager.mutex);
+
+    printf("[P2P Push] Unsubscribing from %zu contacts...\n", g_subscription_manager.count);
+
+    if (ctx->p2p_transport) {
+        dht_context_t *dht = p2p_transport_get_dht_context(ctx->p2p_transport);
+
+        // Cancel all subscriptions
+        for (size_t i = 0; i < g_subscription_manager.count; i++) {
+            subscription_entry_t *entry = &g_subscription_manager.subscriptions[i];
+            if (dht) {
+                dht_cancel_listen(dht, entry->listen_token);
+            }
+            free(entry->contact_fingerprint);
+        }
+    }
+
+    // Free array
+    free(g_subscription_manager.subscriptions);
+    g_subscription_manager.subscriptions = NULL;
+    g_subscription_manager.count = 0;
+    g_subscription_manager.capacity = 0;
+    g_subscription_manager.messenger_ctx = NULL;
+
+    pthread_mutex_unlock(&g_subscription_manager.mutex);
+
+    printf("[P2P Push] ✓ All subscriptions cancelled\n");
 }
 
 // ============================================================================

@@ -153,6 +153,14 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
             printf("[Identity] Warning: Failed to register presence\n");
         }
 
+        // Subscribe to all contacts' outboxes for push notifications
+        printf("[Identity] Subscribing to contacts for push notifications...\n");
+        if (messenger_p2p_subscribe_to_contacts(ctx) == 0) {
+            printf("[Identity] [OK] Push notifications enabled\n");
+        } else {
+            printf("[Identity] Warning: Failed to enable push notifications\n");
+        }
+
         // Initialize profile manager for profile caching
         dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
         if (dht_ctx) {

@@ -194,6 +194,64 @@ int messenger_p2p_check_offline_messages(
     size_t *messages_received
 );
 
+// ============================================================================
+// PUSH NOTIFICATIONS (Phase 10.1)
+// ============================================================================
+
+/**
+ * Subscribe to all contacts' outboxes for push notifications
+ *
+ * Enables real-time message delivery by subscribing to DHT listen() on each
+ * contact's outbox. When a contact sends a message, the callback is triggered
+ * instantly instead of waiting for the 2-minute polling timer.
+ *
+ * This should be called once during messenger initialization after P2P is enabled.
+ *
+ * @param ctx: Messenger context
+ * @return: 0 on success, -1 on error
+ */
+int messenger_p2p_subscribe_to_contacts(messenger_context_t *ctx);
+
+/**
+ * Subscribe to a single contact's outbox for push notifications
+ *
+ * Enables real-time message delivery for a specific contact.
+ * Should be called when adding a new contact.
+ *
+ * @param ctx: Messenger context
+ * @param contact_fingerprint: Contact's fingerprint
+ * @return: 0 on success, -1 on error
+ */
+int messenger_p2p_subscribe_to_contact(
+    messenger_context_t *ctx,
+    const char *contact_fingerprint
+);
+
+/**
+ * Unsubscribe from a single contact's outbox
+ *
+ * Cancels push notifications for a specific contact.
+ * Should be called when removing a contact.
+ *
+ * @param ctx: Messenger context
+ * @param contact_fingerprint: Contact's fingerprint
+ * @return: 0 on success, -1 on error
+ */
+int messenger_p2p_unsubscribe_from_contact(
+    messenger_context_t *ctx,
+    const char *contact_fingerprint
+);
+
+/**
+ * Unsubscribe from all contacts' outboxes
+ *
+ * Cancels all push notification subscriptions.
+ * Should be called during messenger shutdown.
+ *
+ * @param ctx: Messenger context
+ */
+void messenger_p2p_unsubscribe_all(messenger_context_t *ctx);
+
 #ifdef __cplusplus
 }
 #endif

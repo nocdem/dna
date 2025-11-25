@@ -143,6 +143,23 @@ void p2p_transport_free(p2p_transport_t *ctx);
  */
 struct dht_context* p2p_transport_get_dht_context(p2p_transport_t *ctx);
 
+/**
+ * Deliver message via P2P transport callback
+ * Thread-safe helper function for invoking the message callback
+ *
+ * @param ctx: P2P transport context
+ * @param peer_pubkey: Peer's public key (NULL if unknown)
+ * @param data: Message data
+ * @param len: Message length
+ * @return: 0 on success, -1 if no callback registered
+ */
+int p2p_transport_deliver_message(
+    p2p_transport_t *ctx,
+    const uint8_t *peer_pubkey,
+    const uint8_t *data,
+    size_t len
+);
+
 // ============================================================================
 // Peer Discovery (DHT-based)
 // ============================================================================

@@ -7,6 +7,7 @@
 #include "../font_awesome.h"
 #include "../texture_manager.h"
 #include "../../messenger.h"
+#include "../../messenger_p2p.h"
 #include "../../database/contacts_db.h"
 #include "../../database/profile_manager.h"
 #include "../../dht/core/dht_keyserver.h"
@@ -357,8 +358,17 @@ void render(AppState& state, std::function<void()> reload_contacts_callback) {
             // Reload contacts from database (fast, no messenger reinit)
             reload_contacts_callback();
 
-            // Auto-publish contacts to DHT (async, non-blocking)
+            // Subscribe to push notifications for this contact
             messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+            if (ctx && ctx->p2p_enabled) {
+                if (messenger_p2p_subscribe_to_contact(ctx, fingerprint) == 0) {
+                    printf("[AddContact] ✓ Subscribed to push notifications for %s\n", fingerprint);
+                } else {
+                    printf("[AddContact] Warning: Failed to subscribe to push notifications\n");
+                }
+            }
+
+            // Auto-publish contacts to DHT (async, non-blocking)
             if (ctx) {
                 state.dht_publish_task.start([ctx, fingerprint](AsyncTask* task) {
                     printf("[AddContact] Publishing contacts to DHT...\n");

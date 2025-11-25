@@ -667,8 +667,40 @@ if(BUILD_TESTS)
     )
     target_include_directories(test_check_persistence PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
 
+    # Performance Test: DHT Offline Queue Performance
+    add_executable(test_dht_offline_performance tests/test_dht_offline_performance.c)
+    target_link_libraries(test_dht_offline_performance
+        -Wl,--start-group
+        dht_lib
+        dsa
+        ${OPENDHT_LIBRARIES}
+        -Wl,--end-group
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+        ${OPENSSL_LIBRARIES}
+        pthread
+        m
+    )
+    target_include_directories(test_dht_offline_performance PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
+
+    # Test: DHT listen() API (Push Notifications - Phase 1)
+    add_executable(test_dht_listen tests/test_dht_listen.c)
+    target_link_libraries(test_dht_listen
+        -Wl,--start-group
+        dht_lib
+        dsa
+        ${OPENDHT_LIBRARIES}
+        -Wl,--end-group
+        ${JSONC_LIBRARIES}
+        ${SQLite3_LIBRARIES}
+        ${OPENSSL_LIBRARIES}
+        pthread
+        m
+    )
+    target_include_directories(test_dht_listen PRIVATE ${CMAKE_SOURCE_DIR} ${OPENDHT_INCLUDE_DIRS})
+
     message(STATUS "Building unit tests: test_dna_profile, test_simple, test_identity_backup, test_timestamp_v08, test_gsk")
-    message(STATUS "Building PQ DHT tests: test_dilithium5_signature, test_pq_put_get, test_pq_dht_bootstrap, test_check_persistence")
+    message(STATUS "Building PQ DHT tests: test_dilithium5_signature, test_pq_put_get, test_pq_dht_bootstrap, test_check_persistence, test_dht_offline_performance, test_dht_listen")
 endif()
 
 # ImGui GUI (Phase 11: Modern GUI)

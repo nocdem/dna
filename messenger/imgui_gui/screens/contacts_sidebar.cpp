@@ -8,6 +8,7 @@
 #include "../helpers/avatar_helpers.h"
 #include "../../database/contacts_db.h"
 #include "../../messenger.h"
+#include "../../messenger_p2p.h"
 #include "../helpers/data_loader.h"  // Phase 1.4: For contact refresh
 
 #include <cstring>
@@ -80,9 +81,19 @@ void renderContactsList(AppState& state) {
             }
 
             if (ImGui::MenuItem(ICON_FA_TRASH " Delete contact")) {
-                if (contacts_db_remove(state.contacts[i].address.c_str()) == 0) {
+                const char *contact_fp = state.contacts[i].address.c_str();
+                if (contacts_db_remove(contact_fp) == 0) {
                     printf("[Context Menu] Deleted contact: %s\n",
                            state.contacts[i].name.c_str());
+
+                    // Unsubscribe from push notifications
+                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                    if (ctx && ctx->p2p_enabled) {
+                        if (messenger_p2p_unsubscribe_from_contact(ctx, contact_fp) == 0) {
+                            printf("[Context Menu] ✓ Unsubscribed from push notifications\n");
+                        }
+                    }
+
                     {
                         std::lock_guard<std::mutex> lock(state.messages_mutex);
                         state.contact_messages.erase(i);
@@ -93,7 +104,6 @@ void renderContactsList(AppState& state) {
                         state.current_view = VIEW_CONTACTS;
                     }
                     // Sync deletion to DHT for multi-device support
-                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
                     if (ctx) {
                         messenger_sync_contacts_to_dht(ctx);
                         printf("[Context Menu] Synced contact deletion to DHT\n");
@@ -483,9 +493,19 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             }
 
             if (ImGui::MenuItem(ICON_FA_TRASH " Delete contact")) {
-                if (contacts_db_remove(state.contacts[i].address.c_str()) == 0) {
+                const char *contact_fp = state.contacts[i].address.c_str();
+                if (contacts_db_remove(contact_fp) == 0) {
                     printf("[Context Menu] Deleted contact: %s\n",
                            state.contacts[i].name.c_str());
+
+                    // Unsubscribe from push notifications
+                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                    if (ctx && ctx->p2p_enabled) {
+                        if (messenger_p2p_unsubscribe_from_contact(ctx, contact_fp) == 0) {
+                            printf("[Context Menu] ✓ Unsubscribed from push notifications\n");
+                        }
+                    }
+
                     // Clear messages from memory
                     {
                         std::lock_guard<std::mutex> lock(state.messages_mutex);
@@ -499,7 +519,6 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
                         state.current_view = VIEW_CONTACTS;
                     }
                     // Sync deletion to DHT for multi-device support
-                    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
                     if (ctx) {
                         messenger_sync_contacts_to_dht(ctx);
                         printf("[Context Menu] Synced contact deletion to DHT\n");

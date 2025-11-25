@@ -15,6 +15,7 @@ if(WIN32)
     add_library(dht_lib STATIC
         # Core modules (Phase 3/4)
         core/dht_context.cpp
+        core/dht_listen.cpp
         core/dht_stats.cpp
         core/dht_keyserver.c
         core/dht_bootstrap_registry.c
@@ -51,6 +52,7 @@ else()
     add_library(dht_lib STATIC
         # Core modules (Phase 3/4)
         core/dht_context.cpp
+        core/dht_listen.cpp
         core/dht_stats.cpp
         core/dht_keyserver.c
         core/dht_bootstrap_registry.c

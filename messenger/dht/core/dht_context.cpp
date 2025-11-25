@@ -840,28 +840,34 @@ extern "C" int dht_get(dht_context_t *ctx,
     }
 
     try {
+        auto start_total = std::chrono::steady_clock::now();
+
         // Hash the key
         auto hash = dht::InfoHash::get(key, key_len);
 
         std::cout << "[DHT] GET: " << hash << std::endl;
 
         // Get value using future-based API (OpenDHT 2.4 compatible)
+        auto start_network = std::chrono::steady_clock::now();
         auto future = ctx->runner.get(hash);
         auto values = future.get();
+        auto network_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_network).count();
 
         if (values.empty()) {
-            std::cout << "[DHT] Value not found" << std::endl;
+            std::cout << "[DHT] Value not found (took " << network_ms << "ms)" << std::endl;
             return -1;
         }
 
         // Get first value
         auto val = values[0];
         if (!val || val->data.empty()) {
-            std::cout << "[DHT] Value empty" << std::endl;
+            std::cout << "[DHT] Value empty (took " << network_ms << "ms)" << std::endl;
             return -1;
         }
 
         // Allocate C buffer and copy data (+ 1 for null terminator)
+        auto start_copy = std::chrono::steady_clock::now();
         *value_out = (uint8_t*)malloc(val->data.size() + 1);
         if (!*value_out) {
             std::cerr << "[DHT] ERROR: malloc failed" << std::endl;
@@ -871,8 +877,15 @@ extern "C" int dht_get(dht_context_t *ctx,
         memcpy(*value_out, val->data.data(), val->data.size());
         (*value_out)[val->data.size()] = '\0';  // Null-terminate for string safety
         *value_len_out = val->data.size();
+        auto copy_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_copy).count();
 
-        std::cout << "[DHT] GET successful: " << val->data.size() << " bytes" << std::endl;
+        auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start_total).count();
+
+        std::cout << "[DHT] GET successful: " << val->data.size() << " bytes "
+                  << "(network: " << network_ms << "ms, copy: " << copy_ms << "ms, total: " << total_ms << "ms)"
+                  << std::endl;
 
         return 0;
     } catch (const std::exception& e) {
@@ -908,11 +921,15 @@ extern "C" void dht_get_async(dht_context_t *ctx,
 
         // Use OpenDHT's async get with callback (GetCallbackSimple)
         // GetCallbackSimple signature: bool(std::shared_ptr<Value>)
+        // Use shared_ptr to track if GetCallback was invoked
+        auto value_found = std::make_shared<bool>(false);
+
         ctx->runner.get(hash,
             // GetCallback - called for each value
-            [callback, userdata, hash](const std::shared_ptr<dht::Value>& val) {
+            [callback, userdata, hash, value_found](const std::shared_ptr<dht::Value>& val) {
                 if (!val || val->data.empty()) {
                     std::cout << "[DHT] GET_ASYNC: Value empty for " << hash << std::endl;
+                    *value_found = true;  // Mark as handled
                     callback(nullptr, 0, userdata);
                     return false;  // Stop listening
                 }
@@ -921,6 +938,7 @@ extern "C" void dht_get_async(dht_context_t *ctx,
                 uint8_t *value_copy = (uint8_t*)malloc(val->data.size());
                 if (!value_copy) {
                     std::cerr << "[DHT] ERROR: malloc failed in async callback" << std::endl;
+                    *value_found = true;  // Mark as handled
                     callback(nullptr, 0, userdata);
                     return false;  // Stop listening
                 }
@@ -929,15 +947,19 @@ extern "C" void dht_get_async(dht_context_t *ctx,
                 std::cout << "[DHT] GET_ASYNC successful: " << val->data.size() << " bytes" << std::endl;
 
                 // Call the user callback with data
+                *value_found = true;  // Mark as handled
                 callback(value_copy, val->data.size(), userdata);
 
                 return false;  // Stop listening after first value
             },
             // DoneCallback - called when query completes
-            [callback, userdata, hash](bool success) {
-                if (!success) {
-                    std::cout << "[DHT] GET_ASYNC: Query failed for " << hash << std::endl;
+            [callback, userdata, hash, value_found](bool success) {
+                // If GetCallback was never called (no values found), call user callback now
+                if (!*value_found) {
+                    std::cout << "[DHT] GET_ASYNC: No values found for " << hash << std::endl;
                     callback(nullptr, 0, userdata);
+                } else if (!success) {
+                    std::cout << "[DHT] GET_ASYNC: Query failed for " << hash << std::endl;
                 }
             }
         );

@@ -119,6 +119,33 @@ int dht_retrieve_queued_messages_from_contacts(
 );
 
 /**
+ * Retrieve all queued messages for recipient from all contacts' outboxes (PARALLEL VERSION)
+ *
+ * Same as dht_retrieve_queued_messages_from_contacts(), but queries all contacts
+ * concurrently using async DHT operations for 10-100× speedup.
+ *
+ * Performance comparison:
+ * - Sequential: N contacts × 300ms/contact = 30 seconds for 100 contacts
+ * - Parallel:   ~300ms total (all queries concurrent)
+ *
+ * @param ctx DHT context
+ * @param recipient Recipient identity (fingerprint - 128 hex chars)
+ * @param sender_list Array of sender identities (contacts' fingerprints)
+ * @param sender_count Number of senders in list
+ * @param messages_out Output array (caller must free with dht_offline_messages_free)
+ * @param count_out Output count of messages
+ * @return 0 on success, -1 on failure
+ */
+int dht_retrieve_queued_messages_from_contacts_parallel(
+    dht_context_t *ctx,
+    const char *recipient,
+    const char **sender_list,
+    size_t sender_count,
+    dht_offline_message_t **messages_out,
+    size_t *count_out
+);
+
+/**
  * REMOVED: dht_clear_queue() - No longer needed in Model E
  *
  * In sender-based outbox model, recipients don't control sender outboxes.

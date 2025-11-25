@@ -105,7 +105,8 @@ int p2p_check_offline_messages(
     dht_offline_message_t *messages = NULL;
     size_t count = 0;
 
-    int result = dht_retrieve_queued_messages_from_contacts(
+    // Use parallel version for 10-100× speedup
+    int result = dht_retrieve_queued_messages_from_contacts_parallel(
         ctx->dht,
         ctx->config.identity,  // My fingerprint (recipient)
         sender_fps,

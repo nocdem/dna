@@ -217,6 +217,28 @@ dht_context_t* p2p_transport_get_dht_context(p2p_transport_t *ctx) {
     return ctx->dht;
 }
 
+int p2p_transport_deliver_message(
+    p2p_transport_t *ctx,
+    const uint8_t *peer_pubkey,
+    const uint8_t *data,
+    size_t len)
+{
+    if (!ctx || !data || len == 0) {
+        return -1;
+    }
+
+    // Thread-safe callback invocation
+    pthread_mutex_lock(&ctx->callback_mutex);
+    if (ctx->message_callback) {
+        ctx->message_callback(peer_pubkey, data, len, ctx->callback_user_data);
+        pthread_mutex_unlock(&ctx->callback_mutex);
+        return 0;
+    }
+    pthread_mutex_unlock(&ctx->callback_mutex);
+
+    return -1;  // No callback registered
+}
+
 // ============================================================================
 // Connection Management
 // ============================================================================
