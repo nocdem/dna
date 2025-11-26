@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
 #include <time.h>
 #include <json-c/json.h>
 #include <openssl/evp.h>
@@ -345,27 +346,93 @@ static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char
     char dht_key[65];
     if (dna_feed_get_bucket_key(channel_id, date, dht_key) != 0) return -1;
 
-    uint8_t *value = NULL;
-    size_t value_len = 0;
-    int ret = dht_get(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key), &value, &value_len);
+    /* Get ALL values and merge them (multiple bucket updates create multiple DHT values) */
+    uint8_t **values = NULL;
+    size_t *value_lens = NULL;
+    size_t value_count = 0;
+    int ret = dht_get_all(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
+                          &values, &value_lens, &value_count);
 
-    if (ret != 0 || !value || value_len == 0) {
+    if (ret != 0 || value_count == 0) {
         return -2;
     }
 
-    char *json_str = malloc(value_len + 1);
-    if (!json_str) {
-        free(value);
+    /* Merge all bucket values - collect all unique post_ids */
+    dna_feed_bucket_t *merged = calloc(1, sizeof(dna_feed_bucket_t));
+    if (!merged) {
+        for (size_t i = 0; i < value_count; i++) free(values[i]);
+        free(values);
+        free(value_lens);
         return -1;
     }
-    memcpy(json_str, value, value_len);
-    json_str[value_len] = '\0';
-    free(value);
 
-    ret = bucket_from_json(json_str, bucket_out);
-    free(json_str);
+    /* Use a simple array to track unique post_ids (max ~1000 posts per day) */
+    char **all_post_ids = NULL;
+    size_t all_count = 0;
+    size_t all_capacity = 0;
 
-    return ret;
+    for (size_t v = 0; v < value_count; v++) {
+        if (!values[v] || value_lens[v] == 0) continue;
+
+        char *json_str = malloc(value_lens[v] + 1);
+        if (!json_str) continue;
+        memcpy(json_str, values[v], value_lens[v]);
+        json_str[value_lens[v]] = '\0';
+
+        dna_feed_bucket_t *bucket = NULL;
+        if (bucket_from_json(json_str, &bucket) == 0 && bucket) {
+            /* Copy channel_id and bucket_date from first valid bucket */
+            if (merged->channel_id[0] == '\0') {
+                strncpy(merged->channel_id, bucket->channel_id, sizeof(merged->channel_id) - 1);
+                strncpy(merged->bucket_date, bucket->bucket_date, sizeof(merged->bucket_date) - 1);
+            }
+
+            /* Add unique post_ids */
+            for (size_t i = 0; i < bucket->post_count; i++) {
+                /* Check if already added */
+                bool exists = false;
+                for (size_t j = 0; j < all_count; j++) {
+                    if (strcmp(all_post_ids[j], bucket->post_ids[i]) == 0) {
+                        exists = true;
+                        break;
+                    }
+                }
+                if (!exists) {
+                    /* Grow array if needed */
+                    if (all_count >= all_capacity) {
+                        size_t new_cap = all_capacity == 0 ? 64 : all_capacity * 2;
+                        char **new_ids = realloc(all_post_ids, new_cap * sizeof(char *));
+                        if (!new_ids) continue;
+                        all_post_ids = new_ids;
+                        all_capacity = new_cap;
+                    }
+                    all_post_ids[all_count++] = strdup(bucket->post_ids[i]);
+                }
+            }
+            dna_feed_bucket_free(bucket);
+        }
+        free(json_str);
+    }
+
+    /* Cleanup DHT values */
+    for (size_t i = 0; i < value_count; i++) free(values[i]);
+    free(values);
+    free(value_lens);
+
+    /* Set merged bucket's post_ids */
+    merged->post_ids = all_post_ids;
+    merged->post_count = all_count;
+    merged->allocated_count = all_capacity;
+
+    if (all_count == 0) {
+        dna_feed_bucket_free(merged);
+        return -2;
+    }
+
+    printf("[DNA_FEED] Merged %zu bucket values into %zu unique posts\n", value_count, all_count);
+
+    *bucket_out = merged;
+    return 0;
 }
 
 /* Save bucket to DHT */
