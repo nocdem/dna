@@ -4,7 +4,7 @@
  * Saves all messages to local SQLite database for data sovereignty.
  * Users own their message history, not dependent on remote PostgreSQL.
  *
- * Database Location: ~/.dna/messages.db
+ * Database Location: ~/.dna/<fingerprint>_messages.db (per-identity)
  *
  * @file message_backup.h
  * @author DNA Messenger Team

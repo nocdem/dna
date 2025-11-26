@@ -433,7 +433,9 @@ int messenger_get_group_conversation(messenger_context_t *ctx, int group_id, mes
     *count_out = 0;
 
     // Get messages from message_backup (Phase 5.2)
-    message_backup_context_t *backup_ctx = message_backup_init(ctx->identity);
+    // Use fingerprint (canonical) for consistent database path
+    const char *db_identity = ctx->fingerprint ? ctx->fingerprint : ctx->identity;
+    message_backup_context_t *backup_ctx = message_backup_init(db_identity);
     if (!backup_ctx) {
         fprintf(stderr, "[MESSENGER] Failed to init message backup\n");
         return -1;

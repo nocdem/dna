@@ -98,8 +98,8 @@ static int get_db_path(const char *identity, char *path_out, size_t path_len) {
         }
     }
 
-    // Database path: ~/.dna/messages.db
-    snprintf(path_out, path_len, "%s/messages.db", dna_dir);
+    // Database path: ~/.dna/<identity>_messages.db (per-identity)
+    snprintf(path_out, path_len, "%s/%s_messages.db", dna_dir, identity);
     return 0;
 }
 

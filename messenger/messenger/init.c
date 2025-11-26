@@ -105,10 +105,13 @@ messenger_context_t* messenger_init(const char *identity) {
         ctx->fingerprint = NULL;
     }
 
-    // Initialize SQLite local message storage
-    ctx->backup_ctx = message_backup_init(identity);
+    // Initialize SQLite local message storage (per-identity)
+    // Use fingerprint (canonical) for consistent database path regardless of login method
+    const char *db_identity = ctx->fingerprint ? ctx->fingerprint : identity;
+    ctx->backup_ctx = message_backup_init(db_identity);
     if (!ctx->backup_ctx) {
         fprintf(stderr, "Error: Failed to initialize SQLite message storage\n");
+        free(ctx->fingerprint);
         free(ctx->identity);
         free(ctx);
         return NULL;
