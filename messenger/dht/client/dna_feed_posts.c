@@ -435,7 +435,7 @@ static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char
     return 0;
 }
 
-/* Save bucket to DHT */
+/* Save bucket to DHT (signed - each user has their own bucket value) */
 static int save_bucket(dht_context_t *dht_ctx, const dna_feed_bucket_t *bucket) {
     char *json_data = NULL;
     if (bucket_to_json(bucket, &json_data) != 0) return -1;
@@ -446,6 +446,8 @@ static int save_bucket(dht_context_t *dht_ctx, const dna_feed_bucket_t *bucket) 
         return -1;
     }
 
+    /* Signed put with value_id=1 - each user maintains their own bucket.
+     * Different users have different signed values, merged on read. */
     int ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
                              (const uint8_t *)json_data, strlen(json_data),
                              1, DNA_FEED_TTL_SECONDS);
