@@ -74,6 +74,7 @@ add_executable(dna-messenger
     helpers/engine_wrapper.cpp
     screens/register_name_screen.cpp
     screens/message_wall_screen.cpp
+    screens/feed_screen.cpp
     screens/profile_editor_screen.cpp
     screens/contact_profile_viewer.cpp
     screens/settings_screen.cpp

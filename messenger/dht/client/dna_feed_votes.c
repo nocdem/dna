@@ -1,0 +1,402 @@
+/*
+ * DNA Feed - Vote Operations
+ *
+ * Implements voting system for the public feed.
+ * Votes are permanent - once cast, they cannot be changed.
+ */
+
+#include "dna_feed.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <json-c/json.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#else
+#include <arpa/inet.h>
+#endif
+
+/* Dilithium5 functions */
+extern int pqcrystals_dilithium5_ref_verify(const uint8_t *sig, size_t siglen,
+                                             const uint8_t *m, size_t mlen,
+                                             const uint8_t *ctx, size_t ctxlen,
+                                             const uint8_t *pk);
+
+extern int pqcrystals_dilithium5_ref_signature(uint8_t *sig, size_t *siglen,
+                                                const uint8_t *m, size_t mlen,
+                                                const uint8_t *ctx, size_t ctxlen,
+                                                const uint8_t *sk);
+
+/* Network byte order helpers */
+static inline uint64_t htonll_vote(uint64_t value) {
+    static const int num = 1;
+    if (*(char *)&num == 1) {
+        return ((uint64_t)htonl(value & 0xFFFFFFFF) << 32) | htonl(value >> 32);
+    }
+    return value;
+}
+
+/* Base64 helpers */
+static char *base64_encode(const uint8_t *data, size_t len) {
+    static const char base64_chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    size_t out_len = 4 * ((len + 2) / 3) + 1;
+    char *out = malloc(out_len);
+    if (!out) return NULL;
+
+    size_t i, j;
+    for (i = 0, j = 0; i < len;) {
+        uint32_t octet_a = i < len ? data[i++] : 0;
+        uint32_t octet_b = i < len ? data[i++] : 0;
+        uint32_t octet_c = i < len ? data[i++] : 0;
+        uint32_t triple = (octet_a << 16) + (octet_b << 8) + octet_c;
+
+        out[j++] = base64_chars[(triple >> 18) & 0x3F];
+        out[j++] = base64_chars[(triple >> 12) & 0x3F];
+        out[j++] = base64_chars[(triple >> 6) & 0x3F];
+        out[j++] = base64_chars[triple & 0x3F];
+    }
+
+    size_t padding = len % 3;
+    if (padding == 1) { out[j - 2] = '='; out[j - 1] = '='; }
+    else if (padding == 2) { out[j - 1] = '='; }
+    out[j] = '\0';
+    return out;
+}
+
+static uint8_t *base64_decode(const char *str, size_t *out_len) {
+    static const uint8_t base64_table[256] = {
+        ['A'] = 0,  ['B'] = 1,  ['C'] = 2,  ['D'] = 3,  ['E'] = 4,  ['F'] = 5,  ['G'] = 6,  ['H'] = 7,
+        ['I'] = 8,  ['J'] = 9,  ['K'] = 10, ['L'] = 11, ['M'] = 12, ['N'] = 13, ['O'] = 14, ['P'] = 15,
+        ['Q'] = 16, ['R'] = 17, ['S'] = 18, ['T'] = 19, ['U'] = 20, ['V'] = 21, ['W'] = 22, ['X'] = 23,
+        ['Y'] = 24, ['Z'] = 25, ['a'] = 26, ['b'] = 27, ['c'] = 28, ['d'] = 29, ['e'] = 30, ['f'] = 31,
+        ['g'] = 32, ['h'] = 33, ['i'] = 34, ['j'] = 35, ['k'] = 36, ['l'] = 37, ['m'] = 38, ['n'] = 39,
+        ['o'] = 40, ['p'] = 41, ['q'] = 42, ['r'] = 43, ['s'] = 44, ['t'] = 45, ['u'] = 46, ['v'] = 47,
+        ['w'] = 48, ['x'] = 49, ['y'] = 50, ['z'] = 51, ['0'] = 52, ['1'] = 53, ['2'] = 54, ['3'] = 55,
+        ['4'] = 56, ['5'] = 57, ['6'] = 58, ['7'] = 59, ['8'] = 60, ['9'] = 61, ['+'] = 62, ['/'] = 63
+    };
+
+    size_t len = strlen(str);
+    size_t padding = 0;
+    if (len >= 2 && str[len - 1] == '=') {
+        padding++;
+        if (str[len - 2] == '=') padding++;
+    }
+
+    *out_len = (len / 4) * 3 - padding;
+    uint8_t *out = malloc(*out_len);
+    if (!out) return NULL;
+
+    size_t i, j;
+    for (i = 0, j = 0; i < len;) {
+        uint32_t sextet_a = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
+        uint32_t sextet_b = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
+        uint32_t sextet_c = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
+        uint32_t sextet_d = str[i] == '=' ? 0 : base64_table[(uint8_t)str[i]]; i++;
+
+        uint32_t triple = (sextet_a << 18) + (sextet_b << 12) + (sextet_c << 6) + sextet_d;
+
+        if (j < *out_len) out[j++] = (triple >> 16) & 0xFF;
+        if (j < *out_len) out[j++] = (triple >> 8) & 0xFF;
+        if (j < *out_len) out[j++] = triple & 0xFF;
+    }
+    return out;
+}
+
+/* ============================================================================
+ * JSON Serialization
+ * ========================================================================== */
+
+static int votes_to_json(const dna_feed_votes_t *votes, char **json_out) {
+    json_object *root = json_object_new_object();
+    if (!root) return -1;
+
+    json_object_object_add(root, "version", json_object_new_int(1));
+    json_object_object_add(root, "post_id", json_object_new_string(votes->post_id));
+    json_object_object_add(root, "upvote_count", json_object_new_int(votes->upvote_count));
+    json_object_object_add(root, "downvote_count", json_object_new_int(votes->downvote_count));
+
+    json_object *votes_arr = json_object_new_array();
+    for (size_t i = 0; i < votes->vote_count; i++) {
+        json_object *vote_obj = json_object_new_object();
+        json_object_object_add(vote_obj, "voter",
+            json_object_new_string(votes->votes[i].voter_fingerprint));
+        json_object_object_add(vote_obj, "value",
+            json_object_new_int(votes->votes[i].vote_value));
+        json_object_object_add(vote_obj, "timestamp",
+            json_object_new_int64(votes->votes[i].timestamp));
+
+        if (votes->votes[i].signature_len > 0) {
+            char *sig_b64 = base64_encode(votes->votes[i].signature, votes->votes[i].signature_len);
+            if (sig_b64) {
+                json_object_object_add(vote_obj, "signature", json_object_new_string(sig_b64));
+                free(sig_b64);
+            }
+        }
+
+        json_object_array_add(votes_arr, vote_obj);
+    }
+    json_object_object_add(root, "votes", votes_arr);
+
+    const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PLAIN);
+    *json_out = json_str ? strdup(json_str) : NULL;
+    json_object_put(root);
+
+    return *json_out ? 0 : -1;
+}
+
+static int votes_from_json(const char *json_str, dna_feed_votes_t **votes_out) {
+    json_object *root = json_tokener_parse(json_str);
+    if (!root) return -1;
+
+    dna_feed_votes_t *votes = calloc(1, sizeof(dna_feed_votes_t));
+    if (!votes) {
+        json_object_put(root);
+        return -1;
+    }
+
+    json_object *j_val;
+    if (json_object_object_get_ex(root, "post_id", &j_val))
+        strncpy(votes->post_id, json_object_get_string(j_val), sizeof(votes->post_id) - 1);
+    if (json_object_object_get_ex(root, "upvote_count", &j_val))
+        votes->upvote_count = json_object_get_int(j_val);
+    if (json_object_object_get_ex(root, "downvote_count", &j_val))
+        votes->downvote_count = json_object_get_int(j_val);
+
+    json_object *j_votes;
+    if (json_object_object_get_ex(root, "votes", &j_votes)) {
+        size_t count = json_object_array_length(j_votes);
+        if (count > 0) {
+            votes->votes = calloc(count, sizeof(dna_feed_vote_t));
+            votes->allocated_count = count;
+
+            for (size_t i = 0; i < count; i++) {
+                json_object *vote_obj = json_object_array_get_idx(j_votes, i);
+                if (!vote_obj) continue;
+
+                if (json_object_object_get_ex(vote_obj, "voter", &j_val))
+                    strncpy(votes->votes[i].voter_fingerprint, json_object_get_string(j_val),
+                            sizeof(votes->votes[i].voter_fingerprint) - 1);
+                if (json_object_object_get_ex(vote_obj, "value", &j_val))
+                    votes->votes[i].vote_value = (int8_t)json_object_get_int(j_val);
+                if (json_object_object_get_ex(vote_obj, "timestamp", &j_val))
+                    votes->votes[i].timestamp = json_object_get_int64(j_val);
+
+                if (json_object_object_get_ex(vote_obj, "signature", &j_val)) {
+                    const char *sig_b64 = json_object_get_string(j_val);
+                    if (sig_b64) {
+                        size_t sig_len = 0;
+                        uint8_t *sig_bytes = base64_decode(sig_b64, &sig_len);
+                        if (sig_bytes && sig_len <= sizeof(votes->votes[i].signature)) {
+                            memcpy(votes->votes[i].signature, sig_bytes, sig_len);
+                            votes->votes[i].signature_len = sig_len;
+                        }
+                        free(sig_bytes);
+                    }
+                }
+
+                votes->vote_count++;
+            }
+        }
+    }
+
+    json_object_put(root);
+    *votes_out = votes;
+    return 0;
+}
+
+/* ============================================================================
+ * Vote Operations
+ * ========================================================================== */
+
+void dna_feed_votes_free(dna_feed_votes_t *votes) {
+    if (!votes) return;
+    free(votes->votes);
+    free(votes);
+}
+
+int8_t dna_feed_get_user_vote(const dna_feed_votes_t *votes, const char *voter_fingerprint) {
+    if (!votes || !voter_fingerprint) return 0;
+
+    for (size_t i = 0; i < votes->vote_count; i++) {
+        if (strcmp(votes->votes[i].voter_fingerprint, voter_fingerprint) == 0) {
+            return votes->votes[i].vote_value;
+        }
+    }
+    return 0;
+}
+
+int dna_feed_verify_vote_signature(const dna_feed_vote_t *vote,
+                                   const char *post_id,
+                                   const uint8_t *public_key) {
+    if (!vote || !post_id || !public_key || vote->signature_len == 0) return -1;
+
+    /* Build signed data: post_id || vote_value || timestamp */
+    size_t post_id_len = strlen(post_id);
+    size_t data_len = post_id_len + sizeof(int8_t) + sizeof(uint64_t);
+    uint8_t *data = malloc(data_len);
+    if (!data) return -1;
+
+    memcpy(data, post_id, post_id_len);
+    data[post_id_len] = (uint8_t)vote->vote_value;
+    uint64_t ts_net = htonll_vote(vote->timestamp);
+    memcpy(data + post_id_len + 1, &ts_net, sizeof(uint64_t));
+
+    int ret = pqcrystals_dilithium5_ref_verify(vote->signature, vote->signature_len,
+                                                data, data_len, NULL, 0, public_key);
+    free(data);
+    return (ret == 0) ? 0 : -1;
+}
+
+int dna_feed_votes_get(dht_context_t *dht_ctx, const char *post_id, dna_feed_votes_t **votes_out) {
+    if (!dht_ctx || !post_id || !votes_out) return -1;
+
+    char dht_key[65];
+    if (dna_feed_get_votes_key(post_id, dht_key) != 0) return -1;
+
+    printf("[DNA_FEED] Fetching votes for post %s...\n", post_id);
+
+    uint8_t *value = NULL;
+    size_t value_len = 0;
+    int ret = dht_get(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key), &value, &value_len);
+
+    if (ret != 0 || !value || value_len == 0) {
+        /* No votes yet - create empty structure */
+        dna_feed_votes_t *votes = calloc(1, sizeof(dna_feed_votes_t));
+        if (!votes) return -1;
+        strncpy(votes->post_id, post_id, sizeof(votes->post_id) - 1);
+        *votes_out = votes;
+        return -2;
+    }
+
+    char *json_str = malloc(value_len + 1);
+    if (!json_str) {
+        free(value);
+        return -1;
+    }
+    memcpy(json_str, value, value_len);
+    json_str[value_len] = '\0';
+    free(value);
+
+    ret = votes_from_json(json_str, votes_out);
+    free(json_str);
+
+    if (ret == 0) {
+        printf("[DNA_FEED] Loaded %zu votes (up=%d, down=%d)\n",
+               (*votes_out)->vote_count, (*votes_out)->upvote_count, (*votes_out)->downvote_count);
+    }
+
+    return ret;
+}
+
+int dna_feed_vote_cast(dht_context_t *dht_ctx,
+                       const char *post_id,
+                       const char *voter_fingerprint,
+                       int8_t vote_value,
+                       const uint8_t *private_key) {
+    if (!dht_ctx || !post_id || !voter_fingerprint || !private_key) return -1;
+
+    /* Validate vote value */
+    if (vote_value != 1 && vote_value != -1) {
+        fprintf(stderr, "[DNA_FEED] Invalid vote value (must be +1 or -1)\n");
+        return -1;
+    }
+
+    /* Load existing votes */
+    dna_feed_votes_t *votes = NULL;
+    int ret = dna_feed_votes_get(dht_ctx, post_id, &votes);
+    if (ret == -1) return -1;  /* Error */
+
+    /* Check if user already voted */
+    if (dna_feed_get_user_vote(votes, voter_fingerprint) != 0) {
+        fprintf(stderr, "[DNA_FEED] User already voted on this post\n");
+        dna_feed_votes_free(votes);
+        return -2;
+    }
+
+    /* Create new vote */
+    dna_feed_vote_t new_vote = {0};
+    strncpy(new_vote.voter_fingerprint, voter_fingerprint, sizeof(new_vote.voter_fingerprint) - 1);
+    new_vote.vote_value = vote_value;
+    new_vote.timestamp = (uint64_t)time(NULL);
+
+    /* Sign vote: post_id || vote_value || timestamp */
+    size_t post_id_len = strlen(post_id);
+    size_t data_len = post_id_len + sizeof(int8_t) + sizeof(uint64_t);
+    uint8_t *sign_data = malloc(data_len);
+    if (!sign_data) {
+        dna_feed_votes_free(votes);
+        return -1;
+    }
+
+    memcpy(sign_data, post_id, post_id_len);
+    sign_data[post_id_len] = (uint8_t)vote_value;
+    uint64_t ts_net = htonll_vote(new_vote.timestamp);
+    memcpy(sign_data + post_id_len + 1, &ts_net, sizeof(uint64_t));
+
+    size_t sig_len = 0;
+    ret = pqcrystals_dilithium5_ref_signature(new_vote.signature, &sig_len,
+                                               sign_data, data_len,
+                                               NULL, 0, private_key);
+    free(sign_data);
+
+    if (ret != 0) {
+        fprintf(stderr, "[DNA_FEED] Failed to sign vote\n");
+        dna_feed_votes_free(votes);
+        return -1;
+    }
+    new_vote.signature_len = sig_len;
+
+    /* Add vote to structure */
+    size_t new_count = votes->vote_count + 1;
+    dna_feed_vote_t *new_votes = realloc(votes->votes, new_count * sizeof(dna_feed_vote_t));
+    if (!new_votes) {
+        dna_feed_votes_free(votes);
+        return -1;
+    }
+
+    votes->votes = new_votes;
+    votes->votes[votes->vote_count] = new_vote;
+    votes->vote_count = new_count;
+    votes->allocated_count = new_count;
+
+    /* Update counts */
+    if (vote_value == 1) {
+        votes->upvote_count++;
+    } else {
+        votes->downvote_count++;
+    }
+
+    /* Serialize and publish */
+    char *json_data = NULL;
+    if (votes_to_json(votes, &json_data) != 0) {
+        dna_feed_votes_free(votes);
+        return -1;
+    }
+
+    char dht_key[65];
+    if (dna_feed_get_votes_key(post_id, dht_key) != 0) {
+        free(json_data);
+        dna_feed_votes_free(votes);
+        return -1;
+    }
+
+    printf("[DNA_FEED] Publishing vote to DHT...\n");
+    ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
+                         (const uint8_t *)json_data, strlen(json_data),
+                         1, DNA_FEED_TTL_SECONDS);
+    free(json_data);
+
+    if (ret != 0) {
+        fprintf(stderr, "[DNA_FEED] Failed to publish vote\n");
+        dna_feed_votes_free(votes);
+        return -1;
+    }
+
+    printf("[DNA_FEED] Successfully cast %s on post %s\n",
+           vote_value == 1 ? "upvote" : "downvote", post_id);
+
+    dna_feed_votes_free(votes);
+    return 0;
+}

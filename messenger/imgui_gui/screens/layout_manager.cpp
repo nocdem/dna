@@ -4,6 +4,7 @@
 #include "chat_screen.h"
 #include "wallet_screen.h"
 #include "settings_screen.h"
+#include "feed_screen.h"
 #include "../ui_helpers.h"
 #include "../font_awesome.h"
 #include "imgui.h"
@@ -40,6 +41,10 @@ void renderMobileLayout(AppState& state) {
             break;
         case VIEW_SETTINGS:
             SettingsScreen::render(state);
+            break;
+        case VIEW_FEED:
+        case VIEW_FEED_CHANNEL:
+            FeedScreen::render(state);
             break;
     }
 
@@ -79,6 +84,10 @@ void renderDesktopLayout(AppState& state,
         case VIEW_SETTINGS:
             SettingsScreen::render(state);
             break;
+        case VIEW_FEED:
+        case VIEW_FEED_CHANNEL:
+            FeedScreen::render(state);
+            break;
     }
 
     ImGui::EndChild();
@@ -87,34 +96,42 @@ void renderDesktopLayout(AppState& state,
 
 void renderBottomNavBar(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
-    float btn_width = io.DisplaySize.x / 4.0f;
+    float btn_width = io.DisplaySize.x / 5.0f;  // 5 buttons now
 
     // Show current identity name centered above nav bar
     if (!state.current_identity.empty()) {
         ImGui::Spacing();
-        
+
         // Get display name from cache, or use shortened fingerprint
         std::string display_name = state.current_identity.substr(0, 10) + "...";
         auto it = state.identity_name_cache.find(state.current_identity);
         if (it != state.identity_name_cache.end()) {
             display_name = it->second;
         }
-        
+
         // Center the identity name
         float text_width = ImGui::CalcTextSize(display_name.c_str()).x;
         float center_x = (io.DisplaySize.x - text_width) * 0.5f;
         ImGui::SetCursorPosX(center_x);
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", display_name.c_str());
-        
+
         ImGui::Spacing();
     }
 
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 0.0f);
     ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
 
-    // Contacts button
-    if (ThemedButton(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60), state.current_view == VIEW_CONTACTS)) {
+    // Contacts/Chats button
+    if (ThemedButton(ICON_FA_COMMENTS "\nChats", ImVec2(btn_width, 60), state.current_view == VIEW_CONTACTS || state.current_view == VIEW_CHAT)) {
         state.current_view = VIEW_CONTACTS;
+    }
+
+    ImGui::SameLine();
+
+    // Feed button (new!)
+    if (ThemedButton(ICON_FA_NEWSPAPER "\nFeed", ImVec2(btn_width, 60), state.current_view == VIEW_FEED || state.current_view == VIEW_FEED_CHANNEL)) {
+        state.current_view = VIEW_FEED;
+        state.selected_contact = -1;
     }
 
     ImGui::SameLine();

@@ -111,6 +111,15 @@ AppState::AppState() {
     show_group_invitation_dialog = false;
     selected_invitation_index = -1;
     invitation_action_in_progress = false;
+
+    // Initialize feed state (Phase 7: Public Feed)
+    selected_feed_channel = -1;
+    feed_loading = false;
+    memset(feed_post_input, 0, sizeof(feed_post_input));
+    show_create_channel_dialog = false;
+    create_channel_in_progress = false;
+    memset(create_channel_name, 0, sizeof(create_channel_name));
+    memset(create_channel_desc, 0, sizeof(create_channel_desc));
 }
 
 void AppState::scanIdentities() {

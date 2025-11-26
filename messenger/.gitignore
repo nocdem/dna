@@ -116,6 +116,8 @@ temp/
 Thumbs.db
 
 # Note: CLAUDE.md and docs/ are now tracked for team collaboration
+# Security audit (internal only, not for public repo)
+docs/SECURITY_AUDIT.md
 
 # Planning docs (completed, not needed in repo)
 *_PLAN.md

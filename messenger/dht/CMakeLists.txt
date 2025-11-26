@@ -33,6 +33,9 @@ if(WIN32)
         client/dna_profile.c
         client/dna_message_wall.c
         client/dna_wall_votes.c
+        client/dna_feed_channels.c
+        client/dna_feed_posts.c
+        client/dna_feed_votes.c
         # Keyserver modules
         keyserver/keyserver_helpers.c
         keyserver/keyserver_publish.c
@@ -70,6 +73,9 @@ else()
         client/dna_profile.c
         client/dna_message_wall.c
         client/dna_wall_votes.c
+        client/dna_feed_channels.c
+        client/dna_feed_posts.c
+        client/dna_feed_votes.c
         # Keyserver modules
         keyserver/keyserver_helpers.c
         keyserver/keyserver_publish.c
