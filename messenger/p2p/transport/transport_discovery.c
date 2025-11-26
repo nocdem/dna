@@ -316,17 +316,20 @@ int p2p_send_message(
     // FIX: Send via existing ICE connection (Bug #1 - no more per-message context creation)
     int ice_sent = ice_send(ice_conn->ice_ctx, message, message_len);
     if (ice_sent > 0) {
-        printf("[P2P] [TIER 2] ✓✓ SUCCESS - Sent %d bytes via ICE (connection cached)!\n", ice_sent);
-        return 0;  // SUCCESS - Tier 2 worked!
+        printf("[P2P] [TIER 2] ✓ Sent %d bytes via ICE (connection cached)\n", ice_sent);
+        // WARNING: ICE/UDP has NO ACK - we don't know if peer received it!
+        // Fall through to DHT queue as backup to ensure delivery
+        printf("[P2P] [TIER 2] ICE has no ACK - also queueing to DHT for guaranteed delivery\n");
+    } else {
+        printf("[P2P] [TIER 2] Failed to send message via ICE\n");
     }
-
-    printf("[P2P] [TIER 2] Failed to send message via ICE\n");
 
     // ========================================================================
     // TIER 3: DHT Offline Queue (handled by caller - messenger_p2p.c)
+    // Always queue to DHT when ICE is used (no ACK = can't trust delivery)
     // ========================================================================
 
 tier3_fallback:
-    printf("[P2P] [TIER 3] Both direct and ICE failed - falling back to DHT offline queue\n");
+    printf("[P2P] [TIER 3] Queueing to DHT offline queue for guaranteed delivery\n");
     return -1;  // Caller (messenger_p2p.c) will queue to DHT offline storage
 }
