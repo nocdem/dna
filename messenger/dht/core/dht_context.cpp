@@ -1184,7 +1184,7 @@ extern "C" int dht_get_node_id(dht_context_t *ctx, char *node_id_out) {
 
     try {
         // Get the node's public key from OpenDHT
-        auto node_id = ctx->runner.getId();
+        auto node_id = ctx->runner.getPublicKey()->getLongId();
 
         // Convert to hex string
         std::string id_hex = node_id.toString();
