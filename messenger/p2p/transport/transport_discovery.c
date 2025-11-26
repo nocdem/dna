@@ -200,10 +200,21 @@ int p2p_send_message(
         char ips_copy[64];
         snprintf(ips_copy, sizeof(ips_copy), "%s", peer_info.ip);
 
+        // Get our own IPs to avoid self-connection
+        char my_ips[256] = {0};
+        get_external_ip(my_ips, sizeof(my_ips));
+
         char *ip_token = strtok(ips_copy, ",");
         while (ip_token) {
             // Trim whitespace
             while (*ip_token == ' ') ip_token++;
+
+            // Skip self-connection (same IP + same port = our own listener)
+            if (peer_info.port == ctx->config.listen_port && strstr(my_ips, ip_token)) {
+                printf("[P2P] [TIER 1] Skipping %s:%d (self-connection)\n", ip_token, peer_info.port);
+                ip_token = strtok(NULL, ",");
+                continue;
+            }
 
             printf("[P2P] [TIER 1] Trying IP: %s:%d...\n", ip_token, peer_info.port);
 
@@ -292,8 +303,6 @@ int p2p_send_message(
         goto tier3_fallback;
     }
 
-    printf("[P2P] [TIER 2] Attempting ICE NAT traversal (persistent connections)...\n");
-
     // Compute peer fingerprint (hex string) from public key hash
     uint8_t peer_dht_key[64];  // SHA3-512 = 64 bytes
     sha3_512_hash(peer_pubkey, 2592, peer_dht_key);  // Dilithium5 public key size
@@ -304,7 +313,33 @@ int p2p_send_message(
     }
     peer_fingerprint_hex[128] = '\0';
 
-    // FIX: Find or create ICE connection (reuse existing, Bug #1 #3)
+    // OPTIMIZATION: Skip ICE for offline peers (no point in 10s timeout)
+    // But still try if we have an existing cached connection
+    if (tier1_lookup_success && !peer_info.is_online) {
+        // Check for existing cached ICE connection first
+        pthread_mutex_lock(&ctx->connections_mutex);
+        p2p_connection_t *cached_conn = NULL;
+        for (size_t i = 0; i < 256; i++) {
+            if (ctx->connections[i] &&
+                ctx->connections[i]->type == CONNECTION_TYPE_ICE &&
+                ctx->connections[i]->active &&
+                strcmp(ctx->connections[i]->peer_fingerprint, peer_fingerprint_hex) == 0) {
+                cached_conn = ctx->connections[i];
+                break;
+            }
+        }
+        pthread_mutex_unlock(&ctx->connections_mutex);
+
+        if (!cached_conn) {
+            printf("[P2P] [TIER 2] Skipped - peer offline, no cached ICE connection\n");
+            goto tier3_fallback;
+        }
+        printf("[P2P] [TIER 2] Peer offline but have cached ICE connection, trying it...\n");
+    } else {
+        printf("[P2P] [TIER 2] Attempting ICE NAT traversal (persistent connections)...\n");
+    }
+
+    // Find or create ICE connection (reuse existing, create new only if peer online)
     p2p_connection_t *ice_conn = ice_get_or_create_connection(ctx, peer_pubkey, peer_fingerprint_hex);
     if (!ice_conn) {
         printf("[P2P] [TIER 2] Failed to establish ICE connection\n");
@@ -313,20 +348,34 @@ int p2p_send_message(
 
     printf("[P2P] [TIER 2] ✓ Using ICE connection to peer %.32s...\n", peer_fingerprint_hex);
 
-    // FIX: Send via existing ICE connection (Bug #1 - no more per-message context creation)
+    // Send via existing ICE connection and wait for ACK
     int ice_sent = ice_send(ice_conn->ice_ctx, message, message_len);
     if (ice_sent > 0) {
-        printf("[P2P] [TIER 2] ✓✓ SUCCESS - Sent %d bytes via ICE (connection cached)!\n", ice_sent);
-        return 0;  // SUCCESS - Tier 2 worked!
-    }
+        printf("[P2P] [TIER 2] ✓ Sent %d bytes via ICE, waiting for ACK...\n", ice_sent);
 
-    printf("[P2P] [TIER 2] Failed to send message via ICE\n");
+        // Wait for ACK (2 second timeout)
+        uint8_t ack_buf[1];
+        int ack_result = ice_recv_timeout(ice_conn->ice_ctx, ack_buf, 1, 2000);
+
+        if (ack_result == 1 && ack_buf[0] == 0x01) {
+            printf("[P2P] [TIER 2] ✓✓ SUCCESS - ACK received via ICE!\n");
+            return 0;  // SUCCESS - Tier 2 worked!
+        } else if (ack_result > 0) {
+            // Got data but not ACK - might be a message from peer
+            printf("[P2P] [TIER 2] Received %d bytes but not ACK (0x%02x)\n", ack_result, ack_buf[0]);
+        } else {
+            printf("[P2P] [TIER 2] No ACK received (timeout or error)\n");
+        }
+    } else {
+        printf("[P2P] [TIER 2] Failed to send message via ICE\n");
+    }
 
     // ========================================================================
     // TIER 3: DHT Offline Queue (handled by caller - messenger_p2p.c)
+    // Always queue to DHT when ICE is used (no ACK = can't trust delivery)
     // ========================================================================
 
 tier3_fallback:
-    printf("[P2P] [TIER 3] Both direct and ICE failed - falling back to DHT offline queue\n");
+    printf("[P2P] [TIER 3] Queueing to DHT offline queue for guaranteed delivery\n");
     return -1;  // Caller (messenger_p2p.c) will queue to DHT offline storage
 }

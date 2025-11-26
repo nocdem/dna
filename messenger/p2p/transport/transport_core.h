@@ -78,6 +78,9 @@ struct p2p_connection {
     pthread_t recv_thread;              // Receive thread
     bool active;                        // Connection active
 
+    // Back-pointer to transport (for callback invocation in recv thread)
+    struct p2p_transport *transport;    // Parent transport context
+
     // TCP-specific fields (used when type == TCP)
     int sockfd;                         // TCP socket
     char peer_ip[64];                   // Peer IP address
