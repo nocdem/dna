@@ -231,17 +231,17 @@ void AppState::loadIdentity(const std::string& identity) {
         return strcmp(a.name.c_str(), b.name.c_str()) < 0; // Then alphabetically
     });
 
-    // Mock message history for first contact
-    contact_messages[0].push_back({contacts[0].name, "Hey! How are you?", "Today 10:30 AM", false});
-    contact_messages[0].push_back({"Me", "I'm good! Working on DNA Messenger", "Today 10:32 AM", true});
-    contact_messages[0].push_back({contacts[0].name, "Nice! Post-quantum crypto is the future", "Today 10:33 AM", false});
-    contact_messages[0].push_back({"Me", "Absolutely! Kyber1024 + Dilithium5", "Today 10:35 AM", true});
-    contact_messages[0].push_back({contacts[0].name, "Can't wait to try it out!", "Today 10:36 AM", false});
+    // Mock message history for first contact (use address as key)
+    contact_messages[contacts[0].address].push_back({contacts[0].name, "Hey! How are you?", "Today 10:30 AM", false});
+    contact_messages[contacts[0].address].push_back({"Me", "I'm good! Working on DNA Messenger", "Today 10:32 AM", true});
+    contact_messages[contacts[0].address].push_back({contacts[0].name, "Nice! Post-quantum crypto is the future", "Today 10:33 AM", false});
+    contact_messages[contacts[0].address].push_back({"Me", "Absolutely! Kyber1024 + Dilithium5", "Today 10:35 AM", true});
+    contact_messages[contacts[0].address].push_back({contacts[0].name, "Can't wait to try it out!", "Today 10:36 AM", false});
 
-    // Mock message history for second contact
-    contact_messages[1].push_back({contacts[1].name, "Are you available tomorrow?", "Yesterday 3:45 PM", false});
-    contact_messages[1].push_back({"Me", "Yes, what's up?", "Yesterday 4:12 PM", true});
-    contact_messages[1].push_back({contacts[1].name, "Let's discuss the new features", "Yesterday 4:15 PM", false});
+    // Mock message history for second contact (use address as key)
+    contact_messages[contacts[1].address].push_back({contacts[1].name, "Are you available tomorrow?", "Yesterday 3:45 PM", false});
+    contact_messages[contacts[1].address].push_back({"Me", "Yes, what's up?", "Yesterday 4:12 PM", true});
+    contact_messages[contacts[1].address].push_back({contacts[1].name, "Let's discuss the new features", "Yesterday 4:15 PM", false});
 
     printf("[SKETCH MODE] Loaded %zu mock contacts (sorted: online first)\n", contacts.size());
 

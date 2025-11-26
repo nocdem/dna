@@ -111,7 +111,7 @@ public:
     std::vector<Contact> contacts;
     std::vector<Group> groups;                        // User's groups
     std::vector<GroupInvitation> pending_invitations; // Pending group invitations
-    std::map<int, std::vector<Message>> contact_messages;
+    std::map<std::string, std::vector<Message>> contact_messages;  // Keyed by fingerprint for persistence across contact list changes
     std::map<int, std::vector<Message>> group_messages;  // Phase 6.2: Group messages (indexed by group index)
     mutable std::mutex messages_mutex;  // Protect contact_messages and group_messages from concurrent access
     char message_input[16384]; // 16KB for long messages

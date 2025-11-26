@@ -427,20 +427,20 @@ void loadMessagesForContact(AppState& state, int contact_index) {
         return;
     }
 
-    // Check if messages are already cached
-    if (!state.contact_messages[contact_index].empty()) {
-        printf("[Messages] Using cached messages for contact %d (%zu messages)\n",
-               contact_index, state.contact_messages[contact_index].size());
+    // Check if messages are already cached (use fingerprint as key)
+    std::string contact_address = contact.address;
+    if (!state.contact_messages[contact_address].empty()) {
+        printf("[Messages] Using cached messages for contact %s (%zu messages)\n",
+               contact_address.c_str(), state.contact_messages[contact_address].size());
         return;  // Already loaded, use cache!
     }
 
     // Copy data for async task
-    std::string contact_address = contact.address;
     std::string contact_name = contact.name;
     std::string current_identity = state.current_identity;
 
-    // Load messages asynchronously
-    state.message_load_task.start([&state, ctx, contact_index, contact_address, contact_name, current_identity](AsyncTask* task) {
+    // Load messages asynchronously (capture fingerprint, not index)
+    state.message_load_task.start([&state, ctx, contact_address, contact_name, current_identity](AsyncTask* task) {
         printf("[Messages] Loading messages for contact: %s (%s)\n",
                contact_name.c_str(), contact_address.c_str());
 
@@ -530,7 +530,7 @@ void loadMessagesForContact(AppState& state, int contact_index) {
             messenger_free_messages(messages, count);
 
             // Atomic swap: replace UI vector in one operation (FAST!)
-            state.contact_messages[contact_index] = std::move(loaded_messages);
+            state.contact_messages[contact_address] = std::move(loaded_messages);
 
             printf("[Messages] Processed %d messages for display\n", count);
         } else {

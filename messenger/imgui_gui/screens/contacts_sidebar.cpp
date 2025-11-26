@@ -74,7 +74,7 @@ void renderContactsList(AppState& state) {
             if (ImGui::MenuItem(ICON_FA_BROOM " Clear messages")) {
                 {
                     std::lock_guard<std::mutex> lock(state.messages_mutex);
-                    state.contact_messages[i].clear();
+                    state.contact_messages[state.contacts[i].address].clear();
                 }
                 printf("[Context Menu] Cleared messages for contact: %s\n",
                        state.contacts[i].name.c_str());
@@ -94,9 +94,11 @@ void renderContactsList(AppState& state) {
                         }
                     }
 
+                    // Clear messages from memory (must erase by fingerprint before removing contact)
+                    std::string fingerprint = state.contacts[i].address;
                     {
                         std::lock_guard<std::mutex> lock(state.messages_mutex);
-                        state.contact_messages.erase(i);
+                        state.contact_messages.erase(fingerprint);
                     }
                     state.contacts.erase(state.contacts.begin() + i);
                     if (state.selected_contact == (int)i) {
@@ -486,7 +488,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
                 // Clear messages for this contact from memory
                 {
                     std::lock_guard<std::mutex> lock(state.messages_mutex);
-                    state.contact_messages[i].clear();
+                    state.contact_messages[state.contacts[i].address].clear();
                 }
                 printf("[Context Menu] Cleared messages for contact: %s\n",
                        state.contacts[i].name.c_str());
@@ -506,10 +508,11 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
                         }
                     }
 
-                    // Clear messages from memory
+                    // Clear messages from memory (must erase by fingerprint before removing contact)
+                    std::string fingerprint = state.contacts[i].address;
                     {
                         std::lock_guard<std::mutex> lock(state.messages_mutex);
-                        state.contact_messages.erase(i);
+                        state.contact_messages.erase(fingerprint);
                     }
                     // Remove from contacts list
                     state.contacts.erase(state.contacts.begin() + i);

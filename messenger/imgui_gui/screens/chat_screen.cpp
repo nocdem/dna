@@ -390,7 +390,8 @@ void retryMessage(AppState& state, int contact_idx, int msg_idx) {
     std::string recipient;
     {
         std::lock_guard<std::mutex> lock(state.messages_mutex);
-        std::vector<Message>& messages = state.contact_messages[contact_idx];
+        recipient = state.contacts[contact_idx].address;
+        std::vector<Message>& messages = state.contact_messages[recipient];
 
         if (msg_idx < 0 || msg_idx >= (int)messages.size()) {
             printf("[Retry] ERROR: Invalid message index\n");
@@ -408,22 +409,21 @@ void retryMessage(AppState& state, int contact_idx, int msg_idx) {
 
         // Copy data for async task
         message_copy = msg.content;
-        recipient = state.contacts[contact_idx].address;
     }
 
     printf("[Retry] Retrying message to %s...\n", recipient.c_str());
 
-    // Enqueue retry task
-    state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, contact_idx, msg_idx]() {
+    // Enqueue retry task (capture fingerprint, not index)
+    state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, msg_idx]() {
         const char* recipients[] = { recipient.c_str() };
         int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0, MESSAGE_TYPE_CHAT);
 
         // Update status with mutex protection
         {
             std::lock_guard<std::mutex> lock(state.messages_mutex);
-            if (msg_idx >= 0 && msg_idx < (int)state.contact_messages[contact_idx].size()) {
-                state.contact_messages[contact_idx][msg_idx].status =
-                    (result == 0) ? STATUS_SENT : STATUS_FAILED;
+            auto& msgs = state.contact_messages[recipient];
+            if (msg_idx >= 0 && msg_idx < (int)msgs.size()) {
+                msgs[msg_idx].status = (result == 0) ? STATUS_SENT : STATUS_FAILED;
             }
         }
 
@@ -562,7 +562,7 @@ void render(AppState& state) {
     std::vector<Message> messages_copy;
     {
         std::lock_guard<std::mutex> lock(state.messages_mutex);
-        messages_copy = state.contact_messages[state.selected_contact];
+        messages_copy = state.contact_messages[contact.address];
     }
 
     // Render all messages (no clipper for variable-height items)
@@ -890,13 +890,12 @@ void render(AppState& state) {
                         // Copy data for async task
                         std::string message_copy = std::string(state.message_input);
                         std::string recipient = state.contacts[state.selected_contact].address;
-                        int contact_idx = state.selected_contact;
 
                         // Get message index BEFORE appending (important for queue)
                         int msg_idx;
                         {
                             std::lock_guard<std::mutex> lock(state.messages_mutex);
-                            msg_idx = state.contact_messages[contact_idx].size();
+                            msg_idx = state.contact_messages[recipient].size();
 
                             // Optimistic UI update: append pending message immediately
                             Message pending_msg;
@@ -905,7 +904,7 @@ void render(AppState& state) {
                             pending_msg.timestamp = "now";
                             pending_msg.is_outgoing = true;
                             pending_msg.status = STATUS_PENDING;
-                            state.contact_messages[contact_idx].push_back(pending_msg);
+                            state.contact_messages[recipient].push_back(pending_msg);
                         }
 
                         // Clear input immediately for better UX
@@ -913,17 +912,17 @@ void render(AppState& state) {
                         state.should_focus_input = true;
                         state.should_scroll_to_bottom = true;  // Force scroll to bottom after sending
 
-                        // Enqueue message send task
-                        state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, contact_idx, msg_idx]() {
+                        // Enqueue message send task (capture fingerprint, not index)
+                        state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, msg_idx]() {
                             const char* recipients[] = { recipient.c_str() };
                             int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0, MESSAGE_TYPE_CHAT);
 
                             // Update status with mutex protection
                             {
                                 std::lock_guard<std::mutex> lock(state.messages_mutex);
-                                if (msg_idx < (int)state.contact_messages[contact_idx].size()) {
-                                    state.contact_messages[contact_idx][msg_idx].status =
-                                        (result == 0) ? STATUS_SENT : STATUS_FAILED;
+                                auto& msgs = state.contact_messages[recipient];
+                                if (msg_idx < (int)msgs.size()) {
+                                    msgs[msg_idx].status = (result == 0) ? STATUS_SENT : STATUS_FAILED;
                                 }
                             }
 
@@ -1167,13 +1166,12 @@ void render(AppState& state) {
                         // Copy data for async task
                         std::string message_copy = std::string(state.message_input);
                         std::string recipient = state.contacts[state.selected_contact].address;
-                        int contact_idx = state.selected_contact;
 
                         // Get message index BEFORE appending (important for queue)
                         int msg_idx;
                         {
                             std::lock_guard<std::mutex> lock(state.messages_mutex);
-                            msg_idx = state.contact_messages[contact_idx].size();
+                            msg_idx = state.contact_messages[recipient].size();
 
                             // Optimistic UI update: append pending message immediately
                             Message pending_msg;
@@ -1182,7 +1180,7 @@ void render(AppState& state) {
                             pending_msg.timestamp = "now";
                             pending_msg.is_outgoing = true;
                             pending_msg.status = STATUS_PENDING;
-                            state.contact_messages[contact_idx].push_back(pending_msg);
+                            state.contact_messages[recipient].push_back(pending_msg);
                         }
 
                         // Clear input immediately for better UX
@@ -1190,17 +1188,17 @@ void render(AppState& state) {
                         state.should_focus_input = true;
                         state.should_scroll_to_bottom = true;  // Force scroll to bottom after sending
 
-                        // Enqueue message send task
-                        state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, contact_idx, msg_idx]() {
+                        // Enqueue message send task (capture fingerprint, not index)
+                        state.message_send_queue.enqueue([&state, ctx, message_copy, recipient, msg_idx]() {
                             const char* recipients[] = { recipient.c_str() };
                             int result = messenger_send_message(ctx, recipients, 1, message_copy.c_str(), 0, MESSAGE_TYPE_CHAT);
 
                             // Update status with mutex protection
                             {
                                 std::lock_guard<std::mutex> lock(state.messages_mutex);
-                                if (msg_idx < (int)state.contact_messages[contact_idx].size()) {
-                                    state.contact_messages[contact_idx][msg_idx].status =
-                                        (result == 0) ? STATUS_SENT : STATUS_FAILED;
+                                auto& msgs = state.contact_messages[recipient];
+                                if (msg_idx < (int)msgs.size()) {
+                                    msgs[msg_idx].status = (result == 0) ? STATUS_SENT : STATUS_FAILED;
                                 }
                             }
 
