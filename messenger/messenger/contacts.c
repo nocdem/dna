@@ -214,25 +214,30 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    // SAFETY CHECK 3: Prevent deletion of all contacts
-    // If local has ANY contacts but DHT has 0, abort (likely DHT failure)
-    // No "clear all" feature exists, so empty DHT is always suspicious
-    if (local_count > 0 && count == 0) {
-        fprintf(stderr, "[MESSENGER] SAFETY: Local has %d contacts but DHT has 0\n", local_count);
-        fprintf(stderr, "[MESSENGER] SAFETY: This indicates DHT failure - keeping local contacts\n");
-        fprintf(stderr, "[MESSENGER] SAFETY: No 'clear all' feature exists\n");
+    // SAFETY CHECK 3: Prevent deletion of contacts
+    // If local has MORE contacts than DHT, abort (DHT is stale or incomplete)
+    // Only sync from DHT if it has MORE or EQUAL contacts
+    if (local_count > 0 && count < (size_t)local_count) {
+        printf("[MESSENGER] SAFETY: Local has %d contacts but DHT has %zu\n", local_count, count);
+        printf("[MESSENGER] SAFETY: DHT appears stale - using MERGE mode instead of REPLACE\n");
+
+        // MERGE mode: only ADD contacts from DHT that don't exist locally
+        size_t added = 0;
+        for (size_t i = 0; i < count; i++) {
+            if (!contacts_db_exists(contacts[i])) {
+                if (contacts_db_add(contacts[i], NULL) == 0) {
+                    added++;
+                    printf("[MESSENGER] MERGE: Added new contact from DHT: %s\n", contacts[i]);
+                }
+            }
+        }
         dht_contactlist_free_contacts(contacts, count);
-        return -1;
+        printf("[MESSENGER] MERGE sync complete: added %zu new contacts from DHT\n", added);
+        return 0;
     }
 
-    // SAFETY CHECK 4: Log normal replacements
-    if (local_count > 0 && (size_t)local_count != count) {
-        printf("[MESSENGER] INFO: Replacing %d local contacts with %zu from DHT\n",
-               local_count, count);
-    }
-
-    // All safety checks passed - proceed with REPLACE
-    printf("[MESSENGER] REPLACE sync: Clearing local contacts...\n");
+    // DHT has equal or more contacts - safe to REPLACE
+    printf("[MESSENGER] REPLACE sync: DHT has %zu contacts (local had %d)\n", count, local_count);
 
     if (contacts_db_clear_all() != 0) {
         fprintf(stderr, "[MESSENGER] Failed to clear local contacts\n");
