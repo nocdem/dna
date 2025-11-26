@@ -292,8 +292,6 @@ int p2p_send_message(
         goto tier3_fallback;
     }
 
-    printf("[P2P] [TIER 2] Attempting ICE NAT traversal (persistent connections)...\n");
-
     // Compute peer fingerprint (hex string) from public key hash
     uint8_t peer_dht_key[64];  // SHA3-512 = 64 bytes
     sha3_512_hash(peer_pubkey, 2592, peer_dht_key);  // Dilithium5 public key size
@@ -304,7 +302,33 @@ int p2p_send_message(
     }
     peer_fingerprint_hex[128] = '\0';
 
-    // FIX: Find or create ICE connection (reuse existing, Bug #1 #3)
+    // OPTIMIZATION: Skip ICE for offline peers (no point in 10s timeout)
+    // But still try if we have an existing cached connection
+    if (tier1_lookup_success && !peer_info.is_online) {
+        // Check for existing cached ICE connection first
+        pthread_mutex_lock(&ctx->connections_mutex);
+        p2p_connection_t *cached_conn = NULL;
+        for (size_t i = 0; i < 256; i++) {
+            if (ctx->connections[i] &&
+                ctx->connections[i]->type == CONNECTION_TYPE_ICE &&
+                ctx->connections[i]->active &&
+                strcmp(ctx->connections[i]->peer_fingerprint, peer_fingerprint_hex) == 0) {
+                cached_conn = ctx->connections[i];
+                break;
+            }
+        }
+        pthread_mutex_unlock(&ctx->connections_mutex);
+
+        if (!cached_conn) {
+            printf("[P2P] [TIER 2] Skipped - peer offline, no cached ICE connection\n");
+            goto tier3_fallback;
+        }
+        printf("[P2P] [TIER 2] Peer offline but have cached ICE connection, trying it...\n");
+    } else {
+        printf("[P2P] [TIER 2] Attempting ICE NAT traversal (persistent connections)...\n");
+    }
+
+    // Find or create ICE connection (reuse existing, create new only if peer online)
     p2p_connection_t *ice_conn = ice_get_or_create_connection(ctx, peer_pubkey, peer_fingerprint_hex);
     if (!ice_conn) {
         printf("[P2P] [TIER 2] Failed to establish ICE connection\n");
