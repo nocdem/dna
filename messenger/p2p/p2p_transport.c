@@ -1,3 +1,5 @@
+#define _GNU_SOURCE  // Required for pthread_timedjoin_np
+
 /**
  * P2P Transport Implementation (FACADE)
  *
@@ -167,10 +169,46 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
     }
 
     printf("[P2P] Stopping transport...\n");
+    ctx->running = false;
 
-    // Shutdown ICE context
+    // Close all peer connections (TCP and ICE)
+    pthread_mutex_lock(&ctx->connections_mutex);
+    for (size_t i = 0; i < 256; i++) {
+        if (ctx->connections[i]) {
+            p2p_connection_t *conn = ctx->connections[i];
+            conn->active = false;
+
+            if (conn->type == CONNECTION_TYPE_TCP) {
+                if (conn->sockfd >= 0) {
+                    close(conn->sockfd);
+                }
+            } else if (conn->type == CONNECTION_TYPE_ICE) {
+                if (conn->ice_ctx) {
+                    printf("[P2P] Shutting down ICE connection to %.16s...\n", conn->peer_fingerprint);
+                    ice_shutdown(conn->ice_ctx);
+                    ice_context_free(conn->ice_ctx);
+                    conn->ice_ctx = NULL;
+                }
+            }
+
+            // Wait for receive thread to finish (with timeout)
+            if (conn->recv_thread) {
+                struct timespec timeout;
+                clock_gettime(CLOCK_REALTIME, &timeout);
+                timeout.tv_sec += 1;  // 1 second timeout
+                pthread_timedjoin_np(conn->recv_thread, NULL, &timeout);
+            }
+
+            free(conn);
+            ctx->connections[i] = NULL;
+        }
+    }
+    ctx->connection_count = 0;
+    pthread_mutex_unlock(&ctx->connections_mutex);
+
+    // Shutdown persistent ICE context
     if (ctx->ice_ready) {
-        printf("[P2P] Shutting down ICE...\n");
+        printf("[P2P] Shutting down persistent ICE...\n");
         pthread_mutex_lock(&ctx->ice_mutex);
         if (ctx->ice_context) {
             ice_shutdown(ctx->ice_context);
@@ -181,7 +219,7 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
         pthread_mutex_unlock(&ctx->ice_mutex);
     }
 
-    // Stop TCP listener and close connections
+    // Stop TCP listener
     tcp_stop_listener(ctx);
 
     // Don't stop DHT - it's a global singleton managed at app level
