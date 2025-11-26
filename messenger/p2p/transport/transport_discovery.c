@@ -200,10 +200,21 @@ int p2p_send_message(
         char ips_copy[64];
         snprintf(ips_copy, sizeof(ips_copy), "%s", peer_info.ip);
 
+        // Get our own IPs to avoid self-connection
+        char my_ips[256] = {0};
+        get_external_ip(my_ips, sizeof(my_ips));
+
         char *ip_token = strtok(ips_copy, ",");
         while (ip_token) {
             // Trim whitespace
             while (*ip_token == ' ') ip_token++;
+
+            // Skip self-connection (same IP + same port = our own listener)
+            if (peer_info.port == ctx->config.listen_port && strstr(my_ips, ip_token)) {
+                printf("[P2P] [TIER 1] Skipping %s:%d (self-connection)\n", ip_token, peer_info.port);
+                ip_token = strtok(NULL, ",");
+                continue;
+            }
 
             printf("[P2P] [TIER 1] Trying IP: %s:%d...\n", ip_token, peer_info.port);
 
