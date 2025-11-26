@@ -111,12 +111,23 @@ static void sortPostsThreaded(std::vector<FeedPost>& posts) {
     std::map<std::string, std::vector<const FeedPost*>> replies_by_parent;
     std::vector<const FeedPost*> top_level;
 
+    // First pass: index all posts by ID
     for (const auto& post : posts) {
         post_by_id[post.post_id] = &post;
+    }
+
+    // Second pass: categorize as top-level or reply
+    // Orphan replies (parent not in list) are treated as top-level
+    for (const auto& post : posts) {
         if (post.reply_to.empty()) {
+            // Top-level post
             top_level.push_back(&post);
-        } else {
+        } else if (post_by_id.find(post.reply_to) != post_by_id.end()) {
+            // Reply with parent in list
             replies_by_parent[post.reply_to].push_back(&post);
+        } else {
+            // Orphan reply (parent not loaded) - treat as top-level
+            top_level.push_back(&post);
         }
     }
 
