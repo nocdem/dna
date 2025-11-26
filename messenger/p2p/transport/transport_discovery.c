@@ -313,13 +313,24 @@ int p2p_send_message(
 
     printf("[P2P] [TIER 2] ✓ Using ICE connection to peer %.32s...\n", peer_fingerprint_hex);
 
-    // FIX: Send via existing ICE connection (Bug #1 - no more per-message context creation)
+    // Send via existing ICE connection and wait for ACK
     int ice_sent = ice_send(ice_conn->ice_ctx, message, message_len);
     if (ice_sent > 0) {
-        printf("[P2P] [TIER 2] ✓ Sent %d bytes via ICE (connection cached)\n", ice_sent);
-        // WARNING: ICE/UDP has NO ACK - we don't know if peer received it!
-        // Fall through to DHT queue as backup to ensure delivery
-        printf("[P2P] [TIER 2] ICE has no ACK - also queueing to DHT for guaranteed delivery\n");
+        printf("[P2P] [TIER 2] ✓ Sent %d bytes via ICE, waiting for ACK...\n", ice_sent);
+
+        // Wait for ACK (2 second timeout)
+        uint8_t ack_buf[1];
+        int ack_result = ice_recv_timeout(ice_conn->ice_ctx, ack_buf, 1, 2000);
+
+        if (ack_result == 1 && ack_buf[0] == 0x01) {
+            printf("[P2P] [TIER 2] ✓✓ SUCCESS - ACK received via ICE!\n");
+            return 0;  // SUCCESS - Tier 2 worked!
+        } else if (ack_result > 0) {
+            // Got data but not ACK - might be a message from peer
+            printf("[P2P] [TIER 2] Received %d bytes but not ACK (0x%02x)\n", ack_result, ack_buf[0]);
+        } else {
+            printf("[P2P] [TIER 2] No ACK received (timeout or error)\n");
+        }
     } else {
         printf("[P2P] [TIER 2] Failed to send message via ICE\n");
     }

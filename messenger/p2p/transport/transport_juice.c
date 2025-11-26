@@ -909,7 +909,7 @@ static p2p_connection_t* ice_find_connection(
 /**
  * ICE connection receive thread
  *
- * Continuously reads messages from ICE connection and invokes callback.
+ * Continuously reads messages from ICE connection, sends ACK, and invokes callback.
  *
  * @param arg: p2p_connection_t pointer
  * @return: NULL
@@ -929,12 +929,38 @@ void* ice_connection_recv_thread(void *arg) {
         int received = ice_recv_timeout(conn->ice_ctx, buffer, sizeof(buffer), 1000);  // 1s timeout
 
         if (received > 0) {
+            // Check if this is an ACK (1 byte, value 0x01) - ignore it
+            if (received == 1 && buffer[0] == 0x01) {
+                // This is an ACK response, not a message - ignore
+                continue;
+            }
+
             printf("[ICE-RECV] ✓ Received %d bytes from peer %.32s...\n",
                    received, conn->peer_fingerprint);
 
-            // TODO: Invoke message callback here (needs access to p2p_transport_t context)
-            // For now, just acknowledge receipt
-            // In production, this would decrypt and pass to messenger layer
+            // Send ACK back to sender (single byte 0x01)
+            uint8_t ack = 0x01;
+            int ack_sent = ice_send(conn->ice_ctx, &ack, 1);
+            if (ack_sent == 1) {
+                printf("[ICE-RECV] ✓ Sent ACK to peer\n");
+            } else {
+                printf("[ICE-RECV] Failed to send ACK (peer may retry or use DHT)\n");
+            }
+
+            // Invoke message callback via transport back-pointer
+            if (conn->transport && conn->transport->message_callback) {
+                pthread_mutex_lock(&conn->transport->callback_mutex);
+                conn->transport->message_callback(
+                    conn->peer_pubkey,  // Sender's public key
+                    buffer,
+                    received,
+                    conn->transport->callback_user_data
+                );
+                pthread_mutex_unlock(&conn->transport->callback_mutex);
+                printf("[ICE-RECV] ✓ Message delivered to callback\n");
+            } else {
+                printf("[ICE-RECV] Warning: No message callback registered\n");
+            }
         } else if (received < 0) {
             fprintf(stderr, "[ICE-RECV] Receive error, closing connection\n");
             conn->active = false;
@@ -1025,6 +1051,7 @@ static p2p_connection_t* ice_create_connection(
 
     // Initialize connection
     conn->type = CONNECTION_TYPE_ICE;
+    conn->transport = ctx;  // Back-pointer for callback invocation
     memcpy(conn->peer_pubkey, peer_pubkey, 2592);
     strncpy(conn->peer_fingerprint, peer_fingerprint, sizeof(conn->peer_fingerprint) - 1);
     conn->peer_fingerprint[128] = '\0';
