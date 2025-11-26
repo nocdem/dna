@@ -10,6 +10,7 @@
  */
 
 #include "dht_groups.h"
+#include "dht_chunked.h"
 #include "../core/dht_context.h"
 #include "../../crypto/utils/qgp_sha3.h"
 #include "../../crypto/utils/qgp_random.h"
@@ -18,7 +19,6 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
-#include <openssl/evp.h>
 
 // Global database connection for group cache
 static sqlite3 *g_db = NULL;
@@ -72,20 +72,9 @@ static int generate_uuid_v4(char *uuid_out) {
     return 0;  // Success
 }
 
-// Helper: Compute SHA3-512 hash for DHT key (Category 5)
-static void compute_dht_key(const char *group_uuid, char *key_out) {
-    unsigned char hash[64];  // SHA3-512 = 64 bytes
-    if (qgp_sha3_512((unsigned char*)group_uuid, strlen(group_uuid), hash) != 0) {
-        // Fallback: clear output
-        key_out[0] = '\0';
-        return;
-    }
-
-    // Convert to hex string (128 chars)
-    for (int i = 0; i < 64; i++) {
-        sprintf(key_out + (i * 2), "%02x", hash[i]);
-    }
-    key_out[128] = '\0';
+// Helper: Create base key for chunked layer (handles hashing internally)
+static void make_base_key(const char *group_uuid, char *key_out, size_t key_out_size) {
+    snprintf(key_out, key_out_size, "dht:group:%s", group_uuid);
 }
 
 // Helper: Serialize metadata to JSON string
@@ -299,15 +288,14 @@ int dht_groups_create(
         return -1;
     }
 
-    // Compute DHT key
-    char dht_key[129];
-    compute_dht_key(group_uuid, dht_key);
+    // Create base key for chunked layer
+    char base_key[256];
+    make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    // Store in DHT (signed, 30-day TTL for group metadata, value_id=1 for replacement)
-    unsigned int ttl_30days = 30 * 24 * 3600;
-    int ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json), 1, ttl_30days);
-    if (ret != 0) {
-        fprintf(stderr, "[DHT GROUPS] Failed to store in DHT\n");
+    // Store in DHT via chunked layer (30-day TTL for group metadata)
+    int ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT GROUPS] Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
         free(json);
         for (uint32_t i = 0; i < meta.member_count; i++) free(meta.members[i]);
         free(meta.members);
@@ -360,16 +348,16 @@ int dht_groups_get(
         return -1;
     }
 
-    // Compute DHT key
-    char dht_key[129];
-    compute_dht_key(group_uuid, dht_key);
+    // Create base key for chunked layer
+    char base_key[256];
+    make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    // Retrieve from DHT
+    // Retrieve from DHT via chunked layer
     uint8_t *value = NULL;
     size_t value_len = 0;
-    int ret = dht_get(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), &value, &value_len);
-    if (ret != 0 || !value || value_len == 0) {
-        fprintf(stderr, "[DHT GROUPS] Group not found in DHT: %s\n", group_uuid);
+    int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
+    if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
+        fprintf(stderr, "[DHT GROUPS] Group not found in DHT: %s (%s)\n", group_uuid, dht_chunked_strerror(ret));
         if (value) free(value);
         return -2;  // Not found
     }
@@ -450,20 +438,19 @@ int dht_groups_update(
         return -1;
     }
 
-    char dht_key[129];
-    compute_dht_key(group_uuid, dht_key);
+    char base_key[256];
+    make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    unsigned int ttl_30days = 30 * 24 * 3600;
-    ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json), 1, ttl_30days);
+    ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
     free(json);
     dht_groups_free_metadata(meta);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DHT GROUPS] Failed to update DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT GROUPS] Failed to update DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    printf("[DHT GROUPS] Updated group %s (signed)\n", group_uuid);
+    printf("[DHT GROUPS] Updated group %s\n", group_uuid);
     return 0;
 }
 
@@ -530,20 +517,19 @@ int dht_groups_add_member(
         return -1;
     }
 
-    char dht_key[129];
-    compute_dht_key(group_uuid, dht_key);
+    char base_key[256];
+    make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    unsigned int ttl_30days = 30 * 24 * 3600;
-    ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json), 1, ttl_30days);
+    ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
     free(json);
     dht_groups_free_metadata(meta);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DHT GROUPS] Failed to add member to DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT GROUPS] Failed to add member to DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    printf("[DHT GROUPS] Added member %s to group %s (signed)\n", new_member, group_uuid);
+    printf("[DHT GROUPS] Added member %s to group %s\n", new_member, group_uuid);
     return 0;
 }
 
@@ -605,20 +591,19 @@ int dht_groups_remove_member(
         return -1;
     }
 
-    char dht_key[129];
-    compute_dht_key(group_uuid, dht_key);
+    char base_key[256];
+    make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    unsigned int ttl_30days = 30 * 24 * 3600;
-    ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)json, strlen(json), 1, ttl_30days);
+    ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
     free(json);
     dht_groups_free_metadata(meta);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DHT GROUPS] Failed to remove member from DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT GROUPS] Failed to remove member from DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    printf("[DHT GROUPS] Removed member %s from group %s (signed)\n", member, group_uuid);
+    printf("[DHT GROUPS] Removed member %s from group %s\n", member, group_uuid);
     return 0;
 }
 
@@ -649,17 +634,15 @@ int dht_groups_delete(
 
     dht_groups_free_metadata(meta);
 
-    // Delete from DHT (store empty value)
-    char dht_key[129];
-    compute_dht_key(group_uuid, dht_key);
+    // Delete from DHT via chunked layer
+    char base_key[256];
+    make_base_key(group_uuid, base_key, sizeof(base_key));
 
-    // OpenDHT doesn't have explicit delete, so store a tombstone (signed)
-    const char *tombstone = "{\"deleted\":true}";
-    unsigned int ttl_30days = 30 * 24 * 3600;
-    ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), (uint8_t*)tombstone, strlen(tombstone), 1, ttl_30days);
+    // Chunked layer has explicit delete
+    ret = dht_chunked_delete(dht_ctx, base_key, 0);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DHT GROUPS] Failed to delete from DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT GROUPS] Failed to delete from DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 

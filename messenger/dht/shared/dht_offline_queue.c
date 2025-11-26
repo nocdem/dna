@@ -1,6 +1,6 @@
 #include "dht_offline_queue.h"
+#include "dht_chunked.h"
 #include "../crypto/utils/qgp_sha3.h"
-#include <openssl/evp.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -16,24 +16,25 @@
 #endif
 
 /**
- * SHA3-512 hash helper (Category 5 security)
- * Uses qgp_sha3.h wrapper for consistent hashing
+ * Generate base key for sender's outbox to recipient (Model E)
+ * Chunked layer handles hashing internally
+ *
+ * Key format: sender + ":outbox:" + recipient
+ * Example: "alice_fp:outbox:bob_fp"
  */
-static void sha3_512_hash(const uint8_t *data, size_t len, uint8_t *hash_out) {
-    qgp_sha3_512(data, len, hash_out);
+static void make_outbox_base_key(const char *sender, const char *recipient, char *key_out, size_t key_out_size) {
+    snprintf(key_out, key_out_size, "%s:outbox:%s", sender, recipient);
 }
 
 /**
- * Generate DHT storage key for sender's outbox to recipient (Model E)
- * Uses SHA3-512 for 256-bit quantum security
- *
- * Key format: SHA3-512(sender + ":outbox:" + recipient)
- * Example: SHA3-512("alice_fp:outbox:bob_fp")
+ * Legacy function - kept for API compatibility but now just creates base key
+ * @deprecated Use make_outbox_base_key instead
  */
 void dht_generate_outbox_key(const char *sender, const char *recipient, uint8_t *key_out) {
-    char key_input[2048];  // sender(128) + ":outbox:" + recipient(128) + margin
-    snprintf(key_input, sizeof(key_input), "%s:outbox:%s", sender, recipient);
-    sha3_512_hash((const uint8_t*)key_input, strlen(key_input), key_out);
+    // For backward compatibility, fill with SHA3-512 hash of base key
+    char base_key[512];
+    make_outbox_base_key(sender, recipient, base_key, sizeof(base_key));
+    qgp_sha3_512((const uint8_t*)base_key, strlen(base_key), key_out);
 }
 
 /**
@@ -344,48 +345,29 @@ int dht_queue_message(
     printf("[DHT Queue] Queueing message from %s to %s (%zu bytes, TTL=%u)\n",
            sender, recipient, ciphertext_len, ttl_seconds);
 
-    // Generate sender's outbox key (Model E): SHA3-512(sender + ":outbox:" + recipient) = 64 bytes
-    uint8_t queue_key[64];
-    dht_generate_outbox_key(sender, recipient, queue_key);
+    // Generate sender's outbox base key (Model E)
+    char base_key[512];
+    make_outbox_base_key(sender, recipient, base_key, sizeof(base_key));
 
-    printf("[DHT Queue] Outbox key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
-           queue_key[0], queue_key[1], queue_key[2], queue_key[3],
-           queue_key[4], queue_key[5], queue_key[6], queue_key[7]);
+    printf("[DHT Queue] Outbox base key: %s\n", base_key);
 
-    // 1. Try to retrieve existing queue (use dht_get_all to get latest version)
+    // 1. Try to retrieve existing queue via chunked layer
     uint8_t *existing_data = NULL;
     size_t existing_len = 0;
     dht_offline_message_t *existing_messages = NULL;
     size_t existing_count = 0;
 
-    printf("[DHT Queue] → DHT GET_ALL: Checking existing offline queue\n");
-    uint8_t **all_values = NULL;
-    size_t *all_lengths = NULL;
-    size_t value_count = 0;
+    printf("[DHT Queue] → DHT CHUNKED_FETCH: Checking existing offline queue\n");
 
     clock_gettime(CLOCK_MONOTONIC, &get_start);
-    int get_result = dht_get_all(ctx, queue_key, 64, &all_values, &all_lengths, &value_count);
+    int get_result = dht_chunked_fetch(ctx, base_key, &existing_data, &existing_len);
     struct timespec get_end;
     clock_gettime(CLOCK_MONOTONIC, &get_end);
     long get_ms = (get_end.tv_sec - get_start.tv_sec) * 1000 +
                   (get_end.tv_nsec - get_start.tv_nsec) / 1000000;
-    if (get_result == 0 && value_count > 0) {
-        // Multiple values found - pick the largest one (most recent with most messages)
-        printf("[DHT Queue] Found %zu queue version(s), selecting largest\n", value_count);
-        size_t largest_idx = 0;
-        size_t largest_size = all_lengths[0];
-        for (size_t i = 1; i < value_count; i++) {
-            if (all_lengths[i] > largest_size) {
-                largest_size = all_lengths[i];
-                largest_idx = i;
-            }
-        }
 
-        existing_data = all_values[largest_idx];
-        existing_len = all_lengths[largest_idx];
-
-        printf("[DHT Queue] Selected version %zu/%zu (%zu bytes, get took %ld ms)\n",
-               largest_idx + 1, value_count, existing_len, get_ms);
+    if (get_result == DHT_CHUNK_OK && existing_data && existing_len > 0) {
+        printf("[DHT Queue] Found existing queue (%zu bytes, get took %ld ms)\n", existing_len, get_ms);
 
         clock_gettime(CLOCK_MONOTONIC, &deserialize_start);
         if (dht_deserialize_messages(existing_data, existing_len, &existing_messages, &existing_count) == 0) {
@@ -397,15 +379,7 @@ int dht_queue_message(
                    existing_count, deserialize_ms);
         }
 
-        // Free all values except the one we're using
-        for (size_t i = 0; i < value_count; i++) {
-            if (i != largest_idx) {
-                free(all_values[i]);
-            }
-        }
-        free(all_values);
-        free(all_lengths);
-        free(existing_data);  // Free after deserialize
+        free(existing_data);
     } else {
         printf("[DHT Queue] No existing queue found, creating new (get took %ld ms)\n", get_ms);
     }
@@ -473,11 +447,10 @@ int dht_queue_message(
     printf("[DHT Queue] Serialized queue: %zu messages, %zu bytes (took %ld ms)\n",
            new_count, serialized_len, serialize_ms);
 
-    // 5. Store in DHT using SIGNED put with fixed value ID
-    // Using value_id=1 ensures old queue versions are REPLACED (not accumulated)
-    printf("[DHT Queue] → DHT PUT_SIGNED: Queueing offline message (%zu total in queue)\n", new_count);
+    // 5. Store in DHT via chunked layer (7-day TTL for offline queue)
+    printf("[DHT Queue] → DHT CHUNKED_PUBLISH: Queueing offline message (%zu total in queue)\n", new_count);
     clock_gettime(CLOCK_MONOTONIC, &put_start);
-    int put_result = dht_put_signed(ctx, queue_key, 64, serialized, serialized_len, 1, 0);
+    int put_result = dht_chunked_publish(ctx, base_key, serialized, serialized_len, DHT_CHUNK_TTL_7DAY);
     struct timespec put_end;
     clock_gettime(CLOCK_MONOTONIC, &put_end);
     long put_ms = (put_end.tv_sec - put_start.tv_sec) * 1000 +
@@ -486,8 +459,9 @@ int dht_queue_message(
     free(serialized);
     dht_offline_messages_free(all_messages, new_count);
 
-    if (put_result != 0) {
-        fprintf(stderr, "[DHT Queue] Failed to store queue in DHT (put took %ld ms)\n", put_ms);
+    if (put_result != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT Queue] Failed to store queue in DHT: %s (put took %ld ms)\n",
+                dht_chunked_strerror(put_result), put_ms);
         return -1;
     }
 
@@ -539,31 +513,31 @@ int dht_retrieve_queued_messages_from_contacts(
 
         const char *sender = sender_list[contact_idx];
 
-        // Generate sender's outbox key to us: SHA3-512(sender + ":outbox:" + recipient)
-        uint8_t outbox_key[64];
-        dht_generate_outbox_key(sender, recipient, outbox_key);
+        // Generate sender's outbox base key to us
+        char outbox_base_key[512];
+        make_outbox_base_key(sender, recipient, outbox_base_key, sizeof(outbox_base_key));
 
         printf("[DHT Queue] [%zu/%zu] Checking sender %.20s... outbox\n",
                contact_idx + 1, sender_count, sender);
 
-        // Query DHT for this sender's outbox (use dht_get to get single value)
+        // Query DHT for this sender's outbox via chunked layer
         uint8_t *outbox_data = NULL;
         size_t outbox_len = 0;
 
         clock_gettime(CLOCK_MONOTONIC, &dht_get_start);
-        int get_result = dht_get(ctx, outbox_key, 64, &outbox_data, &outbox_len);
+        int get_result = dht_chunked_fetch(ctx, outbox_base_key, &outbox_data, &outbox_len);
         struct timespec dht_get_end;
         clock_gettime(CLOCK_MONOTONIC, &dht_get_end);
         long dht_get_ms = (dht_get_end.tv_sec - dht_get_start.tv_sec) * 1000 +
                           (dht_get_end.tv_nsec - dht_get_start.tv_nsec) / 1000000;
 
-        if (get_result != 0 || !outbox_data || outbox_len == 0) {
+        if (get_result != DHT_CHUNK_OK || !outbox_data || outbox_len == 0) {
             // No messages from this sender (outbox empty or doesn't exist)
-            printf("[DHT Queue]   ✗ No messages (dht_get took %ld ms)\n", dht_get_ms);
+            printf("[DHT Queue]   ✗ No messages (chunked_fetch took %ld ms)\n", dht_get_ms);
             continue;
         }
 
-        printf("[DHT Queue]   ✓ Found outbox (%zu bytes, dht_get took %ld ms)\n", outbox_len, dht_get_ms);
+        printf("[DHT Queue]   ✓ Found outbox (%zu bytes, chunked_fetch took %ld ms)\n", outbox_len, dht_get_ms);
 
         // Deserialize messages from this sender's outbox
         dht_offline_message_t *sender_messages = NULL;
@@ -644,101 +618,18 @@ int dht_retrieve_queued_messages_from_contacts(
 
 /**
  * ============================================================================
- * PARALLEL MESSAGE RETRIEVAL (10-100× SPEEDUP)
+ * PARALLEL MESSAGE RETRIEVAL
  * ============================================================================
+ * Note: With chunked layer migration, async operations are not available.
+ * The chunked layer has internal parallel chunk fetching for large data.
+ * This function now uses sequential retrieval with chunked compression benefits.
  */
 
 /**
- * Context for parallel async DHT queries
- */
-typedef struct {
-    dht_context_t *ctx;
-    const char *recipient;
-    const char **sender_list;
-    size_t sender_count;
-
-    // Thread synchronization
-    pthread_mutex_t mutex;
-    pthread_cond_t cond;
-    size_t completed_count;
-
-    // Results accumulation
-    dht_offline_message_t *all_messages;
-    size_t all_count;
-    size_t all_capacity;
-
-    // Timing
-    struct timespec start_time;
-} parallel_query_context_t;
-
-/**
- * Async callback for parallel DHT GET operations
- */
-static void parallel_get_callback(uint8_t *value, size_t value_len, void *userdata) {
-    parallel_query_context_t *pctx = (parallel_query_context_t*)userdata;
-
-    pthread_mutex_lock(&pctx->mutex);
-
-    // Process retrieved value
-    if (value != NULL && value_len > 0) {
-        // Deserialize messages from this sender's outbox
-        dht_offline_message_t *sender_messages = NULL;
-        size_t sender_count_msgs = 0;
-
-        if (dht_deserialize_messages(value, value_len, &sender_messages, &sender_count_msgs) == 0) {
-            printf("[DHT Queue Parallel]   Deserialized %zu message(s) (took async callback)\n",
-                   sender_count_msgs);
-
-            // Filter expired messages and append to results
-            uint64_t now = (uint64_t)time(NULL);
-            for (size_t i = 0; i < sender_count_msgs; i++) {
-                if (sender_messages[i].expiry >= now) {
-                    // Grow array if needed
-                    if (pctx->all_count >= pctx->all_capacity) {
-                        size_t new_capacity = (pctx->all_capacity == 0) ? 16 : (pctx->all_capacity * 2);
-                        dht_offline_message_t *new_array = (dht_offline_message_t*)realloc(
-                            pctx->all_messages, new_capacity * sizeof(dht_offline_message_t));
-                        if (!new_array) {
-                            fprintf(stderr, "[DHT Queue Parallel] Failed to grow message array\n");
-                            dht_offline_message_free(&sender_messages[i]);
-                            continue;
-                        }
-                        pctx->all_messages = new_array;
-                        pctx->all_capacity = new_capacity;
-                    }
-
-                    // Transfer message ownership
-                    pctx->all_messages[pctx->all_count++] = sender_messages[i];
-                } else {
-                    // Expired message
-                    dht_offline_message_free(&sender_messages[i]);
-                }
-            }
-
-            free(sender_messages);
-        }
-
-        free(value);  // Free the DHT-allocated buffer
-    }
-
-    // Mark this query as completed
-    pctx->completed_count++;
-
-    // Signal if all queries completed
-    if (pctx->completed_count >= pctx->sender_count) {
-        pthread_cond_signal(&pctx->cond);
-    }
-
-    pthread_mutex_unlock(&pctx->mutex);
-}
-
-/**
- * Retrieve queued messages from all contacts in PARALLEL
+ * Retrieve queued messages from all contacts
  *
- * This is the optimized version that launches all DHT queries concurrently
- * instead of sequentially.
- *
- * Performance: O(1) instead of O(N) - all queries happen simultaneously
+ * Note: With chunked layer, this now uses sequential fetches.
+ * The chunked layer provides parallel chunk fetching internally for large queues.
  */
 int dht_retrieve_queued_messages_from_contacts_parallel(
     dht_context_t *ctx,
@@ -748,87 +639,9 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
     dht_offline_message_t **messages_out,
     size_t *count_out)
 {
-    if (!ctx || !recipient || !sender_list || sender_count == 0 || !messages_out || !count_out) {
-        fprintf(stderr, "[DHT Queue Parallel] Invalid parameters for retrieval\n");
-        return -1;
-    }
-
-    struct timespec function_start;
-    clock_gettime(CLOCK_MONOTONIC, &function_start);
-
-    printf("[DHT Queue Parallel] Retrieving queued messages for %s from %zu contacts (PARALLEL)\n",
-           recipient, sender_count);
-
-    // Initialize parallel query context
-    parallel_query_context_t pctx = {
-        .ctx = ctx,
-        .recipient = recipient,
-        .sender_list = sender_list,
-        .sender_count = sender_count,
-        .completed_count = 0,
-        .all_messages = NULL,
-        .all_count = 0,
-        .all_capacity = 0,
-        .start_time = function_start
-    };
-
-    pthread_mutex_init(&pctx.mutex, NULL);
-    pthread_cond_init(&pctx.cond, NULL);
-
-    // Launch ALL async queries concurrently (non-blocking)
-    printf("[DHT Queue Parallel] Launching %zu concurrent DHT queries...\n", sender_count);
-
-    for (size_t contact_idx = 0; contact_idx < sender_count; contact_idx++) {
-        const char *sender = sender_list[contact_idx];
-
-        // Generate sender's outbox key
-        uint8_t outbox_key[64];
-        dht_generate_outbox_key(sender, recipient, outbox_key);
-
-        printf("[DHT Queue Parallel] [%zu/%zu] Querying sender %.20s... outbox (async)\n",
-               contact_idx + 1, sender_count, sender);
-
-        // Launch async DHT GET (non-blocking!)
-        dht_get_async(ctx, outbox_key, 64, parallel_get_callback, &pctx);
-    }
-
-    // Wait for all queries to complete
-    printf("[DHT Queue Parallel] Waiting for all %zu queries to complete...\n", sender_count);
-
-    pthread_mutex_lock(&pctx.mutex);
-    while (pctx.completed_count < sender_count) {
-        // Wait with 30-second timeout
-        struct timespec timeout;
-        clock_gettime(CLOCK_REALTIME, &timeout);
-        timeout.tv_sec += 30;
-
-        int wait_result = pthread_cond_timedwait(&pctx.cond, &pctx.mutex, &timeout);
-        if (wait_result == ETIMEDOUT) {
-            fprintf(stderr, "[DHT Queue Parallel] Timeout waiting for queries (%zu/%zu completed)\n",
-                    pctx.completed_count, sender_count);
-            break;
-        }
-    }
-    pthread_mutex_unlock(&pctx.mutex);
-
-    struct timespec function_end;
-    clock_gettime(CLOCK_MONOTONIC, &function_end);
-    long total_ms = (function_end.tv_sec - function_start.tv_sec) * 1000 +
-                    (function_end.tv_nsec - function_start.tv_nsec) / 1000000;
-    long avg_ms_per_contact = sender_count > 0 ? total_ms / sender_count : 0;
-
-    printf("[DHT Queue Parallel] ✓ Retrieved %zu valid messages from %zu contacts\n",
-           pctx.all_count, sender_count);
-    printf("[DHT Queue Parallel] ⏱ Total time: %ld ms (PARALLEL, avg per contact: %ld ms)\n",
-           total_ms, avg_ms_per_contact);
-    printf("[DHT Queue Parallel] 🚀 Speedup vs sequential: ~%.1fx faster\n",
-           (float)(sender_count * 300) / (float)(total_ms > 0 ? total_ms : 1));
-
-    // Cleanup
-    pthread_mutex_destroy(&pctx.mutex);
-    pthread_cond_destroy(&pctx.cond);
-
-    *messages_out = pctx.all_messages;
-    *count_out = pctx.all_count;
-    return 0;
+    // With chunked layer, delegate to sequential version
+    // Chunked layer provides compression benefits and parallel chunk fetching internally
+    printf("[DHT Queue] Note: Using chunked layer sequential fetch (parallel chunk fetching enabled internally)\n");
+    return dht_retrieve_queued_messages_from_contacts(ctx, recipient, sender_list, sender_count,
+                                                       messages_out, count_out);
 }

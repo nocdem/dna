@@ -2,9 +2,11 @@
  * DNA Feed - Channel Operations
  *
  * Implements channel CRUD operations for the public feed system.
+ * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
  */
 
 #include "dna_feed.h"
+#include "../shared/dht_chunked.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -345,16 +347,16 @@ void dna_feed_registry_free(dna_feed_registry_t *registry) {
 int dna_feed_registry_get(dht_context_t *dht_ctx, dna_feed_registry_t **registry_out) {
     if (!dht_ctx || !registry_out) return -1;
 
-    char dht_key[65];
-    if (dna_feed_get_registry_key(dht_key) != 0) return -1;
+    /* Use base key string directly for chunked layer */
+    const char *base_key = "dna:feed:registry";
 
     printf("[DNA_FEED] Fetching channel registry from DHT...\n");
 
     uint8_t *value = NULL;
     size_t value_len = 0;
-    int ret = dht_get(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key), &value, &value_len);
+    int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
 
-    if (ret != 0 || !value || value_len == 0) {
+    if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
         printf("[DNA_FEED] Registry not found in DHT\n");
         return -2;
     }
@@ -383,16 +385,17 @@ int dna_feed_channel_get(dht_context_t *dht_ctx, const char *channel_id,
                          dna_feed_channel_t **channel_out) {
     if (!dht_ctx || !channel_id || !channel_out) return -1;
 
-    char dht_key[65];
-    if (dna_feed_get_channel_key(channel_id, dht_key) != 0) return -1;
+    /* Generate base key for channel metadata */
+    char base_key[256];
+    snprintf(base_key, sizeof(base_key), "dna:feed:%s:meta", channel_id);
 
     printf("[DNA_FEED] Fetching channel %s from DHT...\n", channel_id);
 
     uint8_t *value = NULL;
     size_t value_len = 0;
-    int ret = dht_get(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key), &value, &value_len);
+    int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
 
-    if (ret != 0 || !value || value_len == 0) {
+    if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
         printf("[DNA_FEED] Channel not found\n");
         return -2;
     }
@@ -461,22 +464,18 @@ int dna_feed_channel_create(dht_context_t *dht_ctx,
         return -1;
     }
 
-    /* Publish channel metadata to DHT */
-    char dht_key[65];
-    if (dna_feed_get_channel_key(channel_id, dht_key) != 0) {
-        free(json_data);
-        free(channel);
-        return -1;
-    }
+    /* Publish channel metadata to DHT using chunked layer */
+    char base_key[256];
+    snprintf(base_key, sizeof(base_key), "dna:feed:%s:meta", channel_id);
 
     printf("[DNA_FEED] Publishing channel '%s' to DHT...\n", name);
-    int ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                             (const uint8_t *)json_data, strlen(json_data),
-                             1, DNA_FEED_TTL_SECONDS);
+    int ret = dht_chunked_publish(dht_ctx, base_key,
+                                   (const uint8_t *)json_data, strlen(json_data),
+                                   DNA_FEED_TTL_SECONDS);
     free(json_data);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DNA_FEED] Failed to publish channel to DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DNA_FEED] Failed to publish channel to DHT: %s\n", dht_chunked_strerror(ret));
         free(channel);
         return -1;
     }
@@ -508,7 +507,7 @@ int dna_feed_channel_create(dht_context_t *dht_ctx,
     registry->allocated_count = new_count;
     registry->updated_at = (uint64_t)time(NULL);
 
-    /* Publish updated registry */
+    /* Publish updated registry using chunked layer */
     char *registry_json = NULL;
     if (registry_to_json(registry, &registry_json) != 0) {
         dna_feed_registry_free(registry);
@@ -516,16 +515,14 @@ int dna_feed_channel_create(dht_context_t *dht_ctx,
         return -1;
     }
 
-    char registry_key[65];
-    dna_feed_get_registry_key(registry_key);
-    ret = dht_put_signed(dht_ctx, (const uint8_t *)registry_key, strlen(registry_key),
-                         (const uint8_t *)registry_json, strlen(registry_json),
-                         1, DNA_FEED_TTL_SECONDS);
+    ret = dht_chunked_publish(dht_ctx, "dna:feed:registry",
+                              (const uint8_t *)registry_json, strlen(registry_json),
+                              DNA_FEED_TTL_SECONDS);
     free(registry_json);
     dna_feed_registry_free(registry);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DNA_FEED] Failed to update registry\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DNA_FEED] Failed to update registry: %s\n", dht_chunked_strerror(ret));
         /* Channel was created, just registry update failed */
     }
 

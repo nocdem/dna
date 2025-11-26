@@ -2,12 +2,15 @@
  * DHT Profile Storage Implementation
  * Public user profile data stored in DHT
  *
+ * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
+ *
  * @file dht_profile.c
  * @author DNA Messenger Team
  * @date 2025-11-12
  */
 
 #include "dht_profile.h"
+#include "dht_chunked.h"
 #include "../crypto/utils/qgp_sha3.h"
 #include "../crypto/utils/qgp_dilithium.h"
 #include <stdio.h>
@@ -197,10 +200,11 @@ static int deserialize_from_json(const char *json, dht_profile_t *profile_out) {
 }
 
 /**
- * Compute DHT key for profile
- * Key = SHA3-512(user_fingerprint + ":profile")
+ * Generate base key string for profile storage
+ * Format: "fingerprint:profile"
+ * The dht_chunked layer handles hashing internally
  */
-static int compute_dht_key(const char *user_fingerprint, uint8_t *key_out) {
+static int make_base_key(const char *user_fingerprint, char *key_out, size_t key_out_size) {
     if (!user_fingerprint || !key_out) return -1;
 
     // Fingerprint is 64-byte hex string (128 chars)
@@ -210,13 +214,9 @@ static int compute_dht_key(const char *user_fingerprint, uint8_t *key_out) {
         return -1;
     }
 
-    // Construct key string: fingerprint + ":profile"
-    char key_str[256];
-    snprintf(key_str, sizeof(key_str), "%s:profile", user_fingerprint);
-
-    // Hash with SHA3-512
-    if (qgp_sha3_512((const uint8_t*)key_str, strlen(key_str), key_out) != 0) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to compute SHA3-512\n");
+    int ret = snprintf(key_out, key_out_size, "%s:profile", user_fingerprint);
+    if (ret < 0 || (size_t)ret >= key_out_size) {
+        fprintf(stderr, "[DHT_PROFILE] Base key buffer too small\n");
         return -1;
     }
 
@@ -313,24 +313,24 @@ int dht_profile_publish(
 
     printf("[DHT_PROFILE] Total blob size: %zu bytes\n", blob_size);
 
-    // Compute DHT key
-    uint8_t dht_key[64];
-    if (compute_dht_key(user_fingerprint, dht_key) != 0) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to compute DHT key\n");
+    // Generate base key for chunked storage
+    char base_key[256];
+    if (make_base_key(user_fingerprint, base_key, sizeof(base_key)) != 0) {
+        fprintf(stderr, "[DHT_PROFILE] Failed to generate base key\n");
         free(blob);
         return -1;
     }
 
-    // Store in DHT with signed put (value_id=1 for replacement)
-    int result = dht_put_signed_permanent(dht_ctx, dht_key, 64, blob, blob_size, 1);
+    // Store in DHT using chunked layer (handles compression, chunking, signing)
+    int result = dht_chunked_publish(dht_ctx, base_key, blob, blob_size, DHT_CHUNK_TTL_365DAY);
     free(blob);
 
-    if (result != 0) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to store in DHT\n");
+    if (result != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT_PROFILE] Failed to store in DHT: %s\n", dht_chunked_strerror(result));
         return -1;
     }
 
-    printf("[DHT_PROFILE] Successfully published profile (signed, value_id=1)\n");
+    printf("[DHT_PROFILE] Successfully published profile\n");
     return 0;
 }
 
@@ -349,20 +349,20 @@ int dht_profile_fetch(
 
     printf("[DHT_PROFILE] Fetching profile for '%s'\n", user_fingerprint);
 
-    // Compute DHT key
-    uint8_t dht_key[64];
-    if (compute_dht_key(user_fingerprint, dht_key) != 0) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to compute DHT key\n");
+    // Generate base key for chunked storage
+    char base_key[256];
+    if (make_base_key(user_fingerprint, base_key, sizeof(base_key)) != 0) {
+        fprintf(stderr, "[DHT_PROFILE] Failed to generate base key\n");
         return -1;
     }
 
-    // Fetch from DHT
+    // Fetch from DHT using chunked layer (handles decompression, reassembly)
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_get(dht_ctx, dht_key, 64, &blob, &blob_size);
-    if (result != 0 || !blob) {
-        printf("[DHT_PROFILE] Profile not found in DHT\n");
+    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
+    if (result != DHT_CHUNK_OK || !blob) {
+        printf("[DHT_PROFILE] Profile not found in DHT: %s\n", dht_chunked_strerror(result));
         return -2;  // Not found
     }
 
@@ -440,6 +440,9 @@ int dht_profile_fetch(
 
 /**
  * Delete user profile from DHT
+ *
+ * Note: DHT doesn't support true deletion. This function publishes
+ * empty chunks to overwrite existing data. Chunks will fully expire via TTL.
  */
 int dht_profile_delete(
     dht_context_t *dht_ctx,
@@ -449,13 +452,13 @@ int dht_profile_delete(
         return -1;
     }
 
-    uint8_t dht_key[64];
-    if (compute_dht_key(user_fingerprint, dht_key) != 0) {
+    char base_key[256];
+    if (make_base_key(user_fingerprint, base_key, sizeof(base_key)) != 0) {
         return -1;
     }
 
-    // Note: DHT deletion is best-effort (not guaranteed)
-    dht_delete(dht_ctx, dht_key, 64);
+    // Note: dht_chunked_delete overwrites with empty chunks
+    dht_chunked_delete(dht_ctx, base_key, 0);
 
     printf("[DHT_PROFILE] Deleted profile for '%s' (best-effort)\n", user_fingerprint);
     return 0;

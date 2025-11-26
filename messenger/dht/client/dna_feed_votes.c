@@ -3,9 +3,11 @@
  *
  * Implements voting system for the public feed.
  * Votes are permanent - once cast, they cannot be changed.
+ * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
  */
 
 #include "dna_feed.h"
+#include "../shared/dht_chunked.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -252,16 +254,17 @@ int dna_feed_verify_vote_signature(const dna_feed_vote_t *vote,
 int dna_feed_votes_get(dht_context_t *dht_ctx, const char *post_id, dna_feed_votes_t **votes_out) {
     if (!dht_ctx || !post_id || !votes_out) return -1;
 
-    char dht_key[65];
-    if (dna_feed_get_votes_key(post_id, dht_key) != 0) return -1;
+    /* Generate base key for votes */
+    char base_key[512];
+    snprintf(base_key, sizeof(base_key), "dna:feed:post:%s:votes", post_id);
 
     printf("[DNA_FEED] Fetching votes for post %s...\n", post_id);
 
     uint8_t *value = NULL;
     size_t value_len = 0;
-    int ret = dht_get(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key), &value, &value_len);
+    int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
 
-    if (ret != 0 || !value || value_len == 0) {
+    if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
         /* No votes yet - create empty structure */
         dna_feed_votes_t *votes = calloc(1, sizeof(dna_feed_votes_t));
         if (!votes) return -1;
@@ -368,28 +371,24 @@ int dna_feed_vote_cast(dht_context_t *dht_ctx,
         votes->downvote_count++;
     }
 
-    /* Serialize and publish */
+    /* Serialize and publish using chunked layer */
     char *json_data = NULL;
     if (votes_to_json(votes, &json_data) != 0) {
         dna_feed_votes_free(votes);
         return -1;
     }
 
-    char dht_key[65];
-    if (dna_feed_get_votes_key(post_id, dht_key) != 0) {
-        free(json_data);
-        dna_feed_votes_free(votes);
-        return -1;
-    }
+    char base_key[512];
+    snprintf(base_key, sizeof(base_key), "dna:feed:post:%s:votes", post_id);
 
     printf("[DNA_FEED] Publishing vote to DHT...\n");
-    ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                         (const uint8_t *)json_data, strlen(json_data),
-                         1, DNA_FEED_TTL_SECONDS);
+    ret = dht_chunked_publish(dht_ctx, base_key,
+                              (const uint8_t *)json_data, strlen(json_data),
+                              DNA_FEED_TTL_SECONDS);
     free(json_data);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DNA_FEED] Failed to publish vote\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DNA_FEED] Failed to publish vote: %s\n", dht_chunked_strerror(ret));
         dna_feed_votes_free(votes);
         return -1;
     }

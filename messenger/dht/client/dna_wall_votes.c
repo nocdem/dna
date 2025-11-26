@@ -1,8 +1,10 @@
 /*
  * DNA Wall Votes - Community Voting System Implementation
+ * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
  */
 
 #include "dna_wall_votes.h"
+#include "../shared/dht_chunked.h"
 #include "../../crypto/utils/qgp_dilithium.h"
 #include "../../crypto/utils/qgp_types.h"
 #include "../core/dht_context.h"
@@ -18,8 +20,6 @@
 #else
     #include <arpa/inet.h>
 #endif
-
-#include <openssl/evp.h>
 
 // Network byte order conversion for uint64_t
 static uint64_t htonll(uint64_t value) {
@@ -37,40 +37,18 @@ static uint64_t ntohll(uint64_t value) {
 }
 
 /**
- * Generate DHT key for votes
+ * Generate base key for votes (chunked layer handles hashing)
  */
-static int dna_wall_votes_get_dht_key(const char *post_id, char *dht_key_out) {
-    if (!post_id || !dht_key_out) {
+static int dna_wall_votes_make_base_key(const char *post_id, char *key_out, size_t key_out_size) {
+    if (!post_id || !key_out || key_out_size == 0) {
         return -1;
     }
 
-    // Key format: SHA256(post_id + ":votes")
-    char key_input[256];
-    snprintf(key_input, sizeof(key_input), "%s:votes", post_id);
-
-    // SHA256 hash using OpenSSL EVP
-    uint8_t hash[32];
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) {
-        fprintf(stderr, "[DNA_VOTES] Failed to create EVP context\n");
+    int ret = snprintf(key_out, key_out_size, "%s:votes", post_id);
+    if (ret < 0 || (size_t)ret >= key_out_size) {
+        fprintf(stderr, "[DNA_VOTES] Base key buffer too small\n");
         return -1;
     }
-
-    if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1 ||
-        EVP_DigestUpdate(ctx, key_input, strlen(key_input)) != 1 ||
-        EVP_DigestFinal_ex(ctx, hash, NULL) != 1) {
-        EVP_MD_CTX_free(ctx);
-        fprintf(stderr, "[DNA_VOTES] Failed to compute SHA256\n");
-        return -1;
-    }
-
-    EVP_MD_CTX_free(ctx);
-
-    // Convert to hex
-    for (int i = 0; i < 32; i++) {
-        sprintf(dht_key_out + (i * 2), "%02x", hash[i]);
-    }
-    dht_key_out[64] = '\0';
 
     return 0;
 }
@@ -267,22 +245,21 @@ int dna_load_votes(dht_context_t *dht_ctx,
         return -1;
     }
 
-    // Get DHT key
-    char dht_key[65];
-    if (dna_wall_votes_get_dht_key(post_id, dht_key) != 0) {
+    // Get base key for chunked layer
+    char base_key[512];
+    if (dna_wall_votes_make_base_key(post_id, base_key, sizeof(base_key)) != 0) {
         return -1;
     }
 
-    printf("[DNA_VOTES] → DHT GET: Loading votes for post\n");
+    printf("[DNA_VOTES] → DHT CHUNKED_FETCH: Loading votes for post\n");
 
-    // Query DHT
+    // Query DHT via chunked layer
     uint8_t *value_data = NULL;
     size_t value_size = 0;
-    int ret = dht_get(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                      &value_data, &value_size);
+    int ret = dht_chunked_fetch(dht_ctx, base_key, &value_data, &value_size);
 
-    if (ret != 0) {
-        printf("[DNA_VOTES] No votes found in DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        printf("[DNA_VOTES] No votes found in DHT: %s\n", dht_chunked_strerror(ret));
         return -2;  // No votes
     }
 
@@ -461,27 +438,26 @@ int dna_cast_vote(dht_context_t *dht_ctx,
         return -1;
     }
 
-    // Publish to DHT
-    char dht_key[65];
-    if (dna_wall_votes_get_dht_key(post_id, dht_key) != 0) {
+    // Publish to DHT via chunked layer
+    char base_key[512];
+    if (dna_wall_votes_make_base_key(post_id, base_key, sizeof(base_key)) != 0) {
         free(json_data);
         dna_wall_votes_free(votes);
         return -1;
     }
 
-    printf("[DNA_VOTES] → DHT PUT_SIGNED: Publishing votes (up=%d, down=%d, total=%zu)\n",
+    printf("[DNA_VOTES] → DHT CHUNKED_PUBLISH: Publishing votes (up=%d, down=%d, total=%zu)\n",
            votes->upvote_count, votes->downvote_count, votes->vote_count);
 
-    unsigned int ttl_30days = 30 * 24 * 3600;  // Votes persist for 30 days
-    ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                         (const uint8_t *)json_data, strlen(json_data),
-                         1, ttl_30days);
+    ret = dht_chunked_publish(dht_ctx, base_key,
+                              (const uint8_t *)json_data, strlen(json_data),
+                              DHT_CHUNK_TTL_30DAY);
 
     free(json_data);
     dna_wall_votes_free(votes);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DNA_VOTES] Failed to publish votes to DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DNA_VOTES] Failed to publish votes to DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 

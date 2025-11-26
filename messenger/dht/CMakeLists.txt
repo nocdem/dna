@@ -25,6 +25,7 @@ if(WIN32)
         shared/dht_groups.c
         shared/dht_profile.c
         shared/dht_gsk_storage.c  # Phase 13: GSK chunked storage
+        shared/dht_chunked.c      # Generic chunked storage layer
         # Client modules (Phase 3/4)
         client/dht_identity.cpp
         client/dht_singleton.c
@@ -65,6 +66,7 @@ else()
         shared/dht_groups.c
         shared/dht_profile.c
         shared/dht_gsk_storage.c  # Phase 13: GSK chunked storage
+        shared/dht_chunked.c      # Generic chunked storage layer
         # Client modules (Phase 3/4)
         client/dht_identity.cpp
         client/dht_singleton.c
@@ -100,9 +102,9 @@ target_include_directories(dht_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
     ${CMAKE_CURRENT_SOURCE_DIR}/../crypto)
 if(WIN32)
-    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES})
+    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} zstd)
 else()
-    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} json-c curl)
+    target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} json-c curl zstd z)
 endif()
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD 17)
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD_REQUIRED ON)

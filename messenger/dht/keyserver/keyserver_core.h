@@ -33,6 +33,7 @@
 // External dependencies
 #include "../core/dht_context.h"
 #include "../core/dht_keyserver.h"  // Includes type definitions (dht_pubkey_entry_t, sizes)
+#include "../shared/dht_chunked.h"  // Chunked storage layer
 #include "../client/dna_profile.h"
 #include "../../crypto/utils/qgp_dilithium.h"
 #include "../../crypto/utils/qgp_sha3.h"

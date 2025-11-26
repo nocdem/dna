@@ -2,9 +2,13 @@
  * DNA Feed - Post Operations
  *
  * Implements post creation, retrieval, and threading for the public feed system.
+ * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
+ *
+ * Note: Bucket operations use dht_get_all for multi-owner aggregation and remain unchanged.
  */
 
 #include "dna_feed.h"
+#include "../shared/dht_chunked.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -312,16 +316,17 @@ int dna_feed_verify_post_signature(const dna_feed_post_t *post, const uint8_t *p
 int dna_feed_post_get(dht_context_t *dht_ctx, const char *post_id, dna_feed_post_t **post_out) {
     if (!dht_ctx || !post_id || !post_out) return -1;
 
-    char dht_key[65];
-    if (dna_feed_get_post_key(post_id, dht_key) != 0) return -1;
+    /* Generate base key for post */
+    char base_key[512];
+    snprintf(base_key, sizeof(base_key), "dna:feed:post:%s", post_id);
 
     printf("[DNA_FEED] Fetching post %s...\n", post_id);
 
     uint8_t *value = NULL;
     size_t value_len = 0;
-    int ret = dht_get(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key), &value, &value_len);
+    int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
 
-    if (ret != 0 || !value || value_len == 0) {
+    if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
         return -2;
     }
 
@@ -552,28 +557,24 @@ int dna_feed_post_create(dht_context_t *dht_ctx,
     }
     post->signature_len = sig_len;
 
-    /* Serialize and publish post */
+    /* Serialize and publish post using chunked layer */
     char *json_data = NULL;
     if (post_to_json(post, &json_data) != 0) {
         free(post);
         return -1;
     }
 
-    char post_key[65];
-    if (dna_feed_get_post_key(post->post_id, post_key) != 0) {
-        free(json_data);
-        free(post);
-        return -1;
-    }
+    char base_key[512];
+    snprintf(base_key, sizeof(base_key), "dna:feed:post:%s", post->post_id);
 
     printf("[DNA_FEED] Publishing post to DHT...\n");
-    ret = dht_put_signed(dht_ctx, (const uint8_t *)post_key, strlen(post_key),
-                         (const uint8_t *)json_data, strlen(json_data),
-                         1, DNA_FEED_TTL_SECONDS);
+    ret = dht_chunked_publish(dht_ctx, base_key,
+                              (const uint8_t *)json_data, strlen(json_data),
+                              DNA_FEED_TTL_SECONDS);
     free(json_data);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DNA_FEED] Failed to publish post\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DNA_FEED] Failed to publish post: %s\n", dht_chunked_strerror(ret));
         free(post);
         return -1;
     }

@@ -1,73 +1,75 @@
 /**
  * @file dht_gsk_storage.c
- * @brief DHT Chunked Storage for GSK Initial Key Packets Implementation
+ * @brief DHT Storage for GSK Initial Key Packets
+ *
+ * Simplified implementation using the generic dht_chunked layer.
+ * Handles publishing and fetching of large Initial Key Packets
+ * for Group Symmetric Key (GSK) distribution via DHT.
  *
  * Part of DNA Messenger v0.09 - GSK Upgrade
  *
- * @date 2025-11-21
+ * @date 2025-11-27
  */
 
 #include "dht_gsk_storage.h"
+#include "dht_chunked.h"
 #include "../../crypto/utils/qgp_sha3.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+#include <winsock2.h>
+#else
 #include <arpa/inet.h>
+#endif
+
+/*============================================================================
+ * Internal Helper Functions
+ *============================================================================*/
 
 /**
- * Generate DHT key for a specific chunk (binary format)
+ * Generate base key for GSK storage
  *
- * Internal helper - generates 32-byte binary key for DHT storage.
- * DHT API expects binary keys, not hex strings.
- *
- * @param group_uuid Group UUID
- * @param gsk_version GSK version number
- * @param chunk_index Chunk index (0, 1, 2, 3)
- * @param key_out Output buffer for binary DHT key (32 bytes)
- * @return 0 on success, -1 on error
+ * Format: "group_uuid:gsk:version"
  */
-static int dht_gsk_make_chunk_key_binary(const char *group_uuid,
-                                          uint32_t gsk_version,
-                                          uint32_t chunk_index,
-                                          uint8_t key_out[32]) {
-    if (!group_uuid || !key_out) {
-        fprintf(stderr, "[DHT_GSK] make_chunk_key: NULL parameter\n");
+static int make_gsk_base_key(const char *group_uuid, uint32_t gsk_version,
+                             char *key_out, size_t key_out_size) {
+    if (!group_uuid || !key_out) return -1;
+
+    int ret = snprintf(key_out, key_out_size, "%s:gsk:%u", group_uuid, gsk_version);
+    if (ret < 0 || (size_t)ret >= key_out_size) {
         return -1;
     }
-
-    // Key format: SHA3-512(group_uuid + ":gsk:" + version + ":chunk" + index) truncated to 32 bytes
-    char key_input[256];
-    snprintf(key_input, sizeof(key_input), "%s:gsk:%u:chunk%u",
-             group_uuid, gsk_version, chunk_index);
-
-    // Hash with SHA3-512 and take first 32 bytes
-    uint8_t full_hash[64];
-    if (qgp_sha3_512((const uint8_t *)key_input, strlen(key_input), full_hash) != 0) {
-        fprintf(stderr, "[DHT_GSK] SHA3-512 failed\n");
-        return -1;
-    }
-
-    // Use first 32 bytes as DHT key
-    memcpy(key_out, full_hash, 32);
-
     return 0;
 }
+
+/*============================================================================
+ * Legacy API - For backward compatibility with existing code
+ *============================================================================*/
 
 /**
  * Generate DHT key for a specific chunk (hex string format)
  *
- * Public API - converts binary key to hex string for logging/debugging.
+ * This is kept for logging/debugging purposes. The actual storage
+ * now uses the generic chunked layer which has its own key format.
  */
 int dht_gsk_make_chunk_key(const char *group_uuid,
                             uint32_t gsk_version,
                             uint32_t chunk_index,
                             char key_out[65]) {
-    if (!key_out) {
+    if (!group_uuid || !key_out) {
+        return -1;
+    }
+
+    // Generate using the new chunked layer format for consistency
+    char base_key[256];
+    if (make_gsk_base_key(group_uuid, gsk_version, base_key, sizeof(base_key)) != 0) {
         return -1;
     }
 
     uint8_t binary_key[32];
-    if (dht_gsk_make_chunk_key_binary(group_uuid, gsk_version, chunk_index, binary_key) != 0) {
+    if (dht_chunked_make_key(base_key, chunk_index, binary_key) != 0) {
         return -1;
     }
 
@@ -82,6 +84,9 @@ int dht_gsk_make_chunk_key(const char *group_uuid,
 
 /**
  * Serialize chunk to binary format
+ *
+ * Legacy function - kept for any code that still uses it directly.
+ * New code should use dht_chunked_publish() which handles serialization internally.
  */
 int dht_gsk_serialize_chunk(const dht_gsk_chunk_t *chunk,
                              uint8_t **serialized_out,
@@ -129,7 +134,6 @@ int dht_gsk_serialize_chunk(const dht_gsk_chunk_t *chunk,
 
     // Chunk data
     memcpy(serialized + offset, chunk->chunk_data, chunk->chunk_size);
-    offset += chunk->chunk_size;
 
     *serialized_out = serialized;
     *serialized_size_out = total_size;
@@ -138,6 +142,8 @@ int dht_gsk_serialize_chunk(const dht_gsk_chunk_t *chunk,
 
 /**
  * Deserialize chunk from binary format
+ *
+ * Legacy function - kept for any code that still uses it directly.
  */
 int dht_gsk_deserialize_chunk(const uint8_t *serialized,
                                size_t serialized_size,
@@ -218,8 +224,15 @@ void dht_gsk_free_chunk(dht_gsk_chunk_t *chunk) {
     }
 }
 
+/*============================================================================
+ * Main API - Now using generic chunked layer
+ *============================================================================*/
+
 /**
- * Publish Initial Key Packet to DHT (chunked)
+ * Publish Initial Key Packet to DHT
+ *
+ * Uses the generic dht_chunked layer for automatic chunking,
+ * compression, and parallel-friendly storage.
  */
 int dht_gsk_publish(dht_context_t *ctx,
                     const char *group_uuid,
@@ -231,78 +244,33 @@ int dht_gsk_publish(dht_context_t *ctx,
         return -1;
     }
 
-    // Calculate number of chunks needed
-    uint32_t total_chunks = (packet_size + DHT_GSK_CHUNK_SIZE - 1) / DHT_GSK_CHUNK_SIZE;
-
-    if (total_chunks > DHT_GSK_MAX_CHUNKS) {
-        fprintf(stderr, "[DHT_GSK] Packet too large: %zu bytes requires %u chunks (max %u)\n",
-                packet_size, total_chunks, DHT_GSK_MAX_CHUNKS);
+    // Generate base key for this GSK packet
+    char base_key[256];
+    if (make_gsk_base_key(group_uuid, gsk_version, base_key, sizeof(base_key)) != 0) {
+        fprintf(stderr, "[DHT_GSK] Failed to generate base key\n");
         return -1;
     }
 
-    printf("[DHT_GSK] Publishing packet (group=%s v%u): %zu bytes → %u chunks\n",
-           group_uuid, gsk_version, packet_size, total_chunks);
+    printf("[DHT_GSK] Publishing packet (group=%s v%u): %zu bytes\n",
+           group_uuid, gsk_version, packet_size);
 
-    // Split into chunks and publish each
-    for (uint32_t i = 0; i < total_chunks; i++) {
-        // Calculate chunk boundaries
-        size_t chunk_offset = i * DHT_GSK_CHUNK_SIZE;
-        size_t chunk_size = (i == total_chunks - 1)
-            ? (packet_size - chunk_offset)  // Last chunk: remaining bytes
-            : DHT_GSK_CHUNK_SIZE;           // Other chunks: full 50 KB
+    // Use the generic chunked layer
+    int ret = dht_chunked_publish(ctx, base_key, packet, packet_size, DHT_GSK_DEFAULT_TTL);
 
-        // Create chunk structure
-        dht_gsk_chunk_t chunk = {
-            .magic = DHT_GSK_MAGIC,
-            .version = DHT_GSK_VERSION,
-            .total_chunks = total_chunks,
-            .chunk_index = i,
-            .chunk_size = (uint32_t)chunk_size,
-            .chunk_data = (uint8_t *)(packet + chunk_offset)  // Point to packet data (no copy)
-        };
-
-        // Serialize chunk
-        uint8_t *serialized = NULL;
-        size_t serialized_size = 0;
-        if (dht_gsk_serialize_chunk(&chunk, &serialized, &serialized_size) != 0) {
-            fprintf(stderr, "[DHT_GSK] Failed to serialize chunk %u\n", i);
-            return -1;
-        }
-
-        // Generate binary DHT key for this chunk
-        uint8_t dht_key_binary[32];
-        if (dht_gsk_make_chunk_key_binary(group_uuid, gsk_version, i, dht_key_binary) != 0) {
-            fprintf(stderr, "[DHT_GSK] Failed to generate key for chunk %u\n", i);
-            free(serialized);
-            return -1;
-        }
-
-        // Generate hex key for logging
-        char dht_key_hex[65];
-        for (int j = 0; j < 32; j++) {
-            sprintf(&dht_key_hex[j * 2], "%02x", dht_key_binary[j]);
-        }
-        dht_key_hex[64] = '\0';
-
-        // Publish to DHT (signed put with value_id=1 for replacement, 7-day TTL)
-        if (dht_put_signed(ctx, dht_key_binary, 32, serialized, serialized_size, 1, DHT_GSK_DEFAULT_TTL) != 0) {
-            fprintf(stderr, "[DHT_GSK] Failed to publish chunk %u to DHT\n", i);
-            free(serialized);
-            return -1;
-        }
-
-        printf("[DHT_GSK]   Chunk %u/%u published: %zu bytes (key=%s)\n",
-               i, total_chunks, serialized_size, dht_key_hex);
-
-        free(serialized);
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT_GSK] Failed to publish: %s\n", dht_chunked_strerror(ret));
+        return -1;
     }
 
-    printf("[DHT_GSK] ✓ Published %u chunks to DHT\n", total_chunks);
+    printf("[DHT_GSK] Published successfully\n");
     return 0;
 }
 
 /**
- * Fetch Initial Key Packet from DHT (sequential chunk fetching)
+ * Fetch Initial Key Packet from DHT
+ *
+ * Uses the generic dht_chunked layer for parallel fetching,
+ * automatic reassembly, and decompression.
  */
 int dht_gsk_fetch(dht_context_t *ctx,
                   const char *group_uuid,
@@ -314,112 +282,23 @@ int dht_gsk_fetch(dht_context_t *ctx,
         return -1;
     }
 
+    // Generate base key for this GSK packet
+    char base_key[256];
+    if (make_gsk_base_key(group_uuid, gsk_version, base_key, sizeof(base_key)) != 0) {
+        fprintf(stderr, "[DHT_GSK] Failed to generate base key\n");
+        return -1;
+    }
+
     printf("[DHT_GSK] Fetching packet (group=%s v%u)...\n", group_uuid, gsk_version);
 
-    // Step 1: Fetch chunk0 to determine total_chunks
-    uint8_t chunk0_key[32];
-    if (dht_gsk_make_chunk_key_binary(group_uuid, gsk_version, 0, chunk0_key) != 0) {
-        fprintf(stderr, "[DHT_GSK] Failed to generate chunk0 key\n");
+    // Use the generic chunked layer
+    int ret = dht_chunked_fetch(ctx, base_key, packet_out, packet_size_out);
+
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT_GSK] Failed to fetch: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    uint8_t *chunk0_data = NULL;
-    size_t chunk0_size = 0;
-    if (dht_get(ctx, chunk0_key, 32, &chunk0_data, &chunk0_size) != 0) {
-        fprintf(stderr, "[DHT_GSK] Failed to fetch chunk0 from DHT\n");
-        return -1;
-    }
-
-    dht_gsk_chunk_t chunk0;
-    if (dht_gsk_deserialize_chunk(chunk0_data, chunk0_size, &chunk0) != 0) {
-        fprintf(stderr, "[DHT_GSK] Failed to deserialize chunk0\n");
-        free(chunk0_data);
-        return -1;
-    }
-    free(chunk0_data);
-
-    uint32_t total_chunks = chunk0.total_chunks;
-    printf("[DHT_GSK]   Chunk0 fetched: total_chunks=%u\n", total_chunks);
-
-    if (total_chunks > DHT_GSK_MAX_CHUNKS) {
-        fprintf(stderr, "[DHT_GSK] Invalid total_chunks: %u (max %u)\n",
-                total_chunks, DHT_GSK_MAX_CHUNKS);
-        dht_gsk_free_chunk(&chunk0);
-        return -1;
-    }
-
-    // Step 2: Allocate array to store all chunks
-    dht_gsk_chunk_t *chunks = (dht_gsk_chunk_t *)calloc(total_chunks, sizeof(dht_gsk_chunk_t));
-    if (!chunks) {
-        fprintf(stderr, "[DHT_GSK] Failed to allocate chunks array\n");
-        dht_gsk_free_chunk(&chunk0);
-        return -1;
-    }
-
-    // Store chunk0
-    chunks[0] = chunk0;
-
-    // Step 3: Fetch remaining chunks sequentially
-    for (uint32_t i = 1; i < total_chunks; i++) {
-        uint8_t chunk_key[32];
-        if (dht_gsk_make_chunk_key_binary(group_uuid, gsk_version, i, chunk_key) != 0) {
-            fprintf(stderr, "[DHT_GSK] Failed to generate key for chunk %u\n", i);
-            goto cleanup_chunks;
-        }
-
-        uint8_t *chunk_data = NULL;
-        size_t chunk_size = 0;
-        if (dht_get(ctx, chunk_key, 32, &chunk_data, &chunk_size) != 0) {
-            fprintf(stderr, "[DHT_GSK] Failed to fetch chunk %u from DHT\n", i);
-            goto cleanup_chunks;
-        }
-
-        if (dht_gsk_deserialize_chunk(chunk_data, chunk_size, &chunks[i]) != 0) {
-            fprintf(stderr, "[DHT_GSK] Failed to deserialize chunk %u\n", i);
-            free(chunk_data);
-            goto cleanup_chunks;
-        }
-        free(chunk_data);
-
-        printf("[DHT_GSK]   Chunk %u/%u fetched: %u bytes\n", i, total_chunks, chunks[i].chunk_size);
-    }
-
-    // Step 4: Calculate total packet size
-    size_t total_packet_size = 0;
-    for (uint32_t i = 0; i < total_chunks; i++) {
-        total_packet_size += chunks[i].chunk_size;
-    }
-
-    // Step 5: Allocate packet buffer and reassemble
-    uint8_t *packet = (uint8_t *)malloc(total_packet_size);
-    if (!packet) {
-        fprintf(stderr, "[DHT_GSK] Failed to allocate packet buffer\n");
-        goto cleanup_chunks;
-    }
-
-    size_t offset = 0;
-    for (uint32_t i = 0; i < total_chunks; i++) {
-        memcpy(packet + offset, chunks[i].chunk_data, chunks[i].chunk_size);
-        offset += chunks[i].chunk_size;
-    }
-
-    printf("[DHT_GSK] ✓ Reassembled packet: %zu bytes from %u chunks\n",
-           total_packet_size, total_chunks);
-
-    // Cleanup chunks
-    for (uint32_t i = 0; i < total_chunks; i++) {
-        dht_gsk_free_chunk(&chunks[i]);
-    }
-    free(chunks);
-
-    *packet_out = packet;
-    *packet_size_out = total_packet_size;
+    printf("[DHT_GSK] Fetched %zu bytes successfully\n", *packet_size_out);
     return 0;
-
-cleanup_chunks:
-    for (uint32_t i = 0; i < total_chunks; i++) {
-        dht_gsk_free_chunk(&chunks[i]);
-    }
-    free(chunks);
-    return -1;
 }

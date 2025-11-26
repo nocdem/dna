@@ -2,12 +2,15 @@
  * DHT Identity Backup Implementation
  * Encrypted backup of random DHT signing identity for BIP39 recovery
  *
+ * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
+ *
  * @file dht_identity_backup.c
  * @author DNA Messenger Team
  * @date 2025-11-12
  */
 
 #include "dht_identity_backup.h"
+#include "../shared/dht_chunked.h"
 #include "../crypto/utils/qgp_sha3.h"
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_aes.h"
@@ -24,10 +27,11 @@
 //=============================================================================
 
 /**
- * Compute DHT key for identity backup
- * Key = SHA3-512(user_fingerprint + ":dht_identity")
+ * Generate base key string for identity backup storage
+ * Format: "fingerprint:dht_identity"
+ * The dht_chunked layer handles hashing internally
  */
-static int compute_dht_key(const char *user_fingerprint, uint8_t *key_out) {
+static int make_base_key(const char *user_fingerprint, char *key_out, size_t key_out_size) {
     if (!user_fingerprint || !key_out) return -1;
 
     // Fingerprint is 128-char hex string
@@ -37,13 +41,9 @@ static int compute_dht_key(const char *user_fingerprint, uint8_t *key_out) {
         return -1;
     }
 
-    // Construct key string: fingerprint + ":dht_identity"
-    char key_str[256];
-    snprintf(key_str, sizeof(key_str), "%s:dht_identity", user_fingerprint);
-
-    // Hash with SHA3-512
-    if (qgp_sha3_512((const uint8_t*)key_str, strlen(key_str), key_out) != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to compute SHA3-512\n");
+    int ret = snprintf(key_out, key_out_size, "%s:dht_identity", user_fingerprint);
+    if (ret < 0 || (size_t)ret >= key_out_size) {
+        fprintf(stderr, "[DHT Identity] Base key buffer too small\n");
         return -1;
     }
 
@@ -379,18 +379,18 @@ int dht_identity_fetch_from_dht(
 
     printf("[DHT Identity] Fetching from DHT for %s\n", user_fingerprint);
 
-    // Step 1: Compute DHT key
-    uint8_t dht_key[64];
-    if (compute_dht_key(user_fingerprint, dht_key) != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to compute DHT key\n");
+    // Step 1: Generate base key for chunked storage
+    char base_key[256];
+    if (make_base_key(user_fingerprint, base_key, sizeof(base_key)) != 0) {
+        fprintf(stderr, "[DHT Identity] Failed to generate base key\n");
         return -1;
     }
 
-    // Step 2: Fetch from DHT
+    // Step 2: Fetch from DHT using chunked layer
     uint8_t *encrypted_data = NULL;
     size_t encrypted_size = 0;
 
-    if (dht_get(dht_ctx, dht_key, 64, &encrypted_data, &encrypted_size) != 0) {
+    if (dht_chunked_fetch(dht_ctx, base_key, &encrypted_data, &encrypted_size) != DHT_CHUNK_OK) {
         fprintf(stderr, "[DHT Identity] Not found in DHT\n");
         return -1;
     }
@@ -480,19 +480,18 @@ int dht_identity_publish_backup(
     printf("[DHT Identity] Publishing backup to DHT for %s (%zu bytes)\n",
            user_fingerprint, backup_size);
 
-    // Compute DHT key
-    uint8_t dht_key[64];
-    if (compute_dht_key(user_fingerprint, dht_key) != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to compute DHT key\n");
+    // Generate base key for chunked storage
+    char base_key[256];
+    if (make_base_key(user_fingerprint, base_key, sizeof(base_key)) != 0) {
+        fprintf(stderr, "[DHT Identity] Failed to generate base key\n");
         return -1;
     }
 
-    // Publish to DHT with PERMANENT TTL (value_id=1 for replacement)
-    int result = dht_put_signed_permanent(dht_ctx, dht_key, 64,
-                                          encrypted_backup, backup_size, 1);
+    // Publish to DHT using chunked layer (handles compression, chunking, signing)
+    int result = dht_chunked_publish(dht_ctx, base_key, encrypted_backup, backup_size, DHT_CHUNK_TTL_365DAY);
 
-    if (result != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to publish to DHT\n");
+    if (result != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT Identity] Failed to publish to DHT: %s\n", dht_chunked_strerror(result));
         return -1;
     }
 
@@ -524,16 +523,16 @@ bool dht_identity_dht_exists(
 {
     if (!user_fingerprint || !dht_ctx) return false;
 
-    uint8_t dht_key[64];
-    if (compute_dht_key(user_fingerprint, dht_key) != 0) {
+    char base_key[256];
+    if (make_base_key(user_fingerprint, base_key, sizeof(base_key)) != 0) {
         return false;
     }
 
     uint8_t *data = NULL;
     size_t size = 0;
-    int result = dht_get(dht_ctx, dht_key, 64, &data, &size);
+    int result = dht_chunked_fetch(dht_ctx, base_key, &data, &size);
 
-    if (result == 0 && data) {
+    if (result == DHT_CHUNK_OK && data) {
         free(data);
         return true;
     }

@@ -1,9 +1,12 @@
 /**
  * DHT Contact List Synchronization Implementation
  * Per-identity encrypted contact lists with DHT storage
+ *
+ * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
  */
 
 #include "dht_contactlist.h"
+#include "../shared/dht_chunked.h"
 #include "../crypto/utils/qgp_sha3.h"
 #include "../crypto/utils/qgp_dilithium.h"
 #include "../crypto/utils/qgp_kyber.h"
@@ -36,33 +39,21 @@
 // ============================================================================
 
 /**
- * Compute DHT key for contact list
- * Key = SHA3-512(identity + ":contactlist")
+ * Generate base key string for contact list storage
+ * Format: "identity:contactlist"
+ * The dht_chunked layer handles hashing internally
  */
-static int compute_dht_key(const char *identity, uint8_t dht_key[64]) {
-    if (!identity || !dht_key) {
+static int make_base_key(const char *identity, char *key_out, size_t key_out_size) {
+    if (!identity || !key_out) {
         return -1;
     }
 
-    // Construct key material: identity + ":contactlist"
-    size_t identity_len = strlen(identity);
-    const char *suffix = ":contactlist";
-    size_t suffix_len = strlen(suffix);
-    size_t total_len = identity_len + suffix_len;
-
-    uint8_t *key_material = malloc(total_len);
-    if (!key_material) {
-        fprintf(stderr, "[DHT_CONTACTLIST] Failed to allocate key material\n");
+    int ret = snprintf(key_out, key_out_size, "%s:contactlist", identity);
+    if (ret < 0 || (size_t)ret >= key_out_size) {
+        fprintf(stderr, "[DHT_CONTACTLIST] Base key buffer too small\n");
         return -1;
     }
 
-    memcpy(key_material, identity, identity_len);
-    memcpy(key_material + identity_len, suffix, suffix_len);
-
-    // Compute SHA3-512 hash
-    qgp_sha3_512(key_material, total_len, dht_key);
-
-    free(key_material);
     return 0;
 }
 
@@ -343,25 +334,24 @@ int dht_contactlist_publish(
 
     printf("[DHT_CONTACTLIST] Total blob size: %zu bytes\n", blob_size);
 
-    // Step 5: Compute DHT key
-    uint8_t dht_key[64];
-    if (compute_dht_key(identity, dht_key) != 0) {
-        fprintf(stderr, "[DHT_CONTACTLIST] Failed to compute DHT key\n");
+    // Step 5: Generate base key for chunked storage
+    char base_key[512];
+    if (make_base_key(identity, base_key, sizeof(base_key)) != 0) {
+        fprintf(stderr, "[DHT_CONTACTLIST] Failed to generate base key\n");
         free(blob);
         return -1;
     }
 
-    // Step 6: Store in DHT (permanent storage with replacement support)
-    // Use signed put with value_id=1 to enable replacement (no accumulation)
-    int result = dht_put_signed_permanent(dht_ctx, dht_key, 64, blob, blob_size, 1);
+    // Step 6: Store in DHT using chunked layer (handles compression, chunking, signing)
+    int result = dht_chunked_publish(dht_ctx, base_key, blob, blob_size, DHT_CHUNK_TTL_365DAY);
     free(blob);
 
-    if (result != 0) {
-        fprintf(stderr, "[DHT_CONTACTLIST] Failed to store in DHT\n");
+    if (result != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT_CONTACTLIST] Failed to store in DHT: %s\n", dht_chunked_strerror(result));
         return -1;
     }
 
-    printf("[DHT_CONTACTLIST] Successfully published contact list to DHT (signed, value_id=1)\n");
+    printf("[DHT_CONTACTLIST] Successfully published contact list to DHT\n");
     return 0;
 }
 
@@ -383,20 +373,20 @@ int dht_contactlist_fetch(
 
     printf("[DHT_CONTACTLIST] Fetching contact list for '%s'\n", identity);
 
-    // Step 1: Compute DHT key
-    uint8_t dht_key[64];
-    if (compute_dht_key(identity, dht_key) != 0) {
-        fprintf(stderr, "[DHT_CONTACTLIST] Failed to compute DHT key\n");
+    // Step 1: Generate base key for chunked storage
+    char base_key[512];
+    if (make_base_key(identity, base_key, sizeof(base_key)) != 0) {
+        fprintf(stderr, "[DHT_CONTACTLIST] Failed to generate base key\n");
         return -1;
     }
 
-    // Step 2: Fetch from DHT
+    // Step 2: Fetch from DHT using chunked layer (handles decompression, reassembly)
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_get(dht_ctx, dht_key, 64, &blob, &blob_size);
-    if (result != 0 || !blob) {
-        printf("[DHT_CONTACTLIST] Contact list not found in DHT\n");
+    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
+    if (result != DHT_CHUNK_OK || !blob) {
+        printf("[DHT_CONTACTLIST] Contact list not found in DHT: %s\n", dht_chunked_strerror(result));
         return -2;  // Not found
     }
 
@@ -576,26 +566,25 @@ int dht_contactlist_fetch(
 /**
  * Clear contact list from DHT (best-effort, not guaranteed)
  *
- * DEPRECATED: With signed puts (value_id=1), this function is no longer necessary.
+ * DEPRECATED: With chunked storage, this function publishes empty chunks to overwrite.
  * Use dht_contactlist_publish() with an empty contact array instead, which will
- * replace the old contact list with an empty one via the signed put mechanism.
+ * replace the old contact list with an empty one.
  *
- * This function uses dht_delete() which is best-effort in DHT networks - not guaranteed
- * to succeed. For reliable clearing, use: dht_contactlist_publish(ctx, identity, NULL, 0, ...)
+ * Note: DHT doesn't support true deletion. Chunks will fully expire via TTL.
  */
 int dht_contactlist_clear(dht_context_t *dht_ctx, const char *identity) {
     if (!dht_ctx || !identity) {
         return -1;
     }
 
-    uint8_t dht_key[64];
-    if (compute_dht_key(identity, dht_key) != 0) {
+    char base_key[512];
+    if (make_base_key(identity, base_key, sizeof(base_key)) != 0) {
         return -1;
     }
 
-    // Note: DHT deletion is best-effort (not guaranteed)
-    // With signed puts, prefer publishing empty list via dht_contactlist_publish()
-    dht_delete(dht_ctx, dht_key, 64);
+    // Note: dht_chunked_delete overwrites with empty chunks
+    // Chunks will fully expire via TTL
+    dht_chunked_delete(dht_ctx, base_key, 0);
 
     printf("[DHT_CONTACTLIST] Attempted to clear contact list for '%s' (best-effort, deprecated)\n", identity);
     printf("[DHT_CONTACTLIST] Recommend using dht_contactlist_publish() with empty array for reliable clearing\n");
@@ -634,16 +623,16 @@ bool dht_contactlist_exists(dht_context_t *dht_ctx, const char *identity) {
         return false;
     }
 
-    uint8_t dht_key[64];
-    if (compute_dht_key(identity, dht_key) != 0) {
+    char base_key[512];
+    if (make_base_key(identity, base_key, sizeof(base_key)) != 0) {
         return false;
     }
 
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_get(dht_ctx, dht_key, 64, &blob, &blob_size);
-    if (result == 0 && blob) {
+    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
+    if (result == DHT_CHUNK_OK && blob) {
         free(blob);
         return true;
     }
@@ -659,16 +648,16 @@ int dht_contactlist_get_timestamp(dht_context_t *dht_ctx, const char *identity, 
         return -1;
     }
 
-    uint8_t dht_key[64];
-    if (compute_dht_key(identity, dht_key) != 0) {
+    char base_key[512];
+    if (make_base_key(identity, base_key, sizeof(base_key)) != 0) {
         return -1;
     }
 
     uint8_t *blob = NULL;
     size_t blob_size = 0;
 
-    int result = dht_get(dht_ctx, dht_key, 64, &blob, &blob_size);
-    if (result != 0 || !blob) {
+    int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
+    if (result != DHT_CHUNK_OK || !blob) {
         return -2;  // Not found
     }
 

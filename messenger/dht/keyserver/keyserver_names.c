@@ -96,29 +96,17 @@ int dna_register_name(
         return -1;
     }
 
-    // Compute identity DHT key
-    char key_input[256];
-    snprintf(key_input, sizeof(key_input), "%s:profile", fingerprint);
+    // Create base key for identity (chunked layer handles hashing)
+    char base_key[256];
+    snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    unsigned char hash[64];
-    if (qgp_sha3_512((unsigned char*)key_input, strlen(key_input), hash) != 0) {
-        free(json);
-        dna_identity_free(identity);
-        return -1;
-    }
-
-    char dht_key[129];
-    for (int i = 0; i < 64; i++) {
-        sprintf(dht_key + (i * 2), "%02x", hash[i]);
-    }
-    dht_key[128] = '\0';
-
-    ret = dht_put_signed_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                                    (uint8_t*)json, strlen(json), 1);
+    ret = dht_chunked_publish(dht_ctx, base_key,
+                              (uint8_t*)json, strlen(json),
+                              DHT_CHUNK_TTL_365DAY);
     free(json);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DNA] Failed to store identity in DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DNA] Failed to store identity in DHT: %s\n", dht_chunked_strerror(ret));
         dna_identity_free(identity);
         return -1;
     }
@@ -132,23 +120,16 @@ int dna_register_name(
         *p = tolower(*p);
     }
 
-    snprintf(key_input, sizeof(key_input), "%s:lookup", normalized_name);
-    if (qgp_sha3_512((unsigned char*)key_input, strlen(key_input), hash) != 0) {
-        dna_identity_free(identity);
-        return -1;
-    }
+    // Create base key for name lookup (chunked layer handles hashing)
+    char name_base_key[256];
+    snprintf(name_base_key, sizeof(name_base_key), "%s:lookup", normalized_name);
 
-    for (int i = 0; i < 64; i++) {
-        sprintf(dht_key + (i * 2), "%02x", hash[i]);
-    }
-    dht_key[128] = '\0';
+    ret = dht_chunked_publish(dht_ctx, name_base_key,
+                              (uint8_t*)fingerprint, 128,
+                              DHT_CHUNK_TTL_365DAY);
 
-    unsigned int ttl_365_days = 365 * 24 * 3600;
-    ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                         (uint8_t*)fingerprint, 128, 1, ttl_365_days);  // Store fingerprint (128 hex chars, signed)
-
-    if (ret != 0) {
-        fprintf(stderr, "[DNA] Failed to store name mapping in DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DNA] Failed to store name mapping in DHT: %s\n", dht_chunked_strerror(ret));
         dna_identity_free(identity);
         return -1;
     }
@@ -222,29 +203,17 @@ int dna_renew_name(
         return -1;
     }
 
-    // Compute DHT key
-    char key_input[256];
-    snprintf(key_input, sizeof(key_input), "%s:profile", fingerprint);
+    // Create base key for identity (chunked layer handles hashing)
+    char base_key[256];
+    snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    unsigned char hash[64];
-    if (qgp_sha3_512((unsigned char*)key_input, strlen(key_input), hash) != 0) {
-        free(json);
-        dna_identity_free(identity);
-        return -1;
-    }
-
-    char dht_key[129];
-    for (int i = 0; i < 64; i++) {
-        sprintf(dht_key + (i * 2), "%02x", hash[i]);
-    }
-    dht_key[128] = '\0';
-
-    int ret = dht_put_signed_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                                        (uint8_t*)json, strlen(json), 1);
+    int ret = dht_chunked_publish(dht_ctx, base_key,
+                                  (uint8_t*)json, strlen(json),
+                                  DHT_CHUNK_TTL_365DAY);
     free(json);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DNA] Failed to store renewed identity in DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DNA] Failed to store renewed identity in DHT: %s\n", dht_chunked_strerror(ret));
         dna_identity_free(identity);
         return -1;
     }
@@ -275,31 +244,20 @@ int dna_lookup_by_name(
         *p = tolower(*p);
     }
 
-    // Compute DHT key: SHA3-512(name + ":lookup")
-    char key_input[300];
-    snprintf(key_input, sizeof(key_input), "%s:lookup", normalized_name);
-
-    unsigned char hash[64];
-    if (qgp_sha3_512((unsigned char*)key_input, strlen(key_input), hash) != 0) {
-        fprintf(stderr, "[DNA] Failed to compute DHT key\n");
-        return -1;
-    }
-
-    char dht_key[129];
-    for (int i = 0; i < 64; i++) {
-        sprintf(dht_key + (i * 2), "%02x", hash[i]);
-    }
-    dht_key[128] = '\0';
+    // Create base key for name lookup (chunked layer handles hashing)
+    char base_key[300];
+    snprintf(base_key, sizeof(base_key), "%s:lookup", normalized_name);
 
     printf("[DNA] Looking up name '%s'\n", normalized_name);
-    printf("[DNA] DHT key: %.32s...\n", dht_key);
+    printf("[DNA] Base key: %s\n", base_key);
 
-    // Fetch from DHT
+    // Fetch from DHT via chunked layer
     uint8_t *value = NULL;
     size_t value_len = 0;
 
-    if (dht_get(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), &value, &value_len) != 0 || !value) {
-        fprintf(stderr, "[DNA] Name not found in DHT\n");
+    int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
+    if (ret != DHT_CHUNK_OK || !value) {
+        fprintf(stderr, "[DNA] Name not found in DHT: %s\n", dht_chunked_strerror(ret));
         return -2;  // Not found
     }
 

@@ -60,24 +60,25 @@ int dht_keyserver_publish(
         return -1;
     }
 
-    // Compute DHT key FROM FINGERPRINT (primary key)
-    char dht_key[129];
-    compute_dht_key_by_fingerprint(fingerprint, dht_key);
+    // Create base key for chunked layer (it handles hashing internally)
+    char base_key[256];
+    snprintf(base_key, sizeof(base_key), "%s:pubkey", fingerprint);
 
-    // Store in DHT (permanent, signed with fixed value_id=1 to prevent accumulation)
+    // Store in DHT via chunked layer (permanent storage)
     printf("[DHT_KEYSERVER] Publishing keys for fingerprint '%s' to DHT\n", fingerprint);
     if (display_name && strlen(display_name) > 0) {
         printf("[DHT_KEYSERVER] Display name: %s\n", display_name);
     }
-    printf("[DHT_KEYSERVER] DHT key: %s\n", dht_key);
+    printf("[DHT_KEYSERVER] Base key: %s\n", base_key);
 
-    int ret = dht_put_signed_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                                        (uint8_t*)json, strlen(json), 1);
+    int ret = dht_chunked_publish(dht_ctx, base_key,
+                                  (uint8_t*)json, strlen(json),
+                                  DHT_CHUNK_TTL_365DAY);
 
     free(json);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to store in DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
@@ -154,34 +155,22 @@ int dht_keyserver_publish(
             char *reverse_json = strdup(reverse_json_str);
             json_object_put(reverse_obj);
 
-            // Compute DHT key for reverse lookup using SHA3-512
-            char reverse_key_input[256];
-            snprintf(reverse_key_input, sizeof(reverse_key_input), "%s:reverse", entry.fingerprint);
-
-            unsigned char reverse_hash[64];  // SHA3-512 = 64 bytes
-            if (qgp_sha3_512((unsigned char*)reverse_key_input, strlen(reverse_key_input), reverse_hash) != 0) {
-                fprintf(stderr, "[DHT_KEYSERVER] Failed to compute reverse DHT key\n");
-                free(reverse_json);
-                return ret;  // Still return success for main publish
-            }
-
-            char reverse_dht_key[129];
-            for (int i = 0; i < 64; i++) {
-                sprintf(reverse_dht_key + (i * 2), "%02x", reverse_hash[i]);
-            }
-            reverse_dht_key[128] = '\0';
+            // Create base key for reverse lookup (chunked layer handles hashing)
+            char reverse_base_key[256];
+            snprintf(reverse_base_key, sizeof(reverse_base_key), "%s:reverse", entry.fingerprint);
 
             printf("[DHT_KEYSERVER] Publishing signed reverse mapping (fingerprint → identity)\n");
-            printf("[DHT_KEYSERVER] Reverse key: %s\n", reverse_dht_key);
+            printf("[DHT_KEYSERVER] Reverse base key: %s\n", reverse_base_key);
 
-            unsigned int ttl_365_days = 365 * 24 * 3600;
-            ret = dht_put_signed(dht_ctx, (uint8_t*)reverse_dht_key, strlen(reverse_dht_key),
-                                 (uint8_t*)reverse_json, strlen(reverse_json), 1, ttl_365_days);
+            ret = dht_chunked_publish(dht_ctx, reverse_base_key,
+                                      (uint8_t*)reverse_json, strlen(reverse_json),
+                                      DHT_CHUNK_TTL_365DAY);
 
             free(reverse_json);
 
-            if (ret != 0) {
-                fprintf(stderr, "[DHT_KEYSERVER] Warning: Failed to store reverse mapping (non-critical)\n");
+            if (ret != DHT_CHUNK_OK) {
+                fprintf(stderr, "[DHT_KEYSERVER] Warning: Failed to store reverse mapping (non-critical): %s\n",
+                        dht_chunked_strerror(ret));
             } else {
                 printf("[DHT_KEYSERVER] ✓ Signed reverse mapping published\n");
             }
@@ -216,21 +205,20 @@ int dht_keyserver_publish_alias(
         return -1;
     }
 
-    // Compute alias DHT key
-    char alias_key[129];
-    compute_dht_key_by_name(name, alias_key);
+    // Create base key for alias (chunked layer handles hashing)
+    char alias_base_key[256];
+    snprintf(alias_base_key, sizeof(alias_base_key), "%s:lookup", name);
 
-    // Store fingerprint as plain text (signed with fixed value_id=1 to prevent accumulation)
-    // Use 365-day TTL for name registrations (persistent identity)
+    // Store fingerprint as plain text via chunked layer
     printf("[DHT_KEYSERVER] Publishing alias: '%s' → %s\n", name, fingerprint);
-    printf("[DHT_KEYSERVER] Alias DHT key: %s\n", alias_key);
+    printf("[DHT_KEYSERVER] Alias base key: %s\n", alias_base_key);
 
-    unsigned int ttl_365_days = 365 * 24 * 3600;  // 365 days in seconds
-    int ret = dht_put_signed(dht_ctx, (uint8_t*)alias_key, strlen(alias_key),
-                             (uint8_t*)fingerprint, 128, 1, ttl_365_days);
+    int ret = dht_chunked_publish(dht_ctx, alias_base_key,
+                                  (uint8_t*)fingerprint, 128,
+                                  DHT_CHUNK_TTL_365DAY);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to publish alias\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to publish alias: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
@@ -286,21 +274,22 @@ int dht_keyserver_update(
         return -1;
     }
 
-    // Compute DHT key FROM FINGERPRINT (fingerprint-first)
-    char dht_key[129];
-    compute_dht_key_by_fingerprint(entry.fingerprint, dht_key);
+    // Create base key for chunked layer (fingerprint-first)
+    char base_key[256];
+    snprintf(base_key, sizeof(base_key), "%s:pubkey", entry.fingerprint);
 
-    // Store in DHT (signed with fixed value_id=1 to replace old entry)
+    // Store in DHT via chunked layer
     printf("[DHT_KEYSERVER] Updating keys for fingerprint: %s\n", entry.fingerprint);
     printf("[DHT_KEYSERVER] New version: %u\n", new_version);
 
-    ret = dht_put_signed_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                                    (uint8_t*)json, strlen(json), 1);
+    ret = dht_chunked_publish(dht_ctx, base_key,
+                              (uint8_t*)json, strlen(json),
+                              DHT_CHUNK_TTL_365DAY);
 
     free(json);
 
-    if (ret != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to update in DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to update in DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
