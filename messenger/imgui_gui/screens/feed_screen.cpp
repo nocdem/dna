@@ -683,6 +683,7 @@ void loadChannels(AppState& state) {
             state.feed_channels.push_back(ch);
         }
         dna_feed_registry_free(registry);
+        registry = nullptr;  // Prevent double-free
         state.feed_status = "";
     } else if (ret == -2) {
         // No registry exists - try to create default channels
