@@ -277,28 +277,24 @@ void renderChannelList(AppState& state) {
             bool is_selected = (state.selected_feed_channel == (int)i);
             ImGui::PushID((int)i);
 
-            // Channel item background
+            // Channel item - use Selectable for proper hit testing
+            float item_height = 50.0f;
             ImVec2 item_min = ImGui::GetCursorScreenPos();
-            ImVec2 item_max = ImVec2(item_min.x + ImGui::GetContentRegionAvail().x, item_min.y + 50);
 
+            // Draw selection background
             if (is_selected) {
                 ImVec4 bg_color = theme_color;
                 bg_color.w = 0.2f;
+                ImVec2 item_max = ImVec2(item_min.x + ImGui::GetContentRegionAvail().x, item_min.y + item_height);
                 ImGui::GetWindowDrawList()->AddRectFilled(item_min, item_max, ImGui::ColorConvertFloat4ToU32(bg_color), 4.0f);
             }
 
-            // Invisible button for click handling
-            if (ImGui::InvisibleButton("##channel", ImVec2(ImGui::GetContentRegionAvail().x, 50))) {
-                state.selected_feed_channel = (int)i;
-                state.current_channel_id = channel.channel_id;
-                state.current_view = VIEW_FEED_CHANNEL;
-                loadChannelPosts(state);
-            }
+            // Channel content in a group
+            ImGui::BeginGroup();
 
-            // Reset cursor for drawing content
-            ImGui::SetCursorScreenPos(item_min);
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10);
-            ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 8);
+            // Padding
+            ImGui::Dummy(ImVec2(10, 8));
+            ImGui::SameLine();
 
             // Channel icon and name
             ImGui::TextColored(theme_color, ICON_FA_HASHTAG);
@@ -316,14 +312,28 @@ void renderChannelList(AppState& state) {
             ImGui::TextColored(hint_color, "[%d]", channel.post_count);
 
             // Description (truncated)
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 28);
+            ImGui::Dummy(ImVec2(28, 0));
+            ImGui::SameLine();
             std::string desc = channel.description;
             if (desc.length() > 35) {
                 desc = desc.substr(0, 32) + "...";
             }
             ImGui::TextColored(hint_color, "%s", desc.c_str());
 
-            ImGui::SetCursorPosY(item_max.y - item_min.y + ImGui::GetCursorPosY() - 50 + 4);
+            ImGui::EndGroup();
+
+            // Make the whole area clickable
+            ImVec2 group_min = item_min;
+            ImVec2 group_max = ImVec2(item_min.x + ImGui::GetContentRegionAvail().x, item_min.y + item_height);
+            if (ImGui::IsMouseHoveringRect(group_min, group_max) && ImGui::IsMouseClicked(0)) {
+                state.selected_feed_channel = (int)i;
+                state.current_channel_id = channel.channel_id;
+                state.current_view = VIEW_FEED_CHANNEL;
+                loadChannelPosts(state);
+            }
+
+            // Ensure proper spacing
+            ImGui::Dummy(ImVec2(0, 4));
 
             ImGui::PopID();
         }
