@@ -1338,13 +1338,9 @@ Dht::storageStore(const InfoHash& id, const Sp<Value>& value, time_point created
         store_bucket = &store_quota[sa];
 
     auto store = st->second.store(id, value, created, expiration, store_bucket);
-    std::cout << "[DEBUG] Storage::store() returned: " << (store.first ? "SUCCESS" : "NULL") << std::endl;
     if (auto vs = store.first) {
         total_store_size += store.second.size_diff;
         total_values += store.second.values_diff;
-        std::cout << "[STORAGE] Dht ptr = " << (void*)this << std::endl;
-        std::cout << "[DEBUG] ✓ Internal storage updated: total_store_size=" << total_store_size
-                  << ", total_values=" << total_values << std::endl;
         scheduler.cancel(vs->expiration_job);
         if (not permanent) {
             vs->expiration_job = scheduler.add(expiration, std::bind(&Dht::expireStorage, this, id));
@@ -1358,8 +1354,6 @@ Dht::storageStore(const InfoHash& id, const Sp<Value>& value, time_point created
         } else {
             storageChanged(id, st->second, vs->data, store.second.values_diff > 0 || store.second.edited_values > 0);
         }
-    } else {
-        std::cout << "[DEBUG] ✗ Storage::store() returned NULL - Value NOT added to internal memory!" << std::endl;
     }
 
     return std::get<0>(store);
