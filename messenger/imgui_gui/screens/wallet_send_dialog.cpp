@@ -23,7 +23,7 @@ extern "C" {
 
 // Network fee constants
 #define NETWORK_FEE_DATOSHI 2000000000000000ULL  // 0.002 CELL
-#define NETWORK_FEE_COLLECTOR "mHLjDKBUWvbwW8UZo8X4U76aPT8j7EsdZ1b7e8rKEtL8xoE"
+#define NETWORK_FEE_COLLECTOR "Rj7J7MiX2bWy8sNyX38bB86KTFUnSn7sdKDsTFa2RJyQTDWFaebrj6BucT7Wa5CSq77zwRAwevbiKy1sv1RBGTonM83D3xPDwoyGasZ7"
 
 // UTXO structure for transaction building
 typedef struct {
