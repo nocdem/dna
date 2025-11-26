@@ -103,6 +103,7 @@ int main(int argc, char** argv) {
     int bootstrap_count = 0;
     std::string public_ip = "";
     bool verbose = false;
+    (void)verbose;  // TODO: implement verbose logging
 
     // Parse command line arguments
     for (int i = 1; i < argc; i++) {
