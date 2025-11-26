@@ -192,10 +192,10 @@ void renderSidebar(AppState& state) {
                                    state.profile_registered_name != "Error loading";
         
         if (has_registered_name) {
-            // User is registered - show all 4 round icon buttons in a single row
-            // Edit Profile, Post to Wall, Wallet, Settings
+            // User is registered - show all 5 round icon buttons in a single row
+            // Edit Profile, Post to Wall, Feed, Wallet, Settings
             float button_spacing = 8.0f;
-            float total_width = (32.0f * 4) + (button_spacing * 3);  // 4 buttons, 3 spaces
+            float total_width = (32.0f * 5) + (button_spacing * 4);  // 5 buttons, 4 spaces
             float start_x = (250 - total_width) * 0.5f;
 
             ImGui::SetCursorPosX(start_x);
@@ -207,7 +207,7 @@ void renderSidebar(AppState& state) {
             }
 
             ImGui::SameLine(0, button_spacing);
-            if (ThemedRoundButton(ICON_FA_NEWSPAPER)) {
+            if (ThemedRoundButton(ICON_FA_COMMENT)) {
                 state.wall_fingerprint = state.current_identity;
                 state.wall_display_name = "My Wall";
                 state.wall_is_own = true;
@@ -215,6 +215,15 @@ void renderSidebar(AppState& state) {
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
                 ImGui::SetTooltip("Post messages to your public wall");
+            }
+
+            ImGui::SameLine(0, button_spacing);
+            if (ThemedRoundButton(ICON_FA_NEWSPAPER)) {
+                state.current_view = VIEW_FEED;
+                state.selected_contact = -1;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                ImGui::SetTooltip("Browse public feed channels");
             }
 
             ImGui::SameLine(0, button_spacing);
@@ -233,9 +242,9 @@ void renderSidebar(AppState& state) {
                 ImGui::SetTooltip("Configure application settings");
             }
         } else {
-            // User not registered - show Register DNA, Wallet and Settings buttons in a row
+            // User not registered - show Register DNA, Feed, Wallet and Settings buttons in a row
             float button_spacing = 8.0f;
-            float total_width = (32.0f * 3) + (button_spacing * 2);  // 3 buttons, 2 spaces
+            float total_width = (32.0f * 4) + (button_spacing * 3);  // 4 buttons, 3 spaces
             float available_width = ImGui::GetContentRegionAvail().x;
             float start_x = (available_width - total_width) * 0.5f;
 
@@ -245,6 +254,15 @@ void renderSidebar(AppState& state) {
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
                 ImGui::SetTooltip("Register a human-readable DNA name");
+            }
+
+            ImGui::SameLine(0, button_spacing);
+            if (ThemedRoundButton(ICON_FA_NEWSPAPER)) {
+                state.current_view = VIEW_FEED;
+                state.selected_contact = -1;
+            }
+            if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayNormal | ImGuiHoveredFlags_NoSharedDelay)) {
+                ImGui::SetTooltip("Browse public feed channels");
             }
 
             ImGui::SameLine(0, button_spacing);
