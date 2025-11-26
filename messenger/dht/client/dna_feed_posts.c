@@ -353,7 +353,10 @@ static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char
     int ret = dht_get_all(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
                           &values, &value_lens, &value_count);
 
+    printf("[DNA_FEED_DEBUG] get_bucket: dht_get_all returned %d, value_count=%zu\n", ret, value_count);
+
     if (ret != 0 || value_count == 0) {
+        printf("[DNA_FEED_DEBUG] get_bucket: no values found (ret=%d)\n", ret);
         return -2;
     }
 
@@ -446,11 +449,19 @@ static int save_bucket(dht_context_t *dht_ctx, const dna_feed_bucket_t *bucket) 
         return -1;
     }
 
+    printf("[DNA_FEED_DEBUG] save_bucket: channel=%s date=%s post_count=%zu\n",
+           bucket->channel_id, bucket->bucket_date, bucket->post_count);
+    for (size_t i = 0; i < bucket->post_count; i++) {
+        printf("[DNA_FEED_DEBUG]   post_id[%zu]: %.40s...\n", i, bucket->post_ids[i]);
+    }
+
     /* Signed put with value_id=1 - each user maintains their own bucket.
      * Different users have different signed values, merged on read. */
     int ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
                              (const uint8_t *)json_data, strlen(json_data),
                              1, DNA_FEED_TTL_SECONDS);
+
+    printf("[DNA_FEED_DEBUG] save_bucket: dht_put_signed returned %d\n", ret);
     free(json_data);
 
     return ret;
