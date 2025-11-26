@@ -1,16 +1,15 @@
 /**
  * P2P Transport Offline Queue Module
- * Per-Message Model: Each message gets unique DHT key (no GET-MODIFY-PUT)
+ * Model E: Sender outbox architecture for offline message delivery
  */
 
 #include "transport_core.h"
-#include "../../dht/shared/dht_permsg.h"
 
 /**
- * Queue offline message using per-message DHT keys (NEW MODEL)
- * Each message gets its own unique DHT key - no blocking GET required!
+ * Queue offline message in sender's DHT outbox (Model E)
+ * Stores encrypted message in sender's outbox for recipient to retrieve
  * @param ctx: P2P transport context
- * @param sender: Sender fingerprint
+ * @param sender: Sender fingerprint (owner of outbox)
  * @param recipient: Recipient fingerprint
  * @param message: Encrypted message data
  * @param message_len: Message length
@@ -33,21 +32,19 @@ int p2p_queue_offline_message(
         return -1;
     }
 
-    printf("[P2P] Queueing offline message for %s (%zu bytes) [PER-MESSAGE MODEL]\n", recipient, message_len);
+    printf("[P2P] Queueing offline message for %s (%zu bytes)\n", recipient, message_len);
 
-    // Use NEW per-message model: instant PUT, no blocking GET!
-    int result = dht_permsg_put(
+    int result = dht_queue_message(
         ctx->dht,
         sender,
         recipient,
         message,
         message_len,
-        ctx->config.offline_ttl_seconds,
-        NULL  // Don't need message key back
+        ctx->config.offline_ttl_seconds
     );
 
     if (result == 0) {
-        printf("[P2P] ✓ Message queued successfully (per-message key)\n");
+        printf("[P2P] ✓ Message queued successfully\n");
         // Update statistics
         ctx->offline_queued++;
     } else {
@@ -58,8 +55,8 @@ int p2p_queue_offline_message(
 }
 
 /**
- * Check offline messages using per-message DHT keys (NEW MODEL)
- * Fetches notifications and retrieves individual messages
+ * Check offline messages from contacts' outboxes (Model E)
+ * Queries each contact's outbox for messages addressed to this user
  * @param ctx: P2P transport context
  * @param messages_received: Output number of messages delivered (optional)
  * @return: 0 on success, -1 on error
@@ -78,7 +75,7 @@ int p2p_check_offline_messages(
         return 0;
     }
 
-    printf("[P2P] Checking DHT for offline messages [PER-MESSAGE MODEL]...\n");
+    printf("[P2P] Checking DHT for offline messages (Model E - querying contacts' outboxes)...\n");
 
     // 1. Load contacts from database
     contact_list_t *contacts = NULL;
@@ -88,7 +85,7 @@ int p2p_check_offline_messages(
         return 0;
     }
 
-    printf("[P2P] Loaded %zu contacts for message filtering\n", contacts->count);
+    printf("[P2P] Loaded %zu contacts, will query each sender's outbox\n", contacts->count);
 
     // 2. Build array of sender fingerprints
     const char **sender_fps = (const char**)malloc(contacts->count * sizeof(char*));
@@ -103,11 +100,13 @@ int p2p_check_offline_messages(
         sender_fps[i] = contacts->contacts[i].identity;  // Fingerprint
     }
 
-    // 3. Fetch messages using per-message model
-    dht_permsg_t *messages = NULL;
+    // 3. Query all contacts' outboxes
+    // For each contact: Key = SHA3-512(contact_fp + ":outbox:" + my_fp)
+    dht_offline_message_t *messages = NULL;
     size_t count = 0;
 
-    int result = dht_permsg_fetch_from_contacts(
+    // Use parallel version for 10-100× speedup
+    int result = dht_retrieve_queued_messages_from_contacts_parallel(
         ctx->dht,
         ctx->config.identity,  // My fingerprint (recipient)
         sender_fps,
@@ -120,28 +119,30 @@ int p2p_check_offline_messages(
     contacts_db_free_list(contacts);
 
     if (result != 0) {
-        fprintf(stderr, "[P2P] Failed to retrieve offline messages\n");
+        fprintf(stderr, "[P2P] Failed to retrieve offline messages from contacts' outboxes\n");
         if (messages_received) *messages_received = 0;
         return -1;
     }
 
     if (count == 0) {
-        printf("[P2P] No offline messages found\n");
+        printf("[P2P] No offline messages in any contact's outbox\n");
         if (messages_received) *messages_received = 0;
         return 0;
     }
 
-    printf("[P2P] Found %zu offline messages\n", count);
+    printf("[P2P] Found %zu offline messages from contacts' outboxes\n", count);
 
     // 4. Deliver each message via callback
     size_t delivered_count = 0;
     for (size_t i = 0; i < count; i++) {
-        dht_permsg_t *msg = &messages[i];
+        dht_offline_message_t *msg = &messages[i];
 
-        printf("[P2P] Delivering offline message %zu/%zu from %.20s... (%zu bytes)\n",
-               i + 1, count, msg->sender_fp, msg->ciphertext_len);
+        printf("[P2P] Delivering offline message %zu/%zu from %s (%zu bytes)\n",
+               i + 1, count, msg->sender, msg->ciphertext_len);
 
         // Deliver to application layer (messenger_p2p.c)
+        // Note: Sender pubkey is unknown for offline messages (would need reverse lookup)
+        // Callback will try to identify sender from message content
         if (ctx->message_callback) {
             ctx->message_callback(
                 NULL,  // peer_pubkey (unknown for offline messages)
@@ -157,10 +158,13 @@ int p2p_check_offline_messages(
 
     printf("[P2P] ✓ Delivered %zu/%zu offline messages\n", delivered_count, count);
 
+    // Note (Model E): No queue clearing needed - recipients don't control sender outboxes.
+    // Senders manage their own outboxes. Messages delivered to local SQLite only.
+
     if (messages_received) {
         *messages_received = delivered_count;
     }
 
-    dht_permsg_free_messages(messages, count);
+    dht_offline_messages_free(messages, count);
     return 0;
 }

@@ -25,7 +25,6 @@ if(WIN32)
         shared/dht_groups.c
         shared/dht_profile.c
         shared/dht_gsk_storage.c  # Phase 13: GSK chunked storage
-        shared/dht_permsg.c       # Per-message DHT storage (no GET-MODIFY-PUT)
         # Client modules (Phase 3/4)
         client/dht_identity.cpp
         client/dht_singleton.c
@@ -66,7 +65,6 @@ else()
         shared/dht_groups.c
         shared/dht_profile.c
         shared/dht_gsk_storage.c  # Phase 13: GSK chunked storage
-        shared/dht_permsg.c       # Per-message DHT storage (no GET-MODIFY-PUT)
         # Client modules (Phase 3/4)
         client/dht_identity.cpp
         client/dht_singleton.c
