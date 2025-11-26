@@ -153,6 +153,15 @@ void sha3_512_hash(const uint8_t *data, size_t len, uint8_t *hash_out);
 int get_external_ip(char *ip_out, size_t len);
 
 /**
+ * Get public IP address via STUN query
+ * Queries STUN server to discover NAT-mapped public IP
+ * @param ip_out: Output buffer for public IP string
+ * @param len: Buffer length
+ * @return: 0 on success, -1 on failure
+ */
+int stun_get_public_ip(char *ip_out, size_t len);
+
+/**
  * Create presence JSON for DHT registration
  * @param ip: IP address
  * @param port: TCP port

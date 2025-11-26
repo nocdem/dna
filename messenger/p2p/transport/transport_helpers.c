@@ -5,6 +5,13 @@
 
 #include "transport_core.h"
 
+// Windows static linking: define JUICE_STATIC to avoid dllimport declarations
+#ifdef _WIN32
+#define JUICE_STATIC
+#endif
+
+#include <juice/juice.h>
+
 /**
  * Compute SHA3-512 hash (Category 5 security)
  * Used for DHT keys: key = SHA3-512(public_key)
@@ -107,6 +114,147 @@ int get_external_ip(char *ip_out, size_t len) {
 
     snprintf(ip_out, len, "%s", all_ips);
     return 0;
+}
+
+// ============================================================================
+// STUN Public IP Discovery
+// ============================================================================
+
+// State for STUN callback
+typedef struct {
+    char public_ip[64];
+    volatile int gathering_done;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+} stun_state_t;
+
+// Callback for STUN candidate discovery
+static void on_stun_candidate(juice_agent_t *agent, const char *sdp, void *user_ptr) {
+    stun_state_t *state = (stun_state_t*)user_ptr;
+    if (!state || !sdp) return;
+
+    // Look for srflx (server-reflexive) candidate - this contains public IP
+    // Format: a=candidate:2 1 UDP 1678769919 195.174.168.27 35404 typ srflx ...
+    if (strstr(sdp, "typ srflx") != NULL) {
+        // Parse IP from candidate string
+        // Skip "a=candidate:X X UDP PRIORITY "
+        const char *p = sdp;
+        int space_count = 0;
+        while (*p && space_count < 4) {
+            if (*p == ' ') space_count++;
+            p++;
+        }
+
+        if (*p) {
+            // Now p points to IP address
+            char ip[64] = {0};
+            int i = 0;
+            while (*p && *p != ' ' && i < 63) {
+                ip[i++] = *p++;
+            }
+            ip[i] = '\0';
+
+            pthread_mutex_lock(&state->mutex);
+            if (state->public_ip[0] == '\0') {
+                strncpy(state->public_ip, ip, sizeof(state->public_ip) - 1);
+                printf("[STUN] Discovered public IP: %s\n", ip);
+            }
+            pthread_mutex_unlock(&state->mutex);
+        }
+    }
+}
+
+// Callback for gathering done
+static void on_stun_gathering_done(juice_agent_t *agent, void *user_ptr) {
+    stun_state_t *state = (stun_state_t*)user_ptr;
+    if (!state) return;
+
+    pthread_mutex_lock(&state->mutex);
+    state->gathering_done = 1;
+    pthread_cond_broadcast(&state->cond);
+    pthread_mutex_unlock(&state->mutex);
+}
+
+// Dummy callbacks (required by libjuice)
+static void on_stun_state_changed(juice_agent_t *agent, juice_state_t s, void *user_ptr) {}
+static void on_stun_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {}
+
+/**
+ * Get public IP address via STUN query
+ * Queries STUN server to discover NAT-mapped public IP
+ * @param ip_out: Output buffer for public IP string
+ * @param len: Buffer length
+ * @return: 0 on success, -1 on failure
+ */
+int stun_get_public_ip(char *ip_out, size_t len) {
+    if (!ip_out || len < 16) {
+        return -1;
+    }
+
+    // Initialize state
+    stun_state_t state;
+    memset(&state, 0, sizeof(state));
+    state.gathering_done = 0;
+    pthread_mutex_init(&state.mutex, NULL);
+    pthread_cond_init(&state.cond, NULL);
+
+    // Configure libjuice for STUN-only query
+    juice_config_t config;
+    memset(&config, 0, sizeof(config));
+    config.concurrency_mode = JUICE_CONCURRENCY_MODE_POLL;
+    config.stun_server_host = "stun.l.google.com";
+    config.stun_server_port = 19302;
+    config.cb_state_changed = on_stun_state_changed;
+    config.cb_candidate = on_stun_candidate;
+    config.cb_gathering_done = on_stun_gathering_done;
+    config.cb_recv = on_stun_recv;
+    config.user_ptr = &state;
+
+    // Create temporary agent
+    juice_agent_t *agent = juice_create(&config);
+    if (!agent) {
+        pthread_mutex_destroy(&state.mutex);
+        pthread_cond_destroy(&state.cond);
+        return -1;
+    }
+
+    // Start gathering (this triggers STUN query)
+    if (juice_gather_candidates(agent) < 0) {
+        juice_destroy(agent);
+        pthread_mutex_destroy(&state.mutex);
+        pthread_cond_destroy(&state.cond);
+        return -1;
+    }
+
+    // Wait for gathering to complete (max 5 seconds)
+    pthread_mutex_lock(&state.mutex);
+
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 5;
+
+    while (!state.gathering_done) {
+        int ret = pthread_cond_timedwait(&state.cond, &state.mutex, &deadline);
+        if (ret == ETIMEDOUT) {
+            break;
+        }
+    }
+
+    // Copy result
+    int success = (state.public_ip[0] != '\0');
+    if (success) {
+        strncpy(ip_out, state.public_ip, len - 1);
+        ip_out[len - 1] = '\0';
+    }
+
+    pthread_mutex_unlock(&state.mutex);
+
+    // Cleanup
+    juice_destroy(agent);
+    pthread_mutex_destroy(&state.mutex);
+    pthread_cond_destroy(&state.cond);
+
+    return success ? 0 : -1;
 }
 
 /**

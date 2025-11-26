@@ -21,11 +21,31 @@ int p2p_register_presence(p2p_transport_t *ctx) {
         return -1;
     }
 
-    // Get external IP
-    char my_ip[64];
-    if (get_external_ip(my_ip, sizeof(my_ip)) != 0) {
-        printf("[P2P] Failed to get external IP\n");
+    // Get local IPs (LAN addresses)
+    char local_ips[256];
+    if (get_external_ip(local_ips, sizeof(local_ips)) != 0) {
+        printf("[P2P] Failed to get local IPs\n");
         return -1;
+    }
+
+    // Get public IP via STUN (NAT-mapped address)
+    char public_ip[64] = {0};
+    if (stun_get_public_ip(public_ip, sizeof(public_ip)) == 0) {
+        printf("[P2P] STUN discovered public IP: %s\n", public_ip);
+    } else {
+        printf("[P2P] STUN query failed (will use local IPs only)\n");
+    }
+
+    // Combine local IPs + public IP (avoid duplicates)
+    char my_ip[512];
+    if (public_ip[0] != '\0' && strstr(local_ips, public_ip) == NULL) {
+        // Public IP is different from all local IPs - include both
+        snprintf(my_ip, sizeof(my_ip), "%s,%s", local_ips, public_ip);
+        printf("[P2P] Using IPs: %s (local + public)\n", my_ip);
+    } else {
+        // Either STUN failed or public IP matches a local IP
+        snprintf(my_ip, sizeof(my_ip), "%s", local_ips);
+        printf("[P2P] Using IPs: %s (local only)\n", my_ip);
     }
 
     // Create presence JSON
