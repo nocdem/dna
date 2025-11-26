@@ -12,6 +12,8 @@
 #include <algorithm>
 #include <ctime>
 #include <cstring>
+#include <map>
+#include <functional>
 
 extern "C" {
     #include "../../messenger.h"
@@ -98,6 +100,58 @@ static std::string getAuthorName(AppState& state, const std::string& fingerprint
         return shortened;
     }
     return fingerprint;
+}
+
+// Sort posts in threaded order: top-level posts (newest first), with replies below their parent (oldest first)
+static void sortPostsThreaded(std::vector<FeedPost>& posts) {
+    if (posts.empty()) return;
+
+    // Build lookup maps
+    std::map<std::string, const FeedPost*> post_by_id;
+    std::map<std::string, std::vector<const FeedPost*>> replies_by_parent;
+    std::vector<const FeedPost*> top_level;
+
+    for (const auto& post : posts) {
+        post_by_id[post.post_id] = &post;
+        if (post.reply_to.empty()) {
+            top_level.push_back(&post);
+        } else {
+            replies_by_parent[post.reply_to].push_back(&post);
+        }
+    }
+
+    // Sort top-level by timestamp desc (newest first)
+    std::sort(top_level.begin(), top_level.end(),
+              [](const FeedPost* a, const FeedPost* b) {
+                  return a->timestamp > b->timestamp;
+              });
+
+    // Sort each reply group by timestamp asc (oldest first)
+    for (auto& pair : replies_by_parent) {
+        std::sort(pair.second.begin(), pair.second.end(),
+                  [](const FeedPost* a, const FeedPost* b) {
+                      return a->timestamp < b->timestamp;
+                  });
+    }
+
+    // Build result with depth-first traversal (replies directly after parent)
+    std::vector<FeedPost> result;
+    std::function<void(const FeedPost*)> addWithReplies;
+    addWithReplies = [&](const FeedPost* post) {
+        result.push_back(*post);
+        auto it = replies_by_parent.find(post->post_id);
+        if (it != replies_by_parent.end()) {
+            for (const FeedPost* reply : it->second) {
+                addWithReplies(reply);
+            }
+        }
+    };
+
+    for (const FeedPost* post : top_level) {
+        addWithReplies(post);
+    }
+
+    posts = std::move(result);
 }
 
 void render(AppState& state) {
@@ -453,8 +507,9 @@ void renderChannelContent(AppState& state) {
                     fp.user_vote = 0;
                     fp.verified = true;
 
-                    // Insert at correct position (sorted by timestamp desc)
-                    state.feed_posts.insert(state.feed_posts.begin(), fp);
+                    // Add post and re-sort with threaded ordering
+                    state.feed_posts.push_back(fp);
+                    sortPostsThreaded(state.feed_posts);
 
                     dna_feed_post_free(new_post);
                     state.feed_status = "Post created!";
@@ -751,11 +806,8 @@ void loadChannelPosts(AppState& state) {
             }
         }
 
-        // Sort by timestamp descending (newest first)
-        std::sort(state.feed_posts.begin(), state.feed_posts.end(),
-                  [](const FeedPost& a, const FeedPost& b) {
-                      return a.timestamp > b.timestamp;
-                  });
+        // Sort with threaded ordering (replies below their parent)
+        sortPostsThreaded(state.feed_posts);
 
         state.feed_status = "";
     } else if (ret == -2) {
