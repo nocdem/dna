@@ -306,6 +306,18 @@ int dht_delete(dht_context_t *ctx,
 int dht_get_node_id(dht_context_t *ctx, char *node_id_out);
 
 /**
+ * Get unique value_id for this DHT node's identity
+ *
+ * Returns a 64-bit value derived from the node's public key.
+ * Used as value_id for putSigned() to ensure each owner has a unique slot.
+ *
+ * @param ctx DHT context
+ * @param value_id_out Output for the 64-bit value_id
+ * @return 0 on success, -1 on error
+ */
+int dht_get_owner_value_id(dht_context_t *ctx, uint64_t *value_id_out);
+
+/**
  * Bootstrap to additional DHT nodes at runtime
  * Used for dynamic bootstrap node discovery
  *

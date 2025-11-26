@@ -1229,6 +1229,40 @@ extern "C" int dht_get_node_id(dht_context_t *ctx, char *node_id_out) {
 }
 
 /**
+ * Get unique value_id for this DHT node's identity
+ * Returns first 8 bytes of node ID as uint64_t
+ */
+extern "C" int dht_get_owner_value_id(dht_context_t *ctx, uint64_t *value_id_out) {
+    if (!ctx || !value_id_out) {
+        return -1;
+    }
+
+    try {
+        auto pk = ctx->runner.getPublicKey();
+        if (!pk) {
+            return -1;
+        }
+
+        // Get the long ID (64-byte hash)
+        auto long_id = pk->getLongId();
+
+        // Use first 8 bytes as uint64_t value_id
+        // This gives each DHT identity a unique value_id slot
+        uint64_t id = 0;
+        auto id_data = long_id.data();
+        for (int i = 0; i < 8; i++) {
+            id = (id << 8) | id_data[i];
+        }
+
+        *value_id_out = id;
+        return 0;
+    } catch (const std::exception& e) {
+        std::cerr << "[DHT] Exception in dht_get_owner_value_id: " << e.what() << std::endl;
+        return -1;
+    }
+}
+
+/**
  * Bootstrap to additional DHT nodes at runtime
  */
 extern "C" int dht_context_bootstrap_runtime(dht_context_t *ctx, const char *ip, uint16_t port) {
