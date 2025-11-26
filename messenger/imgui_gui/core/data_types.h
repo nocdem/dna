@@ -56,10 +56,8 @@ struct FeedChannel {
     std::string description;    // Description (512 chars max)
     std::string creator_fp;     // Creator fingerprint
     uint64_t created_at;        // Creation timestamp
-    int post_count;             // Approximate post count
     int subscriber_count;       // Approximate subscriber count
     uint64_t last_activity;     // Latest post timestamp
-    int unread_count;           // Unread posts since last view
 };
 
 // Feed post structure

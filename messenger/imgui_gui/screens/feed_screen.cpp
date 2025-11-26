@@ -187,10 +187,8 @@ void render(AppState& state) {
                         ch.description = new_channel->description;
                         ch.creator_fp = new_channel->creator_fingerprint;
                         ch.created_at = new_channel->created_at;
-                        ch.post_count = 0;
                         ch.subscriber_count = 1;
                         ch.last_activity = new_channel->created_at;
-                        ch.unread_count = 0;
                         state.feed_channels.push_back(ch);
                         dna_feed_channel_free(new_channel);
 
@@ -301,16 +299,6 @@ void renderChannelList(AppState& state) {
             ImGui::SameLine();
             ImGui::Text("%s", channel.name.c_str());
 
-            // Unread badge
-            if (channel.unread_count > 0) {
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(1.0f, 0.4f, 0.4f, 1.0f), "(%d)", channel.unread_count);
-            }
-
-            // Post count
-            ImGui::SameLine();
-            ImGui::TextColored(hint_color, "[%d]", channel.post_count);
-
             // Description (truncated)
             ImGui::Dummy(ImVec2(28, 0));
             ImGui::SameLine();
@@ -365,8 +353,6 @@ void renderChannelContent(AppState& state) {
 
     // Channel name
     ImGui::TextColored(theme_color, ICON_FA_HASHTAG " %s", channel.name.c_str());
-    ImGui::SameLine();
-    ImGui::TextColored(hint_color, "(%d posts)", channel.post_count);
 
     // Refresh button
     ImGui::SameLine();
@@ -469,12 +455,6 @@ void renderChannelContent(AppState& state) {
 
                     // Insert at correct position (sorted by timestamp desc)
                     state.feed_posts.insert(state.feed_posts.begin(), fp);
-
-                    // Update channel post count
-                    if (state.selected_feed_channel >= 0 &&
-                        state.selected_feed_channel < (int)state.feed_channels.size()) {
-                        state.feed_channels[state.selected_feed_channel].post_count++;
-                    }
 
                     dna_feed_post_free(new_post);
                     state.feed_status = "Post created!";
@@ -686,10 +666,8 @@ void loadChannels(AppState& state) {
             ch.description = registry->channels[i].description;
             ch.creator_fp = registry->channels[i].creator_fingerprint;
             ch.created_at = registry->channels[i].created_at;
-            ch.post_count = registry->channels[i].post_count;
             ch.subscriber_count = registry->channels[i].subscriber_count;
             ch.last_activity = registry->channels[i].last_activity;
-            ch.unread_count = 0;
             state.feed_channels.push_back(ch);
         }
         dna_feed_registry_free(registry);
