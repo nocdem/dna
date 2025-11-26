@@ -471,10 +471,10 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
         return -1;
     }
 
-    // Enable verbose logging for debugging ICE issues
-    juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
+    // Set log level to WARN (suppress verbose STUN debug messages)
+    juice_set_log_level(JUICE_LOG_LEVEL_WARN);
 
-    printf("[ICE] libjuice agent created (debug logging enabled)\n");
+    printf("[ICE] libjuice agent created\n");
 
     // Start gathering candidates
     int ret = juice_gather_candidates(ctx->agent);
