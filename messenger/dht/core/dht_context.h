@@ -171,6 +171,30 @@ int dht_put_signed(dht_context_t *ctx,
                    unsigned int ttl_seconds);
 
 /**
+ * Put SIGNED value in DHT with fixed value ID (SYNCHRONOUS version)
+ *
+ * Same as dht_put_signed() but WAITS for the DHT network response instead
+ * of returning immediately. Use this when you need confirmation that the
+ * value was actually stored.
+ *
+ * @param ctx DHT context
+ * @param key Key (will be hashed to 160-bit infohash)
+ * @param key_len Key length
+ * @param value Value to store
+ * @param value_len Value length
+ * @param value_id Fixed value ID (e.g., 1 for offline queue slot)
+ * @param ttl_seconds Time-to-live in seconds (0 = default 7 days)
+ * @param timeout_ms Timeout in milliseconds (0 = default 10 seconds)
+ * @return 0 on success, -1 on error, -2 on timeout
+ */
+int dht_put_signed_sync(dht_context_t *ctx,
+                        const uint8_t *key, size_t key_len,
+                        const uint8_t *value, size_t value_len,
+                        uint64_t value_id,
+                        unsigned int ttl_seconds,
+                        unsigned int timeout_ms);
+
+/**
  * Put SIGNED value in DHT permanently with fixed value ID
  *
  * This is a convenience wrapper around dht_put_signed() that sets TTL to
