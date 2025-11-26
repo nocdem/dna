@@ -779,6 +779,12 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
                   << ", type=0x" << std::hex << dht_value->type << std::dec
                   << ", id=" << value_id << ")" << std::endl;
 
+        // Debug: show which DHT identity is signing this value
+        auto my_pk = ctx->runner.getPublicKey();
+        if (my_pk) {
+            std::cout << "[DHT] PUT_SIGNED: signer=" << my_pk->getLongId().toString().substr(0, 16) << "..." << std::endl;
+        }
+
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
         // Permanent flag controls whether value expires based on ValueType
@@ -1139,7 +1145,12 @@ extern "C" int dht_get_all(dht_context_t *ctx,
             memcpy(value_array[i], val->data.data(), val->data.size());
             len_array[i] = val->data.size();
 
-            std::cout << "[DHT]   Value " << (i+1) << ": " << val->data.size() << " bytes" << std::endl;
+            // Debug: show value details including owner
+            std::cout << "[DHT]   Value " << (i+1) << ": " << val->data.size() << " bytes";
+            if (val->owner && val->owner->getId()) {
+                std::cout << ", owner=" << val->owner->getId().toString().substr(0, 16) << "...";
+            }
+            std::cout << ", id=" << val->id << ", type=" << std::hex << val->type << std::dec << std::endl;
         }
 
         *values_out = value_array;
