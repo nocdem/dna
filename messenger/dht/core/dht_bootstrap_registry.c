@@ -1,9 +1,14 @@
 /**
  * DHT Bootstrap Node Registry - Implementation
+ *
+ * Storage Model (Owner-Namespaced via Chunked):
+ * - Each node's entry stored at: dna:bootstrap:node:node_id (chunked)
+ * - Node index at: dna:bootstrap:nodes (multi-owner, small)
  */
 
 #include "dht_bootstrap_registry.h"
 #include "dht_context.h"
+#include "../shared/dht_chunked.h"
 #include "../../crypto/utils/qgp_sha3.h"
 #include <json-c/json.h>
 #include <string.h>
@@ -12,24 +17,80 @@
 #include <time.h>
 
 /**
- * Compute the well-known registry DHT key
- * Key = SHA3-512("dna:bootstrap:registry")
+ * Make base key for a node's entry
+ * Format: dna:bootstrap:node:node_id
  */
-void dht_bootstrap_registry_get_key(char *key_out) {
-    const char *registry_id = "dna:bootstrap:registry";
-    uint8_t hash[64];  // SHA3-512 = 64 bytes
-
-    qgp_sha3_512((uint8_t*)registry_id, strlen(registry_id), hash);
-
-    // Convert to hex string (128 chars)
-    for (int i = 0; i < 64; i++) {
-        sprintf(key_out + (i * 2), "%02x", hash[i]);
-    }
-    key_out[128] = '\0';
+static void make_node_base_key(const char *node_id, char *key_out, size_t key_out_size) {
+    snprintf(key_out, key_out_size, "dna:bootstrap:node:%s", node_id);
 }
 
 /**
- * Serialize registry to JSON
+ * Make key for node index (multi-owner, small)
+ * Format: dna:bootstrap:nodes
+ */
+static void make_nodes_index_key(char *key_out, size_t key_out_size) {
+    snprintf(key_out, key_out_size, "dna:bootstrap:nodes");
+}
+
+/**
+ * Serialize single node entry to JSON
+ */
+static char* node_entry_to_json(const bootstrap_node_entry_t *node) {
+    if (!node) return NULL;
+
+    json_object *node_obj = json_object_new_object();
+    json_object_object_add(node_obj, "ip", json_object_new_string(node->ip));
+    json_object_object_add(node_obj, "port", json_object_new_int(node->port));
+    json_object_object_add(node_obj, "node_id", json_object_new_string(node->node_id));
+    json_object_object_add(node_obj, "version", json_object_new_string(node->version));
+    json_object_object_add(node_obj, "last_seen", json_object_new_int64(node->last_seen));
+    json_object_object_add(node_obj, "uptime", json_object_new_int64(node->uptime));
+
+    const char *json_str = json_object_to_json_string_ext(node_obj, JSON_C_TO_STRING_PLAIN);
+    char *result = strdup(json_str);
+
+    json_object_put(node_obj);
+    return result;
+}
+
+/**
+ * Deserialize single node entry from JSON
+ */
+static int node_entry_from_json(const char *json_str, bootstrap_node_entry_t *node) {
+    if (!json_str || !node) return -1;
+
+    memset(node, 0, sizeof(bootstrap_node_entry_t));
+
+    json_object *node_obj = json_tokener_parse(json_str);
+    if (!node_obj) return -1;
+
+    json_object *ip_obj, *port_obj, *node_id_obj, *ver_obj, *last_seen_obj, *uptime_obj;
+
+    if (json_object_object_get_ex(node_obj, "ip", &ip_obj)) {
+        strncpy(node->ip, json_object_get_string(ip_obj), sizeof(node->ip) - 1);
+    }
+    if (json_object_object_get_ex(node_obj, "port", &port_obj)) {
+        node->port = json_object_get_int(port_obj);
+    }
+    if (json_object_object_get_ex(node_obj, "node_id", &node_id_obj)) {
+        strncpy(node->node_id, json_object_get_string(node_id_obj), sizeof(node->node_id) - 1);
+    }
+    if (json_object_object_get_ex(node_obj, "version", &ver_obj)) {
+        strncpy(node->version, json_object_get_string(ver_obj), sizeof(node->version) - 1);
+    }
+    if (json_object_object_get_ex(node_obj, "last_seen", &last_seen_obj)) {
+        node->last_seen = json_object_get_int64(last_seen_obj);
+    }
+    if (json_object_object_get_ex(node_obj, "uptime", &uptime_obj)) {
+        node->uptime = json_object_get_int64(uptime_obj);
+    }
+
+    json_object_put(node_obj);
+    return 0;
+}
+
+/**
+ * Serialize registry to JSON (for compatibility)
  */
 char* dht_bootstrap_registry_to_json(const bootstrap_registry_t *registry) {
     if (!registry) return NULL;
@@ -124,7 +185,11 @@ int dht_bootstrap_registry_from_json(const char *json_str, bootstrap_registry_t 
 }
 
 /**
- * Register this bootstrap node in the DHT registry
+ * Register this bootstrap node in the DHT registry (Owner-Namespaced)
+ *
+ * Storage:
+ * - Node entry at: dna:bootstrap:node:node_id (chunked)
+ * - Node index at: dna:bootstrap:nodes (multi-owner, small)
  */
 int dht_bootstrap_registry_register(
     dht_context_t *dht_ctx,
@@ -136,96 +201,55 @@ int dht_bootstrap_registry_register(
 {
     if (!dht_ctx || !my_ip || !node_id || !version) return -1;
 
-    printf("[REGISTRY] Registering bootstrap node: %s:%d\n", my_ip, my_port);
+    printf("[REGISTRY] Registering bootstrap node: %s:%d (owner-namespaced)\n", my_ip, my_port);
 
-    // Step 1: Fetch existing registry
-    bootstrap_registry_t registry;
-    memset(&registry, 0, sizeof(registry));
+    // Step 1: Create this node's entry
+    bootstrap_node_entry_t node_entry;
+    memset(&node_entry, 0, sizeof(node_entry));
 
-    char dht_key[129];
-    dht_bootstrap_registry_get_key(dht_key);
+    strncpy(node_entry.ip, my_ip, sizeof(node_entry.ip) - 1);
+    node_entry.port = my_port;
+    strncpy(node_entry.node_id, node_id, sizeof(node_entry.node_id) - 1);
+    strncpy(node_entry.version, version, sizeof(node_entry.version) - 1);
+    node_entry.last_seen = time(NULL);
+    node_entry.uptime = uptime;
 
-    uint8_t *existing_value = NULL;
-    size_t existing_len = 0;
-
-    if (dht_get(dht_ctx, (uint8_t*)dht_key, strlen(dht_key), &existing_value, &existing_len) == 0 && existing_value) {
-        // Parse existing registry
-        char *json_str = strndup((char*)existing_value, existing_len);
-        if (dht_bootstrap_registry_from_json(json_str, &registry) != 0) {
-            printf("[REGISTRY] Creating new registry (failed to parse existing)\n");
-            memset(&registry, 0, sizeof(registry));
-        }
-        free(json_str);
-        free(existing_value);
-    } else {
-        printf("[REGISTRY] Creating new registry (none found)\n");
-    }
-
-    // Step 2: Update or add this node
-    uint64_t now = time(NULL);
-    int found = -1;
-
-    for (size_t i = 0; i < registry.node_count; i++) {
-        if (strcmp(registry.nodes[i].node_id, node_id) == 0) {
-            found = i;
-            break;
-        }
-    }
-
-    if (found >= 0) {
-        // Update existing entry
-        bootstrap_node_entry_t *node = &registry.nodes[found];
-        strncpy(node->ip, my_ip, sizeof(node->ip) - 1);
-        node->port = my_port;
-        strncpy(node->version, version, sizeof(node->version) - 1);
-        node->last_seen = now;
-        node->uptime = uptime;
-        printf("[REGISTRY] Updated existing entry (index %d)\n", found);
-    } else {
-        // Add new entry
-        if (registry.node_count >= DHT_BOOTSTRAP_MAX_NODES) {
-            fprintf(stderr, "[REGISTRY] Registry full, cannot add node\n");
-            return -1;
-        }
-
-        bootstrap_node_entry_t *node = &registry.nodes[registry.node_count];
-        strncpy(node->ip, my_ip, sizeof(node->ip) - 1);
-        node->port = my_port;
-        strncpy(node->node_id, node_id, sizeof(node->node_id) - 1);
-        strncpy(node->version, version, sizeof(node->version) - 1);
-        node->last_seen = now;
-        node->uptime = uptime;
-
-        registry.node_count++;
-        printf("[REGISTRY] Added new entry (total: %zu nodes)\n", registry.node_count);
-    }
-
-    registry.registry_version++;
-
-    // Step 3: Serialize and publish
-    char *json = dht_bootstrap_registry_to_json(&registry);
+    // Step 2: Serialize and publish this node's entry via chunked
+    char *json = node_entry_to_json(&node_entry);
     if (!json) {
-        fprintf(stderr, "[REGISTRY] Failed to serialize registry\n");
+        fprintf(stderr, "[REGISTRY] Failed to serialize node entry\n");
         return -1;
     }
 
-    printf("[REGISTRY] Publishing registry (%zu nodes, version %lu)\n",
-           registry.node_count, registry.registry_version);
+    char node_key[256];
+    make_node_base_key(node_id, node_key, sizeof(node_key));
 
-    // Use 7-day TTL, value_id=1 for replacement
-    // Nodes refresh every 5 minutes, so 7 days is plenty
-    unsigned int ttl_7days = 7 * 24 * 3600;
-    int ret = dht_put_signed(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                             (uint8_t*)json, strlen(json), 1, ttl_7days);
-
+    printf("[REGISTRY] Publishing node entry via chunked\n");
+    int ret = dht_chunked_publish(dht_ctx, node_key,
+                                   (uint8_t*)json, strlen(json),
+                                   DHT_CHUNK_TTL_7DAY);
     free(json);
 
-    if (ret != 0) {
-        fprintf(stderr, "[REGISTRY] Failed to publish registry to DHT\n");
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[REGISTRY] Failed to publish node entry: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    printf("[REGISTRY] ✓ Successfully registered\n");
+    // Step 3: Register node_id in index (multi-owner, small)
+    char index_key[256];
+    make_nodes_index_key(index_key, sizeof(index_key));
+
+    printf("[REGISTRY] Registering node_id in index\n");
+    ret = dht_put_signed(dht_ctx, (uint8_t*)index_key, strlen(index_key),
+                         (uint8_t*)node_id, strlen(node_id),
+                         1, DHT_CHUNK_TTL_7DAY);
+
+    if (ret != 0) {
+        // Non-fatal - node entry is already stored
+        fprintf(stderr, "[REGISTRY] Warning: Failed to register in nodes index\n");
+    }
+
+    printf("[REGISTRY] ✓ Successfully registered node %s\n", node_id);
     return 0;
 }
 
@@ -242,75 +266,113 @@ static int find_node_by_ip_port(const bootstrap_registry_t *reg, const char *ip,
 }
 
 /**
- * Fetch the bootstrap registry from DHT
- * Gets ALL values from all owners and merges them
+ * Fetch the bootstrap registry from DHT (Owner-Namespaced)
+ *
+ * Gets node index → fetches each node's entry → merges
  */
 int dht_bootstrap_registry_fetch(dht_context_t *dht_ctx, bootstrap_registry_t *registry_out) {
     if (!dht_ctx || !registry_out) return -1;
 
-    char dht_key[129];
-    dht_bootstrap_registry_get_key(dht_key);
+    printf("[REGISTRY] Fetching bootstrap registry (owner-namespaced)...\n");
 
-    printf("[REGISTRY] Fetching bootstrap registry from DHT (all owners)...\n");
+    // Step 1: Get node index (multi-owner, small node_id list)
+    char index_key[256];
+    make_nodes_index_key(index_key, sizeof(index_key));
 
-    // Get ALL values at this key (from all owners/signers)
-    uint8_t **values = NULL;
-    size_t *values_len = NULL;
-    size_t count = 0;
+    uint8_t **index_values = NULL;
+    size_t *index_lens = NULL;
+    size_t index_count = 0;
 
-    if (dht_get_all(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                    &values, &values_len, &count) != 0 || count == 0) {
-        fprintf(stderr, "[REGISTRY] No registry found in DHT\n");
-        return -1;
+    int ret = dht_get_all(dht_ctx, (uint8_t*)index_key, strlen(index_key),
+                          &index_values, &index_lens, &index_count);
+
+    // Collect unique node_ids
+    char **node_ids = NULL;
+    size_t num_node_ids = 0;
+
+    if (ret == 0 && index_count > 0) {
+        node_ids = calloc(index_count, sizeof(char *));
+        if (node_ids) {
+            for (size_t i = 0; i < index_count; i++) {
+                if (index_values[i] && index_lens[i] > 0 && index_lens[i] < 256) {
+                    char *nid = malloc(index_lens[i] + 1);
+                    if (nid) {
+                        memcpy(nid, index_values[i], index_lens[i]);
+                        nid[index_lens[i]] = '\0';
+
+                        // Dedup
+                        bool duplicate = false;
+                        for (size_t j = 0; j < num_node_ids; j++) {
+                            if (strcmp(node_ids[j], nid) == 0) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+                        if (!duplicate) {
+                            node_ids[num_node_ids++] = nid;
+                        } else {
+                            free(nid);
+                        }
+                    }
+                }
+                free(index_values[i]);
+            }
+        }
+        free(index_values);
+        free(index_lens);
     }
 
-    printf("[REGISTRY] Found %zu registry version(s) from different owners\n", count);
+    printf("[REGISTRY] Found %zu unique node_ids in index\n", num_node_ids);
 
     // Initialize output registry
     memset(registry_out, 0, sizeof(bootstrap_registry_t));
 
-    // Parse each registry JSON and merge nodes
-    for (size_t i = 0; i < count; i++) {
-        if (!values[i] || values_len[i] == 0) continue;
+    // Step 2: Fetch each node's entry via chunked
+    for (size_t n = 0; n < num_node_ids && registry_out->node_count < DHT_BOOTSTRAP_MAX_NODES; n++) {
+        char node_key[256];
+        make_node_base_key(node_ids[n], node_key, sizeof(node_key));
 
-        char *json_str = strndup((char*)values[i], values_len[i]);
-        if (!json_str) continue;
+        uint8_t *data = NULL;
+        size_t data_len = 0;
 
-        bootstrap_registry_t temp_reg;
-        memset(&temp_reg, 0, sizeof(temp_reg));
-
-        if (dht_bootstrap_registry_from_json(json_str, &temp_reg) == 0) {
-            // Merge nodes from temp_reg into registry_out
-            for (size_t j = 0; j < temp_reg.node_count; j++) {
-                bootstrap_node_entry_t *node = &temp_reg.nodes[j];
-                int existing = find_node_by_ip_port(registry_out, node->ip, node->port);
-
-                if (existing >= 0) {
-                    // Update if this entry is newer
-                    if (node->last_seen > registry_out->nodes[existing].last_seen) {
-                        registry_out->nodes[existing] = *node;
-                    }
-                } else if (registry_out->node_count < DHT_BOOTSTRAP_MAX_NODES) {
-                    // Add new node
-                    registry_out->nodes[registry_out->node_count++] = *node;
-                }
-            }
-
-            // Track highest version
-            if (temp_reg.registry_version > registry_out->registry_version) {
-                registry_out->registry_version = temp_reg.registry_version;
-            }
+        ret = dht_chunked_fetch(dht_ctx, node_key, &data, &data_len);
+        if (ret != DHT_CHUNK_OK || !data) {
+            printf("[REGISTRY] Node %s: no data\n", node_ids[n]);
+            continue;
         }
 
+        // Parse node entry
+        char *json_str = malloc(data_len + 1);
+        if (!json_str) {
+            free(data);
+            continue;
+        }
+        memcpy(json_str, data, data_len);
+        json_str[data_len] = '\0';
+        free(data);
+
+        bootstrap_node_entry_t node_entry;
+        if (node_entry_from_json(json_str, &node_entry) == 0) {
+            // Check if node already exists by IP:port
+            int existing = find_node_by_ip_port(registry_out, node_entry.ip, node_entry.port);
+            if (existing >= 0) {
+                // Update if this entry is newer
+                if (node_entry.last_seen > registry_out->nodes[existing].last_seen) {
+                    registry_out->nodes[existing] = node_entry;
+                }
+            } else {
+                // Add new node
+                registry_out->nodes[registry_out->node_count++] = node_entry;
+            }
+        }
         free(json_str);
-        free(values[i]);
     }
 
-    free(values);
-    free(values_len);
+    // Free node_ids
+    for (size_t i = 0; i < num_node_ids; i++) free(node_ids[i]);
+    free(node_ids);
 
-    printf("[REGISTRY] ✓ Merged registry: %zu unique nodes (version %lu)\n",
-           registry_out->node_count, registry_out->registry_version);
+    printf("[REGISTRY] ✓ Fetched registry: %zu nodes\n", registry_out->node_count);
 
     return (registry_out->node_count > 0) ? 0 : -1;
 }

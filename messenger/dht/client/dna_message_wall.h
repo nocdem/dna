@@ -1,11 +1,11 @@
 /*
  * DNA Message Wall - Public Message Board via DHT
  *
- * Each user has a public message wall stored in DHT:
- * - Key: SHA256(fingerprint + ":message_wall")
- * - Value: JSON array of messages with signatures
- * - Rotation: Keep latest 100 messages
- * - TTL: 30 days (re-publish on new post)
+ * Storage Model (Owner-Namespaced via Chunked):
+ * - Each poster's messages stored at: wall_owner:wall:poster_fingerprint (chunked)
+ * - Contributors index at: wall_owner:wall:contributors (multi-owner, small)
+ * - Rotation: Keep latest 100 messages per poster
+ * - TTL: 30 days
  */
 
 #ifndef DNA_MESSAGE_WALL_H
@@ -102,17 +102,6 @@ int dna_load_wall(dht_context_t *dht_ctx,
  * @param wall Message wall to free
  */
 void dna_message_wall_free(dna_message_wall_t *wall);
-
-/**
- * @brief Get DHT key for user's message wall
- *
- * Key format: SHA256(fingerprint + ":message_wall")
- *
- * @param fingerprint User's SHA3-512 fingerprint (128 hex chars)
- * @param key_out Output buffer (65 bytes: 64 hex + null)
- * @return 0 on success, -1 on error
- */
-int dna_message_wall_get_dht_key(const char *fingerprint, char *key_out);
 
 /**
  * @brief Verify message signature

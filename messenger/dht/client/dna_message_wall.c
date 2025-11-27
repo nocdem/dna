@@ -1,15 +1,19 @@
 /*
  * DNA Message Wall - Public Message Board via DHT
+ *
+ * Storage Model (Option 2 - Owner-Namespaced):
+ * - Each poster stores their messages under: wall_owner:wall:poster_fingerprint (chunked)
+ * - Contributor index at: wall_owner:wall:contributors (multi-owner, small)
+ * - Fetch aggregates all contributors' messages
  */
 
 #include "dna_message_wall.h"
+#include "../shared/dht_chunked.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <json-c/json.h>
-#include <openssl/sha.h>
-#include <openssl/evp.h>
 #ifdef _WIN32
 #include <winsock2.h>
 #else
@@ -46,40 +50,20 @@ static char *base64_encode(const uint8_t *data, size_t len);
 static uint8_t *base64_decode(const char *str, size_t *out_len);
 
 /**
- * Get DHT key for user's message wall
- * Key format: SHA256(fingerprint + ":message_wall")
+ * Make base key for a poster's messages on a wall
+ * Format: wall_owner:wall:poster_fingerprint
  */
-int dna_message_wall_get_dht_key(const char *fingerprint, char *key_out) {
-    if (!fingerprint || !key_out) {
-        return -1;
-    }
+static void make_poster_base_key(const char *wall_owner, const char *poster,
+                                  char *key_out, size_t key_out_size) {
+    snprintf(key_out, key_out_size, "%s:wall:%s", wall_owner, poster);
+}
 
-    // Construct string: fingerprint + ":message_wall"
-    char input[256] = {0};
-    snprintf(input, sizeof(input), "%s:message_wall", fingerprint);
-
-    // SHA256 hash
-    uint8_t hash[32];
-    EVP_MD_CTX *ctx = EVP_MD_CTX_new();
-    if (!ctx) {
-        return -1;
-    }
-
-    if (EVP_DigestInit_ex(ctx, EVP_sha256(), NULL) != 1 ||
-        EVP_DigestUpdate(ctx, input, strlen(input)) != 1 ||
-        EVP_DigestFinal_ex(ctx, hash, NULL) != 1) {
-        EVP_MD_CTX_free(ctx);
-        return -1;
-    }
-    EVP_MD_CTX_free(ctx);
-
-    // Convert to hex string
-    for (int i = 0; i < 32; i++) {
-        sprintf(key_out + (i * 2), "%02x", hash[i]);
-    }
-    key_out[64] = '\0';
-
-    return 0;
+/**
+ * Make key for contributors index (small, multi-owner)
+ * Format: wall_owner:wall:contributors
+ */
+static void make_contributors_key(const char *wall_owner, char *key_out, size_t key_out_size) {
+    snprintf(key_out, key_out_size, "%s:wall:contributors", wall_owner);
 }
 
 /**
@@ -424,7 +408,11 @@ int dna_message_wall_verify_signature(const dna_wall_message_t *message,
 }
 
 /**
- * Load user's public message wall from DHT
+ * Load user's public message wall from DHT (Owner-Namespaced)
+ *
+ * Storage model:
+ * - Each poster's messages stored at: wall_owner:wall:poster_fingerprint (chunked)
+ * - Contributors index at: wall_owner:wall:contributors (multi-owner, small)
  */
 int dna_load_wall(dht_context_t *dht_ctx,
                   const char *fingerprint,
@@ -433,95 +421,170 @@ int dna_load_wall(dht_context_t *dht_ctx,
         return -1;
     }
 
-    // Get DHT key
-    char dht_key[65] = {0};
-    if (dna_message_wall_get_dht_key(fingerprint, dht_key) != 0) {
+    printf("[DNA_WALL] Loading wall for %.16s... (owner-namespaced)\n", fingerprint);
+
+    // Step 1: Get contributors index (multi-owner, small fingerprint list)
+    char contrib_key[512];
+    make_contributors_key(fingerprint, contrib_key, sizeof(contrib_key));
+
+    uint8_t **contrib_values = NULL;
+    size_t *contrib_lens = NULL;
+    size_t contrib_count = 0;
+
+    int ret = dht_get_all(dht_ctx, (const uint8_t *)contrib_key, strlen(contrib_key),
+                          &contrib_values, &contrib_lens, &contrib_count);
+
+    // Collect unique contributor fingerprints
+    char **contributors = NULL;
+    size_t num_contributors = 0;
+
+    if (ret == 0 && contrib_count > 0) {
+        // Parse each contributor entry (simple fingerprint string)
+        contributors = calloc(contrib_count, sizeof(char *));
+        if (contributors) {
+            for (size_t i = 0; i < contrib_count; i++) {
+                if (contrib_values[i] && contrib_lens[i] > 0 && contrib_lens[i] < 256) {
+                    // Check if this fingerprint is already in list (dedup)
+                    char *fp = malloc(contrib_lens[i] + 1);
+                    if (fp) {
+                        memcpy(fp, contrib_values[i], contrib_lens[i]);
+                        fp[contrib_lens[i]] = '\0';
+
+                        bool duplicate = false;
+                        for (size_t j = 0; j < num_contributors; j++) {
+                            if (strcmp(contributors[j], fp) == 0) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+                        if (!duplicate) {
+                            contributors[num_contributors++] = fp;
+                        } else {
+                            free(fp);
+                        }
+                    }
+                }
+                free(contrib_values[i]);
+            }
+        }
+        free(contrib_values);
+        free(contrib_lens);
+    }
+
+    printf("[DNA_WALL] Found %zu unique contributors\n", num_contributors);
+
+    // Step 2: Create merged wall
+    dna_message_wall_t *merged_wall = calloc(1, sizeof(dna_message_wall_t));
+    if (!merged_wall) {
+        for (size_t i = 0; i < num_contributors; i++) free(contributors[i]);
+        free(contributors);
         return -1;
     }
+    strncpy(merged_wall->fingerprint, fingerprint, sizeof(merged_wall->fingerprint) - 1);
 
-    // Query DHT - fetch ALL versions (DHT is append-only)
-    printf("[DNA_WALL] → DHT GET: Loading message wall for user\n");
-    uint8_t **values = NULL;
-    size_t *values_len = NULL;
-    size_t value_count = 0;
-
-    int ret = dht_get_all(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                          &values, &values_len, &value_count);
-    if (ret != 0 || value_count == 0) {
-        return -2;  // Not found
+    // Pre-allocate messages array
+    size_t msg_capacity = 64;
+    merged_wall->messages = calloc(msg_capacity, sizeof(dna_wall_message_t));
+    if (!merged_wall->messages) {
+        free(merged_wall);
+        for (size_t i = 0; i < num_contributors; i++) free(contributors[i]);
+        free(contributors);
+        return -1;
     }
+    merged_wall->allocated_count = msg_capacity;
 
-    printf("[DNA_WALL] Found %zu wall version(s) in DHT\n", value_count);
+    // Step 3: Fetch each contributor's messages via chunked
+    for (size_t c = 0; c < num_contributors; c++) {
+        char poster_key[512];
+        make_poster_base_key(fingerprint, contributors[c], poster_key, sizeof(poster_key));
 
-    // Parse all versions and find the one with newest message
-    dna_message_wall_t *best_wall = NULL;
-    uint64_t best_timestamp = 0;
+        uint8_t *data = NULL;
+        size_t data_len = 0;
 
-    for (size_t i = 0; i < value_count; i++) {
-        if (!values[i] || values_len[i] == 0) {
+        ret = dht_chunked_fetch(dht_ctx, poster_key, &data, &data_len);
+        if (ret != DHT_CHUNK_OK || !data) {
+            printf("[DNA_WALL] Contributor %.16s...: no data\n", contributors[c]);
             continue;
         }
 
-        // Create null-terminated copy for JSON parsing
-        char *json_str = (char*)malloc(values_len[i] + 1);
+        // Parse contributor's wall
+        char *json_str = malloc(data_len + 1);
         if (!json_str) {
-            printf("[DNA_WALL] ⚠ Version %zu/%zu: Memory allocation failed\n", i+1, value_count);
+            free(data);
             continue;
         }
-        memcpy(json_str, values[i], values_len[i]);
-        json_str[values_len[i]] = '\0';
+        memcpy(json_str, data, data_len);
+        json_str[data_len] = '\0';
+        free(data);
 
-        // Parse JSON
-        dna_message_wall_t *wall = NULL;
-        if (dna_message_wall_from_json(json_str, &wall) != 0) {
-            printf("[DNA_WALL] ⚠ Version %zu/%zu: JSON parse failed\n", i+1, value_count);
+        dna_message_wall_t *contrib_wall = NULL;
+        if (dna_message_wall_from_json(json_str, &contrib_wall) != 0) {
+            printf("[DNA_WALL] Contributor %.16s...: parse failed\n", contributors[c]);
             free(json_str);
             continue;
         }
         free(json_str);
 
-        // Get timestamp of newest message (messages[0] is newest)
-        uint64_t wall_timestamp = 0;
-        if (wall->message_count > 0) {
-            wall_timestamp = wall->messages[0].timestamp;
-        }
+        printf("[DNA_WALL] Contributor %.16s...: %zu messages\n",
+               contributors[c], contrib_wall->message_count);
 
-        printf("[DNA_WALL] Version %zu/%zu: %zu messages, newest=%lu\n",
-               i+1, value_count, wall->message_count, wall_timestamp);
-
-        // Keep the wall with the newest message
-        if (wall_timestamp > best_timestamp) {
-            if (best_wall) {
-                dna_message_wall_free(best_wall);
+        // Merge messages into main wall
+        for (size_t m = 0; m < contrib_wall->message_count; m++) {
+            // Grow array if needed
+            if (merged_wall->message_count >= merged_wall->allocated_count) {
+                size_t new_cap = merged_wall->allocated_count * 2;
+                dna_wall_message_t *new_msgs = realloc(merged_wall->messages,
+                                                        new_cap * sizeof(dna_wall_message_t));
+                if (!new_msgs) break;
+                merged_wall->messages = new_msgs;
+                merged_wall->allocated_count = new_cap;
             }
-            best_wall = wall;
-            best_timestamp = wall_timestamp;
-        } else {
-            dna_message_wall_free(wall);
+
+            merged_wall->messages[merged_wall->message_count++] = contrib_wall->messages[m];
+        }
+
+        dna_message_wall_free(contrib_wall);
+    }
+
+    // Free contributors list
+    for (size_t i = 0; i < num_contributors; i++) free(contributors[i]);
+    free(contributors);
+
+    // Step 4: Sort messages by timestamp (newest first)
+    if (merged_wall->message_count > 1) {
+        for (size_t i = 0; i < merged_wall->message_count - 1; i++) {
+            for (size_t j = i + 1; j < merged_wall->message_count; j++) {
+                if (merged_wall->messages[j].timestamp > merged_wall->messages[i].timestamp) {
+                    dna_wall_message_t tmp = merged_wall->messages[i];
+                    merged_wall->messages[i] = merged_wall->messages[j];
+                    merged_wall->messages[j] = tmp;
+                }
+            }
         }
     }
 
-    // Free DHT data
-    for (size_t i = 0; i < value_count; i++) {
-        free(values[i]);
-    }
-    free(values);
-    free(values_len);
+    // Update reply counts
+    dna_wall_update_reply_counts(merged_wall);
 
-    if (!best_wall) {
-        fprintf(stderr, "[DNA_WALL] No valid wall found\n");
-        return -2;
+    if (merged_wall->message_count == 0) {
+        printf("[DNA_WALL] Wall is empty\n");
+        dna_message_wall_free(merged_wall);
+        return -2;  // Not found
     }
 
-    printf("[DNA_WALL] ✓ Loaded newest wall version (%zu messages, timestamp=%lu)\n",
-           best_wall->message_count, best_timestamp);
+    printf("[DNA_WALL] ✓ Loaded wall: %zu messages from %zu contributors\n",
+           merged_wall->message_count, num_contributors);
 
-    *wall_out = best_wall;
+    *wall_out = merged_wall;
     return 0;
 }
 
 /**
- * Post a message to user's public message wall
+ * Post a message to user's public message wall (Owner-Namespaced)
+ *
+ * Storage model:
+ * - Poster's messages stored at: wall_owner:wall:poster_fingerprint (chunked)
+ * - Contributors index at: wall_owner:wall:contributors (multi-owner, small)
  */
 int dna_post_to_wall(dht_context_t *dht_ctx,
                      const char *wall_owner_fingerprint,
@@ -540,58 +603,77 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
         return -1;
     }
 
-    // Load existing wall from wall owner's DHT location (or create new)
-    dna_message_wall_t *wall = NULL;
-    int ret = dna_load_wall(dht_ctx, wall_owner_fingerprint, &wall);
-    if (ret == -2) {
-        // Wall doesn't exist, create new
-        wall = calloc(1, sizeof(dna_message_wall_t));
-        if (!wall) {
-            return -1;
+    printf("[DNA_WALL] Posting to wall %.16s... as poster %.16s...\n",
+           wall_owner_fingerprint, poster_fingerprint);
+
+    // Step 1: Load poster's OWN existing messages for this wall (not entire wall)
+    char poster_key[512];
+    make_poster_base_key(wall_owner_fingerprint, poster_fingerprint, poster_key, sizeof(poster_key));
+
+    dna_message_wall_t *poster_wall = NULL;
+    uint8_t *existing_data = NULL;
+    size_t existing_len = 0;
+
+    int ret = dht_chunked_fetch(dht_ctx, poster_key, &existing_data, &existing_len);
+    if (ret == DHT_CHUNK_OK && existing_data) {
+        // Parse existing messages
+        char *json_str = malloc(existing_len + 1);
+        if (json_str) {
+            memcpy(json_str, existing_data, existing_len);
+            json_str[existing_len] = '\0';
+            dna_message_wall_from_json(json_str, &poster_wall);
+            free(json_str);
         }
-        strncpy(wall->fingerprint, wall_owner_fingerprint, sizeof(wall->fingerprint) - 1);
-        wall->messages = NULL;
-        wall->message_count = 0;
-        wall->allocated_count = 0;
-    } else if (ret != 0) {
-        // Error loading
-        return -1;
+        free(existing_data);
     }
 
-    // Create new message
+    // Create poster wall if doesn't exist
+    if (!poster_wall) {
+        poster_wall = calloc(1, sizeof(dna_message_wall_t));
+        if (!poster_wall) {
+            return -1;
+        }
+        strncpy(poster_wall->fingerprint, wall_owner_fingerprint, sizeof(poster_wall->fingerprint) - 1);
+    }
+
+    printf("[DNA_WALL] Poster has %zu existing messages on this wall\n", poster_wall->message_count);
+
+    // Step 2: Handle reply depth (need to load full wall to find parent)
+    int reply_depth = 0;
+    if (reply_to && reply_to[0] != '\0') {
+        // Load full wall to find parent message depth
+        dna_message_wall_t *full_wall = NULL;
+        if (dna_load_wall(dht_ctx, wall_owner_fingerprint, &full_wall) == 0 && full_wall) {
+            for (size_t i = 0; i < full_wall->message_count; i++) {
+                if (strcmp(full_wall->messages[i].post_id, reply_to) == 0) {
+                    reply_depth = full_wall->messages[i].reply_depth + 1;
+                    break;
+                }
+            }
+            dna_message_wall_free(full_wall);
+        }
+        if (reply_depth > 2) {
+            fprintf(stderr, "[DNA_WALL] Max thread depth exceeded (max 3 levels)\n");
+            dna_message_wall_free(poster_wall);
+            return -2;
+        }
+    }
+
+    // Step 3: Create new message
     dna_wall_message_t new_msg = {0};
     strncpy(new_msg.text, message_text, DNA_MESSAGE_WALL_MAX_TEXT_LEN - 1);
     new_msg.timestamp = (uint64_t)time(NULL);
-
-    // Generate post_id using POSTER's fingerprint (not wall owner's!)
     dna_wall_make_post_id(poster_fingerprint, new_msg.timestamp, new_msg.post_id);
-
-    // Handle threading
-    new_msg.reply_depth = 0;  // Default: top-level post
+    new_msg.reply_depth = reply_depth;
     new_msg.reply_count = 0;
     if (reply_to && reply_to[0] != '\0') {
-        // This is a reply - find parent to determine depth
         strncpy(new_msg.reply_to, reply_to, sizeof(new_msg.reply_to) - 1);
-
-        // Find parent message to calculate depth
-        for (size_t i = 0; i < wall->message_count; i++) {
-            if (strcmp(wall->messages[i].post_id, reply_to) == 0) {
-                new_msg.reply_depth = wall->messages[i].reply_depth + 1;
-                if (new_msg.reply_depth > 2) {
-                    // Max depth exceeded (0=post, 1=comment, 2=reply)
-                    fprintf(stderr, "[DNA_WALL] Max thread depth exceeded (max 3 levels)\n");
-                    dna_message_wall_free(wall);
-                    return -2;
-                }
-                break;
-            }
-        }
     }
 
     // Sign message (text + timestamp)
     uint8_t *sign_data = malloc(text_len + sizeof(uint64_t));
     if (!sign_data) {
-        dna_message_wall_free(wall);
+        dna_message_wall_free(poster_wall);
         return -1;
     }
 
@@ -607,83 +689,72 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
 
     if (ret != 0) {
         fprintf(stderr, "[DNA_WALL] Failed to sign message\n");
-        dna_message_wall_free(wall);
+        dna_message_wall_free(poster_wall);
         return -1;
     }
     new_msg.signature_len = sig_len;
 
-    // Add message to wall (prepend, newest first)
-    printf("[DNA_WALL] Adding message to wall (current: %zu messages)\n", wall->message_count);
-    size_t new_count = wall->message_count + 1;
+    // Step 4: Add message to poster's wall (prepend, newest first)
+    size_t new_count = poster_wall->message_count + 1;
     if (new_count > DNA_MESSAGE_WALL_MAX_MESSAGES) {
         new_count = DNA_MESSAGE_WALL_MAX_MESSAGES;
     }
 
     dna_wall_message_t *new_messages = calloc(new_count, sizeof(dna_wall_message_t));
     if (!new_messages) {
-        dna_message_wall_free(wall);
+        dna_message_wall_free(poster_wall);
         return -1;
     }
 
-    // First message is the new one
     new_messages[0] = new_msg;
-    printf("[DNA_WALL] New message at index 0: timestamp=%lu, text='%s'\n",
-           new_msg.timestamp, new_msg.text);
-
-    // Copy old messages (up to limit - 1)
-    size_t copy_count = (wall->message_count < new_count - 1) ?
-                        wall->message_count : (new_count - 1);
-    printf("[DNA_WALL] Copying %zu old messages\n", copy_count);
+    size_t copy_count = (poster_wall->message_count < new_count - 1) ?
+                        poster_wall->message_count : (new_count - 1);
     for (size_t i = 0; i < copy_count; i++) {
-        new_messages[i + 1] = wall->messages[i];
-        printf("[DNA_WALL]   Old message %zu at index %zu: timestamp=%lu, text='%s'\n",
-               i, i+1, wall->messages[i].timestamp, wall->messages[i].text);
+        new_messages[i + 1] = poster_wall->messages[i];
     }
 
-    // Replace messages array
-    free(wall->messages);
-    wall->messages = new_messages;
-    wall->message_count = new_count;
-    wall->allocated_count = new_count;
-    printf("[DNA_WALL] Wall now has %zu messages\n", new_count);
+    free(poster_wall->messages);
+    poster_wall->messages = new_messages;
+    poster_wall->message_count = new_count;
+    poster_wall->allocated_count = new_count;
 
-    // Update reply counts for all messages
-    dna_wall_update_reply_counts(wall);
-
-    // Serialize to JSON
+    // Step 5: Serialize and publish poster's messages via chunked
     char *json_data = NULL;
-    ret = dna_message_wall_to_json(wall, &json_data);
+    ret = dna_message_wall_to_json(poster_wall, &json_data);
     if (ret != 0 || !json_data) {
         fprintf(stderr, "[DNA_WALL] Failed to serialize wall\n");
-        dna_message_wall_free(wall);
+        dna_message_wall_free(poster_wall);
         return -1;
     }
 
-    // Publish to DHT at wall owner's location
-    char dht_key[65] = {0};
-    if (dna_message_wall_get_dht_key(wall_owner_fingerprint, dht_key) != 0) {
-        free(json_data);
-        dna_message_wall_free(wall);
-        return -1;
-    }
-
-    printf("[DNA_WALL] → DHT PUT_SIGNED: Publishing message wall (%zu messages)\n", wall->message_count);
-    unsigned int ttl_30days = 30 * 24 * 3600;  // Wall posts persist for 30 days
-    ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                         (const uint8_t *)json_data, strlen(json_data),
-                         1, ttl_30days);
+    printf("[DNA_WALL] Publishing poster's %zu messages via chunked\n", poster_wall->message_count);
+    ret = dht_chunked_publish(dht_ctx, poster_key,
+                               (uint8_t*)json_data, strlen(json_data),
+                               DHT_CHUNK_TTL_30DAY);
     free(json_data);
+    dna_message_wall_free(poster_wall);
+
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DNA_WALL] Failed to publish poster data: %s\n", dht_chunked_strerror(ret));
+        return -1;
+    }
+
+    // Step 6: Register poster in contributors index (multi-owner, small)
+    char contrib_key[512];
+    make_contributors_key(wall_owner_fingerprint, contrib_key, sizeof(contrib_key));
+
+    printf("[DNA_WALL] Registering contributor in index\n");
+    ret = dht_put_signed(dht_ctx, (const uint8_t *)contrib_key, strlen(contrib_key),
+                         (const uint8_t *)poster_fingerprint, strlen(poster_fingerprint),
+                         1, DHT_CHUNK_TTL_30DAY);
 
     if (ret != 0) {
-        fprintf(stderr, "[DNA_WALL] Failed to publish to DHT\n");
-        dna_message_wall_free(wall);
-        return -1;
+        // Non-fatal - poster data is already stored
+        fprintf(stderr, "[DNA_WALL] Warning: Failed to register in contributors index\n");
     }
 
-    printf("[DNA_WALL] Successfully posted message to wall (signed, wall_owner=%s, poster=%s)\n",
+    printf("[DNA_WALL] ✓ Posted message (wall=%.16s..., poster=%.16s...)\n",
            wall_owner_fingerprint, poster_fingerprint);
-
-    dna_message_wall_free(wall);
     return 0;
 }
 

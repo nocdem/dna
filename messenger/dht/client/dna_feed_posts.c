@@ -2,9 +2,11 @@
  * DNA Feed - Post Operations
  *
  * Implements post creation, retrieval, and threading for the public feed system.
- * Uses dht_chunked layer for automatic chunking, compression, and parallel fetch.
  *
- * Note: Bucket operations use dht_get_all for multi-owner aggregation and remain unchanged.
+ * Storage Model (Owner-Namespaced via Chunked):
+ * - Individual posts stored at: dna:feed:post:post_id (chunked)
+ * - Each poster's post_ids stored at: channel:bucket:date:poster_fingerprint (chunked)
+ * - Bucket contributors index at: channel:bucket:date:contributors (multi-owner, small)
  */
 
 #include "dna_feed.h"
@@ -108,6 +110,28 @@ static uint8_t *base64_decode(const char *str, size_t *out_len) {
         if (j < *out_len) out[j++] = triple & 0xFF;
     }
     return out;
+}
+
+/* ============================================================================
+ * Bucket Key Helpers (Owner-Namespaced)
+ * ========================================================================== */
+
+/**
+ * Make base key for a poster's post_ids in a bucket
+ * Format: channel:bucket:date:poster_fingerprint
+ */
+static void make_poster_bucket_key(const char *channel_id, const char *date,
+                                    const char *poster, char *key_out, size_t key_out_size) {
+    snprintf(key_out, key_out_size, "%s:bucket:%s:%s", channel_id, date, poster);
+}
+
+/**
+ * Make key for bucket contributors index (multi-owner, small)
+ * Format: channel:bucket:date:contributors
+ */
+static void make_bucket_contributors_key(const char *channel_id, const char *date,
+                                          char *key_out, size_t key_out_size) {
+    snprintf(key_out, key_out_size, "%s:bucket:%s:contributors", channel_id, date);
 }
 
 /* ============================================================================
@@ -345,59 +369,110 @@ int dna_feed_post_get(dht_context_t *dht_ctx, const char *post_id, dna_feed_post
     return ret;
 }
 
-/* Get bucket for a channel/date */
+/* Get bucket for a channel/date (Owner-Namespaced)
+ *
+ * Gets contributor index → fetches each poster's post_ids → merges
+ */
 static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char *date,
                       dna_feed_bucket_t **bucket_out) {
-    char dht_key[65];
-    if (dna_feed_get_bucket_key(channel_id, date, dht_key) != 0) return -1;
+    printf("[DNA_FEED] get_bucket: channel=%s date=%s (owner-namespaced)\n", channel_id, date);
 
-    /* Get ALL values and merge them (multiple bucket updates create multiple DHT values) */
-    uint8_t **values = NULL;
-    size_t *value_lens = NULL;
-    size_t value_count = 0;
-    int ret = dht_get_all(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                          &values, &value_lens, &value_count);
+    /* Step 1: Get contributors index (multi-owner, small poster fingerprints) */
+    char contrib_key[512];
+    make_bucket_contributors_key(channel_id, date, contrib_key, sizeof(contrib_key));
 
-    printf("[DNA_FEED_DEBUG] get_bucket: dht_get_all returned %d, value_count=%zu\n", ret, value_count);
+    uint8_t **contrib_values = NULL;
+    size_t *contrib_lens = NULL;
+    size_t contrib_count = 0;
 
-    if (ret != 0 || value_count == 0) {
-        printf("[DNA_FEED_DEBUG] get_bucket: no values found (ret=%d)\n", ret);
+    int ret = dht_get_all(dht_ctx, (const uint8_t *)contrib_key, strlen(contrib_key),
+                          &contrib_values, &contrib_lens, &contrib_count);
+
+    /* Collect unique contributor fingerprints */
+    char **contributors = NULL;
+    size_t num_contributors = 0;
+
+    if (ret == 0 && contrib_count > 0) {
+        contributors = calloc(contrib_count, sizeof(char *));
+        if (contributors) {
+            for (size_t i = 0; i < contrib_count; i++) {
+                if (contrib_values[i] && contrib_lens[i] > 0 && contrib_lens[i] < 256) {
+                    char *fp = malloc(contrib_lens[i] + 1);
+                    if (fp) {
+                        memcpy(fp, contrib_values[i], contrib_lens[i]);
+                        fp[contrib_lens[i]] = '\0';
+
+                        /* Dedup */
+                        bool duplicate = false;
+                        for (size_t j = 0; j < num_contributors; j++) {
+                            if (strcmp(contributors[j], fp) == 0) {
+                                duplicate = true;
+                                break;
+                            }
+                        }
+                        if (!duplicate) {
+                            contributors[num_contributors++] = fp;
+                        } else {
+                            free(fp);
+                        }
+                    }
+                }
+                free(contrib_values[i]);
+            }
+        }
+        free(contrib_values);
+        free(contrib_lens);
+    }
+
+    printf("[DNA_FEED] Found %zu unique bucket contributors\n", num_contributors);
+
+    if (num_contributors == 0) {
+        free(contributors);
         return -2;
     }
 
-    /* Merge all bucket values - collect all unique post_ids */
+    /* Step 2: Create merged bucket */
     dna_feed_bucket_t *merged = calloc(1, sizeof(dna_feed_bucket_t));
     if (!merged) {
-        for (size_t i = 0; i < value_count; i++) free(values[i]);
-        free(values);
-        free(value_lens);
+        for (size_t i = 0; i < num_contributors; i++) free(contributors[i]);
+        free(contributors);
         return -1;
     }
+    strncpy(merged->channel_id, channel_id, sizeof(merged->channel_id) - 1);
+    strncpy(merged->bucket_date, date, sizeof(merged->bucket_date) - 1);
 
-    /* Use a simple array to track unique post_ids (max ~1000 posts per day) */
+    /* Collect all unique post_ids */
     char **all_post_ids = NULL;
     size_t all_count = 0;
     size_t all_capacity = 0;
 
-    for (size_t v = 0; v < value_count; v++) {
-        if (!values[v] || value_lens[v] == 0) continue;
+    /* Step 3: Fetch each contributor's post_ids via chunked */
+    for (size_t c = 0; c < num_contributors; c++) {
+        char poster_key[512];
+        make_poster_bucket_key(channel_id, date, contributors[c], poster_key, sizeof(poster_key));
 
-        char *json_str = malloc(value_lens[v] + 1);
-        if (!json_str) continue;
-        memcpy(json_str, values[v], value_lens[v]);
-        json_str[value_lens[v]] = '\0';
+        uint8_t *data = NULL;
+        size_t data_len = 0;
+
+        ret = dht_chunked_fetch(dht_ctx, poster_key, &data, &data_len);
+        if (ret != DHT_CHUNK_OK || !data) {
+            continue;
+        }
+
+        /* Parse contributor's bucket */
+        char *json_str = malloc(data_len + 1);
+        if (!json_str) {
+            free(data);
+            continue;
+        }
+        memcpy(json_str, data, data_len);
+        json_str[data_len] = '\0';
+        free(data);
 
         dna_feed_bucket_t *bucket = NULL;
         if (bucket_from_json(json_str, &bucket) == 0 && bucket) {
-            /* Copy channel_id and bucket_date from first valid bucket */
-            if (merged->channel_id[0] == '\0') {
-                strncpy(merged->channel_id, bucket->channel_id, sizeof(merged->channel_id) - 1);
-                strncpy(merged->bucket_date, bucket->bucket_date, sizeof(merged->bucket_date) - 1);
-            }
-
             /* Add unique post_ids */
             for (size_t i = 0; i < bucket->post_count; i++) {
-                /* Check if already added */
                 bool exists = false;
                 for (size_t j = 0; j < all_count; j++) {
                     if (strcmp(all_post_ids[j], bucket->post_ids[i]) == 0) {
@@ -406,7 +481,6 @@ static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char
                     }
                 }
                 if (!exists) {
-                    /* Grow array if needed */
                     if (all_count >= all_capacity) {
                         size_t new_cap = all_capacity == 0 ? 64 : all_capacity * 2;
                         char **new_ids = realloc(all_post_ids, new_cap * sizeof(char *));
@@ -422,10 +496,9 @@ static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char
         free(json_str);
     }
 
-    /* Cleanup DHT values */
-    for (size_t i = 0; i < value_count; i++) free(values[i]);
-    free(values);
-    free(value_lens);
+    /* Free contributors */
+    for (size_t i = 0; i < num_contributors; i++) free(contributors[i]);
+    free(contributors);
 
     /* Set merged bucket's post_ids */
     merged->post_ids = all_post_ids;
@@ -437,46 +510,107 @@ static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char
         return -2;
     }
 
-    printf("[DNA_FEED] Merged %zu bucket values into %zu unique posts\n", value_count, all_count);
+    printf("[DNA_FEED] Merged bucket: %zu unique posts from %zu contributors\n", all_count, num_contributors);
 
     *bucket_out = merged;
     return 0;
 }
 
-/* Save bucket to DHT (signed - each user has their own bucket value) */
-static int save_bucket(dht_context_t *dht_ctx, const dna_feed_bucket_t *bucket) {
-    char *json_data = NULL;
-    if (bucket_to_json(bucket, &json_data) != 0) return -1;
+/* Save poster's post_id to their bucket (Owner-Namespaced)
+ *
+ * Storage:
+ * - Poster's post_ids at: channel:bucket:date:poster_fingerprint (chunked)
+ * - Contributor index at: channel:bucket:date:contributors (multi-owner, small)
+ */
+static int save_poster_bucket(dht_context_t *dht_ctx, const char *channel_id, const char *date,
+                               const char *poster_fingerprint, const char *new_post_id) {
+    printf("[DNA_FEED] save_poster_bucket: channel=%s date=%s poster=%.16s...\n",
+           channel_id, date, poster_fingerprint);
 
-    char dht_key[65];
-    if (dna_feed_get_bucket_key(bucket->channel_id, bucket->bucket_date, dht_key) != 0) {
-        free(json_data);
+    /* Step 1: Load poster's existing post_ids for this bucket */
+    char poster_key[512];
+    make_poster_bucket_key(channel_id, date, poster_fingerprint, poster_key, sizeof(poster_key));
+
+    dna_feed_bucket_t *poster_bucket = NULL;
+    uint8_t *existing_data = NULL;
+    size_t existing_len = 0;
+
+    int ret = dht_chunked_fetch(dht_ctx, poster_key, &existing_data, &existing_len);
+    if (ret == DHT_CHUNK_OK && existing_data) {
+        char *json_str = malloc(existing_len + 1);
+        if (json_str) {
+            memcpy(json_str, existing_data, existing_len);
+            json_str[existing_len] = '\0';
+            bucket_from_json(json_str, &poster_bucket);
+            free(json_str);
+        }
+        free(existing_data);
+    }
+
+    /* Create bucket if doesn't exist */
+    if (!poster_bucket) {
+        poster_bucket = calloc(1, sizeof(dna_feed_bucket_t));
+        if (!poster_bucket) return -1;
+        strncpy(poster_bucket->channel_id, channel_id, sizeof(poster_bucket->channel_id) - 1);
+        strncpy(poster_bucket->bucket_date, date, sizeof(poster_bucket->bucket_date) - 1);
+    }
+
+    /* Check if post_id already exists */
+    for (size_t i = 0; i < poster_bucket->post_count; i++) {
+        if (strcmp(poster_bucket->post_ids[i], new_post_id) == 0) {
+            printf("[DNA_FEED] Post already in poster's bucket\n");
+            dna_feed_bucket_free(poster_bucket);
+            return 0;  /* Already exists, success */
+        }
+    }
+
+    /* Step 2: Add new post_id to poster's bucket */
+    size_t new_count = poster_bucket->post_count + 1;
+    char **new_ids = realloc(poster_bucket->post_ids, new_count * sizeof(char *));
+    if (!new_ids) {
+        dna_feed_bucket_free(poster_bucket);
+        return -1;
+    }
+    poster_bucket->post_ids = new_ids;
+    poster_bucket->post_ids[poster_bucket->post_count] = strdup(new_post_id);
+    poster_bucket->post_count = new_count;
+    poster_bucket->allocated_count = new_count;
+
+    /* Step 3: Serialize and publish poster's bucket via chunked */
+    char *json_data = NULL;
+    if (bucket_to_json(poster_bucket, &json_data) != 0) {
+        dna_feed_bucket_free(poster_bucket);
         return -1;
     }
 
-    /* Get unique value_id for this DHT identity.
-     * Each owner needs a different value_id to store separate bucket values.
-     * OpenDHT putSigned: (key, value_id) is owned by first signer - others can't overwrite.
-     * By using unique value_id per owner, each user gets their own slot. */
-    uint64_t owner_value_id = 1;  /* Fallback */
-    if (dht_get_owner_value_id(dht_ctx, &owner_value_id) != 0) {
-        printf("[DNA_FEED] Warning: Could not get owner value_id, using default\n");
-    }
-
-    printf("[DNA_FEED_DEBUG] save_bucket: channel=%s date=%s post_count=%zu value_id=%lu\n",
-           bucket->channel_id, bucket->bucket_date, bucket->post_count, owner_value_id);
-    for (size_t i = 0; i < bucket->post_count; i++) {
-        printf("[DNA_FEED_DEBUG]   post_id[%zu]: %.40s...\n", i, bucket->post_ids[i]);
-    }
-
-    int ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
-                             (const uint8_t *)json_data, strlen(json_data),
-                             owner_value_id, DNA_FEED_TTL_SECONDS);
-
-    printf("[DNA_FEED_DEBUG] save_bucket: dht_put_signed returned %d\n", ret);
+    printf("[DNA_FEED] Publishing poster's bucket (%zu post_ids) via chunked\n", poster_bucket->post_count);
+    ret = dht_chunked_publish(dht_ctx, poster_key,
+                               (const uint8_t *)json_data, strlen(json_data),
+                               DNA_FEED_TTL_SECONDS);
     free(json_data);
+    dna_feed_bucket_free(poster_bucket);
 
-    return ret;
+    if (ret != DHT_CHUNK_OK) {
+        fprintf(stderr, "[DNA_FEED] Failed to publish poster bucket: %s\n", dht_chunked_strerror(ret));
+        return -1;
+    }
+
+    /* Step 4: Register poster in contributors index (multi-owner, small) */
+    char contrib_key[512];
+    make_bucket_contributors_key(channel_id, date, contrib_key, sizeof(contrib_key));
+
+    printf("[DNA_FEED] Registering contributor in bucket index\n");
+    ret = dht_put_signed(dht_ctx, (const uint8_t *)contrib_key, strlen(contrib_key),
+                         (const uint8_t *)poster_fingerprint, strlen(poster_fingerprint),
+                         1, DNA_FEED_TTL_SECONDS);
+
+    if (ret != 0) {
+        /* Non-fatal - poster bucket is already stored */
+        fprintf(stderr, "[DNA_FEED] Warning: Failed to register in contributors index\n");
+    }
+
+    printf("[DNA_FEED] ✓ Saved poster bucket\n");
+    return 0;
 }
 
 int dna_feed_post_create(dht_context_t *dht_ctx,
@@ -579,41 +713,15 @@ int dna_feed_post_create(dht_context_t *dht_ctx,
         return -1;
     }
 
-    /* Add to daily bucket index */
+    /* Add to daily bucket index (owner-namespaced) */
     char today[12];
     dna_feed_get_today_date(today);
 
-    dna_feed_bucket_t *bucket = NULL;
-    if (get_bucket(dht_ctx, channel_id, today, &bucket) != 0) {
-        /* Create new bucket */
-        bucket = calloc(1, sizeof(dna_feed_bucket_t));
-        if (!bucket) {
-            free(post);
-            return -1;
-        }
-        strncpy(bucket->channel_id, channel_id, sizeof(bucket->channel_id) - 1);
-        strncpy(bucket->bucket_date, today, sizeof(bucket->bucket_date) - 1);
+    /* Save poster's bucket (handles loading, adding, and publishing) */
+    if (save_poster_bucket(dht_ctx, channel_id, today, author_fingerprint, post->post_id) != 0) {
+        fprintf(stderr, "[DNA_FEED] Warning: Failed to add to bucket index\n");
+        /* Continue anyway - post itself was published successfully */
     }
-
-    /* Check bucket size limit */
-    if (bucket->post_count >= DNA_FEED_MAX_POSTS_PER_BUCKET) {
-        fprintf(stderr, "[DNA_FEED] Bucket full for today\n");
-        /* Continue anyway, just don't add to index */
-    } else {
-        /* Add post_id to bucket */
-        size_t new_count = bucket->post_count + 1;
-        char **new_ids = realloc(bucket->post_ids, new_count * sizeof(char *));
-        if (new_ids) {
-            bucket->post_ids = new_ids;
-            bucket->post_ids[bucket->post_count] = strdup(post->post_id);
-            bucket->post_count = new_count;
-
-            /* Save updated bucket */
-            save_bucket(dht_ctx, bucket);
-        }
-    }
-
-    dna_feed_bucket_free(bucket);
 
     printf("[DNA_FEED] Successfully created post %s\n", post->post_id);
 

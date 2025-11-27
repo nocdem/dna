@@ -2,15 +2,14 @@
  * DHT Bootstrap Node Registry
  *
  * Distributed discovery system for DNA Messenger bootstrap nodes.
- * Instead of hardcoding bootstrap IPs, nodes register themselves in a
- * well-known DHT location and clients discover them dynamically.
+ * Instead of hardcoding bootstrap IPs, nodes register themselves in DHT
+ * and clients discover them dynamically.
  *
- * Architecture:
- * - Registry Key: SHA3-512("dna:bootstrap:registry")
- * - Each bootstrap node registers: IP, port, node_id, version, timestamp
+ * Storage Model (Owner-Namespaced via Chunked):
+ * - Each node's entry stored at: dna:bootstrap:node:node_id (chunked)
+ * - Node index at: dna:bootstrap:nodes (multi-owner, small)
  * - Nodes refresh registration every 5 minutes (heartbeat)
- * - Clients query registry and filter by last_seen < 15 minutes
- * - Uses PUT_SIGNED for authenticity
+ * - Clients query index and filter by last_seen < 15 minutes
  *
  * Cold Start:
  * - Clients need ONE hardcoded seed node to read the registry
@@ -55,12 +54,6 @@ typedef struct {
     size_t node_count;
     uint64_t registry_version;  // Incremented on each update
 } bootstrap_registry_t;
-
-/**
- * Compute the well-known registry DHT key
- * Returns: 128-char hex string (SHA3-512 hash)
- */
-void dht_bootstrap_registry_get_key(char *key_out);
 
 /**
  * Register this bootstrap node in the DHT registry
