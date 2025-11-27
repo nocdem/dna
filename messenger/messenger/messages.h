@@ -90,18 +90,6 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
                                 char **plaintext_out, size_t *plaintext_len_out);
 
 /**
- * Delete public key (stub - DHT migration pending)
- *
- * Legacy function for deleting keys from centralized keyserver.
- * Not yet implemented for DHT keyserver (keys are permanent).
- *
- * @param ctx: Messenger context
- * @param identity: Identity to delete
- * @return: -1 (not implemented)
- */
-int messenger_delete_pubkey(messenger_context_t *ctx, const char *identity);
-
-/**
  * Delete message from SQLite
  *
  * Permanently deletes message from local database.

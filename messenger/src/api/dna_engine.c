@@ -12,6 +12,15 @@
 #include "dht/client/dht_contactlist.h"
 #include "p2p/p2p_transport.h"
 
+/* Blockchain/Wallet includes for send_tokens */
+#include "blockchain/wallet.h"
+#include "blockchain/blockchain_rpc.h"
+#include "blockchain/blockchain_tx_builder_minimal.h"
+#include "blockchain/blockchain_sign_minimal.h"
+#include "blockchain/blockchain_json_minimal.h"
+#include "crypto/utils/base58.h"
+#include <time.h>
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -1234,24 +1243,363 @@ done:
     task->callback.balances(task->request_id, error, balances, count, task->user_data);
 }
 
+/* Network fee constants for send_tokens */
+#define NETWORK_FEE_DATOSHI 2000000000000000ULL  /* 0.002 CELL */
+#define NETWORK_FEE_COLLECTOR "Rj7J7MiX2bWy8sNyX38bB86KTFUnSn7sdKDsTFa2RJyQTDWFaebrj6BucT7Wa5CSq77zwRAwevbiKy1sv1RBGTonM83D3xPDwoyGasZ7"
+#define DEFAULT_VALIDATOR_FEE_DATOSHI 100000000000000ULL  /* 0.0001 CELL */
+
+/* UTXO structure for transaction building */
+typedef struct {
+    cellframe_hash_t hash;
+    uint32_t idx;
+    uint256_t value;
+} engine_utxo_t;
+
 void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
+    engine_utxo_t *selected_utxos = NULL;
+    cellframe_tx_builder_t *builder = NULL;
+    cellframe_rpc_response_t *utxo_resp = NULL;
+    cellframe_rpc_response_t *submit_resp = NULL;
+    uint8_t *dap_sign = NULL;
+    char *json = NULL;
 
     if (!engine->wallets_loaded || !engine->wallet_list) {
         error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
         goto done;
     }
 
-    /* TODO: Implement transaction building and signing */
-    /* This requires:
-     * 1. Get UTXOs for wallet
-     * 2. Build transaction with inputs/outputs
-     * 3. Sign with Dilithium from wallet
-     * 4. Submit via RPC
-     */
-    error = DNA_ERROR_INTERNAL; /* Not yet implemented */
+    /* Get task parameters */
+    int wallet_index = task->params.send_tokens.wallet_index;
+    const char *recipient = task->params.send_tokens.recipient;
+    const char *amount_str = task->params.send_tokens.amount;
+    const char *network = task->params.send_tokens.network;
+
+    /* Get wallet */
+    wallet_list_t *wallets = (wallet_list_t*)engine->wallet_list;
+    if (wallet_index < 0 || wallet_index >= wallets->count) {
+        error = DNA_ERROR_INVALID_ARG;
+        goto done;
+    }
+
+    cellframe_wallet_t *wallet = &wallets->wallets[wallet_index];
+
+    /* Check if address is available */
+    if (wallet->address[0] == '\0') {
+        fprintf(stderr, "[ENGINE] Wallet address not available\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    char address[WALLET_ADDRESS_MAX];
+    strncpy(address, wallet->address, WALLET_ADDRESS_MAX - 1);
+    address[WALLET_ADDRESS_MAX - 1] = '\0';
+
+    /* Parse amount */
+    uint256_t amount = {0};
+    if (cellframe_uint256_from_str(amount_str, &amount) != 0) {
+        fprintf(stderr, "[ENGINE] Failed to parse amount: %s\n", amount_str);
+        error = DNA_ERROR_INVALID_ARG;
+        goto done;
+    }
+
+    /* Use default validator fee */
+    uint256_t fee = {0};
+    fee.lo.lo = DEFAULT_VALIDATOR_FEE_DATOSHI;
+
+    /* STEP 1: Query UTXOs */
+    int num_selected_utxos = 0;
+    uint64_t total_input_u64 = 0;
+    uint64_t required_u64 = amount.lo.lo + NETWORK_FEE_DATOSHI + fee.lo.lo;
+
+    if (cellframe_rpc_get_utxo(network, address, "CELL", &utxo_resp) != 0 || !utxo_resp) {
+        fprintf(stderr, "[ENGINE] Failed to query UTXOs from RPC\n");
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    if (utxo_resp->result) {
+        /* Parse UTXO response: result[0][0]["outs"][] */
+        if (json_object_is_type(utxo_resp->result, json_type_array) &&
+            json_object_array_length(utxo_resp->result) > 0) {
+
+            json_object *first_array = json_object_array_get_idx(utxo_resp->result, 0);
+            if (first_array && json_object_is_type(first_array, json_type_array) &&
+                json_object_array_length(first_array) > 0) {
+
+                json_object *first_item = json_object_array_get_idx(first_array, 0);
+                json_object *outs_obj = NULL;
+
+                if (first_item && json_object_object_get_ex(first_item, "outs", &outs_obj) &&
+                    json_object_is_type(outs_obj, json_type_array)) {
+
+                    int num_utxos = json_object_array_length(outs_obj);
+                    if (num_utxos == 0) {
+                        fprintf(stderr, "[ENGINE] No UTXOs available\n");
+                        error = DNA_ERROR_NOT_FOUND;
+                        goto done;
+                    }
+
+                    /* Parse all UTXOs */
+                    engine_utxo_t *all_utxos = (engine_utxo_t*)malloc(sizeof(engine_utxo_t) * num_utxos);
+                    if (!all_utxos) {
+                        error = DNA_ERROR_INTERNAL;
+                        goto done;
+                    }
+                    int valid_utxos = 0;
+
+                    for (int i = 0; i < num_utxos; i++) {
+                        json_object *utxo_obj = json_object_array_get_idx(outs_obj, i);
+                        json_object *jhash = NULL, *jidx = NULL, *jvalue = NULL;
+
+                        if (utxo_obj &&
+                            json_object_object_get_ex(utxo_obj, "prev_hash", &jhash) &&
+                            json_object_object_get_ex(utxo_obj, "out_prev_idx", &jidx) &&
+                            json_object_object_get_ex(utxo_obj, "value_datoshi", &jvalue)) {
+
+                            const char *hash_str = json_object_get_string(jhash);
+                            const char *value_str = json_object_get_string(jvalue);
+
+                            /* Parse hash */
+                            if (hash_str && strlen(hash_str) >= 66 && hash_str[0] == '0' && hash_str[1] == 'x') {
+                                for (int j = 0; j < 32; j++) {
+                                    sscanf(hash_str + 2 + (j * 2), "%2hhx", &all_utxos[valid_utxos].hash.raw[j]);
+                                }
+                                all_utxos[valid_utxos].idx = json_object_get_int(jidx);
+                                cellframe_uint256_from_str(value_str, &all_utxos[valid_utxos].value);
+                                valid_utxos++;
+                            }
+                        }
+                    }
+
+                    if (valid_utxos == 0) {
+                        fprintf(stderr, "[ENGINE] No valid UTXOs\n");
+                        free(all_utxos);
+                        error = DNA_ERROR_NOT_FOUND;
+                        goto done;
+                    }
+
+                    /* Select UTXOs (greedy selection) */
+                    selected_utxos = (engine_utxo_t*)malloc(sizeof(engine_utxo_t) * valid_utxos);
+                    if (!selected_utxos) {
+                        free(all_utxos);
+                        error = DNA_ERROR_INTERNAL;
+                        goto done;
+                    }
+
+                    for (int i = 0; i < valid_utxos; i++) {
+                        selected_utxos[num_selected_utxos++] = all_utxos[i];
+                        total_input_u64 += all_utxos[i].value.lo.lo;
+
+                        if (total_input_u64 >= required_u64) {
+                            break;
+                        }
+                    }
+
+                    free(all_utxos);
+
+                    /* Check if we have enough */
+                    if (total_input_u64 < required_u64) {
+                        fprintf(stderr, "[ENGINE] Insufficient funds. Need: %lu, Have: %lu\n",
+                                (unsigned long)required_u64, (unsigned long)total_input_u64);
+                        error = DNA_ERROR_INTERNAL;
+                        goto done;
+                    }
+
+                } else {
+                    fprintf(stderr, "[ENGINE] Invalid UTXO response format\n");
+                    error = DNA_ENGINE_ERROR_NETWORK;
+                    goto done;
+                }
+            } else {
+                fprintf(stderr, "[ENGINE] Invalid UTXO response format\n");
+                error = DNA_ENGINE_ERROR_NETWORK;
+                goto done;
+            }
+        } else {
+            fprintf(stderr, "[ENGINE] Invalid UTXO response format\n");
+            error = DNA_ENGINE_ERROR_NETWORK;
+            goto done;
+        }
+    }
+
+    /* STEP 2: Build transaction */
+    builder = cellframe_tx_builder_new();
+    if (!builder) {
+        fprintf(stderr, "[ENGINE] Failed to create tx builder\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    /* Set timestamp */
+    uint64_t ts = (uint64_t)time(NULL);
+    cellframe_tx_set_timestamp(builder, ts);
+
+    /* Parse recipient address from Base58 */
+    uint8_t recipient_addr_buf[BASE58_DECODE_SIZE(256)];
+    size_t decoded_size = base58_decode(recipient, recipient_addr_buf);
+    if (decoded_size != sizeof(cellframe_addr_t)) {
+        fprintf(stderr, "[ENGINE] Invalid recipient address\n");
+        error = DNA_ERROR_INVALID_ARG;
+        goto done;
+    }
+    cellframe_addr_t recipient_addr;
+    memcpy(&recipient_addr, recipient_addr_buf, sizeof(cellframe_addr_t));
+
+    /* Parse network collector address */
+    uint8_t network_collector_buf[BASE58_DECODE_SIZE(256)];
+    decoded_size = base58_decode(NETWORK_FEE_COLLECTOR, network_collector_buf);
+    if (decoded_size != sizeof(cellframe_addr_t)) {
+        fprintf(stderr, "[ENGINE] Invalid network collector address\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+    cellframe_addr_t network_collector_addr;
+    memcpy(&network_collector_addr, network_collector_buf, sizeof(cellframe_addr_t));
+
+    /* Parse sender address (for change) */
+    uint8_t sender_addr_buf[BASE58_DECODE_SIZE(256)];
+    decoded_size = base58_decode(address, sender_addr_buf);
+    if (decoded_size != sizeof(cellframe_addr_t)) {
+        fprintf(stderr, "[ENGINE] Invalid sender address\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+    cellframe_addr_t sender_addr;
+    memcpy(&sender_addr, sender_addr_buf, sizeof(cellframe_addr_t));
+
+    /* Calculate network fee */
+    uint256_t network_fee = {0};
+    network_fee.lo.lo = NETWORK_FEE_DATOSHI;
+
+    /* Calculate change */
+    uint64_t change_u64 = total_input_u64 - amount.lo.lo - NETWORK_FEE_DATOSHI - fee.lo.lo;
+    uint256_t change = {0};
+    change.lo.lo = change_u64;
+
+    /* Add all IN items */
+    for (int i = 0; i < num_selected_utxos; i++) {
+        if (cellframe_tx_add_in(builder, &selected_utxos[i].hash, selected_utxos[i].idx) != 0) {
+            fprintf(stderr, "[ENGINE] Failed to add IN item\n");
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+    }
+
+    /* Add OUT item (recipient) */
+    if (cellframe_tx_add_out(builder, &recipient_addr, amount) != 0) {
+        fprintf(stderr, "[ENGINE] Failed to add recipient OUT\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    /* Add OUT item (network fee collector) */
+    if (cellframe_tx_add_out(builder, &network_collector_addr, network_fee) != 0) {
+        fprintf(stderr, "[ENGINE] Failed to add network fee OUT\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    /* Add OUT item (change) - only if change > 0 */
+    if (change.hi.hi != 0 || change.hi.lo != 0 || change.lo.hi != 0 || change.lo.lo != 0) {
+        if (cellframe_tx_add_out(builder, &sender_addr, change) != 0) {
+            fprintf(stderr, "[ENGINE] Failed to add change OUT\n");
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+    }
+
+    /* Add OUT_COND item (validator fee) */
+    if (cellframe_tx_add_fee(builder, fee) != 0) {
+        fprintf(stderr, "[ENGINE] Failed to add validator fee\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    /* STEP 3: Sign transaction */
+    size_t tx_size;
+    const uint8_t *tx_data = cellframe_tx_get_signing_data(builder, &tx_size);
+    if (!tx_data) {
+        fprintf(stderr, "[ENGINE] Failed to get transaction data\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    /* Sign transaction */
+    size_t dap_sign_size = 0;
+    if (cellframe_sign_transaction(tx_data, tx_size,
+                                    wallet->private_key, wallet->private_key_size,
+                                    wallet->public_key, wallet->public_key_size,
+                                    &dap_sign, &dap_sign_size) != 0) {
+        fprintf(stderr, "[ENGINE] Failed to sign transaction\n");
+        free((void*)tx_data);
+        error = DNA_ERROR_CRYPTO;
+        goto done;
+    }
+
+    free((void*)tx_data);
+
+    /* Add signature to transaction */
+    if (cellframe_tx_add_signature(builder, dap_sign, dap_sign_size) != 0) {
+        fprintf(stderr, "[ENGINE] Failed to add signature\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    /* STEP 4: Convert to JSON */
+    const uint8_t *signed_tx = cellframe_tx_get_data(builder, &tx_size);
+    if (!signed_tx) {
+        fprintf(stderr, "[ENGINE] Failed to get signed transaction\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    if (cellframe_tx_to_json(signed_tx, tx_size, &json) != 0) {
+        fprintf(stderr, "[ENGINE] Failed to convert to JSON\n");
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    /* STEP 5: Submit to RPC */
+    if (cellframe_rpc_submit_tx(network, "main", json, &submit_resp) != 0 || !submit_resp) {
+        fprintf(stderr, "[ENGINE] Failed to submit transaction to RPC\n");
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    /* Check response */
+    if (submit_resp->result) {
+        bool tx_created = false;
+
+        if (json_object_is_type(submit_resp->result, json_type_array) &&
+            json_object_array_length(submit_resp->result) > 0) {
+
+            json_object *first_elem = json_object_array_get_idx(submit_resp->result, 0);
+            if (first_elem) {
+                json_object *jtx_create = NULL;
+                if (json_object_object_get_ex(first_elem, "tx_create", &jtx_create)) {
+                    tx_created = json_object_get_boolean(jtx_create);
+                }
+            }
+        }
+
+        if (!tx_created) {
+            fprintf(stderr, "[ENGINE] Transaction failed to create\n");
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+
+        printf("[ENGINE] Transaction submitted successfully!\n");
+    }
 
 done:
+    if (selected_utxos) free(selected_utxos);
+    if (builder) cellframe_tx_builder_free(builder);
+    if (utxo_resp) cellframe_rpc_response_free(utxo_resp);
+    if (submit_resp) cellframe_rpc_response_free(submit_resp);
+    if (dap_sign) free(dap_sign);
+    if (json) free(json);
+
     task->callback.completion(task->request_id, error, task->user_data);
 }
 
@@ -1259,17 +1607,164 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_transaction_t *transactions = NULL;
     int count = 0;
+    cellframe_rpc_response_t *resp = NULL;
 
     if (!engine->wallets_loaded || !engine->wallet_list) {
         error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
         goto done;
     }
 
-    /* TODO: Query transaction history from RPC */
-    /* Current Cellframe RPC doesn't have direct tx history endpoint */
-    error = DNA_ERROR_INTERNAL; /* Not yet implemented */
+    /* Get wallet address */
+    int wallet_index = task->params.get_transactions.wallet_index;
+    const char *network = task->params.get_transactions.network;
+
+    wallet_list_t *wallets = (wallet_list_t*)engine->wallet_list;
+    if (wallet_index < 0 || wallet_index >= wallets->count) {
+        error = DNA_ERROR_INVALID_ARG;
+        goto done;
+    }
+
+    cellframe_wallet_t *wallet = &wallets->wallets[wallet_index];
+    if (wallet->address[0] == '\0') {
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    /* Query transaction history from RPC */
+    if (cellframe_rpc_get_tx_history(network, wallet->address, &resp) != 0 || !resp) {
+        fprintf(stderr, "[ENGINE] Failed to query tx history from RPC\n");
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    if (!resp->result) {
+        /* No transactions - return empty list */
+        goto done;
+    }
+
+    /* Parse response: result[0] = {addr, limit}, result[1..n] = transactions */
+    if (!json_object_is_type(resp->result, json_type_array)) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    /* First element is array with addr/limit, skip it */
+    /* Count actual transaction objects (starting from index 1) */
+    int array_len = json_object_array_length(resp->result);
+    if (array_len <= 1) {
+        /* Only header, no transactions */
+        goto done;
+    }
+
+    /* First array element contains addr and limit objects */
+    json_object *first_elem = json_object_array_get_idx(resp->result, 0);
+    if (!first_elem || !json_object_is_type(first_elem, json_type_array)) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    /* Get transactions array - it's inside first_elem starting at index 2 */
+    int tx_array_len = json_object_array_length(first_elem);
+    int tx_count = tx_array_len - 2;  /* Skip addr and limit objects */
+
+    if (tx_count <= 0) {
+        goto done;
+    }
+
+    /* Allocate transactions array */
+    transactions = calloc(tx_count, sizeof(dna_transaction_t));
+    if (!transactions) {
+        error = DNA_ERROR_INTERNAL;
+        goto done;
+    }
+
+    /* Parse each transaction */
+    for (int i = 0; i < tx_count; i++) {
+        json_object *tx_obj = json_object_array_get_idx(first_elem, i + 2);
+        if (!tx_obj) continue;
+
+        json_object *jhash = NULL, *jstatus = NULL, *jtx_created = NULL, *jdata = NULL;
+
+        json_object_object_get_ex(tx_obj, "hash", &jhash);
+        json_object_object_get_ex(tx_obj, "status", &jstatus);
+        json_object_object_get_ex(tx_obj, "tx_created", &jtx_created);
+        json_object_object_get_ex(tx_obj, "data", &jdata);
+
+        /* Copy hash */
+        if (jhash) {
+            strncpy(transactions[count].tx_hash, json_object_get_string(jhash),
+                    sizeof(transactions[count].tx_hash) - 1);
+        }
+
+        /* Copy status */
+        if (jstatus) {
+            strncpy(transactions[count].status, json_object_get_string(jstatus),
+                    sizeof(transactions[count].status) - 1);
+        }
+
+        /* Copy timestamp */
+        if (jtx_created) {
+            strncpy(transactions[count].timestamp, json_object_get_string(jtx_created),
+                    sizeof(transactions[count].timestamp) - 1);
+        }
+
+        /* Parse data array for direction, amount, token, address */
+        if (jdata && json_object_is_type(jdata, json_type_array)) {
+            int data_len = json_object_array_length(jdata);
+            for (int j = 0; j < data_len; j++) {
+                json_object *data_item = json_object_array_get_idx(jdata, j);
+                if (!data_item) continue;
+
+                json_object *jtx_type = NULL, *jtoken = NULL;
+                json_object *jrecv_coins = NULL, *jsend_coins = NULL;
+                json_object *jsrc_addr = NULL, *jdst_addr = NULL;
+
+                json_object_object_get_ex(data_item, "tx_type", &jtx_type);
+                json_object_object_get_ex(data_item, "token", &jtoken);
+                json_object_object_get_ex(data_item, "recv_coins", &jrecv_coins);
+                json_object_object_get_ex(data_item, "send_coins", &jsend_coins);
+                json_object_object_get_ex(data_item, "source_address", &jsrc_addr);
+                json_object_object_get_ex(data_item, "destination_address", &jdst_addr);
+
+                if (jtx_type) {
+                    const char *tx_type = json_object_get_string(jtx_type);
+                    if (strcmp(tx_type, "recv") == 0) {
+                        strncpy(transactions[count].direction, "received",
+                                sizeof(transactions[count].direction) - 1);
+                        if (jrecv_coins) {
+                            strncpy(transactions[count].amount, json_object_get_string(jrecv_coins),
+                                    sizeof(transactions[count].amount) - 1);
+                        }
+                        if (jsrc_addr) {
+                            strncpy(transactions[count].other_address, json_object_get_string(jsrc_addr),
+                                    sizeof(transactions[count].other_address) - 1);
+                        }
+                    } else if (strcmp(tx_type, "send") == 0) {
+                        strncpy(transactions[count].direction, "sent",
+                                sizeof(transactions[count].direction) - 1);
+                        if (jsend_coins) {
+                            strncpy(transactions[count].amount, json_object_get_string(jsend_coins),
+                                    sizeof(transactions[count].amount) - 1);
+                        }
+                        if (jdst_addr) {
+                            strncpy(transactions[count].other_address, json_object_get_string(jdst_addr),
+                                    sizeof(transactions[count].other_address) - 1);
+                        }
+                    }
+                }
+
+                if (jtoken) {
+                    strncpy(transactions[count].token, json_object_get_string(jtoken),
+                            sizeof(transactions[count].token) - 1);
+                }
+            }
+        }
+
+        count++;
+    }
 
 done:
+    if (resp) cellframe_rpc_response_free(resp);
     task->callback.transactions(task->request_id, error, transactions, count, task->user_data);
 }
 

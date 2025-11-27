@@ -1,8 +1,12 @@
 # DNA Engine API Reference
 
-**Version:** 1.0.0
-**Date:** 2025-11-26
+**Version:** 1.1.0
+**Date:** 2025-11-27
 **Location:** `include/dna/dna_engine.h`
+
+**Changelog:**
+- v1.1.0 (2025-11-27): Implemented `send_tokens` with full UTXO selection, tx building, Dilithium5 signing
+- v1.0.0 (2025-11-26): Initial documentation
 
 ---
 
@@ -647,7 +651,51 @@ dna_request_id_t dna_engine_send_tokens(
 );
 ```
 
-Sends tokens via Cellframe transaction.
+Sends tokens via Cellframe transaction with Dilithium5 signature.
+
+**Parameters:**
+- `wallet_index` - Index of wallet in list (from `dna_engine_list_wallets`)
+- `recipient_address` - Base58 Cellframe address
+- `amount` - Amount as string (e.g., "1.5" for 1.5 CELL)
+- `token` - Token ticker (e.g., "CELL", "CPUNK")
+- `network` - Network name (e.g., "Backbone", "KelVPN")
+
+**Implementation Details:**
+1. Queries UTXOs from RPC (`cellframe_rpc_get_utxo`)
+2. Builds transaction with inputs/outputs
+3. Signs with wallet's Dilithium5 private key
+4. Submits to mempool via RPC (`cellframe_rpc_submit_tx`)
+
+**Fees:**
+- Network fee: 0.002 CELL (fixed, goes to network collector)
+- Validator fee: 0.0001 CELL (default, configurable)
+
+**Example:**
+```c
+dna_engine_send_tokens(engine,
+    0,                      // First wallet
+    "Rj7J7MiX2bWy...",     // Recipient address
+    "10.5",                 // Amount
+    "CELL",                 // Token
+    "Backbone",             // Network
+    on_send_complete,
+    NULL);
+
+void on_send_complete(dna_request_id_t id, int error, void* ud) {
+    if (error == 0) {
+        printf("Transaction submitted!\n");
+    } else {
+        printf("Error: %s\n", dna_engine_error_string(error));
+    }
+}
+```
+
+**Error codes:**
+- `DNA_ENGINE_ERROR_NOT_INITIALIZED` - Wallet not loaded
+- `DNA_ERROR_INVALID_ARG` - Invalid address or amount
+- `DNA_ERROR_NOT_FOUND` - No UTXOs available (insufficient funds)
+- `DNA_ENGINE_ERROR_NETWORK` - RPC communication failed
+- `DNA_ERROR_CRYPTO` - Transaction signing failed
 
 ---
 

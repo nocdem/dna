@@ -347,6 +347,107 @@ int cellframe_rpc_submit_tx(const char *net, const char *chain, const char *tx_j
 }
 
 /**
+ * Get transaction history for address
+ */
+int cellframe_rpc_get_tx_history(const char *net, const char *address, cellframe_rpc_response_t **response_out) {
+    if (!net || !address || !response_out) {
+        return -1;
+    }
+
+    /* Build params string: "tx_history;-net;Backbone;-addr;ADDRESS" */
+    char params_str[1024];
+    snprintf(params_str, sizeof(params_str), "tx_history;-net;%s;-addr;%s", net, address);
+
+    /* Create params array with single string */
+    json_object *params_array = json_object_new_array();
+    json_object_array_add(params_array, json_object_new_string(params_str));
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        json_object_put(params_array);
+        return -1;
+    }
+
+    /* Build JSON request */
+    json_object *jreq = json_object_new_object();
+    json_object_object_add(jreq, "method", json_object_new_string("tx_history"));
+    json_object_object_add(jreq, "params", params_array);
+    json_object_object_add(jreq, "id", json_object_new_string("1"));
+    json_object_object_add(jreq, "version", json_object_new_string("2"));
+
+    const char *json_str = json_object_to_json_string(jreq);
+
+    /* Setup response buffer */
+    struct response_buffer resp_buf = {0};
+
+    /* Setup curl */
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, CELLFRAME_RPC_ENDPOINT);
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    /* Perform request */
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    json_object_put(jreq);
+
+    if (res != CURLE_OK) {
+        if (resp_buf.data) {
+            free(resp_buf.data);
+        }
+        return -1;
+    }
+
+    /* Parse response */
+    json_object *jresp = json_tokener_parse(resp_buf.data);
+    free(resp_buf.data);
+
+    if (!jresp) {
+        return -1;
+    }
+
+    /* Extract response fields */
+    cellframe_rpc_response_t *response = calloc(1, sizeof(cellframe_rpc_response_t));
+    if (!response) {
+        json_object_put(jresp);
+        return -1;
+    }
+
+    json_object *jtype = NULL;
+    json_object *jresult = NULL;
+    json_object *jid = NULL;
+    json_object *jversion = NULL;
+
+    if (json_object_object_get_ex(jresp, "type", &jtype)) {
+        response->type = json_object_get_int(jtype);
+    }
+
+    if (json_object_object_get_ex(jresp, "result", &jresult)) {
+        response->result = json_object_get(jresult);
+    }
+
+    if (json_object_object_get_ex(jresp, "id", &jid)) {
+        response->id = json_object_get_int(jid);
+    }
+
+    if (json_object_object_get_ex(jresp, "version", &jversion)) {
+        response->version = json_object_get_int(jversion);
+    }
+
+    json_object_put(jresp);
+
+    *response_out = response;
+    return 0;
+}
+
+/**
  * Free RPC response
  */
 void cellframe_rpc_response_free(cellframe_rpc_response_t *response) {

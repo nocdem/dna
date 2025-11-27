@@ -104,6 +104,16 @@ int cellframe_rpc_get_utxo(const char *net, const char *address, const char *tok
 int cellframe_rpc_submit_tx(const char *net, const char *chain, const char *tx_json, cellframe_rpc_response_t **response_out);
 
 /**
+ * Get transaction history for address
+ *
+ * @param net - Network name (e.g., "Backbone")
+ * @param address - Wallet address
+ * @param response_out - Response structure with tx history array
+ * @return 0 on success, -1 on error
+ */
+int cellframe_rpc_get_tx_history(const char *net, const char *address, cellframe_rpc_response_t **response_out);
+
+/**
  * Free RPC response
  */
 void cellframe_rpc_response_free(cellframe_rpc_response_t *response);

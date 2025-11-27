@@ -282,10 +282,6 @@ public:
 
     // Messenger backend context (opaque pointer, defined in messenger.h)
     void *messenger_ctx;
-
-    // Mock data loading functions
-    void scanIdentities();
-    void loadIdentity(const std::string& identity);
 };
 
 #endif // APP_STATE_H
