@@ -1,16 +1,20 @@
 /*
- * DNA Nodus - Post-Quantum DHT Bootstrap Node with SQL Persistence
- *
- * Dilithium5 (FIPS 204 / ML-DSA-87) enforced bootstrap node for DNA Messenger
+ * DNA Nodus v0.3 - Post-Quantum DHT Bootstrap Node + STUN/TURN Server
  *
  * Features:
- * - SQLite value persistence (survives restarts)
+ * - SQLite DHT value persistence
  * - Mandatory Dilithium5 signature enforcement
- * - Binary identity files (.dsa, .pub, .cert)
- * - Public bootstrap node (no rate limiting)
- * - Auto-registration in DHT bootstrap registry
- * - Listens on port 4000
+ * - STUN/TURN relay server (libjuice)
+ * - DHT-based credential authentication
+ * - Auto-discovery of peer nodus via DHT registry
+ * - JSON config file: /etc/dna-nodus.conf
+ *
+ * Config is loaded from /etc/dna-nodus.conf - no CLI arguments needed.
  */
+
+#include "nodus_config.h"
+#include "turn_server.h"
+#include "turn_credential_manager.h"
 
 #include "../../dht/core/dht_context.h"
 #include "../../dht/shared/dht_value_storage.h"
@@ -25,15 +29,29 @@
 #include <ifaddrs.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <set>
 
-static dht_context_t *global_ctx = NULL;
+static dht_context_t *global_ctx = nullptr;
+static TurnServer *global_turn = nullptr;
+static TurnCredentialManager *global_cred_mgr = nullptr;
 
 void signal_handler(int sig) {
     (void)sig;
     std::cout << "\nShutting down..." << std::endl;
+
+    if (global_cred_mgr) {
+        delete global_cred_mgr;
+        global_cred_mgr = nullptr;
+    }
+    if (global_turn) {
+        global_turn->stop();
+        delete global_turn;
+        global_turn = nullptr;
+    }
     if (global_ctx) {
         dht_context_stop(global_ctx);
         dht_context_free(global_ctx);
+        global_ctx = nullptr;
     }
     exit(0);
 }
@@ -44,12 +62,11 @@ std::string get_interface_ip() {
     std::string ip;
 
     if (getifaddrs(&ifaddr) == -1) {
-        std::cerr << "Failed to get interface addresses" << std::endl;
         return "";
     }
 
-    for (ifa = ifaddr; ifa != NULL; ifa = ifa->ifa_next) {
-        if (ifa->ifa_addr == NULL)
+    for (ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next) {
+        if (ifa->ifa_addr == nullptr)
             continue;
 
         if (ifa->ifa_addr->sa_family == AF_INET) {
@@ -69,7 +86,7 @@ std::string get_interface_ip() {
     return ip;
 }
 
-// Get file size and format as human-readable string
+// Get file size as human-readable string
 std::string get_file_size(const std::string& path) {
     struct stat st;
     if (stat(path.c_str(), &st) != 0) {
@@ -87,163 +104,241 @@ std::string get_file_size(const std::string& path) {
 
     char buf[64];
     snprintf(buf, sizeof(buf), "%.2f %s", size, units[unit]);
-    return std::string(buf);
+    return buf;
+}
+
+// Track connected peers to avoid duplicate connections
+static std::set<std::string> connected_peers;
+
+bool already_connected(const char* ip, uint16_t port) {
+    char key[128];
+    snprintf(key, sizeof(key), "%s:%u", ip, port);
+    return connected_peers.count(key) > 0;
+}
+
+void mark_connected(const char* ip, uint16_t port) {
+    char key[128];
+    snprintf(key, sizeof(key), "%s:%u", ip, port);
+    connected_peers.insert(key);
 }
 
 int main(int argc, char** argv) {
-    std::cout << "DNA Nodus v0.2 - Post-Quantum DHT Bootstrap Node" << std::endl;
+    (void)argc;
+    (void)argv;
+
+    std::cout << "DNA Nodus v0.3 - Post-Quantum DHT Bootstrap + STUN/TURN" << std::endl;
     std::cout << "FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5 Security" << std::endl;
-    std::cout << "SQLite value persistence enabled" << std::endl << std::endl;
+    std::cout << std::endl;
 
-    // Default settings
-    int port = 4000;
-    std::string identity_path = "dna-bootstrap-node";
-    std::string persist_path = "/var/lib/dna-dht/bootstrap.state";
-    std::string bootstrap_hosts[3];
-    int bootstrap_count = 0;
-    std::string public_ip = "";
-    bool verbose = false;
-    (void)verbose;  // TODO: implement verbose logging
+    // Load configuration
+    NodusConfig cfg;
+    cfg.load();  // Loads from /etc/dna-nodus.conf or uses defaults
+    cfg.print();
 
-    // Parse command line arguments
-    for (int i = 1; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "-p" && i + 1 < argc) {
-            port = std::stoi(argv[++i]);
-        } else if (arg == "-i" && i + 1 < argc) {
-            identity_path = argv[++i];
-        } else if (arg == "-b" && i + 1 < argc) {
-            if (bootstrap_count < 3) {
-                bootstrap_hosts[bootstrap_count++] = argv[++i];
-            }
-        } else if (arg == "--public-ip" && i + 1 < argc) {
-            public_ip = argv[++i];
-        } else if (arg == "-s" && i + 1 < argc) {
-            persist_path = argv[++i];
-        } else if (arg == "-v") {
-            verbose = true;
-        } else if (arg == "-h" || arg == "--help") {
-            std::cout << "Usage: dna-nodus [options]" << std::endl;
-            std::cout << "Options:" << std::endl;
-            std::cout << "  -p <port>           Port to listen on (default: 4000)" << std::endl;
-            std::cout << "  -i <path>           Identity name (default: dna-bootstrap-node)" << std::endl;
-            std::cout << "  -s <path>           Persistence path (default: /var/lib/dna-dht/bootstrap.state)" << std::endl;
-            std::cout << "  -b <host>:port      Bootstrap from host (can specify multiple times)" << std::endl;
-            std::cout << "  --public-ip <ip>    Public IP address" << std::endl;
-            std::cout << "  -v                  Verbose logging" << std::endl;
-            std::cout << "  -h, --help          Show this help" << std::endl;
-            return 0;
-        }
-    }
-
-    // Auto-detect public IP if not specified
-    if (public_ip.empty()) {
+    // Auto-detect public IP if "auto"
+    std::string public_ip = cfg.public_ip;
+    if (public_ip == "auto" || public_ip.empty()) {
         public_ip = get_interface_ip();
-        if (!public_ip.empty())
-            std::cout << "Auto-detected IP: " << public_ip << std::endl;
+        if (!public_ip.empty()) {
+            std::cout << "[IP] Auto-detected: " << public_ip << std::endl;
+        } else {
+            std::cerr << "[IP] WARNING: Could not detect public IP" << std::endl;
+        }
     }
 
     // Setup signal handlers
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
-    // Configure DHT context for bootstrap node
-    dht_config_t config;
-    memset(&config, 0, sizeof(config));
-    config.port = port;
-    config.is_bootstrap = true;  // Enable bootstrap mode + value storage
-    strncpy(config.identity, identity_path.c_str(), sizeof(config.identity) - 1);
-    strncpy(config.persistence_path, persist_path.c_str(), sizeof(config.persistence_path) - 1);
+    // Configure DHT context
+    dht_config_t dht_config;
+    memset(&dht_config, 0, sizeof(dht_config));
+    dht_config.port = cfg.dht_port;
+    dht_config.is_bootstrap = true;
+    strncpy(dht_config.identity, cfg.identity.c_str(), sizeof(dht_config.identity) - 1);
+    strncpy(dht_config.persistence_path, cfg.persistence_path.c_str(),
+            sizeof(dht_config.persistence_path) - 1);
 
-    // Add bootstrap nodes
-    config.bootstrap_count = bootstrap_count;
-    for (int i = 0; i < bootstrap_count; i++) {
-        strncpy(config.bootstrap_nodes[i], bootstrap_hosts[i].c_str(),
-                sizeof(config.bootstrap_nodes[i]) - 1);
+    // Add seed nodes
+    dht_config.bootstrap_count = std::min((int)cfg.seed_nodes.size(), 5);
+    for (int i = 0; i < dht_config.bootstrap_count; i++) {
+        strncpy(dht_config.bootstrap_nodes[i], cfg.seed_nodes[i].c_str(),
+                sizeof(dht_config.bootstrap_nodes[i]) - 1);
+        mark_connected(cfg.seed_nodes[i].c_str(), cfg.dht_port);
     }
 
-    std::cout << "Creating DHT context (bootstrap mode)..." << std::endl;
-    global_ctx = dht_context_new(&config);
+    std::cout << std::endl << "[DHT] Creating context..." << std::endl;
+    global_ctx = dht_context_new(&dht_config);
     if (!global_ctx) {
-        std::cerr << "ERROR: Failed to create DHT context" << std::endl;
+        std::cerr << "[DHT] ERROR: Failed to create context" << std::endl;
         return 1;
     }
-    std::cout << "✓ DHT context created" << std::endl << std::endl;
 
-    std::cout << "Starting DHT node on port " << port << "..." << std::endl;
-    std::cout << "Persistence: " << persist_path << std::endl;
+    std::cout << "[DHT] Starting on port " << cfg.dht_port << "..." << std::endl;
 
     // Check database size
-    std::string db_path = persist_path + ".values.db";
-    std::string db_size = get_file_size(db_path);
-    std::cout << "Database:    " << db_path << " (" << db_size << ")" << std::endl;
+    std::string db_path = cfg.persistence_path + ".values.db";
+    std::cout << "[DHT] Database: " << db_path << " (" << get_file_size(db_path) << ")" << std::endl;
 
     if (dht_context_start(global_ctx) != 0) {
-        std::cerr << "ERROR: Failed to start DHT node" << std::endl;
+        std::cerr << "[DHT] ERROR: Failed to start" << std::endl;
         dht_context_free(global_ctx);
         return 1;
     }
-    std::cout << "✓ DHT node started" << std::endl << std::endl;
+    std::cout << "[DHT] Started" << std::endl;
 
-    std::cout << "=== DNA Nodus Running ===" << std::endl;
-    std::cout << "Port:     " << port << std::endl;
-    std::cout << "Security: Dilithium5 (ML-DSA-87) - Mandatory Signatures" << std::endl;
-    if (!public_ip.empty()) {
-        std::cout << "Public IP: " << public_ip << std::endl;
+    // Get node ID
+    char node_id[129];
+    if (dht_get_node_id(global_ctx, node_id) != 0) {
+        std::cerr << "[DHT] ERROR: Failed to get node ID" << std::endl;
+        dht_context_free(global_ctx);
+        return 1;
     }
-    std::cout << "Press Ctrl+C to stop" << std::endl << std::endl;
+    std::cout << "[DHT] Node ID: " << std::string(node_id).substr(0, 16) << "..." << std::endl;
 
-    // Register this bootstrap node in DHT registry
-    {
-        char node_id[129];
-        if (dht_get_node_id(global_ctx, node_id) == 0) {
-            std::cout << "[REGISTRY] Node ID: " << std::string(node_id).substr(0, 16) << "..." << std::endl;
+    // Start TURN server
+    std::cout << std::endl << "[TURN] Starting STUN/TURN server..." << std::endl;
+    global_turn = new TurnServer();
 
-            if (dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), port,
-                                                node_id, "v0.2", 0) == 0) {
-                std::cout << "[REGISTRY] ✓ Registered in bootstrap registry" << std::endl;
-            } else {
-                std::cerr << "[REGISTRY] WARNING: Failed to register in bootstrap registry" << std::endl;
-            }
+    TurnServer::Config turn_config;
+    turn_config.port = cfg.turn_port;
+    turn_config.external_ip = public_ip;
+    turn_config.relay_port_begin = cfg.relay_port_begin;
+    turn_config.relay_port_end = cfg.relay_port_end;
+
+    if (!global_turn->start(turn_config)) {
+        std::cerr << "[TURN] ERROR: Failed to start TURN server" << std::endl;
+        delete global_turn;
+        global_turn = nullptr;
+        // Continue without TURN - DHT still works
+    }
+
+    // Setup credential manager
+    if (global_turn) {
+        std::cout << std::endl << "[CRED] Starting credential manager..." << std::endl;
+        global_cred_mgr = new TurnCredentialManager();
+
+        TurnCredentialManager::Config cred_config;
+        cred_config.dht_ctx = global_ctx;
+        cred_config.turn_server = global_turn;
+        cred_config.credential_ttl_seconds = cfg.credential_ttl_seconds;
+        cred_config.node_id = node_id;
+
+        // Add all known TURN servers (self + will discover others)
+        TurnServerInfo self_info;
+        self_info.host = public_ip;
+        self_info.port = cfg.turn_port;
+        cred_config.turn_servers.push_back(self_info);
+
+        if (!global_cred_mgr->init(cred_config)) {
+            std::cerr << "[CRED] ERROR: Failed to init credential manager" << std::endl;
+            delete global_cred_mgr;
+            global_cred_mgr = nullptr;
         }
     }
 
-    // Main loop - print stats every 60 seconds, refresh registry every 5 minutes
+    // Register in bootstrap registry
+    if (dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), cfg.dht_port,
+                                         node_id, "v0.3", 0) == 0) {
+        std::cout << "[REGISTRY] Registered in bootstrap registry" << std::endl;
+    }
+
+    std::cout << std::endl;
+    std::cout << "=== DNA Nodus v0.3 Running ===" << std::endl;
+    std::cout << "DHT:   " << public_ip << ":" << cfg.dht_port << std::endl;
+    std::cout << "TURN:  " << public_ip << ":" << cfg.turn_port << std::endl;
+    std::cout << "===============================" << std::endl;
+    std::cout << std::endl;
+
+    // Main loop
     int seconds = 0;
     while (true) {
         sleep(1);
         seconds++;
 
-        // Refresh bootstrap registry every 5 minutes
-        if (seconds % 300 == 0) {
-            char node_id[129];
-            if (dht_get_node_id(global_ctx, node_id) == 0) {
-                dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), port,
-                                                node_id, "v0.2", seconds);
-            }
+        // Every 5 seconds: Poll for credential requests
+        if (global_cred_mgr && seconds % 5 == 0) {
+            global_cred_mgr->poll_requests();
         }
 
+        // Every 30 seconds: Poll credential sync
+        if (global_cred_mgr && seconds % 30 == 0) {
+            global_cred_mgr->poll_sync();
+        }
+
+        // Every 60 seconds: Print stats
         if (seconds % 60 == 0) {
             size_t node_count = 0;
             size_t stored_values = 0;
-            if (dht_get_stats(global_ctx, &node_count, &stored_values) == 0) {
-                std::cout << "[" << seconds / 60 << " min] ";
-                std::cout << "[" << node_count << " nodes] ";
-                std::cout << "[" << stored_values << " values]";
+            dht_get_stats(global_ctx, &node_count, &stored_values);
 
-                // Print storage stats if available
-                dht_value_storage_t *storage = dht_get_storage(global_ctx);
-                if (storage) {
-                    dht_storage_stats_t storage_stats;
-                    if (dht_value_storage_get_stats(storage, &storage_stats) == 0) {
-                        std::cout << " | DB: " << storage_stats.total_values << " values";
+            std::cout << "[" << seconds / 60 << " min] ";
+            std::cout << "[" << node_count << " nodes] ";
+            std::cout << "[" << stored_values << " values]";
 
-                        if (storage_stats.republish_in_progress) {
-                            std::cout << " (republishing...)";
+            // Storage stats
+            dht_value_storage_t *storage = dht_get_storage(global_ctx);
+            if (storage) {
+                dht_storage_stats_t storage_stats;
+                if (dht_value_storage_get_stats(storage, &storage_stats) == 0) {
+                    std::cout << " | DB: " << storage_stats.total_values;
+                    if (storage_stats.republish_in_progress) {
+                        std::cout << " (republishing)";
+                    }
+                }
+            }
+
+            // TURN stats
+            if (global_turn) {
+                auto turn_stats = global_turn->get_stats();
+                std::cout << " | TURN: " << turn_stats.total_credentials << " creds";
+            }
+
+            // Credential stats
+            if (global_cred_mgr) {
+                auto cred_stats = global_cred_mgr->get_stats();
+                std::cout << " | Issued: " << cred_stats.credentials_issued;
+                if (cred_stats.auth_failures > 0) {
+                    std::cout << " (fail: " << cred_stats.auth_failures << ")";
+                }
+            }
+
+            std::cout << std::endl;
+        }
+
+        // Every 5 minutes: Refresh registry + discover peers
+        if (seconds % 300 == 0) {
+            // Refresh own registration
+            dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), cfg.dht_port,
+                                            node_id, "v0.3", seconds);
+
+            // Discover new peers
+            bootstrap_registry_t registry;
+            if (dht_bootstrap_registry_fetch(global_ctx, &registry) == 0) {
+                dht_bootstrap_registry_filter_active(&registry);
+
+                int new_peers = 0;
+                for (size_t i = 0; i < registry.node_count; i++) {
+                    if (!already_connected(registry.nodes[i].ip, registry.nodes[i].port)) {
+                        if (dht_context_bootstrap_runtime(global_ctx,
+                                registry.nodes[i].ip, registry.nodes[i].port) == 0) {
+                            mark_connected(registry.nodes[i].ip, registry.nodes[i].port);
+                            new_peers++;
+                            std::cout << "[DISCOVERY] Connected to new peer: "
+                                      << registry.nodes[i].ip << ":"
+                                      << registry.nodes[i].port << std::endl;
+
+                            // Add to credential manager's TURN server list
+                            if (global_cred_mgr) {
+                                // TODO: Update turn_servers list dynamically
+                            }
                         }
                     }
                 }
-                std::cout << std::endl;
+
+                if (new_peers > 0) {
+                    std::cout << "[DISCOVERY] Found " << new_peers << " new peer(s)" << std::endl;
+                }
             }
         }
     }

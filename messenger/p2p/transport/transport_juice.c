@@ -22,6 +22,7 @@
 
 #include "transport_ice.h"
 #include "transport_core.h"
+#include "turn_credentials.h"
 #include "../../dht/core/dht_context.h"
 #include "../../dht/client/dht_singleton.h"
 #include "../../crypto/utils/qgp_sha3.h"
@@ -83,6 +84,13 @@ struct ice_context {
     juice_agent_t *agent;          // libjuice agent
     char stun_server[256];         // STUN server hostname
     uint16_t stun_port;            // STUN server port
+
+    // TURN server info (used when STUN fails)
+    char turn_server[256];         // TURN server hostname
+    uint16_t turn_port;            // TURN server port
+    char turn_username[128];       // TURN username
+    char turn_password[128];       // TURN password
+    int turn_enabled;              // TURN is configured
 
     char local_candidates[MAX_CANDIDATES_SIZE];   // SDP-formatted local candidates
     char remote_candidates[MAX_CANDIDATES_SIZE];  // SDP-formatted remote candidates
@@ -373,6 +381,13 @@ ice_context_t* ice_context_new(void) {
     ctx->stun_server[0] = '\0';
     ctx->stun_port = 0;
 
+    // TURN state
+    ctx->turn_server[0] = '\0';
+    ctx->turn_port = 0;
+    ctx->turn_username[0] = '\0';
+    ctx->turn_password[0] = '\0';
+    ctx->turn_enabled = 0;
+
     // Initialize mutexes and condition variables
     pthread_mutex_init(&ctx->state_mutex, NULL);
     pthread_cond_init(&ctx->state_cond, NULL);
@@ -464,6 +479,22 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
     config.cb_recv = on_juice_recv;
     config.user_ptr = ctx;
 
+    // Configure TURN server if enabled
+    juice_turn_server_t turn_server;
+    if (ctx->turn_enabled && ctx->turn_server[0] != '\0') {
+        memset(&turn_server, 0, sizeof(turn_server));
+        turn_server.host = ctx->turn_server;
+        turn_server.port = ctx->turn_port;
+        turn_server.username = ctx->turn_username;
+        turn_server.password = ctx->turn_password;
+
+        config.turn_servers = &turn_server;
+        config.turn_servers_count = 1;
+
+        printf("[ICE] TURN server configured: %s:%u (user: %s)\n",
+               ctx->turn_server, ctx->turn_port, ctx->turn_username);
+    }
+
     // Create libjuice agent
     ctx->agent = juice_create(&config);
     if (!ctx->agent) {
@@ -474,7 +505,8 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
     // Set log level to WARN (suppress verbose STUN debug messages)
     juice_set_log_level(JUICE_LOG_LEVEL_WARN);
 
-    printf("[ICE] libjuice agent created\n");
+    printf("[ICE] libjuice agent created%s\n",
+           ctx->turn_enabled ? " (with TURN)" : "");
 
     // Start gathering candidates
     int ret = juice_gather_candidates(ctx->agent);
@@ -974,9 +1006,73 @@ void* ice_connection_recv_thread(void *arg) {
 }
 
 /**
+ * Configure TURN credentials on ICE context
+ *
+ * @param ice_ctx: ICE context
+ * @param creds: TURN credentials
+ * @return 0 on success, -1 on error
+ */
+static int ice_configure_turn(ice_context_t *ice_ctx, const turn_credentials_t *creds) {
+    if (!ice_ctx || !creds || creds->server_count == 0) {
+        return -1;
+    }
+
+    // Use first available server
+    const turn_server_info_t *server = &creds->servers[0];
+
+    strncpy(ice_ctx->turn_server, server->host, sizeof(ice_ctx->turn_server) - 1);
+    ice_ctx->turn_port = server->port;
+    strncpy(ice_ctx->turn_username, server->username, sizeof(ice_ctx->turn_username) - 1);
+    strncpy(ice_ctx->turn_password, server->password, sizeof(ice_ctx->turn_password) - 1);
+    ice_ctx->turn_enabled = 1;
+
+    printf("[ICE] TURN configured: %s:%u\n", server->host, server->port);
+    return 0;
+}
+
+/**
+ * Request TURN credentials from dna-nodus
+ *
+ * Note: Full implementation requires access to node's Dilithium5 keys.
+ * Keys are passed via p2p_transport context when available.
+ *
+ * @param fingerprint: Client fingerprint
+ * @param creds: Output credentials
+ * @param pubkey: Node's public key (2592 bytes) or NULL
+ * @param privkey: Node's private key (4896 bytes) or NULL
+ * @return 0 on success, -1 on error
+ */
+static int ice_request_turn_credentials(
+    const char *fingerprint,
+    turn_credentials_t *creds,
+    const uint8_t *pubkey,
+    const uint8_t *privkey)
+{
+    if (!pubkey || !privkey) {
+        // Keys not available - TURN request not possible
+        // This is expected when p2p_transport doesn't have key access
+        printf("[ICE] TURN credentials not available (no keys)\n");
+        return -1;
+    }
+
+    printf("[ICE] Requesting TURN credentials from dna-nodus...\n");
+
+    // Request credentials (30 second timeout)
+    int ret = turn_credentials_request(fingerprint, pubkey, privkey, creds, 30000);
+    if (ret != 0) {
+        fprintf(stderr, "[ICE] Failed to get TURN credentials\n");
+        return -1;
+    }
+
+    printf("[ICE] ✓ Got TURN credentials (%zu servers)\n", creds->server_count);
+    return 0;
+}
+
+/**
  * Create new ICE connection to peer
  *
  * Uses per-peer ICE context (each peer gets own ICE stream).
+ * Falls back to TURN if STUN-only ICE fails.
  *
  * @param ctx: P2P transport context
  * @param peer_pubkey: Peer's Dilithium5 public key
@@ -1034,10 +1130,68 @@ static p2p_connection_t* ice_create_connection(
     printf("[ICE-JUICE] ✓ Fetched peer ICE candidates from DHT\n");
 
     // Perform ICE connectivity checks
-    if (ice_connect(peer_ice_ctx) != 0) {
-        fprintf(stderr, "[ICE-JUICE] ICE connectivity checks failed\n");
-        ice_context_free(peer_ice_ctx);
-        return NULL;
+    int ice_connected = (ice_connect(peer_ice_ctx) == 0);
+
+    // If STUN-only ICE failed, try with TURN
+    if (!ice_connected) {
+        printf("[ICE-JUICE] STUN-only ICE failed, requesting TURN credentials...\n");
+
+        // Get our fingerprint from transport context (if available)
+        const char *local_fingerprint = ctx ? ctx->my_fingerprint : NULL;
+
+        if (local_fingerprint && strlen(local_fingerprint) > 0) {
+            turn_credentials_t turn_creds;
+
+            // Check cache first, then request new
+            // Note: Full TURN request requires keys from transport context
+            int have_creds = (turn_credentials_get_cached(local_fingerprint, &turn_creds) == 0);
+            if (!have_creds) {
+                // Check if keys are available in transport context
+                const uint8_t *pubkey = ctx->my_public_key;
+                const uint8_t *privkey = ctx->my_private_key;
+                have_creds = (ice_request_turn_credentials(local_fingerprint, &turn_creds,
+                                                           pubkey, privkey) == 0);
+            }
+
+            if (have_creds) {
+                // Recreate ICE context with TURN
+                ice_context_free(peer_ice_ctx);
+                peer_ice_ctx = ice_context_new();
+
+                if (peer_ice_ctx) {
+                    // Configure TURN
+                    ice_configure_turn(peer_ice_ctx, &turn_creds);
+
+                    // Gather candidates again (with TURN)
+                    gathered = 0;
+                    for (size_t i = 0; i < 3 && !gathered; i++) {
+                        if (ice_gather_candidates(peer_ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
+                            gathered = 1;
+                            printf("[ICE-JUICE] ✓ Gathered candidates with TURN via %s:%d\n",
+                                   stun_servers[i], stun_ports[i]);
+                            break;
+                        }
+                    }
+
+                    if (gathered) {
+                        // Fetch peer candidates again
+                        if (ice_fetch_from_dht(peer_ice_ctx, peer_fingerprint) == 0) {
+                            // Try ICE with TURN
+                            ice_connected = (ice_connect(peer_ice_ctx) == 0);
+                            if (ice_connected) {
+                                printf("[ICE-JUICE] ✓ Connected via TURN relay!\n");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if (!ice_connected) {
+            fprintf(stderr, "[ICE-JUICE] ICE connectivity checks failed (including TURN)\n");
+            if (peer_ice_ctx) ice_context_free(peer_ice_ctx);
+            return NULL;
+        }
     }
 
     printf("[ICE-JUICE] ✓ ICE connection established to peer!\n");

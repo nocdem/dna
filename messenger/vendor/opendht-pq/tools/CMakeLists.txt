@@ -38,8 +38,49 @@ function (configure_tool name extra_files)
     endif ()
 endfunction ()
 
-# DNA Nodus - Post-Quantum Bootstrap Node
-configure_tool (dna-nodus "")
+# DNA Nodus v0.3 - Post-Quantum Bootstrap + STUN/TURN
+# Additional sources for dna-nodus (config, TURN server, credential manager)
+set(DNA_NODUS_SOURCES
+    nodus_config.cpp
+    turn_server.cpp
+    turn_credential_manager.cpp
+)
+
+function (configure_nodus name)
+    add_executable (${name} ${name}.cpp ${DNA_NODUS_SOURCES})
+    add_dependencies(${name} opendht dht_lib dsa libjuice_external)
+    if (MSVC)
+        target_sources(${name} PRIVATE ${MSC_COMPAT_SOURCES})
+        target_link_libraries (${name} PUBLIC opendht ${JUICE_LIBRARIES})
+        target_include_directories (${name} PRIVATE SYSTEM
+            ${MSC_COMPAT_DIR}
+            ${MSVC_COMPAT_DIR}
+            ${CMAKE_SOURCE_DIR}/crypto/dsa
+            ${CMAKE_SOURCE_DIR}/vendor  # nlohmann/json.hpp
+            ${JUICE_INCLUDE_DIRS}
+        )
+    else()
+        target_link_libraries (${name} LINK_PUBLIC
+            -Wl,--start-group
+            opendht
+            dsa
+            dht_lib
+            ${JUICE_LIBRARIES}
+            -Wl,--end-group
+            ${SQLite3_LIBRARIES}
+            ${READLINE_LIBRARIES}
+        )
+        target_include_directories (${name} PRIVATE
+            ${CMAKE_CURRENT_BINARY_DIR}
+            ${CMAKE_SOURCE_DIR}/crypto/dsa
+            ${CMAKE_SOURCE_DIR}/vendor  # nlohmann/json.hpp
+            ${JUICE_INCLUDE_DIRS}
+        )
+    endif ()
+endfunction ()
+
+# DNA Nodus v0.3 - Post-Quantum Bootstrap Node + STUN/TURN Server
+configure_nodus (dna-nodus)
 if (OPENDHT_EXAMPLES)
     configure_tool (dhtscanner tools_common.h)
     configure_tool (dhtchat tools_common.h)

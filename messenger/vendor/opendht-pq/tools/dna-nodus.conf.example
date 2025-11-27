@@ -1,0 +1,16 @@
+{
+    "dht_port": 4000,
+    "seed_nodes": [
+        "154.38.182.161",
+        "164.68.105.227",
+        "164.68.116.180"
+    ],
+    "persistence_path": "/var/lib/dna-dht/bootstrap.state",
+    "turn_port": 3478,
+    "relay_port_begin": 49152,
+    "relay_port_end": 65535,
+    "credential_ttl_seconds": 604800,
+    "identity": "dna-bootstrap-node",
+    "public_ip": "auto",
+    "verbose": false
+}

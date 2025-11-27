@@ -1,0 +1,43 @@
+[Unit]
+Description=DNA Nodus - Post-Quantum DHT Bootstrap + STUN/TURN Server
+Documentation=https://gitlab.cpunk.io/cpunk/dna-messenger
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+
+# Config file is loaded from /etc/dna-nodus.conf
+# No CLI arguments needed - pure config file based
+
+ExecStart=/opt/dna-messenger/build/vendor/opendht-pq/tools/dna-nodus
+
+# Restart on failure
+Restart=on-failure
+RestartSec=5
+
+# Security hardening
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+# Allow writing to persistence directory
+ReadWritePaths=/var/lib/dna-dht
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dna-nodus
+
+# Resource limits
+LimitNOFILE=65535
+LimitNPROC=4096
+
+# Watchdog (optional - restart if unresponsive)
+WatchdogSec=60
+
+[Install]
+WantedBy=multi-user.target

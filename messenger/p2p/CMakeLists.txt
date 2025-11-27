@@ -30,6 +30,7 @@ add_library(p2p_transport STATIC
     transport/transport_discovery.c
     transport/transport_offline.c
     transport/transport_juice.c            # NAT traversal (libjuice - replaces libnice)
+    transport/turn_credentials.c           # TURN credential client (requests from dna-nodus)
 )
 
 target_include_directories(p2p_transport PUBLIC
