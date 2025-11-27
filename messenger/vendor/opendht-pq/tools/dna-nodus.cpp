@@ -161,7 +161,7 @@ int main(int argc, char** argv) {
 
     // Add seed nodes
     dht_config.bootstrap_count = std::min((int)cfg.seed_nodes.size(), 5);
-    for (int i = 0; i < dht_config.bootstrap_count; i++) {
+    for (size_t i = 0; i < dht_config.bootstrap_count; i++) {
         strncpy(dht_config.bootstrap_nodes[i], cfg.seed_nodes[i].c_str(),
                 sizeof(dht_config.bootstrap_nodes[i]) - 1);
         mark_connected(cfg.seed_nodes[i].c_str(), cfg.dht_port);
