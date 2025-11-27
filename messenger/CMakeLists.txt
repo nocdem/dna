@@ -69,7 +69,13 @@ add_definitions("-DBUILD_TS=\"${BUILD_TS}\"")
 add_definitions("-DBUILD_HASH=\"${BUILD_HASH}\"")
 
 # Platform detection
-if(WIN32)
+if(ANDROID)
+    # Include Android-specific configuration
+    include(${CMAKE_SOURCE_DIR}/cmake/AndroidBuild.cmake)
+    message(STATUS "Platform: Android")
+    set(PLATFORM_SOURCES crypto/utils/qgp_platform_android.c)
+    set(PLATFORM_LIBS)  # pthread is part of bionic on Android
+elseif(WIN32)
     add_definitions(-D_WIN32)
     message(STATUS "Platform: Windows")
     set(PLATFORM_SOURCES

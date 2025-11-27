@@ -117,16 +117,135 @@ char* qgp_platform_join_path(const char *dir, const char *file);
 void qgp_secure_memzero(void *ptr, size_t len);
 
 /* ============================================================================
+ * Application Data Directories (Mobile-Ready)
+ * ============================================================================ */
+
+/**
+ * Get the application data directory
+ *
+ * Desktop (Linux): ~/.dna/
+ * Desktop (Windows): %APPDATA%/dna/
+ * Mobile (Android): Set via qgp_platform_set_app_dirs() -> Context.getFilesDir()
+ * Mobile (iOS): Set via qgp_platform_set_app_dirs() -> ~/Library/Application Support/dna/
+ *
+ * The directory is created if it doesn't exist.
+ *
+ * @return Application data directory path (read-only, do not free)
+ *         Returns NULL if not set on mobile and qgp_platform_set_app_dirs() not called
+ */
+const char* qgp_platform_app_data_dir(void);
+
+/**
+ * Get the application cache directory
+ *
+ * Desktop (Linux): ~/.cache/dna/
+ * Desktop (Windows): %LOCALAPPDATA%/dna/cache/
+ * Mobile (Android): Set via qgp_platform_set_app_dirs() -> Context.getCacheDir()
+ * Mobile (iOS): Set via qgp_platform_set_app_dirs() -> ~/Library/Caches/dna/
+ *
+ * Note: Cache directory contents may be cleared by OS when storage is low.
+ * Do not store critical data here.
+ *
+ * @return Cache directory path (read-only, do not free)
+ */
+const char* qgp_platform_cache_dir(void);
+
+/**
+ * Set application directories (required for mobile platforms)
+ *
+ * On mobile platforms, the native app must call this function during
+ * initialization to provide the sandboxed data and cache directories.
+ *
+ * On desktop, this function is optional - default paths are used if not called.
+ *
+ * @param data_dir  Application data directory (must not be NULL)
+ * @param cache_dir Application cache directory (can be NULL, will use data_dir/cache)
+ * @return 0 on success, -1 on failure
+ */
+int qgp_platform_set_app_dirs(const char *data_dir, const char *cache_dir);
+
+/* ============================================================================
+ * Network State (Mobile Network Handling)
+ * ============================================================================ */
+
+/**
+ * Network connectivity state
+ */
+typedef enum {
+    QGP_NETWORK_UNKNOWN = 0,   /* Network state unknown */
+    QGP_NETWORK_NONE = 1,      /* No network connectivity */
+    QGP_NETWORK_WIFI = 2,      /* Connected via WiFi */
+    QGP_NETWORK_CELLULAR = 3,  /* Connected via cellular */
+    QGP_NETWORK_ETHERNET = 4   /* Connected via ethernet */
+} qgp_network_state_t;
+
+/**
+ * Get current network connectivity state
+ *
+ * Desktop: Always returns QGP_NETWORK_UNKNOWN (use other methods)
+ * Mobile: Returns actual network state (WiFi, Cellular, None)
+ *
+ * @return Current network state
+ */
+qgp_network_state_t qgp_platform_network_state(void);
+
+/**
+ * Network state change callback type
+ */
+typedef void (*qgp_network_callback_t)(qgp_network_state_t new_state, void *user_data);
+
+/**
+ * Set callback for network state changes (mobile only)
+ *
+ * @param callback Function to call when network state changes
+ * @param user_data User data passed to callback
+ */
+void qgp_platform_set_network_callback(qgp_network_callback_t callback, void *user_data);
+
+/* ============================================================================
  * Platform Detection Macros
  * ============================================================================ */
 
-#ifdef _WIN32
+#if defined(__ANDROID__)
+    #define QGP_PLATFORM_ANDROID 1
+    #define QGP_PLATFORM_IOS 0
+    #define QGP_PLATFORM_WINDOWS 0
+    #define QGP_PLATFORM_LINUX 0
+    #define QGP_PLATFORM_MOBILE 1
+    #define QGP_PATH_SEPARATOR "/"
+#elif defined(__APPLE__)
+    #include <TargetConditionals.h>
+    #if TARGET_OS_IOS || TARGET_OS_IPHONE
+        #define QGP_PLATFORM_ANDROID 0
+        #define QGP_PLATFORM_IOS 1
+        #define QGP_PLATFORM_WINDOWS 0
+        #define QGP_PLATFORM_LINUX 0
+        #define QGP_PLATFORM_MOBILE 1
+        #define QGP_PATH_SEPARATOR "/"
+    #else
+        /* macOS */
+        #define QGP_PLATFORM_ANDROID 0
+        #define QGP_PLATFORM_IOS 0
+        #define QGP_PLATFORM_WINDOWS 0
+        #define QGP_PLATFORM_LINUX 0
+        #define QGP_PLATFORM_MACOS 1
+        #define QGP_PLATFORM_MOBILE 0
+        #define QGP_PATH_SEPARATOR "/"
+    #endif
+#elif defined(_WIN32)
+    #define QGP_PLATFORM_ANDROID 0
+    #define QGP_PLATFORM_IOS 0
     #define QGP_PLATFORM_WINDOWS 1
     #define QGP_PLATFORM_LINUX 0
+    #define QGP_PLATFORM_MOBILE 0
     #define QGP_PATH_SEPARATOR "\\"
 #else
+    /* Linux/Unix */
+    #define QGP_PLATFORM_ANDROID 0
+    #define QGP_PLATFORM_IOS 0
     #define QGP_PLATFORM_WINDOWS 0
     #define QGP_PLATFORM_LINUX 1
+    #define QGP_PLATFORM_MOBILE 0
     #define QGP_PATH_SEPARATOR "/"
 #endif
 

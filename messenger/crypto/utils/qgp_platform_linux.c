@@ -160,6 +160,122 @@ char* qgp_platform_join_path(const char *dir, const char *file) {
 }
 
 /* ============================================================================
+ * Application Data Directories (Linux Implementation)
+ * ============================================================================ */
+
+/* Static storage for app directories (set via qgp_platform_set_app_dirs) */
+static char g_app_data_dir[4096] = {0};
+static char g_app_cache_dir[4096] = {0};
+static int g_dirs_initialized = 0;
+
+const char* qgp_platform_app_data_dir(void) {
+    /* If already set via qgp_platform_set_app_dirs, return that */
+    if (g_dirs_initialized && g_app_data_dir[0]) {
+        return g_app_data_dir;
+    }
+
+    /* Default for Linux: ~/.dna */
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        return NULL;
+    }
+
+    /* Build path ~/.dna */
+    snprintf(g_app_data_dir, sizeof(g_app_data_dir), "%s/.dna", home);
+
+    /* Create directory if it doesn't exist */
+    qgp_platform_mkdir(g_app_data_dir);
+
+    return g_app_data_dir;
+}
+
+const char* qgp_platform_cache_dir(void) {
+    /* If already set via qgp_platform_set_app_dirs, return that */
+    if (g_dirs_initialized && g_app_cache_dir[0]) {
+        return g_app_cache_dir;
+    }
+
+    /* Default for Linux: ~/.cache/dna */
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        return NULL;
+    }
+
+    /* Check XDG_CACHE_HOME first */
+    const char *cache_home = getenv("XDG_CACHE_HOME");
+    if (cache_home && cache_home[0]) {
+        snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s/dna", cache_home);
+    } else {
+        snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s/.cache/dna", home);
+    }
+
+    /* Create cache directory hierarchy */
+    char parent[4096];
+    if (cache_home && cache_home[0]) {
+        snprintf(parent, sizeof(parent), "%s", cache_home);
+    } else {
+        snprintf(parent, sizeof(parent), "%s/.cache", home);
+    }
+    qgp_platform_mkdir(parent);
+    qgp_platform_mkdir(g_app_cache_dir);
+
+    return g_app_cache_dir;
+}
+
+int qgp_platform_set_app_dirs(const char *data_dir, const char *cache_dir) {
+    if (!data_dir) {
+        return -1;
+    }
+
+    /* Copy data directory */
+    size_t data_len = strlen(data_dir);
+    if (data_len >= sizeof(g_app_data_dir)) {
+        return -1;  /* Path too long */
+    }
+    memcpy(g_app_data_dir, data_dir, data_len + 1);
+
+    /* Copy cache directory (or use data_dir/cache as fallback) */
+    if (cache_dir) {
+        size_t cache_len = strlen(cache_dir);
+        if (cache_len >= sizeof(g_app_cache_dir)) {
+            return -1;  /* Path too long */
+        }
+        memcpy(g_app_cache_dir, cache_dir, cache_len + 1);
+    } else {
+        /* Default: data_dir/cache */
+        snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s/cache", data_dir);
+    }
+
+    /* Create directories */
+    qgp_platform_mkdir(g_app_data_dir);
+    qgp_platform_mkdir(g_app_cache_dir);
+
+    g_dirs_initialized = 1;
+    return 0;
+}
+
+/* ============================================================================
+ * Network State (Linux Implementation - Stub)
+ * On desktop Linux, network state is always UNKNOWN (use other methods)
+ * ============================================================================ */
+
+static qgp_network_callback_t g_network_callback = NULL;
+static void *g_network_callback_data = NULL;
+
+qgp_network_state_t qgp_platform_network_state(void) {
+    /* Desktop Linux doesn't track network state via this API */
+    /* Mobile implementations will return actual state */
+    return QGP_NETWORK_UNKNOWN;
+}
+
+void qgp_platform_set_network_callback(qgp_network_callback_t callback, void *user_data) {
+    g_network_callback = callback;
+    g_network_callback_data = user_data;
+    /* On desktop Linux, callback is never called (network state not tracked) */
+    /* Mobile implementations will call this on state changes */
+}
+
+/* ============================================================================
  * Secure Memory Wiping (Prevents compiler optimization)
  * ============================================================================ */
 
