@@ -94,6 +94,22 @@ AppState::AppState() {
     profile_avatar_preview_loaded = false;
     profile_avatar_marked_for_removal = false;
 
+    // Initialize contact profile viewer state
+    show_contact_profile = false;
+    viewed_profile_avatar_loaded = false;
+    viewed_profile_loading = false;
+    memset(viewed_profile_backbone, 0, sizeof(viewed_profile_backbone));
+    memset(viewed_profile_kelvpn, 0, sizeof(viewed_profile_kelvpn));
+    memset(viewed_profile_subzero, 0, sizeof(viewed_profile_subzero));
+    memset(viewed_profile_testnet, 0, sizeof(viewed_profile_testnet));
+    memset(viewed_profile_btc, 0, sizeof(viewed_profile_btc));
+    memset(viewed_profile_eth, 0, sizeof(viewed_profile_eth));
+    memset(viewed_profile_sol, 0, sizeof(viewed_profile_sol));
+    memset(viewed_profile_telegram, 0, sizeof(viewed_profile_telegram));
+    memset(viewed_profile_twitter, 0, sizeof(viewed_profile_twitter));
+    memset(viewed_profile_github, 0, sizeof(viewed_profile_github));
+    memset(viewed_profile_bio, 0, sizeof(viewed_profile_bio));
+
     // Initialize register name dialog state
     show_register_name = false;
     register_name_available = false;

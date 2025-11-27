@@ -213,6 +213,23 @@ public:
     bool show_contact_profile;
     std::string viewed_profile_fingerprint;
     std::string viewed_profile_name;
+    // Separate variables for viewed contact profile (to not overwrite user's own profile)
+    std::string viewed_profile_registered_name;
+    char viewed_profile_backbone[256];
+    char viewed_profile_kelvpn[256];
+    char viewed_profile_subzero[256];
+    char viewed_profile_testnet[256];
+    char viewed_profile_btc[256];
+    char viewed_profile_eth[256];
+    char viewed_profile_sol[256];
+    char viewed_profile_telegram[256];
+    char viewed_profile_twitter[256];
+    char viewed_profile_github[256];
+    char viewed_profile_bio[513];
+    std::string viewed_profile_avatar_base64;
+    bool viewed_profile_avatar_loaded;
+    std::string viewed_profile_status;
+    bool viewed_profile_loading;
     char profile_backbone[256];
     char profile_kelvpn[256];
     char profile_subzero[256];
