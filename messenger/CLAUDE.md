@@ -1,6 +1,6 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-11-28 | **Phase:** 7 (Android UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13
+**Last Updated:** 2025-11-28 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.2 (Flutter Foundation + Core Screens), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13
 
 ---
 
@@ -26,6 +26,7 @@ Anything aginst protcol mode breaks the blockchain / encryption .
 - **[README.md](README.md)** - Project overview and getting started
 
 ### 🔧 Technical Docs
+- **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)
 - **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap + STUN/TURN server (v0.3)
 - **[DHT Refactoring](docs/DHT_REFACTORING_PROGRESS.md)** - DHT modularization history
 - **[Message Formats](docs/MESSAGE_FORMATS.md)** - v0.08 message format spec
@@ -188,7 +189,7 @@ ssh root@<server-ip> "bash /opt/dna-messenger/nodus_build.sh"
 - **Phase 13:** GSK Group Encryption (200x speedup)
 
 ### 🚧 In Progress
-- **Phase 7:** Android UI (Kotlin + Jetpack Compose)
+- **Phase 7:** Mobile/Desktop UI (Flutter + Dart)
 
 ### 📋 Planned
 - **Phase 8:** Web Messenger (WebAssembly)

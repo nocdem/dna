@@ -31,7 +31,7 @@ DNA Messenger has been successfully ported to Android. The Android SDK provides 
 ┌─────────────────────────────────────────────────────────────┐
 │                    Android App (Phase 7)                     │
 │  ┌─────────────────────────────────────────────────────────┐│
-│  │        Native UI (Kotlin + Jetpack Compose)             ││
+│  │        Flutter UI (Dart + dart:ffi)                     ││
 │  └─────────────────────────────────────────────────────────┘│
 │                            │                                 │
 │  ┌─────────────────────────────────────────────────────────┐│
