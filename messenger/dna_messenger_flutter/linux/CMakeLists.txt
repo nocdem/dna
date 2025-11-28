@@ -126,3 +126,10 @@ if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
 endif()
+
+# DNA Messenger native library
+set(DNA_LIB_PATH "${CMAKE_CURRENT_SOURCE_DIR}/libs/libdna_lib.so")
+if(EXISTS "${DNA_LIB_PATH}")
+  install(FILES "${DNA_LIB_PATH}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
+    COMPONENT Runtime)
+endif()
