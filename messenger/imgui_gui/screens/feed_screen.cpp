@@ -468,7 +468,7 @@ void renderChannelContent(AppState& state) {
     if (!state.feed_reply_to.empty()) {
         ImGui::TextColored(hint_color, "Replying to post...");
         ImGui::SameLine();
-        if (ImGui::SmallButton(ICON_FA_XMARK " Cancel")) {
+        if (ThemedButton(ICON_FA_XMARK " Cancel", ImVec2(80, 25), false)) {
             state.feed_reply_to.clear();
         }
     }
@@ -605,7 +605,7 @@ void renderPostCard(AppState& state, const FeedPost& post, bool is_reply) {
 
     // Reply button
     if (post.reply_depth < DNA_FEED_MAX_THREAD_DEPTH) {
-        if (ImGui::SmallButton(ICON_FA_REPLY " Reply")) {
+        if (ThemedButton(ICON_FA_REPLY " Reply", ImVec2(80, 25), false)) {
             state.feed_reply_to = post.post_id;
         }
         ImGui::SameLine();
@@ -647,8 +647,8 @@ void renderPostCard(AppState& state, const FeedPost& post, bool is_reply) {
         ImGui::SameLine();
         bool is_expanded = state.feed_expanded_threads.count(post.post_id) > 0;
         const char* expand_label = is_expanded ?
-            (ICON_FA_ANGLE_UP " Hide replies") : (ICON_FA_ANGLE_DOWN " Show replies");
-        if (ImGui::SmallButton(expand_label)) {
+            (ICON_FA_ANGLE_UP " Hide") : (ICON_FA_ANGLE_DOWN " Show");
+        if (ThemedButton(expand_label, ImVec2(80, 25), false)) {
             if (is_expanded) {
                 state.feed_expanded_threads.erase(post.post_id);
             } else {
@@ -673,37 +673,52 @@ void renderPostCard(AppState& state, const FeedPost& post, bool is_reply) {
 }
 
 int renderVotingUI(AppState& state, const FeedPost& post) {
-    ImVec4 theme_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
     int action = 0;
 
     // Only allow voting if not already voted
     bool can_vote = (post.user_vote == 0) && !state.current_identity.empty();
 
-    // Upvote button
-    ImVec4 up_color = (post.user_vote == 1) ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) : theme_color;
-    ImGui::PushStyleColor(ImGuiCol_Text, up_color);
-    if (ImGui::SmallButton(ICON_FA_ARROW_UP)) {
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(8, 4));
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8, 4));
+
+    // Upvote button (highlight if user upvoted)
+    bool user_upvoted = (post.user_vote == 1);
+    if (user_upvoted) {
+        ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(50, 150, 255, 255));  // Blue highlight
+    }
+    std::string up_label = std::string("\xf0\x9f\x91\x8d ") + std::to_string(post.upvotes);
+    if (ThemedButton(up_label.c_str(), ImVec2(60, 25), false)) {
         if (can_vote) action = 1;
     }
-    ImGui::PopStyleColor();
+    if (user_upvoted) {
+        ImGui::PopStyleColor();
+    }
 
     ImGui::SameLine();
 
-    // Score
-    int score = post.upvotes - post.downvotes;
-    ImVec4 score_color = (score > 0) ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) :
-                         (score < 0) ? ImVec4(1.0f, 0.3f, 0.3f, 1.0f) : theme_color;
-    ImGui::TextColored(score_color, "%d", score);
-
-    ImGui::SameLine();
-
-    // Downvote button
-    ImVec4 down_color = (post.user_vote == -1) ? ImVec4(1.0f, 0.3f, 0.3f, 1.0f) : theme_color;
-    ImGui::PushStyleColor(ImGuiCol_Text, down_color);
-    if (ImGui::SmallButton(ICON_FA_ARROW_DOWN)) {
+    // Downvote button (highlight if user downvoted)
+    bool user_downvoted = (post.user_vote == -1);
+    if (user_downvoted) {
+        ImGui::PushStyleColor(ImGuiCol_Button, IM_COL32(255, 100, 100, 255));  // Red highlight
+    }
+    std::string down_label = std::string("\xf0\x9f\x91\x8e ") + std::to_string(post.downvotes);
+    if (ThemedButton(down_label.c_str(), ImVec2(60, 25), false)) {
         if (can_vote) action = -1;
     }
-    ImGui::PopStyleColor();
+    if (user_downvoted) {
+        ImGui::PopStyleColor();
+    }
+
+    ImGui::SameLine();
+
+    // Net score
+    int net_score = post.upvotes - post.downvotes;
+    ImVec4 score_color = net_score > 0 ? ImVec4(0.3f, 0.8f, 0.3f, 1.0f) :   // Green
+                        net_score < 0 ? ImVec4(0.8f, 0.3f, 0.3f, 1.0f) :   // Red
+                                       ImVec4(0.7f, 0.7f, 0.7f, 1.0f);    // Gray
+    ImGui::TextColored(score_color, "Score: %+d", net_score);
+
+    ImGui::PopStyleVar(2);
 
     return action;
 }
