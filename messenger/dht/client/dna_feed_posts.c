@@ -599,10 +599,14 @@ static int save_poster_bucket(dht_context_t *dht_ctx, const char *channel_id, co
     char contrib_key[512];
     make_bucket_contributors_key(channel_id, date, contrib_key, sizeof(contrib_key));
 
-    printf("[DNA_FEED] Registering contributor in bucket index\n");
+    /* Get unique value_id for this DHT identity (prevents overwrites between owners) */
+    uint64_t contrib_value_id = 1;
+    dht_get_owner_value_id(dht_ctx, &contrib_value_id);
+
+    printf("[DNA_FEED] Registering contributor in bucket index (value_id=%lu)\n", contrib_value_id);
     ret = dht_put_signed(dht_ctx, (const uint8_t *)contrib_key, strlen(contrib_key),
                          (const uint8_t *)poster_fingerprint, strlen(poster_fingerprint),
-                         1, DNA_FEED_TTL_SECONDS);
+                         contrib_value_id, DNA_FEED_TTL_SECONDS);
 
     if (ret != 0) {
         /* Non-fatal - poster bucket is already stored */

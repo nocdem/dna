@@ -239,10 +239,14 @@ int dht_bootstrap_registry_register(
     char index_key[256];
     make_nodes_index_key(index_key, sizeof(index_key));
 
-    printf("[REGISTRY] Registering node_id in index\n");
+    // Get unique value_id for this DHT identity (prevents overwrites between owners)
+    uint64_t value_id = 1;
+    dht_get_owner_value_id(dht_ctx, &value_id);
+
+    printf("[REGISTRY] Registering node_id in index (value_id=%lu)\n", value_id);
     ret = dht_put_signed(dht_ctx, (uint8_t*)index_key, strlen(index_key),
                          (uint8_t*)node_id, strlen(node_id),
-                         1, DHT_CHUNK_TTL_7DAY);
+                         value_id, DHT_CHUNK_TTL_7DAY);
 
     if (ret != 0) {
         // Non-fatal - node entry is already stored
