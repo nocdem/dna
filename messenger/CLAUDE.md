@@ -188,7 +188,7 @@ ssh root@<server-ip> "bash /opt/dna-messenger/nodus_build.sh"
 - **Phase 13:** GSK Group Encryption (200x speedup)
 
 ### 🚧 In Progress
-- **Phase 7:** Android UI (Kotlin + Jetpack Compose)
+- **Phase 7:** Mobile/Desktop UI (Flutter + Dart)
 
 ### 📋 Planned
 - **Phase 8:** Web Messenger (WebAssembly)
