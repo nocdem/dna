@@ -55,7 +55,7 @@ if(WIN32)
     add_library(dht_lib STATIC
         ${DHT_COMMON_SOURCES}
         # Platform-specific
-        gnutls_stubs_win.c
+        gnutls_win_shim.c
         ../blockchain/blockchain_rpc.c
         ../crypto/utils/qgp_platform_windows.c
     )

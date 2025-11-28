@@ -368,15 +368,19 @@ int cmd_keyring_list(void) {
 
             // Copy fields with safe string termination
             // Truncation is expected and safe if fields exceed buffer sizes
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wformat-truncation"
+#endif
             snprintf(entries[entry_count].name, sizeof(entries[entry_count].name), "%s", fields[0]);
             snprintf(entries[entry_count].type, sizeof(entries[entry_count].type), "%s", fields[1]);
             snprintf(entries[entry_count].fingerprint, sizeof(entries[entry_count].fingerprint), "%s", fields[2]);
             snprintf(entries[entry_count].path1, sizeof(entries[entry_count].path1), "%s", fields[3]);
             snprintf(entries[entry_count].path2, sizeof(entries[entry_count].path2), "%s", fields[4]);
             snprintf(entries[entry_count].date, sizeof(entries[entry_count].date), "%s", fields[5]);
+#if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic pop
+#endif
 
             entry_count++;
         }

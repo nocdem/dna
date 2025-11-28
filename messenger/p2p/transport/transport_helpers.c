@@ -175,7 +175,7 @@ static void on_stun_gathering_done(juice_agent_t *agent, void *user_ptr) {
     pthread_mutex_unlock(&state->mutex);
 }
 
-// Dummy callbacks (required by libjuice)
+// No-op callbacks required by libjuice API (only candidate/gathering_done callbacks are used for STUN)
 static void on_stun_state_changed(juice_agent_t *agent, juice_state_t s, void *user_ptr) {}
 static void on_stun_recv(juice_agent_t *agent, const char *data, size_t size, void *user_ptr) {}
 

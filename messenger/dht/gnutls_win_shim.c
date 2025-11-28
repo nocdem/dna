@@ -1,5 +1,5 @@
 /*
- * GnuTLS Stubs for Windows Static Linking
+ * GnuTLS Windows Linker Shim
  *
  * The MXE-built OpenDHT library expects DLL import symbols (__imp_*)
  * from gnutls. gnutls_free already exists in libgnutls.a, so we just

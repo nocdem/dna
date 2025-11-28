@@ -56,6 +56,8 @@ target_link_libraries(p2p_transport
 # Platform-specific libraries
 if(WIN32)
     target_link_libraries(p2p_transport ws2_32 iphlpapi pthread)
+elseif(ANDROID)
+    # Android: pthread is part of bionic libc, no explicit linking needed
 else()
     target_link_libraries(p2p_transport pthread)
 endif()

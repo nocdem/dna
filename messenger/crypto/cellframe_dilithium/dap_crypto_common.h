@@ -21,7 +21,7 @@ typedef unsigned char byte_t;
     } \
 } while(0)
 
-// DAP utility macros - stub
+// DAP utility macros - compatibility layer for Cellframe framework
 #define dap_return_if_pass(cond) do { if (!(cond)) return; } while(0)
 
 // External dependencies - provided by OpenSSL and qgp_random

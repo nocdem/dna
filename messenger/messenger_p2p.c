@@ -689,7 +689,7 @@ int messenger_p2p_init(messenger_context_t *ctx)
     printf("[P2P] P2P transport initialized successfully\n");
     printf("[P2P] Listening on TCP port 4001\n");
     printf("[P2P] DHT port 4000\n");
-    printf("[P2P] Bootstrap nodes: %zu configured\n", BOOTSTRAP_COUNT);
+    printf("[P2P] Bootstrap nodes: %d configured\n", BOOTSTRAP_COUNT);
 
     return 0;
 }

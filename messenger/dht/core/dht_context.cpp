@@ -83,7 +83,7 @@ struct dht_context {
     dht::ValueType type_365day;
 
     dht_context() : running(false), storage(nullptr),
-                    // Initialize with dummy values (will be replaced in start())
+                    // Initialize with default values (configured properly in start())
                     type_7day(0, "", std::chrono::hours(0)),
                     type_30day(0, "", std::chrono::hours(0)),
                     type_365day(0, "", std::chrono::hours(0)) {

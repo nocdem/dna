@@ -72,6 +72,7 @@ if(ANDROID)
             ${ANDROID_DEPS_DIR}/jsonc-arm64/include
             ${ANDROID_DEPS_DIR}/msgpack-arm64/include
             ${ANDROID_DEPS_DIR}/zstd-arm64/include
+            ${ANDROID_DEPS_DIR}/curl-arm64/include
         )
 
         # Link directories for static libraries
@@ -85,12 +86,51 @@ if(ANDROID)
             ${ANDROID_DEPS_DIR}/libtasn1-arm64/lib
             ${ANDROID_DEPS_DIR}/argon2-arm64/lib
             ${ANDROID_DEPS_DIR}/jsonc-arm64/lib
+            ${ANDROID_DEPS_DIR}/curl-arm64/lib
         )
 
         # Set json-c variables for CMake find
         set(JSON-C_FOUND TRUE)
         set(JSON-C_INCLUDE_DIR "${ANDROID_DEPS_DIR}/jsonc-arm64/include")
         set(JSON-C_LIBRARY "${ANDROID_DEPS_DIR}/jsonc-arm64/lib/libjson-c.a")
+
+        # Set CURL variables for CMake find
+        set(CURL_FOUND TRUE)
+        set(CURL_INCLUDE_DIRS "${ANDROID_DEPS_DIR}/curl-arm64/include")
+        set(CURL_LIBRARIES "${ANDROID_DEPS_DIR}/curl-arm64/lib/libcurl.a")
+
+        # Set OpenSSL variables for CMake find (bypass find_package)
+        set(OPENSSL_FOUND TRUE)
+        set(OPENSSL_VERSION "3.3.2")
+        set(OPENSSL_INCLUDE_DIR "${ANDROID_DEPS_DIR}/openssl-arm64/include")
+        set(OPENSSL_CRYPTO_LIBRARY "${ANDROID_DEPS_DIR}/openssl-arm64/lib/libcrypto.a")
+        set(OPENSSL_SSL_LIBRARY "${ANDROID_DEPS_DIR}/openssl-arm64/lib/libssl.a")
+        set(OPENSSL_LIBRARIES "${OPENSSL_SSL_LIBRARY};${OPENSSL_CRYPTO_LIBRARY}")
+
+        # Create OpenSSL::Crypto imported target
+        if(NOT TARGET OpenSSL::Crypto)
+            add_library(OpenSSL::Crypto STATIC IMPORTED)
+            set_target_properties(OpenSSL::Crypto PROPERTIES
+                IMPORTED_LOCATION "${OPENSSL_CRYPTO_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}"
+            )
+        endif()
+
+        # Create OpenSSL::SSL imported target
+        if(NOT TARGET OpenSSL::SSL)
+            add_library(OpenSSL::SSL STATIC IMPORTED)
+            set_target_properties(OpenSSL::SSL PROPERTIES
+                IMPORTED_LOCATION "${OPENSSL_SSL_LIBRARY}"
+                INTERFACE_INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}"
+                INTERFACE_LINK_LIBRARIES "OpenSSL::Crypto"
+            )
+        endif()
+
+        # Set SQLite3 variables for CMake find (bypass find_package)
+        set(SQLite3_FOUND TRUE)
+        set(SQLite3_VERSION "3.46.0")
+        set(SQLite3_INCLUDE_DIRS "${ANDROID_DEPS_DIR}/sqlite-arm64/include")
+        set(SQLite3_LIBRARIES "${ANDROID_DEPS_DIR}/sqlite-arm64/lib/libsqlite3.a")
     else()
         message(WARNING "Android deps directory not found: ${ANDROID_DEPS_DIR}")
         message(WARNING "Build dependencies with build-android-deps.sh first")

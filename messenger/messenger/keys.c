@@ -9,12 +9,10 @@
 #include <json-c/json.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
-#ifndef __ANDROID__
 #ifdef _WIN32
 #define CURL_STATICLIB  // Required for static linking on Windows
 #endif
 #include <curl/curl.h>
-#endif /* __ANDROID__ */
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_types.h"
 #include "../dht/core/dht_keyserver.h"
@@ -24,10 +22,9 @@
 #include "../p2p/p2p_transport.h"
 
 // ============================================================================
-// CURL HELPERS (not available on Android)
+// CURL HELPERS
 // ============================================================================
 
-#ifndef __ANDROID__
 // Response buffer for curl
 struct curl_response_buffer {
     char *data;
@@ -51,7 +48,6 @@ static size_t keys_curl_write_cb(void *contents, size_t size, size_t nmemb, void
 
     return realsize;
 }
-#endif /* __ANDROID__ */
 
 // ============================================================================
 // HELPER FUNCTIONS (Base64 encoding/decoding)
@@ -330,15 +326,6 @@ int messenger_load_pubkey(
     return 0;
 }
 
-#ifdef __ANDROID__
-/* Android: HTTP API not available (no libcurl), use DHT keyserver instead */
-int messenger_list_pubkeys(messenger_context_t *ctx) {
-    (void)ctx;
-    fprintf(stderr, "[Android] messenger_list_pubkeys: HTTP API not available on Android\n");
-    fprintf(stderr, "[Android] Use DHT keyserver lookup instead\n");
-    return -1;
-}
-#else
 int messenger_list_pubkeys(messenger_context_t *ctx) {
     if (!ctx) {
         return -1;
@@ -446,7 +433,6 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
     free(response);
     return 0;
 }
-#endif /* __ANDROID__ */
 
 /**
  * Get contact list (from local contacts database)

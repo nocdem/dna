@@ -255,8 +255,9 @@ int qgp_platform_set_app_dirs(const char *data_dir, const char *cache_dir) {
 }
 
 /* ============================================================================
- * Network State (Linux Implementation - Stub)
- * On desktop Linux, network state is always UNKNOWN (use other methods)
+ * Network State (Linux Desktop Implementation)
+ * Desktop Linux returns UNKNOWN as there's no system API for network state
+ * Mobile platforms (Android/iOS) provide actual network state tracking
  * ============================================================================ */
 
 static qgp_network_callback_t g_network_callback = NULL;

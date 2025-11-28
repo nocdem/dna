@@ -92,24 +92,32 @@ else()
 endif()
 
 # SDK Independence: OpenSSL for AES-256, SHA256, Base64, Random
-find_package(OpenSSL REQUIRED)
-if(OPENSSL_FOUND)
-    message(STATUS "OpenSSL found: ${OPENSSL_VERSION}")
-    message(STATUS "OpenSSL include: ${OPENSSL_INCLUDE_DIR}")
-    message(STATUS "OpenSSL libraries: ${OPENSSL_LIBRARIES}")
+if(ANDROID)
+    # Android: OpenSSL is set by AndroidBuild.cmake (pre-built static library)
+    if(OPENSSL_FOUND)
+        message(STATUS "OpenSSL found for Android: ${OPENSSL_VERSION}")
+        message(STATUS "OpenSSL include: ${OPENSSL_INCLUDE_DIR}")
+        message(STATUS "OpenSSL libraries: ${OPENSSL_LIBRARIES}")
+    else()
+        message(FATAL_ERROR "OpenSSL not found for Android - build openssl-arm64 first!")
+    endif()
+else()
+    find_package(OpenSSL REQUIRED)
+    if(OPENSSL_FOUND)
+        message(STATUS "OpenSSL found: ${OPENSSL_VERSION}")
+        message(STATUS "OpenSSL include: ${OPENSSL_INCLUDE_DIR}")
+        message(STATUS "OpenSSL libraries: ${OPENSSL_LIBRARIES}")
+    endif()
 endif()
 
 # CURL for RPC client (Cellframe API)
-# Optional on Android - wallet functionality disabled without CURL
 if(ANDROID)
-    find_package(CURL QUIET)
+    # Android: CURL is set by AndroidBuild.cmake (pre-built static library)
     if(CURL_FOUND)
-        message(STATUS "CURL found for Android: ${CURL_VERSION_STRING}")
+        message(STATUS "CURL found for Android: ${CURL_LIBRARIES}")
         set(HAS_CURL ON)
     else()
-        message(STATUS "CURL not found for Android - wallet RPC disabled")
-        set(HAS_CURL OFF)
-        add_definitions(-DNO_CURL)
+        message(FATAL_ERROR "CURL not found for Android - build curl-arm64 first!")
     endif()
 else()
     find_package(CURL REQUIRED)
@@ -126,18 +134,33 @@ include(ExternalProject)
 # Create include directory at configure time to avoid CMake errors
 file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/vendor/libjuice/install/include)
 
+# Build libjuice external project with platform-specific settings
+set(LIBJUICE_CMAKE_ARGS
+    -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/vendor/libjuice/install
+    -DCMAKE_BUILD_TYPE=Release
+    -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+    -DBUILD_SHARED_LIBS=OFF
+    -DUSE_NETTLE=OFF
+    -DNO_TESTS=ON
+)
+
+# Pass toolchain and Android settings for cross-compilation
+if(CMAKE_TOOLCHAIN_FILE)
+    list(APPEND LIBJUICE_CMAKE_ARGS -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE})
+endif()
+if(ANDROID)
+    list(APPEND LIBJUICE_CMAKE_ARGS
+        -DANDROID_ABI=${ANDROID_ABI}
+        -DANDROID_PLATFORM=${ANDROID_PLATFORM}
+        -DANDROID_STL=c++_static
+    )
+endif()
+
 ExternalProject_Add(libjuice_external
     GIT_REPOSITORY https://github.com/paullouisageneau/libjuice.git
     GIT_TAG v1.7.0
     PREFIX ${CMAKE_BINARY_DIR}/vendor/libjuice
-    CMAKE_ARGS
-        -DCMAKE_INSTALL_PREFIX=${CMAKE_BINARY_DIR}/vendor/libjuice/install
-        -DCMAKE_BUILD_TYPE=Release
-        -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-        -DBUILD_SHARED_LIBS=OFF
-        -DUSE_NETTLE=OFF
-        -DNO_TESTS=ON
-        $<$<BOOL:${CMAKE_TOOLCHAIN_FILE}>:-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}>
+    CMAKE_ARGS ${LIBJUICE_CMAKE_ARGS}
     BUILD_BYPRODUCTS ${CMAKE_BINARY_DIR}/vendor/libjuice/install/lib/${CMAKE_STATIC_LIBRARY_PREFIX}juice${CMAKE_STATIC_LIBRARY_SUFFIX}
     LOG_DOWNLOAD ON
     LOG_CONFIGURE ON
@@ -196,13 +219,24 @@ endif()
 
 # NOTE: PostgreSQL removed 2025-11-03 - migrated to SQLite for decentralization
 # SQLite3 for all local storage (messages, keyserver cache)
-find_package(SQLite3 REQUIRED)
-if(SQLite3_FOUND)
-    message(STATUS "SQLite3 found: ${SQLite3_VERSION}")
-    message(STATUS "SQLite3 library: ${SQLite3_LIBRARIES}")
-    message(STATUS "SQLite3 include: ${SQLite3_INCLUDE_DIRS}")
+if(ANDROID)
+    # Android: SQLite3 is set by AndroidBuild.cmake (pre-built static library)
+    if(SQLite3_FOUND)
+        message(STATUS "SQLite3 found for Android: ${SQLite3_VERSION}")
+        message(STATUS "SQLite3 library: ${SQLite3_LIBRARIES}")
+        message(STATUS "SQLite3 include: ${SQLite3_INCLUDE_DIRS}")
+    else()
+        message(FATAL_ERROR "SQLite3 not found for Android - build sqlite-arm64 first!")
+    endif()
 else()
-    message(FATAL_ERROR "SQLite3 not found. Install: apt install libsqlite3-dev (Linux)")
+    find_package(SQLite3 REQUIRED)
+    if(SQLite3_FOUND)
+        message(STATUS "SQLite3 found: ${SQLite3_VERSION}")
+        message(STATUS "SQLite3 library: ${SQLite3_LIBRARIES}")
+        message(STATUS "SQLite3 include: ${SQLite3_INCLUDE_DIRS}")
+    else()
+        message(FATAL_ERROR "SQLite3 not found. Install: apt install libsqlite3-dev (Linux)")
+    endif()
 endif()
 
 # SDK Independence: Vendored cryptographic implementations
@@ -304,9 +338,14 @@ target_link_libraries(dna_lib
     ${PLATFORM_LIBS}
 )
 
-# CURL linking (optional on Android)
+# CURL linking
 if(HAS_CURL)
-    target_link_libraries(dna_lib CURL::libcurl)
+    if(ANDROID)
+        # Android: Use static library path directly
+        target_link_libraries(dna_lib ${CURL_LIBRARIES})
+    else()
+        target_link_libraries(dna_lib CURL::libcurl)
+    endif()
 endif()
 
 # On Windows with static linking, link Windows system libs
@@ -336,8 +375,10 @@ if(WIN32)
     )
 endif()
 
-if(NOT WIN32)
+if(NOT WIN32 AND NOT ANDROID)
     target_link_libraries(dna_lib m pthread)
+elseif(ANDROID)
+    target_link_libraries(dna_lib m)  # pthread is part of bionic on Android
 endif()
 
 target_include_directories(dna_lib PUBLIC
@@ -486,4 +527,9 @@ endif()
 option(BUILD_GUI "Build ImGui GUI" ON)
 if(BUILD_GUI)
     add_subdirectory(imgui_gui)
+endif()
+
+# JNI bindings for Android (Phase 6: Mobile)
+if(ANDROID)
+    add_subdirectory(jni)
 endif()
