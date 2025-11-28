@@ -19,7 +19,7 @@ DNA Messenger is migrating from ImGui to Flutter for cross-platform UI. Flutter 
 | Phase | Description | Status |
 |-------|-------------|--------|
 | 1 | FFI Foundation | ✅ Complete |
-| 2 | Core Screens | 📋 Planned |
+| 2 | Core Screens | ✅ Complete |
 | 3 | Full Features | 📋 Planned |
 | 4 | Platform Builds | 📋 Planned |
 | 5 | Testing & Polish | 📋 Planned |
@@ -73,15 +73,24 @@ dna_messenger_flutter/
 ├── windows/                    # Windows platform (libs for .dll)
 ├── macos/                      # macOS platform (Frameworks for .a)
 ├── lib/
-│   ├── main.dart               # Entry point
+│   ├── main.dart               # ✅ Entry point with Riverpod
 │   ├── ffi/
 │   │   ├── dna_bindings.dart   # ✅ Manual FFI bindings (600+ lines)
 │   │   └── dna_engine.dart     # ✅ High-level Dart wrapper (940 lines)
-│   ├── models/                 # 📋 Dart model classes
-│   ├── providers/              # 📋 Riverpod state management
-│   ├── screens/                # 📋 UI screens
+│   ├── providers/              # ✅ Riverpod state management
+│   │   ├── engine_provider.dart
+│   │   ├── identity_provider.dart
+│   │   ├── contacts_provider.dart
+│   │   ├── messages_provider.dart
+│   │   └── theme_provider.dart
+│   ├── screens/                # ✅ UI screens
+│   │   ├── identity/identity_selection_screen.dart
+│   │   ├── contacts/contacts_screen.dart
+│   │   ├── chat/chat_screen.dart
+│   │   └── home_screen.dart
 │   ├── widgets/                # 📋 Reusable widgets
-│   └── theme/                  # 📋 DNA/Club themes
+│   └── theme/
+│       └── dna_theme.dart      # ✅ DNA/Club themes
 ├── ffigen.yaml                 # FFI generator config (reference)
 └── pubspec.yaml                # Dependencies
 ```
@@ -148,36 +157,38 @@ Future<List<Contact>> getContacts() async {
 
 ---
 
-### Phase 2: Core Screens (Planned)
+### Phase 2: Core Screens ✅ COMPLETE
 
-**Tasks:**
-1. Identity selection screen (create/restore BIP39)
-2. Contacts list with online status
+**Completed:**
+1. Identity selection screen with create/restore wizards
+2. Contacts list with online status indicators
 3. Chat conversation with message bubbles
 4. Message sending with status indicators
-5. Real-time event handling via stream
+5. Theme provider with DNA/Club switching
 
 **State Management (Riverpod):**
 ```dart
-@riverpod
-class Engine extends _$Engine {
-  @override
-  Future<DnaEngine> build() async {
-    final engine = await DnaEngine.create();
-    ref.onDispose(() => engine.dispose());
-    return engine;
-  }
-}
+// Engine provider - singleton with cleanup
+final engineProvider = AsyncNotifierProvider<EngineNotifier, DnaEngine>(
+  EngineNotifier.new,
+);
 
-@riverpod
-class Contacts extends _$Contacts {
-  @override
-  Future<List<Contact>> build() async {
-    final engine = await ref.read(engineProvider.future);
-    return engine.getContacts();
-  }
-}
+// Contacts with auto-refresh when identity changes
+final contactsProvider = AsyncNotifierProvider<ContactsNotifier, List<Contact>>(
+  ContactsNotifier.new,
+);
+
+// Conversation by contact fingerprint
+final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, List<Message>, String>(
+  ConversationNotifier.new,
+);
 ```
+
+**Screens Implemented:**
+- `IdentitySelectionScreen`: List identities, create with 3-step wizard, restore from seed
+- `ContactsScreen`: List with online/offline indicators, pull-to-refresh, add contact dialog
+- `ChatScreen`: Message bubbles, timestamps, status icons, input with send button
+- `HomeScreen`: Routes between identity selection and contacts based on state
 
 ---
 
@@ -337,8 +348,8 @@ class ClubTheme {
 
 ## Next Steps
 
-1. Set up Riverpod providers for engine state
-2. Create identity selection screen
-3. Implement contacts list with real-time online status
-4. Build chat screen with message bubbles
-5. Test on Android device with native library
+1. Implement real-time event handling (DHT events → UI updates)
+2. Add BIP39 mnemonic generation/parsing
+3. Build groups screen and wallet screen
+4. Test on Android device with native library
+5. Add settings screen with theme toggle
