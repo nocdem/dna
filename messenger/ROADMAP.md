@@ -1,12 +1,12 @@
 # DNA Messenger - Roadmap
 
-**Version:** 0.1.x | **Last Updated:** 2025-11-26
+**Version:** 0.1.x | **Last Updated:** 2025-11-28
 
 ---
 
 ## Current Status
 
-**Active Development:** Phase 6.4 (DNA Board - Profile Extensions)
+**Active Development:** Phase 7 (Android UI)
 
 | Component | Status |
 |-----------|--------|
@@ -16,6 +16,7 @@
 | User Profiles & Avatars | Production Ready |
 | DNA Board (Social) | Alpha |
 | cpunk Wallet | Production Ready |
+| Android SDK (JNI) | Production Ready |
 
 ---
 
@@ -74,34 +75,44 @@
 - QR code generation
 - Transaction history
 
+### Android SDK (Phase 6)
+- JNI bindings for all dna_engine.h functions
+- Java SDK classes (DNAEngine, Contact, Message, Group, etc.)
+- Android Gradle library project
+- Pre-built libdna_jni.so (16MB arm64-v8a)
+- All dependencies statically linked (no external .so)
+- 26 native methods exposed
+
 ---
 
 ## In Progress
 
-### Phase 6.4: DNA Board Enhancements
-- Profile extensions (social links: Telegram, Twitter, GitHub)
-- Crypto addresses for tipping (BTC, ETH, CPUNK)
-- Feed sorting (Recent, Top, Controversial)
+### Phase 7: Android UI
+- Native Kotlin + Jetpack Compose UI
+- Chat list and conversation screens
+- Contact and group management
+- Wallet integration (balances, send)
+- Profile and settings screens
 
 ---
 
 ## Planned
 
-### Phase 7: Web Messenger
+### Phase 8: Web Messenger
 - WebAssembly crypto module (Emscripten)
 - Browser-based client (HTML5/CSS3)
 - Progressive Web App (PWA)
 - IndexedDB for local storage
 
-### Phase 8: Voice/Video Calls
+### Phase 9: Voice/Video Calls
 - Post-quantum key exchange via DNA messaging
 - Kyber1024 session keys (bypasses WebRTC's quantum-vulnerable DTLS)
 - libsrtp2 + AES-256-GCM media encryption
 - libopus audio, libvpx video
 - ICE NAT traversal via libjuice
 
-### Phase 9+: Future
-- Mobile applications (Flutter)
+### Phase 10+: Future
+- iOS application
 - Forward secrecy (ephemeral session keys)
 - File transfer
 - Tor integration (metadata protection)
@@ -113,6 +124,7 @@
 
 | Version | Date | Highlights |
 |---------|------|------------|
+| 0.1.130+ | 2025-11-28 | Android SDK (JNI bindings, Java classes, Gradle project) |
 | 0.1.120+ | 2025-11-21 | GSK group encryption (200x speedup) |
 | 0.1.115 | 2025-11-18 | Message format v0.08, ICE NAT traversal production-ready |
 | 0.1.110 | 2025-11-17 | P2P group invitations, community voting, avatar system |
@@ -146,4 +158,4 @@
 
 ---
 
-**Project Start:** 2025-10-14 | **Current Phase:** 6.4 | **Next Milestone:** Web Messenger (Phase 7)
+**Project Start:** 2025-10-14 | **Current Phase:** 7 | **Next Milestone:** Android UI (Phase 7)

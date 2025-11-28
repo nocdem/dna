@@ -1,14 +1,14 @@
 # DNA Messenger Mobile Porting Guide
 
 **Last Updated:** 2025-11-28
-**Status:** Foundation Complete (Phases 1-4)
+**Status:** Android SDK Complete (Phases 1-6)
 **Target:** Android first, iOS later
 
 ---
 
 ## Executive Summary
 
-DNA Messenger has excellent architecture for mobile porting. The core library (`libdna_lib.a`) is already cleanly separated from the GUI layer, with a pure C API (`dna_engine.h`) suitable for FFI bindings.
+DNA Messenger has been successfully ported to Android. The Android SDK provides JNI bindings for all core functionality, with a complete Java API and Gradle project structure ready for app development.
 
 ### Current Status
 
@@ -16,11 +16,11 @@ DNA Messenger has excellent architecture for mobile porting. The core library (`
 |-------|-------------|--------|
 | 1 | Core Library Extraction | ✅ Complete (already separated) |
 | 2 | Platform Abstraction | ✅ Complete |
-| 3 | HTTP Abstraction | ✅ Deferred (CURL works on NDK) |
+| 3 | HTTP Abstraction | ✅ Complete (CURL via NDK) |
 | 4 | Android NDK Build Config | ✅ Complete |
-| 5 | OpenDHT-PQ Android Port | 🔄 Pending (needs NDK testing) |
-| 6 | JNI Bindings | 📋 Planned |
-| 7 | Android UI | 📋 Planned |
+| 5 | OpenDHT-PQ Android Port | ✅ Complete (arm64-v8a) |
+| 6 | JNI Bindings | ✅ Complete (26 functions) |
+| 7 | Android UI | 🚧 In Progress |
 | 8 | iOS Port | 📋 Future |
 
 ---
@@ -29,12 +29,24 @@ DNA Messenger has excellent architecture for mobile porting. The core library (`
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Mobile App (Future)                       │
+│                    Android App (Phase 7)                     │
 │  ┌─────────────────────────────────────────────────────────┐│
-│  │   Native UI (Kotlin/Swift) or Cross-Platform (Flutter)  ││
+│  │        Native UI (Kotlin + Jetpack Compose)             ││
 │  └─────────────────────────────────────────────────────────┘│
 │                            │                                 │
-│                     JNI / FFI Bridge                         │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │     Java SDK (io.cpunk.dna.DNAEngine) ✅ COMPLETE       ││
+│  │   - DNAEngine.java (singleton, callbacks)               ││
+│  │   - Contact, Message, Group, Invitation classes         ││
+│  │   - Wallet, Balance, Transaction classes                ││
+│  └─────────────────────────────────────────────────────────┘│
+│                            │                                 │
+│  ┌─────────────────────────────────────────────────────────┐│
+│  │       JNI Bridge (libdna_jni.so) ✅ COMPLETE            ││
+│  │   - 26 native methods                                   ││
+│  │   - 16MB stripped (arm64-v8a)                           ││
+│  │   - All dependencies statically linked                  ││
+│  └─────────────────────────────────────────────────────────┘│
 │                            │                                 │
 │  ┌─────────────────────────────────────────────────────────┐│
 │  │              dna_engine.h (C API)                       ││
@@ -182,70 +194,95 @@ build-android-arm64-v8a/
 
 ---
 
-## Remaining Work
+## Completed Work
 
-### Phase 5: OpenDHT-PQ Android Compatibility
+### Phase 5: OpenDHT-PQ Android Build ✅
 
-**Status:** Needs testing with actual NDK build
+**Status:** Complete (arm64-v8a)
 
-**Potential Issues:**
-1. C++17 features (NDK 21+ required)
-2. Threading model (std::thread should work)
-3. Network listeners (POSIX sockets should work)
-4. Random number generation (getrandom() on API 24+)
+Successfully built OpenDHT-PQ for Android with all dependencies:
+- C++17 support via NDK r26d
+- Threading works correctly (std::thread)
+- POSIX sockets work on Android
+- getrandom() available on API 24+
 
-**Files to review:**
-- `vendor/opendht-pq/src/node.cpp` - Threading
-- `vendor/opendht-pq/src/network_engine.cpp` - Sockets
-- `vendor/opendht-pq/src/crypto.cpp` - Random/crypto
-
-**Testing:**
+**Build tested with:**
 ```bash
-# Try building with NDK
-./build-android.sh arm64-v8a 2>&1 | tee build.log
-
-# Check for errors in OpenDHT
-grep -i "error:" build.log | grep opendht
+cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+      -DANDROID_ABI=arm64-v8a \
+      -DANDROID_PLATFORM=android-24 \
+      -DBUILD_GUI=OFF \
+      -DANDROID=ON ..
 ```
 
-### Phase 6: JNI Bindings
+### Phase 6: JNI Bindings ✅
 
-**Create Java/Kotlin wrapper for dna_engine.h**
+**Status:** Complete (26 native methods)
 
-Example JNI structure:
+**Android SDK Structure:**
 ```
-app/src/main/
-├── java/io/cpunk/dna/
-│   ├── DNAEngine.kt           # Kotlin wrapper class
-│   ├── DNAMessage.kt          # Data classes
-│   └── DNACallback.kt         # Callback interfaces
-└── jniLibs/
-    ├── arm64-v8a/
-    │   └── libdna_jni.so      # JNI native library
-    └── armeabi-v7a/
-        └── libdna_jni.so
+android/
+├── app/
+│   ├── build.gradle
+│   ├── proguard-rules.pro
+│   └── src/main/
+│       ├── AndroidManifest.xml
+│       ├── java/io/cpunk/dna/
+│       │   ├── DNAEngine.java     # Main SDK class
+│       │   ├── Contact.java       # Contact data class
+│       │   ├── Message.java       # Message data class
+│       │   ├── Group.java         # Group data class
+│       │   ├── Invitation.java    # Invitation data class
+│       │   ├── Wallet.java        # Wallet data class
+│       │   ├── Balance.java       # Balance data class
+│       │   ├── Transaction.java   # Transaction data class
+│       │   └── DNAEvent.java      # Event wrapper
+│       └── jniLibs/arm64-v8a/
+│           ├── libdna_jni.so      # 16MB (stripped)
+│           └── libc++_shared.so   # 1.8MB (NDK C++ runtime)
+├── build.gradle
+├── gradle.properties
+└── settings.gradle
 ```
 
-Example Kotlin interface:
-```kotlin
-class DNAEngine(private val context: Context) {
-    init {
-        System.loadLibrary("dna_jni")
-        // Set app directories
-        nativeSetAppDirs(
-            context.filesDir.absolutePath,
-            context.cacheDir.absolutePath
-        )
+**JNI Native Methods (26 total):**
+- `nativeCreate`, `nativeDestroy`
+- `nativeCreateIdentity`, `nativeLoadIdentity`, `nativeListIdentities`
+- `nativeGetFingerprint`, `nativeRegisterName`, `nativeGetDisplayName`
+- `nativeGetContacts`, `nativeAddContact`, `nativeGetConversation`
+- `nativeSendMessage`, `nativeSendGroupMessage`
+- `nativeGetGroups`, `nativeCreateGroup`, `nativeJoinGroup`, `nativeLeaveGroup`
+- `nativeGetInvitations`, `nativeAcceptInvitation`, `nativeRejectInvitation`, `nativeSendInvitation`
+- `nativeListWallets`, `nativeGetBalances`, `nativeGetTransactions`
+- `nativeIsPeerOnline`, `nativeRefreshPresence`
+
+**Example Usage:**
+```java
+// Initialize
+DNAEngine engine = DNAEngine.getInstance();
+engine.initialize(context, new DNAEngine.InitCallback() {
+    @Override
+    public void onInitialized() {
+        // Load identity
+        engine.loadIdentity(fingerprint, new DNAEngine.IdentityCallback() {
+            @Override
+            public void onIdentityLoaded(String name, String fingerprint) {
+                // Ready to use
+            }
+        });
     }
+});
 
-    external fun create(): Long
-    external fun destroy(handle: Long)
-    external fun loadIdentity(handle: Long, fingerprint: String, callback: DNACallback)
-    external fun sendMessage(handle: Long, recipient: String, message: String, callback: DNACallback)
+// Send message
+engine.sendMessage(recipientFingerprint, "Hello!", callback);
 
-    private external fun nativeSetAppDirs(dataDir: String, cacheDir: String)
-}
+// Clean up
+engine.shutdown();
 ```
+
+---
+
+## Remaining Work
 
 ### Phase 7: Android UI
 
@@ -410,6 +447,14 @@ export ANDROID_NDK=/path/to/ndk
 ---
 
 ## Changelog
+
+### 2025-11-28: Android SDK Complete (v0.1.130+)
+- **Phase 6 Complete:** JNI bindings with 26 native methods
+- Created Java SDK classes (DNAEngine, Contact, Message, Group, etc.)
+- Built libdna_jni.so (16MB stripped) with all static dependencies
+- Added Android Gradle library project structure
+- All core libraries build successfully for arm64-v8a
+- Zero external dependencies (only Android system libs)
 
 ### 2025-11-28: Mobile Foundation (v0.1.x)
 - Added platform abstraction for mobile (app_data_dir, cache_dir, network state)
