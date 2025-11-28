@@ -147,11 +147,10 @@ int p2p_check_offline_messages(
                i + 1, count, msg->sender, msg->ciphertext_len);
 
         // Deliver to application layer (messenger_p2p.c)
-        // Note: Sender pubkey is unknown for offline messages (would need reverse lookup)
-        // Callback will try to identify sender from message content
         if (ctx->message_callback) {
             ctx->message_callback(
-                NULL,  // peer_pubkey (unknown for offline messages)
+                NULL,                    // peer_pubkey (unknown for offline messages)
+                msg->sender,             // sender_fingerprint from DHT queue
                 msg->ciphertext,
                 msg->ciphertext_len,
                 ctx->callback_user_data

@@ -60,13 +60,15 @@ typedef struct {
  * Message Callback
  * Called when a P2P message is received
  *
- * @param peer_pubkey Sender's Dilithium5 public key (2592 bytes)
+ * @param peer_pubkey Sender's Dilithium5 public key (2592 bytes), NULL for offline messages
+ * @param sender_fingerprint Sender's fingerprint (128 hex chars), NULL for direct P2P
  * @param message Decrypted message data
  * @param message_len Length of decrypted message
  * @param user_data User-provided callback data
  */
 typedef void (*p2p_message_callback_t)(
     const uint8_t *peer_pubkey,
+    const char *sender_fingerprint,
     const uint8_t *message,
     size_t message_len,
     void *user_data

@@ -275,7 +275,7 @@ int p2p_transport_deliver_message(
     // Thread-safe callback invocation
     pthread_mutex_lock(&ctx->callback_mutex);
     if (ctx->message_callback) {
-        ctx->message_callback(peer_pubkey, data, len, ctx->callback_user_data);
+        ctx->message_callback(peer_pubkey, NULL, data, len, ctx->callback_user_data);
         pthread_mutex_unlock(&ctx->callback_mutex);
         return 0;
     }

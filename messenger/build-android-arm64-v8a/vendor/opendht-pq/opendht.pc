@@ -1,0 +1,12 @@
+prefix=/usr/local
+exec_prefix=${prefix}
+libdir=/usr/local/lib
+includedir=/usr/local/include
+Name: OpenDHT
+Description: C++17 Distributed Hash Table library
+Version: 3.5.5
+Libs: -L${libdir} -lopendht -lfmt
+Libs.private:  -pthread
+Requires: gnutls >= 3.3
+Requires.private: nettle >= 2.4, libargon2
+Cflags: -I${includedir}

@@ -567,6 +567,7 @@ static char* lookup_identity_for_pubkey(
 
 static void p2p_message_received_internal(
     const uint8_t *peer_pubkey,
+    const char *sender_fingerprint,
     const uint8_t *message,
     size_t message_len,
     void *user_data
@@ -839,6 +840,7 @@ int messenger_broadcast_p2p(
 
 static void p2p_message_received_internal(
     const uint8_t *peer_pubkey,
+    const char *sender_fingerprint,
     const uint8_t *message,
     size_t message_len,
     void *user_data)
@@ -849,13 +851,22 @@ static void p2p_message_received_internal(
         return;
     }
 
-    // Lookup identity for this pubkey (may be NULL if no handshake yet)
+    // Determine sender identity from available sources (in priority order):
+    // 1. sender_fingerprint (from DHT offline queue - most reliable for offline messages)
+    // 2. peer_pubkey lookup (from direct P2P connection)
+    // 3. Extract from encrypted message signature (fallback)
     char *sender_identity = NULL;
-    if (peer_pubkey) {
-        sender_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 2592);  // Dilithium5 public key size
+
+    if (sender_fingerprint && strlen(sender_fingerprint) > 0) {
+        // DHT offline message - sender_fingerprint is the fingerprint directly
+        sender_identity = strdup(sender_fingerprint);
+        printf("[P2P] ✓ Identified sender from DHT queue: %.32s...\n", sender_identity);
+    } else if (peer_pubkey) {
+        // Direct P2P - lookup identity from pubkey
+        sender_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 2592);
     }
 
-    // If not found via pubkey, try extracting from encrypted message signature
+    // If not found via fingerprint or pubkey, try extracting from encrypted message signature
     if (!sender_identity && message && message_len > 0) {
         sender_identity = extract_sender_from_encrypted(ctx, message, message_len);
         if (sender_identity) {

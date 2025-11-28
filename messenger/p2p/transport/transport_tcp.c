@@ -89,7 +89,7 @@ void* listener_thread(void *arg) {
         if (ctx->message_callback) {
             // Note: We don't have the peer's public key here (would need handshake)
             // For now, pass NULL - the callback can try to identify sender from message content
-            ctx->message_callback(NULL, message, msg_len, ctx->callback_user_data);
+            ctx->message_callback(NULL, NULL, message, msg_len, ctx->callback_user_data);
         }
         pthread_mutex_unlock(&ctx->callback_mutex);
 

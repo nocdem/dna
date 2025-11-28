@@ -984,6 +984,7 @@ void* ice_connection_recv_thread(void *arg) {
                 pthread_mutex_lock(&conn->transport->callback_mutex);
                 conn->transport->message_callback(
                     conn->peer_pubkey,  // Sender's public key
+                    NULL,               // sender_fingerprint (N/A for direct P2P)
                     buffer,
                     received,
                     conn->transport->callback_user_data
