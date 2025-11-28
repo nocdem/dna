@@ -32,23 +32,31 @@ Desktop GUI application for end-to-end encrypted messaging.
 ./build/imgui_gui/dna-messenger
 ```
 
-### dna-nodus
+### dna-nodus (v0.3)
 
-DHT bootstrap node for the DNA network infrastructure.
+DHT bootstrap + STUN/TURN server for the DNA network infrastructure.
 
-- **Purpose:** Bootstrap peer discovery and DHT value persistence
+- **Purpose:** Bootstrap peer discovery, DHT persistence, NAT relay
 - **Security:** Mandatory Dilithium5 signatures on all DHT values
 - **Persistence:** SQLite database survives restarts
-- **Port:** 4000 (UDP for DHT, TCP for P2P)
+- **Config:** JSON file at `/etc/dna-nodus.conf` (no CLI args)
+- **Ports:**
+  - 4000 (UDP) - DHT operations
+  - 3478 (UDP) - STUN/TURN relay
 
 ```bash
-./build/vendor/opendht-pq/tools/dna-nodus -b 154.38.182.161:4000 -v
+# Build and deploy
+bash /opt/dna-messenger/nodus_build.sh
 ```
 
 **Public Bootstrap Nodes:**
-- US-1: 154.38.182.161:4000
-- EU-1: 164.68.105.227:4000
-- EU-2: 164.68.116.180:4000
+| Server | IP | DHT | TURN |
+|--------|-----|-----|------|
+| US-1 | 154.38.182.161 | :4000 | :3478 |
+| EU-1 | 164.68.105.227 | :4000 | :3478 |
+| EU-2 | 164.68.116.180 | :4000 | :3478 |
+
+See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full documentation.
 
 ---
 

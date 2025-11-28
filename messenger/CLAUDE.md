@@ -26,6 +26,7 @@ Anything aginst protcol mode breaks the blockchain / encryption .
 - **[README.md](README.md)** - Project overview and getting started
 
 ### 🔧 Technical Docs
+- **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap + STUN/TURN server (v0.3)
 - **[DHT Refactoring](docs/DHT_REFACTORING_PROGRESS.md)** - DHT modularization history
 - **[Message Formats](docs/MESSAGE_FORMATS.md)** - v0.08 message format spec
 - **[ICE NAT Traversal](docs/ICE_NAT_TRAVERSAL_FIXES.md)** - NAT traversal implementation
@@ -116,41 +117,60 @@ Co-Authored-By: Claude <noreply@anthropic.com>
 
 ## Bootstrap Server Deployment (CRITICAL)
 
-**IMPORTANT:** Use **dna-nodus** ONLY. Never build or use `dht-bootstrap` service.
+**IMPORTANT:** Use **dna-nodus v0.3** ONLY. Never build or use `dht-bootstrap` service.
 
 **Bootstrap Servers:**
-- US-1: 154.38.182.161:4000
-- EU-1: 164.68.105.227:4000
-- EU-2: 164.68.116.180:4000
+| Server | IP | DHT Port | TURN Port |
+|--------|-----|----------|-----------|
+| US-1 | 154.38.182.161 | 4000 | 3478 |
+| EU-1 | 164.68.105.227 | 4000 | 3478 |
+| EU-2 | 164.68.116.180 | 4000 | 3478 |
 
-**Deployment Process:**
+**Deployment Process (v0.3+):**
 ```bash
-# On each bootstrap server:
-cd /opt/dna-messenger
-git pull
-rm -rf build && mkdir build && cd build
-cmake -DBUILD_GUI=OFF .. && make -j$(nproc)
+# Use the build script on each server:
+ssh root@<server-ip> "bash /opt/dna-messenger/nodus_build.sh"
 
-# Kill old nodus
-killall -9 dna-nodus
-
-# Start dna-nodus with persistence (runs in foreground)
-./vendor/opendht-pq/tools/dna-nodus -b 154.38.182.161:4000 -b 164.68.105.227:4000 -b 164.68.116.180:4000 -v
-
-# OR run in background:
-nohup ./vendor/opendht-pq/tools/dna-nodus -b <bootstrap-nodes> -v > /var/log/dna-nodus.log 2>&1 &
+# The script will:
+# 1. Pull latest code
+# 2. Build dna-nodus
+# 3. Install to /usr/local/bin/
+# 4. Restart systemd service
 ```
+
+**Configuration (v0.3+):**
+- Config file: `/etc/dna-nodus.conf` (JSON format)
+- No CLI arguments needed - pure config file
+- See `vendor/opendht-pq/tools/dna-nodus.conf.example`
+
+**Example config:**
+```json
+{
+    "dht_port": 4000,
+    "seed_nodes": ["154.38.182.161", "164.68.105.227"],
+    "turn_port": 3478,
+    "public_ip": "auto",
+    "persistence_path": "/var/lib/dna-dht/bootstrap.state"
+}
+```
+
+**Services:**
+- DHT Bootstrap: UDP port 4000
+- STUN/TURN Server: UDP port 3478 (libjuice)
+- Credential TTL: 7 days
 
 **Persistence:**
 - Default path: `/var/lib/dna-dht/bootstrap.state`
 - SQLite database: `bootstrap.state.values.db`
-- Use `-s <path>` to override
 - Values persist across restarts automatically
+
+**Documentation:** See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full details.
 
 **NEVER:**
 - Build dht-bootstrap service
 - Use dht-bootstrap systemd service
 - Deploy binaries via scp (always pull + build on server)
+- Use CLI arguments (v0.3 uses config file only)
 
 ---
 
