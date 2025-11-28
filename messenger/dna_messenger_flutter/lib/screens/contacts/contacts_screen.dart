@@ -12,10 +12,17 @@ class ContactsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final contacts = ref.watch(contactsProvider);
+    final dhtState = ref.watch(dhtConnectionStateProvider);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Contacts'),
+        title: Row(
+          children: [
+            const Text('Contacts'),
+            const SizedBox(width: 8),
+            _DhtStatusIndicator(state: dhtState),
+          ],
+        ),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -24,7 +31,7 @@ class ContactsScreen extends ConsumerWidget {
           ),
           IconButton(
             icon: const Icon(Icons.settings),
-            onPressed: () => _openSettings(context),
+            onPressed: () => _openSettings(context, ref),
             tooltip: 'Settings',
           ),
         ],
@@ -132,10 +139,33 @@ class ContactsScreen extends ConsumerWidget {
     );
   }
 
-  void _openSettings(BuildContext context) {
-    // TODO: Navigate to settings screen
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Settings coming soon')),
+  void _openSettings(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.palette),
+              title: const Text('Toggle Theme'),
+              subtitle: const Text('Switch between DNA and Club theme'),
+              onTap: () {
+                ref.read(themeProvider.notifier).toggleTheme();
+                Navigator.pop(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.logout),
+              title: const Text('Switch Identity'),
+              onTap: () {
+                // TODO: Implement identity switching
+                Navigator.pop(context);
+              },
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -325,5 +355,33 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
         );
       }
     }
+  }
+}
+
+/// DHT connection status indicator
+class _DhtStatusIndicator extends StatelessWidget {
+  final DhtConnectionState state;
+
+  const _DhtStatusIndicator({required this.state});
+
+  @override
+  Widget build(BuildContext context) {
+    final (color, tooltip) = switch (state) {
+      DhtConnectionState.connected => (DnaColors.textSuccess, 'DHT Connected'),
+      DhtConnectionState.connecting => (DnaColors.textInfo, 'Connecting...'),
+      DhtConnectionState.disconnected => (DnaColors.offline, 'DHT Disconnected'),
+    };
+
+    return Tooltip(
+      message: tooltip,
+      child: Container(
+        width: 8,
+        height: 8,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: color,
+        ),
+      ),
+    );
   }
 }

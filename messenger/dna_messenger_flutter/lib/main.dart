@@ -39,6 +39,9 @@ class _AppLoader extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final engine = ref.watch(engineProvider);
 
+    // Activate event handler when engine is ready
+    ref.watch(eventHandlerActiveProvider);
+
     return engine.when(
       data: (_) => const HomeScreen(),
       loading: () => const _LoadingScreen(),

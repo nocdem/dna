@@ -82,7 +82,8 @@ dna_messenger_flutter/
 │   │   ├── identity_provider.dart
 │   │   ├── contacts_provider.dart
 │   │   ├── messages_provider.dart
-│   │   └── theme_provider.dart
+│   │   ├── theme_provider.dart
+│   │   └── event_handler.dart   # ✅ Real-time event handling
 │   ├── screens/                # ✅ UI screens
 │   │   ├── identity/identity_selection_screen.dart
 │   │   ├── contacts/contacts_screen.dart
@@ -186,9 +187,15 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 
 **Screens Implemented:**
 - `IdentitySelectionScreen`: List identities, create with 3-step wizard, restore from seed
-- `ContactsScreen`: List with online/offline indicators, pull-to-refresh, add contact dialog
+- `ContactsScreen`: List with online/offline indicators, pull-to-refresh, add contact dialog, DHT status indicator
 - `ChatScreen`: Message bubbles, timestamps, status icons, input with send button
 - `HomeScreen`: Routes between identity selection and contacts based on state
+
+**Event Handling:**
+- `EventHandler`: Listens to engine event stream, updates providers
+- Contact online/offline status updates in real-time
+- New messages added to conversations automatically
+- DHT connection state tracked and displayed
 
 ---
 
@@ -348,8 +355,8 @@ class ClubTheme {
 
 ## Next Steps
 
-1. Implement real-time event handling (DHT events → UI updates)
-2. Add BIP39 mnemonic generation/parsing
-3. Build groups screen and wallet screen
-4. Test on Android device with native library
-5. Add settings screen with theme toggle
+1. Add BIP39 mnemonic generation/parsing (integrate with native library)
+2. Build groups screen and wallet screen (Phase 3)
+3. Test on Android device with native library (Phase 4)
+4. Add settings screen with full options
+5. Build and test on all platforms
