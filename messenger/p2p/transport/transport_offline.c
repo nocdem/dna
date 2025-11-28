@@ -87,6 +87,9 @@ int p2p_check_offline_messages(
 
     printf("[P2P] Loaded %zu contacts, will query each sender's outbox\n", contacts->count);
 
+    // DEBUG: Log my identity
+    printf("[P2P DEBUG FETCH] my_identity (recipient)='%s'\n", ctx->config.identity);
+
     // 2. Build array of sender fingerprints
     const char **sender_fps = (const char**)malloc(contacts->count * sizeof(char*));
     if (!sender_fps) {
@@ -98,6 +101,9 @@ int p2p_check_offline_messages(
 
     for (size_t i = 0; i < contacts->count; i++) {
         sender_fps[i] = contacts->contacts[i].identity;  // Fingerprint
+        // DEBUG: Log each contact's identity
+        printf("[P2P DEBUG FETCH] contact[%zu] identity (sender)='%s'\n", i, sender_fps[i]);
+        printf("[P2P DEBUG FETCH] expected_base_key[%zu]='%s:outbox:%s'\n", i, sender_fps[i], ctx->config.identity);
     }
 
     // 3. Query all contacts' outboxes
