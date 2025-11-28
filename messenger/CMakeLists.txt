@@ -1,6 +1,9 @@
 cmake_minimum_required(VERSION 3.10)
 project(dna C CXX)  # C for core library, C++ for ImGui GUI
 
+# Build options
+option(BUILD_SHARED_LIB "Build dna_lib as shared library (for Flutter)" OFF)
+
 # Static linking configuration for Windows
 if(WIN32)
     # Force static runtime library on Windows
@@ -290,7 +293,14 @@ set(COMMON_SOURCES
 )
 
 # DNA Messenger Library (libdna)
-add_library(dna_lib STATIC
+# Use BUILD_SHARED_LIB=ON for Flutter/mobile builds
+if(BUILD_SHARED_LIB)
+    set(DNA_LIB_TYPE SHARED)
+else()
+    set(DNA_LIB_TYPE STATIC)
+endif()
+
+add_library(dna_lib ${DNA_LIB_TYPE}
     dna_api.c
     # Unified Engine API (Core/GUI separation)
     src/api/dna_engine.c
