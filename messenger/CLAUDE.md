@@ -26,6 +26,7 @@ Anything aginst protcol mode breaks the blockchain / encryption .
 - **[README.md](README.md)** - Project overview and getting started
 
 ### 🔧 Technical Docs
+- **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)
 - **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap + STUN/TURN server (v0.3)
 - **[DHT Refactoring](docs/DHT_REFACTORING_PROGRESS.md)** - DHT modularization history
 - **[Message Formats](docs/MESSAGE_FORMATS.md)** - v0.08 message format spec
