@@ -4,6 +4,11 @@ project(dna C CXX)  # C for core library, C++ for ImGui GUI
 # Build options
 option(BUILD_SHARED_LIB "Build dna_lib as shared library (for Flutter)" OFF)
 
+# Enable Position Independent Code for shared library builds
+if(BUILD_SHARED_LIB)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 # Static linking configuration for Windows
 if(WIN32)
     # Force static runtime library on Windows
