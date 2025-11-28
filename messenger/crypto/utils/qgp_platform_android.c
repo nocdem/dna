@@ -16,14 +16,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>   /* For explicit_bzero on newer Android */
 #include <unistd.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
 #include <errno.h>
 
-/* Android uses /dev/urandom like Linux */
+/* Android random: getrandom() available in API 28+, use syscall for API 24-27 */
+#if __ANDROID_API__ >= 28
 #include <sys/random.h>
+#else
+/* For API 24-27, use syscall directly */
+#include <sys/syscall.h>
+#define getrandom(buf, len, flags) syscall(SYS_getrandom, buf, len, flags)
+#endif
 
 /* ============================================================================
  * Application Data Directories (Android Implementation)
@@ -230,8 +237,9 @@ void qgp_secure_memzero(void *ptr, size_t len) {
         return;
     }
 
-    /* Use explicit_bzero if available (Android NDK r23+) */
-#if defined(__ANDROID_API__) && __ANDROID_API__ >= 23
+    /* Use explicit_bzero if available (Android API 28+)
+     * For API 24-27, use volatile memset fallback */
+#if defined(__ANDROID_API__) && __ANDROID_API__ >= 28
     explicit_bzero(ptr, len);
 #else
     /* Fallback: volatile pointer prevents optimization */

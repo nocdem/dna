@@ -52,11 +52,61 @@ if(ANDROID)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 
+    # Android cross-compiled dependencies paths
+    # These are built by the Android NDK build process
+    set(ANDROID_DEPS_DIR "$ENV{HOME}/android-deps" CACHE PATH "Android dependencies directory")
+    if(EXISTS "${ANDROID_DEPS_DIR}")
+        message(STATUS "Android deps dir: ${ANDROID_DEPS_DIR}")
+
+        # Add all dependency include paths globally
+        include_directories(
+            ${ANDROID_DEPS_DIR}/openssl-arm64/include
+            ${ANDROID_DEPS_DIR}/sqlite-arm64/include
+            ${ANDROID_DEPS_DIR}/asio-1.30.2/include
+            ${ANDROID_DEPS_DIR}/fmt-arm64/include
+            ${ANDROID_DEPS_DIR}/gnutls-arm64/include
+            ${ANDROID_DEPS_DIR}/nettle-arm64/include
+            ${ANDROID_DEPS_DIR}/gmp-arm64/include
+            ${ANDROID_DEPS_DIR}/libtasn1-arm64/include
+            ${ANDROID_DEPS_DIR}/argon2-arm64/include
+            ${ANDROID_DEPS_DIR}/jsonc-arm64/include
+            ${ANDROID_DEPS_DIR}/msgpack-arm64/include
+            ${ANDROID_DEPS_DIR}/zstd-arm64/include
+        )
+
+        # Link directories for static libraries
+        link_directories(
+            ${ANDROID_DEPS_DIR}/openssl-arm64/lib
+            ${ANDROID_DEPS_DIR}/sqlite-arm64/lib
+            ${ANDROID_DEPS_DIR}/fmt-arm64/lib
+            ${ANDROID_DEPS_DIR}/gnutls-arm64/lib
+            ${ANDROID_DEPS_DIR}/nettle-arm64/lib
+            ${ANDROID_DEPS_DIR}/gmp-arm64/lib
+            ${ANDROID_DEPS_DIR}/libtasn1-arm64/lib
+            ${ANDROID_DEPS_DIR}/argon2-arm64/lib
+            ${ANDROID_DEPS_DIR}/jsonc-arm64/lib
+        )
+
+        # Set json-c variables for CMake find
+        set(JSON-C_FOUND TRUE)
+        set(JSON-C_INCLUDE_DIR "${ANDROID_DEPS_DIR}/jsonc-arm64/include")
+        set(JSON-C_LIBRARY "${ANDROID_DEPS_DIR}/jsonc-arm64/lib/libjson-c.a")
+    else()
+        message(WARNING "Android deps directory not found: ${ANDROID_DEPS_DIR}")
+        message(WARNING "Build dependencies with build-android-deps.sh first")
+    endif()
+
+    # Disable pkg-config for Android (would find host libraries)
+    set(PKG_CONFIG_EXECUTABLE "" CACHE FILEPATH "Disable pkg-config for Android" FORCE)
+
     # Disable features not available/needed on Android
     set(BUILD_DNA_SEND OFF CACHE BOOL "Disable dna-send on Android" FORCE)
 
     # OpenDHT-PQ configuration for Android
     set(OPENDHT_TOOLS OFF CACHE BOOL "Disable OpenDHT tools on Android" FORCE)
+
+    # Fix msgpack boost dependency
+    add_definitions(-DMSGPACK_NO_BOOST)
 
     message(STATUS "Android build configured successfully")
     message(STATUS "========================================")

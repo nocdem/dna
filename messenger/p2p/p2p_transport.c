@@ -1,4 +1,6 @@
-#define _GNU_SOURCE  // Required for pthread_timedjoin_np
+#ifndef __ANDROID__
+#define _GNU_SOURCE  // Required for pthread_timedjoin_np (Linux only)
+#endif
 
 /**
  * P2P Transport Implementation (FACADE)
@@ -191,12 +193,17 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
                 }
             }
 
-            // Wait for receive thread to finish (with timeout)
+            // Wait for receive thread to finish (with timeout on Linux)
             if (conn->recv_thread) {
+#ifdef __ANDROID__
+                // Android: pthread_timedjoin_np not available, use regular join
+                pthread_join(conn->recv_thread, NULL);
+#else
                 struct timespec timeout;
                 clock_gettime(CLOCK_REALTIME, &timeout);
                 timeout.tv_sec += 1;  // 1 second timeout
                 pthread_timedjoin_np(conn->recv_thread, NULL, &timeout);
+#endif
             }
 
             free(conn);

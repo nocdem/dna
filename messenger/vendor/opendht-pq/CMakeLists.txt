@@ -24,7 +24,7 @@ include(CMakePackageConfigHelpers)
 include(CMakeDependentOption)
 include(CheckIncludeFileCXX)
 set(POSSIBLE_PKGCONFIG OFF)
-if(NOT MSVC)
+if(NOT MSVC AND NOT ANDROID)
     include(FindPkgConfig)
     set(POSSIBLE_PKGCONFIG ON)
 endif()
@@ -104,7 +104,115 @@ if (WIN32)
 endif ()
 
 list (APPEND CMAKE_MODULE_PATH "${PROJECT_SOURCE_DIR}/cmake")
-if (NOT MSVC)
+if (ANDROID)
+    # Android-specific dependency handling (no pkg-config)
+    message(STATUS "OpenDHT-PQ: Configuring for Android")
+    set(http_lib "")
+    set(llhttp_lib "")
+    set (THREADS_PREFER_PTHREAD_FLAG TRUE)
+    find_package (Threads)
+
+    # Use Android deps from ANDROID_DEPS_DIR
+    set(ANDROID_DEPS_DIR "$ENV{HOME}/android-deps" CACHE PATH "Android deps")
+
+    # GnuTLS
+    set(GNUTLS_INCLUDE_DIR "${ANDROID_DEPS_DIR}/gnutls-arm64/include")
+    set(GNUTLS_LIBRARY "${ANDROID_DEPS_DIR}/gnutls-arm64/lib/libgnutls.a")
+    set(GNUTLS_FOUND TRUE)
+    include_directories(${GNUTLS_INCLUDE_DIR})
+
+    # Nettle
+    set(NETTLE_INCLUDE_DIR "${ANDROID_DEPS_DIR}/nettle-arm64/include")
+    set(NETTLE_LIBRARY "${ANDROID_DEPS_DIR}/nettle-arm64/lib/libnettle.a")
+    set(HOGWEED_LIBRARY "${ANDROID_DEPS_DIR}/nettle-arm64/lib/libhogweed.a")
+    include_directories(${NETTLE_INCLUDE_DIR})
+
+    # Argon2
+    set(ARGON2_INCLUDE_DIR "${ANDROID_DEPS_DIR}/argon2-arm64/include")
+    set(ARGON2_LIBRARY "${ANDROID_DEPS_DIR}/argon2-arm64/lib/libargon2.a")
+    set(argon2_lib ", libargon2")
+    include_directories(${ARGON2_INCLUDE_DIR})
+
+    # GMP
+    set(GMP_INCLUDE_DIR "${ANDROID_DEPS_DIR}/gmp-arm64/include")
+    set(GMP_LIBRARY "${ANDROID_DEPS_DIR}/gmp-arm64/lib/libgmp.a")
+    include_directories(${GMP_INCLUDE_DIR})
+
+    # libtasn1
+    set(TASN1_INCLUDE_DIR "${ANDROID_DEPS_DIR}/libtasn1-arm64/include")
+    set(TASN1_LIBRARY "${ANDROID_DEPS_DIR}/libtasn1-arm64/lib/libtasn1.a")
+    include_directories(${TASN1_INCLUDE_DIR})
+
+    # fmt
+    set(FMT_INCLUDE_DIR "${ANDROID_DEPS_DIR}/fmt-arm64/include")
+    set(FMT_LIBRARY "${ANDROID_DEPS_DIR}/fmt-arm64/lib/libfmt.a")
+    include_directories(${FMT_INCLUDE_DIR})
+
+    # ASIO (header-only)
+    set(ASIO_INCLUDE_DIR "${ANDROID_DEPS_DIR}/asio-1.30.2/include")
+    include_directories(${ASIO_INCLUDE_DIR})
+
+    # msgpack (header-only)
+    set(MSGPACK_INCLUDE_DIR "${ANDROID_DEPS_DIR}/msgpack-arm64/include")
+    include_directories(${MSGPACK_INCLUDE_DIR})
+    set(HAVE_MSGPACKCXX TRUE)
+
+    # No jsoncpp on Android (not required for basic DHT)
+    set(JSONCPP_FOUND FALSE)
+
+    # No readline on Android
+    set(OPENDHT_TOOLS OFF)
+
+    # No HTTP proxy on Android for now
+    set(OPENDHT_HTTP OFF)
+    set(OPENDHT_PROXY_SERVER OFF)
+    set(OPENDHT_PROXY_CLIENT OFF)
+
+    # Create imported targets for Android dependencies
+    # fmt library as imported target
+    add_library(fmt::fmt STATIC IMPORTED)
+    set_target_properties(fmt::fmt PROPERTIES
+        IMPORTED_LOCATION "${ANDROID_DEPS_DIR}/fmt-arm64/lib/libfmt.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${ANDROID_DEPS_DIR}/fmt-arm64/include"
+    )
+    add_library(fmt::fmt-header-only ALIAS fmt::fmt)
+
+    # GnuTLS as imported target
+    add_library(gnutls_imported STATIC IMPORTED)
+    set_target_properties(gnutls_imported PROPERTIES
+        IMPORTED_LOCATION "${ANDROID_DEPS_DIR}/gnutls-arm64/lib/libgnutls.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${ANDROID_DEPS_DIR}/gnutls-arm64/include"
+    )
+    set(GNUTLS_LIBRARIES gnutls_imported)
+
+    # Create nettle/hogweed as imported targets
+    add_library(nettle_imported STATIC IMPORTED)
+    set_target_properties(nettle_imported PROPERTIES
+        IMPORTED_LOCATION "${ANDROID_DEPS_DIR}/nettle-arm64/lib/libnettle.a"
+    )
+    add_library(hogweed_imported STATIC IMPORTED)
+    set_target_properties(hogweed_imported PROPERTIES
+        IMPORTED_LOCATION "${ANDROID_DEPS_DIR}/nettle-arm64/lib/libhogweed.a"
+    )
+
+    # Create argon2 as imported target
+    add_library(argon2 STATIC IMPORTED)
+    set_target_properties(argon2 PROPERTIES
+        IMPORTED_LOCATION "${ANDROID_DEPS_DIR}/argon2-arm64/lib/libargon2.a"
+        INTERFACE_INCLUDE_DIRECTORIES "${ANDROID_DEPS_DIR}/argon2-arm64/include"
+    )
+
+    # Create jsoncpp as imported target (empty/stub for Android)
+    add_library(jsoncpp INTERFACE IMPORTED)
+    add_library(JsonCpp::JsonCpp ALIAS jsoncpp)
+
+    # Create msgpack-cxx as imported target
+    add_library(msgpack-cxx INTERFACE IMPORTED)
+    set_target_properties(msgpack-cxx PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${ANDROID_DEPS_DIR}/msgpack-arm64/include"
+    )
+
+elseif (NOT MSVC)
     # Initialize pkg-config substitution variables for llhttp before any detection
     set(http_lib "")
     set(llhttp_lib "")

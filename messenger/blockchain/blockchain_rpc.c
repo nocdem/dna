@@ -6,6 +6,67 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef NO_CURL
+/* Android/platforms without libcurl: Stub implementations */
+
+int cellframe_rpc_call(const cellframe_rpc_request_t *request, cellframe_rpc_response_t **response_out) {
+    (void)request;
+    (void)response_out;
+    fprintf(stderr, "[RPC] Cellframe RPC not available (no libcurl)\n");
+    return -1;
+}
+
+int cellframe_rpc_get_tx(const char *net, const char *tx_hash, cellframe_rpc_response_t **response_out) {
+    (void)net; (void)tx_hash; (void)response_out;
+    fprintf(stderr, "[RPC] Cellframe RPC not available (no libcurl)\n");
+    return -1;
+}
+
+int cellframe_rpc_get_block(const char *net, uint64_t block_num, cellframe_rpc_response_t **response_out) {
+    (void)net; (void)block_num; (void)response_out;
+    fprintf(stderr, "[RPC] Cellframe RPC not available (no libcurl)\n");
+    return -1;
+}
+
+int cellframe_rpc_get_balance(const char *net, const char *address, const char *token, cellframe_rpc_response_t **response_out) {
+    (void)net; (void)address; (void)token; (void)response_out;
+    fprintf(stderr, "[RPC] Cellframe RPC not available (no libcurl)\n");
+    return -1;
+}
+
+int cellframe_rpc_get_utxo(const char *net, const char *address, const char *token, cellframe_rpc_response_t **response_out) {
+    (void)net; (void)address; (void)token; (void)response_out;
+    fprintf(stderr, "[RPC] Cellframe RPC not available (no libcurl)\n");
+    return -1;
+}
+
+int cellframe_rpc_submit_tx(const char *net, const char *chain, const char *tx_json, cellframe_rpc_response_t **response_out) {
+    (void)net; (void)chain; (void)tx_json; (void)response_out;
+    fprintf(stderr, "[RPC] Cellframe RPC not available (no libcurl)\n");
+    return -1;
+}
+
+int cellframe_rpc_get_tx_history(const char *net, const char *address, cellframe_rpc_response_t **response_out) {
+    (void)net; (void)address; (void)response_out;
+    fprintf(stderr, "[RPC] Cellframe RPC not available (no libcurl)\n");
+    return -1;
+}
+
+void cellframe_rpc_response_free(cellframe_rpc_response_t *response) {
+    if (response) {
+        free(response);
+    }
+}
+
+int cellframe_verify_registration_tx(const char *tx_hash, const char *network, const char *expected_name) {
+    (void)tx_hash; (void)network; (void)expected_name;
+    fprintf(stderr, "[RPC] Cellframe RPC not available (no libcurl)\n");
+    return -1;
+}
+
+#else /* HAS_CURL */
+
 #ifdef _WIN32
 #define CURL_STATICLIB  // Required for static linking on Windows
 #endif
@@ -597,12 +658,14 @@ int cellframe_verify_registration_tx(const char *tx_hash, const char *network, c
         return -2;
     }
 
-    printf("[TX_VERIFY] ✓ Transaction verified successfully\n");
+    printf("[TX_VERIFY] Transaction verified successfully\n");
     printf("[TX_VERIFY]   Amount: %s CPUNK\n", value_str);
     printf("[TX_VERIFY]   To: %s\n", to_addr);
     printf("[TX_VERIFY]   Memo: %s\n", memo);
     printf("[TX_VERIFY]   Status: %s\n", status);
 
     cellframe_rpc_response_free(response);
-    return 0;  // Valid ✅
+    return 0;  // Valid
 }
+
+#endif /* NO_CURL */
