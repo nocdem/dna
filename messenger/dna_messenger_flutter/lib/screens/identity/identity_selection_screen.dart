@@ -240,8 +240,8 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
 
   void _generateMnemonic() {
     // TODO: Generate real BIP39 mnemonic from native library
-    // For now, use placeholder
-    _mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+    // For now, use placeholder (24 words for 256-bit entropy - post-quantum security)
+    _mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
   }
 
   @override
@@ -291,7 +291,7 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Write down these 12 words in order. This is the ONLY way to recover your identity.',
+            'Write down these 24 words in order. This is the ONLY way to recover your identity.',
             style: theme.textTheme.bodySmall,
           ),
           const SizedBox(height: 24),
@@ -578,7 +578,7 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Enter the 12-word seed phrase you saved when creating your identity.',
+                'Enter the 24-word seed phrase you saved when creating your identity.',
                 style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 24),
@@ -600,7 +600,7 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
                 const Center(child: CircularProgressIndicator())
               else
                 ElevatedButton(
-                  onPressed: _seedController.text.trim().split(' ').length >= 12
+                  onPressed: _seedController.text.trim().split(' ').length >= 24
                       ? _restoreIdentity
                       : null,
                   child: const Text('Restore Identity'),
@@ -618,7 +618,7 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
     try {
       // TODO: Convert mnemonic to seeds using BIP39
       final words = _seedController.text.trim().split(' ');
-      if (words.length < 12) {
+      if (words.length < 24) {
         throw Exception('Invalid seed phrase');
       }
 

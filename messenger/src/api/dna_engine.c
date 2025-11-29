@@ -545,23 +545,27 @@ void dna_handle_list_identities(dna_engine_t *engine, dna_task_t *task) {
 }
 
 void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
-    char fingerprint[129] = {0};
+    char fingerprint_buf[129] = {0};
 
     int rc = messenger_generate_keys_from_seeds(
         task->params.create_identity.signing_seed,
         task->params.create_identity.encryption_seed,
-        fingerprint
+        fingerprint_buf
     );
 
     int error = DNA_OK;
+    char *fingerprint = NULL;
     if (rc != 0) {
         error = DNA_ERROR_CRYPTO;
+    } else {
+        /* Allocate on heap - caller must free via dna_free_string */
+        fingerprint = strdup(fingerprint_buf);
     }
 
     task->callback.identity_created(
         task->request_id,
         error,
-        (error == DNA_OK) ? fingerprint : NULL,
+        fingerprint,
         task->user_data
     );
 }

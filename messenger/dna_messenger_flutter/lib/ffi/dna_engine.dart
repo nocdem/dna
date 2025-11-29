@@ -504,8 +504,12 @@ class DnaEngine {
       calloc.free(sigSeedPtr);
       calloc.free(encSeedPtr);
 
-      if (error == 0) {
-        completer.complete(fingerprint.toDartString());
+      if (error == 0 && fingerprint != nullptr) {
+        // Copy string before freeing native memory
+        final result = fingerprint.toDartString();
+        // Free heap-allocated fingerprint from C
+        calloc.free(fingerprint);
+        completer.complete(result);
       } else {
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
       }
