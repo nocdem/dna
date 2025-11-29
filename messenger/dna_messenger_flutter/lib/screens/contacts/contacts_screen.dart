@@ -29,11 +29,6 @@ class ContactsScreen extends ConsumerWidget {
             onPressed: () => ref.invalidate(contactsProvider),
             tooltip: 'Refresh',
           ),
-          IconButton(
-            icon: const Icon(Icons.settings),
-            onPressed: () => _openSettings(context, ref),
-            tooltip: 'Settings',
-          ),
         ],
       ),
       body: contacts.when(
@@ -135,36 +130,6 @@ class ContactsScreen extends ConsumerWidget {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => const ChatScreen(),
-      ),
-    );
-  }
-
-  void _openSettings(BuildContext context, WidgetRef ref) {
-    showModalBottomSheet(
-      context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.palette),
-              title: const Text('Toggle Theme'),
-              subtitle: const Text('Switch between DNA and Club theme'),
-              onTap: () {
-                ref.read(themeProvider.notifier).toggleTheme();
-                Navigator.pop(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.logout),
-              title: const Text('Switch Identity'),
-              onTap: () {
-                // TODO: Implement identity switching
-                Navigator.pop(context);
-              },
-            ),
-          ],
-        ),
       ),
     );
   }

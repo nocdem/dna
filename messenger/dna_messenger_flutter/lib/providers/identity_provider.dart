@@ -32,6 +32,14 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   Future<void> loadIdentity(String fingerprint) async {
     final engine = await ref.read(engineProvider.future);
     await engine.loadIdentity(fingerprint);
+    ref.read(currentFingerprintProvider.notifier).state = fingerprint;
+    // Invalidate to trigger UI rebuild
+    ref.invalidate(engineProvider);
+  }
+
+  void unloadIdentity() {
+    ref.read(currentFingerprintProvider.notifier).state = null;
+    ref.invalidate(engineProvider);
   }
 }
 
@@ -78,6 +86,25 @@ final createIdentityStateProvider =
     StateNotifierProvider<CreateIdentityStateNotifier, CreateIdentityState>(
   (ref) => CreateIdentityStateNotifier(),
 );
+
+/// Current fingerprint (null if no identity loaded)
+final currentFingerprintProvider = StateProvider<String?>((ref) => null);
+
+/// User profile data
+class UserProfile {
+  final String? nickname;
+  final String? avatar;
+
+  UserProfile({this.nickname, this.avatar});
+}
+
+final userProfileProvider = FutureProvider<UserProfile?>((ref) async {
+  final fingerprint = ref.watch(currentFingerprintProvider);
+  if (fingerprint == null) return null;
+
+  // TODO: Fetch profile from engine
+  return UserProfile();
+});
 
 class CreateIdentityStateNotifier extends StateNotifier<CreateIdentityState> {
   CreateIdentityStateNotifier() : super(const CreateIdentityState());

@@ -84,13 +84,13 @@ class IdentitySelectionScreen extends ConsumerWidget {
               // Action buttons
               const SizedBox(height: 24),
               ElevatedButton.icon(
-                onPressed: () => _showCreateIdentityDialog(context, ref),
+                onPressed: () => _showCreateIdentityScreen(context),
                 icon: const Icon(Icons.add),
                 label: const Text('Create New Identity'),
               ),
               const SizedBox(height: 12),
               OutlinedButton.icon(
-                onPressed: () => _showRestoreIdentityDialog(context, ref),
+                onPressed: () => _showRestoreIdentityScreen(context),
                 icon: const Icon(Icons.restore),
                 label: const Text('Restore from Seed'),
               ),
@@ -167,7 +167,6 @@ class IdentitySelectionScreen extends ConsumerWidget {
   }
 
   Future<void> _loadIdentity(BuildContext context, WidgetRef ref, String fingerprint) async {
-    // Show loading
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -179,12 +178,11 @@ class IdentitySelectionScreen extends ConsumerWidget {
     try {
       await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
       if (context.mounted) {
-        Navigator.of(context).pop(); // Close loading
-        // Navigation to home will happen via provider watching
+        Navigator.of(context).pop();
       }
     } catch (e) {
       if (context.mounted) {
-        Navigator.of(context).pop(); // Close loading
+        Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to load identity: $e'),
@@ -195,7 +193,7 @@ class IdentitySelectionScreen extends ConsumerWidget {
     }
   }
 
-  void _showCreateIdentityDialog(BuildContext context, WidgetRef ref) {
+  void _showCreateIdentityScreen(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => const CreateIdentityScreen(),
@@ -203,7 +201,7 @@ class IdentitySelectionScreen extends ConsumerWidget {
     );
   }
 
-  void _showRestoreIdentityDialog(BuildContext context, WidgetRef ref) {
+  void _showRestoreIdentityScreen(BuildContext context) {
     Navigator.of(context).push(
       MaterialPageRoute(
         builder: (context) => const RestoreIdentityScreen(),
@@ -212,7 +210,7 @@ class IdentitySelectionScreen extends ConsumerWidget {
   }
 }
 
-/// Create Identity Screen - Step-by-step wizard
+/// Create Identity Screen - 3-step: show seed, confirm, nickname, create
 class CreateIdentityScreen extends ConsumerStatefulWidget {
   const CreateIdentityScreen({super.key});
 
@@ -220,12 +218,13 @@ class CreateIdentityScreen extends ConsumerStatefulWidget {
   ConsumerState<CreateIdentityScreen> createState() => _CreateIdentityScreenState();
 }
 
+enum _CreateStep { seed, nickname, creating }
+
 class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
-  final _nameController = TextEditingController();
   String _mnemonic = '';
-  bool _seedCopied = false;
   bool _seedConfirmed = false;
-  bool _isCreating = false;
+  _CreateStep _step = _CreateStep.seed;
+  final _nicknameController = TextEditingController();
 
   @override
   void initState() {
@@ -233,16 +232,16 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
     _generateMnemonic();
   }
 
-  void _generateMnemonic() {
-    // TODO: Generate real BIP39 mnemonic
-    // For now, use placeholder - will integrate with native library
-    _mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
-  }
-
   @override
   void dispose() {
-    _nameController.dispose();
+    _nicknameController.dispose();
     super.dispose();
+  }
+
+  void _generateMnemonic() {
+    // TODO: Generate real BIP39 mnemonic from native library
+    // For now, use placeholder
+    _mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
   }
 
   @override
@@ -251,7 +250,11 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Create Identity'),
+        title: Text(_step == _CreateStep.seed
+            ? 'Create Identity'
+            : _step == _CreateStep.nickname
+                ? 'Register Nickname'
+                : 'Creating...'),
       ),
       body: SafeArea(
         child: Padding(
@@ -259,118 +262,21 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              // Step indicator
-              _buildStepIndicator(theme),
-              const SizedBox(height: 32),
-
               // Content
               Expanded(
-                child: _buildContent(theme),
+                child: switch (_step) {
+                  _CreateStep.seed => _buildSeedStep(theme),
+                  _CreateStep.nickname => _buildNicknameStep(theme),
+                  _CreateStep.creating => _buildCreatingState(theme),
+                },
               ),
 
               // Actions
-              _buildActions(theme),
+              if (_step != _CreateStep.creating) _buildActions(theme),
             ],
           ),
         ),
       ),
-    );
-  }
-
-  Widget _buildStepIndicator(ThemeData theme) {
-    return Row(
-      children: [
-        _buildStep(theme, 1, 'Name', !_seedCopied),
-        Expanded(
-          child: Container(
-            height: 2,
-            color: _seedCopied
-                ? theme.colorScheme.primary
-                : theme.colorScheme.primary.withAlpha(51),
-          ),
-        ),
-        _buildStep(theme, 2, 'Seed', _seedCopied && !_seedConfirmed),
-        Expanded(
-          child: Container(
-            height: 2,
-            color: _seedConfirmed
-                ? theme.colorScheme.primary
-                : theme.colorScheme.primary.withAlpha(51),
-          ),
-        ),
-        _buildStep(theme, 3, 'Create', _seedConfirmed),
-      ],
-    );
-  }
-
-  Widget _buildStep(ThemeData theme, int number, String label, bool active) {
-    final color = active
-        ? theme.colorScheme.primary
-        : theme.colorScheme.primary.withAlpha(128);
-
-    return Column(
-      children: [
-        Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: active ? color : Colors.transparent,
-            border: Border.all(color: color, width: 2),
-          ),
-          child: Center(
-            child: Text(
-              '$number',
-              style: TextStyle(
-                color: active ? theme.colorScheme.surface : color,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-          ),
-        ),
-        const SizedBox(height: 4),
-        Text(
-          label,
-          style: theme.textTheme.bodySmall?.copyWith(color: color),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildContent(ThemeData theme) {
-    if (!_seedCopied) {
-      return _buildNameStep(theme);
-    } else if (!_seedConfirmed) {
-      return _buildSeedStep(theme);
-    } else {
-      return _buildCreateStep(theme);
-    }
-  }
-
-  Widget _buildNameStep(ThemeData theme) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'Choose a display name',
-          style: theme.textTheme.titleLarge,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'This name will be visible to your contacts. You can register it on the DHT later.',
-          style: theme.textTheme.bodySmall,
-        ),
-        const SizedBox(height: 24),
-        TextField(
-          controller: _nameController,
-          decoration: const InputDecoration(
-            labelText: 'Display Name',
-            hintText: 'Enter your name',
-          ),
-          textCapitalization: TextCapitalization.words,
-          autofocus: true,
-        ),
-      ],
     );
   }
 
@@ -400,14 +306,8 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
             ),
             child: Column(
               children: [
-                Text(
-                  _mnemonic,
-                  style: theme.textTheme.bodyLarge?.copyWith(
-                    fontFamily: 'monospace',
-                    height: 1.8,
-                  ),
-                  textAlign: TextAlign.center,
-                ),
+                // Display words in a grid
+                _buildMnemonicGrid(theme),
                 const SizedBox(height: 16),
                 OutlinedButton.icon(
                   onPressed: () {
@@ -450,104 +350,152 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
               ],
             ),
           ),
+          const SizedBox(height: 24),
+          // Confirmation checkbox
+          CheckboxListTile(
+            value: _seedConfirmed,
+            onChanged: (value) => setState(() => _seedConfirmed = value ?? false),
+            title: Text(
+              'I have saved my recovery phrase',
+              style: theme.textTheme.bodyMedium,
+            ),
+            controlAffinity: ListTileControlAffinity.leading,
+            contentPadding: EdgeInsets.zero,
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildCreateStep(ThemeData theme) {
-    if (_isCreating) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 24),
-            Text(
-              'Creating identity...',
-              style: theme.textTheme.titleMedium,
+  Widget _buildMnemonicGrid(ThemeData theme) {
+    final words = _mnemonic.split(' ');
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      children: words.asMap().entries.map((entry) {
+        final index = entry.key + 1;
+        final word = entry.value;
+        return Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          decoration: BoxDecoration(
+            color: theme.scaffoldBackgroundColor,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: theme.colorScheme.primary.withAlpha(51)),
+          ),
+          child: Text(
+            '$index. $word',
+            style: theme.textTheme.bodyMedium?.copyWith(
+              fontFamily: 'monospace',
             ),
-            const SizedBox(height: 8),
-            Text(
-              'Generating cryptographic keys',
-              style: theme.textTheme.bodySmall,
-            ),
-          ],
-        ),
-      );
-    }
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text(
-          'Ready to create',
-          style: theme.textTheme.titleLarge,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'Your identity will be created with post-quantum encryption (Kyber1024 + Dilithium5).',
-          style: theme.textTheme.bodySmall,
-        ),
-        const SizedBox(height: 24),
-        _buildInfoRow(theme, Icons.person, 'Name', _nameController.text),
-        const SizedBox(height: 12),
-        _buildInfoRow(theme, Icons.security, 'Encryption', 'ML-KEM-1024 (Kyber)'),
-        const SizedBox(height: 12),
-        _buildInfoRow(theme, Icons.verified, 'Signing', 'ML-DSA-87 (Dilithium)'),
-      ],
+          ),
+        );
+      }).toList(),
     );
   }
 
-  Widget _buildInfoRow(ThemeData theme, IconData icon, String label, String value) {
-    return Row(
-      children: [
-        Icon(icon, size: 20, color: theme.colorScheme.primary),
-        const SizedBox(width: 12),
-        Text('$label: ', style: theme.textTheme.bodySmall),
-        Expanded(
-          child: Text(value, style: theme.textTheme.bodyMedium),
-        ),
-      ],
+  Widget _buildNicknameStep(ThemeData theme) {
+    return SingleChildScrollView(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Choose your nickname',
+            style: theme.textTheme.titleLarge,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Your nickname is how others can find you. It will be registered on the DHT network.',
+            style: theme.textTheme.bodySmall,
+          ),
+          const SizedBox(height: 24),
+          TextField(
+            controller: _nicknameController,
+            decoration: const InputDecoration(
+              labelText: 'Nickname',
+              hintText: 'Choose a unique nickname',
+              prefixIcon: Icon(Icons.alternate_email),
+            ),
+            autofocus: true,
+            textInputAction: TextInputAction.done,
+            onChanged: (_) => setState(() {}),
+            onSubmitted: (_) {
+              if (_nicknameController.text.trim().isNotEmpty) {
+                _createIdentity();
+              }
+            },
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: DnaColors.textSuccess.withAlpha(26),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.check_circle,
+                  color: DnaColors.textSuccess,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Nickname registration is free!',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: DnaColors.textSuccess,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCreatingState(ThemeData theme) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const CircularProgressIndicator(),
+          const SizedBox(height: 24),
+          Text(
+            'Creating identity...',
+            style: theme.textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Generating post-quantum cryptographic keys',
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
     );
   }
 
   Widget _buildActions(ThemeData theme) {
-    if (_isCreating) return const SizedBox.shrink();
-
-    if (!_seedCopied) {
+    if (_step == _CreateStep.seed) {
       return ElevatedButton(
-        onPressed: _nameController.text.trim().isNotEmpty
-            ? () => setState(() => _seedCopied = true)
+        onPressed: _seedConfirmed
+            ? () => setState(() => _step = _CreateStep.nickname)
             : null,
         child: const Text('Continue'),
-      );
-    } else if (!_seedConfirmed) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          ElevatedButton(
-            onPressed: () => setState(() => _seedConfirmed = true),
-            child: const Text('I have saved my seed phrase'),
-          ),
-          const SizedBox(height: 8),
-          TextButton(
-            onPressed: () => setState(() => _seedCopied = false),
-            child: const Text('Back'),
-          ),
-        ],
       );
     } else {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           ElevatedButton(
-            onPressed: _createIdentity,
+            onPressed: _nicknameController.text.trim().isNotEmpty
+                ? _createIdentity
+                : null,
             child: const Text('Create Identity'),
           ),
           const SizedBox(height: 8),
           TextButton(
-            onPressed: () => setState(() => _seedConfirmed = false),
+            onPressed: () => setState(() => _step = _CreateStep.seed),
             child: const Text('Back'),
           ),
         ],
@@ -556,26 +504,30 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
   }
 
   Future<void> _createIdentity() async {
-    setState(() => _isCreating = true);
+    setState(() => _step = _CreateStep.creating);
 
     try {
       // TODO: Convert mnemonic to seeds using BIP39
-      // For now, use dummy seeds - will integrate properly
+      // For now, use dummy seeds
       final signingSeed = List<int>.filled(32, 0);
       final encryptionSeed = List<int>.filled(32, 1);
 
       final fingerprint = await ref.read(identitiesProvider.notifier)
           .createIdentity(signingSeed, encryptionSeed);
 
-      // Load the new identity
+      // TODO: Register nickname on DHT
+      final nickname = _nicknameController.text.trim();
+      if (nickname.isNotEmpty) {
+        // await engine.registerNickname(nickname);
+      }
+
       await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
 
       if (mounted) {
-        // Pop back to root, identity will be loaded
         Navigator.of(context).popUntil((route) => route.isFirst);
       }
     } catch (e) {
-      setState(() => _isCreating = false);
+      setState(() => _step = _CreateStep.nickname);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -670,7 +622,6 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
         throw Exception('Invalid seed phrase');
       }
 
-      // For now, use dummy seeds - will integrate properly
       final signingSeed = List<int>.filled(32, 0);
       final encryptionSeed = List<int>.filled(32, 1);
 
