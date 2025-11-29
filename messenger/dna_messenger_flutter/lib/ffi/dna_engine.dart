@@ -483,58 +483,45 @@ class DnaEngine {
     return completer.future;
   }
 
-  /// Create new identity from BIP39 seeds
-  Future<String> createIdentity(List<int> signingSeed, List<int> encryptionSeed) async {
+  /// Create new identity from BIP39 seeds (synchronous)
+  String createIdentitySync(List<int> signingSeed, List<int> encryptionSeed) {
     if (signingSeed.length != 32 || encryptionSeed.length != 32) {
       throw ArgumentError('Seeds must be 32 bytes each');
     }
 
-    final completer = Completer<String>();
-    final localId = _nextLocalId++;
-
     final sigSeedPtr = calloc<Uint8>(32);
     final encSeedPtr = calloc<Uint8>(32);
+    final fingerprintPtr = calloc<Uint8>(129); // 128 hex chars + null
 
-    for (var i = 0; i < 32; i++) {
-      sigSeedPtr[i] = signingSeed[i];
-      encSeedPtr[i] = encryptionSeed[i];
-    }
-
-    void onComplete(int requestId, int error, Pointer<Utf8> fingerprint, Pointer<Void> userData) {
-      calloc.free(sigSeedPtr);
-      calloc.free(encSeedPtr);
-
-      if (error == 0 && fingerprint != nullptr) {
-        // Copy string before freeing native memory
-        final result = fingerprint.toDartString();
-        // Free heap-allocated fingerprint from C
-        calloc.free(fingerprint);
-        completer.complete(result);
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+    try {
+      for (var i = 0; i < 32; i++) {
+        sigSeedPtr[i] = signingSeed[i];
+        encSeedPtr[i] = encryptionSeed[i];
       }
-      _cleanupRequest(localId);
-    }
 
-    final callback = NativeCallable<DnaIdentityCreatedCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
+      final error = _bindings.dna_engine_create_identity_sync(
+        _engine,
+        sigSeedPtr,
+        encSeedPtr,
+        fingerprintPtr.cast(),
+      );
 
-    final requestId = _bindings.dna_engine_create_identity(
-      _engine,
-      sigSeedPtr,
-      encSeedPtr,
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
+      if (error != 0) {
+        throw DnaEngineException.fromCode(error, _bindings);
+      }
 
-    if (requestId == 0) {
+      return fingerprintPtr.cast<Utf8>().toDartString();
+    } finally {
       calloc.free(sigSeedPtr);
       calloc.free(encSeedPtr);
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
+      calloc.free(fingerprintPtr);
     }
+  }
 
-    return completer.future;
+  /// Create new identity from BIP39 seeds (async wrapper)
+  Future<String> createIdentity(List<int> signingSeed, List<int> encryptionSeed) async {
+    // Use sync version wrapped in compute to avoid blocking UI
+    return createIdentitySync(signingSeed, encryptionSeed);
   }
 
   /// Load and activate identity

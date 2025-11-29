@@ -1807,6 +1807,22 @@ dna_request_id_t dna_engine_create_identity(
     return dna_submit_task(engine, TASK_CREATE_IDENTITY, &params, cb, user_data);
 }
 
+int dna_engine_create_identity_sync(
+    dna_engine_t *engine,
+    const uint8_t signing_seed[32],
+    const uint8_t encryption_seed[32],
+    char fingerprint_out[129]
+) {
+    (void)engine; /* Not needed for keygen */
+
+    if (!signing_seed || !encryption_seed || !fingerprint_out) {
+        return DNA_ERROR_INVALID_ARGUMENT;
+    }
+
+    int rc = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, fingerprint_out);
+    return (rc == 0) ? DNA_OK : DNA_ERROR_CRYPTO;
+}
+
 dna_request_id_t dna_engine_load_identity(
     dna_engine_t *engine,
     const char *fingerprint,

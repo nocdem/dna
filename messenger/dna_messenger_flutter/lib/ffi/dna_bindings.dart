@@ -547,6 +547,22 @@ class DnaBindings {
         engine, signing_seed, encryption_seed, callback, user_data);
   }
 
+  late final _dna_engine_create_identity_sync = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Uint8>, Pointer<Uint8>,
+          Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Uint8>, Pointer<Uint8>,
+          Pointer<Utf8>)>('dna_engine_create_identity_sync');
+
+  int dna_engine_create_identity_sync(
+    Pointer<dna_engine_t> engine,
+    Pointer<Uint8> signing_seed,
+    Pointer<Uint8> encryption_seed,
+    Pointer<Utf8> fingerprint_out,
+  ) {
+    return _dna_engine_create_identity_sync(
+        engine, signing_seed, encryption_seed, fingerprint_out);
+  }
+
   late final _dna_engine_load_identity = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
           Pointer<DnaCompletionCb>, Pointer<Void>),
