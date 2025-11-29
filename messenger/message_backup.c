@@ -383,7 +383,7 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
     if (!ctx || !ctx->db || !contact_identity) return -1;
 
     const char *sql =
-        "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read, status, group_id "
+        "SELECT id, sender, recipient, encrypted_message, encrypted_len, timestamp, delivered, read, status, group_id, message_type "
         "FROM messages "
         "WHERE (sender = ? AND recipient = ?) OR (sender = ? AND recipient = ?) "
         "ORDER BY timestamp ASC";
@@ -442,6 +442,7 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
         messages[idx].read = sqlite3_column_int(stmt, 7) != 0;
         messages[idx].status = sqlite3_column_int(stmt, 8);  // Read status column (default 1 for old messages)
         messages[idx].group_id = sqlite3_column_int(stmt, 9);  // Phase 5.2: group ID
+        messages[idx].message_type = sqlite3_column_int(stmt, 10);  // Phase 6.2: message type (0=chat, 1=group_invitation)
         idx++;
     }
 

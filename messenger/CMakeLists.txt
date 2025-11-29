@@ -319,7 +319,6 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     messenger/messages.c
     messenger/gsk.c  # Phase 13: Group Symmetric Key (v0.09)
     messenger/gsk_packet.c  # Phase 13: GSK packet builder
-    messenger/group_ownership.c  # Phase 13: Ownership transfer (v0.09)
     # Messenger facade (delegates to messenger/ modules)
     messenger.c
     messenger_p2p.c  # Phase 9.1b: P2P integration layer

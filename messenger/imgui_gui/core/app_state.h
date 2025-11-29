@@ -283,6 +283,16 @@ public:
     std::string invitation_action_status;  // Status message for accept/reject
     bool invitation_action_in_progress;
 
+    // Group context menu state (right-click menu)
+    int group_context_menu_index;  // Index of group for context menu (-1 = none)
+    bool show_group_info_dialog;
+    bool show_add_member_dialog;
+    bool show_leave_group_confirm;
+    bool show_delete_group_confirm;
+    std::vector<std::string> group_members_list;  // Members of selected group
+    std::vector<int> add_member_selected;  // Selected contacts to add
+    std::string group_action_status;
+
     // Async tasks for DHT operations
     AsyncTask dht_publish_task;
     AsyncTask contact_lookup_task;

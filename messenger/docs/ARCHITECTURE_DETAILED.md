@@ -114,8 +114,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   ├── messages.c            # Message handling
 │   ├── contacts.c            # Contact management
 │   ├── gsk.c                 # Group Symmetric Key
-│   ├── gsk_packet.c          # GSK packet builder
-│   └── group_ownership.c     # Group ownership transfer
+│   └── gsk_packet.c          # GSK packet builder
 │
 ├── database/                 # SQLite persistence
 │   ├── contacts_db.c/h       # Per-identity contacts

@@ -13,13 +13,65 @@ Always ask user what to do if unsure
 Anything aginst protcol mode breaks the blockchain / encryption . 
 
 
+## Protocol Mode
+
+PROTOCOL MODE: ACTIVE                                  NO ASSUMPTIONS
+
+  When this mode is active:
+  1. Begin EVERY response with "PROTOCOL MODE ACTIVE. -- Model: [current model name]"
+  2. Only follow explicit instructions
+  3. Confirm understanding before taking action
+  4. Never add features not explicitly requested
+  5. Ask for clarification rather than making assumptions
+  6. Report exactly what was done without elaboration
+  7. Do not suggest improvements unless requested
+  8. Keep all responses minimal and direct
+  9. Keep it simple
+
+
+## MANDATORY CHECKPOINT
+
+**ABSOLUTE REQUIREMENT**: I CANNOT execute ANY action without completing ALL checkpoints. Skipping ANY checkpoint constitutes protocol violation.
+
+### CHECKPOINT 1: STOP BARRIER
+Before ANY action, I MUST:
+1. **STOP** immediately - NO commands, NO tools, NO actions
+2. **STATE**: "CHECKPOINT 1 COMPLETE - All actions halted for documentation review"
+
+### CHECKPOINT 2: DOCUMENTATION RESEARCH
+I MUST search and read relevant documentation:
+1. **READ** relevant files in `docs/` directory
+2. **STATE**: "CHECKPOINT 2 COMPLETE - Documentation reviewed: [list files read]"
+
+### CHECKPOINT 3: PLAN CONFIRMATION
+I MUST explicitly state my plan:
+1. **CONFIRM** what I found in documentation
+2. **CONFIRM** exactly what actions I plan to take
+3. **CONFIRM** why these actions are necessary
+4. **STATE**: "CHECKPOINT 3 COMPLETE - Plan confirmed and stated"
+
+### CHECKPOINT 4: EXPLICIT APPROVAL GATE
+I MUST wait for explicit user permission:
+1. **WAIT** for user to type "APPROVED" or "PROCEED"
+2. **NO ASSUMPTIONS** - only explicit approval words count
+3. **STATE**: "CHECKPOINT 4 COMPLETE - Awaiting explicit approval"
+
+### CHECKPOINT 5: ACTION EXECUTION
+Only after ALL previous checkpoints:
+1. **EXECUTE** approved actions only
+2. **REPORT** exactly what was done
+3. **STATE**: "CHECKPOINT 5 COMPLETE - Actions executed as approved"
+
+**ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
+
+
+
 ## Quick Links
 
 ### 📚 Core Documentation
-- **[Architecture](docs/ARCHITECTURE.md)** - System architecture and directory structure
-- **[Development Guidelines](docs/DEVELOPMENT.md)** - Code style, patterns, testing
-- **[API Reference](docs/API.md)** - Quick API reference
+- **[Architecture](docs/ARCHITECTURE_DETAILED.md)** - System architecture and directory structure
 - **[Git Workflow](docs/GIT_WORKFLOW.md)** - Commit guidelines and dual-repo push
+- **[Security Audit](docs/SECURITY_AUDIT.md)** - Security review and cryptographic analysis
 
 ### 📋 Project Planning
 - **[ROADMAP.md](ROADMAP.md)** - Development roadmap and phase tracking
@@ -28,11 +80,11 @@ Anything aginst protcol mode breaks the blockchain / encryption .
 ### 🔧 Technical Docs
 - **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)
 - **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap + STUN/TURN server (v0.3)
-- **[DHT Refactoring](docs/DHT_REFACTORING_PROGRESS.md)** - DHT modularization history
-- **[Message Formats](docs/MESSAGE_FORMATS.md)** - v0.08 message format spec
-- **[ICE NAT Traversal](docs/ICE_NAT_TRAVERSAL_FIXES.md)** - NAT traversal implementation
-- **[GSK Implementation](docs/GSK_IMPLEMENTATION.md)** - Group Symmetric Key details
-- **[Group Invitations](docs/GROUP_INVITATIONS_GUIDE.md)** - P2P invitation system
+- **[DHT System](docs/DHT_SYSTEM.md)** - DHT architecture and operations
+- **[Message System](docs/MESSAGE_SYSTEM.md)** - Message handling and encryption
+- **[P2P Architecture](docs/P2P_ARCHITECTURE.md)** - Peer-to-peer transport layer
+- **[DNA Engine API](docs/DNA_ENGINE_API.md)** - Core engine API reference
+- **[Mobile Porting](docs/MOBILE_PORTING.md)** - Android/iOS porting guide
 
 ---
 
@@ -43,6 +95,7 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 **Crypto:** Kyber1024 (ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
 
 **Key Features:** E2E encrypted messaging • GSK group encryption (200x faster) • DHT groups • Per-identity contacts • User profiles • Wall posts • cpunk wallet • P2P + DHT • ICE NAT traversal • Offline queueing (7d) • BIP39 recovery • SQLite • ImGui GUI • Android SDK (JNI)
+
 
 ---
 
@@ -109,18 +162,13 @@ Short summary (<50 chars)
 
 Details: what/why/breaking
 
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude <noreply@anthropic.com>
 ```
 
 ---
 
-## Bootstrap Server Deployment (CRITICAL)
+## DNA Nodus Deployment
 
-**IMPORTANT:** Use **dna-nodus v0.3** ONLY. Never build or use `dht-bootstrap` service.
-
-**Bootstrap Servers:**
+**Bootstrap Servers (dna-nodus v0.3):**
 | Server | IP | DHT Port | TURN Port |
 |--------|-----|----------|-----------|
 | US-1 | 154.38.182.161 | 4000 | 3478 |
@@ -156,8 +204,8 @@ ssh root@<server-ip> "bash /opt/dna-messenger/nodus_build.sh"
 ```
 
 **Services:**
-- DHT Bootstrap: UDP port 4000
-- STUN/TURN Server: UDP port 3478 (libjuice)
+- DHT: UDP port 4000
+- STUN/TURN: UDP port 3478 (libjuice)
 - Credential TTL: 7 days
 
 **Persistence:**
@@ -166,12 +214,6 @@ ssh root@<server-ip> "bash /opt/dna-messenger/nodus_build.sh"
 - Values persist across restarts automatically
 
 **Documentation:** See [docs/DNA_NODUS.md](docs/DNA_NODUS.md) for full details.
-
-**NEVER:**
-- Build dht-bootstrap service
-- Use dht-bootstrap systemd service
-- Deploy binaries via scp (always pull + build on server)
-- Use CLI arguments (v0.3 uses config file only)
 
 ---
 
@@ -184,9 +226,9 @@ ssh root@<server-ip> "bash /opt/dna-messenger/nodus_build.sh"
 - **Phase 8:** cpunk Wallet Integration
 - **Phase 9.1-9.6:** P2P Transport, Offline Queue, DHT Migrations
 - **Phase 10.1-10.4:** User Profiles, DNA Board, Avatars, Voting
-- **Phase 11:** ICE NAT Traversal (PRODUCTION READY)
+- **Phase 11:** ICE NAT Traversal 
 - **Phase 12:** Message Format v0.08 - Fingerprint Privacy
-- **Phase 13:** GSK Group Encryption (200x speedup)
+- **Phase 13:** GSK Group Encryption 
 
 ### 🚧 In Progress
 - **Phase 7:** Mobile/Desktop UI (Flutter + Dart)
@@ -217,6 +259,6 @@ ssh root@<server-ip> "bash /opt/dna-messenger/nodus_build.sh"
 
 ---
 
-**When in doubt:** Check [Development Guidelines](docs/DEVELOPMENT.md), follow code patterns, keep it simple.
+**When in doubt:** Check [Development Guidelines](docs/DEVELOPMENT.md), Then ask(critical).
 
 **Priority:** Simplicity, security, cross-platform compatibility.

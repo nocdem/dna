@@ -19,6 +19,7 @@
 #include "screens/add_contact_dialog.h"
 #include "screens/create_group_dialog.h"
 #include "screens/group_invitation_dialog.h"
+#include "screens/group_settings_dialog.h"
 #include "screens/profile_sidebar.h"
 #include "screens/contacts_sidebar.h"
 #include "screens/chat_screen.h"
@@ -323,6 +324,9 @@ void DNAMessengerApp::renderDialogs() {
 
     // Group Invitation dialog (Phase 6.1)
     GroupInvitationDialog::render(state);
+
+    // Group Settings dialogs (right-click menu)
+    GroupSettingsDialog::render(state);
 
     // Receive dialog
     WalletReceiveDialog::render(state);

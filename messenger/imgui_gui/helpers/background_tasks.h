@@ -4,12 +4,11 @@
  *
  * Manages periodic background tasks:
  * - GSK discovery polling (every 2 minutes)
- * - Ownership liveness checks (every 2 minutes)
- * - Owner heartbeat publishing (every 6 hours)
+ * - Group outbox sync (every 30 seconds)
  *
- * Part of DNA Messenger v0.09 - GSK Upgrade
+ * Part of DNA Messenger v0.10 - Group Outbox
  *
- * @date 2025-11-21
+ * @date 2025-11-29
  */
 
 #ifndef BACKGROUND_TASKS_H
@@ -66,25 +65,15 @@ public:
     void pollGSKDiscovery();
 
     /**
-     * Check ownership liveness for all groups
+     * Sync group message outboxes
      *
-     * Called every 2 minutes.
+     * Called every 30 seconds.
      * For each group I'm a member of:
-     * - Check if owner's heartbeat is fresh
-     * - If owner offline (7+ days), initiate transfer
-     * - Trigger UI notification if ownership changes
+     * - Fetch hour buckets since last sync
+     * - Decrypt and store new messages
+     * - Trigger UI notification for new messages
      */
-    void checkOwnershipLiveness();
-
-    /**
-     * Publish heartbeat for groups I own
-     *
-     * Called every 6 hours.
-     * For each group I own:
-     * - Publish heartbeat to DHT
-     * - Prove I'm still online
-     */
-    void publishOwnerHeartbeats();
+    void pollGroupOutbox();
 
     /**
      * Force immediate poll (for testing or manual refresh)
@@ -95,8 +84,7 @@ private:
     BackgroundTaskManager()
         : ctx_(nullptr)
         , last_gsk_poll_(0)
-        , last_ownership_check_(0)
-        , last_heartbeat_publish_(0)
+        , last_group_outbox_poll_(0)
         , initialized_(false)
     {}
     ~BackgroundTaskManager() = default;
@@ -107,17 +95,16 @@ private:
 
     messenger_context_t* ctx_;
     std::string identity_;
+    std::string fingerprint_;
 
     uint64_t last_gsk_poll_;
-    uint64_t last_ownership_check_;
-    uint64_t last_heartbeat_publish_;
+    uint64_t last_group_outbox_poll_;
 
     bool initialized_;
 
     // Poll intervals (seconds)
-    static constexpr uint64_t GSK_POLL_INTERVAL = 120;          // 2 minutes
-    static constexpr uint64_t OWNERSHIP_CHECK_INTERVAL = 120;   // 2 minutes
-    static constexpr uint64_t HEARTBEAT_PUBLISH_INTERVAL = 21600; // 6 hours
+    static constexpr uint64_t GSK_POLL_INTERVAL = 120;              // 2 minutes
+    static constexpr uint64_t GROUP_OUTBOX_POLL_INTERVAL = 30;      // 30 seconds
 };
 
 } // namespace DNA

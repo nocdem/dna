@@ -283,12 +283,6 @@ void render(AppState& state) {
         }
 
         ImGui::Spacing();
-        ImGui::Spacing();
-
-        ImGui::Text(ICON_FA_COINS " Cost: 1 CPUNK");
-        ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextInfo() : ClubTheme::TextInfo(), ICON_FA_CIRCLE_INFO " Payment: Free for now (not yet implemented)");
-
-        ImGui::Spacing();
         ImGui::TextColored(g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint(), "%s", state.register_name_status.c_str());
 
         ImGui::Spacing();
@@ -311,7 +305,7 @@ void render(AppState& state) {
         if (!can_register) {
             ImGui::BeginDisabled();
         }
-        if (ThemedButton(ICON_FA_CIRCLE_CHECK " Register DNA (Free)", ImVec2(button_width_right, 40))) {
+        if (ThemedButton(ICON_FA_CIRCLE_CHECK " Register DNA", ImVec2(button_width_right, 40))) {
             registerName(state);
         }
         if (!can_register) {
