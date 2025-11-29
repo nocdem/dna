@@ -210,6 +210,21 @@ int dht_groups_sync_from_dht(
 );
 
 /**
+ * Get member count for a group from local cache
+ *
+ * Queries dht_group_members table for count.
+ * Fast local lookup, no DHT query.
+ *
+ * @param group_uuid: Group UUID
+ * @param count_out: Output member count
+ * @return: 0 on success, -1 on error
+ */
+int dht_groups_get_member_count(
+    const char *group_uuid,
+    int *count_out
+);
+
+/**
  * Free group metadata structure
  *
  * @param metadata: Metadata to free

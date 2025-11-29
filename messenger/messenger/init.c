@@ -14,6 +14,7 @@
 #include "../database/keyserver_cache.h"
 #include "../dht/client/dht_identity_backup.h"
 #include "../dht/client/dht_singleton.h"
+#include "../dht/client/dna_group_outbox.h"
 #include "../dht/shared/dht_groups.h"
 
 // Helper function to check if file exists
@@ -120,6 +121,16 @@ messenger_context_t* messenger_init(const char *identity) {
     // Initialize GSK subsystem (Phase 13 - Group Symmetric Key)
     if (gsk_init(ctx->backup_ctx) != 0) {
         fprintf(stderr, "Error: Failed to initialize GSK subsystem\n");
+        message_backup_close(ctx->backup_ctx);
+        free(ctx->identity);
+        free(ctx);
+        return NULL;
+    }
+
+    // Initialize Group Outbox subsystem (v0.10 - Feed pattern group messaging)
+    dna_group_outbox_set_db(message_backup_get_db(ctx->backup_ctx));
+    if (dna_group_outbox_db_init() != 0) {
+        fprintf(stderr, "Error: Failed to initialize group outbox subsystem\n");
         message_backup_close(ctx->backup_ctx);
         free(ctx->identity);
         free(ctx);

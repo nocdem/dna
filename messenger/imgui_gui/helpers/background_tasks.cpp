@@ -13,10 +13,10 @@
 #include "../../p2p/p2p_transport.h"
 #include "../../messenger/gsk.h"
 #include "../../messenger/gsk_packet.h"
-#include "../../messenger/group_ownership.h"
 #include "../../dht/shared/dht_groups.h"
 #include "../../dht/shared/dht_gsk_storage.h"
 #include "../../dht/core/dht_context.h"
+#include "../../dht/client/dna_group_outbox.h"
 #include "../../p2p/p2p_transport.h"
 #include <ctime>
 #include <cstdio>
@@ -39,15 +39,16 @@ BackgroundTaskManager& BackgroundTaskManager::getInstance() {
 void BackgroundTaskManager::init(messenger_context_t* ctx, const std::string& identity) {
     ctx_ = ctx;
     identity_ = identity;
+    fingerprint_ = ctx->fingerprint ? ctx->fingerprint : identity;
     initialized_ = true;
 
     // Initialize timestamps (stagger initial polls to avoid burst)
     uint64_t now = static_cast<uint64_t>(std::time(nullptr));
-    last_gsk_poll_ = now - GSK_POLL_INTERVAL + 10;           // First poll in 10 seconds
-    last_ownership_check_ = now - OWNERSHIP_CHECK_INTERVAL + 15; // First check in 15 seconds
-    last_heartbeat_publish_ = now - HEARTBEAT_PUBLISH_INTERVAL + 30; // First publish in 30 seconds
+    last_gsk_poll_ = now - GSK_POLL_INTERVAL + 10;                     // First poll in 10 seconds
+    last_group_outbox_poll_ = now - GROUP_OUTBOX_POLL_INTERVAL + 5;    // First poll in 5 seconds
 
-    printf("[BACKGROUND] Initialized background tasks (identity=%s)\n", identity.c_str());
+    printf("[BACKGROUND] Initialized background tasks (identity=%s, fingerprint=%s)\n",
+           identity.c_str(), fingerprint_.c_str());
 }
 
 /**
@@ -66,16 +67,10 @@ void BackgroundTaskManager::update() {
         last_gsk_poll_ = now;
     }
 
-    // Ownership liveness checks (every 2 minutes)
-    if (now - last_ownership_check_ >= OWNERSHIP_CHECK_INTERVAL) {
-        checkOwnershipLiveness();
-        last_ownership_check_ = now;
-    }
-
-    // Heartbeat publishing (every 6 hours)
-    if (now - last_heartbeat_publish_ >= HEARTBEAT_PUBLISH_INTERVAL) {
-        publishOwnerHeartbeats();
-        last_heartbeat_publish_ = now;
+    // Group outbox sync (every 30 seconds)
+    if (now - last_group_outbox_poll_ >= GROUP_OUTBOX_POLL_INTERVAL) {
+        pollGroupOutbox();
+        last_group_outbox_poll_ = now;
     }
 }
 
@@ -201,190 +196,43 @@ dht_groups_free_cache_entries(groups, group_count);
 }
 
 /**
- * Check ownership liveness for all groups
+ * Sync group message outboxes
  */
-void BackgroundTaskManager::checkOwnershipLiveness() {
+void BackgroundTaskManager::pollGroupOutbox() {
     if (!ctx_) return;
 
-    printf("[BACKGROUND] Checking ownership liveness...\n");
+    printf("[BACKGROUND] Syncing group outboxes...\n");
 
     // Get DHT context
     dht_context_t* dht_ctx = ctx_->p2p_transport ?
         p2p_transport_get_dht_context(ctx_->p2p_transport) : nullptr;
     if (!dht_ctx) {
-        fprintf(stderr, "[BACKGROUND] DHT context not available\n");
+        fprintf(stderr, "[BACKGROUND] DHT context not available for group outbox sync\n");
         return;
     }
 
-    // Get list of all groups for this user
-    dht_group_cache_entry_t* groups = nullptr;
-    int group_count = 0;
+    // Sync all groups
+    size_t new_message_count = 0;
+    int result = dna_group_outbox_sync_all(dht_ctx, fingerprint_.c_str(), &new_message_count);
 
-    if (dht_groups_list_for_user(ctx_->identity, &groups, &group_count) != 0) {
-        fprintf(stderr, "[BACKGROUND] Failed to list groups\n");
-        return;
-    }
+    if (result == DNA_GROUP_OUTBOX_OK) {
+        if (new_message_count > 0) {
+            printf("[BACKGROUND] Received %zu new group messages\n", new_message_count);
 
-    printf("[BACKGROUND] Checking %d groups for owner liveness...\n", group_count);
-
-    // Check each group's owner liveness
-    for (int i = 0; i < group_count; i++) {
-        dht_group_cache_entry_t* cached_group = &groups[i];
-
-        // Check if owner is still alive (heartbeat within 7 days)
-        bool is_alive = false;
-        char owner_fingerprint[129] = {0};
-
-        if (group_ownership_check_liveness(dht_ctx, cached_group->group_uuid,
-                                          &is_alive, owner_fingerprint) == 0) {
-
-            if (!is_alive) {
-                printf("[BACKGROUND] Owner offline for group %s, initiating transfer...\n",
-                       cached_group->name);
-
-                // Load my Dilithium private key for potential ownership
-                uint8_t my_dilithium_privkey[4627]; // QGP_DSA87_SECRETKEYBYTES
-                char dil_path[512];
-                snprintf(dil_path, sizeof(dil_path), "%s/.dna/%s.dsa",
-                        getenv("HOME"), ctx_->fingerprint);
-
-                FILE* df = fopen(dil_path, "rb");
-                if (df && fread(my_dilithium_privkey, 1, 4627, df) == 4627) {
-                    fclose(df);
-
-                    // Attempt ownership transfer
-                    bool became_owner = false;
-                    if (group_ownership_transfer(dht_ctx, cached_group->group_uuid,
-                                                ctx_->fingerprint,
-                                                my_dilithium_privkey,
-                                                &became_owner) == 0) {
-
-                        if (became_owner) {
-                            printf("[BACKGROUND] I became owner of group %s!\n", cached_group->name);
-
-                            // Notify user
-                            NotificationManager::showNativeNotification(
-                                "You Are Now Group Owner",
-                                "You became owner of group '" + std::string(cached_group->name) + "' (previous owner offline for 7+ days)",
-                                NotificationType::SUCCESS
-                            );
-
-                            // Rotate GSK as new owner (for security - old owner is gone)
-                            printf("[BACKGROUND] Rotating GSK as new owner...\n");
-                            if (gsk_rotate_on_member_remove(dht_ctx, cached_group->group_uuid, ctx_->identity) != 0) {
-                                fprintf(stderr, "[BACKGROUND] Warning: GSK rotation failed\n");
-                            }
-
-                        } else {
-                            // Someone else became owner
-                            printf("[BACKGROUND] Ownership transferred to another member\n");
-
-                            // Fetch updated metadata to get new owner
-                            dht_group_metadata_t* updated_meta = nullptr;
-                            if (dht_groups_get(dht_ctx, cached_group->group_uuid, &updated_meta) == 0) {
-                                NotificationManager::showNativeNotification(
-                                    "Group Owner Changed",
-                                    "Group '" + std::string(cached_group->name) + "' now owned by " + std::string(updated_meta->creator),
-                                    NotificationType::INFO
-                                );
-                                dht_groups_free_metadata(updated_meta);
-                            }
-                        }
-                    } else {
-                        fprintf(stderr, "[BACKGROUND] Ownership transfer failed\n");
-                    }
-                } else {
-                    fprintf(stderr, "[BACKGROUND] Failed to load Dilithium private key\n");
-                    if (df) fclose(df);
-                }
-            } else {
-                // Owner is alive, all good
-                printf("[BACKGROUND] Owner alive for group %s\n", cached_group->name);
-            }
-        } else {
-            fprintf(stderr, "[BACKGROUND] Failed to check liveness for group %s\n", cached_group->group_uuid);
+            // Show notification
+            NotificationManager::showNativeNotification(
+                "New Group Messages",
+                std::to_string(new_message_count) + " new message(s) received",
+                NotificationType::INFO
+            );
         }
+    } else if (result != DNA_GROUP_OUTBOX_ERR_NO_GSK) {
+        // Only log errors that aren't "no GSK" (expected for new groups)
+        fprintf(stderr, "[BACKGROUND] Group outbox sync failed: %s\n",
+                dna_group_outbox_strerror(result));
     }
 
-    // Free group list
-    dht_groups_free_cache_entries(groups, group_count);
-
-    printf("[BACKGROUND] Ownership liveness check complete\n");
-}
-
-/**
- * Publish heartbeat for groups I own
- */
-void BackgroundTaskManager::publishOwnerHeartbeats() {
-    if (!ctx_) return;
-
-    printf("[BACKGROUND] Publishing owner heartbeats...\n");
-
-    // Get DHT context
-    dht_context_t* dht_ctx = ctx_->p2p_transport ?
-        p2p_transport_get_dht_context(ctx_->p2p_transport) : nullptr;
-    if (!dht_ctx) {
-        fprintf(stderr, "[BACKGROUND] DHT context not available\n");
-        return;
-    }
-
-    // Get list of all groups for this user
-    dht_group_cache_entry_t* groups = nullptr;
-    int group_count = 0;
-
-    if (dht_groups_list_for_user(ctx_->identity, &groups, &group_count) != 0) {
-        fprintf(stderr, "[BACKGROUND] Failed to list groups\n");
-        return;
-    }
-
-    // Load my Dilithium private key (used for signing heartbeats)
-    uint8_t my_dilithium_privkey[4627]; // QGP_DSA87_SECRETKEYBYTES
-    char dil_path[512];
-    snprintf(dil_path, sizeof(dil_path), "%s/.dna/%s.dsa",
-            getenv("HOME"), ctx_->fingerprint);
-
-    FILE* df = fopen(dil_path, "rb");
-    if (!df || fread(my_dilithium_privkey, 1, 4627, df) != 4627) {
-        fprintf(stderr, "[BACKGROUND] Failed to load Dilithium private key\n");
-        if (df) fclose(df);
-
-        // Free group list
-        dht_groups_free_cache_entries(groups, group_count);
-        return;
-    }
-    fclose(df);
-
-    int heartbeats_published = 0;
-
-    // Publish heartbeat for each group I own
-    for (int i = 0; i < group_count; i++) {
-        dht_group_cache_entry_t* cached_group = &groups[i];
-
-        // Check if I'm the owner (compare with creator fingerprint)
-        if (strcmp(cached_group->creator, identity_.c_str()) == 0 ||
-            strcmp(cached_group->creator, ctx_->fingerprint) == 0) {
-
-            printf("[BACKGROUND] Publishing heartbeat for group %s (I am owner)\n",
-                   cached_group->name);
-
-            // Publish heartbeat to DHT
-            if (group_ownership_publish_heartbeat(dht_ctx,
-                                                 cached_group->group_uuid,
-                                                 ctx_->fingerprint,
-                                                 my_dilithium_privkey) == 0) {
-                printf("[BACKGROUND] Heartbeat published for %s\n", cached_group->name);
-                heartbeats_published++;
-            } else {
-                fprintf(stderr, "[BACKGROUND] Failed to publish heartbeat for %s\n",
-                       cached_group->name);
-            }
-        }
-    }
-
-    // Free group list
-    dht_groups_free_cache_entries(groups, group_count);
-
-    printf("[BACKGROUND] Heartbeat publishing complete (%d published)\n", heartbeats_published);
+    printf("[BACKGROUND] Group outbox sync complete\n");
 }
 
 /**
@@ -398,14 +246,12 @@ void BackgroundTaskManager::forcePoll() {
     printf("[BACKGROUND] Force polling all tasks...\n");
 
     pollGSKDiscovery();
-    checkOwnershipLiveness();
-    publishOwnerHeartbeats();
+    pollGroupOutbox();
 
     // Update timestamps
     uint64_t now = static_cast<uint64_t>(std::time(nullptr));
     last_gsk_poll_ = now;
-    last_ownership_check_ = now;
-    last_heartbeat_publish_ = now;
+    last_group_outbox_poll_ = now;
 }
 
 } // namespace DNA

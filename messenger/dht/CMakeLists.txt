@@ -37,6 +37,7 @@ set(DHT_COMMON_SOURCES
     client/dna_feed_channels.c
     client/dna_feed_posts.c
     client/dna_feed_votes.c
+    client/dna_group_outbox.c   # Group message outbox (feed pattern)
     # Keyserver modules
     keyserver/keyserver_helpers.c
     keyserver/keyserver_publish.c

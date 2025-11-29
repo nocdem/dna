@@ -9,6 +9,7 @@
 #include "dht/shared/dht_groups.h"
 #include "dht/core/dht_context.h"
 #include "dht/client/dht_singleton.h"  // For dht_singleton_get
+#include "dht/client/dna_group_outbox.h"  // Group outbox (feed pattern)
 #include "message_backup.h"  // Phase 5.2
 #include "database/group_invitations.h"  // Group invitation management
 #include "dna_api.h"  // For dna_decrypt_message_raw
@@ -801,14 +802,17 @@ int messenger_sync_groups(messenger_context_t *ctx) {
 }
 
 // ============================================================================
-// GROUP MESSAGING (Phase 6.2)
+// GROUP MESSAGING (Feed Pattern via DHT Outbox)
 // ============================================================================
 
 /**
- * Send message to a group
+ * Send message to a group using feed-pattern outbox
  *
- * Looks up group members from DHT and sends encrypted message to all members
- * using multi-recipient encryption (Kyber1024 + AES-256-GCM).
+ * NEW IMPLEMENTATION (v0.10+):
+ * - Message encrypted ONCE with GSK (AES-256-GCM)
+ * - Stored ONCE in DHT (feed pattern)
+ * - All members poll via dht_get_all()
+ * - Storage: O(message_size) vs O(N * message_size) in old system
  *
  * @param ctx Messenger context
  * @param group_uuid Group UUID (36 chars)
@@ -821,7 +825,7 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
         return -1;
     }
 
-    printf("[GROUP MSG] Sending message to group %s\n", group_uuid);
+    printf("[GROUP MSG] Sending message to group %s (feed pattern)\n", group_uuid);
 
     // Step 1: Get DHT context
     dht_context_t *dht_ctx = dht_singleton_get();
@@ -830,119 +834,63 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
         return -1;
     }
 
-    // Step 2: Get group metadata from DHT
-    dht_group_metadata_t *metadata = NULL;
-    int result = dht_groups_get(dht_ctx, group_uuid, &metadata);
-    if (result != 0 || !metadata) {
-        fprintf(stderr, "[GROUP MSG] Failed to get group metadata from DHT\n");
+    // Step 2: Load Dilithium5 private key for signing
+    const char *home = qgp_platform_home_dir();
+    char dilithium_path[512];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s-dilithium.pqkey",
+             home, ctx->identity);
+
+    FILE *fp = fopen(dilithium_path, "rb");
+    if (!fp) {
+        fprintf(stderr, "[GROUP MSG] Failed to open Dilithium key: %s\n", dilithium_path);
         return -1;
     }
 
-    if (metadata->member_count == 0 || !metadata->members) {
-        fprintf(stderr, "[GROUP MSG] Group has no members\n");
-        dht_groups_free_metadata(metadata);
+    uint8_t dilithium_privkey[4896];  // Dilithium5 private key size
+    if (fread(dilithium_privkey, 1, 4896, fp) != 4896) {
+        fprintf(stderr, "[GROUP MSG] Failed to read Dilithium private key\n");
+        fclose(fp);
         return -1;
     }
+    fclose(fp);
 
-    printf("[GROUP MSG] Group has %u members\n", metadata->member_count);
+    // Step 3: Get sender fingerprint (canonical identifier)
+    const char *sender_fingerprint = ctx->fingerprint ? ctx->fingerprint : ctx->identity;
 
-    // Step 3: Build recipients array (exclude self, verify keys exist)
-    const char **recipients = malloc(metadata->member_count * sizeof(char*));
-    if (!recipients) {
-        fprintf(stderr, "[GROUP MSG] Memory allocation failed\n");
-        dht_groups_free_metadata(metadata);
-        return -1;
-    }
+    // Step 4: Send via group outbox (feed pattern)
+    char message_id[DNA_GROUP_MSG_ID_SIZE];
+    int result = dna_group_outbox_send(
+        dht_ctx,
+        group_uuid,
+        sender_fingerprint,
+        message,
+        dilithium_privkey,
+        message_id
+    );
 
-    size_t recipient_count = 0;
-    size_t members_without_keys = 0;
+    // Secure wipe private key
+    memset(dilithium_privkey, 0, sizeof(dilithium_privkey));
 
-    for (uint32_t i = 0; i < metadata->member_count; i++) {
-        // Skip self (already added by messenger_send_message)
-        if (strcmp(metadata->members[i], ctx->identity) == 0) {
-            continue;
-        }
-
-        // Verify this member has published keys (quick check)
-        uint8_t *sign_key = NULL, *enc_key = NULL;
-        size_t sign_len = 0, enc_len = 0;
-
-        if (messenger_load_pubkey(ctx, metadata->members[i], &sign_key, &sign_len,
-                                  &enc_key, &enc_len, NULL) == 0) {
-            // Keys found - include in recipients
-            recipients[recipient_count++] = metadata->members[i];
-            free(sign_key);
-            free(enc_key);
-        } else {
-            // Keys not found - skip this member
-            fprintf(stderr, "[GROUP MSG] Warning: Member '%s' has no keys in DHT, skipping\n",
-                    metadata->members[i]);
-            members_without_keys++;
-        }
-    }
-
-    if (recipient_count == 0) {
-        fprintf(stderr, "[GROUP MSG] Error: No valid recipients (all members missing keys)\n");
-        free(recipients);
-        dht_groups_free_metadata(metadata);
-        return -1;
-    }
-
-    printf("[GROUP MSG] Sending to %zu/%u recipients (%zu without keys, excluding self)\n",
-           recipient_count, metadata->member_count - 1, members_without_keys);
-
-    // Step 4: Get group's local_id for database storage
-    int local_id = 0;
-    dht_group_cache_entry_t *entries = NULL;
-    int count = 0;
-    if (dht_groups_list_for_user(ctx->identity, &entries, &count) == 0) {
-        for (int i = 0; i < count; i++) {
-            if (strcmp(entries[i].group_uuid, group_uuid) == 0) {
-                local_id = entries[i].local_id;
-                break;
-            }
-        }
-        dht_groups_free_cache_entries(entries, count);
-    }
-
-    if (local_id == 0) {
-        fprintf(stderr, "[GROUP MSG] Error: Group not found in cache\n");
-        free(recipients);
-        dht_groups_free_metadata(metadata);
-        return -1;
-    }
-
-    printf("[GROUP MSG] Group local_id: %d\n", local_id);
-
-    // Step 5: Send message using multi-recipient encryption
-    // messenger_send_message will handle:
-    // - Multi-recipient Kyber1024 encryption
-    // - P2P delivery
-    // - DHT offline queue fallback
-    // - SQLite storage with group_id
-    result = messenger_send_message(ctx, recipients, recipient_count, message, local_id, MESSAGE_TYPE_CHAT);
-
-    free(recipients);
-    dht_groups_free_metadata(metadata);
-
-    if (result == 0) {
-        printf("[GROUP MSG] ✓ Group message sent successfully\n");
+    if (result == DNA_GROUP_OUTBOX_OK) {
+        printf("[GROUP MSG] Message sent via group outbox: %s\n", message_id);
+        return 0;
     } else {
-        fprintf(stderr, "[GROUP MSG] Failed to send group message\n");
+        fprintf(stderr, "[GROUP MSG] Failed to send group message: %s\n",
+                dna_group_outbox_strerror(result));
+        return -1;
     }
-
-    return result;
 }
 
 /**
- * Load group conversation messages
+ * Load group conversation messages from group outbox
  *
- * Retrieves all messages for a specific group from local SQLite database.
- * Messages are returned ENCRYPTED - caller must decrypt each message.
+ * NEW IMPLEMENTATION (v0.10+):
+ * Retrieves messages from the group_messages table (feed pattern storage).
+ * Messages are already decrypted during sync.
  *
  * @param ctx Messenger context
  * @param group_uuid Group UUID (36 chars)
- * @param messages_out Output array of messages (caller must free with message_backup_free_messages)
+ * @param messages_out Output array of messages (caller must free)
  * @param count_out Number of messages returned
  * @return 0 on success, -1 on error
  */
@@ -953,37 +901,59 @@ int messenger_load_group_messages(messenger_context_t *ctx, const char *group_uu
         return -1;
     }
 
-    // Step 1: Get group's local_id from cache
-    dht_group_cache_entry_t *entries = NULL;
-    int entry_count = 0;
-    int local_id = 0;
+    printf("[GROUP MSG] Loading messages for group %s (from group_messages table)\n", group_uuid);
 
-    if (dht_groups_list_for_user(ctx->identity, &entries, &entry_count) == 0) {
-        for (int i = 0; i < entry_count; i++) {
-            if (strcmp(entries[i].group_uuid, group_uuid) == 0) {
-                local_id = entries[i].local_id;
-                break;
-            }
-        }
-        dht_groups_free_cache_entries(entries, entry_count);
-    }
+    // Load from new group_messages table
+    dna_group_message_t *group_msgs = NULL;
+    size_t group_count = 0;
 
-    if (local_id == 0) {
-        fprintf(stderr, "[GROUP MSG] Group not found in cache: %s\n", group_uuid);
+    int result = dna_group_outbox_db_get_messages(group_uuid, 0, 0, &group_msgs, &group_count);
+    if (result != 0) {
+        fprintf(stderr, "[GROUP MSG] Failed to load group messages from database\n");
+        *messages_out = NULL;
+        *count_out = 0;
         return -1;
     }
 
-    printf("[GROUP MSG] Loading messages for group (local_id=%d)\n", local_id);
-
-    // Step 2: Query messages from database using existing function
-    int result = message_backup_get_group_conversation(ctx->backup_ctx, local_id,
-                                                        messages_out, count_out);
-
-    if (result == 0) {
-        printf("[GROUP MSG] ✓ Loaded %d group messages\n", *count_out);
-    } else {
-        fprintf(stderr, "[GROUP MSG] Failed to load group messages\n");
+    if (group_count == 0) {
+        *messages_out = NULL;
+        *count_out = 0;
+        return 0;
     }
 
-    return result;
+    // Convert dna_group_message_t to backup_message_t for compatibility
+    backup_message_t *messages = calloc(group_count, sizeof(backup_message_t));
+    if (!messages) {
+        dna_group_outbox_free_messages(group_msgs, group_count);
+        return -1;
+    }
+
+    for (size_t i = 0; i < group_count; i++) {
+        messages[i].id = (int)i;  // Use index as ID
+        strncpy(messages[i].sender, group_msgs[i].sender_fingerprint, sizeof(messages[i].sender) - 1);
+        strncpy(messages[i].recipient, group_uuid, sizeof(messages[i].recipient) - 1);
+        messages[i].timestamp = (time_t)(group_msgs[i].timestamp_ms / 1000);
+        messages[i].delivered = 1;
+        messages[i].read = 0;
+        messages[i].status = 1;  // SENT
+        messages[i].group_id = 0;  // Not used in new system
+        messages[i].message_type = 0;  // CHAT
+
+        // Copy encrypted message (for compatibility)
+        if (group_msgs[i].ciphertext && group_msgs[i].ciphertext_len > 0) {
+            messages[i].encrypted_message = malloc(group_msgs[i].ciphertext_len);
+            if (messages[i].encrypted_message) {
+                memcpy(messages[i].encrypted_message, group_msgs[i].ciphertext, group_msgs[i].ciphertext_len);
+                messages[i].encrypted_len = group_msgs[i].ciphertext_len;
+            }
+        }
+    }
+
+    dna_group_outbox_free_messages(group_msgs, group_count);
+
+    *messages_out = messages;
+    *count_out = (int)group_count;
+
+    printf("[GROUP MSG] Loaded %zu group messages\n", group_count);
+    return 0;
 }
