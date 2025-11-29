@@ -115,6 +115,31 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
 
     *group_id_out = local_id;
     printf("[MESSENGER] Created group '%s' (local_id=%d, uuid=%s)\n", name, local_id, group_uuid);
+
+    // Phase 13: Create initial GSK (version 0) and publish to DHT
+    printf("[MESSENGER] Creating initial GSK for group %s...\n", group_uuid);
+    if (gsk_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
+        fprintf(stderr, "[MESSENGER] Warning: Initial GSK creation failed (non-fatal)\n");
+        // Continue - group is created, but GSK needs to be created later
+    } else {
+        printf("[MESSENGER] Initial GSK created and published to DHT\n");
+    }
+
+    // Send invitations to all initial members (not the creator)
+    if (member_count > 0) {
+        printf("[MESSENGER] Sending invitations to %zu initial members...\n", member_count);
+        for (size_t i = 0; i < member_count; i++) {
+            ret = messenger_send_group_invitation(ctx, group_uuid, members[i],
+                                                   name, (int)(member_count + 1));
+            if (ret == 0) {
+                printf("[MESSENGER] Sent invitation to %s\n", members[i]);
+            } else {
+                fprintf(stderr, "[MESSENGER] Warning: Failed to send invitation to %s\n", members[i]);
+                // Non-fatal - continue with other members
+            }
+        }
+    }
+
     return 0;
 }
 

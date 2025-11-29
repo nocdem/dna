@@ -85,6 +85,7 @@ add_executable(dna-messenger
     screens/add_contact_dialog.cpp
     screens/create_group_dialog.cpp
     screens/group_invitation_dialog.cpp
+    screens/group_settings_dialog.cpp
     screens/chat_screen.cpp
     screens/profile_sidebar.cpp
     screens/contacts_sidebar.cpp

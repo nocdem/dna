@@ -128,6 +128,13 @@ AppState::AppState() {
     selected_invitation_index = -1;
     invitation_action_in_progress = false;
 
+    // Initialize group context menu state
+    group_context_menu_index = -1;
+    show_group_info_dialog = false;
+    show_add_member_dialog = false;
+    show_leave_group_confirm = false;
+    show_delete_group_confirm = false;
+
     // Initialize feed state (Phase 7: Public Feed)
     selected_feed_channel = -1;
     feed_loading = false;

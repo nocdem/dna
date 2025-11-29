@@ -10,6 +10,8 @@
 #include "../../messenger.h"
 #include "../../messenger_p2p.h"
 #include "../helpers/data_loader.h"  // Phase 1.4: For contact refresh
+#include "../../dht/shared/dht_groups.h"  // For dht_groups_get
+#include "../../p2p/p2p_transport.h"  // For p2p_transport_get_dht_context
 
 #include <cstring>
 #include <cstdio>
@@ -362,6 +364,12 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             bool clicked = ImGui::InvisibleButton("##group", ImVec2(list_width, item_height));
             bool hovered = ImGui::IsItemHovered();
 
+            // Right-click context menu
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
+                state.group_context_menu_index = i;
+                ImGui::OpenPopup("GroupContextMenu");
+            }
+
             if (clicked) {
                 // Select group and show group chat
                 state.selected_group = i;
@@ -447,6 +455,67 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             draw_list->AddText(text_pos, text_color, display_text);
 
             ImGui::PopID();
+        }
+
+        // Group context menu popup (right-click menu)
+        if (ImGui::BeginPopup("GroupContextMenu")) {
+            if (state.group_context_menu_index >= 0 &&
+                state.group_context_menu_index < (int)state.groups.size()) {
+
+                const Group& group = state.groups[state.group_context_menu_index];
+                messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
+                bool is_owner = ctx && (group.creator == ctx->identity);
+
+                // Group Info
+                if (ImGui::MenuItem(ICON_FA_CIRCLE_INFO "  Group Info")) {
+                    state.show_group_info_dialog = true;
+                    state.group_members_list.clear();
+                    // Load members from DHT
+                    if (ctx) {
+                        dht_context_t *dht_ctx = ctx->p2p_transport ?
+                            p2p_transport_get_dht_context(ctx->p2p_transport) : nullptr;
+                        if (dht_ctx) {
+                            dht_group_metadata_t *meta = nullptr;
+                            if (dht_groups_get(dht_ctx, group.group_uuid.c_str(), &meta) == 0 && meta) {
+                                for (uint32_t m = 0; m < meta->member_count; m++) {
+                                    state.group_members_list.push_back(meta->members[m]);
+                                }
+                                dht_groups_free_metadata(meta);
+                            }
+                        }
+                    }
+                    ImGui::CloseCurrentPopup();
+                }
+
+                ImGui::Separator();
+
+                // Add Member (owner only)
+                if (is_owner) {
+                    if (ImGui::MenuItem(ICON_FA_USER_PLUS "  Add Member")) {
+                        state.show_add_member_dialog = true;
+                        state.add_member_selected.clear();
+                        ImGui::CloseCurrentPopup();
+                    }
+                }
+
+                // Leave Group
+                if (ImGui::MenuItem(ICON_FA_RIGHT_FROM_BRACKET "  Leave Group")) {
+                    state.show_leave_group_confirm = true;
+                    ImGui::CloseCurrentPopup();
+                }
+
+                // Delete Group (owner only)
+                if (is_owner) {
+                    ImGui::Separator();
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.3f, 0.3f, 1.0f));
+                    if (ImGui::MenuItem(ICON_FA_TRASH "  Delete Group")) {
+                        state.show_delete_group_confirm = true;
+                        ImGui::CloseCurrentPopup();
+                    }
+                    ImGui::PopStyleColor();
+                }
+            }
+            ImGui::EndPopup();
         }
 
         ImGui::Spacing();
