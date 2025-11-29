@@ -356,6 +356,7 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
         }
 
         // Render groups
+        int right_clicked_group = -1;  // Track which group was right-clicked
         for (size_t i = 0; i < state.groups.size(); i++) {
             ImGui::PushID(2000 + i); // Offset ID to avoid conflicts
 
@@ -364,10 +365,9 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             bool clicked = ImGui::InvisibleButton("##group", ImVec2(list_width, item_height));
             bool hovered = ImGui::IsItemHovered();
 
-            // Right-click context menu
+            // Right-click context menu - track outside PushID scope
             if (ImGui::IsItemClicked(ImGuiMouseButton_Right)) {
-                state.group_context_menu_index = i;
-                ImGui::OpenPopup("GroupContextMenu");
+                right_clicked_group = i;
             }
 
             if (clicked) {
@@ -455,6 +455,12 @@ void renderSidebar(AppState& state, std::function<void(int)> load_messages_callb
             draw_list->AddText(text_pos, text_color, display_text);
 
             ImGui::PopID();
+        }
+
+        // Open popup outside PushID scope
+        if (right_clicked_group >= 0) {
+            state.group_context_menu_index = right_clicked_group;
+            ImGui::OpenPopup("GroupContextMenu");
         }
 
         // Group context menu popup (right-click menu)
