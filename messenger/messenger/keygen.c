@@ -159,26 +159,17 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
 int messenger_generate_keys_from_seeds(
     const uint8_t *signing_seed,
     const uint8_t *encryption_seed,
+    const char *data_dir,
     char *fingerprint_out)
 {
-    if (!signing_seed || !encryption_seed || !fingerprint_out) {
+    if (!signing_seed || !encryption_seed || !data_dir || !fingerprint_out) {
         return -1;
     }
 
-    // Create ~/.dna directory
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
-        fprintf(stderr, "Error: Cannot get home directory\n");
-        return -1;
-    }
-
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
-
-    // Create directory if needed
-    if (!qgp_platform_is_directory(dna_dir)) {
-        if (qgp_platform_mkdir(dna_dir) != 0) {
-            fprintf(stderr, "Error: Cannot create directory: %s\n", dna_dir);
+    // Create data directory if needed
+    if (!qgp_platform_is_directory(data_dir)) {
+        if (qgp_platform_mkdir(data_dir) != 0) {
+            fprintf(stderr, "Error: Cannot create directory: %s\n", data_dir);
             return -1;
         }
     }
@@ -223,7 +214,7 @@ int messenger_generate_keys_from_seeds(
 
     // Save with fingerprint-based filename (Phase 4: fingerprint-first)
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, fingerprint);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", data_dir, fingerprint);
 
     if (qgp_key_save(sign_key, dilithium_path) != 0) {
         fprintf(stderr, "Error: Failed to save signing key\n");
@@ -281,7 +272,7 @@ int messenger_generate_keys_from_seeds(
 
     // Save with fingerprint-based filename (Phase 4: fingerprint-first)
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, fingerprint);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", data_dir, fingerprint);
 
     if (qgp_key_save(enc_key, kyber_path) != 0) {
         fprintf(stderr, "Error: Failed to save encryption key\n");

@@ -1,5 +1,6 @@
 // Engine Provider - Core DNA Engine state management
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import '../ffi/dna_engine.dart';
@@ -12,8 +13,24 @@ final engineProvider = AsyncNotifierProvider<EngineNotifier, DnaEngine>(
 class EngineNotifier extends AsyncNotifier<DnaEngine> {
   @override
   Future<DnaEngine> build() async {
-    final appDir = await getApplicationDocumentsDirectory();
-    final dataDir = '${appDir.path}/dna_messenger';
+    // Desktop: use ~/.dna for consistency with ImGui app
+    // Mobile: use app-specific documents directory
+    final String dataDir;
+    if (Platform.isLinux || Platform.isMacOS || Platform.isWindows) {
+      final home = Platform.environment['HOME'] ??
+          Platform.environment['USERPROFILE'] ??
+          '.';
+      dataDir = '$home/.dna';
+    } else {
+      final appDir = await getApplicationDocumentsDirectory();
+      dataDir = '${appDir.path}/dna_messenger';
+    }
+
+    // Ensure directory exists
+    final dir = Directory(dataDir);
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
 
     final engine = await DnaEngine.create(dataDir: dataDir);
 

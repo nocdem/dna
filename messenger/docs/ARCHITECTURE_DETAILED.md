@@ -1380,10 +1380,12 @@ All messages are signed with Dilithium5 before transmission:
 
 | Data | Encryption | Location |
 |------|------------|----------|
-| Private keys | None (file permissions) | `~/.dna/*.dsa`, `~/.dna/*.kem` |
-| Messages | AES-256-GCM (encrypted at rest) | `~/.dna/messages.db` |
+| Private keys | None (file permissions) | `<data_dir>/*.dsa`, `<data_dir>/*.kem` |
+| Messages | AES-256-GCM (encrypted at rest) | `<data_dir>/messages.db` |
 | Contacts | Plaintext | Per-identity SQLite |
 | Cache | Plaintext | Per-identity SQLite |
+
+**Note:** `data_dir` defaults to `~/.dna` on desktop, app-specific directory on mobile.
 
 ---
 

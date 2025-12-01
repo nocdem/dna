@@ -280,7 +280,7 @@ dna_request_id_t dna_engine_list_identities(
 );
 ```
 
-Lists available identities by scanning `~/.dna` for `.dsa` key files.
+Lists available identities by scanning the engine's `data_dir` for `.dsa` key files.
 
 **Callback signature:**
 ```c
@@ -316,8 +316,10 @@ Creates new identity from BIP39 seeds.
 - `encryption_seed` - 32-byte seed for Kyber1024 keypair
 
 **Keys saved to:**
-- `~/.dna/<fingerprint>.dsa` (Dilithium5 signing key)
-- `~/.dna/<fingerprint>.kem` (Kyber1024 encryption key)
+- `<data_dir>/<fingerprint>.dsa` (Dilithium5 signing key)
+- `<data_dir>/<fingerprint>.kem` (Kyber1024 encryption key)
+
+Where `data_dir` is the directory passed to `dna_engine_create()` (defaults to `~/.dna` on desktop).
 
 **Example (from BIP39 mnemonic):**
 ```c

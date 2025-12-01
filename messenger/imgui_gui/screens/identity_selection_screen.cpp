@@ -632,7 +632,7 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
 
     // Generate keys from seeds (returns fingerprint)
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, fingerprint);
+    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
@@ -859,9 +859,22 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
     printf("[Identity] Derived seeds from mnemonic\n");
     printf("[Identity] Generating keys from seeds...\n");
 
+    // Get data directory (~/.dna)
+    const char* home = qgp_platform_home_dir();
+    if (!home) {
+        printf("[Identity] ERROR: Failed to get home directory\n");
+        state.restore_error_message = "Failed to get home directory";
+        return;
+    }
+#ifdef _WIN32
+    std::string dna_dir = std::string(home) + "\\.dna";
+#else
+    std::string dna_dir = std::string(home) + "/.dna";
+#endif
+
     // Generate keys from seeds (fingerprint-first, no name required)
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, fingerprint);
+    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
