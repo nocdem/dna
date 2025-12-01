@@ -61,9 +61,11 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   Future<void> loadIdentity(String fingerprint) async {
     final engine = await ref.read(engineProvider.future);
     await engine.loadIdentity(fingerprint);
+    // Set fingerprint AFTER identity is loaded - this triggers UI rebuild
+    // via identityLoadedProvider which watches currentFingerprintProvider
+    // NOTE: Do NOT invalidate engineProvider here - it would destroy the engine
+    // and lose the loaded identity state
     ref.read(currentFingerprintProvider.notifier).state = fingerprint;
-    // Invalidate to trigger UI rebuild
-    ref.invalidate(engineProvider);
   }
 
   /// Register a nickname for the current identity
