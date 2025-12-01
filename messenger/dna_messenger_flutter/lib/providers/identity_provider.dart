@@ -124,9 +124,6 @@ final createIdentityStateProvider =
   (ref) => CreateIdentityStateNotifier(),
 );
 
-/// Current fingerprint (null if no identity loaded)
-final currentFingerprintProvider = StateProvider<String?>((ref) => null);
-
 /// User profile data
 class UserProfile {
   final String? nickname;

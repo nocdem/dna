@@ -565,7 +565,10 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
       final fingerprint = await ref.read(identitiesProvider.notifier)
           .createIdentityFromMnemonic(_mnemonic);
 
-      // Register nickname on DHT
+      // Load the identity first (required before nickname registration)
+      await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
+
+      // Register nickname on DHT (must be after identity is loaded)
       final nickname = _nicknameController.text.trim();
       if (nickname.isNotEmpty) {
         try {
@@ -576,8 +579,6 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
           debugPrint('Nickname registration failed: $e');
         }
       }
-
-      await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
 
       if (mounted) {
         Navigator.of(context).popUntil((route) => route.isFirst);

@@ -31,14 +31,18 @@ final engineEventsProvider = StreamProvider<DnaEvent>((ref) async* {
   yield* engine.events;
 });
 
-/// Current identity fingerprint
+/// Current fingerprint (null if no identity loaded) - set explicitly when loadIdentity is called
+final currentFingerprintProvider = StateProvider<String?>((ref) => null);
+
+/// Current identity fingerprint (from engine state - may be stale after invalidation)
 final currentIdentityProvider = Provider<String?>((ref) {
   final engineAsync = ref.watch(engineProvider);
   return engineAsync.whenOrNull(data: (engine) => engine.fingerprint);
 });
 
-/// Identity loaded state
+/// Identity loaded state - uses currentFingerprintProvider which is set explicitly
+/// when loadIdentity is called (avoids relying on engine state which can be invalidated)
 final identityLoadedProvider = Provider<bool>((ref) {
-  final identity = ref.watch(currentIdentityProvider);
-  return identity != null && identity.isNotEmpty;
+  final fingerprint = ref.watch(currentFingerprintProvider);
+  return fingerprint != null && fingerprint.isNotEmpty;
 });
