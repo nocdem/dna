@@ -25,6 +25,7 @@ class DnaColors {
   static const textSuccess = Color(0xFF40FF86);
   static const textWarning = Color(0xFFFF8080);
   static const textInfo = Color(0xFFFFCC66);
+  static const offline = Color(0xFF6B7280); // Gray for offline status
 
   // Borders
   static const border = Color(0x0FFFFFFF); // 6% white
