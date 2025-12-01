@@ -20,12 +20,10 @@ class DnaMessengerApp extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final currentTheme = ref.watch(themeProvider);
-
     return MaterialApp(
       title: 'DNA Messenger',
       debugShowCheckedModeBanner: false,
-      theme: currentTheme == AppTheme.club ? DnaTheme.club : DnaTheme.dna,
+      theme: DnaTheme.theme,
       home: const _AppLoader(),
     );
   }

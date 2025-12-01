@@ -1,175 +1,162 @@
 // DNA Messenger Theme
-// Ported from imgui_gui/theme_colors.h
+// Colors from cpunk.io
 
 import 'package:flutter/material.dart';
 
-/// DNA Theme colors (cpunk.io)
+/// Cpunk theme colors (cpunk.io)
 class DnaColors {
-  static const background = Color(0xFF191D21);
-  static const surface = Color(0xFF1E2227);
-  static const inputBackground = Color(0xFF1F2429);
-  static const primary = Color(0xFF00FFCC);
-  static const primaryDark = Color(0xFF00D9AD);
-  static const primaryDarker = Color(0xFF00BF99);
-  static const text = Color(0xFF00FFCC);
-  static const textDisabled = Color(0xFFCCCCCC);
-  static const textHint = Color(0xFFB3B3B3);
-  static const textWarning = Color(0xFFFF8080);
-  static const textSuccess = Color(0xFF80FF80);
-  static const textInfo = Color(0xFFFFCC66);
-  static const offline = Color(0xFFDDDDDD);
-  static const separator = Color(0x4D00FFCC); // 30% alpha
-  static const border = Color(0x4D00FFCC);
-}
+  // Backgrounds
+  static const background = Color(0xFF050712);
+  static const surface = Color(0xFF111426);
+  static const panel = Color(0xFF151832);
 
-/// Club Theme colors (cpunk.club)
-class ClubColors {
-  static const background = Color(0xFF201D1C);
-  static const surface = Color(0xFF262220);
-  static const inputBackground = Color(0xFF262320);
-  static const primary = Color(0xFFF97834);
-  static const primaryDark = Color(0xFFDF662F);
-  static const primaryDarker = Color(0xFFC6592A);
-  static const text = Color(0xFFF97834);
-  static const textDisabled = Color(0xFFCCCCCC);
-  static const textHint = Color(0xFFB3B3B3);
-  static const textWarning = Color(0xFFFF8080);
-  static const textSuccess = Color(0xFF80FF80);
-  static const textInfo = Color(0xFFFFCC66);
-  static const offline = Color(0xFFDDDDDD);
-  static const separator = Color(0x4DF97834); // 30% alpha
-  static const border = Color(0x4DF97834);
-}
+  // Primary accent (cyan)
+  static const primary = Color(0xFF00F0FF);
+  static const primarySoft = Color(0x1400F0FF); // 8% alpha
 
-enum AppTheme { dna, club }
+  // Secondary accent (magenta)
+  static const accent = Color(0xFFFF2CD8);
+
+  // Text
+  static const text = Color(0xFFF5F7FF);
+  static const textMuted = Color(0xFF9AA4D4);
+
+  // Status colors
+  static const textSuccess = Color(0xFF40FF86);
+  static const textWarning = Color(0xFFFF8080);
+  static const textInfo = Color(0xFFFFCC66);
+
+  // Borders
+  static const border = Color(0x0FFFFFFF); // 6% white
+  static const borderAccent = Color(0x4D00F0FF); // 30% cyan
+}
 
 class DnaTheme {
-  static ThemeData get dna => _buildTheme(
-        background: DnaColors.background,
-        surface: DnaColors.surface,
-        primary: DnaColors.primary,
-        primaryDark: DnaColors.primaryDark,
-        text: DnaColors.text,
-        textHint: DnaColors.textHint,
-      );
-
-  static ThemeData get club => _buildTheme(
-        background: ClubColors.background,
-        surface: ClubColors.surface,
-        primary: ClubColors.primary,
-        primaryDark: ClubColors.primaryDark,
-        text: ClubColors.text,
-        textHint: ClubColors.textHint,
-      );
-
-  static ThemeData _buildTheme({
-    required Color background,
-    required Color surface,
-    required Color primary,
-    required Color primaryDark,
-    required Color text,
-    required Color textHint,
-  }) {
-    return ThemeData(
-      useMaterial3: true,
-      brightness: Brightness.dark,
-      scaffoldBackgroundColor: background,
-      colorScheme: ColorScheme.dark(
-        surface: surface,
-        primary: primary,
-        onPrimary: background,
-        secondary: primary,
-        onSecondary: background,
-        outline: primary.withAlpha(77), // 30%
+  static ThemeData get theme => ThemeData(
+    useMaterial3: true,
+    brightness: Brightness.dark,
+    scaffoldBackgroundColor: DnaColors.background,
+    colorScheme: ColorScheme.dark(
+      surface: DnaColors.surface,
+      primary: DnaColors.primary,
+      onPrimary: DnaColors.background,
+      secondary: DnaColors.accent,
+      onSecondary: DnaColors.background,
+      outline: DnaColors.borderAccent,
+    ),
+    appBarTheme: const AppBarTheme(
+      backgroundColor: DnaColors.background,
+      foregroundColor: DnaColors.primary,
+      elevation: 0,
+      centerTitle: false,
+    ),
+    cardTheme: CardThemeData(
+      color: DnaColors.surface,
+      elevation: 0,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: const BorderSide(color: DnaColors.border, width: 1),
       ),
-      appBarTheme: AppBarTheme(
-        backgroundColor: background,
-        foregroundColor: primary,
-        elevation: 0,
-        centerTitle: false,
+    ),
+    listTileTheme: const ListTileThemeData(
+      textColor: DnaColors.text,
+      iconColor: DnaColors.primary,
+    ),
+    inputDecorationTheme: InputDecorationTheme(
+      filled: true,
+      fillColor: DnaColors.surface,
+      hintStyle: const TextStyle(color: DnaColors.textMuted),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: const BorderSide(color: DnaColors.borderAccent),
       ),
-      cardTheme: CardThemeData(
-        color: surface,
-        elevation: 0,
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: const BorderSide(color: DnaColors.borderAccent),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(8),
+        borderSide: const BorderSide(color: DnaColors.primary, width: 2),
+      ),
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(
+        backgroundColor: DnaColors.primary,
+        foregroundColor: DnaColors.background,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-          side: BorderSide(color: primary.withAlpha(51), width: 1),
-        ),
-      ),
-      listTileTheme: ListTileThemeData(
-        textColor: text,
-        iconColor: primary,
-      ),
-      inputDecorationTheme: InputDecorationTheme(
-        filled: true,
-        fillColor: surface,
-        hintStyle: TextStyle(color: textHint),
-        border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide(color: primary.withAlpha(77)),
         ),
-        enabledBorder: OutlineInputBorder(
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+      ),
+    ),
+    outlinedButtonTheme: OutlinedButtonThemeData(
+      style: OutlinedButton.styleFrom(
+        foregroundColor: DnaColors.primary,
+        side: const BorderSide(color: DnaColors.primary),
+        shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide(color: primary.withAlpha(77)),
         ),
-        focusedBorder: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(8),
-          borderSide: BorderSide(color: primary, width: 2),
-        ),
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
       ),
-      elevatedButtonTheme: ElevatedButtonThemeData(
-        style: ElevatedButton.styleFrom(
-          backgroundColor: primary,
-          foregroundColor: background,
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-        ),
+    ),
+    textButtonTheme: TextButtonThemeData(
+      style: TextButton.styleFrom(
+        foregroundColor: DnaColors.primary,
       ),
-      outlinedButtonTheme: OutlinedButtonThemeData(
-        style: OutlinedButton.styleFrom(
-          foregroundColor: primary,
-          side: BorderSide(color: primary),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(8),
-          ),
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-        ),
+    ),
+    floatingActionButtonTheme: const FloatingActionButtonThemeData(
+      backgroundColor: DnaColors.primary,
+      foregroundColor: DnaColors.background,
+    ),
+    dividerTheme: const DividerThemeData(
+      color: DnaColors.border,
+      thickness: 1,
+    ),
+    textTheme: const TextTheme(
+      headlineLarge: TextStyle(color: DnaColors.text, fontWeight: FontWeight.bold),
+      headlineMedium: TextStyle(color: DnaColors.text, fontWeight: FontWeight.bold),
+      headlineSmall: TextStyle(color: DnaColors.text, fontWeight: FontWeight.bold),
+      titleLarge: TextStyle(color: DnaColors.text),
+      titleMedium: TextStyle(color: DnaColors.text),
+      titleSmall: TextStyle(color: DnaColors.text),
+      bodyLarge: TextStyle(color: DnaColors.text),
+      bodyMedium: TextStyle(color: DnaColors.text),
+      bodySmall: TextStyle(color: DnaColors.textMuted),
+      labelLarge: TextStyle(color: DnaColors.text),
+      labelMedium: TextStyle(color: DnaColors.text),
+      labelSmall: TextStyle(color: DnaColors.textMuted),
+    ),
+    iconTheme: const IconThemeData(color: DnaColors.primary),
+    snackBarTheme: const SnackBarThemeData(
+      backgroundColor: DnaColors.surface,
+      contentTextStyle: TextStyle(color: DnaColors.text),
+      actionTextColor: DnaColors.primary,
+    ),
+    switchTheme: SwitchThemeData(
+      thumbColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.selected)) {
+          return DnaColors.primary;
+        }
+        return DnaColors.textMuted;
+      }),
+      trackColor: WidgetStateProperty.resolveWith((states) {
+        if (states.contains(WidgetState.selected)) {
+          return DnaColors.primarySoft;
+        }
+        return DnaColors.surface;
+      }),
+    ),
+    dialogTheme: DialogThemeData(
+      backgroundColor: DnaColors.surface,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(16),
+        side: const BorderSide(color: DnaColors.border),
       ),
-      textButtonTheme: TextButtonThemeData(
-        style: TextButton.styleFrom(
-          foregroundColor: primary,
-        ),
-      ),
-      floatingActionButtonTheme: FloatingActionButtonThemeData(
-        backgroundColor: primary,
-        foregroundColor: background,
-      ),
-      dividerTheme: DividerThemeData(
-        color: primary.withAlpha(51),
-        thickness: 1,
-      ),
-      textTheme: TextTheme(
-        headlineLarge: TextStyle(color: text, fontWeight: FontWeight.bold),
-        headlineMedium: TextStyle(color: text, fontWeight: FontWeight.bold),
-        headlineSmall: TextStyle(color: text, fontWeight: FontWeight.bold),
-        titleLarge: TextStyle(color: text),
-        titleMedium: TextStyle(color: text),
-        titleSmall: TextStyle(color: text),
-        bodyLarge: TextStyle(color: text),
-        bodyMedium: TextStyle(color: text),
-        bodySmall: TextStyle(color: textHint),
-        labelLarge: TextStyle(color: text),
-        labelMedium: TextStyle(color: text),
-        labelSmall: TextStyle(color: textHint),
-      ),
-      iconTheme: IconThemeData(color: primary),
-      snackBarTheme: SnackBarThemeData(
-        backgroundColor: surface,
-        contentTextStyle: TextStyle(color: text),
-        actionTextColor: primary,
-      ),
-    );
-  }
+    ),
+    bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+      backgroundColor: DnaColors.background,
+      selectedItemColor: DnaColors.primary,
+      unselectedItemColor: DnaColors.textMuted,
+    ),
+  );
 }

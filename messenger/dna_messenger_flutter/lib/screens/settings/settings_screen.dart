@@ -28,9 +28,6 @@ class SettingsScreen extends ConsumerWidget {
           // Nickname registration
           _NicknameSection(profile: profile),
           const Divider(),
-          // Appearance
-          _AppearanceSection(),
-          const Divider(),
           // Security
           _SecuritySection(),
           const Divider(),
@@ -244,43 +241,6 @@ class _NicknameSectionState extends ConsumerState<_NicknameSection> {
         setState(() => _isRegistering = false);
       }
     }
-  }
-}
-
-class _AppearanceSection extends ConsumerWidget {
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final currentTheme = ref.watch(themeProvider);
-    final isDnaTheme = currentTheme == AppTheme.dna;
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Row(
-            children: [
-              Icon(
-                Icons.palette,
-                color: theme.colorScheme.primary,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Appearance',
-                style: theme.textTheme.titleMedium,
-              ),
-            ],
-          ),
-        ),
-        SwitchListTile(
-          title: const Text('DNA Theme'),
-          subtitle: Text(isDnaTheme ? 'Classic DNA green' : 'Club theme'),
-          value: isDnaTheme,
-          onChanged: (_) => ref.read(themeProvider.notifier).toggleTheme(),
-        ),
-      ],
-    );
   }
 }
 
