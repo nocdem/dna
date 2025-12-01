@@ -37,6 +37,7 @@ class ContactsScreen extends ConsumerWidget {
         error: (error, stack) => _buildError(context, ref, error),
       ),
       floatingActionButton: FloatingActionButton(
+        heroTag: 'contacts_fab',
         onPressed: () => _showAddContactDialog(context, ref),
         tooltip: 'Add Contact',
         child: const Icon(Icons.person_add),

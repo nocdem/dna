@@ -29,6 +29,7 @@ class GroupsScreen extends ConsumerWidget {
       ),
       body: _buildBody(context, ref, groups, invitations),
       floatingActionButton: FloatingActionButton(
+        heroTag: 'groups_fab',
         onPressed: () => _showCreateGroupDialog(context, ref),
         tooltip: 'Create Group',
         child: const Icon(Icons.group_add),
