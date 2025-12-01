@@ -8,6 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$PROJECT_ROOT/build"
 FLUTTER_LIBS_DIR="$SCRIPT_DIR/linux/libs"
+FLUTTER_BUNDLE_LIB="$SCRIPT_DIR/build/linux/x64/debug/bundle/lib"
 
 # Colors for output
 RED='\033[0;31m'
@@ -60,7 +61,11 @@ copy_library() {
     mkdir -p "$FLUTTER_LIBS_DIR"
     cp "$BUILD_DIR/libdna_lib.so" "$FLUTTER_LIBS_DIR/"
 
-    echo -e "${GREEN}Library copied to $FLUTTER_LIBS_DIR${NC}"
+    # Also copy to bundle for flutter run
+    mkdir -p "$FLUTTER_BUNDLE_LIB"
+    cp "$BUILD_DIR/libdna_lib.so" "$FLUTTER_BUNDLE_LIB/"
+
+    echo -e "${GREEN}Library copied to $FLUTTER_LIBS_DIR and bundle${NC}"
 }
 
 # Run Flutter app
@@ -80,13 +85,12 @@ run_flutter() {
 main() {
     check_dependencies
 
-    # Check if we need to rebuild
-    if [ "$1" = "--rebuild" ] || [ "$1" = "-r" ] || [ ! -f "$FLUTTER_LIBS_DIR/libdna_lib.so" ]; then
+    # Handle --no-build flag to skip native library build
+    if [ "$1" = "--no-build" ] || [ "$1" = "-n" ]; then
+        shift
+    else
+        # Always rebuild native library to catch any changes
         build_native_lib
-        copy_library
-        shift 2>/dev/null || true
-    elif [ "$BUILD_DIR/libdna_lib.so" -nt "$FLUTTER_LIBS_DIR/libdna_lib.so" ] 2>/dev/null; then
-        echo -e "${YELLOW}Native library updated, copying...${NC}"
         copy_library
     fi
 
@@ -98,14 +102,13 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Usage: $0 [OPTIONS] [FLUTTER_ARGS...]"
     echo ""
     echo "Options:"
-    echo "  -r, --rebuild    Force rebuild of native library"
+    echo "  -n, --no-build   Skip native library build (faster restart)"
     echo "  -h, --help       Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0                    # Build if needed and run"
-    echo "  $0 --rebuild          # Force rebuild and run"
-    echo "  $0 --release          # Run in release mode"
-    echo "  $0 --rebuild --release"
+    echo "  $0                    # Build native lib and run"
+    echo "  $0 --no-build         # Skip build and run (faster)"
+    echo "  $0 --release          # Build and run in release mode"
     exit 0
 fi
 
