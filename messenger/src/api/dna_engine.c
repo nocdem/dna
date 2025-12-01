@@ -1816,7 +1816,7 @@ int dna_engine_create_identity_sync(
     (void)engine; /* Not needed for keygen */
 
     if (!signing_seed || !encryption_seed || !fingerprint_out) {
-        return DNA_ERROR_INVALID_ARGUMENT;
+        return DNA_ERROR_INVALID_ARG;
     }
 
     int rc = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, fingerprint_out);
