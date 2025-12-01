@@ -1127,7 +1127,15 @@ class DnaEngine {
       calloc.free(fpPtr);
 
       if (error == 0) {
-        completer.complete(displayName.toDartString());
+        if (displayName == nullptr) {
+          completer.complete('');
+        } else {
+          try {
+            completer.complete(displayName.toDartString());
+          } catch (e) {
+            completer.complete('');
+          }
+        }
       } else {
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
       }
@@ -1166,7 +1174,16 @@ class DnaEngine {
       calloc.free(namePtr);
 
       if (error == 0) {
-        completer.complete(fingerprint.toDartString());
+        // nullptr or empty string means name is available
+        if (fingerprint == nullptr) {
+          completer.complete('');
+        } else {
+          try {
+            completer.complete(fingerprint.toDartString());
+          } catch (e) {
+            completer.complete('');
+          }
+        }
       } else {
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
       }
@@ -1200,8 +1217,18 @@ class DnaEngine {
     void onComplete(int requestId, int error, Pointer<Utf8> displayName,
                     Pointer<Void> userData) {
       if (error == 0) {
-        final name = displayName.toDartString();
-        completer.complete(name.isEmpty ? null : name);
+        // Handle nullptr (no registered name)
+        if (displayName == nullptr) {
+          completer.complete(null);
+        } else {
+          try {
+            final name = displayName.toDartString();
+            completer.complete(name.isEmpty ? null : name);
+          } catch (e) {
+            // Invalid UTF-8 data - treat as no registered name
+            completer.complete(null);
+          }
+        }
       } else {
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
       }
