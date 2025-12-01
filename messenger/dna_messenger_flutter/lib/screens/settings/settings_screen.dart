@@ -1,4 +1,5 @@
 // Settings Screen - App settings and profile management
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -119,10 +120,157 @@ class _NicknameSectionState extends ConsumerState<_NicknameSection> {
   final _controller = TextEditingController();
   bool _isRegistering = false;
 
+  // Nickname availability checking
+  Timer? _debounceTimer;
+  bool _isCheckingAvailability = false;
+  String? _availabilityStatus;
+  bool _isNameAvailable = false;
+  String _lastCheckedName = '';
+
   @override
   void dispose() {
+    _debounceTimer?.cancel();
     _controller.dispose();
     super.dispose();
+  }
+
+  /// Validate nickname locally (3-20 chars, alphanumeric + underscore)
+  String? _validateNicknameLocally(String name) {
+    if (name.isEmpty) return null;
+    if (name.length < 3) return 'At least 3 characters';
+    if (name.length > 20) return 'Maximum 20 characters';
+    final validChars = RegExp(r'^[a-zA-Z0-9_]+$');
+    if (!validChars.hasMatch(name)) {
+      return 'Only letters, numbers, underscore';
+    }
+    return null;
+  }
+
+  void _onNicknameChanged(String value) {
+    setState(() {});
+
+    _debounceTimer?.cancel();
+
+    final name = value.trim().toLowerCase();
+
+    final localError = _validateNicknameLocally(name);
+    if (localError != null) {
+      setState(() {
+        _availabilityStatus = localError;
+        _isNameAvailable = false;
+        _isCheckingAvailability = false;
+      });
+      return;
+    }
+
+    if (name.isEmpty) {
+      setState(() {
+        _availabilityStatus = null;
+        _isNameAvailable = false;
+        _isCheckingAvailability = false;
+      });
+      return;
+    }
+
+    if (name == _lastCheckedName && _availabilityStatus != null) {
+      return;
+    }
+
+    setState(() => _isCheckingAvailability = true);
+    _debounceTimer = Timer(const Duration(milliseconds: 500), () {
+      _checkNameAvailability(name);
+    });
+  }
+
+  Future<void> _checkNameAvailability(String name) async {
+    if (!mounted) return;
+
+    try {
+      final engine = ref.read(engineProvider).valueOrNull;
+      if (engine == null) {
+        setState(() {
+          _availabilityStatus = 'Engine not ready';
+          _isNameAvailable = false;
+          _isCheckingAvailability = false;
+        });
+        return;
+      }
+
+      final result = await engine.lookupName(name);
+
+      if (!mounted) return;
+
+      _lastCheckedName = name;
+      setState(() {
+        _isCheckingAvailability = false;
+        if (result.isEmpty) {
+          _availabilityStatus = 'Available!';
+          _isNameAvailable = true;
+        } else {
+          _availabilityStatus = 'Already taken';
+          _isNameAvailable = false;
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isCheckingAvailability = false;
+        _availabilityStatus = 'Check failed';
+        _isNameAvailable = false;
+      });
+    }
+  }
+
+  Widget? _buildAvailabilitySuffix() {
+    if (_isCheckingAvailability) {
+      return const Padding(
+        padding: EdgeInsets.all(12),
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      );
+    }
+    if (_controller.text.trim().isEmpty) {
+      return null;
+    }
+    if (_isNameAvailable) {
+      return const Icon(Icons.check_circle, color: DnaColors.textSuccess);
+    }
+    if (_availabilityStatus != null) {
+      return const Icon(Icons.cancel, color: DnaColors.textWarning);
+    }
+    return null;
+  }
+
+  Widget _buildAvailabilityStatus(ThemeData theme) {
+    if (_isCheckingAvailability) {
+      return Text(
+        'Checking availability...',
+        style: theme.textTheme.bodySmall?.copyWith(color: DnaColors.textMuted),
+      );
+    }
+    if (_availabilityStatus == null || _controller.text.trim().isEmpty) {
+      return Text(
+        '3-20 characters, letters, numbers, underscore',
+        style: theme.textTheme.bodySmall?.copyWith(color: DnaColors.textMuted),
+      );
+    }
+    if (_isNameAvailable) {
+      return Text(
+        _availabilityStatus!,
+        style: theme.textTheme.bodySmall?.copyWith(color: DnaColors.textSuccess),
+      );
+    }
+    return Text(
+      _availabilityStatus!,
+      style: theme.textTheme.bodySmall?.copyWith(color: DnaColors.textWarning),
+    );
+  }
+
+  bool _canRegister() {
+    return _isNameAvailable && !_isCheckingAvailability && !_isRegistering;
   }
 
   @override
@@ -181,20 +329,21 @@ class _NicknameSectionState extends ConsumerState<_NicknameSection> {
               children: [
                 TextField(
                   controller: _controller,
-                  decoration: const InputDecoration(
+                  decoration: InputDecoration(
                     labelText: 'Nickname',
                     hintText: 'Choose a unique nickname',
-                    prefixIcon: Icon(Icons.alternate_email),
+                    prefixIcon: const Icon(Icons.alternate_email),
+                    suffixIcon: _buildAvailabilitySuffix(),
                   ),
-                  onChanged: (_) => setState(() {}),
+                  onChanged: _onNicknameChanged,
                 ),
+                const SizedBox(height: 8),
+                _buildAvailabilityStatus(theme),
                 const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: _isRegistering || _controller.text.trim().isEmpty
-                        ? null
-                        : _registerNickname,
+                    onPressed: _canRegister() ? _registerNickname : null,
                     child: _isRegistering
                         ? const SizedBox(
                             width: 20,

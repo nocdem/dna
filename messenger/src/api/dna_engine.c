@@ -267,6 +267,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_GET_DISPLAY_NAME:
             dna_handle_get_display_name(engine, task);
             break;
+        case TASK_LOOKUP_NAME:
+            dna_handle_lookup_name(engine, task);
+            break;
 
         /* Contacts */
         case TASK_GET_CONTACTS:
@@ -658,6 +661,36 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     task->callback.display_name(task->request_id, error, display_name, task->user_data);
+}
+
+void dna_handle_lookup_name(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;  /* Not needed for DHT lookup */
+    char fingerprint[129] = {0};
+    int error = DNA_OK;
+
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    char *fp_out = NULL;
+    int rc = dna_lookup_by_name(dht, task->params.lookup_name.name, &fp_out);
+
+    if (rc == 0 && fp_out) {
+        /* Name is taken - return the fingerprint of who owns it */
+        strncpy(fingerprint, fp_out, sizeof(fingerprint) - 1);
+        free(fp_out);
+    } else if (rc == -2) {
+        /* Name not found = available, return empty string */
+        fingerprint[0] = '\0';
+    } else {
+        /* Other error */
+        error = DNA_ENGINE_ERROR_NETWORK;
+    }
+
+done:
+    task->callback.display_name(task->request_id, error, fingerprint, task->user_data);
 }
 
 /* ============================================================================
@@ -1866,6 +1899,21 @@ dna_request_id_t dna_engine_get_display_name(
 
     dna_task_callback_t cb = { .display_name = callback };
     return dna_submit_task(engine, TASK_GET_DISPLAY_NAME, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_lookup_name(
+    dna_engine_t *engine,
+    const char *name,
+    dna_display_name_cb callback,
+    void *user_data
+) {
+    if (!engine || !name || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.lookup_name.name, name, sizeof(params.lookup_name.name) - 1);
+
+    dna_task_callback_t cb = { .display_name = callback };
+    return dna_submit_task(engine, TASK_LOOKUP_NAME, &params, cb, user_data);
 }
 
 /* Contacts */

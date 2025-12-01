@@ -506,6 +506,25 @@ dna_request_id_t dna_engine_get_display_name(
     void *user_data
 );
 
+/**
+ * Lookup name availability (name -> fingerprint)
+ *
+ * Checks if a name is already registered in DHT.
+ * Returns fingerprint if name is taken, empty string if available.
+ *
+ * @param engine    Engine instance
+ * @param name      Name to lookup (3-20 chars, alphanumeric + underscore)
+ * @param callback  Called with fingerprint (empty if available)
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_lookup_name(
+    dna_engine_t *engine,
+    const char *name,
+    dna_display_name_cb callback,
+    void *user_data
+);
+
 /* ============================================================================
  * 3. CONTACTS (3 async functions)
  * ============================================================================ */

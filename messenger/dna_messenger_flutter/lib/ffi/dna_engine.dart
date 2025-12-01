@@ -1153,6 +1153,45 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Lookup name availability (name -> fingerprint)
+  /// Returns fingerprint if name is taken, empty string if available.
+  Future<String> lookupName(String name) async {
+    final completer = Completer<String>();
+    final localId = _nextLocalId++;
+
+    final namePtr = name.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Utf8> fingerprint,
+                    Pointer<Void> userData) {
+      calloc.free(namePtr);
+
+      if (error == 0) {
+        completer.complete(fingerprint.toDartString());
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDisplayNameCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_lookup_name(
+      _engine,
+      namePtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(namePtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   /// Get registered name for current identity
   Future<String?> getRegisteredName() async {
     final completer = Completer<String?>();
