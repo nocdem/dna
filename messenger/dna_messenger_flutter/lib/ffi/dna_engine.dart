@@ -896,6 +896,470 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Send tokens
+  Future<void> sendTokens({
+    required int walletIndex,
+    required String recipientAddress,
+    required String amount,
+    required String token,
+    required String network,
+  }) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final recipientPtr = recipientAddress.toNativeUtf8();
+    final amountPtr = amount.toNativeUtf8();
+    final tokenPtr = token.toNativeUtf8();
+    final networkPtr = network.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(recipientPtr);
+      calloc.free(amountPtr);
+      calloc.free(tokenPtr);
+      calloc.free(networkPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_send_tokens(
+      _engine,
+      walletIndex,
+      recipientPtr.cast(),
+      amountPtr.cast(),
+      tokenPtr.cast(),
+      networkPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(recipientPtr);
+      calloc.free(amountPtr);
+      calloc.free(tokenPtr);
+      calloc.free(networkPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get transaction history
+  Future<List<Transaction>> getTransactions(int walletIndex, String network) async {
+    final completer = Completer<List<Transaction>>();
+    final localId = _nextLocalId++;
+
+    final networkPtr = network.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_transaction_t> transactions,
+                    int count, Pointer<Void> userData) {
+      calloc.free(networkPtr);
+
+      if (error == 0) {
+        final result = <Transaction>[];
+        for (var i = 0; i < count; i++) {
+          result.add(Transaction.fromNative((transactions + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_transactions(transactions, count);
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaTransactionsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_transactions(
+      _engine,
+      walletIndex,
+      networkPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(networkPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // BIP39 OPERATIONS
+  // ---------------------------------------------------------------------------
+
+  /// Generate a random 24-word BIP39 mnemonic
+  String generateMnemonic() {
+    final mnemonicPtr = calloc<Uint8>(BIP39_MAX_MNEMONIC_LENGTH);
+
+    try {
+      final result = _bindings.bip39_generate_mnemonic(
+        BIP39_WORDS_24,
+        mnemonicPtr.cast(),
+        BIP39_MAX_MNEMONIC_LENGTH,
+      );
+
+      if (result != 0) {
+        throw DnaEngineException(-1, 'Failed to generate mnemonic');
+      }
+
+      return mnemonicPtr.cast<Utf8>().toDartString();
+    } finally {
+      calloc.free(mnemonicPtr);
+    }
+  }
+
+  /// Validate a BIP39 mnemonic
+  bool validateMnemonic(String mnemonic) {
+    final mnemonicPtr = mnemonic.toNativeUtf8();
+
+    try {
+      return _bindings.bip39_validate_mnemonic(mnemonicPtr.cast());
+    } finally {
+      calloc.free(mnemonicPtr);
+    }
+  }
+
+  /// Derive signing and encryption seeds from BIP39 mnemonic
+  /// Returns a record with (signingSeed, encryptionSeed) as List<int>
+  ({List<int> signingSeed, List<int> encryptionSeed}) deriveSeeds(
+    String mnemonic, {
+    String passphrase = '',
+  }) {
+    final mnemonicPtr = mnemonic.toNativeUtf8();
+    final passphrasePtr = passphrase.toNativeUtf8();
+    final signingSeedPtr = calloc<Uint8>(32);
+    final encryptionSeedPtr = calloc<Uint8>(32);
+
+    try {
+      final result = _bindings.qgp_derive_seeds_from_mnemonic(
+        mnemonicPtr.cast(),
+        passphrasePtr.cast(),
+        signingSeedPtr,
+        encryptionSeedPtr,
+      );
+
+      if (result != 0) {
+        throw DnaEngineException(-1, 'Failed to derive seeds from mnemonic');
+      }
+
+      final signingSeed = <int>[];
+      final encryptionSeed = <int>[];
+
+      for (var i = 0; i < 32; i++) {
+        signingSeed.add(signingSeedPtr[i]);
+        encryptionSeed.add(encryptionSeedPtr[i]);
+      }
+
+      return (signingSeed: signingSeed, encryptionSeed: encryptionSeed);
+    } finally {
+      calloc.free(mnemonicPtr);
+      calloc.free(passphrasePtr);
+      calloc.free(signingSeedPtr);
+      calloc.free(encryptionSeedPtr);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // IDENTITY OPERATIONS (continued)
+  // ---------------------------------------------------------------------------
+
+  /// Register a human-readable name in DHT
+  Future<void> registerName(String name) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final namePtr = name.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(namePtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_register_name(
+      _engine,
+      namePtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(namePtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get display name for a fingerprint
+  Future<String> getDisplayName(String fingerprint) async {
+    final completer = Completer<String>();
+    final localId = _nextLocalId++;
+
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Utf8> displayName,
+                    Pointer<Void> userData) {
+      calloc.free(fpPtr);
+
+      if (error == 0) {
+        completer.complete(displayName.toDartString());
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDisplayNameCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_display_name(
+      _engine,
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get registered name for current identity
+  Future<String?> getRegisteredName() async {
+    final completer = Completer<String?>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Utf8> displayName,
+                    Pointer<Void> userData) {
+      if (error == 0) {
+        final name = displayName.toDartString();
+        completer.complete(name.isEmpty ? null : name);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDisplayNameCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_registered_name(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // GROUPS OPERATIONS (continued)
+  // ---------------------------------------------------------------------------
+
+  /// Create a new group
+  Future<String> createGroup(String name, List<String> memberFingerprints) async {
+    final completer = Completer<String>();
+    final localId = _nextLocalId++;
+
+    final namePtr = name.toNativeUtf8();
+
+    // Allocate array of string pointers
+    final membersPtr = calloc<Pointer<Utf8>>(memberFingerprints.length.clamp(1, 1000));
+    for (var i = 0; i < memberFingerprints.length; i++) {
+      membersPtr[i] = memberFingerprints[i].toNativeUtf8();
+    }
+
+    void onComplete(int requestId, int error, Pointer<Utf8> groupUuid,
+                    Pointer<Void> userData) {
+      // Free allocated memory
+      calloc.free(namePtr);
+      for (var i = 0; i < memberFingerprints.length; i++) {
+        calloc.free(membersPtr[i]);
+      }
+      calloc.free(membersPtr);
+
+      if (error == 0) {
+        completer.complete(groupUuid.toDartString());
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaGroupCreatedCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_create_group(
+      _engine,
+      namePtr.cast(),
+      membersPtr,
+      memberFingerprints.length,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(namePtr);
+      for (var i = 0; i < memberFingerprints.length; i++) {
+        calloc.free(membersPtr[i]);
+      }
+      calloc.free(membersPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Send message to a group
+  Future<void> sendGroupMessage(String groupUuid, String message) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final groupPtr = groupUuid.toNativeUtf8();
+    final messagePtr = message.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(groupPtr);
+      calloc.free(messagePtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_send_group_message(
+      _engine,
+      groupPtr.cast(),
+      messagePtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(groupPtr);
+      calloc.free(messagePtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Accept a group invitation
+  Future<void> acceptInvitation(String groupUuid) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final groupPtr = groupUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(groupPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_accept_invitation(
+      _engine,
+      groupPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(groupPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Reject a group invitation
+  Future<void> rejectInvitation(String groupUuid) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final groupPtr = groupUuid.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(groupPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_reject_invitation(
+      _engine,
+      groupPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(groupPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   // ---------------------------------------------------------------------------
   // CLEANUP
   // ---------------------------------------------------------------------------

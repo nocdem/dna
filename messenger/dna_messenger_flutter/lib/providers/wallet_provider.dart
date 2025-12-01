@@ -27,6 +27,26 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
       return engine.listWallets();
     });
   }
+
+  /// Send tokens from a wallet
+  Future<void> sendTokens({
+    required int walletIndex,
+    required String recipientAddress,
+    required String amount,
+    required String token,
+    required String network,
+  }) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.sendTokens(
+      walletIndex: walletIndex,
+      recipientAddress: recipientAddress,
+      amount: amount,
+      token: token,
+      network: network,
+    );
+    // Refresh balances after send
+    ref.invalidate(balancesProvider(walletIndex));
+  }
 }
 
 /// Balances for selected wallet
@@ -52,3 +72,28 @@ class BalancesNotifier extends FamilyAsyncNotifier<List<Balance>, int> {
 
 /// Selected wallet index
 final selectedWalletIndexProvider = StateProvider<int>((ref) => 0);
+
+/// Transactions for a wallet and network
+final transactionsProvider = AsyncNotifierProviderFamily<
+    TransactionsNotifier,
+    List<Transaction>,
+    ({int walletIndex, String network})>(
+  TransactionsNotifier.new,
+);
+
+class TransactionsNotifier
+    extends FamilyAsyncNotifier<List<Transaction>, ({int walletIndex, String network})> {
+  @override
+  Future<List<Transaction>> build(({int walletIndex, String network}) arg) async {
+    final engine = await ref.watch(engineProvider.future);
+    return engine.getTransactions(arg.walletIndex, arg.network);
+  }
+
+  Future<void> refresh() async {
+    state = const AsyncValue.loading();
+    state = await AsyncValue.guard(() async {
+      final engine = await ref.read(engineProvider.future);
+      return engine.getTransactions(arg.walletIndex, arg.network);
+    });
+  }
+}

@@ -225,6 +225,8 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
   bool _seedConfirmed = false;
   _CreateStep _step = _CreateStep.seed;
   final _nicknameController = TextEditingController();
+  bool _isGeneratingMnemonic = true;
+  String? _mnemonicError;
 
   @override
   void initState() {
@@ -238,10 +240,28 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
     super.dispose();
   }
 
-  void _generateMnemonic() {
-    // TODO: Generate real BIP39 mnemonic from native library
-    // For now, use placeholder (24 words for 256-bit entropy - post-quantum security)
-    _mnemonic = 'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art';
+  Future<void> _generateMnemonic() async {
+    setState(() {
+      _isGeneratingMnemonic = true;
+      _mnemonicError = null;
+    });
+
+    try {
+      final mnemonic = await ref.read(identitiesProvider.notifier).generateMnemonic();
+      if (mounted) {
+        setState(() {
+          _mnemonic = mnemonic;
+          _isGeneratingMnemonic = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _mnemonicError = 'Failed to generate mnemonic: $e';
+          _isGeneratingMnemonic = false;
+        });
+      }
+    }
   }
 
   @override
@@ -281,6 +301,40 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
   }
 
   Widget _buildSeedStep(ThemeData theme) {
+    if (_isGeneratingMnemonic) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 24),
+            Text(
+              'Generating seed phrase...',
+              style: theme.textTheme.titleMedium,
+            ),
+          ],
+        ),
+      );
+    }
+
+    if (_mnemonicError != null) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.error_outline, size: 48, color: DnaColors.textWarning),
+            const SizedBox(height: 16),
+            Text(_mnemonicError!, style: theme.textTheme.bodyMedium),
+            const SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _generateMnemonic,
+              child: const Text('Retry'),
+            ),
+          ],
+        ),
+      );
+    }
+
     return SingleChildScrollView(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -507,18 +561,20 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
     setState(() => _step = _CreateStep.creating);
 
     try {
-      // TODO: Convert mnemonic to seeds using BIP39
-      // For now, use dummy seeds
-      final signingSeed = List<int>.filled(32, 0);
-      final encryptionSeed = List<int>.filled(32, 1);
-
+      // Create identity from mnemonic using real BIP39
       final fingerprint = await ref.read(identitiesProvider.notifier)
-          .createIdentity(signingSeed, encryptionSeed);
+          .createIdentityFromMnemonic(_mnemonic);
 
-      // TODO: Register nickname on DHT
+      // Register nickname on DHT
       final nickname = _nicknameController.text.trim();
       if (nickname.isNotEmpty) {
-        // await engine.registerNickname(nickname);
+        try {
+          await ref.read(identitiesProvider.notifier).registerName(nickname);
+        } catch (e) {
+          // Nickname registration failed, but identity was created
+          // User can register later in settings
+          debugPrint('Nickname registration failed: $e');
+        }
       }
 
       await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
@@ -616,17 +672,22 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
     setState(() => _isRestoring = true);
 
     try {
-      // TODO: Convert mnemonic to seeds using BIP39
-      final words = _seedController.text.trim().split(' ');
-      if (words.length < 24) {
-        throw Exception('Invalid seed phrase');
+      final mnemonic = _seedController.text.trim();
+      final words = mnemonic.split(' ');
+
+      if (words.length < 12) {
+        throw Exception('Seed phrase must have at least 12 words');
       }
 
-      final signingSeed = List<int>.filled(32, 0);
-      final encryptionSeed = List<int>.filled(32, 1);
+      // Validate mnemonic
+      final isValid = await ref.read(identitiesProvider.notifier).validateMnemonic(mnemonic);
+      if (!isValid) {
+        throw Exception('Invalid seed phrase. Please check your words.');
+      }
 
+      // Create identity from mnemonic using real BIP39
       final fingerprint = await ref.read(identitiesProvider.notifier)
-          .createIdentity(signingSeed, encryptionSeed);
+          .createIdentityFromMnemonic(mnemonic);
 
       await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
 

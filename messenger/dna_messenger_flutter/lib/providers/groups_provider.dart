@@ -27,6 +27,20 @@ class GroupsNotifier extends AsyncNotifier<List<Group>> {
       return engine.getGroups();
     });
   }
+
+  /// Create a new group
+  Future<String> createGroup(String name, List<String> memberFingerprints) async {
+    final engine = await ref.read(engineProvider.future);
+    final uuid = await engine.createGroup(name, memberFingerprints);
+    await refresh();
+    return uuid;
+  }
+
+  /// Send message to a group
+  Future<void> sendGroupMessage(String groupUuid, String message) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.sendGroupMessage(groupUuid, message);
+  }
 }
 
 /// Invitations list provider
@@ -52,6 +66,22 @@ class InvitationsNotifier extends AsyncNotifier<List<Invitation>> {
       final engine = await ref.read(engineProvider.future);
       return engine.getInvitations();
     });
+  }
+
+  /// Accept a group invitation
+  Future<void> acceptInvitation(String groupUuid) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.acceptInvitation(groupUuid);
+    await refresh();
+    // Also refresh groups list
+    ref.invalidate(groupsProvider);
+  }
+
+  /// Reject a group invitation
+  Future<void> rejectInvitation(String groupUuid) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.rejectInvitation(groupUuid);
+    await refresh();
   }
 }
 

@@ -218,10 +218,10 @@ class _NicknameSectionState extends ConsumerState<_NicknameSection> {
     setState(() => _isRegistering = true);
 
     try {
-      // TODO: Call engine to register nickname
-      await Future.delayed(const Duration(seconds: 1)); // Simulated delay
+      await ref.read(identitiesProvider.notifier).registerName(_controller.text.trim());
 
       if (mounted) {
+        _controller.clear();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Nickname "${_controller.text.trim()}" registered'),

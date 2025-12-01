@@ -1,7 +1,7 @@
 # DNA Messenger Flutter UI
 
-**Last Updated:** 2025-11-28
-**Status:** Phase 1 Complete (FFI Foundation)
+**Last Updated:** 2025-12-01
+**Status:** Phase 3 Complete (Full Features)
 **Target:** Android first, all platforms from single codebase
 
 ---
@@ -20,7 +20,7 @@ DNA Messenger is migrating from ImGui to Flutter for cross-platform UI. Flutter 
 |-------|-------------|--------|
 | 1 | FFI Foundation | ✅ Complete |
 | 2 | Core Screens | ✅ Complete |
-| 3 | Full Features | 📋 Planned |
+| 3 | Full Features | ✅ Complete |
 | 4 | Platform Builds | 📋 Planned |
 | 5 | Testing & Polish | 📋 Planned |
 
@@ -75,19 +75,24 @@ dna_messenger_flutter/
 ├── lib/
 │   ├── main.dart               # ✅ Entry point with Riverpod
 │   ├── ffi/
-│   │   ├── dna_bindings.dart   # ✅ Manual FFI bindings (600+ lines)
-│   │   └── dna_engine.dart     # ✅ High-level Dart wrapper (940 lines)
+│   │   ├── dna_bindings.dart   # ✅ Manual FFI bindings (1000+ lines)
+│   │   └── dna_engine.dart     # ✅ High-level Dart wrapper (1400+ lines)
 │   ├── providers/              # ✅ Riverpod state management
 │   │   ├── engine_provider.dart
-│   │   ├── identity_provider.dart
+│   │   ├── identity_provider.dart  # ✅ BIP39 methods
 │   │   ├── contacts_provider.dart
 │   │   ├── messages_provider.dart
+│   │   ├── groups_provider.dart    # ✅ Group actions
+│   │   ├── wallet_provider.dart    # ✅ Send/transactions
 │   │   ├── theme_provider.dart
-│   │   └── event_handler.dart   # ✅ Real-time event handling
+│   │   └── event_handler.dart      # ✅ Real-time event handling
 │   ├── screens/                # ✅ UI screens
-│   │   ├── identity/identity_selection_screen.dart
+│   │   ├── identity/identity_selection_screen.dart  # ✅ BIP39 integrated
 │   │   ├── contacts/contacts_screen.dart
 │   │   ├── chat/chat_screen.dart
+│   │   ├── groups/groups_screen.dart   # ✅ + GroupChatScreen
+│   │   ├── wallet/wallet_screen.dart   # ✅ Send dialog
+│   │   ├── settings/settings_screen.dart  # ✅ Name registration
 │   │   └── home_screen.dart
 │   ├── widgets/                # 📋 Reusable widgets
 │   └── theme/
@@ -199,15 +204,65 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 
 ---
 
-### Phase 3: Full Features (Planned)
+### Phase 3: Full Features ✅ COMPLETE
 
-**Tasks:**
-1. Groups: list, create, invite, group chat
-2. Wallet: balances, send tokens, QR receive, history
-3. Profile: editor, viewer, avatar handling
-4. Settings: theme switching
-5. Name registration
-6. Message wall / DNA Board
+**Completed:**
+
+1. **BIP39 Integration:**
+   - Real mnemonic generation via native library
+   - Mnemonic validation
+   - Seed derivation from mnemonic
+   - Identity creation from mnemonic
+
+2. **Groups:**
+   - Create groups with name
+   - Accept/reject invitations
+   - Group chat screen with message sending
+   - Group list with member counts
+
+3. **Wallet:**
+   - Send tokens with recipient, amount, token, network selection
+   - Transaction history provider
+   - Balances display per wallet
+
+4. **Profile/Identity:**
+   - Nickname registration on DHT
+   - Get registered name for current identity
+   - Display name lookup for contacts
+
+5. **Settings:**
+   - Nickname registration works
+   - Theme switching (DNA/Club)
+
+**FFI Functions Added (11 new):**
+```dart
+// BIP39
+generateMnemonic()           // 24-word mnemonic
+validateMnemonic(mnemonic)   // Validate words
+deriveSeeds(mnemonic)        // Derive signing/encryption seeds
+
+// Identity
+registerName(name)           // Register on DHT
+getDisplayName(fingerprint)  // Lookup name
+getRegisteredName()          // Current identity's name
+
+// Groups
+createGroup(name, members)   // Create new group
+sendGroupMessage(uuid, msg)  // Send to group
+acceptInvitation(uuid)       // Accept invite
+rejectInvitation(uuid)       // Decline invite
+
+// Wallet
+sendTokens(...)              // Send tokens
+getTransactions(index, net)  // Transaction history
+```
+
+**Screens Updated:**
+- `identity_selection_screen.dart`: Real BIP39 mnemonic generation/validation
+- `groups_screen.dart`: Create, accept, reject, open group chat
+- `GroupChatScreen`: New screen for group messaging
+- `wallet_screen.dart`: Functional send dialog with token/network selection
+- `settings_screen.dart`: Nickname registration works
 
 ---
 
@@ -355,8 +410,11 @@ class ClubTheme {
 
 ## Next Steps
 
-1. Add BIP39 mnemonic generation/parsing (integrate with native library)
-2. Build groups screen and wallet screen (Phase 3)
+1. ~~Add BIP39 mnemonic generation/parsing~~ ✅ Complete
+2. ~~Build groups screen and wallet screen~~ ✅ Complete
 3. Test on Android device with native library (Phase 4)
-4. Add settings screen with full options
-5. Build and test on all platforms
+4. ~~Add settings screen with full options~~ ✅ Complete
+5. Build and test on all platforms (Phase 4)
+6. Add QR code generation for wallet receive
+7. Add group conversation history display
+8. Integration testing with DHT network

@@ -22,6 +22,35 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     });
   }
 
+  /// Generate a 24-word BIP39 mnemonic
+  Future<String> generateMnemonic() async {
+    final engine = await ref.read(engineProvider.future);
+    return engine.generateMnemonic();
+  }
+
+  /// Validate a BIP39 mnemonic
+  Future<bool> validateMnemonic(String mnemonic) async {
+    final engine = await ref.read(engineProvider.future);
+    return engine.validateMnemonic(mnemonic);
+  }
+
+  /// Create identity from mnemonic
+  Future<String> createIdentityFromMnemonic(String mnemonic, {String passphrase = ''}) async {
+    final engine = await ref.read(engineProvider.future);
+
+    // Derive seeds from mnemonic
+    final seeds = engine.deriveSeeds(mnemonic, passphrase: passphrase);
+
+    // Create identity with derived seeds
+    final fingerprint = await engine.createIdentity(
+      seeds.signingSeed,
+      seeds.encryptionSeed,
+    );
+
+    await refresh();
+    return fingerprint;
+  }
+
   Future<String> createIdentity(List<int> signingSeed, List<int> encryptionSeed) async {
     final engine = await ref.read(engineProvider.future);
     final fingerprint = await engine.createIdentity(signingSeed, encryptionSeed);
@@ -35,6 +64,14 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     ref.read(currentFingerprintProvider.notifier).state = fingerprint;
     // Invalidate to trigger UI rebuild
     ref.invalidate(engineProvider);
+  }
+
+  /// Register a nickname for the current identity
+  Future<void> registerName(String name) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.registerName(name);
+    // Invalidate user profile to refresh
+    ref.invalidate(userProfileProvider);
   }
 
   void unloadIdentity() {
@@ -102,8 +139,14 @@ final userProfileProvider = FutureProvider<UserProfile?>((ref) async {
   final fingerprint = ref.watch(currentFingerprintProvider);
   if (fingerprint == null) return null;
 
-  // TODO: Fetch profile from engine
-  return UserProfile();
+  final engine = await ref.read(engineProvider.future);
+  try {
+    final registeredName = await engine.getRegisteredName();
+    return UserProfile(nickname: registeredName);
+  } catch (e) {
+    // If fetching fails, return empty profile
+    return UserProfile();
+  }
 });
 
 class CreateIdentityStateNotifier extends StateNotifier<CreateIdentityState> {

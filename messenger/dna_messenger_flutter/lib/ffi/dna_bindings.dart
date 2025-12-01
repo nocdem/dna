@@ -454,6 +454,14 @@ typedef DnaEventCbDart = void Function(
 );
 
 // =============================================================================
+// BIP39 CONSTANTS
+// =============================================================================
+
+const int BIP39_WORDS_24 = 24;
+const int BIP39_MAX_MNEMONIC_LENGTH = 256;
+const int BIP39_SEED_SIZE = 64;
+
+// =============================================================================
 // BINDINGS CLASS
 // =============================================================================
 
@@ -967,6 +975,101 @@ class DnaBindings {
 
   void dna_free_transactions(Pointer<dna_transaction_t> transactions, int count) {
     _dna_free_transactions(transactions, count);
+  }
+
+  // ---------------------------------------------------------------------------
+  // GROUPS - CREATE GROUP (was missing)
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_create_group = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>,
+          Pointer<Utf8>,
+          Pointer<Pointer<Utf8>>,
+          Int32,
+          Pointer<DnaGroupCreatedCb>,
+          Pointer<Void>),
+      int Function(
+          Pointer<dna_engine_t>,
+          Pointer<Utf8>,
+          Pointer<Pointer<Utf8>>,
+          int,
+          Pointer<DnaGroupCreatedCb>,
+          Pointer<Void>)>('dna_engine_create_group');
+
+  int dna_engine_create_group(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> name,
+    Pointer<Pointer<Utf8>> member_fingerprints,
+    int member_count,
+    Pointer<DnaGroupCreatedCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_create_group(
+        engine, name, member_fingerprints, member_count, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // IDENTITY - GET REGISTERED NAME (was missing)
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_get_registered_name = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaDisplayNameCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaDisplayNameCb>,
+          Pointer<Void>)>('dna_engine_get_registered_name');
+
+  int dna_engine_get_registered_name(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaDisplayNameCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_registered_name(engine, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // BIP39 FUNCTIONS
+  // ---------------------------------------------------------------------------
+
+  late final _bip39_generate_mnemonic = _lib.lookupFunction<
+      Int32 Function(Int32, Pointer<Utf8>, Size),
+      int Function(int, Pointer<Utf8>, int)>('bip39_generate_mnemonic');
+
+  /// Generate random BIP39 mnemonic
+  /// Returns 0 on success, -1 on error
+  int bip39_generate_mnemonic(
+    int word_count,
+    Pointer<Utf8> mnemonic,
+    int mnemonic_size,
+  ) {
+    return _bip39_generate_mnemonic(word_count, mnemonic, mnemonic_size);
+  }
+
+  late final _bip39_validate_mnemonic = _lib.lookupFunction<
+      Bool Function(Pointer<Utf8>),
+      bool Function(Pointer<Utf8>)>('bip39_validate_mnemonic');
+
+  /// Validate BIP39 mnemonic
+  bool bip39_validate_mnemonic(Pointer<Utf8> mnemonic) {
+    return _bip39_validate_mnemonic(mnemonic);
+  }
+
+  late final _qgp_derive_seeds_from_mnemonic = _lib.lookupFunction<
+      Int32 Function(
+          Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>),
+      int Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>,
+          Pointer<Uint8>)>('qgp_derive_seeds_from_mnemonic');
+
+  /// Derive signing and encryption seeds from BIP39 mnemonic
+  /// Returns 0 on success, -1 on error
+  int qgp_derive_seeds_from_mnemonic(
+    Pointer<Utf8> mnemonic,
+    Pointer<Utf8> passphrase,
+    Pointer<Uint8> signing_seed,
+    Pointer<Uint8> encryption_seed,
+  ) {
+    return _qgp_derive_seeds_from_mnemonic(
+        mnemonic, passphrase, signing_seed, encryption_seed);
   }
 }
 

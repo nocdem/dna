@@ -91,7 +91,7 @@ class WalletScreen extends ConsumerWidget {
           _BalancesSection(walletIndex: selectedIndex),
           const SizedBox(height: 16),
           // Actions
-          _ActionButtons(wallet: currentWallet),
+          _ActionButtons(wallet: currentWallet, walletIndex: selectedIndex),
         ],
       ),
     );
@@ -395,13 +395,14 @@ class _BalanceTile extends StatelessWidget {
   }
 }
 
-class _ActionButtons extends StatelessWidget {
+class _ActionButtons extends ConsumerWidget {
   final Wallet wallet;
+  final int walletIndex;
 
-  const _ActionButtons({required this.wallet});
+  const _ActionButtons({required this.wallet, required this.walletIndex});
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Row(
@@ -416,7 +417,7 @@ class _ActionButtons extends StatelessWidget {
           const SizedBox(width: 12),
           Expanded(
             child: ElevatedButton.icon(
-              onPressed: () => _showSend(context),
+              onPressed: () => _showSend(context, ref),
               icon: const Icon(Icons.arrow_upward),
               label: const Text('Send'),
             ),
@@ -479,55 +480,161 @@ class _ActionButtons extends StatelessWidget {
     );
   }
 
-  void _showSend(BuildContext context) {
+  void _showSend(BuildContext context, WidgetRef ref) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom,
-        ),
-        child: SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Send',
-                  style: Theme.of(context).textTheme.titleLarge,
+      builder: (context) => _SendSheet(
+        walletIndex: walletIndex,
+        ref: ref,
+      ),
+    );
+  }
+}
+
+class _SendSheet extends ConsumerStatefulWidget {
+  final int walletIndex;
+  final WidgetRef ref;
+
+  const _SendSheet({required this.walletIndex, required this.ref});
+
+  @override
+  ConsumerState<_SendSheet> createState() => _SendSheetState();
+}
+
+class _SendSheetState extends ConsumerState<_SendSheet> {
+  final _recipientController = TextEditingController();
+  final _amountController = TextEditingController();
+  String _selectedToken = 'CPUNK';
+  String _selectedNetwork = 'cellframe';
+  bool _isSending = false;
+
+  @override
+  void dispose() {
+    _recipientController.dispose();
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        bottom: MediaQuery.of(context).viewInsets.bottom,
+      ),
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Send',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: _recipientController,
+                decoration: const InputDecoration(
+                  labelText: 'Recipient Address',
+                  hintText: 'Enter address',
                 ),
-                const SizedBox(height: 16),
-                const TextField(
-                  decoration: InputDecoration(
-                    labelText: 'Recipient Address',
-                    hintText: 'Enter address',
+                onChanged: (_) => setState(() {}),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _amountController,
+                decoration: InputDecoration(
+                  labelText: 'Amount',
+                  hintText: '0.00',
+                  suffixText: _selectedToken,
+                ),
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                onChanged: (_) => setState(() {}),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _selectedToken,
+                      decoration: const InputDecoration(labelText: 'Token'),
+                      items: const [
+                        DropdownMenuItem(value: 'CPUNK', child: Text('CPUNK')),
+                        DropdownMenuItem(value: 'ETH', child: Text('ETH')),
+                        DropdownMenuItem(value: 'BTC', child: Text('BTC')),
+                      ],
+                      onChanged: (v) => setState(() => _selectedToken = v ?? 'CPUNK'),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 12),
-                const TextField(
-                  decoration: InputDecoration(
-                    labelText: 'Amount',
-                    hintText: '0.00',
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: DropdownButtonFormField<String>(
+                      value: _selectedNetwork,
+                      decoration: const InputDecoration(labelText: 'Network'),
+                      items: const [
+                        DropdownMenuItem(value: 'cellframe', child: Text('Cellframe')),
+                        DropdownMenuItem(value: 'ethereum', child: Text('Ethereum')),
+                        DropdownMenuItem(value: 'bitcoin', child: Text('Bitcoin')),
+                      ],
+                      onChanged: (v) => setState(() => _selectedNetwork = v ?? 'cellframe'),
+                    ),
                   ),
-                  keyboardType: TextInputType.numberWithOptions(decimal: true),
-                ),
-                const SizedBox(height: 16),
-                ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text('Transaction submitted')),
-                    );
-                  },
-                  child: const Text('Send'),
-                ),
-              ],
-            ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: _canSend() ? _send : null,
+                child: _isSending
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Send'),
+              ),
+            ],
           ),
         ),
       ),
     );
+  }
+
+  bool _canSend() {
+    return !_isSending &&
+        _recipientController.text.trim().isNotEmpty &&
+        _amountController.text.trim().isNotEmpty;
+  }
+
+  Future<void> _send() async {
+    setState(() => _isSending = true);
+
+    try {
+      await widget.ref.read(walletsProvider.notifier).sendTokens(
+        walletIndex: widget.walletIndex,
+        recipientAddress: _recipientController.text.trim(),
+        amount: _amountController.text.trim(),
+        token: _selectedToken,
+        network: _selectedNetwork,
+      );
+
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Transaction submitted successfully')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isSending = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to send: $e'),
+            backgroundColor: DnaColors.textWarning,
+          ),
+        );
+      }
+    }
   }
 }

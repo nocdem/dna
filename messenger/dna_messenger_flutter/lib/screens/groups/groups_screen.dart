@@ -167,44 +167,50 @@ class GroupsScreen extends ConsumerWidget {
 
   void _openGroupChat(BuildContext context, WidgetRef ref, Group group) {
     ref.read(selectedGroupProvider.notifier).state = group;
-    // TODO: Navigate to group chat screen
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Opening ${group.name}...')),
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (context) => GroupChatScreen(group: group),
+      ),
     );
   }
 
   Future<void> _acceptInvitation(BuildContext context, WidgetRef ref, Invitation invitation) async {
     try {
-      // TODO: Call engine to accept invitation
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Joined ${invitation.groupName}')),
-      );
-      ref.invalidate(groupsProvider);
-      ref.invalidate(invitationsProvider);
+      await ref.read(invitationsProvider.notifier).acceptInvitation(invitation.groupUuid);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Joined ${invitation.groupName}')),
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to accept invitation: $e'),
-          backgroundColor: DnaColors.textWarning,
-        ),
-      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to accept invitation: $e'),
+            backgroundColor: DnaColors.textWarning,
+          ),
+        );
+      }
     }
   }
 
   Future<void> _declineInvitation(BuildContext context, WidgetRef ref, Invitation invitation) async {
     try {
-      // TODO: Call engine to decline invitation
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Invitation declined')),
-      );
-      ref.invalidate(invitationsProvider);
+      await ref.read(invitationsProvider.notifier).rejectInvitation(invitation.groupUuid);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invitation declined')),
+        );
+      }
     } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to decline invitation: $e'),
-          backgroundColor: DnaColors.textWarning,
-        ),
-      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to decline invitation: $e'),
+            backgroundColor: DnaColors.textWarning,
+          ),
+        );
+      }
     }
   }
 }
@@ -415,20 +421,199 @@ class _CreateGroupDialogState extends ConsumerState<_CreateGroupDialog> {
     setState(() => _isCreating = true);
 
     try {
-      // TODO: Call engine to create group
-      Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Group "${_controller.text.trim()}" created')),
+      await ref.read(groupsProvider.notifier).createGroup(
+        _controller.text.trim(),
+        [], // Empty members list - can add members later
       );
-      widget.ref.invalidate(groupsProvider);
+      if (mounted) {
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Group "${_controller.text.trim()}" created')),
+        );
+      }
     } catch (e) {
       setState(() => _isCreating = false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to create group: $e'),
-          backgroundColor: DnaColors.textWarning,
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to create group: $e'),
+            backgroundColor: DnaColors.textWarning,
+          ),
+        );
+      }
+    }
+  }
+}
+
+/// Group Chat Screen - Chat within a group
+class GroupChatScreen extends ConsumerStatefulWidget {
+  final Group group;
+
+  const GroupChatScreen({super.key, required this.group});
+
+  @override
+  ConsumerState<GroupChatScreen> createState() => _GroupChatScreenState();
+}
+
+class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
+  final _messageController = TextEditingController();
+  final _scrollController = ScrollController();
+  bool _isSending = false;
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    _scrollController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(widget.group.name),
+            Text(
+              '${widget.group.memberCount} members',
+              style: theme.textTheme.bodySmall,
+            ),
+          ],
         ),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.info_outline),
+            onPressed: () {
+              // Show group info
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Group UUID: ${widget.group.uuid}'),
+                ),
+              );
+            },
+            tooltip: 'Group Info',
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          // Messages list (placeholder)
+          Expanded(
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.forum_outlined,
+                    size: 64,
+                    color: theme.colorScheme.primary.withAlpha(128),
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No messages yet',
+                    style: theme.textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Start the conversation!',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Message input
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surface,
+              border: Border(
+                top: BorderSide(
+                  color: theme.dividerColor,
+                ),
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _messageController,
+                    decoration: InputDecoration(
+                      hintText: 'Type a message...',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                      filled: true,
+                      fillColor: theme.scaffoldBackgroundColor,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 8,
+                      ),
+                    ),
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => _sendMessage(),
+                    onChanged: (_) => setState(() {}),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton.filled(
+                  onPressed: _messageController.text.trim().isEmpty || _isSending
+                      ? null
+                      : _sendMessage,
+                  icon: _isSending
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.send),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _sendMessage() async {
+    final message = _messageController.text.trim();
+    if (message.isEmpty) return;
+
+    setState(() => _isSending = true);
+    _messageController.clear();
+
+    try {
+      await ref.read(groupsProvider.notifier).sendGroupMessage(
+        widget.group.uuid,
+        message,
       );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Message sent'),
+            duration: Duration(seconds: 1),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to send message: $e'),
+            backgroundColor: DnaColors.textWarning,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isSending = false);
+      }
     }
   }
 }
