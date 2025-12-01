@@ -96,7 +96,7 @@ dna_messenger_flutter/
 │   │   └── home_screen.dart
 │   ├── widgets/                # 📋 Reusable widgets
 │   └── theme/
-│       └── dna_theme.dart      # ✅ DNA/Club themes
+│       └── dna_theme.dart      # ✅ cpunk.io theme
 ├── ffigen.yaml                 # FFI generator config (reference)
 └── pubspec.yaml                # Dependencies
 ```
@@ -232,7 +232,8 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 
 5. **Settings:**
    - Nickname registration works
-   - Theme switching (DNA/Club)
+   - Export seed phrase (placeholder)
+   - Switch identity
 
 **FFI Functions Added (11 new):**
 ```dart
@@ -361,25 +362,29 @@ flutter build apk --release
 
 ## Theming
 
+Single theme based on cpunk.io color palette:
+
 ```dart
-class DnaTheme {
-  static ThemeData get dark => ThemeData(
-    useMaterial3: true,
-    colorScheme: ColorScheme.dark(
-      surface: Color(0xFF151719),
-      primary: Color(0xFF00FFCC),
-      onPrimary: Color(0xFF151719),
-    ),
-    scaffoldBackgroundColor: Color(0xFF151719),
-  );
+class DnaColors {
+  static const background = Color(0xFF050712);  // Dark navy
+  static const surface = Color(0xFF111426);     // Panel blue-gray
+  static const primary = Color(0xFF00F0FF);     // Cyan accent
+  static const accent = Color(0xFFFF2CD8);      // Magenta
+  static const text = Color(0xFFF5F7FF);        // Off-white
+  static const textMuted = Color(0xFF9AA4D4);   // Light blue-gray
+  static const textSuccess = Color(0xFF40FF86); // Green
+  static const textWarning = Color(0xFFFF8080); // Red
 }
 
-class ClubTheme {
-  static ThemeData get dark => ThemeData(
+class DnaTheme {
+  static ThemeData get theme => ThemeData(
     useMaterial3: true,
+    brightness: Brightness.dark,
+    scaffoldBackgroundColor: DnaColors.background,
     colorScheme: ColorScheme.dark(
-      surface: Color(0xFF1A1816),
-      primary: Color(0xFFF97834),
+      surface: DnaColors.surface,
+      primary: DnaColors.primary,
+      secondary: DnaColors.accent,
     ),
   );
 }
