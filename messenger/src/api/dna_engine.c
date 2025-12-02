@@ -10,7 +10,9 @@
 #include "dht/client/dht_singleton.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/client/dht_contactlist.h"
+#include "dht/client/dna_feed.h"
 #include "p2p/p2p_transport.h"
+#include "crypto/utils/qgp_types.h"
 
 /* Blockchain/Wallet includes for send_tokens */
 #include "blockchain/wallet.h"
@@ -31,6 +33,10 @@
 
 /* Use engine-specific error codes */
 #define DNA_OK 0
+
+/* Forward declarations for static helpers */
+static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
+static qgp_key_t* dna_load_private_key(dna_engine_t *engine);
 
 /* ============================================================================
  * ERROR STRINGS
@@ -163,6 +169,9 @@ void dna_free_task_params(dna_task_t *task) {
             break;
         case TASK_SEND_GROUP_MESSAGE:
             free(task->params.send_group_message.message);
+            break;
+        case TASK_CREATE_FEED_POST:
+            free(task->params.create_feed_post.text);
             break;
         default:
             break;
@@ -346,6 +355,32 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_GET_REGISTERED_NAME:
             dna_handle_get_registered_name(engine, task);
             break;
+
+        /* Feed */
+        case TASK_GET_FEED_CHANNELS:
+            dna_handle_get_feed_channels(engine, task);
+            break;
+        case TASK_CREATE_FEED_CHANNEL:
+            dna_handle_create_feed_channel(engine, task);
+            break;
+        case TASK_INIT_DEFAULT_CHANNELS:
+            dna_handle_init_default_channels(engine, task);
+            break;
+        case TASK_GET_FEED_POSTS:
+            dna_handle_get_feed_posts(engine, task);
+            break;
+        case TASK_CREATE_FEED_POST:
+            dna_handle_create_feed_post(engine, task);
+            break;
+        case TASK_GET_FEED_POST_REPLIES:
+            dna_handle_get_feed_post_replies(engine, task);
+            break;
+        case TASK_CAST_FEED_VOTE:
+            dna_handle_cast_feed_vote(engine, task);
+            break;
+        case TASK_GET_FEED_VOTES:
+            dna_handle_get_feed_votes(engine, task);
+            break;
     }
 }
 
@@ -385,7 +420,11 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize synchronization */
     pthread_mutex_init(&engine->event_mutex, NULL);
     pthread_mutex_init(&engine->task_mutex, NULL);
+    pthread_mutex_init(&engine->name_cache_mutex, NULL);
     pthread_cond_init(&engine->task_cond, NULL);
+
+    /* Initialize name cache */
+    engine->name_cache_count = 0;
 
     /* Initialize task queue */
     dna_task_queue_init(&engine->task_queue);
@@ -441,6 +480,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Cleanup synchronization */
     pthread_mutex_destroy(&engine->event_mutex);
     pthread_mutex_destroy(&engine->task_mutex);
+    pthread_mutex_destroy(&engine->name_cache_mutex);
     pthread_cond_destroy(&engine->task_cond);
 
     /* Free data directory */
@@ -541,6 +581,47 @@ void dna_handle_list_identities(dna_engine_t *engine, dna_task_t *task) {
 
     int rc = dna_scan_identities(engine->data_dir, &fingerprints, &count);
 
+    /* Prefetch and cache display names for all identities */
+    if (rc == 0 && count > 0) {
+        dht_context_t *dht = dna_get_dht_ctx(engine);
+        if (dht) {
+            pthread_mutex_lock(&engine->name_cache_mutex);
+
+            for (int i = 0; i < count && i < DNA_NAME_CACHE_MAX; i++) {
+                /* Check if already cached */
+                bool found = false;
+                for (int j = 0; j < engine->name_cache_count; j++) {
+                    if (strcmp(engine->name_cache[j].fingerprint, fingerprints[i]) == 0) {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    /* Fetch from DHT and cache */
+                    char *display_name = NULL;
+                    if (dna_get_display_name(dht, fingerprints[i], &display_name) == 0 && display_name) {
+                        /* Only cache if it's a real name (not just shortened fingerprint) */
+                        if (strlen(display_name) < 20 || strstr(display_name, "...") == NULL) {
+                            if (engine->name_cache_count < DNA_NAME_CACHE_MAX) {
+                                strncpy(engine->name_cache[engine->name_cache_count].fingerprint,
+                                        fingerprints[i], 128);
+                                strncpy(engine->name_cache[engine->name_cache_count].display_name,
+                                        display_name, 63);
+                                engine->name_cache_count++;
+                                printf("[DNA_ENGINE] Cached name: %s -> %s\n",
+                                       fingerprints[i], display_name);
+                            }
+                        }
+                        free(display_name);
+                    }
+                }
+            }
+
+            pthread_mutex_unlock(&engine->name_cache_mutex);
+        }
+    }
+
     int error = (rc == 0) ? DNA_OK : DNA_ENGINE_ERROR_DATABASE;
     task->callback.identities(task->request_id, error, fingerprints, count, task->user_data);
 
@@ -599,9 +680,10 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Load DHT identity */
     messenger_load_dht_identity(fingerprint);
 
-    /* Enable P2P if available */
-    if (engine->messenger->p2p_transport) {
-        engine->messenger->p2p_enabled = true;
+    /* Initialize P2P transport for DHT and messaging */
+    if (messenger_p2p_init(engine->messenger) != 0) {
+        printf("[DNA_ENGINE] Warning: Failed to initialize P2P transport\n");
+        /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
     }
 
     engine->identity_loaded = true;
@@ -642,7 +724,22 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     char display_name_buf[256] = {0};
     int error = DNA_OK;
     char *display_name = NULL;
+    const char *fingerprint = task->params.get_display_name.fingerprint;
 
+    /* Check cache first */
+    pthread_mutex_lock(&engine->name_cache_mutex);
+    for (int i = 0; i < engine->name_cache_count; i++) {
+        if (strcmp(engine->name_cache[i].fingerprint, fingerprint) == 0) {
+            strncpy(display_name_buf, engine->name_cache[i].display_name,
+                    sizeof(display_name_buf) - 1);
+            pthread_mutex_unlock(&engine->name_cache_mutex);
+            printf("[DNA_ENGINE] Cache hit: %s -> %s\n", fingerprint, display_name_buf);
+            goto done;
+        }
+    }
+    pthread_mutex_unlock(&engine->name_cache_mutex);
+
+    /* Not in cache, fetch from DHT */
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
         error = DNA_ENGINE_ERROR_NETWORK;
@@ -650,15 +747,29 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     }
 
     char *name_out = NULL;
-    int rc = dna_get_display_name(dht, task->params.get_display_name.fingerprint, &name_out);
+    int rc = dna_get_display_name(dht, fingerprint, &name_out);
 
     if (rc == 0 && name_out) {
         strncpy(display_name_buf, name_out, sizeof(display_name_buf) - 1);
+
+        /* Cache the result if it's a real name */
+        if (strlen(name_out) < 20 || strstr(name_out, "...") == NULL) {
+            pthread_mutex_lock(&engine->name_cache_mutex);
+            if (engine->name_cache_count < DNA_NAME_CACHE_MAX) {
+                strncpy(engine->name_cache[engine->name_cache_count].fingerprint,
+                        fingerprint, 128);
+                strncpy(engine->name_cache[engine->name_cache_count].display_name,
+                        name_out, 63);
+                engine->name_cache_count++;
+                printf("[DNA_ENGINE] Cached name: %s -> %s\n", fingerprint, name_out);
+            }
+            pthread_mutex_unlock(&engine->name_cache_mutex);
+        }
+
         free(name_out);
     } else {
         /* Fall back to shortened fingerprint */
-        snprintf(display_name_buf, sizeof(display_name_buf), "%.16s...",
-                 task->params.get_display_name.fingerprint);
+        snprintf(display_name_buf, sizeof(display_name_buf), "%.16s...", fingerprint);
     }
 
 done:
@@ -2467,4 +2578,493 @@ void dna_free_balances(dna_balance_t *balances, int count) {
 void dna_free_transactions(dna_transaction_t *transactions, int count) {
     (void)count;
     free(transactions);
+}
+
+void dna_free_feed_channels(dna_channel_info_t *channels, int count) {
+    (void)count;
+    free(channels);
+}
+
+void dna_free_feed_posts(dna_post_info_t *posts, int count) {
+    if (!posts) return;
+    for (int i = 0; i < count; i++) {
+        free(posts[i].text);
+    }
+    free(posts);
+}
+
+void dna_free_feed_post(dna_post_info_t *post) {
+    if (!post) return;
+    free(post->text);
+    free(post);
+}
+
+/* ============================================================================
+ * FEED HANDLERS
+ * ============================================================================ */
+
+/* Helper: Get DHT context from engine */
+static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine) {
+    if (!engine || !engine->messenger || !engine->messenger->p2p_transport) {
+        return NULL;
+    }
+    return p2p_transport_get_dht_context(engine->messenger->p2p_transport);
+}
+
+/* Helper: Get private key for signing (caller frees with qgp_key_free) */
+static qgp_key_t* dna_load_private_key(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) {
+        return NULL;
+    }
+
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/%s.dsa",
+             engine->data_dir, engine->fingerprint);
+
+    qgp_key_t *key = NULL;
+    if (qgp_key_load(key_path, &key) != 0 || !key) {
+        return NULL;
+    }
+    return key;
+}
+
+void dna_handle_get_feed_channels(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        task->callback.feed_channels(task->request_id, DNA_ENGINE_ERROR_NETWORK,
+                                     NULL, 0, task->user_data);
+        return;
+    }
+
+    dna_feed_registry_t *registry = NULL;
+    int ret = dna_feed_registry_get(dht, &registry);
+
+    if (ret == 0 && registry && registry->channel_count > 0) {
+        /* Convert to engine format */
+        dna_channel_info_t *channels = calloc(registry->channel_count, sizeof(dna_channel_info_t));
+        if (channels) {
+            for (size_t i = 0; i < registry->channel_count; i++) {
+                strncpy(channels[i].channel_id, registry->channels[i].channel_id, 64);
+                strncpy(channels[i].name, registry->channels[i].name, 63);
+                strncpy(channels[i].description, registry->channels[i].description, 511);
+                strncpy(channels[i].creator_fingerprint, registry->channels[i].creator_fingerprint, 128);
+                channels[i].created_at = registry->channels[i].created_at;
+                channels[i].post_count = registry->channels[i].post_count;
+                channels[i].subscriber_count = registry->channels[i].subscriber_count;
+                channels[i].last_activity = registry->channels[i].last_activity;
+            }
+            task->callback.feed_channels(task->request_id, DNA_OK,
+                                         channels, (int)registry->channel_count, task->user_data);
+        } else {
+            task->callback.feed_channels(task->request_id, DNA_ERROR_INTERNAL,
+                                         NULL, 0, task->user_data);
+        }
+        dna_feed_registry_free(registry);
+    } else if (ret == -2) {
+        /* No registry - return empty */
+        task->callback.feed_channels(task->request_id, DNA_OK, NULL, 0, task->user_data);
+    } else {
+        task->callback.feed_channels(task->request_id, DNA_ERROR_INTERNAL,
+                                     NULL, 0, task->user_data);
+        if (registry) dna_feed_registry_free(registry);
+    }
+}
+
+void dna_handle_create_feed_channel(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    qgp_key_t *key = dna_load_private_key(engine);
+
+    if (!dht || !key) {
+        if (key) qgp_key_free(key);
+        task->callback.feed_channel(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
+                                    NULL, task->user_data);
+        return;
+    }
+
+    dna_feed_channel_t *new_channel = NULL;
+    int ret = dna_feed_channel_create(dht,
+                                       task->params.create_feed_channel.name,
+                                       task->params.create_feed_channel.description,
+                                       engine->fingerprint,
+                                       key->private_key,
+                                       &new_channel);
+    qgp_key_free(key);
+
+    if (ret == 0 && new_channel) {
+        dna_channel_info_t *channel = calloc(1, sizeof(dna_channel_info_t));
+        if (channel) {
+            strncpy(channel->channel_id, new_channel->channel_id, 64);
+            strncpy(channel->name, new_channel->name, 63);
+            strncpy(channel->description, new_channel->description, 511);
+            strncpy(channel->creator_fingerprint, new_channel->creator_fingerprint, 128);
+            channel->created_at = new_channel->created_at;
+            channel->subscriber_count = 1;
+            channel->last_activity = new_channel->created_at;
+        }
+        dna_feed_channel_free(new_channel);
+        task->callback.feed_channel(task->request_id, DNA_OK, channel, task->user_data);
+    } else if (ret == -2) {
+        task->callback.feed_channel(task->request_id, DNA_ENGINE_ERROR_ALREADY_EXISTS,
+                                    NULL, task->user_data);
+    } else {
+        task->callback.feed_channel(task->request_id, DNA_ERROR_INTERNAL,
+                                    NULL, task->user_data);
+    }
+}
+
+void dna_handle_init_default_channels(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    qgp_key_t *key = dna_load_private_key(engine);
+
+    if (!dht || !key) {
+        if (key) qgp_key_free(key);
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY, task->user_data);
+        return;
+    }
+
+    int created = dna_feed_init_default_channels(dht, engine->fingerprint, key->private_key);
+    qgp_key_free(key);
+
+    task->callback.completion(task->request_id, created >= 0 ? DNA_OK : DNA_ERROR_INTERNAL,
+                              task->user_data);
+}
+
+void dna_handle_get_feed_posts(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        task->callback.feed_posts(task->request_id, DNA_ENGINE_ERROR_NETWORK,
+                                  NULL, 0, task->user_data);
+        return;
+    }
+
+    const char *date = task->params.get_feed_posts.date[0] ? task->params.get_feed_posts.date : NULL;
+
+    dna_feed_post_t *posts = NULL;
+    size_t count = 0;
+    int ret = dna_feed_posts_get_by_channel(dht, task->params.get_feed_posts.channel_id,
+                                            date, &posts, &count);
+
+    if (ret == 0 && posts && count > 0) {
+        /* Convert to engine format */
+        dna_post_info_t *out_posts = calloc(count, sizeof(dna_post_info_t));
+        if (out_posts) {
+            for (size_t i = 0; i < count; i++) {
+                strncpy(out_posts[i].post_id, posts[i].post_id, 199);
+                strncpy(out_posts[i].channel_id, posts[i].channel_id, 64);
+                strncpy(out_posts[i].author_fingerprint, posts[i].author_fingerprint, 128);
+                out_posts[i].text = strdup(posts[i].text);
+                out_posts[i].timestamp = posts[i].timestamp;
+                strncpy(out_posts[i].reply_to, posts[i].reply_to, 199);
+                out_posts[i].reply_depth = posts[i].reply_depth;
+                out_posts[i].reply_count = posts[i].reply_count;
+                out_posts[i].upvotes = posts[i].upvotes;
+                out_posts[i].downvotes = posts[i].downvotes;
+                out_posts[i].user_vote = posts[i].user_vote;
+                out_posts[i].verified = (posts[i].signature_len > 0);
+            }
+            task->callback.feed_posts(task->request_id, DNA_OK,
+                                      out_posts, (int)count, task->user_data);
+        } else {
+            task->callback.feed_posts(task->request_id, DNA_ERROR_INTERNAL,
+                                      NULL, 0, task->user_data);
+        }
+        free(posts);
+    } else if (ret == -2) {
+        /* No posts - return empty */
+        task->callback.feed_posts(task->request_id, DNA_OK, NULL, 0, task->user_data);
+    } else {
+        task->callback.feed_posts(task->request_id, DNA_ERROR_INTERNAL,
+                                  NULL, 0, task->user_data);
+        if (posts) free(posts);
+    }
+}
+
+void dna_handle_create_feed_post(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    qgp_key_t *key = dna_load_private_key(engine);
+
+    if (!dht || !key) {
+        if (key) qgp_key_free(key);
+        task->callback.feed_post(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
+                                 NULL, task->user_data);
+        return;
+    }
+
+    const char *reply_to = task->params.create_feed_post.reply_to[0] ?
+                           task->params.create_feed_post.reply_to : NULL;
+
+    dna_feed_post_t *new_post = NULL;
+    int ret = dna_feed_post_create(dht,
+                                    task->params.create_feed_post.channel_id,
+                                    engine->fingerprint,
+                                    task->params.create_feed_post.text,
+                                    key->private_key,
+                                    reply_to,
+                                    &new_post);
+    qgp_key_free(key);
+
+    if (ret == 0 && new_post) {
+        dna_post_info_t *post = calloc(1, sizeof(dna_post_info_t));
+        if (post) {
+            strncpy(post->post_id, new_post->post_id, 199);
+            strncpy(post->channel_id, new_post->channel_id, 64);
+            strncpy(post->author_fingerprint, new_post->author_fingerprint, 128);
+            post->text = strdup(new_post->text);
+            post->timestamp = new_post->timestamp;
+            strncpy(post->reply_to, new_post->reply_to, 199);
+            post->reply_depth = new_post->reply_depth;
+            post->reply_count = 0;
+            post->upvotes = 0;
+            post->downvotes = 0;
+            post->user_vote = 0;
+            post->verified = true;
+        }
+        dna_feed_post_free(new_post);
+        task->callback.feed_post(task->request_id, DNA_OK, post, task->user_data);
+    } else if (ret == -2) {
+        task->callback.feed_post(task->request_id, DNA_ENGINE_ERROR_PERMISSION,
+                                 NULL, task->user_data);  /* Max depth exceeded */
+    } else {
+        task->callback.feed_post(task->request_id, DNA_ERROR_INTERNAL,
+                                 NULL, task->user_data);
+    }
+}
+
+void dna_handle_get_feed_post_replies(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        task->callback.feed_posts(task->request_id, DNA_ENGINE_ERROR_NETWORK,
+                                  NULL, 0, task->user_data);
+        return;
+    }
+
+    dna_feed_post_t *replies = NULL;
+    size_t count = 0;
+    int ret = dna_feed_post_get_replies(dht, task->params.get_feed_post_replies.post_id,
+                                        &replies, &count);
+
+    if (ret == 0 && replies && count > 0) {
+        dna_post_info_t *out_posts = calloc(count, sizeof(dna_post_info_t));
+        if (out_posts) {
+            for (size_t i = 0; i < count; i++) {
+                strncpy(out_posts[i].post_id, replies[i].post_id, 199);
+                strncpy(out_posts[i].channel_id, replies[i].channel_id, 64);
+                strncpy(out_posts[i].author_fingerprint, replies[i].author_fingerprint, 128);
+                out_posts[i].text = strdup(replies[i].text);
+                out_posts[i].timestamp = replies[i].timestamp;
+                strncpy(out_posts[i].reply_to, replies[i].reply_to, 199);
+                out_posts[i].reply_depth = replies[i].reply_depth;
+                out_posts[i].reply_count = replies[i].reply_count;
+                out_posts[i].upvotes = replies[i].upvotes;
+                out_posts[i].downvotes = replies[i].downvotes;
+                out_posts[i].user_vote = replies[i].user_vote;
+                out_posts[i].verified = (replies[i].signature_len > 0);
+            }
+            task->callback.feed_posts(task->request_id, DNA_OK,
+                                      out_posts, (int)count, task->user_data);
+        } else {
+            task->callback.feed_posts(task->request_id, DNA_ERROR_INTERNAL,
+                                      NULL, 0, task->user_data);
+        }
+        free(replies);
+    } else {
+        task->callback.feed_posts(task->request_id, DNA_OK, NULL, 0, task->user_data);
+        if (replies) free(replies);
+    }
+}
+
+void dna_handle_cast_feed_vote(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    qgp_key_t *key = dna_load_private_key(engine);
+
+    if (!dht || !key) {
+        if (key) qgp_key_free(key);
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY, task->user_data);
+        return;
+    }
+
+    int ret = dna_feed_vote_cast(dht,
+                                  task->params.cast_feed_vote.post_id,
+                                  engine->fingerprint,
+                                  task->params.cast_feed_vote.vote_value,
+                                  key->private_key);
+    qgp_key_free(key);
+
+    if (ret == 0) {
+        task->callback.completion(task->request_id, DNA_OK, task->user_data);
+    } else if (ret == -2) {
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_ALREADY_EXISTS, task->user_data);
+    } else {
+        task->callback.completion(task->request_id, DNA_ERROR_INTERNAL, task->user_data);
+    }
+}
+
+void dna_handle_get_feed_votes(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        task->callback.feed_post(task->request_id, DNA_ENGINE_ERROR_NETWORK,
+                                 NULL, task->user_data);
+        return;
+    }
+
+    dna_feed_votes_t *votes = NULL;
+    int ret = dna_feed_votes_get(dht, task->params.get_feed_votes.post_id, &votes);
+
+    dna_post_info_t *post = calloc(1, sizeof(dna_post_info_t));
+    if (post) {
+        strncpy(post->post_id, task->params.get_feed_votes.post_id, 199);
+        if (ret == 0 && votes) {
+            post->upvotes = votes->upvote_count;
+            post->downvotes = votes->downvote_count;
+            post->user_vote = engine->identity_loaded ?
+                              dna_feed_get_user_vote(votes, engine->fingerprint) : 0;
+            dna_feed_votes_free(votes);
+        }
+        task->callback.feed_post(task->request_id, DNA_OK, post, task->user_data);
+    } else {
+        if (votes) dna_feed_votes_free(votes);
+        task->callback.feed_post(task->request_id, DNA_ERROR_INTERNAL, NULL, task->user_data);
+    }
+}
+
+/* ============================================================================
+ * FEED PUBLIC API
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_get_feed_channels(
+    dna_engine_t *engine,
+    dna_feed_channels_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = {0};
+    cb.feed_channels = callback;
+    return dna_submit_task(engine, TASK_GET_FEED_CHANNELS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_create_feed_channel(
+    dna_engine_t *engine,
+    const char *name,
+    const char *description,
+    dna_feed_channel_cb callback,
+    void *user_data
+) {
+    if (!engine || !name || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.create_feed_channel.name, name, 63);
+    if (description) {
+        strncpy(params.create_feed_channel.description, description, 511);
+    }
+
+    dna_task_callback_t cb = {0};
+    cb.feed_channel = callback;
+    return dna_submit_task(engine, TASK_CREATE_FEED_CHANNEL, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_init_default_channels(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = {0};
+    cb.completion = callback;
+    return dna_submit_task(engine, TASK_INIT_DEFAULT_CHANNELS, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_feed_posts(
+    dna_engine_t *engine,
+    const char *channel_id,
+    const char *date,
+    dna_feed_posts_cb callback,
+    void *user_data
+) {
+    if (!engine || !channel_id || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_feed_posts.channel_id, channel_id, 64);
+    if (date) {
+        strncpy(params.get_feed_posts.date, date, 11);
+    }
+
+    dna_task_callback_t cb = {0};
+    cb.feed_posts = callback;
+    return dna_submit_task(engine, TASK_GET_FEED_POSTS, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_create_feed_post(
+    dna_engine_t *engine,
+    const char *channel_id,
+    const char *text,
+    const char *reply_to,
+    dna_feed_post_cb callback,
+    void *user_data
+) {
+    if (!engine || !channel_id || !text || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.create_feed_post.channel_id, channel_id, 64);
+    params.create_feed_post.text = strdup(text);
+    if (!params.create_feed_post.text) return DNA_REQUEST_ID_INVALID;
+    if (reply_to) {
+        strncpy(params.create_feed_post.reply_to, reply_to, 199);
+    }
+
+    dna_task_callback_t cb = {0};
+    cb.feed_post = callback;
+    return dna_submit_task(engine, TASK_CREATE_FEED_POST, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_feed_post_replies(
+    dna_engine_t *engine,
+    const char *post_id,
+    dna_feed_posts_cb callback,
+    void *user_data
+) {
+    if (!engine || !post_id || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_feed_post_replies.post_id, post_id, 199);
+
+    dna_task_callback_t cb = {0};
+    cb.feed_posts = callback;
+    return dna_submit_task(engine, TASK_GET_FEED_POST_REPLIES, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_cast_feed_vote(
+    dna_engine_t *engine,
+    const char *post_id,
+    int8_t vote_value,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !post_id || !callback) return DNA_REQUEST_ID_INVALID;
+    if (vote_value != 1 && vote_value != -1) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.cast_feed_vote.post_id, post_id, 199);
+    params.cast_feed_vote.vote_value = vote_value;
+
+    dna_task_callback_t cb = {0};
+    cb.completion = callback;
+    return dna_submit_task(engine, TASK_CAST_FEED_VOTE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_feed_votes(
+    dna_engine_t *engine,
+    const char *post_id,
+    dna_feed_post_cb callback,
+    void *user_data
+) {
+    if (!engine || !post_id || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_feed_votes.post_id, post_id, 199);
+
+    dna_task_callback_t cb = {0};
+    cb.feed_post = callback;
+    return dna_submit_task(engine, TASK_GET_FEED_VOTES, &params, cb, user_data);
 }

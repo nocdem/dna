@@ -7,3 +7,4 @@ export 'theme_provider.dart';
 export 'event_handler.dart';
 export 'groups_provider.dart';
 export 'wallet_provider.dart';
+export 'feed_provider.dart';

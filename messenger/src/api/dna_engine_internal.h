@@ -75,7 +75,17 @@ typedef enum {
     TASK_SYNC_CONTACTS_FROM_DHT,
     TASK_SYNC_GROUPS,
     TASK_SUBSCRIBE_TO_CONTACTS,
-    TASK_GET_REGISTERED_NAME
+    TASK_GET_REGISTERED_NAME,
+
+    /* Feed */
+    TASK_GET_FEED_CHANNELS,
+    TASK_CREATE_FEED_CHANNEL,
+    TASK_INIT_DEFAULT_CHANNELS,
+    TASK_GET_FEED_POSTS,
+    TASK_CREATE_FEED_POST,
+    TASK_GET_FEED_POST_REPLIES,
+    TASK_CAST_FEED_VOTE,
+    TASK_GET_FEED_VOTES
 } dna_task_type_t;
 
 /* ============================================================================
@@ -171,6 +181,41 @@ typedef union {
         char network[64];
     } get_transactions;
 
+    /* Create feed channel */
+    struct {
+        char name[64];
+        char description[512];
+    } create_feed_channel;
+
+    /* Get feed posts */
+    struct {
+        char channel_id[65];
+        char date[12];  /* YYYYMMDD or empty for today */
+    } get_feed_posts;
+
+    /* Create feed post */
+    struct {
+        char channel_id[65];
+        char *text;  /* Heap allocated, task owns */
+        char reply_to[200];
+    } create_feed_post;
+
+    /* Get feed post replies */
+    struct {
+        char post_id[200];
+    } get_feed_post_replies;
+
+    /* Cast feed vote */
+    struct {
+        char post_id[200];
+        int8_t vote_value;
+    } cast_feed_vote;
+
+    /* Get feed votes */
+    struct {
+        char post_id[200];
+    } get_feed_votes;
+
 } dna_task_params_t;
 
 /**
@@ -189,6 +234,10 @@ typedef union {
     dna_wallets_cb wallets;
     dna_balances_cb balances;
     dna_transactions_cb transactions;
+    dna_feed_channels_cb feed_channels;
+    dna_feed_channel_cb feed_channel;
+    dna_feed_posts_cb feed_posts;
+    dna_feed_post_cb feed_post;
 } dna_task_callback_t;
 
 /**
@@ -218,6 +267,16 @@ typedef struct {
  * ============================================================================ */
 
 /**
+ * Identity name cache entry
+ */
+#define DNA_NAME_CACHE_MAX 32
+
+typedef struct {
+    char fingerprint[129];
+    char display_name[64];
+} dna_name_cache_entry_t;
+
+/**
  * DNA Engine internal state
  */
 struct dna_engine {
@@ -232,6 +291,11 @@ struct dna_engine {
     /* Wallet */
     wallet_list_t *wallet_list;      /* Cached wallet list */
     bool wallets_loaded;             /* True if wallets have been scanned */
+
+    /* Identity name cache (fingerprint -> display name) */
+    dna_name_cache_entry_t name_cache[DNA_NAME_CACHE_MAX];
+    int name_cache_count;
+    pthread_mutex_t name_cache_mutex;
 
     /* Event callback */
     dna_event_cb event_callback;
@@ -371,6 +435,16 @@ void dna_handle_sync_contacts_from_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_subscribe_to_contacts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task);
+
+/* Feed */
+void dna_handle_get_feed_channels(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_create_feed_channel(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_init_default_channels(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_feed_posts(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_create_feed_post(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_feed_post_replies(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_cast_feed_vote(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_feed_votes(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers

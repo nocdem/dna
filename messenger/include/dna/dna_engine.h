@@ -147,6 +147,38 @@ typedef struct {
     char status[32];            /* ACCEPTED, DECLINED, PENDING */
 } dna_transaction_t;
 
+/**
+ * Feed channel information (simplified for async API)
+ */
+typedef struct {
+    char channel_id[65];        /* SHA256 hex of channel name (64 + null) */
+    char name[64];              /* Display name */
+    char description[512];      /* Channel description */
+    char creator_fingerprint[129]; /* Creator's SHA3-512 fingerprint */
+    uint64_t created_at;        /* Unix timestamp */
+    int post_count;             /* Approximate post count */
+    int subscriber_count;       /* Approximate subscriber count */
+    uint64_t last_activity;     /* Timestamp of last post */
+} dna_channel_info_t;
+
+/**
+ * Feed post information (simplified for async API)
+ */
+typedef struct {
+    char post_id[200];          /* <fingerprint>_<timestamp_ms>_<random> */
+    char channel_id[65];        /* Channel this post belongs to */
+    char author_fingerprint[129]; /* Author's SHA3-512 fingerprint */
+    char *text;                 /* Post content (caller frees via dna_free_feed_posts) */
+    uint64_t timestamp;         /* Unix timestamp (milliseconds) */
+    char reply_to[200];         /* Parent post_id (empty for top-level) */
+    int reply_depth;            /* 0=post, 1=comment, 2=reply */
+    int reply_count;            /* Number of direct replies */
+    int upvotes;                /* Upvote count */
+    int downvotes;              /* Downvote count */
+    int user_vote;              /* Current user's vote: +1, -1, or 0 */
+    bool verified;              /* Signature verified */
+} dna_post_info_t;
+
 /* ============================================================================
  * ASYNC CALLBACK TYPES
  * ============================================================================ */
@@ -276,6 +308,48 @@ typedef void (*dna_transactions_cb)(
     int error,
     dna_transaction_t *transactions,
     int count,
+    void *user_data
+);
+
+/**
+ * Feed channels callback
+ */
+typedef void (*dna_feed_channels_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_channel_info_t *channels,
+    int count,
+    void *user_data
+);
+
+/**
+ * Feed channel created callback
+ */
+typedef void (*dna_feed_channel_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_channel_info_t *channel,
+    void *user_data
+);
+
+/**
+ * Feed posts callback
+ */
+typedef void (*dna_feed_posts_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_post_info_t *posts,
+    int count,
+    void *user_data
+);
+
+/**
+ * Feed post created callback
+ */
+typedef void (*dna_feed_post_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_post_info_t *post,
     void *user_data
 );
 
@@ -930,7 +1004,160 @@ dna_request_id_t dna_engine_get_registered_name(
 );
 
 /* ============================================================================
- * 8. BACKWARD COMPATIBILITY (for gradual GUI migration)
+ * 8. FEED (8 async functions) - Public social feed via DHT
+ * ============================================================================ */
+
+/**
+ * Get all feed channels from DHT registry
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with channels array
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_feed_channels(
+    dna_engine_t *engine,
+    dna_feed_channels_cb callback,
+    void *user_data
+);
+
+/**
+ * Create a new feed channel
+ *
+ * Creates channel metadata and adds to global registry.
+ * Requires active identity for signing.
+ *
+ * @param engine      Engine instance
+ * @param name        Channel name (max 64 chars)
+ * @param description Channel description (max 512 chars)
+ * @param callback    Called with created channel
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_create_feed_channel(
+    dna_engine_t *engine,
+    const char *name,
+    const char *description,
+    dna_feed_channel_cb callback,
+    void *user_data
+);
+
+/**
+ * Initialize default feed channels
+ *
+ * Creates #general, #announcements, #help, #random if they don't exist.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_init_default_channels(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get posts for a feed channel
+ *
+ * Returns posts for specified date (or today if NULL).
+ *
+ * @param engine     Engine instance
+ * @param channel_id Channel ID (SHA256 of channel name)
+ * @param date       Date string (YYYYMMDD) or NULL for today
+ * @param callback   Called with posts array
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_feed_posts(
+    dna_engine_t *engine,
+    const char *channel_id,
+    const char *date,
+    dna_feed_posts_cb callback,
+    void *user_data
+);
+
+/**
+ * Create a new feed post
+ *
+ * Posts are signed with Dilithium5. Set reply_to for replies.
+ * Max thread depth is 2 (post -> comment -> reply).
+ *
+ * @param engine     Engine instance
+ * @param channel_id Channel ID
+ * @param text       Post content (max 2048 chars)
+ * @param reply_to   Parent post_id for replies, NULL for top-level
+ * @param callback   Called with created post
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_create_feed_post(
+    dna_engine_t *engine,
+    const char *channel_id,
+    const char *text,
+    const char *reply_to,
+    dna_feed_post_cb callback,
+    void *user_data
+);
+
+/**
+ * Get replies to a post
+ *
+ * @param engine    Engine instance
+ * @param post_id   Parent post ID
+ * @param callback  Called with replies array
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_feed_post_replies(
+    dna_engine_t *engine,
+    const char *post_id,
+    dna_feed_posts_cb callback,
+    void *user_data
+);
+
+/**
+ * Cast a vote on a feed post
+ *
+ * Votes are permanent (cannot be changed once cast).
+ * Signed with Dilithium5.
+ *
+ * @param engine     Engine instance
+ * @param post_id    Post ID to vote on
+ * @param vote_value +1 for upvote, -1 for downvote
+ * @param callback   Called on completion
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_cast_feed_vote(
+    dna_engine_t *engine,
+    const char *post_id,
+    int8_t vote_value,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get vote counts and user's vote for a post
+ *
+ * Returns updated upvotes/downvotes/user_vote in the post struct.
+ *
+ * @param engine    Engine instance
+ * @param post_id   Post ID
+ * @param callback  Called with post containing vote data
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_feed_votes(
+    dna_engine_t *engine,
+    const char *post_id,
+    dna_feed_post_cb callback,
+    void *user_data
+);
+
+/* ============================================================================
+ * 9. BACKWARD COMPATIBILITY (for gradual GUI migration)
  * ============================================================================ */
 
 /**
@@ -1002,6 +1229,21 @@ void dna_free_balances(dna_balance_t *balances, int count);
  * Free transactions array returned by callbacks
  */
 void dna_free_transactions(dna_transaction_t *transactions, int count);
+
+/**
+ * Free feed channels array returned by callbacks
+ */
+void dna_free_feed_channels(dna_channel_info_t *channels, int count);
+
+/**
+ * Free feed posts array returned by callbacks
+ */
+void dna_free_feed_posts(dna_post_info_t *posts, int count);
+
+/**
+ * Free single feed post returned by callbacks
+ */
+void dna_free_feed_post(dna_post_info_t *post);
 
 #ifdef __cplusplus
 }

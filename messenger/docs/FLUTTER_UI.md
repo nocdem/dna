@@ -303,12 +303,30 @@ dna_messenger_flutter/
 
 ---
 
-## Upcoming UI Changes
+## Recent UI Changes (2025-12-02)
 
-**Navigation Redesign (TODO):**
-- Replace bottom navigation bar with hamburger menu (drawer)
-- Move all navigation to hamburger menu for cleaner interface
-- Current bottom menu will be completely removed
+**Navigation Redesign (COMPLETE):**
+- Replaced bottom navigation bar with hamburger drawer navigation
+- Feed is now the default landing page (index 0)
+- Drawer header shows: Avatar + display name + "Switch Identity" button
+- Navigation order: Feed, Chats, Groups, Wallet, Settings
+
+**Feed Implementation (COMPLETE):**
+- Full Feed functionality ported from ImGui
+- Channels: list, create, init default channels
+- Posts: list, create, reply (max depth 2)
+- Voting: upvote/downvote with Dilithium5 signatures
+- Real-time updates via DHT
+
+**New files:**
+- `lib/screens/feed/feed_screen.dart` - Feed UI with channels and posts
+- `lib/providers/feed_provider.dart` - Riverpod state management for Feed
+
+**Modified files:**
+- `lib/screens/home_screen.dart` - Drawer navigation, Feed as default
+- `lib/ffi/dna_bindings.dart` - Feed FFI bindings
+- `lib/ffi/dna_engine.dart` - Feed models and methods
+- `lib/providers/providers.dart` - Export feed_provider
 
 ---
 
