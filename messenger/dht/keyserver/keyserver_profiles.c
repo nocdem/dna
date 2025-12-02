@@ -344,7 +344,7 @@ int dna_get_display_name(
         return -1;
     }
 
-    // Try to load identity from DHT
+    // Try to load identity from DHT (profile lookup)
     dna_unified_identity_t *identity = NULL;
     int ret = dna_load_identity(dht_ctx, fingerprint, &identity);
 
@@ -360,11 +360,26 @@ int dna_get_display_name(
             }
 
             *display_name_out = display;
-            printf("[DNA] ✓ Display name: %s (registered)\n", display);
+            printf("[DNA] ✓ Display name: %s (from profile)\n", display);
             return 0;
         }
 
         dna_identity_free(identity);
+    }
+
+    // Profile lookup failed or no registered name in profile
+    // Try reverse lookup (fingerprint:reverse key) as fallback
+    if (dht_ctx) {
+        char *registered_name = NULL;
+        ret = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &registered_name);
+        if (ret == 0 && registered_name && registered_name[0] != '\0') {
+            *display_name_out = registered_name;
+            printf("[DNA] ✓ Display name: %s (from reverse lookup)\n", registered_name);
+            return 0;
+        }
+        if (registered_name) {
+            free(registered_name);
+        }
     }
 
     // Fallback: Return shortened fingerprint (first 16 chars + "...")
