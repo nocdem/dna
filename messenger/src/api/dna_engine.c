@@ -680,9 +680,10 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Load DHT identity */
     messenger_load_dht_identity(fingerprint);
 
-    /* Enable P2P if available */
-    if (engine->messenger->p2p_transport) {
-        engine->messenger->p2p_enabled = true;
+    /* Initialize P2P transport for DHT and messaging */
+    if (messenger_p2p_init(engine->messenger) != 0) {
+        printf("[DNA_ENGINE] Warning: Failed to initialize P2P transport\n");
+        /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
     }
 
     engine->identity_loaded = true;
