@@ -355,7 +355,14 @@ Loads and activates an identity.
 1. Loads keypairs from disk
 2. Initializes messenger context
 3. Loads DHT identity
-4. Dispatches `DNA_EVENT_IDENTITY_LOADED` event
+4. Initializes P2P transport
+5. Registers presence in DHT (announces user is online)
+6. Subscribes to contacts for push notifications
+7. Checks for offline messages from contacts' DHT outboxes
+8. Dispatches `DNA_EVENT_IDENTITY_LOADED` event
+
+**Note:** Steps 5-7 happen automatically after P2P initialization succeeds.
+This ensures offline messages are retrieved without additional API calls.
 
 **Example:**
 ```c
@@ -537,9 +544,10 @@ dna_request_id_t dna_engine_check_offline_messages(
 );
 ```
 
-Force check for offline messages in DHT queue.
+Force check for offline messages in DHT queue (Model E: queries contacts' outboxes).
 
-**Note:** Normally automatic - only use for immediate check.
+**Note:** Called automatically by `dna_engine_load_identity()` on startup.
+Use this only for manual refresh (e.g., pull-to-refresh in UI).
 
 ---
 
