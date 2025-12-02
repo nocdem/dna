@@ -81,9 +81,16 @@ run_flutter() {
     flutter run -d linux "$@"
 }
 
+# Pull latest code
+pull_latest() {
+    echo -e "${YELLOW}Pulling latest from GitLab...${NC}"
+    git -C "$PROJECT_ROOT" pull --no-rebase gitlab main
+}
+
 # Main
 main() {
     check_dependencies
+    pull_latest
 
     # Handle --no-build flag to skip native library build
     if [ "$1" = "--no-build" ] || [ "$1" = "-n" ]; then
