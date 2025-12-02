@@ -267,6 +267,16 @@ typedef struct {
  * ============================================================================ */
 
 /**
+ * Identity name cache entry
+ */
+#define DNA_NAME_CACHE_MAX 32
+
+typedef struct {
+    char fingerprint[129];
+    char display_name[64];
+} dna_name_cache_entry_t;
+
+/**
  * DNA Engine internal state
  */
 struct dna_engine {
@@ -281,6 +291,11 @@ struct dna_engine {
     /* Wallet */
     wallet_list_t *wallet_list;      /* Cached wallet list */
     bool wallets_loaded;             /* True if wallets have been scanned */
+
+    /* Identity name cache (fingerprint -> display name) */
+    dna_name_cache_entry_t name_cache[DNA_NAME_CACHE_MAX];
+    int name_cache_count;
+    pthread_mutex_t name_cache_mutex;
 
     /* Event callback */
     dna_event_cb event_callback;

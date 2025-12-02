@@ -34,6 +34,10 @@
 /* Use engine-specific error codes */
 #define DNA_OK 0
 
+/* Forward declarations for static helpers */
+static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
+static qgp_key_t* dna_load_private_key(dna_engine_t *engine);
+
 /* ============================================================================
  * ERROR STRINGS
  * ============================================================================ */
@@ -416,7 +420,11 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize synchronization */
     pthread_mutex_init(&engine->event_mutex, NULL);
     pthread_mutex_init(&engine->task_mutex, NULL);
+    pthread_mutex_init(&engine->name_cache_mutex, NULL);
     pthread_cond_init(&engine->task_cond, NULL);
+
+    /* Initialize name cache */
+    engine->name_cache_count = 0;
 
     /* Initialize task queue */
     dna_task_queue_init(&engine->task_queue);
@@ -472,6 +480,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Cleanup synchronization */
     pthread_mutex_destroy(&engine->event_mutex);
     pthread_mutex_destroy(&engine->task_mutex);
+    pthread_mutex_destroy(&engine->name_cache_mutex);
     pthread_cond_destroy(&engine->task_cond);
 
     /* Free data directory */
@@ -571,6 +580,47 @@ void dna_handle_list_identities(dna_engine_t *engine, dna_task_t *task) {
     int count = 0;
 
     int rc = dna_scan_identities(engine->data_dir, &fingerprints, &count);
+
+    /* Prefetch and cache display names for all identities */
+    if (rc == 0 && count > 0) {
+        dht_context_t *dht = dna_get_dht_ctx(engine);
+        if (dht) {
+            pthread_mutex_lock(&engine->name_cache_mutex);
+
+            for (int i = 0; i < count && i < DNA_NAME_CACHE_MAX; i++) {
+                /* Check if already cached */
+                bool found = false;
+                for (int j = 0; j < engine->name_cache_count; j++) {
+                    if (strcmp(engine->name_cache[j].fingerprint, fingerprints[i]) == 0) {
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (!found) {
+                    /* Fetch from DHT and cache */
+                    char *display_name = NULL;
+                    if (dna_get_display_name(dht, fingerprints[i], &display_name) == 0 && display_name) {
+                        /* Only cache if it's a real name (not just shortened fingerprint) */
+                        if (strlen(display_name) < 20 || strstr(display_name, "...") == NULL) {
+                            if (engine->name_cache_count < DNA_NAME_CACHE_MAX) {
+                                strncpy(engine->name_cache[engine->name_cache_count].fingerprint,
+                                        fingerprints[i], 128);
+                                strncpy(engine->name_cache[engine->name_cache_count].display_name,
+                                        display_name, 63);
+                                engine->name_cache_count++;
+                                printf("[DNA_ENGINE] Cached name: %s -> %s\n",
+                                       fingerprints[i], display_name);
+                            }
+                        }
+                        free(display_name);
+                    }
+                }
+            }
+
+            pthread_mutex_unlock(&engine->name_cache_mutex);
+        }
+    }
 
     int error = (rc == 0) ? DNA_OK : DNA_ENGINE_ERROR_DATABASE;
     task->callback.identities(task->request_id, error, fingerprints, count, task->user_data);
@@ -673,7 +723,22 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     char display_name_buf[256] = {0};
     int error = DNA_OK;
     char *display_name = NULL;
+    const char *fingerprint = task->params.get_display_name.fingerprint;
 
+    /* Check cache first */
+    pthread_mutex_lock(&engine->name_cache_mutex);
+    for (int i = 0; i < engine->name_cache_count; i++) {
+        if (strcmp(engine->name_cache[i].fingerprint, fingerprint) == 0) {
+            strncpy(display_name_buf, engine->name_cache[i].display_name,
+                    sizeof(display_name_buf) - 1);
+            pthread_mutex_unlock(&engine->name_cache_mutex);
+            printf("[DNA_ENGINE] Cache hit: %s -> %s\n", fingerprint, display_name_buf);
+            goto done;
+        }
+    }
+    pthread_mutex_unlock(&engine->name_cache_mutex);
+
+    /* Not in cache, fetch from DHT */
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
         error = DNA_ENGINE_ERROR_NETWORK;
@@ -681,15 +746,29 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     }
 
     char *name_out = NULL;
-    int rc = dna_get_display_name(dht, task->params.get_display_name.fingerprint, &name_out);
+    int rc = dna_get_display_name(dht, fingerprint, &name_out);
 
     if (rc == 0 && name_out) {
         strncpy(display_name_buf, name_out, sizeof(display_name_buf) - 1);
+
+        /* Cache the result if it's a real name */
+        if (strlen(name_out) < 20 || strstr(name_out, "...") == NULL) {
+            pthread_mutex_lock(&engine->name_cache_mutex);
+            if (engine->name_cache_count < DNA_NAME_CACHE_MAX) {
+                strncpy(engine->name_cache[engine->name_cache_count].fingerprint,
+                        fingerprint, 128);
+                strncpy(engine->name_cache[engine->name_cache_count].display_name,
+                        name_out, 63);
+                engine->name_cache_count++;
+                printf("[DNA_ENGINE] Cached name: %s -> %s\n", fingerprint, name_out);
+            }
+            pthread_mutex_unlock(&engine->name_cache_mutex);
+        }
+
         free(name_out);
     } else {
         /* Fall back to shortened fingerprint */
-        snprintf(display_name_buf, sizeof(display_name_buf), "%.16s...",
-                 task->params.get_display_name.fingerprint);
+        snprintf(display_name_buf, sizeof(display_name_buf), "%.16s...", fingerprint);
     }
 
 done:
