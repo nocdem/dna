@@ -496,6 +496,7 @@ Sender-based outbox for offline message delivery (Model E).
 - **No accumulation**: Signed puts replace old values (not append)
 - **Spam prevention**: Recipients only query known contacts' outboxes
 - **Sender control**: Senders can edit/unsend within 7-day TTL
+- **Automatic retrieval**: `dna_engine_load_identity()` checks all contacts' outboxes on login
 
 #### Message Format
 

@@ -970,6 +970,9 @@ dna_request_id_t dna_engine_register_name(engine, name, callback, user_data);
 dna_request_id_t dna_engine_get_display_name(engine, fingerprint, callback, user_data);
 ```
 
+> **Note:** `dna_engine_load_identity()` automatically initializes P2P, registers presence,
+> subscribes to contacts for push notifications, and checks for offline messages.
+
 **Contacts (3 async functions):**
 ```c
 dna_request_id_t dna_engine_get_contacts(engine, callback, user_data);
