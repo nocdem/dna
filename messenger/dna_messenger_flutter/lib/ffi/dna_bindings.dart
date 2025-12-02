@@ -147,6 +147,71 @@ final class dna_transaction_t extends Struct {
   external Array<Char> status;
 }
 
+/// Feed channel information
+final class dna_channel_info_t extends Struct {
+  @Array(65)
+  external Array<Char> channel_id;
+
+  @Array(64)
+  external Array<Char> name;
+
+  @Array(512)
+  external Array<Char> description;
+
+  @Array(129)
+  external Array<Char> creator_fingerprint;
+
+  @Uint64()
+  external int created_at;
+
+  @Int32()
+  external int post_count;
+
+  @Int32()
+  external int subscriber_count;
+
+  @Uint64()
+  external int last_activity;
+}
+
+/// Feed post information
+final class dna_post_info_t extends Struct {
+  @Array(200)
+  external Array<Char> post_id;
+
+  @Array(65)
+  external Array<Char> channel_id;
+
+  @Array(129)
+  external Array<Char> author_fingerprint;
+
+  external Pointer<Utf8> text;
+
+  @Uint64()
+  external int timestamp;
+
+  @Array(200)
+  external Array<Char> reply_to;
+
+  @Int32()
+  external int reply_depth;
+
+  @Int32()
+  external int reply_count;
+
+  @Int32()
+  external int upvotes;
+
+  @Int32()
+  external int downvotes;
+
+  @Int32()
+  external int user_vote;
+
+  @Bool()
+  external bool verified;
+}
+
 // =============================================================================
 // EVENT TYPES
 // =============================================================================
@@ -346,6 +411,44 @@ typedef DnaTransactionsCbNative = Void Function(
 );
 typedef DnaTransactionsCb = NativeFunction<DnaTransactionsCbNative>;
 
+/// Feed channels callback - Native
+typedef DnaFeedChannelsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_channel_info_t> channels,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaFeedChannelsCb = NativeFunction<DnaFeedChannelsCbNative>;
+
+/// Feed channel callback (single) - Native
+typedef DnaFeedChannelCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_channel_info_t> channel,
+  Pointer<Void> user_data,
+);
+typedef DnaFeedChannelCb = NativeFunction<DnaFeedChannelCbNative>;
+
+/// Feed posts callback - Native
+typedef DnaFeedPostsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_post_info_t> posts,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaFeedPostsCb = NativeFunction<DnaFeedPostsCbNative>;
+
+/// Feed post callback (single) - Native
+typedef DnaFeedPostCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_post_info_t> post,
+  Pointer<Void> user_data,
+);
+typedef DnaFeedPostCb = NativeFunction<DnaFeedPostCbNative>;
+
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
   Pointer<dna_event_t> event,
@@ -445,6 +548,36 @@ typedef DnaTransactionsCbDart = void Function(
   int error,
   Pointer<dna_transaction_t> transactions,
   int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaFeedChannelsCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_channel_info_t> channels,
+  int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaFeedChannelCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_channel_info_t> channel,
+  Pointer<Void> userData,
+);
+
+typedef DnaFeedPostsCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_post_info_t> posts,
+  int count,
+  Pointer<Void> userData,
+);
+
+typedef DnaFeedPostCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_post_info_t> post,
   Pointer<Void> userData,
 );
 
@@ -1085,6 +1218,173 @@ class DnaBindings {
   ) {
     return _qgp_derive_seeds_from_mnemonic(
         mnemonic, passphrase, signing_seed, encryption_seed);
+  }
+
+  // ---------------------------------------------------------------------------
+  // FEED - CHANNELS
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_get_feed_channels = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaFeedChannelsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaFeedChannelsCb>,
+          Pointer<Void>)>('dna_engine_get_feed_channels');
+
+  int dna_engine_get_feed_channels(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaFeedChannelsCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_feed_channels(engine, callback, user_data);
+  }
+
+  late final _dna_engine_create_feed_channel = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaFeedChannelCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaFeedChannelCb>, Pointer<Void>)>('dna_engine_create_feed_channel');
+
+  int dna_engine_create_feed_channel(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> name,
+    Pointer<Utf8> description,
+    Pointer<DnaFeedChannelCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_create_feed_channel(
+        engine, name, description, callback, user_data);
+  }
+
+  late final _dna_engine_init_default_channels = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_init_default_channels');
+
+  int dna_engine_init_default_channels(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_init_default_channels(engine, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // FEED - POSTS
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_get_feed_posts = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaFeedPostsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaFeedPostsCb>, Pointer<Void>)>('dna_engine_get_feed_posts');
+
+  int dna_engine_get_feed_posts(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> channel_id,
+    Pointer<Utf8> date,
+    Pointer<DnaFeedPostsCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_feed_posts(
+        engine, channel_id, date, callback, user_data);
+  }
+
+  late final _dna_engine_create_feed_post = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>, Pointer<DnaFeedPostCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<Utf8>, Pointer<DnaFeedPostCb>, Pointer<Void>)>('dna_engine_create_feed_post');
+
+  int dna_engine_create_feed_post(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> channel_id,
+    Pointer<Utf8> text,
+    Pointer<Utf8> reply_to,
+    Pointer<DnaFeedPostCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_create_feed_post(
+        engine, channel_id, text, reply_to, callback, user_data);
+  }
+
+  late final _dna_engine_get_feed_post_replies = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaFeedPostsCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaFeedPostsCb>, Pointer<Void>)>('dna_engine_get_feed_post_replies');
+
+  int dna_engine_get_feed_post_replies(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> post_id,
+    Pointer<DnaFeedPostsCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_feed_post_replies(engine, post_id, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // FEED - VOTES
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_cast_feed_vote = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Int8,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, int,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_cast_feed_vote');
+
+  int dna_engine_cast_feed_vote(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> post_id,
+    int vote_value,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_cast_feed_vote(
+        engine, post_id, vote_value, callback, user_data);
+  }
+
+  late final _dna_engine_get_feed_votes = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaFeedPostCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaFeedPostCb>, Pointer<Void>)>('dna_engine_get_feed_votes');
+
+  int dna_engine_get_feed_votes(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> post_id,
+    Pointer<DnaFeedPostCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_feed_votes(engine, post_id, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // FEED - MEMORY MANAGEMENT
+  // ---------------------------------------------------------------------------
+
+  late final _dna_free_feed_channels = _lib.lookupFunction<
+      Void Function(Pointer<dna_channel_info_t>, Int32),
+      void Function(Pointer<dna_channel_info_t>, int)>('dna_free_feed_channels');
+
+  void dna_free_feed_channels(Pointer<dna_channel_info_t> channels, int count) {
+    _dna_free_feed_channels(channels, count);
+  }
+
+  late final _dna_free_feed_posts = _lib.lookupFunction<
+      Void Function(Pointer<dna_post_info_t>, Int32),
+      void Function(Pointer<dna_post_info_t>, int)>('dna_free_feed_posts');
+
+  void dna_free_feed_posts(Pointer<dna_post_info_t> posts, int count) {
+    _dna_free_feed_posts(posts, count);
+  }
+
+  late final _dna_free_feed_post = _lib.lookupFunction<
+      Void Function(Pointer<dna_post_info_t>),
+      void Function(Pointer<dna_post_info_t>)>('dna_free_feed_post');
+
+  void dna_free_feed_post(Pointer<dna_post_info_t> post) {
+    _dna_free_feed_post(post);
   }
 }
 
