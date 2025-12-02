@@ -83,8 +83,14 @@ run_flutter() {
 
 # Pull latest code
 pull_latest() {
-    echo -e "${YELLOW}Pulling latest from GitLab...${NC}"
-    git -C "$PROJECT_ROOT" pull --no-rebase gitlab main
+    echo -e "${YELLOW}Pulling latest...${NC}"
+    cd "$PROJECT_ROOT"
+    # Use gitlab remote if available, otherwise origin
+    if git remote | grep -q "^gitlab$"; then
+        git pull --no-rebase gitlab main
+    else
+        git pull --no-rebase origin main
+    fi
 }
 
 # Main
