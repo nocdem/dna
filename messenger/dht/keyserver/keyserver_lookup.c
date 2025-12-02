@@ -6,6 +6,7 @@
 
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
+#include <pthread.h>
 
 // Lookup public keys from DHT (supports both fingerprint and name)
 int dht_keyserver_lookup(
@@ -248,8 +249,36 @@ int dht_keyserver_reverse_lookup(
     return 0;
 }
 
-// Async reverse lookup: fingerprint → identity (now uses chunked layer synchronously)
-// Note: This function maintains the callback API but now uses synchronous chunked fetch
+// Thread context for async reverse lookup
+typedef struct {
+    dht_context_t *dht_ctx;
+    char fingerprint[129];
+    void (*callback)(char *identity, void *userdata);
+    void *userdata;
+} reverse_lookup_async_ctx_t;
+
+// Worker thread for async reverse lookup
+static void *reverse_lookup_thread(void *arg) {
+    reverse_lookup_async_ctx_t *ctx = (reverse_lookup_async_ctx_t *)arg;
+
+    // Perform synchronous lookup in this thread
+    char *identity = NULL;
+    int ret = dht_keyserver_reverse_lookup(ctx->dht_ctx, ctx->fingerprint, &identity);
+
+    // Call the callback with the result
+    if (ret != 0) {
+        ctx->callback(NULL, ctx->userdata);
+    } else {
+        ctx->callback(identity, ctx->userdata);  // Caller is responsible for freeing identity
+    }
+
+    // Free the context
+    free(ctx);
+    return NULL;
+}
+
+// Async reverse lookup: fingerprint → identity (true async using pthread)
+// Spawns a detached thread to perform the lookup without blocking the caller
 void dht_keyserver_reverse_lookup_async(
     dht_context_t *dht_ctx,
     const char *fingerprint,
@@ -262,15 +291,33 @@ void dht_keyserver_reverse_lookup_async(
         return;
     }
 
-    printf("[DHT_KEYSERVER] Reverse lookup for fingerprint: %s\n", fingerprint);
+    printf("[DHT_KEYSERVER] Async reverse lookup for fingerprint: %s\n", fingerprint);
 
-    // Use synchronous reverse lookup and call callback with result
-    char *identity = NULL;
-    int ret = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &identity);
-
-    if (ret != 0) {
+    // Allocate context for the thread
+    reverse_lookup_async_ctx_t *ctx = malloc(sizeof(reverse_lookup_async_ctx_t));
+    if (!ctx) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to allocate async context\n");
         callback(NULL, userdata);
-    } else {
-        callback(identity, userdata);  // Caller is responsible for freeing identity
+        return;
     }
+
+    ctx->dht_ctx = dht_ctx;
+    strncpy(ctx->fingerprint, fingerprint, 128);
+    ctx->fingerprint[128] = '\0';
+    ctx->callback = callback;
+    ctx->userdata = userdata;
+
+    // Spawn detached thread
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+
+    if (pthread_create(&thread, &attr, reverse_lookup_thread, ctx) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to create async thread\n");
+        free(ctx);
+        callback(NULL, userdata);
+    }
+
+    pthread_attr_destroy(&attr);
 }

@@ -232,47 +232,6 @@ bool messenger_is_fingerprint(const char *str);
 int messenger_get_display_name(messenger_context_t *ctx, const char *identifier, char *display_name_out);
 
 // ============================================================================
-// IDENTITY MIGRATION (Phase 4: Old Names → Fingerprints)
-// ============================================================================
-
-/**
- * Detect old-style identity files that need migration
- *
- * Scans ~/.dna/ for .dsa files and checks if they use old naming (not fingerprints).
- * Returns list of identities that need migration.
- *
- * @param identities_out: Array of identity names (caller must free each string and array)
- * @param count_out: Number of identities found
- * @return: 0 on success, -1 on error
- */
-int messenger_detect_old_identities(char ***identities_out, int *count_out);
-
-/**
- * Migrate identity files from old naming to fingerprint naming
- *
- * Renames files:
- *   ~/.dna/<name>.dsa → ~/.dna/<fingerprint>.dsa
- *   ~/.dna/<name>.kem → ~/.dna/<fingerprint>.kem
- *   ~/.dna/<name>_contacts.db → ~/.dna/<fingerprint>_contacts.db
- *
- * Creates backup:
- *   ~/.dna/backup_pre_migration/<name>.*
- *
- * @param old_name: Old identity name (e.g., "alice")
- * @param fingerprint_out: Output buffer for computed fingerprint (129 bytes)
- * @return: 0 on success, -1 on error
- */
-int messenger_migrate_identity_files(const char *old_name, char *fingerprint_out);
-
-/**
- * Check if an identity has already been migrated
- *
- * @param name: Identity name to check
- * @return: true if migrated (fingerprint files exist), false otherwise
- */
-bool messenger_is_identity_migrated(const char *name);
-
-// ============================================================================
 // PUBLIC KEY MANAGEMENT (keyserver table)
 // ============================================================================
 

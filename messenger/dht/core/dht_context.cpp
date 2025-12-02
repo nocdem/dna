@@ -211,6 +211,110 @@ namespace {
             }
         );
     }
+
+    /**
+     * Persist value metadata to storage (internal helper)
+     *
+     * Factors out the duplicated persistent storage logic from dht_put_ttl()
+     * and dht_put_signed(). This is an internal helper, not a public C API.
+     *
+     * @param ctx DHT context (for accessing ctx->storage)
+     * @param key Original key bytes (not hashed)
+     * @param key_len Key length (typically 64 for SHA3-512)
+     * @param value Original value bytes
+     * @param value_len Value length
+     * @param value_type The assigned ValueType (0x1001, 0x1002, 0x1003)
+     * @param ttl_seconds TTL in seconds (UINT_MAX = permanent)
+     */
+    static void persist_value_if_enabled(
+        dht_context_t *ctx,
+        const uint8_t *key, size_t key_len,
+        const uint8_t *value, size_t value_len,
+        uint32_t value_type,
+        unsigned int ttl_seconds
+    ) {
+        if (!ctx->storage) {
+            return;
+        }
+
+        uint64_t expires_at = 0;  // 0 = permanent
+        if (ttl_seconds != UINT_MAX) {
+            expires_at = time(NULL) + ttl_seconds;
+        }
+
+        // CRITICAL FIX (2025-11-12): Store ORIGINAL key, not derived infohash
+        // This prevents double-hashing bug on republish after bootstrap restart
+        // Old bug: stored infohash -> republish hashed infohash -> wrong DHT key
+        dht_value_metadata_t metadata;
+        metadata.key_hash = key;           // Original 64-byte SHA3-512 input
+        metadata.key_hash_len = key_len;   // 64 bytes (not 40-char hex infohash)
+        metadata.value_data = value;
+        metadata.value_data_len = value_len;
+        metadata.value_type = value_type;
+        metadata.created_at = time(NULL);
+        metadata.expires_at = expires_at;
+
+        if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
+            if (dht_value_storage_should_persist(metadata.value_type, metadata.expires_at)) {
+                std::cout << "[Storage] Value persisted to disk (key: " << key_len << " bytes)" << std::endl;
+            }
+        }
+    }
+
+    /**
+     * Register custom ValueTypes with the DHT runner (internal helper)
+     *
+     * @param ctx DHT context
+     */
+    static void register_value_types(dht_context_t *ctx) {
+        std::cout << "[DHT] Registering custom ValueTypes..." << std::endl;
+
+        // Create ValueTypes with captured context (eliminates global storage)
+        ctx->type_7day = create_7day_type(ctx);
+        ctx->type_30day = create_30day_type(ctx);
+        ctx->type_365day = create_365day_type(ctx);
+
+        // Register with DhtRunner
+        ctx->runner.registerType(ctx->type_7day);
+        ctx->runner.registerType(ctx->type_30day);
+        ctx->runner.registerType(ctx->type_365day);
+
+        std::cout << "[DHT] Registered DNA_TYPE_7DAY (id=0x1001, TTL=7 days)" << std::endl;
+        std::cout << "[DHT] Registered DNA_TYPE_30DAY (id=0x1003, TTL=30 days)" << std::endl;
+        std::cout << "[DHT] Registered DNA_TYPE_365DAY (id=0x1002, TTL=365 days)" << std::endl;
+    }
+
+    /**
+     * Bootstrap to configured nodes (internal helper)
+     *
+     * @param ctx DHT context
+     */
+    static void bootstrap_to_nodes(dht_context_t *ctx) {
+        if (ctx->config.bootstrap_count == 0) {
+            std::cout << "[DHT] No bootstrap nodes (first node in network)" << std::endl;
+            return;
+        }
+
+        std::cout << "[DHT] Bootstrapping to " << ctx->config.bootstrap_count << " nodes:" << std::endl;
+
+        for (size_t i = 0; i < ctx->config.bootstrap_count; i++) {
+            std::string node_addr(ctx->config.bootstrap_nodes[i]);
+
+            // Parse IP:port
+            size_t colon_pos = node_addr.find(':');
+            if (colon_pos == std::string::npos) {
+                std::cerr << "[DHT] Invalid bootstrap node format: " << node_addr << std::endl;
+                continue;
+            }
+
+            std::string ip = node_addr.substr(0, colon_pos);
+            std::string port_str = node_addr.substr(colon_pos + 1);
+
+            std::cout << "[DHT]   -> " << ip << ":" << port_str << std::endl;
+
+            ctx->runner.bootstrap(ip, port_str);
+        }
+    }
 }
 
 /**
@@ -341,46 +445,10 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
         }
 
         // Register custom ValueTypes (CRITICAL: all nodes must know these types!)
-        std::cout << "[DHT] Registering custom ValueTypes..." << std::endl;
-
-        // Create ValueTypes with captured context (eliminates global storage)
-        ctx->type_7day = create_7day_type(ctx);
-        ctx->type_30day = create_30day_type(ctx);
-        ctx->type_365day = create_365day_type(ctx);
-
-        // Register with DhtRunner
-        ctx->runner.registerType(ctx->type_7day);
-        ctx->runner.registerType(ctx->type_30day);
-        ctx->runner.registerType(ctx->type_365day);
-
-        std::cout << "[DHT] ✓ Registered DNA_TYPE_7DAY (id=0x1001, TTL=7 days)" << std::endl;
-        std::cout << "[DHT] ✓ Registered DNA_TYPE_30DAY (id=0x1003, TTL=30 days)" << std::endl;
-        std::cout << "[DHT] ✓ Registered DNA_TYPE_365DAY (id=0x1002, TTL=365 days)" << std::endl;
+        register_value_types(ctx);
 
         // Bootstrap to other nodes
-        if (ctx->config.bootstrap_count > 0) {
-            std::cout << "[DHT] Bootstrapping to " << ctx->config.bootstrap_count << " nodes:" << std::endl;
-
-            for (size_t i = 0; i < ctx->config.bootstrap_count; i++) {
-                std::string node_addr(ctx->config.bootstrap_nodes[i]);
-
-                // Parse IP:port
-                size_t colon_pos = node_addr.find(':');
-                if (colon_pos == std::string::npos) {
-                    std::cerr << "[DHT] Invalid bootstrap node format: " << node_addr << std::endl;
-                    continue;
-                }
-
-                std::string ip = node_addr.substr(0, colon_pos);
-                std::string port_str = node_addr.substr(colon_pos + 1);
-
-                std::cout << "[DHT]   → " << ip << ":" << port_str << std::endl;
-
-                ctx->runner.bootstrap(ip, port_str);
-            }
-        } else {
-            std::cout << "[DHT] No bootstrap nodes (first node in network)" << std::endl;
-        }
+        bootstrap_to_nodes(ctx);
 
         ctx->running = true;
         return 0;
@@ -418,46 +486,10 @@ extern "C" int dht_context_start_with_identity(dht_context_t *ctx, dht_identity_
         std::cout << "[DHT] Node started on port " << ctx->config.port << std::endl;
 
         // Register custom ValueTypes
-        std::cout << "[DHT] Registering custom ValueTypes..." << std::endl;
-
-        // Create ValueTypes with captured context (eliminates global storage)
-        ctx->type_7day = create_7day_type(ctx);
-        ctx->type_30day = create_30day_type(ctx);
-        ctx->type_365day = create_365day_type(ctx);
-
-        // Register with DhtRunner
-        ctx->runner.registerType(ctx->type_7day);
-        ctx->runner.registerType(ctx->type_30day);
-        ctx->runner.registerType(ctx->type_365day);
-
-        std::cout << "[DHT] ✓ Registered DNA_TYPE_7DAY (id=0x1001, TTL=7 days)" << std::endl;
-        std::cout << "[DHT] ✓ Registered DNA_TYPE_30DAY (id=0x1003, TTL=30 days)" << std::endl;
-        std::cout << "[DHT] ✓ Registered DNA_TYPE_365DAY (id=0x1002, TTL=365 days)" << std::endl;
+        register_value_types(ctx);
 
         // Bootstrap to other nodes
-        if (ctx->config.bootstrap_count > 0) {
-            std::cout << "[DHT] Bootstrapping to " << ctx->config.bootstrap_count << " nodes:" << std::endl;
-
-            for (size_t i = 0; i < ctx->config.bootstrap_count; i++) {
-                std::string node_addr(ctx->config.bootstrap_nodes[i]);
-
-                // Parse IP:port
-                size_t colon_pos = node_addr.find(':');
-                if (colon_pos == std::string::npos) {
-                    std::cerr << "[DHT] Invalid bootstrap node format: " << node_addr << std::endl;
-                    continue;
-                }
-
-                std::string ip = node_addr.substr(0, colon_pos);
-                std::string port_str = node_addr.substr(colon_pos + 1);
-
-                std::cout << "[DHT]   → " << ip << ":" << port_str << std::endl;
-
-                ctx->runner.bootstrap(ip, port_str);
-            }
-        } else {
-            std::cout << "[DHT] No bootstrap nodes (first node in network)" << std::endl;
-        }
+        bootstrap_to_nodes(ctx);
 
         ctx->running = true;
         return 0;
@@ -649,30 +681,7 @@ extern "C" int dht_put_ttl(dht_context_t *ctx,
         }
 
         // Store value to persistent storage (if enabled)
-        if (ctx->storage) {
-            uint64_t expires_at = 0;  // 0 = permanent
-            if (ttl_seconds != UINT_MAX) {
-                expires_at = time(NULL) + ttl_seconds;
-            }
-
-            // CRITICAL FIX (2025-11-12): Store ORIGINAL key, not derived infohash
-            // This prevents double-hashing bug on republish after bootstrap restart
-            // Old bug: stored infohash → republish hashed infohash → wrong DHT key
-            dht_value_metadata_t metadata;
-            metadata.key_hash = key;           // Original 64-byte SHA3-512 input
-            metadata.key_hash_len = key_len;   // 64 bytes (not 40-char hex infohash)
-            metadata.value_data = value;
-            metadata.value_data_len = value_len;
-            metadata.value_type = dht_value->type;
-            metadata.created_at = time(NULL);
-            metadata.expires_at = expires_at;
-
-            if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
-                if (dht_value_storage_should_persist(metadata.value_type, metadata.expires_at)) {
-                    std::cout << "[Storage] ✓ Value persisted to disk (key: " << key_len << " bytes)" << std::endl;
-                }
-            }
-        }
+        persist_value_if_enabled(ctx, key, key_len, value, value_len, dht_value->type, ttl_seconds);
 
         return 0;
     } catch (const std::exception& e) {
@@ -807,30 +816,7 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
                              true);  // permanent=true for maintain_storage behavior
 
         // Store value to persistent storage (if enabled)
-        if (ctx->storage) {
-            uint64_t expires_at = 0;  // 0 = permanent
-            if (ttl_seconds != UINT_MAX) {
-                expires_at = time(NULL) + ttl_seconds;
-            }
-
-            // CRITICAL FIX (2025-11-12): Store ORIGINAL key, not derived infohash
-            // This prevents double-hashing bug on republish after bootstrap restart
-            // Old bug: stored infohash → republish hashed infohash → wrong DHT key
-            dht_value_metadata_t metadata;
-            metadata.key_hash = key;           // Original 64-byte SHA3-512 input
-            metadata.key_hash_len = key_len;   // 64 bytes (not 40-char hex infohash)
-            metadata.value_data = value;
-            metadata.value_data_len = value_len;
-            metadata.value_type = dht_value->type;
-            metadata.created_at = time(NULL);
-            metadata.expires_at = expires_at;
-
-            if (dht_value_storage_put(ctx->storage, &metadata) == 0) {
-                if (dht_value_storage_should_persist(metadata.value_type, metadata.expires_at)) {
-                    std::cout << "[Storage] ✓ Value persisted to disk (key: " << key_len << " bytes)" << std::endl;
-                }
-            }
-        }
+        persist_value_if_enabled(ctx, key, key_len, value, value_len, dht_value->type, ttl_seconds);
 
         return 0;
     } catch (const std::exception& e) {
@@ -910,21 +896,48 @@ extern "C" int dht_republish_packed(dht_context_t *ctx,
     }
 }
 
+/*============================================================================
+ * DHT GET Validation Macros
+ * Consolidate common validation logic for dht_get, dht_get_async, dht_get_all
+ *============================================================================*/
+
+#define DHT_GET_VALIDATE_CTX(ctx, func_name) \
+    do { \
+        if (!(ctx)) { \
+            std::cerr << "[DHT] ERROR: NULL context in " << (func_name) << std::endl; \
+            return -1; \
+        } \
+        if (!(ctx)->running) { \
+            std::cerr << "[DHT] ERROR: Node not running in " << (func_name) << std::endl; \
+            return -1; \
+        } \
+    } while(0)
+
+#define DHT_GET_VALIDATE_CTX_ASYNC(ctx, callback, userdata, func_name) \
+    do { \
+        if (!(ctx)) { \
+            std::cerr << "[DHT] ERROR: NULL context in " << (func_name) << std::endl; \
+            if (callback) (callback)(nullptr, 0, userdata); \
+            return; \
+        } \
+        if (!(ctx)->running) { \
+            std::cerr << "[DHT] ERROR: Node not running in " << (func_name) << std::endl; \
+            if (callback) (callback)(nullptr, 0, userdata); \
+            return; \
+        } \
+    } while(0)
+
 /**
  * Get value from DHT (returns first value only)
  */
 extern "C" int dht_get(dht_context_t *ctx,
                        const uint8_t *key, size_t key_len,
                        uint8_t **value_out, size_t *value_len_out) {
-    if (!ctx || !key || !value_out || !value_len_out) {
+    if (!key || !value_out || !value_len_out) {
         std::cerr << "[DHT] ERROR: NULL parameter in dht_get" << std::endl;
         return -1;
     }
-
-    if (!ctx->running) {
-        std::cerr << "[DHT] ERROR: Node not running" << std::endl;
-        return -1;
-    }
+    DHT_GET_VALIDATE_CTX(ctx, "dht_get");
 
     try {
         auto start_total = std::chrono::steady_clock::now();
@@ -999,17 +1012,12 @@ extern "C" void dht_get_async(dht_context_t *ctx,
                               const uint8_t *key, size_t key_len,
                               void (*callback)(uint8_t *value, size_t value_len, void *userdata),
                               void *userdata) {
-    if (!ctx || !key || !callback) {
+    if (!key || !callback) {
         std::cerr << "[DHT] ERROR: NULL parameter in dht_get_async" << std::endl;
-        if (callback) callback(nullptr, 0, userdata);  // Call with error
+        if (callback) callback(nullptr, 0, userdata);
         return;
     }
-
-    if (!ctx->running) {
-        std::cerr << "[DHT] ERROR: Node not running" << std::endl;
-        callback(nullptr, 0, userdata);  // Call with error
-        return;
-    }
+    DHT_GET_VALIDATE_CTX_ASYNC(ctx, callback, userdata, "dht_get_async");
 
     try {
         // Hash the key
@@ -1074,15 +1082,11 @@ extern "C" int dht_get_all(dht_context_t *ctx,
                            const uint8_t *key, size_t key_len,
                            uint8_t ***values_out, size_t **values_len_out,
                            size_t *count_out) {
-    if (!ctx || !key || !values_out || !values_len_out || !count_out) {
+    if (!key || !values_out || !values_len_out || !count_out) {
         std::cerr << "[DHT] ERROR: NULL parameter in dht_get_all" << std::endl;
         return -1;
     }
-
-    if (!ctx->running) {
-        std::cerr << "[DHT] ERROR: Node not running" << std::endl;
-        return -1;
-    }
+    DHT_GET_VALIDATE_CTX(ctx, "dht_get_all");
 
     try {
         // Hash the key
