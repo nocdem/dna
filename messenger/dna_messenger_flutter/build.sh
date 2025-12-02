@@ -1,6 +1,6 @@
 #!/bin/bash
-# DNA Messenger Flutter - Linux build and run script
-# Compiles native library, copies to correct location, and runs the app
+# DNA Messenger Flutter - Full build script
+# Pulls latest code, builds native library, and runs the app
 
 set -e
 
@@ -16,7 +16,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}=== DNA Messenger Flutter - Linux ===${NC}"
+echo -e "${GREEN}=== DNA Messenger Flutter - Full Build ===${NC}"
 
 # Check for required tools
 check_dependencies() {
@@ -25,12 +25,28 @@ check_dependencies() {
     command -v cmake >/dev/null 2>&1 || missing+=("cmake")
     command -v make >/dev/null 2>&1 || missing+=("make")
     command -v flutter >/dev/null 2>&1 || missing+=("flutter")
+    command -v git >/dev/null 2>&1 || missing+=("git")
 
     if [ ${#missing[@]} -ne 0 ]; then
         echo -e "${RED}Error: Missing required tools: ${missing[*]}${NC}"
         echo "Install with: sudo apt install ${missing[*]}"
         exit 1
     fi
+}
+
+# Pull latest code
+pull_latest() {
+    echo -e "${YELLOW}Pulling latest code...${NC}"
+    cd "$PROJECT_ROOT"
+
+    # Use gitlab remote if available, otherwise origin
+    if git remote | grep -q "^gitlab$"; then
+        git pull --no-rebase gitlab main
+    else
+        git pull --no-rebase origin main
+    fi
+
+    echo -e "${GREEN}Code updated${NC}"
 }
 
 # Build native library
@@ -84,16 +100,9 @@ run_flutter() {
 # Main
 main() {
     check_dependencies
-
-    # Handle --no-build flag to skip native library build
-    if [ "$1" = "--no-build" ] || [ "$1" = "-n" ]; then
-        shift
-    else
-        # Always rebuild native library to catch any changes
-        build_native_lib
-        copy_library
-    fi
-
+    pull_latest
+    build_native_lib
+    copy_library
     run_flutter "$@"
 }
 
@@ -101,14 +110,15 @@ main() {
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Usage: $0 [OPTIONS] [FLUTTER_ARGS...]"
     echo ""
+    echo "This script pulls latest code, builds the native library, and runs the app."
+    echo "Use run_linux.sh for faster iterations without git pull."
+    echo ""
     echo "Options:"
-    echo "  -n, --no-build   Skip native library build (faster restart)"
     echo "  -h, --help       Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0                    # Build native lib and run"
-    echo "  $0 --no-build         # Skip build and run (faster)"
-    echo "  $0 --release          # Build and run in release mode"
+    echo "  $0                    # Pull, build, and run"
+    echo "  $0 --release          # Pull, build, and run in release mode"
     exit 0
 fi
 
