@@ -1,14 +1,14 @@
 #!/bin/bash
-# DNA Messenger Flutter - Full build script
-# Pulls latest code, builds native library, and runs the app
+# DNA Messenger Flutter GUI - Full build script
+# Pulls latest code, builds native library, and runs the Flutter app
 
 set -e
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FLUTTER_DIR="$PROJECT_ROOT/dna_messenger_flutter"
 BUILD_DIR="$PROJECT_ROOT/build"
-FLUTTER_LIBS_DIR="$SCRIPT_DIR/linux/libs"
-FLUTTER_BUNDLE_LIB="$SCRIPT_DIR/build/linux/x64/debug/bundle/lib"
+FLUTTER_LIBS_DIR="$FLUTTER_DIR/linux/libs"
+FLUTTER_BUNDLE_LIB="$FLUTTER_DIR/build/linux/x64/debug/bundle/lib"
 
 # Colors for output
 RED='\033[0;31m'
@@ -16,7 +16,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}=== DNA Messenger Flutter - Full Build ===${NC}"
+echo -e "${GREEN}=== DNA Messenger Flutter GUI - Full Build ===${NC}"
 
 # Check for required tools
 check_dependencies() {
@@ -88,7 +88,7 @@ copy_library() {
 run_flutter() {
     echo -e "${YELLOW}Starting Flutter app...${NC}"
 
-    cd "$SCRIPT_DIR"
+    cd "$FLUTTER_DIR"
 
     # Get Flutter dependencies if needed
     flutter pub get
@@ -110,8 +110,8 @@ main() {
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Usage: $0 [OPTIONS] [FLUTTER_ARGS...]"
     echo ""
-    echo "This script pulls latest code, builds the native library, and runs the app."
-    echo "Use run_linux.sh for faster iterations without git pull."
+    echo "This script pulls latest code, builds the native library, and runs the Flutter app."
+    echo "Use dna_messenger_flutter/run_linux.sh for faster iterations without git pull."
     echo ""
     echo "Options:"
     echo "  -h, --help       Show this help message"
