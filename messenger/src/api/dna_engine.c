@@ -619,11 +619,7 @@ done:
 void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
 
-    printf("[RegisterName] Registering name '%s' for fingerprint %.20s...\n",
-           task->params.register_name.name, engine->fingerprint);
-
     if (!engine->identity_loaded || !engine->messenger) {
-        printf("[RegisterName] ERROR: No identity loaded\n");
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
     }
@@ -634,8 +630,6 @@ void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task) {
         task->params.register_name.name
     );
 
-    printf("[RegisterName] messenger_register_name returned: %d\n", rc);
-
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
     }
@@ -645,8 +639,9 @@ done:
 }
 
 void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
-    char display_name[256] = {0};
+    char display_name_buf[256] = {0};
     int error = DNA_OK;
+    char *display_name = NULL;
 
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
@@ -658,22 +653,25 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     int rc = dna_get_display_name(dht, task->params.get_display_name.fingerprint, &name_out);
 
     if (rc == 0 && name_out) {
-        strncpy(display_name, name_out, sizeof(display_name) - 1);
+        strncpy(display_name_buf, name_out, sizeof(display_name_buf) - 1);
         free(name_out);
     } else {
         /* Fall back to shortened fingerprint */
-        snprintf(display_name, sizeof(display_name), "%.16s...",
+        snprintf(display_name_buf, sizeof(display_name_buf), "%.16s...",
                  task->params.get_display_name.fingerprint);
     }
 
 done:
+    /* Allocate on heap for thread-safe callback - caller frees via dna_free_string */
+    display_name = strdup(display_name_buf);
     task->callback.display_name(task->request_id, error, display_name, task->user_data);
 }
 
 void dna_handle_lookup_name(dna_engine_t *engine, dna_task_t *task) {
     (void)engine;  /* Not needed for DHT lookup */
-    char fingerprint[129] = {0};
+    char fingerprint_buf[129] = {0};
     int error = DNA_OK;
+    char *fingerprint = NULL;
 
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
@@ -686,17 +684,19 @@ void dna_handle_lookup_name(dna_engine_t *engine, dna_task_t *task) {
 
     if (rc == 0 && fp_out) {
         /* Name is taken - return the fingerprint of who owns it */
-        strncpy(fingerprint, fp_out, sizeof(fingerprint) - 1);
+        strncpy(fingerprint_buf, fp_out, sizeof(fingerprint_buf) - 1);
         free(fp_out);
     } else if (rc == -2) {
         /* Name not found = available, return empty string */
-        fingerprint[0] = '\0';
+        fingerprint_buf[0] = '\0';
     } else {
         /* Other error */
         error = DNA_ENGINE_ERROR_NETWORK;
     }
 
 done:
+    /* Allocate on heap for thread-safe callback - caller frees via dna_free_string */
+    fingerprint = strdup(fingerprint_buf);
     task->callback.display_name(task->request_id, error, fingerprint, task->user_data);
 }
 
@@ -778,9 +778,6 @@ void dna_handle_add_contact(dna_engine_t *engine, dna_task_t *task) {
 
     const char *identifier = task->params.add_contact.identifier;
 
-    /* Debug logging */
-    printf("[AddContact] Received identifier: '%s' (len=%zu)\n", identifier, strlen(identifier));
-
     /* Check if it's already a fingerprint (128 hex chars) */
     bool is_fingerprint = (strlen(identifier) == 128);
     if (is_fingerprint) {
@@ -790,13 +787,10 @@ void dna_handle_add_contact(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
-    printf("[AddContact] is_fingerprint=%d\n", is_fingerprint);
-
     if (is_fingerprint) {
         strncpy(fingerprint, identifier, 128);
     } else {
         /* Lookup name in DHT */
-        printf("[AddContact] Looking up name in DHT: '%s'\n", identifier);
         dht_context_t *dht = dht_singleton_get();
         if (!dht) {
             error = DNA_ENGINE_ERROR_NETWORK;
@@ -805,7 +799,6 @@ void dna_handle_add_contact(dna_engine_t *engine, dna_task_t *task) {
 
         char *fp_out = NULL;
         if (dna_lookup_by_name(dht, identifier, &fp_out) != 0 || !fp_out) {
-            printf("[AddContact] DHT lookup failed for '%s'\n", identifier);
             error = DNA_ERROR_NOT_FOUND;
             goto done;
         }
@@ -2392,35 +2385,24 @@ void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     char *name = NULL;
 
-    printf("[GetRegisteredName] Starting lookup for fingerprint: %.20s...\n",
-           engine->fingerprint[0] ? engine->fingerprint : "(none)");
-
     if (!engine->messenger || !engine->identity_loaded) {
-        printf("[GetRegisteredName] No identity loaded\n");
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
         dht_context_t *dht_ctx = dht_singleton_get();
         if (dht_ctx) {
             char *registered_name = NULL;
             int ret = dht_keyserver_reverse_lookup(dht_ctx, engine->fingerprint, &registered_name);
-            printf("[GetRegisteredName] Reverse lookup returned: %d, name: %s\n",
-                   ret, registered_name ? registered_name : "(null)");
             if (ret == 0 && registered_name) {
                 name = registered_name; /* Transfer ownership */
             }
             /* Not found is not an error - just returns NULL name */
-        } else {
-            printf("[GetRegisteredName] DHT context is NULL\n");
         }
     }
 
-    printf("[GetRegisteredName] Returning name: %s\n", name ? name : "(null)");
-
     if (task->callback.display_name) {
+        /* Caller frees via dna_free_string - don't free here due to async callback */
         task->callback.display_name(task->request_id, error, name, task->user_data);
     }
-
-    free(name);
 }
 
 /* ============================================================================

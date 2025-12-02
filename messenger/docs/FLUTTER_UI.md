@@ -303,6 +303,15 @@ dna_messenger_flutter/
 
 ---
 
+## Upcoming UI Changes
+
+**Navigation Redesign (TODO):**
+- Replace bottom navigation bar with hamburger menu (drawer)
+- Move all navigation to hamburger menu for cleaner interface
+- Current bottom menu will be completely removed
+
+---
+
 ## Dependencies
 
 ```yaml
