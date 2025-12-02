@@ -135,36 +135,12 @@ class IdentitySelectionScreen extends ConsumerWidget {
       itemCount: identities.length,
       itemBuilder: (context, index) {
         final fingerprint = identities[index];
-        final shortFp = _shortenFingerprint(fingerprint);
-
-        return Card(
-          margin: const EdgeInsets.only(bottom: 8),
-          child: ListTile(
-            leading: CircleAvatar(
-              backgroundColor: theme.colorScheme.primary.withAlpha(51),
-              child: Icon(
-                Icons.person,
-                color: theme.colorScheme.primary,
-              ),
-            ),
-            title: Text(shortFp),
-            subtitle: Text(
-              fingerprint,
-              style: theme.textTheme.bodySmall,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            trailing: const Icon(Icons.arrow_forward_ios, size: 16),
-            onTap: () => _loadIdentity(context, ref, fingerprint),
-          ),
+        return _IdentityListTile(
+          fingerprint: fingerprint,
+          onTap: () => _loadIdentity(context, ref, fingerprint),
         );
       },
     );
-  }
-
-  String _shortenFingerprint(String fingerprint) {
-    if (fingerprint.length <= 16) return fingerprint;
-    return '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}';
   }
 
   Future<void> _loadIdentity(BuildContext context, WidgetRef ref, String fingerprint) async {
@@ -867,5 +843,83 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
         );
       }
     }
+  }
+}
+
+/// Identity list tile that fetches display name from DHT
+class _IdentityListTile extends ConsumerWidget {
+  final String fingerprint;
+  final VoidCallback onTap;
+
+  const _IdentityListTile({
+    required this.fingerprint,
+    required this.onTap,
+  });
+
+  String _shortenFingerprint(String fp) {
+    if (fp.length <= 16) return fp;
+    return '${fp.substring(0, 8)}...${fp.substring(fp.length - 8)}';
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final displayNameAsync = ref.watch(identityDisplayNameProvider(fingerprint));
+    final shortFp = _shortenFingerprint(fingerprint);
+
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        leading: CircleAvatar(
+          backgroundColor: theme.colorScheme.primary.withAlpha(51),
+          child: Icon(
+            Icons.person,
+            color: theme.colorScheme.primary,
+          ),
+        ),
+        title: displayNameAsync.when(
+          data: (name) => Text(
+            name ?? shortFp,
+            style: name != null
+                ? theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)
+                : null,
+          ),
+          loading: () => Row(
+            children: [
+              Text(shortFp),
+              const SizedBox(width: 8),
+              const SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            ],
+          ),
+          error: (_, __) => Text(shortFp),
+        ),
+        subtitle: displayNameAsync.when(
+          data: (name) => Text(
+            name != null ? shortFp : fingerprint,
+            style: theme.textTheme.bodySmall,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          loading: () => Text(
+            fingerprint,
+            style: theme.textTheme.bodySmall,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+          error: (_, __) => Text(
+            fingerprint,
+            style: theme.textTheme.bodySmall,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        trailing: const Icon(Icons.arrow_forward_ios, size: 16),
+        onTap: onTap,
+      ),
+    );
   }
 }

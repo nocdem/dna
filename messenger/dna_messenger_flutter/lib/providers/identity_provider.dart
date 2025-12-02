@@ -148,6 +148,37 @@ final userProfileProvider = FutureProvider<UserProfile?>((ref) async {
   }
 });
 
+/// Cache for identity display names (fingerprint -> registered name)
+/// This is used by the identity selection screen to show names instead of fingerprints
+final identityNameCacheProvider = StateProvider<Map<String, String>>((ref) => {});
+
+/// Provider to fetch and cache display name for a fingerprint
+final identityDisplayNameProvider = FutureProvider.family<String?, String>((ref, fingerprint) async {
+  // Check cache first
+  final cache = ref.read(identityNameCacheProvider);
+  if (cache.containsKey(fingerprint)) {
+    return cache[fingerprint];
+  }
+
+  // Fetch from DHT
+  try {
+    final engine = await ref.read(engineProvider.future);
+    final displayName = await engine.getDisplayName(fingerprint);
+
+    if (displayName.isNotEmpty) {
+      // Update cache
+      final newCache = Map<String, String>.from(ref.read(identityNameCacheProvider));
+      newCache[fingerprint] = displayName;
+      ref.read(identityNameCacheProvider.notifier).state = newCache;
+      return displayName;
+    }
+  } catch (e) {
+    // DHT lookup failed, return null
+  }
+
+  return null;
+});
+
 class CreateIdentityStateNotifier extends StateNotifier<CreateIdentityState> {
   CreateIdentityStateNotifier() : super(const CreateIdentityState());
 
