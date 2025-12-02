@@ -339,6 +339,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
         // Input is a name - lookup the fingerprint
         try {
           final fp = await engine.lookupName(input);
+          print('[AddContact] lookupName("$input") returned: "$fp" (len=${fp.length})');
           if (fp.isNotEmpty) {
             fingerprint = fp;
             displayName = input;
@@ -405,6 +406,10 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
     if (_foundFingerprint == null) return;
 
     setState(() => _isAdding = true);
+
+    // Debug: log what we're adding
+    print('[AddContact] Adding fingerprint: $_foundFingerprint');
+    print('[AddContact] Fingerprint length: ${_foundFingerprint!.length}');
 
     try {
       await widget.ref.read(contactsProvider.notifier).addContact(
