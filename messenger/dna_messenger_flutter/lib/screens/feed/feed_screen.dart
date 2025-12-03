@@ -274,6 +274,9 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
   }
 
   Future<void> _castVote(FeedPost post, int value) async {
+    // Set loading state
+    ref.read(votingPostProvider.notifier).state = post.postId;
+
     try {
       final engine = await ref.read(engineProvider.future);
       await engine.castFeedVote(post.postId, value);
@@ -288,6 +291,9 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
           SnackBar(content: Text('Vote failed: $e')),
         );
       }
+    } finally {
+      // Clear loading state
+      ref.read(votingPostProvider.notifier).state = null;
     }
   }
 
@@ -474,23 +480,33 @@ class _PostCard extends ConsumerWidget {
             Row(
               children: [
                 // Upvote
-                _VoteButton(
-                  icon: Icons.thumb_up_outlined,
-                  activeIcon: Icons.thumb_up,
-                  count: post.upvotes,
-                  isActive: post.userVote == 1,
-                  onTap: post.hasVoted ? null : () => onVote(1),
-                ),
+                Builder(builder: (context) {
+                  final votingPostId = ref.watch(votingPostProvider);
+                  final isLoading = votingPostId == post.postId;
+                  return _VoteButton(
+                    icon: Icons.thumb_up_outlined,
+                    activeIcon: Icons.thumb_up,
+                    count: post.upvotes,
+                    isActive: post.userVote == 1,
+                    isLoading: isLoading,
+                    onTap: post.hasVoted ? null : () => onVote(1),
+                  );
+                }),
                 const SizedBox(width: 4),
                 // Downvote
-                _VoteButton(
-                  icon: Icons.thumb_down_outlined,
-                  activeIcon: Icons.thumb_down,
-                  count: post.downvotes,
-                  isActive: post.userVote == -1,
-                  isNegative: true,
-                  onTap: post.hasVoted ? null : () => onVote(-1),
-                ),
+                Builder(builder: (context) {
+                  final votingPostId = ref.watch(votingPostProvider);
+                  final isLoading = votingPostId == post.postId;
+                  return _VoteButton(
+                    icon: Icons.thumb_down_outlined,
+                    activeIcon: Icons.thumb_down,
+                    count: post.downvotes,
+                    isActive: post.userVote == -1,
+                    isNegative: true,
+                    isLoading: isLoading,
+                    onTap: post.hasVoted ? null : () => onVote(-1),
+                  );
+                }),
                 const Spacer(),
                 // Reply count
                 if (post.replyCount > 0)
@@ -548,6 +564,7 @@ class _VoteButton extends StatelessWidget {
   final int count;
   final bool isActive;
   final bool isNegative;
+  final bool isLoading;
   final VoidCallback? onTap;
 
   const _VoteButton({
@@ -556,6 +573,7 @@ class _VoteButton extends StatelessWidget {
     required this.count,
     required this.isActive,
     this.isNegative = false,
+    this.isLoading = false,
     this.onTap,
   });
 
@@ -566,14 +584,24 @@ class _VoteButton extends StatelessWidget {
         : DnaColors.textMuted;
 
     return InkWell(
-      onTap: onTap,
+      onTap: isLoading ? null : onTap,
       borderRadius: BorderRadius.circular(16),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(isActive ? activeIcon : icon, size: 16, color: color),
+            if (isLoading)
+              SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: color,
+                ),
+              )
+            else
+              Icon(isActive ? activeIcon : icon, size: 16, color: color),
             if (count > 0) ...[
               const SizedBox(width: 4),
               Text(

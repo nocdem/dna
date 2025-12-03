@@ -212,6 +212,9 @@ class PostRepliesNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
 // VOTING PROVIDERS
 // =============================================================================
 
+/// Post currently being voted on (null = not voting)
+final votingPostProvider = StateProvider<String?>((ref) => null);
+
 /// Cast a vote on a post
 final castVoteProvider = FutureProvider.family<void, ({String postId, int value})>((ref, params) async {
   final engine = await ref.read(engineProvider.future);
