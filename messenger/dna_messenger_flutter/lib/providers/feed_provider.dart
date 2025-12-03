@@ -1,7 +1,18 @@
 // Feed Provider - Feed state management
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:intl/intl.dart';
 import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
+
+/// Number of days of posts to fetch
+const int _feedDaysToFetch = 7;
+
+/// Generate date strings for the last N days (YYYYMMDD format - no dashes)
+List<String> _getRecentDates(int days) {
+  final formatter = DateFormat('yyyyMMdd');
+  final now = DateTime.now();
+  return List.generate(days, (i) => formatter.format(now.subtract(Duration(days: i))));
+}
 
 // =============================================================================
 // CHANNEL PROVIDERS
@@ -72,18 +83,41 @@ class ChannelPostsNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
     }
 
     final engine = await ref.watch(engineProvider.future);
-    final posts = await engine.getFeedPosts(channelId);
+    final posts = await _fetchPostsFromMultipleDays(engine, channelId);
 
-    // Sort by timestamp (newest first for top-level, oldest first for threads)
+    // Sort by timestamp (newest first)
     posts.sort((a, b) => b.timestamp.compareTo(a.timestamp));
     return posts;
+  }
+
+  /// Fetch posts from the last N days and merge/deduplicate
+  Future<List<FeedPost>> _fetchPostsFromMultipleDays(DnaEngine engine, String channelId) async {
+    final dates = _getRecentDates(_feedDaysToFetch);
+    final allPosts = <FeedPost>[];
+    final seenIds = <String>{};
+
+    for (final date in dates) {
+      try {
+        final posts = await engine.getFeedPosts(channelId, date: date);
+        for (final post in posts) {
+          if (!seenIds.contains(post.postId)) {
+            seenIds.add(post.postId);
+            allPosts.add(post);
+          }
+        }
+      } catch (e) {
+        // Skip days with no posts
+      }
+    }
+
+    return allPosts;
   }
 
   Future<void> refresh() async {
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
-      final posts = await engine.getFeedPosts(arg);
+      final posts = await _fetchPostsFromMultipleDays(engine, arg);
       posts.sort((a, b) => b.timestamp.compareTo(a.timestamp));
       return posts;
     });
