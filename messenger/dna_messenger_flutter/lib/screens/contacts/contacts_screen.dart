@@ -226,6 +226,9 @@ class _ContactTile extends StatelessWidget {
   }
 
   String _formatLastSeen(DateTime lastSeen) {
+    // Epoch (0) means never seen
+    if (lastSeen.millisecondsSinceEpoch == 0) return 'never';
+
     final now = DateTime.now();
     final diff = now.difference(lastSeen);
 
