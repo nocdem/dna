@@ -656,9 +656,21 @@ class _RepliesSection extends ConsumerWidget {
     required this.onVote,
   });
 
+  void _toggleReplyExpansion(WidgetRef ref, String replyId) {
+    final current = ref.read(expandedPostsProvider);
+    final newSet = Set<String>.from(current);
+    if (newSet.contains(replyId)) {
+      newSet.remove(replyId);
+    } else {
+      newSet.add(replyId);
+    }
+    ref.read(expandedPostsProvider.notifier).state = newSet;
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final repliesAsync = ref.watch(postRepliesProvider(postId));
+    final expandedPosts = ref.watch(expandedPostsProvider);
 
     return repliesAsync.when(
       data: (replies) {
@@ -669,11 +681,32 @@ class _RepliesSection extends ConsumerWidget {
           );
         }
         return Column(
-          children: replies.map((reply) => _PostCard(
-            post: reply,
-            onReply: () => onReply(reply),
-            onVote: (value) => onVote(reply, value),
-          )).toList(),
+          children: replies.map((reply) {
+            final isExpanded = expandedPosts.contains(reply.postId);
+            // Only show expand for replies that can have sub-replies (depth < 2)
+            final canHaveReplies = reply.replyDepth < 2;
+
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _PostCard(
+                  post: reply,
+                  onReply: () => onReply(reply),
+                  onVote: (value) => onVote(reply, value),
+                  onTap: canHaveReplies ? () => _toggleReplyExpansion(ref, reply.postId) : null,
+                  isExpanded: isExpanded,
+                  showExpandIndicator: canHaveReplies,
+                ),
+                // Show nested replies when expanded
+                if (isExpanded && canHaveReplies)
+                  _RepliesSection(
+                    postId: reply.postId,
+                    onReply: onReply,
+                    onVote: onVote,
+                  ),
+              ],
+            );
+          }).toList(),
         );
       },
       loading: () => Padding(
