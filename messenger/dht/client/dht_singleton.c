@@ -76,22 +76,22 @@ int dht_singleton_init(void)
 
     printf("[DHT_SINGLETON] DHT started, bootstrapping to network...\n");
 
-    // Wait for DHT to be ready with faster polling for better responsiveness
-    // Check every 100ms for up to 3 seconds maximum
-    int max_attempts = 30;  // 30 * 100ms = 3s max
+    // Wait for DHT to be ready with reduced polling frequency
+    // Check every 250ms for up to 3 seconds maximum (reduces overhead)
+    int max_attempts = 12;  // 12 * 250ms = 3s max
     int attempts = 0;
-    
+
     while (!dht_context_is_ready(g_dht_context) && attempts < max_attempts) {
         #ifdef _WIN32
-        Sleep(100);  // Windows: 100ms
+        Sleep(250);  // Windows: 250ms
         #else
-        usleep(100000);  // Unix: 100ms
+        usleep(250000);  // Unix: 250ms
         #endif
         attempts++;
     }
-    
+
     if (dht_context_is_ready(g_dht_context)) {
-        printf("[DHT_SINGLETON] ✓ Global DHT ready! (took %dms)\n", attempts * 100);
+        printf("[DHT_SINGLETON] ✓ Global DHT ready! (took %dms)\n", attempts * 250);
 
         // STEP 2: Query bootstrap registry for dynamic node discovery
         printf("[DHT_SINGLETON] Querying bootstrap registry for active nodes...\n");
@@ -209,22 +209,22 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 
     printf("[DHT_SINGLETON] DHT started, bootstrapping to network...\n");
 
-    // Wait for DHT to be ready with faster polling for better responsiveness
-    // Check every 100ms for up to 3 seconds maximum
-    int max_attempts = 30;  // 30 * 100ms = 3s max
+    // Wait for DHT to be ready with reduced polling frequency
+    // Check every 250ms for up to 3 seconds maximum (reduces overhead)
+    int max_attempts = 12;  // 12 * 250ms = 3s max
     int attempts = 0;
-    
+
     while (!dht_context_is_ready(g_dht_context) && attempts < max_attempts) {
         #ifdef _WIN32
-        Sleep(100);  // Windows: 100ms
+        Sleep(250);  // Windows: 250ms
         #else
-        usleep(100000);  // Unix: 100ms
+        usleep(250000);  // Unix: 250ms
         #endif
         attempts++;
     }
-    
+
     if (dht_context_is_ready(g_dht_context)) {
-        printf("[DHT_SINGLETON] ✓ Global DHT ready with user identity! (took %dms)\n", attempts * 100);
+        printf("[DHT_SINGLETON] ✓ Global DHT ready with user identity! (took %dms)\n", attempts * 250);
 
         // STEP 2: Query bootstrap registry for dynamic node discovery
         printf("[DHT_SINGLETON] Querying bootstrap registry for active nodes...\n");

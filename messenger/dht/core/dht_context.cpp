@@ -544,15 +544,19 @@ extern "C" void dht_context_free(dht_context_t *ctx) {
 
 /**
  * Check if DHT is ready
+ *
+ * Optimized to use getNodesStats() directly instead of getNodeInfo()
+ * to avoid unnecessary getStoreSize() calls during bootstrap polling.
  */
 extern "C" bool dht_context_is_ready(dht_context_t *ctx) {
     if (!ctx || !ctx->running) return false;
 
     try {
         // Check if we have connected to at least one peer
-        auto node_info = ctx->runner.getNodeInfo();
-        // In OpenDHT 2.4, good_nodes is in ipv4/ipv6 substats
-        size_t total_good = node_info.ipv4.good_nodes + node_info.ipv6.good_nodes;
+        // Use getNodesStats() directly (lighter than getNodeInfo() which also queries store size)
+        auto stats_v4 = ctx->runner.getNodesStats(AF_INET);
+        auto stats_v6 = ctx->runner.getNodesStats(AF_INET6);
+        size_t total_good = stats_v4.good_nodes + stats_v6.good_nodes;
         return total_good > 0;
     } catch (const std::exception& e) {
         std::cerr << "[DHT] Exception in dht_context_is_ready: " << e.what() << std::endl;
