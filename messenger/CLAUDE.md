@@ -56,11 +56,49 @@ I MUST wait for explicit user permission:
 2. **NO ASSUMPTIONS** - only explicit approval words count
 3. **STATE**: "CHECKPOINT 4 COMPLETE - Awaiting explicit approval"
 
+**IMPORTANT:** "Dangerously skip permissions" mode in settings.json does NOT skip this checkpoint.
+- Settings.json controls TOOL permissions (Read, Edit, Bash, etc.)
+- CHECKPOINT 4 controls PLAN approval - ALWAYS requires user approval
+- These are separate systems. Never conflate them.
+
 ### CHECKPOINT 5: ACTION EXECUTION
 Only after ALL previous checkpoints:
 1. **EXECUTE** approved actions only
 2. **REPORT** exactly what was done
 3. **STATE**: "CHECKPOINT 5 COMPLETE - Actions executed as approved"
+
+### CHECKPOINT 6: MANDATORY REPORT
+After ALL actions are complete, I MUST provide a final report:
+1. **SUMMARY** - What was done (brief description)
+2. **FILES CHANGED** - List all files modified/created/deleted
+3. **ISSUES** - Any problems encountered (or "None")
+4. **STATUS** - Final outcome (SUCCESS/PARTIAL/FAILED)
+5. **STATE**: "CHECKPOINT 6 COMPLETE - Final report delivered"
+
+### CHECKPOINT 7: DOCUMENTATION UPDATE
+When changes are made to ANY of the following topics, I MUST update the relevant documentation:
+
+**Documentation Files & Topics:**
+| Topic | Documentation File | Update When... |
+|-------|-------------------|----------------|
+| Architecture | `docs/ARCHITECTURE_DETAILED.md` | Directory structure, components, build system, data flow changes |
+| DHT System | `docs/DHT_SYSTEM.md` | DHT operations, bootstrap nodes, offline queue, key derivation changes |
+| DNA Engine API | `docs/DNA_ENGINE_API.md` | Public API functions, data types, callbacks, error codes changes |
+| DNA Nodus | `docs/DNA_NODUS.md` | Bootstrap server, STUN/TURN, config, deployment changes |
+| Flutter UI | `docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
+| Git Workflow | `docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
+| Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GSK, database schema changes |
+| Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
+| P2P Architecture | `docs/P2P_ARCHITECTURE.md` | Transport tiers, ICE/NAT, TCP, peer discovery changes |
+| Security | `docs/SECURITY_AUDIT.md` | Crypto primitives, vulnerabilities, security fixes |
+
+**Procedure:**
+1. **IDENTIFY** which documentation files are affected by the changes
+2. **UPDATE** each affected documentation file with accurate information
+3. **VERIFY** the documentation matches the actual code changes
+4. **STATE**: "CHECKPOINT 7 COMPLETE - Documentation updated: [list files updated]" OR "CHECKPOINT 7 COMPLETE - No documentation updates required (reason: [reason])"
+
+**IMPORTANT:** Documentation is the source of truth. Code changes without documentation updates violate protocol mode.
 
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
 
@@ -178,7 +216,7 @@ Details: what/why/breaking
 **Deployment Process (v0.3+):**
 ```bash
 # Use the build script on each server:
-ssh root@<server-ip> "bash /opt/dna-messenger/nodus_build.sh"
+ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 
 # The script will:
 # 1. Pull latest code

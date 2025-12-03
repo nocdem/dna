@@ -122,7 +122,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(state.successMessage!),
-            backgroundColor: DnaColors.success,
+            backgroundColor: DnaColors.textSuccess,
           ),
         );
       });
@@ -132,7 +132,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(state.error!),
-            backgroundColor: DnaColors.error,
+            backgroundColor: DnaColors.textWarning,
           ),
         );
       });
@@ -499,7 +499,7 @@ class _AvatarSection extends StatelessWidget {
               onPressed: onRemoveImage,
               child: Text(
                 'Remove Avatar',
-                style: TextStyle(color: DnaColors.error),
+                style: TextStyle(color: DnaColors.textWarning),
               ),
             ),
         ],

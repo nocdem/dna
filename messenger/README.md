@@ -46,7 +46,7 @@ DHT bootstrap + STUN/TURN server for the DNA network infrastructure.
 
 ```bash
 # Build and deploy
-bash /opt/dna-messenger/nodus_build.sh
+bash /opt/dna-messenger/build-nodus.sh
 ```
 
 **Public Bootstrap Nodes:**

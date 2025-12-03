@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "Bash",
+      "Read(*)",
+      "Write(*)",
+      "Edit(*)",
+      "Glob(*)",
+      "Grep(*)",
+      "Task(*)",
+      "TodoWrite(*)",
+      "mcp__filesystem__*",
+      "mcp__sequential-thinking__*"
+    ],
+    "deny": []
+  }
+}
