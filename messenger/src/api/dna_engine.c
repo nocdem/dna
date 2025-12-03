@@ -13,6 +13,7 @@
 #include "dht/client/dna_feed.h"
 #include "dht/client/dna_profile.h"
 #include "p2p/p2p_transport.h"
+#include "database/presence_cache.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 
@@ -1037,8 +1038,9 @@ void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task) {
                          "%.16s...", list->contacts[i].identity);
             }
 
-            contacts[i].is_online = false; /* TODO: Check P2P presence */
-            contacts[i].last_seen = 0;
+            /* Check presence cache for online status and last seen */
+            contacts[i].is_online = presence_cache_get(list->contacts[i].identity);
+            contacts[i].last_seen = (uint64_t)presence_cache_last_seen(list->contacts[i].identity);
         }
         count = (int)list->count;
     }
