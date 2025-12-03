@@ -694,22 +694,16 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
     } else {
         /* P2P initialized successfully - complete P2P setup */
+        /* Note: Presence already registered in messenger_p2p_init() */
 
-        /* 1. Announce presence (we're online) */
-        if (messenger_p2p_refresh_presence(engine->messenger) == 0) {
-            printf("[DNA_ENGINE] Presence registered in DHT\n");
-        } else {
-            printf("[DNA_ENGINE] Warning: Failed to register presence\n");
-        }
-
-        /* 2. Subscribe to contacts for push notifications */
+        /* 1. Subscribe to contacts for push notifications */
         if (messenger_p2p_subscribe_to_contacts(engine->messenger) == 0) {
             printf("[DNA_ENGINE] Subscribed to contacts for push notifications\n");
         } else {
             printf("[DNA_ENGINE] Warning: Failed to subscribe to contacts\n");
         }
 
-        /* 3. Check for offline messages (Model E: query contacts' outboxes) */
+        /* 2. Check for offline messages (Model E: query contacts' outboxes) */
         size_t offline_count = 0;
         if (messenger_p2p_check_offline_messages(engine->messenger, &offline_count) == 0) {
             if (offline_count > 0) {
