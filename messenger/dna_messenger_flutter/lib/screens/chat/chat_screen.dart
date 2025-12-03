@@ -1,7 +1,9 @@
 // Chat Screen - Conversation with message bubbles
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
@@ -16,12 +18,15 @@ class ChatScreen extends ConsumerStatefulWidget {
 class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
+  final _focusNode = FocusNode();
   bool _isSending = false;
+  bool _showEmojiPicker = false;
 
   @override
   void dispose() {
     _messageController.dispose();
     _scrollController.dispose();
+    _focusNode.dispose();
     super.dispose();
   }
 
@@ -105,6 +110,27 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
           // Input area
           _buildInputArea(context, contact),
+
+          // Emoji picker
+          if (_showEmojiPicker)
+            SizedBox(
+              height: 250,
+              child: EmojiPicker(
+                onEmojiSelected: (category, emoji) {
+                  _onEmojiSelected(emoji);
+                },
+                config: Config(
+                  columns: 7,
+                  emojiSizeMax: 28,
+                  bgColor: theme.colorScheme.surface,
+                  indicatorColor: theme.colorScheme.primary,
+                  iconColorSelected: theme.colorScheme.primary,
+                  iconColor: DnaColors.textMuted,
+                  backspaceColor: theme.colorScheme.primary,
+                  checkPlatformCompatibility: true,
+                ),
+              ),
+            ),
         ],
       ),
     );
@@ -248,34 +274,62 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           children: [
             // Emoji button
             IconButton(
-              icon: const Icon(Icons.emoji_emotions_outlined),
+              icon: Icon(
+                _showEmojiPicker
+                    ? Icons.keyboard
+                    : Icons.emoji_emotions_outlined,
+              ),
               onPressed: () {
-                // TODO: Show emoji picker
+                setState(() {
+                  _showEmojiPicker = !_showEmojiPicker;
+                });
+                if (!_showEmojiPicker) {
+                  _focusNode.requestFocus();
+                }
               },
             ),
 
             // Text input
             Expanded(
-              child: TextField(
-                controller: _messageController,
-                decoration: InputDecoration(
-                  hintText: 'Type a message...',
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(24),
-                    borderSide: BorderSide.none,
+              child: KeyboardListener(
+                focusNode: FocusNode(),
+                onKeyEvent: (event) {
+                  // Send on Enter (without Shift)
+                  if (event is KeyDownEvent &&
+                      event.logicalKey == LogicalKeyboardKey.enter &&
+                      !HardwareKeyboard.instance.isShiftPressed) {
+                    if (_messageController.text.trim().isNotEmpty && !_isSending) {
+                      _sendMessage(contact);
+                    }
+                  }
+                },
+                child: TextField(
+                  controller: _messageController,
+                  focusNode: _focusNode,
+                  decoration: InputDecoration(
+                    hintText: 'Type a message...',
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(24),
+                      borderSide: BorderSide.none,
+                    ),
+                    filled: true,
+                    fillColor: theme.scaffoldBackgroundColor,
+                    contentPadding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 8,
+                    ),
                   ),
-                  filled: true,
-                  fillColor: theme.scaffoldBackgroundColor,
-                  contentPadding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
+                  minLines: 1,
+                  maxLines: 5,
+                  textCapitalization: TextCapitalization.sentences,
+                  onChanged: (_) => setState(() {}),
+                  onTap: () {
+                    // Hide emoji picker when text field is tapped
+                    if (_showEmojiPicker) {
+                      setState(() => _showEmojiPicker = false);
+                    }
+                  },
                 ),
-                minLines: 1,
-                maxLines: 5,
-                textCapitalization: TextCapitalization.sentences,
-                onChanged: (_) => setState(() {}),
-                onSubmitted: (_) => _sendMessage(contact),
               ),
             ),
 
@@ -329,6 +383,23 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         setState(() => _isSending = false);
       }
     }
+  }
+
+  void _onEmojiSelected(Emoji emoji) {
+    final text = _messageController.text;
+    final selection = _messageController.selection;
+    final newText = text.replaceRange(
+      selection.start,
+      selection.end,
+      emoji.emoji,
+    );
+    _messageController.value = TextEditingValue(
+      text: newText,
+      selection: TextSelection.collapsed(
+        offset: selection.start + emoji.emoji.length,
+      ),
+    );
+    setState(() {});
   }
 
   void _showContactOptions(BuildContext context) {
