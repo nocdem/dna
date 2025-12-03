@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.1.0
-**Date:** 2025-11-27
+**Version:** 1.2.0
+**Date:** 2025-12-03
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.2.0 (2025-12-03): Added Profile API (`dna_engine_get_profile`, `dna_engine_update_profile`)
 - v1.1.0 (2025-11-27): Implemented `send_tokens` with full UTXO selection, tx building, Dilithium5 signing
 - v1.0.0 (2025-11-26): Initial documentation
 
@@ -157,13 +158,14 @@ void syncExample() {
 |----------|-----------|-------------|
 | [Lifecycle](#1-lifecycle) | 4 | Create/destroy engine, set callbacks |
 | [Identity](#2-identity) | 5 | List, create, load identities, register names |
+| [Profile](#2a-profile) | 2 | Get/update user profile (wallets, socials, bio, avatar) |
 | [Contacts](#3-contacts) | 3 | Get, add, remove contacts |
 | [Messaging](#4-messaging) | 3 | Send messages, get conversations |
 | [Groups](#5-groups) | 6 | Create groups, send group messages, invitations |
 | [Wallet](#6-wallet) | 4 | Cellframe wallet operations |
 | [P2P & Presence](#7-p2p--presence) | 7 | Online status, DHT sync |
 | [Backward Compat](#8-backward-compatibility) | 2 | Access raw contexts |
-| [Memory](#9-memory-management) | 8 | Free callback data |
+| [Memory](#9-memory-management) | 9 | Free callback data |
 
 ---
 
@@ -414,6 +416,101 @@ Looks up display name for fingerprint (DHT lookup).
 **Returns via callback:**
 - Registered name if found
 - Shortened fingerprint (`abc12...xyz89`) if not registered
+
+---
+
+## 2a. Profile
+
+### dna_engine_get_profile
+
+```c
+dna_request_id_t dna_engine_get_profile(
+    dna_engine_t *engine,
+    dna_profile_cb callback,
+    void *user_data
+);
+```
+
+Gets current identity's profile from DHT.
+
+**Callback signature:**
+```c
+typedef void (*dna_profile_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_profile_t *profile,
+    void *user_data
+);
+```
+
+**Profile structure:**
+```c
+typedef struct {
+    /* Cellframe wallet addresses */
+    char backbone[120];
+    char kelvpn[120];
+    char subzero[120];
+    char cpunk_testnet[120];
+
+    /* External wallet addresses */
+    char btc[128];
+    char eth[128];
+    char sol[128];
+
+    /* Social links */
+    char telegram[128];
+    char twitter[128];
+    char github[128];
+
+    /* Bio and avatar */
+    char bio[512];
+    char avatar_base64[20484];  /* Base64-encoded 64x64 PNG/JPEG */
+} dna_profile_t;
+```
+
+**Memory:** Free with `dna_free_profile(profile)`
+
+---
+
+### dna_engine_update_profile
+
+```c
+dna_request_id_t dna_engine_update_profile(
+    dna_engine_t *engine,
+    const dna_profile_t *profile,
+    dna_completion_cb callback,
+    void *user_data
+);
+```
+
+Updates current identity's profile in DHT.
+
+**Parameters:**
+- `engine` - Engine instance
+- `profile` - Profile data to save (wallet addresses, socials, bio, avatar)
+- `callback` - Called on completion
+- `user_data` - User data for callback
+
+**What it does:**
+1. Builds `dna_profile_data_t` from input
+2. Loads Dilithium5 private key for signing
+3. Loads Kyber1024 public key
+4. Calls `dna_update_profile()` to publish to DHT
+
+**Example:**
+```c
+dna_profile_t profile = {0};
+strcpy(profile.backbone, "Rj7J7MiX2bWy...");
+strcpy(profile.telegram, "@myusername");
+strcpy(profile.bio, "Hello, I'm using DNA Messenger!");
+
+dna_engine_update_profile(engine, &profile,
+    [](dna_request_id_t id, int err, void* ud) {
+        if (err == 0) {
+            printf("Profile updated!\n");
+        }
+    }, NULL);
+```
 
 ---
 
@@ -789,6 +886,7 @@ dna_free_invitations(invitations, count);   // For invitations list
 dna_free_wallets(wallets, count);           // For wallets list
 dna_free_balances(balances, count);         // For balances list
 dna_free_transactions(transactions, count); // For transactions list
+dna_free_profile(profile);                  // For profile
 ```
 
 ---

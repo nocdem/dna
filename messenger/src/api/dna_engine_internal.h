@@ -44,6 +44,8 @@ typedef enum {
     TASK_REGISTER_NAME,
     TASK_GET_DISPLAY_NAME,
     TASK_LOOKUP_NAME,
+    TASK_GET_PROFILE,
+    TASK_UPDATE_PROFILE,
 
     /* Contacts */
     TASK_GET_CONTACTS,
@@ -216,6 +218,11 @@ typedef union {
         char post_id[200];
     } get_feed_votes;
 
+    /* Update profile */
+    struct {
+        dna_profile_t profile;
+    } update_profile;
+
 } dna_task_params_t;
 
 /**
@@ -238,6 +245,7 @@ typedef union {
     dna_feed_channel_cb feed_channel;
     dna_feed_posts_cb feed_posts;
     dna_feed_post_cb feed_post;
+    dna_profile_cb profile;
 } dna_task_callback_t;
 
 /**
@@ -403,6 +411,8 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_lookup_name(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task);
 
 /* Contacts */
 void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task);

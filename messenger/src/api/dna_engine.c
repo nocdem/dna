@@ -11,8 +11,10 @@
 #include "dht/core/dht_keyserver.h"
 #include "dht/client/dht_contactlist.h"
 #include "dht/client/dna_feed.h"
+#include "dht/client/dna_profile.h"
 #include "p2p/p2p_transport.h"
 #include "crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_platform.h"
 
 /* Blockchain/Wallet includes for send_tokens */
 #include "blockchain/wallet.h"
@@ -278,6 +280,12 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_LOOKUP_NAME:
             dna_handle_lookup_name(engine, task);
+            break;
+        case TASK_GET_PROFILE:
+            dna_handle_get_profile(engine, task);
+            break;
+        case TASK_UPDATE_PROFILE:
+            dna_handle_update_profile(engine, task);
             break;
 
         /* Contacts */
@@ -837,6 +845,137 @@ done:
     /* Allocate on heap for thread-safe callback - caller frees via dna_free_string */
     fingerprint = strdup(fingerprint_buf);
     task->callback.display_name(task->request_id, error, fingerprint, task->user_data);
+}
+
+void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_profile_t *profile = NULL;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    /* Load identity from DHT */
+    dna_unified_identity_t *identity = NULL;
+    int rc = dna_load_identity(dht, engine->fingerprint, &identity);
+
+    if (rc != 0 || !identity) {
+        if (rc == -2) {
+            /* No profile yet - return empty profile */
+            profile = (dna_profile_t*)calloc(1, sizeof(dna_profile_t));
+        } else {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+        goto done;
+    }
+
+    /* Copy identity data to profile struct */
+    profile = (dna_profile_t*)calloc(1, sizeof(dna_profile_t));
+    if (!profile) {
+        error = DNA_ERROR_INTERNAL;
+        dna_identity_free(identity);
+        goto done;
+    }
+
+    /* Wallets */
+    strncpy(profile->backbone, identity->wallets.backbone, sizeof(profile->backbone) - 1);
+    strncpy(profile->kelvpn, identity->wallets.kelvpn, sizeof(profile->kelvpn) - 1);
+    strncpy(profile->subzero, identity->wallets.subzero, sizeof(profile->subzero) - 1);
+    strncpy(profile->cpunk_testnet, identity->wallets.cpunk_testnet, sizeof(profile->cpunk_testnet) - 1);
+    strncpy(profile->btc, identity->wallets.btc, sizeof(profile->btc) - 1);
+    strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
+    strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
+
+    /* Socials */
+    strncpy(profile->telegram, identity->socials.telegram, sizeof(profile->telegram) - 1);
+    strncpy(profile->twitter, identity->socials.x, sizeof(profile->twitter) - 1);
+    strncpy(profile->github, identity->socials.github, sizeof(profile->github) - 1);
+
+    /* Bio and avatar */
+    strncpy(profile->bio, identity->bio, sizeof(profile->bio) - 1);
+    strncpy(profile->avatar_base64, identity->avatar_base64, sizeof(profile->avatar_base64) - 1);
+
+    dna_identity_free(identity);
+
+done:
+    task->callback.profile(task->request_id, error, profile, task->user_data);
+}
+
+void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    /* Load private keys for signing */
+    qgp_key_t *sign_key = dna_load_private_key(engine);
+    if (!sign_key) {
+        error = DNA_ENGINE_ERROR_PERMISSION;
+        goto done;
+    }
+
+    /* Load encryption key for kyber pubkey */
+    char enc_key_path[512];
+    snprintf(enc_key_path, sizeof(enc_key_path), "%s/%s.kem",
+             engine->data_dir, engine->fingerprint);
+    qgp_key_t *enc_key = NULL;
+    if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
+        error = DNA_ENGINE_ERROR_PERMISSION;
+        qgp_key_free(sign_key);
+        goto done;
+    }
+
+    /* Build profile data structure */
+    dna_profile_data_t profile_data = {0};
+    const dna_profile_t *p = &task->params.update_profile.profile;
+
+    /* Wallets */
+    strncpy(profile_data.wallets.backbone, p->backbone, sizeof(profile_data.wallets.backbone) - 1);
+    strncpy(profile_data.wallets.kelvpn, p->kelvpn, sizeof(profile_data.wallets.kelvpn) - 1);
+    strncpy(profile_data.wallets.subzero, p->subzero, sizeof(profile_data.wallets.subzero) - 1);
+    strncpy(profile_data.wallets.cpunk_testnet, p->cpunk_testnet, sizeof(profile_data.wallets.cpunk_testnet) - 1);
+    strncpy(profile_data.wallets.btc, p->btc, sizeof(profile_data.wallets.btc) - 1);
+    strncpy(profile_data.wallets.eth, p->eth, sizeof(profile_data.wallets.eth) - 1);
+    strncpy(profile_data.wallets.sol, p->sol, sizeof(profile_data.wallets.sol) - 1);
+
+    /* Socials */
+    strncpy(profile_data.socials.telegram, p->telegram, sizeof(profile_data.socials.telegram) - 1);
+    strncpy(profile_data.socials.x, p->twitter, sizeof(profile_data.socials.x) - 1);
+    strncpy(profile_data.socials.github, p->github, sizeof(profile_data.socials.github) - 1);
+
+    /* Bio and avatar */
+    strncpy(profile_data.bio, p->bio, sizeof(profile_data.bio) - 1);
+    strncpy(profile_data.avatar_base64, p->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
+
+    /* Update profile in DHT */
+    int rc = dna_update_profile(dht, engine->fingerprint, &profile_data,
+                                 sign_key->private_key, sign_key->public_key,
+                                 enc_key->public_key);
+
+    qgp_key_free(sign_key);
+    qgp_key_free(enc_key);
+
+    if (rc != 0) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+    }
+
+done:
+    task->callback.completion(task->request_id, error, task->user_data);
 }
 
 /* ============================================================================
@@ -2060,6 +2199,34 @@ dna_request_id_t dna_engine_lookup_name(
     return dna_submit_task(engine, TASK_LOOKUP_NAME, &params, cb, user_data);
 }
 
+dna_request_id_t dna_engine_get_profile(
+    dna_engine_t *engine,
+    dna_profile_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .profile = callback };
+    return dna_submit_task(engine, TASK_GET_PROFILE, NULL, cb, user_data);
+}
+
+dna_request_id_t dna_engine_update_profile(
+    dna_engine_t *engine,
+    const dna_profile_t *profile,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !profile || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    params.update_profile.profile = *profile;
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_UPDATE_PROFILE, &params, cb, user_data);
+}
+
 /* Contacts */
 dna_request_id_t dna_engine_get_contacts(
     dna_engine_t *engine,
@@ -2625,6 +2792,11 @@ void dna_free_feed_post(dna_post_info_t *post) {
     if (!post) return;
     free(post->text);
     free(post);
+}
+
+void dna_free_profile(dna_profile_t *profile) {
+    if (!profile) return;
+    free(profile);
 }
 
 /* ============================================================================

@@ -179,6 +179,31 @@ typedef struct {
     bool verified;              /* Signature verified */
 } dna_post_info_t;
 
+/**
+ * User profile information (wallet addresses, socials, bio, avatar)
+ */
+typedef struct {
+    /* Cellframe wallet addresses */
+    char backbone[120];
+    char kelvpn[120];
+    char subzero[120];
+    char cpunk_testnet[120];
+
+    /* External wallet addresses */
+    char btc[128];
+    char eth[128];
+    char sol[128];
+
+    /* Social links */
+    char telegram[128];
+    char twitter[128];          /* X (Twitter) handle */
+    char github[128];
+
+    /* Bio and avatar */
+    char bio[512];
+    char avatar_base64[20484];  /* Base64-encoded 64x64 PNG/JPEG (~20KB max) */
+} dna_profile_t;
+
 /* ============================================================================
  * ASYNC CALLBACK TYPES
  * ============================================================================ */
@@ -350,6 +375,16 @@ typedef void (*dna_feed_post_cb)(
     dna_request_id_t request_id,
     int error,
     dna_post_info_t *post,
+    void *user_data
+);
+
+/**
+ * Profile callback
+ */
+typedef void (*dna_profile_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_profile_t *profile,
     void *user_data
 );
 
@@ -596,6 +631,41 @@ dna_request_id_t dna_engine_lookup_name(
     dna_engine_t *engine,
     const char *name,
     dna_display_name_cb callback,
+    void *user_data
+);
+
+/**
+ * Get current identity's profile from DHT
+ *
+ * Loads wallet addresses, social links, bio, and avatar.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with profile data
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_profile(
+    dna_engine_t *engine,
+    dna_profile_cb callback,
+    void *user_data
+);
+
+/**
+ * Update current identity's profile in DHT
+ *
+ * Saves wallet addresses, social links, bio, and avatar.
+ * Signs with Dilithium5 before publishing.
+ *
+ * @param engine    Engine instance
+ * @param profile   Profile data to save
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_update_profile(
+    dna_engine_t *engine,
+    const dna_profile_t *profile,
+    dna_completion_cb callback,
     void *user_data
 );
 
@@ -1244,6 +1314,11 @@ void dna_free_feed_posts(dna_post_info_t *posts, int count);
  * Free single feed post returned by callbacks
  */
 void dna_free_feed_post(dna_post_info_t *post);
+
+/**
+ * Free profile returned by callbacks
+ */
+void dna_free_profile(dna_profile_t *profile);
 
 #ifdef __cplusplus
 }

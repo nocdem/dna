@@ -212,6 +212,49 @@ final class dna_post_info_t extends Struct {
   external bool verified;
 }
 
+/// User profile information
+final class dna_profile_t extends Struct {
+  // Cellframe wallets
+  @Array(120)
+  external Array<Char> backbone;
+
+  @Array(120)
+  external Array<Char> kelvpn;
+
+  @Array(120)
+  external Array<Char> subzero;
+
+  @Array(120)
+  external Array<Char> cpunk_testnet;
+
+  // External wallets
+  @Array(128)
+  external Array<Char> btc;
+
+  @Array(128)
+  external Array<Char> eth;
+
+  @Array(128)
+  external Array<Char> sol;
+
+  // Socials
+  @Array(128)
+  external Array<Char> telegram;
+
+  @Array(128)
+  external Array<Char> twitter;
+
+  @Array(128)
+  external Array<Char> github;
+
+  // Bio and avatar
+  @Array(512)
+  external Array<Char> bio;
+
+  @Array(20484)
+  external Array<Char> avatar_base64;
+}
+
 // =============================================================================
 // EVENT TYPES
 // =============================================================================
@@ -449,6 +492,15 @@ typedef DnaFeedPostCbNative = Void Function(
 );
 typedef DnaFeedPostCb = NativeFunction<DnaFeedPostCbNative>;
 
+/// Profile callback - Native
+typedef DnaProfileCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_profile_t> profile,
+  Pointer<Void> user_data,
+);
+typedef DnaProfileCb = NativeFunction<DnaProfileCbNative>;
+
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
   Pointer<dna_event_t> event,
@@ -578,6 +630,13 @@ typedef DnaFeedPostCbDart = void Function(
   int requestId,
   int error,
   Pointer<dna_post_info_t> post,
+  Pointer<Void> userData,
+);
+
+typedef DnaProfileCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<dna_profile_t> profile,
   Pointer<Void> userData,
 );
 
@@ -762,6 +821,39 @@ class DnaBindings {
     Pointer<Void> user_data,
   ) {
     return _dna_engine_lookup_name(engine, name, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // PROFILE
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_get_profile = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaProfileCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaProfileCb>,
+          Pointer<Void>)>('dna_engine_get_profile');
+
+  int dna_engine_get_profile(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaProfileCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_profile(engine, callback, user_data);
+  }
+
+  late final _dna_engine_update_profile = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<dna_profile_t>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<dna_profile_t>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_update_profile');
+
+  int dna_engine_update_profile(
+    Pointer<dna_engine_t> engine,
+    Pointer<dna_profile_t> profile,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_update_profile(engine, profile, callback, user_data);
   }
 
   // ---------------------------------------------------------------------------
@@ -1123,6 +1215,14 @@ class DnaBindings {
 
   void dna_free_transactions(Pointer<dna_transaction_t> transactions, int count) {
     _dna_free_transactions(transactions, count);
+  }
+
+  late final _dna_free_profile = _lib.lookupFunction<
+      Void Function(Pointer<dna_profile_t>),
+      void Function(Pointer<dna_profile_t>)>('dna_free_profile');
+
+  void dna_free_profile(Pointer<dna_profile_t> profile) {
+    _dna_free_profile(profile);
   }
 
   // ---------------------------------------------------------------------------

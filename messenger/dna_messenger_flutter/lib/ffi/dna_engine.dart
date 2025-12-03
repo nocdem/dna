@@ -301,6 +301,132 @@ class FeedPost {
   bool get hasVoted => userVote != 0;
 }
 
+/// User profile information
+class UserProfile {
+  // Cellframe wallets
+  String backbone;
+  String kelvpn;
+  String subzero;
+  String cpunkTestnet;
+
+  // External wallets
+  String btc;
+  String eth;
+  String sol;
+
+  // Socials
+  String telegram;
+  String twitter;
+  String github;
+
+  // Bio and avatar
+  String bio;
+  String avatarBase64;
+
+  UserProfile({
+    this.backbone = '',
+    this.kelvpn = '',
+    this.subzero = '',
+    this.cpunkTestnet = '',
+    this.btc = '',
+    this.eth = '',
+    this.sol = '',
+    this.telegram = '',
+    this.twitter = '',
+    this.github = '',
+    this.bio = '',
+    this.avatarBase64 = '',
+  });
+
+  factory UserProfile.fromNative(dna_profile_t native) {
+    return UserProfile(
+      backbone: native.backbone.toDartString(120),
+      kelvpn: native.kelvpn.toDartString(120),
+      subzero: native.subzero.toDartString(120),
+      cpunkTestnet: native.cpunk_testnet.toDartString(120),
+      btc: native.btc.toDartString(128),
+      eth: native.eth.toDartString(128),
+      sol: native.sol.toDartString(128),
+      telegram: native.telegram.toDartString(128),
+      twitter: native.twitter.toDartString(128),
+      github: native.github.toDartString(128),
+      bio: native.bio.toDartString(512),
+      avatarBase64: native.avatar_base64.toDartString(20484),
+    );
+  }
+
+  /// Copy profile data to native struct
+  void toNative(Pointer<dna_profile_t> native) {
+    _copyStringToArray(backbone, native.ref.backbone, 120);
+    _copyStringToArray(kelvpn, native.ref.kelvpn, 120);
+    _copyStringToArray(subzero, native.ref.subzero, 120);
+    _copyStringToArray(cpunkTestnet, native.ref.cpunk_testnet, 120);
+    _copyStringToArray(btc, native.ref.btc, 128);
+    _copyStringToArray(eth, native.ref.eth, 128);
+    _copyStringToArray(sol, native.ref.sol, 128);
+    _copyStringToArray(telegram, native.ref.telegram, 128);
+    _copyStringToArray(twitter, native.ref.twitter, 128);
+    _copyStringToArray(github, native.ref.github, 128);
+    _copyStringToArray(bio, native.ref.bio, 512);
+    _copyStringToArray(avatarBase64, native.ref.avatar_base64, 20484);
+  }
+
+  static void _copyStringToArray(String str, Array<Char> array, int maxLen) {
+    final bytes = str.codeUnits;
+    final len = bytes.length.clamp(0, maxLen - 1);
+    for (var i = 0; i < len; i++) {
+      array[i] = bytes[i];
+    }
+    array[len] = 0; // null terminator
+  }
+
+  /// Check if profile is empty
+  bool get isEmpty =>
+      backbone.isEmpty &&
+      kelvpn.isEmpty &&
+      subzero.isEmpty &&
+      cpunkTestnet.isEmpty &&
+      btc.isEmpty &&
+      eth.isEmpty &&
+      sol.isEmpty &&
+      telegram.isEmpty &&
+      twitter.isEmpty &&
+      github.isEmpty &&
+      bio.isEmpty &&
+      avatarBase64.isEmpty;
+
+  /// Create a copy of this profile
+  UserProfile copyWith({
+    String? backbone,
+    String? kelvpn,
+    String? subzero,
+    String? cpunkTestnet,
+    String? btc,
+    String? eth,
+    String? sol,
+    String? telegram,
+    String? twitter,
+    String? github,
+    String? bio,
+    String? avatarBase64,
+  }) {
+    return UserProfile(
+      backbone: backbone ?? this.backbone,
+      kelvpn: kelvpn ?? this.kelvpn,
+      subzero: subzero ?? this.subzero,
+      cpunkTestnet: cpunkTestnet ?? this.cpunkTestnet,
+      btc: btc ?? this.btc,
+      eth: eth ?? this.eth,
+      sol: sol ?? this.sol,
+      telegram: telegram ?? this.telegram,
+      twitter: twitter ?? this.twitter,
+      github: github ?? this.github,
+      bio: bio ?? this.bio,
+      avatarBase64: avatarBase64 ?? this.avatarBase64,
+    );
+  }
+}
+
 // =============================================================================
 // EVENTS
 // =============================================================================
@@ -1336,6 +1462,88 @@ class DnaEngine {
     );
 
     if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // PROFILE OPERATIONS
+  // ---------------------------------------------------------------------------
+
+  /// Get current identity's profile from DHT
+  Future<UserProfile> getProfile() async {
+    final completer = Completer<UserProfile>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<dna_profile_t> profile,
+                    Pointer<Void> userData) {
+      if (error == 0) {
+        if (profile != nullptr) {
+          final result = UserProfile.fromNative(profile.ref);
+          _bindings.dna_free_profile(profile);
+          completer.complete(result);
+        } else {
+          // No profile found, return empty profile
+          completer.complete(UserProfile());
+        }
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaProfileCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_profile(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Update current identity's profile in DHT
+  Future<void> updateProfile(UserProfile profile) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    // Allocate native profile struct
+    final nativeProfile = calloc<dna_profile_t>();
+    profile.toNative(nativeProfile);
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(nativeProfile);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_update_profile(
+      _engine,
+      nativeProfile,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(nativeProfile);
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit request');
     }

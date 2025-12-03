@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
+import '../profile/profile_editor_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
   const SettingsScreen({super.key});
@@ -49,51 +50,69 @@ class _ProfileSection extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        children: [
-          CircleAvatar(
-            radius: 32,
-            backgroundColor: theme.colorScheme.primary.withAlpha(51),
-            child: Icon(
-              Icons.person,
-              size: 32,
-              color: theme.colorScheme.primary,
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                profile.when(
-                  data: (p) => Text(
-                    p?.nickname ?? 'Anonymous',
-                    style: theme.textTheme.titleLarge,
-                  ),
-                  loading: () => const SizedBox(
-                    width: 100,
-                    height: 20,
-                    child: LinearProgressIndicator(),
-                  ),
-                  error: (e, st) => Text(
-                    'Anonymous',
-                    style: theme.textTheme.titleLarge,
-                  ),
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              CircleAvatar(
+                radius: 32,
+                backgroundColor: theme.colorScheme.primary.withAlpha(51),
+                child: Icon(
+                  Icons.person,
+                  size: 32,
+                  color: theme.colorScheme.primary,
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  fingerprint != null
-                      ? _shortenFingerprint(fingerprint!)
-                      : 'Not loaded',
-                  style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    profile.when(
+                      data: (p) => Text(
+                        p?.nickname ?? 'Anonymous',
+                        style: theme.textTheme.titleLarge,
+                      ),
+                      loading: () => const SizedBox(
+                        width: 100,
+                        height: 20,
+                        child: LinearProgressIndicator(),
+                      ),
+                      error: (e, st) => Text(
+                        'Anonymous',
+                        style: theme.textTheme.titleLarge,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      fingerprint != null
+                          ? _shortenFingerprint(fingerprint!)
+                          : 'Not loaded',
+                      style: theme.textTheme.bodySmall,
+                    ),
+                  ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
-        ],
-      ),
+        ),
+        ListTile(
+          leading: Icon(Icons.edit, color: theme.colorScheme.primary),
+          title: const Text('Edit Profile'),
+          subtitle: const Text('Wallets, socials, bio, avatar'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const ProfileEditorScreen(),
+              ),
+            );
+          },
+        ),
+      ],
     );
   }
 
