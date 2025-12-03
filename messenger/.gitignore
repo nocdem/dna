@@ -180,3 +180,6 @@ vendor/libjuice/install/
 
 # Development notes
 CLAUDE.md
+
+# Claude Code local files
+.claude/
