@@ -4,16 +4,19 @@
  * Distributed public feed with topic-based channels:
  * - Channel Registry: SHA256("dna:feed:registry") -> list of all channels
  * - Channel Metadata: SHA256("dna:feed:" + channel_id + ":meta") -> channel info
- * - Post Index: SHA256("dna:feed:" + channel_id + ":posts:" + YYYYMMDD) -> daily post IDs
+ * - Channel Index: SHA256("dna:feed:channel:" + channel_id + ":posts:" + YYYYMMDD) -> daily post IDs
  * - Posts: SHA256("dna:feed:post:" + post_id) -> individual post content
- * - Votes: SHA256("dna:feed:post:" + post_id + ":votes") -> vote records
+ * - Comments: SHA256("dna:feed:post:" + post_id + ":comments") -> multi-owner comments
+ * - Post Votes: SHA256("dna:feed:post:" + post_id + ":votes") -> vote records
+ * - Comment Votes: SHA256("dna:feed:comment:" + comment_id + ":votes") -> vote records
  *
  * Features:
  * - Anyone can create channels
  * - Identity-required posts (Dilithium5 signed)
- * - 3-level threading (post -> comment -> reply)
- * - Permanent voting (one vote per user per post)
+ * - Flat comments (no nesting, use @mentions)
+ * - Permanent voting (one vote per user per post/comment)
  * - 30-day TTL for all data
+ * - Engagement-TTL: comments refresh parent post TTL
  */
 
 #ifndef DNA_FEED_H
@@ -33,7 +36,8 @@ extern "C" {
 #define DNA_FEED_MAX_POST_TEXT 2048
 #define DNA_FEED_MAX_POSTS_PER_BUCKET 500
 #define DNA_FEED_TTL_SECONDS (30 * 24 * 60 * 60)  /* 30 days */
-#define DNA_FEED_MAX_THREAD_DEPTH 2               /* 0=post, 1=comment, 2=reply */
+#define DNA_FEED_MAX_COMMENT_TEXT 2048            /* Max comment text length */
+#define DNA_FEED_POST_VERSION 2                   /* Current post format version */
 
 /* Default channel IDs (SHA256 of lowercase name) */
 #define DNA_FEED_CHANNEL_GENERAL "general"
@@ -84,11 +88,8 @@ typedef struct {
     char author_fingerprint[129];             /* Author's SHA3-512 fingerprint */
     char text[DNA_FEED_MAX_POST_TEXT];        /* Post content */
     uint64_t timestamp;                       /* Unix timestamp (milliseconds) */
-
-    /* Threading */
-    char reply_to[200];                       /* Parent post_id (empty for top-level) */
-    int reply_depth;                          /* 0=post, 1=comment, 2=reply */
-    int reply_count;                          /* Number of direct replies */
+    uint64_t updated;                         /* Last activity timestamp (comment added) */
+    int comment_count;                        /* Cached comment count */
 
     /* Signature */
     uint8_t signature[4627];                  /* Dilithium5 signature (NIST Cat 5) */
@@ -99,6 +100,40 @@ typedef struct {
     int downvotes;
     int user_vote;                            /* Current user's vote: +1, -1, or 0 */
 } dna_feed_post_t;
+
+/**
+ * @brief Single comment on a post
+ *
+ * Stored at: SHA256("dna:feed:post:" + post_id + ":comments") as multi-owner value
+ */
+typedef struct {
+    char comment_id[200];                     /* <fingerprint>_<timestamp_ms>_<random> */
+    char post_id[200];                        /* Parent post ID */
+    char author_fingerprint[129];             /* Author's SHA3-512 fingerprint */
+    char text[DNA_FEED_MAX_COMMENT_TEXT];     /* Comment content */
+    uint64_t timestamp;                       /* Unix timestamp (milliseconds) */
+
+    /* Signature */
+    uint8_t signature[4627];                  /* Dilithium5 signature (NIST Cat 5) */
+    size_t signature_len;
+
+    /* Voting (populated separately) */
+    int upvotes;
+    int downvotes;
+    int user_vote;                            /* Current user's vote: +1, -1, or 0 */
+} dna_feed_comment_t;
+
+/**
+ * @brief Post with all its comments
+ *
+ * Used for fetching a complete post thread
+ */
+typedef struct {
+    dna_feed_post_t post;                     /* The main post */
+    dna_feed_comment_t *comments;             /* Array of comments */
+    size_t comment_count;                     /* Number of comments */
+    size_t allocated_count;                   /* Allocated array size */
+} dna_feed_post_with_comments_t;
 
 /**
  * @brief Daily post index bucket
@@ -229,16 +264,14 @@ void dna_feed_registry_free(dna_feed_registry_t *registry);
  * @param author_fingerprint Author's SHA3-512 fingerprint
  * @param text Post content (max 2048 chars)
  * @param private_key Author's Dilithium5 private key
- * @param reply_to Parent post_id for replies (NULL for top-level)
  * @param post_out Output: Created post (caller frees)
- * @return 0 on success, -1 on error, -2 if max depth exceeded
+ * @return 0 on success, -1 on error
  */
 int dna_feed_post_create(dht_context_t *dht_ctx,
                          const char *channel_id,
                          const char *author_fingerprint,
                          const char *text,
                          const uint8_t *private_key,
-                         const char *reply_to,
                          dna_feed_post_t **post_out);
 
 /**
@@ -270,18 +303,16 @@ int dna_feed_posts_get_by_channel(dht_context_t *dht_ctx,
                                   size_t *count_out);
 
 /**
- * @brief Get replies to a post
+ * @brief Get post with all its comments
  *
  * @param dht_ctx DHT context
- * @param post_id Parent post ID
- * @param replies_out Output: Array of replies
- * @param count_out Output: Number of replies
- * @return 0 on success, -1 on error
+ * @param post_id Post ID
+ * @param result_out Output: Post with comments (caller frees)
+ * @return 0 on success, -1 on error, -2 if not found
  */
-int dna_feed_post_get_replies(dht_context_t *dht_ctx,
-                              const char *post_id,
-                              dna_feed_post_t **replies_out,
-                              size_t *count_out);
+int dna_feed_post_get_full(dht_context_t *dht_ctx,
+                           const char *post_id,
+                           dna_feed_post_with_comments_t **result_out);
 
 /**
  * @brief Generate post_id
@@ -313,6 +344,80 @@ void dna_feed_post_free(dna_feed_post_t *post);
  * @brief Free bucket structure
  */
 void dna_feed_bucket_free(dna_feed_bucket_t *bucket);
+
+/**
+ * @brief Free post with comments structure
+ */
+void dna_feed_post_with_comments_free(dna_feed_post_with_comments_t *post_with_comments);
+
+/* ============================================================================
+ * Comment Operations (dna_feed_comments.c)
+ * ========================================================================== */
+
+/**
+ * @brief Add a comment to a post
+ *
+ * Also refreshes the parent post TTL (engagement-TTL).
+ *
+ * @param dht_ctx DHT context
+ * @param post_id Post ID to comment on
+ * @param author_fingerprint Author's SHA3-512 fingerprint
+ * @param text Comment content (max 2048 chars)
+ * @param private_key Author's Dilithium5 private key
+ * @param comment_out Output: Created comment (caller frees)
+ * @return 0 on success, -1 on error, -2 if post not found
+ */
+int dna_feed_comment_add(dht_context_t *dht_ctx,
+                         const char *post_id,
+                         const char *author_fingerprint,
+                         const char *text,
+                         const uint8_t *private_key,
+                         dna_feed_comment_t **comment_out);
+
+/**
+ * @brief Get all comments for a post
+ *
+ * @param dht_ctx DHT context
+ * @param post_id Post ID
+ * @param comments_out Output: Array of comments (caller frees)
+ * @param count_out Output: Number of comments
+ * @return 0 on success, -1 on error, -2 if no comments
+ */
+int dna_feed_comments_get(dht_context_t *dht_ctx,
+                          const char *post_id,
+                          dna_feed_comment_t **comments_out,
+                          size_t *count_out);
+
+/**
+ * @brief Generate comment_id
+ *
+ * Format: <fingerprint>_<timestamp_ms>_<random_hex>
+ *
+ * @param fingerprint Author fingerprint
+ * @param comment_id_out Output buffer (200 bytes)
+ * @return 0 on success, -1 on error
+ */
+int dna_feed_make_comment_id(const char *fingerprint, char *comment_id_out);
+
+/**
+ * @brief Verify comment signature
+ *
+ * @param comment Comment to verify
+ * @param public_key Author's Dilithium5 public key (2592 bytes)
+ * @return 0 if valid, -1 if invalid
+ */
+int dna_feed_verify_comment_signature(const dna_feed_comment_t *comment,
+                                      const uint8_t *public_key);
+
+/**
+ * @brief Free comment structure
+ */
+void dna_feed_comment_free(dna_feed_comment_t *comment);
+
+/**
+ * @brief Free array of comments
+ */
+void dna_feed_comments_free(dna_feed_comment_t *comments, size_t count);
 
 /* ============================================================================
  * Vote Operations (dna_feed_votes.c)
@@ -375,6 +480,36 @@ int dna_feed_verify_vote_signature(const dna_feed_vote_t *vote,
  */
 void dna_feed_votes_free(dna_feed_votes_t *votes);
 
+/**
+ * @brief Cast a vote on a comment
+ *
+ * Votes are permanent - cannot be changed once cast.
+ *
+ * @param dht_ctx DHT context
+ * @param comment_id Comment ID to vote on
+ * @param voter_fingerprint Voter's SHA3-512 fingerprint
+ * @param vote_value +1 for upvote, -1 for downvote
+ * @param private_key Voter's Dilithium5 private key
+ * @return 0 on success, -1 on error, -2 if already voted
+ */
+int dna_feed_comment_vote_cast(dht_context_t *dht_ctx,
+                               const char *comment_id,
+                               const char *voter_fingerprint,
+                               int8_t vote_value,
+                               const uint8_t *private_key);
+
+/**
+ * @brief Get votes for a comment
+ *
+ * @param dht_ctx DHT context
+ * @param comment_id Comment ID
+ * @param votes_out Output: Votes structure (caller frees)
+ * @return 0 on success, -1 on error, -2 if no votes
+ */
+int dna_feed_comment_votes_get(dht_context_t *dht_ctx,
+                               const char *comment_id,
+                               dna_feed_votes_t **votes_out);
+
 /* ============================================================================
  * DHT Key Generation
  * ========================================================================== */
@@ -428,6 +563,26 @@ int dna_feed_get_post_key(const char *post_id, char *key_out);
  * @param key_out Output buffer (65 bytes)
  */
 int dna_feed_get_votes_key(const char *post_id, char *key_out);
+
+/**
+ * @brief Get DHT key for post comments
+ *
+ * Key: SHA256("dna:feed:post:" + post_id + ":comments")
+ *
+ * @param post_id Post ID
+ * @param key_out Output buffer (65 bytes)
+ */
+int dna_feed_get_comments_key(const char *post_id, char *key_out);
+
+/**
+ * @brief Get DHT key for comment votes
+ *
+ * Key: SHA256("dna:feed:comment:" + comment_id + ":votes")
+ *
+ * @param comment_id Comment ID
+ * @param key_out Output buffer (65 bytes)
+ */
+int dna_feed_get_comment_votes_key(const char *comment_id, char *key_out);
 
 /**
  * @brief Get today's date string

@@ -384,14 +384,23 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_CREATE_FEED_POST:
             dna_handle_create_feed_post(engine, task);
             break;
-        case TASK_GET_FEED_POST_REPLIES:
-            dna_handle_get_feed_post_replies(engine, task);
+        case TASK_ADD_FEED_COMMENT:
+            dna_handle_add_feed_comment(engine, task);
+            break;
+        case TASK_GET_FEED_COMMENTS:
+            dna_handle_get_feed_comments(engine, task);
             break;
         case TASK_CAST_FEED_VOTE:
             dna_handle_cast_feed_vote(engine, task);
             break;
         case TASK_GET_FEED_VOTES:
             dna_handle_get_feed_votes(engine, task);
+            break;
+        case TASK_CAST_COMMENT_VOTE:
+            dna_handle_cast_comment_vote(engine, task);
+            break;
+        case TASK_GET_COMMENT_VOTES:
+            dna_handle_get_comment_votes(engine, task);
             break;
     }
 }
@@ -2841,6 +2850,20 @@ void dna_free_feed_post(dna_post_info_t *post) {
     free(post);
 }
 
+void dna_free_feed_comments(dna_comment_info_t *comments, int count) {
+    if (!comments) return;
+    for (int i = 0; i < count; i++) {
+        free(comments[i].text);
+    }
+    free(comments);
+}
+
+void dna_free_feed_comment(dna_comment_info_t *comment) {
+    if (!comment) return;
+    free(comment->text);
+    free(comment);
+}
+
 void dna_free_profile(dna_profile_t *profile) {
     if (!profile) return;
     free(profile);
@@ -3001,9 +3024,8 @@ void dna_handle_get_feed_posts(dna_engine_t *engine, dna_task_t *task) {
                 strncpy(out_posts[i].author_fingerprint, posts[i].author_fingerprint, 128);
                 out_posts[i].text = strdup(posts[i].text);
                 out_posts[i].timestamp = posts[i].timestamp;
-                strncpy(out_posts[i].reply_to, posts[i].reply_to, 199);
-                out_posts[i].reply_depth = posts[i].reply_depth;
-                out_posts[i].reply_count = posts[i].reply_count;
+                out_posts[i].updated = posts[i].updated;
+                out_posts[i].comment_count = posts[i].comment_count;
                 out_posts[i].upvotes = posts[i].upvotes;
                 out_posts[i].downvotes = posts[i].downvotes;
                 out_posts[i].user_vote = posts[i].user_vote;
@@ -3037,16 +3059,12 @@ void dna_handle_create_feed_post(dna_engine_t *engine, dna_task_t *task) {
         return;
     }
 
-    const char *reply_to = task->params.create_feed_post.reply_to[0] ?
-                           task->params.create_feed_post.reply_to : NULL;
-
     dna_feed_post_t *new_post = NULL;
     int ret = dna_feed_post_create(dht,
                                     task->params.create_feed_post.channel_id,
                                     engine->fingerprint,
                                     task->params.create_feed_post.text,
                                     key->private_key,
-                                    reply_to,
                                     &new_post);
     qgp_key_free(key);
 
@@ -3058,9 +3076,8 @@ void dna_handle_create_feed_post(dna_engine_t *engine, dna_task_t *task) {
             strncpy(post->author_fingerprint, new_post->author_fingerprint, 128);
             post->text = strdup(new_post->text);
             post->timestamp = new_post->timestamp;
-            strncpy(post->reply_to, new_post->reply_to, 199);
-            post->reply_depth = new_post->reply_depth;
-            post->reply_count = 0;
+            post->updated = new_post->updated;
+            post->comment_count = new_post->comment_count;
             post->upvotes = 0;
             post->downvotes = 0;
             post->user_vote = 0;
@@ -3068,55 +3085,90 @@ void dna_handle_create_feed_post(dna_engine_t *engine, dna_task_t *task) {
         }
         dna_feed_post_free(new_post);
         task->callback.feed_post(task->request_id, DNA_OK, post, task->user_data);
-    } else if (ret == -2) {
-        task->callback.feed_post(task->request_id, DNA_ENGINE_ERROR_PERMISSION,
-                                 NULL, task->user_data);  /* Max depth exceeded */
     } else {
         task->callback.feed_post(task->request_id, DNA_ERROR_INTERNAL,
                                  NULL, task->user_data);
     }
 }
 
-void dna_handle_get_feed_post_replies(dna_engine_t *engine, dna_task_t *task) {
+void dna_handle_add_feed_comment(dna_engine_t *engine, dna_task_t *task) {
     dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        task->callback.feed_posts(task->request_id, DNA_ENGINE_ERROR_NETWORK,
-                                  NULL, 0, task->user_data);
+    qgp_key_t *key = dna_load_private_key(engine);
+
+    if (!dht || !key) {
+        if (key) qgp_key_free(key);
+        task->callback.feed_comment(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY,
+                                    NULL, task->user_data);
         return;
     }
 
-    dna_feed_post_t *replies = NULL;
-    size_t count = 0;
-    int ret = dna_feed_post_get_replies(dht, task->params.get_feed_post_replies.post_id,
-                                        &replies, &count);
+    dna_feed_comment_t *new_comment = NULL;
+    int ret = dna_feed_comment_add(dht,
+                                    task->params.add_feed_comment.post_id,
+                                    engine->fingerprint,
+                                    task->params.add_feed_comment.text,
+                                    key->private_key,
+                                    &new_comment);
+    qgp_key_free(key);
 
-    if (ret == 0 && replies && count > 0) {
-        dna_post_info_t *out_posts = calloc(count, sizeof(dna_post_info_t));
-        if (out_posts) {
-            for (size_t i = 0; i < count; i++) {
-                strncpy(out_posts[i].post_id, replies[i].post_id, 199);
-                strncpy(out_posts[i].channel_id, replies[i].channel_id, 64);
-                strncpy(out_posts[i].author_fingerprint, replies[i].author_fingerprint, 128);
-                out_posts[i].text = strdup(replies[i].text);
-                out_posts[i].timestamp = replies[i].timestamp;
-                strncpy(out_posts[i].reply_to, replies[i].reply_to, 199);
-                out_posts[i].reply_depth = replies[i].reply_depth;
-                out_posts[i].reply_count = replies[i].reply_count;
-                out_posts[i].upvotes = replies[i].upvotes;
-                out_posts[i].downvotes = replies[i].downvotes;
-                out_posts[i].user_vote = replies[i].user_vote;
-                out_posts[i].verified = (replies[i].signature_len > 0);
-            }
-            task->callback.feed_posts(task->request_id, DNA_OK,
-                                      out_posts, (int)count, task->user_data);
-        } else {
-            task->callback.feed_posts(task->request_id, DNA_ERROR_INTERNAL,
-                                      NULL, 0, task->user_data);
+    if (ret == 0 && new_comment) {
+        dna_comment_info_t *comment = calloc(1, sizeof(dna_comment_info_t));
+        if (comment) {
+            strncpy(comment->comment_id, new_comment->comment_id, 199);
+            strncpy(comment->post_id, new_comment->post_id, 199);
+            strncpy(comment->author_fingerprint, new_comment->author_fingerprint, 128);
+            comment->text = strdup(new_comment->text);
+            comment->timestamp = new_comment->timestamp;
+            comment->upvotes = 0;
+            comment->downvotes = 0;
+            comment->user_vote = 0;
+            comment->verified = true;
         }
-        free(replies);
+        dna_feed_comment_free(new_comment);
+        task->callback.feed_comment(task->request_id, DNA_OK, comment, task->user_data);
     } else {
-        task->callback.feed_posts(task->request_id, DNA_OK, NULL, 0, task->user_data);
-        if (replies) free(replies);
+        task->callback.feed_comment(task->request_id, DNA_ERROR_INTERNAL,
+                                    NULL, task->user_data);
+    }
+}
+
+void dna_handle_get_feed_comments(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        task->callback.feed_comments(task->request_id, DNA_ENGINE_ERROR_NETWORK,
+                                     NULL, 0, task->user_data);
+        return;
+    }
+
+    dna_feed_comment_t *comments = NULL;
+    size_t count = 0;
+    int ret = dna_feed_comments_get(dht, task->params.get_feed_comments.post_id,
+                                     &comments, &count);
+
+    if (ret == 0 && comments && count > 0) {
+        dna_comment_info_t *out_comments = calloc(count, sizeof(dna_comment_info_t));
+        if (out_comments) {
+            for (size_t i = 0; i < count; i++) {
+                strncpy(out_comments[i].comment_id, comments[i].comment_id, 199);
+                strncpy(out_comments[i].post_id, comments[i].post_id, 199);
+                strncpy(out_comments[i].author_fingerprint, comments[i].author_fingerprint, 128);
+                out_comments[i].text = strdup(comments[i].text);
+                out_comments[i].timestamp = comments[i].timestamp;
+                out_comments[i].upvotes = comments[i].upvotes;
+                out_comments[i].downvotes = comments[i].downvotes;
+                out_comments[i].user_vote = comments[i].user_vote;
+                out_comments[i].verified = (comments[i].signature_len > 0);
+            }
+            task->callback.feed_comments(task->request_id, DNA_OK,
+                                         out_comments, (int)count, task->user_data);
+        } else {
+            task->callback.feed_comments(task->request_id, DNA_ERROR_INTERNAL,
+                                         NULL, 0, task->user_data);
+        }
+        dna_feed_comments_free(comments, count);
+    } else {
+        task->callback.feed_comments(task->request_id, DNA_OK, NULL, 0, task->user_data);
+        if (comments) dna_feed_comments_free(comments, count);
     }
 }
 
@@ -3171,6 +3223,60 @@ void dna_handle_get_feed_votes(dna_engine_t *engine, dna_task_t *task) {
     } else {
         if (votes) dna_feed_votes_free(votes);
         task->callback.feed_post(task->request_id, DNA_ERROR_INTERNAL, NULL, task->user_data);
+    }
+}
+
+void dna_handle_cast_comment_vote(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    qgp_key_t *key = dna_load_private_key(engine);
+
+    if (!dht || !key) {
+        if (key) qgp_key_free(key);
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_NO_IDENTITY, task->user_data);
+        return;
+    }
+
+    int ret = dna_feed_comment_vote_cast(dht,
+                                          task->params.cast_comment_vote.comment_id,
+                                          engine->fingerprint,
+                                          task->params.cast_comment_vote.vote_value,
+                                          key->private_key);
+    qgp_key_free(key);
+
+    if (ret == 0) {
+        task->callback.completion(task->request_id, DNA_OK, task->user_data);
+    } else if (ret == -2) {
+        task->callback.completion(task->request_id, DNA_ENGINE_ERROR_ALREADY_EXISTS, task->user_data);
+    } else {
+        task->callback.completion(task->request_id, DNA_ERROR_INTERNAL, task->user_data);
+    }
+}
+
+void dna_handle_get_comment_votes(dna_engine_t *engine, dna_task_t *task) {
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        task->callback.feed_comment(task->request_id, DNA_ENGINE_ERROR_NETWORK,
+                                    NULL, task->user_data);
+        return;
+    }
+
+    dna_feed_votes_t *votes = NULL;
+    int ret = dna_feed_comment_votes_get(dht, task->params.get_comment_votes.comment_id, &votes);
+
+    dna_comment_info_t *comment = calloc(1, sizeof(dna_comment_info_t));
+    if (comment) {
+        strncpy(comment->comment_id, task->params.get_comment_votes.comment_id, 199);
+        if (ret == 0 && votes) {
+            comment->upvotes = votes->upvote_count;
+            comment->downvotes = votes->downvote_count;
+            comment->user_vote = engine->identity_loaded ?
+                                 dna_feed_get_user_vote(votes, engine->fingerprint) : 0;
+            dna_feed_votes_free(votes);
+        }
+        task->callback.feed_comment(task->request_id, DNA_OK, comment, task->user_data);
+    } else {
+        if (votes) dna_feed_votes_free(votes);
+        task->callback.feed_comment(task->request_id, DNA_ERROR_INTERNAL, NULL, task->user_data);
     }
 }
 
@@ -3246,7 +3352,6 @@ dna_request_id_t dna_engine_create_feed_post(
     dna_engine_t *engine,
     const char *channel_id,
     const char *text,
-    const char *reply_to,
     dna_feed_post_cb callback,
     void *user_data
 ) {
@@ -3256,29 +3361,45 @@ dna_request_id_t dna_engine_create_feed_post(
     strncpy(params.create_feed_post.channel_id, channel_id, 64);
     params.create_feed_post.text = strdup(text);
     if (!params.create_feed_post.text) return DNA_REQUEST_ID_INVALID;
-    if (reply_to) {
-        strncpy(params.create_feed_post.reply_to, reply_to, 199);
-    }
 
     dna_task_callback_t cb = {0};
     cb.feed_post = callback;
     return dna_submit_task(engine, TASK_CREATE_FEED_POST, &params, cb, user_data);
 }
 
-dna_request_id_t dna_engine_get_feed_post_replies(
+dna_request_id_t dna_engine_add_feed_comment(
     dna_engine_t *engine,
     const char *post_id,
-    dna_feed_posts_cb callback,
+    const char *text,
+    dna_feed_comment_cb callback,
+    void *user_data
+) {
+    if (!engine || !post_id || !text || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.add_feed_comment.post_id, post_id, 199);
+    params.add_feed_comment.text = strdup(text);
+    if (!params.add_feed_comment.text) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = {0};
+    cb.feed_comment = callback;
+    return dna_submit_task(engine, TASK_ADD_FEED_COMMENT, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_feed_comments(
+    dna_engine_t *engine,
+    const char *post_id,
+    dna_feed_comments_cb callback,
     void *user_data
 ) {
     if (!engine || !post_id || !callback) return DNA_REQUEST_ID_INVALID;
 
     dna_task_params_t params = {0};
-    strncpy(params.get_feed_post_replies.post_id, post_id, 199);
+    strncpy(params.get_feed_comments.post_id, post_id, 199);
 
     dna_task_callback_t cb = {0};
-    cb.feed_posts = callback;
-    return dna_submit_task(engine, TASK_GET_FEED_POST_REPLIES, &params, cb, user_data);
+    cb.feed_comments = callback;
+    return dna_submit_task(engine, TASK_GET_FEED_COMMENTS, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_cast_feed_vote(
@@ -3314,4 +3435,39 @@ dna_request_id_t dna_engine_get_feed_votes(
     dna_task_callback_t cb = {0};
     cb.feed_post = callback;
     return dna_submit_task(engine, TASK_GET_FEED_VOTES, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_cast_comment_vote(
+    dna_engine_t *engine,
+    const char *comment_id,
+    int8_t vote_value,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !comment_id || !callback) return DNA_REQUEST_ID_INVALID;
+    if (vote_value != 1 && vote_value != -1) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.cast_comment_vote.comment_id, comment_id, 199);
+    params.cast_comment_vote.vote_value = vote_value;
+
+    dna_task_callback_t cb = {0};
+    cb.completion = callback;
+    return dna_submit_task(engine, TASK_CAST_COMMENT_VOTE, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_comment_votes(
+    dna_engine_t *engine,
+    const char *comment_id,
+    dna_feed_comment_cb callback,
+    void *user_data
+) {
+    if (!engine || !comment_id || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_comment_votes.comment_id, comment_id, 199);
+
+    dna_task_callback_t cb = {0};
+    cb.feed_comment = callback;
+    return dna_submit_task(engine, TASK_GET_COMMENT_VOTES, &params, cb, user_data);
 }

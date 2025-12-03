@@ -86,9 +86,12 @@ typedef enum {
     TASK_INIT_DEFAULT_CHANNELS,
     TASK_GET_FEED_POSTS,
     TASK_CREATE_FEED_POST,
-    TASK_GET_FEED_POST_REPLIES,
+    TASK_ADD_FEED_COMMENT,
+    TASK_GET_FEED_COMMENTS,
     TASK_CAST_FEED_VOTE,
-    TASK_GET_FEED_VOTES
+    TASK_GET_FEED_VOTES,
+    TASK_CAST_COMMENT_VOTE,
+    TASK_GET_COMMENT_VOTES
 } dna_task_type_t;
 
 /* ============================================================================
@@ -200,13 +203,18 @@ typedef union {
     struct {
         char channel_id[65];
         char *text;  /* Heap allocated, task owns */
-        char reply_to[200];
     } create_feed_post;
 
-    /* Get feed post replies */
+    /* Add feed comment */
     struct {
         char post_id[200];
-    } get_feed_post_replies;
+        char *text;  /* Heap allocated, task owns */
+    } add_feed_comment;
+
+    /* Get feed comments */
+    struct {
+        char post_id[200];
+    } get_feed_comments;
 
     /* Cast feed vote */
     struct {
@@ -218,6 +226,17 @@ typedef union {
     struct {
         char post_id[200];
     } get_feed_votes;
+
+    /* Cast comment vote */
+    struct {
+        char comment_id[200];
+        int8_t vote_value;
+    } cast_comment_vote;
+
+    /* Get comment votes */
+    struct {
+        char comment_id[200];
+    } get_comment_votes;
 
     /* Update profile */
     struct {
@@ -251,6 +270,8 @@ typedef union {
     dna_feed_channel_cb feed_channel;
     dna_feed_posts_cb feed_posts;
     dna_feed_post_cb feed_post;
+    dna_feed_comments_cb feed_comments;
+    dna_feed_comment_cb feed_comment;
     dna_profile_cb profile;
     dna_presence_cb presence;
 } dna_task_callback_t;
@@ -460,9 +481,12 @@ void dna_handle_create_feed_channel(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_init_default_channels(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_feed_posts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_create_feed_post(dna_engine_t *engine, dna_task_t *task);
-void dna_handle_get_feed_post_replies(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_add_feed_comment(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_feed_comments(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_cast_feed_vote(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_feed_votes(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_cast_comment_vote(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_comment_votes(dna_engine_t *engine, dna_task_t *task);
 
 /* ============================================================================
  * INTERNAL FUNCTIONS - Helpers

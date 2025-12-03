@@ -88,8 +88,8 @@ class ChannelPostsNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
     // Load votes for each post (like ImGui does)
     final postsWithVotes = await _loadVotesForPosts(engine, posts);
 
-    // Sort by timestamp (newest first)
-    postsWithVotes.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    // Sort by updated timestamp (most recent activity first)
+    postsWithVotes.sort((a, b) => b.updated.compareTo(a.updated));
     return postsWithVotes;
   }
 
@@ -141,56 +141,60 @@ class ChannelPostsNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
       final engine = await ref.read(engineProvider.future);
       final posts = await _fetchPostsFromMultipleDays(engine, arg);
       final postsWithVotes = await _loadVotesForPosts(engine, posts);
-      postsWithVotes.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      postsWithVotes.sort((a, b) => b.updated.compareTo(a.updated));
       return postsWithVotes;
     });
   }
 
-  Future<FeedPost> createPost(String text, {String? replyTo}) async {
+  Future<FeedPost> createPost(String text) async {
     final engine = await ref.read(engineProvider.future);
-    final post = await engine.createFeedPost(arg, text, replyTo: replyTo);
+    final post = await engine.createFeedPost(arg, text);
     await refresh();
     return post;
   }
 }
 
-/// Post replies provider
-final postRepliesProvider = AsyncNotifierProviderFamily<PostRepliesNotifier, List<FeedPost>, String>(
-  PostRepliesNotifier.new,
+// =============================================================================
+// COMMENTS PROVIDERS
+// =============================================================================
+
+/// Comments for a specific post
+final postCommentsProvider = AsyncNotifierProviderFamily<PostCommentsNotifier, List<FeedComment>, String>(
+  PostCommentsNotifier.new,
 );
 
-class PostRepliesNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
+class PostCommentsNotifier extends FamilyAsyncNotifier<List<FeedComment>, String> {
   @override
-  Future<List<FeedPost>> build(String postId) async {
+  Future<List<FeedComment>> build(String postId) async {
     if (postId.isEmpty) {
       return [];
     }
 
     final engine = await ref.watch(engineProvider.future);
-    final replies = await engine.getFeedPostReplies(postId);
+    final comments = await engine.getFeedComments(postId);
 
-    // Load votes for each reply
-    final repliesWithVotes = await _loadVotesForReplies(engine, replies);
+    // Load votes for each comment
+    final commentsWithVotes = await _loadVotesForComments(engine, comments);
 
-    // Sort by timestamp (oldest first for thread view)
-    repliesWithVotes.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    return repliesWithVotes;
+    // Sort by timestamp (oldest first for chronological view)
+    commentsWithVotes.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    return commentsWithVotes;
   }
 
-  /// Load vote counts for each reply from DHT
-  Future<List<FeedPost>> _loadVotesForReplies(DnaEngine engine, List<FeedPost> replies) async {
-    final result = <FeedPost>[];
-    for (final reply in replies) {
+  /// Load vote counts for each comment from DHT
+  Future<List<FeedComment>> _loadVotesForComments(DnaEngine engine, List<FeedComment> comments) async {
+    final result = <FeedComment>[];
+    for (final comment in comments) {
       try {
-        final voteData = await engine.getFeedVotes(reply.postId);
-        result.add(reply.copyWith(
+        final voteData = await engine.getCommentVotes(comment.commentId);
+        result.add(comment.copyWith(
           upvotes: voteData.upvotes,
           downvotes: voteData.downvotes,
           userVote: voteData.userVote,
         ));
       } catch (e) {
         // Keep original if vote fetch fails
-        result.add(reply);
+        result.add(comment);
       }
     }
     return result;
@@ -200,13 +204,26 @@ class PostRepliesNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
-      final replies = await engine.getFeedPostReplies(arg);
-      final repliesWithVotes = await _loadVotesForReplies(engine, replies);
-      repliesWithVotes.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-      return repliesWithVotes;
+      final comments = await engine.getFeedComments(arg);
+      final commentsWithVotes = await _loadVotesForComments(engine, comments);
+      commentsWithVotes.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      return commentsWithVotes;
     });
   }
+
+  Future<FeedComment> addComment(String text) async {
+    final engine = await ref.read(engineProvider.future);
+    final comment = await engine.addFeedComment(arg, text);
+    await refresh();
+    return comment;
+  }
 }
+
+/// Post ID currently being commented on (null = not commenting)
+final commentingOnPostProvider = StateProvider<String?>((ref) => null);
+
+/// Comment text input state
+final commentTextProvider = StateProvider<String>((ref) => '');
 
 // =============================================================================
 // VOTING PROVIDERS
@@ -215,28 +232,37 @@ class PostRepliesNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
 /// Post currently being voted on (null = not voting)
 final votingPostProvider = StateProvider<String?>((ref) => null);
 
+/// Comment currently being voted on (null = not voting)
+final votingCommentProvider = StateProvider<String?>((ref) => null);
+
 /// Cast a vote on a post
-final castVoteProvider = FutureProvider.family<void, ({String postId, int value})>((ref, params) async {
+final castPostVoteProvider = FutureProvider.family<void, ({String postId, int value})>((ref, params) async {
   final engine = await ref.read(engineProvider.future);
   await engine.castFeedVote(params.postId, params.value);
+});
+
+/// Cast a vote on a comment
+final castCommentVoteProvider = FutureProvider.family<void, ({String commentId, int value})>((ref, params) async {
+  final engine = await ref.read(engineProvider.future);
+  await engine.castCommentVote(params.commentId, params.value);
 });
 
 /// Post vote state (for optimistic updates)
 final postVoteProvider = StateProvider.family<int, String>((ref, postId) => 0);
 
+/// Comment vote state (for optimistic updates)
+final commentVoteProvider = StateProvider.family<int, String>((ref, commentId) => 0);
+
 // =============================================================================
 // EXPANSION STATE
 // =============================================================================
 
-/// Set of expanded post IDs (to show replies)
+/// Set of expanded post IDs (to show comments section)
 final expandedPostsProvider = StateProvider<Set<String>>((ref) => {});
 
 // =============================================================================
-// REPLY STATE
+// COMPOSE STATE
 // =============================================================================
 
-/// Post being replied to (null for new top-level post)
-final replyToPostProvider = StateProvider<FeedPost?>((ref) => null);
-
-/// Compose text controller state
+/// Compose text controller state for new posts
 final composeTextProvider = StateProvider<String>((ref) => '');

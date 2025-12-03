@@ -170,14 +170,28 @@ typedef struct {
     char author_fingerprint[129]; /* Author's SHA3-512 fingerprint */
     char *text;                 /* Post content (caller frees via dna_free_feed_posts) */
     uint64_t timestamp;         /* Unix timestamp (milliseconds) */
-    char reply_to[200];         /* Parent post_id (empty for top-level) */
-    int reply_depth;            /* 0=post, 1=comment, 2=reply */
-    int reply_count;            /* Number of direct replies */
+    uint64_t updated;           /* Last activity timestamp (comment added) */
+    int comment_count;          /* Cached comment count */
     int upvotes;                /* Upvote count */
     int downvotes;              /* Downvote count */
     int user_vote;              /* Current user's vote: +1, -1, or 0 */
     bool verified;              /* Signature verified */
 } dna_post_info_t;
+
+/**
+ * Feed comment info (flat comments, no nesting)
+ */
+typedef struct {
+    char comment_id[200];       /* <fingerprint>_<timestamp_ms>_<random> */
+    char post_id[200];          /* Parent post ID */
+    char author_fingerprint[129]; /* Author's SHA3-512 fingerprint */
+    char *text;                 /* Comment content (caller frees via dna_free_feed_comments) */
+    uint64_t timestamp;         /* Unix timestamp (milliseconds) */
+    int upvotes;                /* Upvote count */
+    int downvotes;              /* Downvote count */
+    int user_vote;              /* Current user's vote: +1, -1, or 0 */
+    bool verified;              /* Signature verified */
+} dna_comment_info_t;
 
 /**
  * User profile information (wallet addresses, socials, bio, avatar)
@@ -386,6 +400,27 @@ typedef void (*dna_feed_post_cb)(
     dna_request_id_t request_id,
     int error,
     dna_post_info_t *post,
+    void *user_data
+);
+
+/**
+ * Feed comments callback
+ */
+typedef void (*dna_feed_comments_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_comment_info_t *comments,
+    int count,
+    void *user_data
+);
+
+/**
+ * Feed comment created callback
+ */
+typedef void (*dna_feed_comment_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_comment_info_t *comment,
     void *user_data
 );
 
@@ -1181,13 +1216,12 @@ dna_request_id_t dna_engine_get_feed_posts(
 /**
  * Create a new feed post
  *
- * Posts are signed with Dilithium5. Set reply_to for replies.
- * Max thread depth is 2 (post -> comment -> reply).
+ * Posts are signed with Dilithium5.
+ * Use dna_engine_add_feed_comment() for comments.
  *
  * @param engine     Engine instance
  * @param channel_id Channel ID
  * @param text       Post content (max 2048 chars)
- * @param reply_to   Parent post_id for replies, NULL for top-level
  * @param callback   Called with created post
  * @param user_data  User data for callback
  * @return           Request ID (0 on immediate error)
@@ -1196,24 +1230,44 @@ dna_request_id_t dna_engine_create_feed_post(
     dna_engine_t *engine,
     const char *channel_id,
     const char *text,
-    const char *reply_to,
     dna_feed_post_cb callback,
     void *user_data
 );
 
 /**
- * Get replies to a post
+ * Add a comment to a post
+ *
+ * Comments are flat (no nesting). Signed with Dilithium5.
+ * Also refreshes parent post TTL (engagement-TTL).
  *
  * @param engine    Engine instance
- * @param post_id   Parent post ID
- * @param callback  Called with replies array
+ * @param post_id   Post ID to comment on
+ * @param text      Comment content (max 2048 chars)
+ * @param callback  Called with created comment
  * @param user_data User data for callback
  * @return          Request ID (0 on immediate error)
  */
-dna_request_id_t dna_engine_get_feed_post_replies(
+dna_request_id_t dna_engine_add_feed_comment(
     dna_engine_t *engine,
     const char *post_id,
-    dna_feed_posts_cb callback,
+    const char *text,
+    dna_feed_comment_cb callback,
+    void *user_data
+);
+
+/**
+ * Get all comments for a post
+ *
+ * @param engine    Engine instance
+ * @param post_id   Post ID
+ * @param callback  Called with comments array
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_feed_comments(
+    dna_engine_t *engine,
+    const char *post_id,
+    dna_feed_comments_cb callback,
     void *user_data
 );
 
@@ -1253,6 +1307,45 @@ dna_request_id_t dna_engine_get_feed_votes(
     dna_engine_t *engine,
     const char *post_id,
     dna_feed_post_cb callback,
+    void *user_data
+);
+
+/**
+ * Cast a vote on a feed comment
+ *
+ * Votes are permanent (cannot be changed once cast).
+ * Signed with Dilithium5.
+ *
+ * @param engine      Engine instance
+ * @param comment_id  Comment ID to vote on
+ * @param vote_value  +1 for upvote, -1 for downvote
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_cast_comment_vote(
+    dna_engine_t *engine,
+    const char *comment_id,
+    int8_t vote_value,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get vote counts and user's vote for a comment
+ *
+ * Returns updated upvotes/downvotes/user_vote in the comment struct.
+ *
+ * @param engine      Engine instance
+ * @param comment_id  Comment ID
+ * @param callback    Called with comment containing vote data
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_comment_votes(
+    dna_engine_t *engine,
+    const char *comment_id,
+    dna_feed_comment_cb callback,
     void *user_data
 );
 
@@ -1344,6 +1437,16 @@ void dna_free_feed_posts(dna_post_info_t *posts, int count);
  * Free single feed post returned by callbacks
  */
 void dna_free_feed_post(dna_post_info_t *post);
+
+/**
+ * Free feed comments array returned by callbacks
+ */
+void dna_free_feed_comments(dna_comment_info_t *comments, int count);
+
+/**
+ * Free single feed comment returned by callbacks
+ */
+void dna_free_feed_comment(dna_comment_info_t *comment);
 
 /**
  * Free profile returned by callbacks

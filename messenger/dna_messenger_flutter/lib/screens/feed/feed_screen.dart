@@ -15,10 +15,12 @@ class FeedScreen extends ConsumerStatefulWidget {
 
 class _FeedScreenState extends ConsumerState<FeedScreen> {
   final _composeController = TextEditingController();
+  final _commentController = TextEditingController();
 
   @override
   void dispose() {
     _composeController.dispose();
+    _commentController.dispose();
     super.dispose();
   }
 
@@ -189,7 +191,6 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
 
   Widget _buildPostsView(FeedChannel channel) {
     final posts = ref.watch(channelPostsProvider(channel.channelId));
-    final replyTo = ref.watch(replyToPostProvider);
 
     return Column(
       children: [
@@ -200,12 +201,6 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
               if (list.isEmpty) {
                 return _buildEmptyPosts();
               }
-              // Build set of loaded post IDs for orphan detection
-              final loadedIds = list.map((p) => p.postId).toSet();
-              // Show parent posts OR orphan replies (parent not in loaded list)
-              final parentPosts = list.where((p) =>
-                  p.replyTo == null || !loadedIds.contains(p.replyTo)
-              ).toList();
               final expandedPosts = ref.watch(expandedPostsProvider);
 
               return RefreshIndicator(
@@ -213,18 +208,18 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
                 child: ListView.builder(
                   reverse: true,
                   padding: const EdgeInsets.only(bottom: 8),
-                  itemCount: parentPosts.length,
+                  itemCount: list.length,
                   itemBuilder: (context, index) {
-                    final post = parentPosts[index];
+                    final post = list[index];
                     final isExpanded = expandedPosts.contains(post.postId);
 
                     return _ExpandablePostCard(
                       post: post,
                       isExpanded: isExpanded,
                       onTap: () => _toggleExpansion(post.postId),
-                      onReply: () => ref.read(replyToPostProvider.notifier).state = post,
-                      onVote: (value) => _castVote(post, value),
-                      onReplyVote: (reply, value) => _castVote(reply, value),
+                      onVote: (value) => _castPostVote(post, value),
+                      commentController: _commentController,
+                      onSendComment: () => _sendComment(post.postId, channel.channelId),
                     );
                   },
                 ),
@@ -234,16 +229,11 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
             error: (e, st) => Center(child: Text('Error: $e')),
           ),
         ),
-        // Reply indicator
-        if (replyTo != null)
-          _ReplyIndicator(
-            post: replyTo,
-            onCancel: () => ref.read(replyToPostProvider.notifier).state = null,
-          ),
-        // Compose area
+        // Compose area for new posts
         _ComposeArea(
           controller: _composeController,
-          onSend: () => _sendPost(channel, replyTo),
+          hintText: 'Write a post...',
+          onSend: () => _sendPost(channel),
         ),
       ],
     );
@@ -267,16 +257,15 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
     );
   }
 
-  Future<void> _sendPost(FeedChannel channel, FeedPost? replyTo) async {
+  Future<void> _sendPost(FeedChannel channel) async {
     final text = _composeController.text.trim();
     if (text.isEmpty) return;
 
     _composeController.clear();
-    ref.read(replyToPostProvider.notifier).state = null;
 
     try {
       await ref.read(channelPostsProvider(channel.channelId).notifier)
-          .createPost(text, replyTo: replyTo?.postId);
+          .createPost(text);
     } catch (e) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -286,7 +275,26 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
     }
   }
 
-  Future<void> _castVote(FeedPost post, int value) async {
+  Future<void> _sendComment(String postId, String channelId) async {
+    final text = _commentController.text.trim();
+    if (text.isEmpty) return;
+
+    _commentController.clear();
+
+    try {
+      await ref.read(postCommentsProvider(postId).notifier).addComment(text);
+      // Also refresh posts to update comment count
+      ref.invalidate(channelPostsProvider(channelId));
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Failed to comment: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _castPostVote(FeedPost post, int value) async {
     // Set loading state
     ref.read(votingPostProvider.notifier).state = post.postId;
 
@@ -428,25 +436,19 @@ class _ChannelTile extends StatelessWidget {
 
 class _PostCard extends ConsumerWidget {
   final FeedPost post;
-  final VoidCallback onReply;
   final void Function(int) onVote;
   final VoidCallback? onTap;
   final bool isExpanded;
-  final bool showExpandIndicator;
 
   const _PostCard({
     required this.post,
-    required this.onReply,
     required this.onVote,
     this.onTap,
     this.isExpanded = false,
-    this.showExpandIndicator = false,
   });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final isReply = post.replyTo != null;
-
     // Look up display name for author
     final displayNameAsync = ref.watch(identityDisplayNameProvider(post.authorFingerprint));
     final authorName = displayNameAsync.valueOrNull ?? _shortenFingerprint(post.authorFingerprint);
@@ -455,12 +457,7 @@ class _PostCard extends ConsumerWidget {
       onTap: onTap,
       borderRadius: BorderRadius.circular(12),
       child: Container(
-        margin: EdgeInsets.only(
-          left: isReply ? 24 + (post.replyDepth * 16) : 8,
-          right: 8,
-          top: 4,
-          bottom: 4,
-        ),
+        margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
           color: DnaColors.surface,
           borderRadius: BorderRadius.circular(12),
@@ -474,16 +471,6 @@ class _PostCard extends ConsumerWidget {
               // Header: author + time
               Row(
                 children: [
-                  if (isReply)
-                    Container(
-                      width: 3,
-                      height: 16,
-                      margin: const EdgeInsets.only(right: 8),
-                      decoration: BoxDecoration(
-                        color: DnaColors.primary.withAlpha(100),
-                        borderRadius: BorderRadius.circular(2),
-                      ),
-                    ),
                   Expanded(
                     child: Text(
                       authorName,
@@ -504,79 +491,64 @@ class _PostCard extends ConsumerWidget {
                       child: Icon(Icons.verified, size: 14, color: DnaColors.textSuccess),
                     ),
                   // Expand indicator
-                  if (showExpandIndicator)
-                    Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: Icon(
-                        isExpanded ? Icons.expand_less : Icons.expand_more,
-                        size: 20,
-                        color: DnaColors.textMuted,
-                      ),
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Icon(
+                      isExpanded ? Icons.expand_less : Icons.expand_more,
+                      size: 20,
+                      color: DnaColors.textMuted,
                     ),
+                  ),
                 ],
               ),
-            const SizedBox(height: 8),
-            // Content
-            Text(post.text),
-            const SizedBox(height: 8),
-            // Actions: votes + reply
-            Row(
-              children: [
-                // Upvote
-                Builder(builder: (context) {
-                  final votingPostId = ref.watch(votingPostProvider);
-                  final isLoading = votingPostId == post.postId;
-                  return _VoteButton(
-                    icon: Icons.thumb_up_outlined,
-                    activeIcon: Icons.thumb_up,
-                    count: post.upvotes,
-                    isActive: post.userVote == 1,
-                    isLoading: isLoading,
-                    onTap: post.hasVoted ? null : () => onVote(1),
-                  );
-                }),
-                const SizedBox(width: 4),
-                // Downvote
-                Builder(builder: (context) {
-                  final votingPostId = ref.watch(votingPostProvider);
-                  final isLoading = votingPostId == post.postId;
-                  return _VoteButton(
-                    icon: Icons.thumb_down_outlined,
-                    activeIcon: Icons.thumb_down,
-                    count: post.downvotes,
-                    isActive: post.userVote == -1,
-                    isNegative: true,
-                    isLoading: isLoading,
-                    onTap: post.hasVoted ? null : () => onVote(-1),
-                  );
-                }),
-                const Spacer(),
-                // Reply count
-                if (post.replyCount > 0)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: Text(
-                      '${post.replyCount} replies',
-                      style: TextStyle(color: DnaColors.textMuted, fontSize: 12),
-                    ),
+              const SizedBox(height: 8),
+              // Content
+              Text(post.text),
+              const SizedBox(height: 8),
+              // Actions: votes + comments
+              Row(
+                children: [
+                  // Upvote
+                  Builder(builder: (context) {
+                    final votingPostId = ref.watch(votingPostProvider);
+                    final isLoading = votingPostId == post.postId;
+                    return _VoteButton(
+                      icon: Icons.thumb_up_outlined,
+                      activeIcon: Icons.thumb_up,
+                      count: post.upvotes,
+                      isActive: post.userVote == 1,
+                      isLoading: isLoading,
+                      onTap: post.hasVoted ? null : () => onVote(1),
+                    );
+                  }),
+                  const SizedBox(width: 4),
+                  // Downvote
+                  Builder(builder: (context) {
+                    final votingPostId = ref.watch(votingPostProvider);
+                    final isLoading = votingPostId == post.postId;
+                    return _VoteButton(
+                      icon: Icons.thumb_down_outlined,
+                      activeIcon: Icons.thumb_down,
+                      count: post.downvotes,
+                      isActive: post.userVote == -1,
+                      isNegative: true,
+                      isLoading: isLoading,
+                      onTap: post.hasVoted ? null : () => onVote(-1),
+                    );
+                  }),
+                  const Spacer(),
+                  // Comment count
+                  Icon(Icons.comment_outlined, size: 16, color: DnaColors.textMuted),
+                  const SizedBox(width: 4),
+                  Text(
+                    '${post.commentCount}',
+                    style: TextStyle(color: DnaColors.textMuted, fontSize: 12),
                   ),
-                // Reply button
-                if (post.replyDepth < 2)
-                  TextButton.icon(
-                    onPressed: onReply,
-                    icon: const Icon(Icons.reply, size: 16),
-                    label: const Text('Reply'),
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      minimumSize: Size.zero,
-                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    ),
-                  ),
-              ],
-            ),
-          ],
+                ],
+              ),
+            ],
+          ),
         ),
-      ),
       ),
     );
   }
@@ -599,24 +571,24 @@ class _PostCard extends ConsumerWidget {
 }
 
 // =============================================================================
-// EXPANDABLE POST CARD (parent + replies)
+// EXPANDABLE POST CARD (post + comments)
 // =============================================================================
 
 class _ExpandablePostCard extends ConsumerWidget {
   final FeedPost post;
   final bool isExpanded;
   final VoidCallback onTap;
-  final VoidCallback onReply;
   final void Function(int) onVote;
-  final void Function(FeedPost, int) onReplyVote;
+  final TextEditingController commentController;
+  final VoidCallback onSendComment;
 
   const _ExpandablePostCard({
     required this.post,
     required this.isExpanded,
     required this.onTap,
-    required this.onReply,
     required this.onVote,
-    required this.onReplyVote,
+    required this.commentController,
+    required this.onSendComment,
   });
 
   @override
@@ -624,21 +596,19 @@ class _ExpandablePostCard extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Parent post - always allow tap to expand/check for replies
+        // Post card
         _PostCard(
           post: post,
-          onReply: onReply,
           onVote: onVote,
           onTap: onTap,
           isExpanded: isExpanded,
-          showExpandIndicator: true,
         ),
-        // Replies (when expanded)
+        // Comments section (when expanded)
         if (isExpanded)
-          _RepliesSection(
+          _CommentsSection(
             postId: post.postId,
-            onReply: (reply) => ref.read(replyToPostProvider.notifier).state = reply,
-            onVote: onReplyVote,
+            commentController: commentController,
+            onSendComment: onSendComment,
           ),
       ],
     );
@@ -646,92 +616,234 @@ class _ExpandablePostCard extends ConsumerWidget {
 }
 
 // =============================================================================
-// REPLIES SECTION
+// COMMENTS SECTION
 // =============================================================================
 
-class _RepliesSection extends ConsumerWidget {
+class _CommentsSection extends ConsumerWidget {
   final String postId;
-  final void Function(FeedPost) onReply;
-  final void Function(FeedPost, int) onVote;
+  final TextEditingController commentController;
+  final VoidCallback onSendComment;
 
-  const _RepliesSection({
+  const _CommentsSection({
     required this.postId,
-    required this.onReply,
-    required this.onVote,
+    required this.commentController,
+    required this.onSendComment,
   });
-
-  void _toggleReplyExpansion(WidgetRef ref, String replyId) {
-    final current = ref.read(expandedPostsProvider);
-    final newSet = Set<String>.from(current);
-    if (newSet.contains(replyId)) {
-      newSet.remove(replyId);
-    } else {
-      newSet.add(replyId);
-    }
-    ref.read(expandedPostsProvider.notifier).state = newSet;
-  }
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final repliesAsync = ref.watch(postRepliesProvider(postId));
-    final expandedPosts = ref.watch(expandedPostsProvider);
+    final commentsAsync = ref.watch(postCommentsProvider(postId));
 
-    return repliesAsync.when(
-      data: (replies) {
-        if (replies.isEmpty) {
-          return Padding(
-            padding: const EdgeInsets.only(left: 32, top: 4, bottom: 8),
-            child: Text('No replies yet', style: TextStyle(color: DnaColors.textMuted, fontSize: 12)),
-          );
-        }
-        return Column(
-          children: replies.map((reply) {
-            final isExpanded = expandedPosts.contains(reply.postId);
-            // Only show expand for replies that can have sub-replies (depth < 2)
-            final canHaveReplies = reply.replyDepth < 2;
-
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _PostCard(
-                  post: reply,
-                  onReply: () => onReply(reply),
-                  onVote: (value) => onVote(reply, value),
-                  onTap: canHaveReplies ? () => _toggleReplyExpansion(ref, reply.postId) : null,
-                  isExpanded: isExpanded,
-                  showExpandIndicator: canHaveReplies,
-                ),
-                // Show nested replies when expanded
-                if (isExpanded && canHaveReplies)
-                  _RepliesSection(
-                    postId: reply.postId,
-                    onReply: onReply,
-                    onVote: onVote,
-                  ),
-              ],
-            );
-          }).toList(),
-        );
-      },
-      loading: () => Padding(
-        padding: const EdgeInsets.only(left: 32, top: 8, bottom: 8),
-        child: Row(
-          children: [
-            SizedBox(
-              width: 16,
-              height: 16,
-              child: CircularProgressIndicator(strokeWidth: 2, color: DnaColors.textMuted),
-            ),
-            const SizedBox(width: 8),
-            Text('Loading replies...', style: TextStyle(color: DnaColors.textMuted, fontSize: 12)),
-          ],
-        ),
+    return Container(
+      margin: const EdgeInsets.only(left: 24, right: 8, bottom: 8),
+      decoration: BoxDecoration(
+        color: DnaColors.background,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: DnaColors.border),
       ),
-      error: (e, st) => Padding(
-        padding: const EdgeInsets.only(left: 32),
-        child: Text('Failed to load replies', style: TextStyle(color: DnaColors.textWarning, fontSize: 12)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Comments list
+          commentsAsync.when(
+            data: (comments) {
+              if (comments.isEmpty) {
+                return Padding(
+                  padding: const EdgeInsets.all(12),
+                  child: Text(
+                    'No comments yet. Be the first!',
+                    style: TextStyle(color: DnaColors.textMuted, fontSize: 13),
+                  ),
+                );
+              }
+              return ListView.separated(
+                shrinkWrap: true,
+                physics: const NeverScrollableScrollPhysics(),
+                itemCount: comments.length,
+                separatorBuilder: (_, __) => Divider(
+                  height: 1,
+                  color: DnaColors.border,
+                ),
+                itemBuilder: (context, index) {
+                  return _CommentCard(comment: comments[index]);
+                },
+              );
+            },
+            loading: () => Padding(
+              padding: const EdgeInsets.all(12),
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: DnaColors.textMuted),
+                  ),
+                  const SizedBox(width: 8),
+                  Text('Loading comments...', style: TextStyle(color: DnaColors.textMuted, fontSize: 12)),
+                ],
+              ),
+            ),
+            error: (e, st) => Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text('Failed to load comments', style: TextStyle(color: DnaColors.textWarning, fontSize: 12)),
+            ),
+          ),
+          // Comment input
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: DnaColors.border)),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: commentController,
+                    decoration: InputDecoration(
+                      hintText: 'Write a comment...',
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                      isDense: true,
+                    ),
+                    style: const TextStyle(fontSize: 13),
+                    maxLines: 2,
+                    minLines: 1,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => onSendComment(),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                IconButton(
+                  onPressed: onSendComment,
+                  icon: const Icon(Icons.send, size: 20),
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
+  }
+}
+
+// =============================================================================
+// COMMENT CARD
+// =============================================================================
+
+class _CommentCard extends ConsumerWidget {
+  final FeedComment comment;
+
+  const _CommentCard({required this.comment});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    // Look up display name for author
+    final displayNameAsync = ref.watch(identityDisplayNameProvider(comment.authorFingerprint));
+    final authorName = displayNameAsync.valueOrNull ?? _shortenFingerprint(comment.authorFingerprint);
+
+    return Padding(
+      padding: const EdgeInsets.all(10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header
+          Row(
+            children: [
+              Text(
+                authorName,
+                style: TextStyle(
+                  color: DnaColors.primary,
+                  fontWeight: FontWeight.w500,
+                  fontSize: 12,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Text(
+                _formatTimestamp(comment.timestamp),
+                style: TextStyle(color: DnaColors.textMuted, fontSize: 11),
+              ),
+              if (comment.verified)
+                Padding(
+                  padding: const EdgeInsets.only(left: 4),
+                  child: Icon(Icons.verified, size: 12, color: DnaColors.textSuccess),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          // Content
+          Text(comment.text, style: const TextStyle(fontSize: 13)),
+          const SizedBox(height: 6),
+          // Votes
+          Row(
+            children: [
+              Builder(builder: (context) {
+                final votingCommentId = ref.watch(votingCommentProvider);
+                final isLoading = votingCommentId == comment.commentId;
+                return _VoteButton(
+                  icon: Icons.thumb_up_outlined,
+                  activeIcon: Icons.thumb_up,
+                  count: comment.upvotes,
+                  isActive: comment.userVote == 1,
+                  isLoading: isLoading,
+                  small: true,
+                  onTap: comment.hasVoted ? null : () => _castCommentVote(ref, comment, 1),
+                );
+              }),
+              const SizedBox(width: 4),
+              Builder(builder: (context) {
+                final votingCommentId = ref.watch(votingCommentProvider);
+                final isLoading = votingCommentId == comment.commentId;
+                return _VoteButton(
+                  icon: Icons.thumb_down_outlined,
+                  activeIcon: Icons.thumb_down,
+                  count: comment.downvotes,
+                  isActive: comment.userVote == -1,
+                  isNegative: true,
+                  isLoading: isLoading,
+                  small: true,
+                  onTap: comment.hasVoted ? null : () => _castCommentVote(ref, comment, -1),
+                );
+              }),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _castCommentVote(WidgetRef ref, FeedComment comment, int value) async {
+    ref.read(votingCommentProvider.notifier).state = comment.commentId;
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      await engine.castCommentVote(comment.commentId, value);
+      // Refresh comments
+      ref.invalidate(postCommentsProvider(comment.postId));
+    } catch (e) {
+      // Ignore errors for now
+    } finally {
+      ref.read(votingCommentProvider.notifier).state = null;
+    }
+  }
+
+  String _shortenFingerprint(String fp) {
+    if (fp.length <= 16) return fp;
+    return '${fp.substring(0, 8)}...${fp.substring(fp.length - 8)}';
+  }
+
+  String _formatTimestamp(DateTime ts) {
+    final now = DateTime.now();
+    final diff = now.difference(ts);
+
+    if (diff.inMinutes < 1) return 'now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    if (diff.inDays < 7) return '${diff.inDays}d ago';
+    return DateFormat('MMM d').format(ts);
   }
 }
 
@@ -746,6 +858,7 @@ class _VoteButton extends StatelessWidget {
   final bool isActive;
   final bool isNegative;
   final bool isLoading;
+  final bool small;
   final VoidCallback? onTap;
 
   const _VoteButton({
@@ -755,6 +868,7 @@ class _VoteButton extends StatelessWidget {
     required this.isActive,
     this.isNegative = false,
     this.isLoading = false,
+    this.small = false,
     this.onTap,
   });
 
@@ -764,79 +878,40 @@ class _VoteButton extends StatelessWidget {
         ? (isNegative ? DnaColors.textWarning : DnaColors.textSuccess)
         : DnaColors.textMuted;
 
+    final iconSize = small ? 14.0 : 16.0;
+    final fontSize = small ? 11.0 : 12.0;
+
     return InkWell(
       onTap: isLoading ? null : onTap,
       borderRadius: BorderRadius.circular(16),
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        padding: EdgeInsets.symmetric(
+          horizontal: small ? 6 : 8,
+          vertical: small ? 2 : 4,
+        ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             if (isLoading)
               SizedBox(
-                width: 16,
-                height: 16,
+                width: iconSize,
+                height: iconSize,
                 child: CircularProgressIndicator(
                   strokeWidth: 2,
                   color: color,
                 ),
               )
             else
-              Icon(isActive ? activeIcon : icon, size: 16, color: color),
+              Icon(isActive ? activeIcon : icon, size: iconSize, color: color),
             if (count > 0) ...[
               const SizedBox(width: 4),
               Text(
                 '$count',
-                style: TextStyle(color: color, fontSize: 12),
+                style: TextStyle(color: color, fontSize: fontSize),
               ),
             ],
           ],
         ),
-      ),
-    );
-  }
-}
-
-// =============================================================================
-// REPLY INDICATOR
-// =============================================================================
-
-class _ReplyIndicator extends StatelessWidget {
-  final FeedPost post;
-  final VoidCallback onCancel;
-
-  const _ReplyIndicator({
-    required this.post,
-    required this.onCancel,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: DnaColors.surface,
-        border: Border(top: BorderSide(color: DnaColors.borderAccent)),
-      ),
-      child: Row(
-        children: [
-          Icon(Icons.reply, size: 16, color: DnaColors.primary),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Replying to: ${post.text.length > 40 ? '${post.text.substring(0, 40)}...' : post.text}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: DnaColors.textMuted, fontSize: 13),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.close, size: 18),
-            onPressed: onCancel,
-            padding: EdgeInsets.zero,
-            constraints: const BoxConstraints(),
-          ),
-        ],
       ),
     );
   }
@@ -848,10 +923,12 @@ class _ReplyIndicator extends StatelessWidget {
 
 class _ComposeArea extends StatelessWidget {
   final TextEditingController controller;
+  final String hintText;
   final VoidCallback onSend;
 
   const _ComposeArea({
     required this.controller,
+    required this.hintText,
     required this.onSend,
   });
 
@@ -869,10 +946,10 @@ class _ComposeArea extends StatelessWidget {
             Expanded(
               child: TextField(
                 controller: controller,
-                decoration: const InputDecoration(
-                  hintText: 'Write a post...',
-                  border: OutlineInputBorder(),
-                  contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                decoration: InputDecoration(
+                  hintText: hintText,
+                  border: const OutlineInputBorder(),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                 ),
                 maxLines: 3,
                 minLines: 1,

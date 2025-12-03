@@ -188,11 +188,9 @@ public:
     int selected_feed_channel;                       // Index into feed_channels (-1 if none)
     std::string current_channel_id;                  // Selected channel ID
     std::vector<FeedPost> feed_posts;                // Current channel's posts
-    std::set<std::string> feed_expanded_threads;     // Expanded thread IDs
     bool feed_loading;
     std::string feed_status;
     char feed_post_input[2049];                      // Post input buffer (2048 + null)
-    std::string feed_reply_to;                       // Post ID being replied to
 
     // Feed dialogs
     bool show_create_channel_dialog;

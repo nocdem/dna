@@ -102,69 +102,6 @@ static std::string getAuthorName(AppState& state, const std::string& fingerprint
     return fingerprint;
 }
 
-// Sort posts in threaded order: top-level posts (newest first), with replies below their parent (oldest first)
-static void sortPostsThreaded(std::vector<FeedPost>& posts) {
-    if (posts.empty()) return;
-
-    // Build lookup maps
-    std::map<std::string, const FeedPost*> post_by_id;
-    std::map<std::string, std::vector<const FeedPost*>> replies_by_parent;
-    std::vector<const FeedPost*> top_level;
-
-    // First pass: index all posts by ID
-    for (const auto& post : posts) {
-        post_by_id[post.post_id] = &post;
-    }
-
-    // Second pass: categorize as top-level or reply
-    // Orphan replies (parent not in list) are treated as top-level
-    for (const auto& post : posts) {
-        if (post.reply_to.empty()) {
-            // Top-level post
-            top_level.push_back(&post);
-        } else if (post_by_id.find(post.reply_to) != post_by_id.end()) {
-            // Reply with parent in list
-            replies_by_parent[post.reply_to].push_back(&post);
-        } else {
-            // Orphan reply (parent not loaded) - treat as top-level
-            top_level.push_back(&post);
-        }
-    }
-
-    // Sort top-level by timestamp desc (newest first)
-    std::sort(top_level.begin(), top_level.end(),
-              [](const FeedPost* a, const FeedPost* b) {
-                  return a->timestamp > b->timestamp;
-              });
-
-    // Sort each reply group by timestamp asc (oldest first)
-    for (auto& pair : replies_by_parent) {
-        std::sort(pair.second.begin(), pair.second.end(),
-                  [](const FeedPost* a, const FeedPost* b) {
-                      return a->timestamp < b->timestamp;
-                  });
-    }
-
-    // Build result with depth-first traversal (replies directly after parent)
-    std::vector<FeedPost> result;
-    std::function<void(const FeedPost*)> addWithReplies;
-    addWithReplies = [&](const FeedPost* post) {
-        result.push_back(*post);
-        auto it = replies_by_parent.find(post->post_id);
-        if (it != replies_by_parent.end()) {
-            for (const FeedPost* reply : it->second) {
-                addWithReplies(reply);
-            }
-        }
-    };
-
-    for (const FeedPost* post : top_level) {
-        addWithReplies(post);
-    }
-
-    posts = std::move(result);
-}
-
 void render(AppState& state) {
     ImGuiIO& io = ImGui::GetIO();
     bool is_mobile = IsMobileLayout();
@@ -453,7 +390,7 @@ void renderChannelContent(AppState& state) {
         // Render posts
         ImGui::Spacing();
         for (const FeedPost& post : state.feed_posts) {
-            renderPostCard(state, post, post.reply_depth > 0);
+            renderPostCard(state, post, false);
             ImGui::Spacing();
         }
     }
@@ -463,15 +400,6 @@ void renderChannelContent(AppState& state) {
     // Post composition area
     ImGui::Separator();
     ImGui::Spacing();
-
-    // Reply indicator
-    if (!state.feed_reply_to.empty()) {
-        ImGui::TextColored(hint_color, "Replying to post...");
-        ImGui::SameLine();
-        if (ThemedButton(ICON_FA_XMARK " Cancel", ImVec2(80, 25), false)) {
-            state.feed_reply_to.clear();
-        }
-    }
 
     // Input field
     float send_btn_width = 60;
@@ -492,14 +420,11 @@ void renderChannelContent(AppState& state) {
 
             if (dht_ctx && key) {
                 dna_feed_post_t *new_post = nullptr;
-                const char *reply_to = state.feed_reply_to.empty() ? nullptr : state.feed_reply_to.c_str();
-
                 int ret = dna_feed_post_create(dht_ctx,
                                                 state.current_channel_id.c_str(),
                                                 state.current_identity.c_str(),
                                                 state.feed_post_input,
                                                 key->private_key,
-                                                reply_to,
                                                 &new_post);
                 if (ret == 0 && new_post) {
                     // Add to local posts list
@@ -510,22 +435,22 @@ void renderChannelContent(AppState& state) {
                     fp.author_name = getAuthorName(state, fp.author_fp);
                     fp.text = new_post->text;
                     fp.timestamp = new_post->timestamp;
-                    fp.reply_to = new_post->reply_to;
-                    fp.reply_depth = new_post->reply_depth;
-                    fp.reply_count = 0;
+                    fp.updated = new_post->updated;
+                    fp.comment_count = 0;
                     fp.upvotes = 0;
                     fp.downvotes = 0;
                     fp.user_vote = 0;
                     fp.verified = true;
 
-                    // Add post and re-sort with threaded ordering
+                    // Add post and sort by activity
                     state.feed_posts.push_back(fp);
-                    sortPostsThreaded(state.feed_posts);
+                    std::sort(state.feed_posts.begin(), state.feed_posts.end(),
+                              [](const FeedPost &a, const FeedPost &b) {
+                                  return a.updated > b.updated;
+                              });
 
                     dna_feed_post_free(new_post);
                     state.feed_status = "Post created!";
-                } else if (ret == -2) {
-                    state.feed_status = "Max thread depth exceeded";
                 } else {
                     state.feed_status = "Failed to create post";
                 }
@@ -535,7 +460,6 @@ void renderChannelContent(AppState& state) {
             }
 
             memset(state.feed_post_input, 0, sizeof(state.feed_post_input));
-            state.feed_reply_to.clear();
         }
     }
 
@@ -547,38 +471,19 @@ void renderChannelContent(AppState& state) {
 }
 
 void renderPostCard(AppState& state, const FeedPost& post, bool is_reply) {
+    (void)is_reply;  // No longer used
     ImVec4 theme_color = g_app_settings.theme == 0 ? DNATheme::Text() : ClubTheme::Text();
     ImVec4 hint_color = g_app_settings.theme == 0 ? DNATheme::TextHint() : ClubTheme::TextHint();
     ImVec4 bg_color = g_app_settings.theme == 0 ? DNATheme::Background() : ClubTheme::Background();
 
-    // Indent based on reply depth
-    float indent = post.reply_depth * 20.0f;
-    if (indent > 0) {
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + indent);
-    }
-
     // Post card background
     ImVec2 content_region = ImGui::GetContentRegionAvail();
-    float card_width = content_region.x - indent;
+    float card_width = content_region.x;
 
     ImGui::PushID(post.post_id.c_str());
 
     ImVec2 card_min = ImGui::GetCursorScreenPos();
     ImGui::BeginGroup();
-
-    // Depth indicator bar (colored)
-    if (post.reply_depth > 0) {
-        ImVec4 depth_colors[] = {
-            ImVec4(0.3f, 0.6f, 1.0f, 1.0f),   // Blue for depth 1
-            ImVec4(0.3f, 0.8f, 0.3f, 1.0f),   // Green for depth 2
-        };
-        int color_idx = std::min(post.reply_depth - 1, 1);
-        ImVec2 bar_min = card_min;
-        ImVec2 bar_max = ImVec2(bar_min.x + 3, bar_min.y + 80);
-        ImGui::GetWindowDrawList()->AddRectFilled(bar_min, bar_max,
-            ImGui::ColorConvertFloat4ToU32(depth_colors[color_idx]), 2.0f);
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 8);
-    }
 
     // Card content with background
     bg_color.w = 0.12f;
@@ -603,13 +508,13 @@ void renderPostCard(AppState& state, const FeedPost& post, bool is_reply) {
     // Action bar
     ImGui::Spacing();
 
-    // Reply button
-    if (post.reply_depth < DNA_FEED_MAX_THREAD_DEPTH) {
-        if (ThemedButton(ICON_FA_REPLY " Reply", ImVec2(80, 25), false)) {
-            state.feed_reply_to = post.post_id;
-        }
-        ImGui::SameLine();
+    // Comments button
+    char comment_label[64];
+    snprintf(comment_label, sizeof(comment_label), ICON_FA_COMMENT " %d", post.comment_count);
+    if (ThemedButton(comment_label, ImVec2(80, 25), false)) {
+        // TODO: Expand to show comments (Phase 9)
     }
+    ImGui::SameLine();
 
     // Voting UI
     int vote_action = renderVotingUI(const_cast<AppState&>(state), post);
@@ -640,23 +545,6 @@ void renderPostCard(AppState& state, const FeedPost& post, bool is_reply) {
             }
             qgp_key_free(key);
         }
-    }
-
-    // Thread expand/collapse
-    if (post.reply_count > 0 && post.reply_depth == 0) {
-        ImGui::SameLine();
-        bool is_expanded = state.feed_expanded_threads.count(post.post_id) > 0;
-        const char* expand_label = is_expanded ?
-            (ICON_FA_ANGLE_UP " Hide") : (ICON_FA_ANGLE_DOWN " Show");
-        if (ThemedButton(expand_label, ImVec2(80, 25), false)) {
-            if (is_expanded) {
-                state.feed_expanded_threads.erase(post.post_id);
-            } else {
-                state.feed_expanded_threads.insert(post.post_id);
-            }
-        }
-        ImGui::SameLine();
-        ImGui::TextColored(hint_color, "(%d)", post.reply_count);
     }
 
     ImGui::EndGroup();
@@ -810,9 +698,8 @@ void loadChannelPosts(AppState& state) {
             fp.author_name = getAuthorName(state, fp.author_fp);
             fp.text = posts[i].text;
             fp.timestamp = posts[i].timestamp;
-            fp.reply_to = posts[i].reply_to;
-            fp.reply_depth = posts[i].reply_depth;
-            fp.reply_count = posts[i].reply_count;
+            fp.updated = posts[i].updated;
+            fp.comment_count = posts[i].comment_count;
             fp.upvotes = posts[i].upvotes;
             fp.downvotes = posts[i].downvotes;
             fp.user_vote = posts[i].user_vote;
@@ -832,8 +719,11 @@ void loadChannelPosts(AppState& state) {
             }
         }
 
-        // Sort with threaded ordering (replies below their parent)
-        sortPostsThreaded(state.feed_posts);
+        // Sort by last activity (most recent first)
+        std::sort(state.feed_posts.begin(), state.feed_posts.end(),
+                  [](const FeedPost &a, const FeedPost &b) {
+                      return a.updated > b.updated;
+                  });
 
         state.feed_status = "";
     } else if (ret == -2) {

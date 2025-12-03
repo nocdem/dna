@@ -170,14 +170,14 @@ static int post_to_json(const dna_feed_post_t *post, char **json_out) {
     json_object *root = json_object_new_object();
     if (!root) return -1;
 
-    json_object_object_add(root, "version", json_object_new_int(1));
+    json_object_object_add(root, "version", json_object_new_int(DNA_FEED_POST_VERSION));
     json_object_object_add(root, "post_id", json_object_new_string(post->post_id));
     json_object_object_add(root, "channel_id", json_object_new_string(post->channel_id));
     json_object_object_add(root, "author", json_object_new_string(post->author_fingerprint));
     json_object_object_add(root, "text", json_object_new_string(post->text));
     json_object_object_add(root, "timestamp", json_object_new_int64(post->timestamp));
-    json_object_object_add(root, "reply_to", json_object_new_string(post->reply_to));
-    json_object_object_add(root, "reply_depth", json_object_new_int(post->reply_depth));
+    json_object_object_add(root, "updated", json_object_new_int64(post->updated));
+    json_object_object_add(root, "comment_count", json_object_new_int(post->comment_count));
 
     /* Signature (base64) */
     if (post->signature_len > 0) {
@@ -216,10 +216,15 @@ static int post_from_json(const char *json_str, dna_feed_post_t **post_out) {
         strncpy(post->text, json_object_get_string(j_val), sizeof(post->text) - 1);
     if (json_object_object_get_ex(root, "timestamp", &j_val))
         post->timestamp = json_object_get_int64(j_val);
-    if (json_object_object_get_ex(root, "reply_to", &j_val))
-        strncpy(post->reply_to, json_object_get_string(j_val), sizeof(post->reply_to) - 1);
-    if (json_object_object_get_ex(root, "reply_depth", &j_val))
-        post->reply_depth = json_object_get_int(j_val);
+
+    /* New v2 fields */
+    if (json_object_object_get_ex(root, "updated", &j_val))
+        post->updated = json_object_get_int64(j_val);
+    else
+        post->updated = post->timestamp;  /* Default to timestamp for old posts */
+
+    if (json_object_object_get_ex(root, "comment_count", &j_val))
+        post->comment_count = json_object_get_int(j_val);
 
     /* Signature (base64) */
     if (json_object_object_get_ex(root, "signature", &j_val)) {
@@ -622,7 +627,6 @@ int dna_feed_post_create(dht_context_t *dht_ctx,
                          const char *author_fingerprint,
                          const char *text,
                          const uint8_t *private_key,
-                         const char *reply_to,
                          dna_feed_post_t **post_out) {
     if (!dht_ctx || !channel_id || !author_fingerprint || !text || !private_key) return -1;
 
@@ -651,25 +655,8 @@ int dna_feed_post_create(dht_context_t *dht_ctx,
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     post->timestamp = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-
-    /* Handle threading */
-    post->reply_depth = 0;
-    if (reply_to && reply_to[0] != '\0') {
-        strncpy(post->reply_to, reply_to, sizeof(post->reply_to) - 1);
-
-        /* Fetch parent to get depth */
-        dna_feed_post_t *parent = NULL;
-        if (dna_feed_post_get(dht_ctx, reply_to, &parent) == 0) {
-            post->reply_depth = parent->reply_depth + 1;
-            dna_feed_post_free(parent);
-
-            if (post->reply_depth > DNA_FEED_MAX_THREAD_DEPTH) {
-                fprintf(stderr, "[DNA_FEED] Max thread depth exceeded\n");
-                free(post);
-                return -2;
-            }
-        }
-    }
+    post->updated = post->timestamp;  /* Initially, updated = timestamp */
+    post->comment_count = 0;
 
     /* Sign post: text || timestamp */
     uint8_t *sign_data = malloc(text_len + sizeof(uint64_t));
@@ -802,65 +789,13 @@ int dna_feed_posts_get_by_channel(dht_context_t *dht_ctx,
     return 0;
 }
 
-int dna_feed_post_get_replies(dht_context_t *dht_ctx,
-                              const char *post_id,
-                              dna_feed_post_t **replies_out,
-                              size_t *count_out) {
-    /* For now, this requires fetching all posts and filtering by reply_to.
-     * A more efficient approach would store reply indexes separately. */
-    if (!dht_ctx || !post_id || !replies_out || !count_out) return -1;
+/* dna_feed_post_get_full() is implemented in dna_feed_comments.c
+ * since it needs access to comment fetching functions */
 
-    /* Get parent post to know channel */
-    dna_feed_post_t *parent = NULL;
-    if (dna_feed_post_get(dht_ctx, post_id, &parent) != 0) {
-        return -1;
+void dna_feed_post_with_comments_free(dna_feed_post_with_comments_t *post_with_comments) {
+    if (!post_with_comments) return;
+    if (post_with_comments->comments) {
+        free(post_with_comments->comments);
     }
-
-    /* Get today's posts and filter */
-    dna_feed_post_t *all_posts = NULL;
-    size_t all_count = 0;
-    if (dna_feed_posts_get_by_channel(dht_ctx, parent->channel_id, NULL, &all_posts, &all_count) != 0) {
-        dna_feed_post_free(parent);
-        *replies_out = NULL;
-        *count_out = 0;
-        return 0;
-    }
-
-    /* Count replies */
-    size_t reply_count = 0;
-    for (size_t i = 0; i < all_count; i++) {
-        if (strcmp(all_posts[i].reply_to, post_id) == 0) {
-            reply_count++;
-        }
-    }
-
-    if (reply_count == 0) {
-        free(all_posts);
-        dna_feed_post_free(parent);
-        *replies_out = NULL;
-        *count_out = 0;
-        return 0;
-    }
-
-    /* Collect replies */
-    dna_feed_post_t *replies = calloc(reply_count, sizeof(dna_feed_post_t));
-    if (!replies) {
-        free(all_posts);
-        dna_feed_post_free(parent);
-        return -1;
-    }
-
-    size_t idx = 0;
-    for (size_t i = 0; i < all_count; i++) {
-        if (strcmp(all_posts[i].reply_to, post_id) == 0) {
-            replies[idx++] = all_posts[i];
-        }
-    }
-
-    free(all_posts);
-    dna_feed_post_free(parent);
-
-    *replies_out = replies;
-    *count_out = reply_count;
-    return 0;
+    free(post_with_comments);
 }

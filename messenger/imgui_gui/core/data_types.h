@@ -69,9 +69,23 @@ struct FeedPost {
     std::string author_avatar;  // Base64 avatar data
     std::string text;           // Post content (2048 chars max)
     uint64_t timestamp;         // Unix timestamp (milliseconds)
-    std::string reply_to;       // Parent post_id (empty for top-level)
-    int reply_depth;            // 0=post, 1=comment, 2=reply
-    int reply_count;            // Number of direct replies
+    uint64_t updated;           // Last activity timestamp (comment added)
+    int comment_count;          // Number of comments
+    int upvotes;                // Upvote count
+    int downvotes;              // Downvote count
+    int user_vote;              // Current user's vote: +1, -1, 0
+    bool verified;              // Signature verified
+};
+
+// Feed comment structure
+struct FeedComment {
+    std::string comment_id;     // Unique ID: fingerprint_timestamp_random
+    std::string post_id;        // Parent post_id
+    std::string author_fp;      // Author fingerprint
+    std::string author_name;    // Cached display name
+    std::string author_avatar;  // Base64 avatar data
+    std::string text;           // Comment content (2048 chars max)
+    uint64_t timestamp;         // Unix timestamp (milliseconds)
     int upvotes;                // Upvote count
     int downvotes;              // Downvote count
     int user_vote;              // Current user's vote: +1, -1, 0
