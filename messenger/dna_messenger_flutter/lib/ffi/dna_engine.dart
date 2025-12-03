@@ -299,6 +299,28 @@ class FeedPost {
 
   /// Check if current user has voted
   bool get hasVoted => userVote != 0;
+
+  /// Create a copy with updated vote data
+  FeedPost copyWith({
+    int? upvotes,
+    int? downvotes,
+    int? userVote,
+  }) {
+    return FeedPost(
+      postId: postId,
+      channelId: channelId,
+      authorFingerprint: authorFingerprint,
+      text: text,
+      timestamp: timestamp,
+      replyTo: replyTo,
+      replyDepth: replyDepth,
+      replyCount: replyCount,
+      upvotes: upvotes ?? this.upvotes,
+      downvotes: downvotes ?? this.downvotes,
+      userVote: userVote ?? this.userVote,
+      verified: verified,
+    );
+  }
 }
 
 /// User profile information

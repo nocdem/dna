@@ -85,9 +85,12 @@ class ChannelPostsNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
     final engine = await ref.watch(engineProvider.future);
     final posts = await _fetchPostsFromMultipleDays(engine, channelId);
 
+    // Load votes for each post (like ImGui does)
+    final postsWithVotes = await _loadVotesForPosts(engine, posts);
+
     // Sort by timestamp (newest first)
-    posts.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-    return posts;
+    postsWithVotes.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+    return postsWithVotes;
   }
 
   /// Fetch posts from the last N days and merge/deduplicate
@@ -113,13 +116,33 @@ class ChannelPostsNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
     return allPosts;
   }
 
+  /// Load vote counts for each post from DHT
+  Future<List<FeedPost>> _loadVotesForPosts(DnaEngine engine, List<FeedPost> posts) async {
+    final result = <FeedPost>[];
+    for (final post in posts) {
+      try {
+        final voteData = await engine.getFeedVotes(post.postId);
+        result.add(post.copyWith(
+          upvotes: voteData.upvotes,
+          downvotes: voteData.downvotes,
+          userVote: voteData.userVote,
+        ));
+      } catch (e) {
+        // Keep original if vote fetch fails
+        result.add(post);
+      }
+    }
+    return result;
+  }
+
   Future<void> refresh() async {
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       final posts = await _fetchPostsFromMultipleDays(engine, arg);
-      posts.sort((a, b) => b.timestamp.compareTo(a.timestamp));
-      return posts;
+      final postsWithVotes = await _loadVotesForPosts(engine, posts);
+      postsWithVotes.sort((a, b) => b.timestamp.compareTo(a.timestamp));
+      return postsWithVotes;
     });
   }
 
@@ -146,9 +169,31 @@ class PostRepliesNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
     final engine = await ref.watch(engineProvider.future);
     final replies = await engine.getFeedPostReplies(postId);
 
+    // Load votes for each reply
+    final repliesWithVotes = await _loadVotesForReplies(engine, replies);
+
     // Sort by timestamp (oldest first for thread view)
-    replies.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-    return replies;
+    repliesWithVotes.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+    return repliesWithVotes;
+  }
+
+  /// Load vote counts for each reply from DHT
+  Future<List<FeedPost>> _loadVotesForReplies(DnaEngine engine, List<FeedPost> replies) async {
+    final result = <FeedPost>[];
+    for (final reply in replies) {
+      try {
+        final voteData = await engine.getFeedVotes(reply.postId);
+        result.add(reply.copyWith(
+          upvotes: voteData.upvotes,
+          downvotes: voteData.downvotes,
+          userVote: voteData.userVote,
+        ));
+      } catch (e) {
+        // Keep original if vote fetch fails
+        result.add(reply);
+      }
+    }
+    return result;
   }
 
   Future<void> refresh() async {
@@ -156,8 +201,9 @@ class PostRepliesNotifier extends FamilyAsyncNotifier<List<FeedPost>, String> {
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
       final replies = await engine.getFeedPostReplies(arg);
-      replies.sort((a, b) => a.timestamp.compareTo(b.timestamp));
-      return replies;
+      final repliesWithVotes = await _loadVotesForReplies(engine, replies);
+      repliesWithVotes.sort((a, b) => a.timestamp.compareTo(b.timestamp));
+      return repliesWithVotes;
     });
   }
 }
