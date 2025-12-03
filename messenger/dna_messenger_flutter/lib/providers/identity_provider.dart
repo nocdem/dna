@@ -163,8 +163,8 @@ final identityNameCacheProvider = StateProvider<Map<String, String>>((ref) => {}
 
 /// Provider to fetch and cache display name for a fingerprint
 final identityDisplayNameProvider = FutureProvider.family<String?, String>((ref, fingerprint) async {
-  // Check cache first
-  final cache = ref.read(identityNameCacheProvider);
+  // Watch cache so provider rebuilds when cache updates
+  final cache = ref.watch(identityNameCacheProvider);
   if (cache.containsKey(fingerprint)) {
     return cache[fingerprint];
   }
@@ -175,10 +175,13 @@ final identityDisplayNameProvider = FutureProvider.family<String?, String>((ref,
     final displayName = await engine.getDisplayName(fingerprint);
 
     if (displayName.isNotEmpty) {
-      // Update cache
-      final newCache = Map<String, String>.from(ref.read(identityNameCacheProvider));
-      newCache[fingerprint] = displayName;
-      ref.read(identityNameCacheProvider.notifier).state = newCache;
+      // Update cache (use read here since we're inside the provider)
+      final currentCache = ref.read(identityNameCacheProvider);
+      if (!currentCache.containsKey(fingerprint)) {
+        final newCache = Map<String, String>.from(currentCache);
+        newCache[fingerprint] = displayName;
+        ref.read(identityNameCacheProvider.notifier).state = newCache;
+      }
       return displayName;
     }
   } catch (e) {
