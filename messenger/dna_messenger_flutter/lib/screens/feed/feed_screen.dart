@@ -200,8 +200,12 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
               if (list.isEmpty) {
                 return _buildEmptyPosts();
               }
-              // Filter to only show parent posts (replyTo == null)
-              final parentPosts = list.where((p) => p.replyTo == null).toList();
+              // Build set of loaded post IDs for orphan detection
+              final loadedIds = list.map((p) => p.postId).toSet();
+              // Show parent posts OR orphan replies (parent not in loaded list)
+              final parentPosts = list.where((p) =>
+                  p.replyTo == null || !loadedIds.contains(p.replyTo)
+              ).toList();
               final expandedPosts = ref.watch(expandedPostsProvider);
 
               return RefreshIndicator(
