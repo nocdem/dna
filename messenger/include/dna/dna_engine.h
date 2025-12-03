@@ -337,6 +337,17 @@ typedef void (*dna_transactions_cb)(
 );
 
 /**
+ * Presence lookup callback
+ * Returns last_seen timestamp from DHT (0 if not found or error)
+ */
+typedef void (*dna_presence_cb)(
+    dna_request_id_t request_id,
+    int error,
+    uint64_t last_seen,     /* Unix timestamp when peer last registered presence */
+    void *user_data
+);
+
+/**
  * Feed channels callback
  */
 typedef void (*dna_feed_channels_cb)(
@@ -998,6 +1009,25 @@ dna_request_id_t dna_engine_refresh_presence(
  * @return            true if peer is online, false otherwise
  */
 bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint);
+
+/**
+ * Lookup peer presence from DHT
+ *
+ * Queries DHT for peer's presence record and returns the timestamp
+ * when they last registered their presence (i.e., when they were last online).
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Peer fingerprint (128 hex chars)
+ * @param callback    Called with last_seen timestamp (0 if not found)
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_lookup_presence(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_presence_cb callback,
+    void *user_data
+);
 
 /**
  * Sync contacts to DHT (publish local contacts)

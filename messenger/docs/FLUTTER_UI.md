@@ -192,7 +192,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 
 **Screens Implemented:**
 - `IdentitySelectionScreen`: List identities, create with 3-step wizard, restore from seed
-- `ContactsScreen`: List with online/offline indicators, pull-to-refresh, add contact dialog, DHT status indicator
+- `ContactsScreen`: List with last seen timestamps, pull-to-refresh, add contact dialog, DHT status indicator
 - `ChatScreen`: Message bubbles, timestamps, status icons, input with send button
 - `HomeScreen`: Routes between identity selection and contacts based on state
 
@@ -201,6 +201,31 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 - Contact online/offline status updates in real-time
 - New messages added to conversations automatically
 - DHT connection state tracked and displayed
+
+**Presence Lookup (Last Seen):**
+- On contacts load/refresh, queries DHT for each contact's presence
+- `engine.lookupPresence(fingerprint)` returns DateTime when contact was last online
+- Contacts sorted by most recently seen first
+- 5-second timeout per lookup to avoid blocking UI
+- Falls back to local data if DHT query fails
+
+```dart
+// ContactsNotifier queries DHT presence for each contact
+Future<List<Contact>> _updateContactsPresence(DnaEngine engine, List<Contact> contacts) async {
+  final futures = contacts.map((contact) async {
+    try {
+      final lastSeen = await engine
+          .lookupPresence(contact.fingerprint)
+          .timeout(const Duration(seconds: 5));
+      if (lastSeen.millisecondsSinceEpoch > 0) {
+        return Contact(..., lastSeen: lastSeen);
+      }
+    } catch (e) { /* timeout or error */ }
+    return contact;
+  });
+  return Future.wait(futures);
+}
+```
 
 ---
 

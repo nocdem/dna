@@ -713,6 +713,7 @@ Stats printed every 60 seconds:
 
 | Data Type | TTL | DHT Key Format | Persisted | Notes |
 |-----------|-----|----------------|-----------|-------|
+| **Presence** | 7 days | `SHA3-512(public_key)` = fingerprint | No | IP:port:timestamp |
 | Offline Messages | 7 days | `SHA3-512(sender:outbox:recipient)` | No | Model E outbox |
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
 | Profiles | 365 days | `SHA3-512(fingerprint:profile)` | Yes | |
@@ -721,6 +722,47 @@ Stats printed every 60 seconds:
 | Group Metadata | 30 days | `SHA3-512(group_uuid)` | Yes | |
 | Message Wall | 30 days | `SHA3-512(fingerprint:message_wall)` | Yes | DNA Board |
 | Bootstrap Registry | 7 days | `SHA3-512("dna:bootstrap:registry")` | Special | Self-healing |
+
+### 8.1 Presence Data
+
+Presence records are published when a user comes online and refreshed periodically.
+
+**DHT Key:** `SHA3-512(Dilithium5_public_key)` = user's fingerprint (binary, 64 bytes)
+
+**Value Format (JSON):**
+```json
+{"ips":"192.168.1.5,83.x.x.x","port":4001,"timestamp":1733234567}
+```
+
+| Field | Description |
+|-------|-------------|
+| `ips` | Comma-separated local + public IPs |
+| `port` | TCP listen port (default 4001) |
+| `timestamp` | Unix timestamp when presence was registered |
+
+**Lookup API:**
+```c
+// C API - lookup presence by fingerprint
+int p2p_lookup_presence_by_fingerprint(
+    p2p_transport_t *ctx,
+    const char *fingerprint,      // 128 hex chars
+    uint64_t *last_seen_out       // Unix timestamp output
+);
+
+// High-level API
+int dna_engine_lookup_presence(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_presence_cb callback,
+    void *user_data
+);
+```
+
+**Flutter Usage:**
+```dart
+final lastSeen = await engine.lookupPresence(contact.fingerprint);
+// Returns DateTime when peer last registered presence
+```
 
 ---
 

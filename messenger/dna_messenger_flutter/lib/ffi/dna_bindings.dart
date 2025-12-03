@@ -501,6 +501,15 @@ typedef DnaProfileCbNative = Void Function(
 );
 typedef DnaProfileCb = NativeFunction<DnaProfileCbNative>;
 
+/// Presence lookup callback - Native
+typedef DnaPresenceCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Uint64 last_seen,
+  Pointer<Void> user_data,
+);
+typedef DnaPresenceCb = NativeFunction<DnaPresenceCbNative>;
+
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
   Pointer<dna_event_t> event,
@@ -637,6 +646,13 @@ typedef DnaProfileCbDart = void Function(
   int requestId,
   int error,
   Pointer<dna_profile_t> profile,
+  Pointer<Void> userData,
+);
+
+typedef DnaPresenceCbDart = void Function(
+  int requestId,
+  int error,
+  int lastSeen,
   Pointer<Void> userData,
 );
 
@@ -1147,6 +1163,21 @@ class DnaBindings {
     Pointer<Utf8> fingerprint,
   ) {
     return _dna_engine_is_peer_online(engine, fingerprint);
+  }
+
+  late final _dna_engine_lookup_presence = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<DnaPresenceCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<DnaPresenceCb>,
+          Pointer<Void>)>('dna_engine_lookup_presence');
+
+  int dna_engine_lookup_presence(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaPresenceCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_lookup_presence(engine, fingerprint, callback, user_data);
   }
 
   // ---------------------------------------------------------------------------

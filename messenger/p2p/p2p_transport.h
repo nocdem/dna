@@ -193,6 +193,23 @@ int p2p_lookup_peer(
     peer_info_t *peer_info
 );
 
+/**
+ * Look up peer presence in DHT by fingerprint
+ *
+ * Queries DHT for peer's presence record using their fingerprint directly.
+ * Returns the timestamp when peer last registered presence (last online time).
+ *
+ * @param ctx P2P transport context
+ * @param fingerprint Peer's fingerprint (128 hex chars)
+ * @param last_seen_out Output - Unix timestamp when last seen (0 if not found)
+ * @return 0 on success, -1 if not found or error
+ */
+int p2p_lookup_presence_by_fingerprint(
+    p2p_transport_t *ctx,
+    const char *fingerprint,
+    uint64_t *last_seen_out
+);
+
 // ============================================================================
 // Direct Messaging
 // ============================================================================

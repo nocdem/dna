@@ -172,6 +172,23 @@ int messenger_p2p_list_online_peers(
  */
 int messenger_p2p_refresh_presence(messenger_context_t *ctx);
 
+/**
+ * Lookup peer presence from DHT
+ *
+ * Queries DHT for peer's presence record using their fingerprint.
+ * Returns timestamp when peer last registered presence (last online time).
+ *
+ * @param ctx: Messenger context
+ * @param fingerprint: Peer's fingerprint (128 hex chars)
+ * @param last_seen_out: Output - Unix timestamp when last seen (0 if not found)
+ * @return: 0 on success, -1 on error/not found
+ */
+int messenger_p2p_lookup_presence(
+    messenger_context_t *ctx,
+    const char *fingerprint,
+    uint64_t *last_seen_out
+);
+
 // ============================================================================
 // OFFLINE MESSAGE QUEUE (Phase 9.2)
 // ============================================================================

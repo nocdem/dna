@@ -154,6 +154,77 @@ int p2p_lookup_peer(
 }
 
 /**
+ * Lookup peer presence by fingerprint
+ * Queries DHT directly using fingerprint (no public key needed)
+ * Returns timestamp when peer last registered presence
+ *
+ * @param ctx: P2P transport context
+ * @param fingerprint: Peer's fingerprint (128 hex chars)
+ * @param last_seen_out: Output timestamp (0 if not found)
+ * @return: 0 on success, -1 on error/not found
+ */
+int p2p_lookup_presence_by_fingerprint(
+    p2p_transport_t *ctx,
+    const char *fingerprint,
+    uint64_t *last_seen_out)
+{
+    if (!ctx || !fingerprint || !last_seen_out) {
+        return -1;
+    }
+
+    *last_seen_out = 0;
+
+    // Validate fingerprint length (128 hex chars)
+    size_t fp_len = strlen(fingerprint);
+    if (fp_len != 128) {
+        printf("[P2P] Invalid fingerprint length: %zu (expected 128)\n", fp_len);
+        return -1;
+    }
+
+    // Convert hex fingerprint to binary DHT key (64 bytes)
+    uint8_t dht_key[64];
+    for (int i = 0; i < 64; i++) {
+        unsigned int byte;
+        if (sscanf(fingerprint + (i * 2), "%02x", &byte) != 1) {
+            printf("[P2P] Invalid fingerprint hex at position %d\n", i * 2);
+            return -1;
+        }
+        dht_key[i] = (uint8_t)byte;
+    }
+
+    printf("[P2P] Looking up presence for fingerprint: %.16s...\n", fingerprint);
+
+    // Query DHT
+    uint8_t *value = NULL;
+    size_t value_len = 0;
+
+    if (dht_get(ctx->dht, dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
+        printf("[P2P] Presence not found in DHT\n");
+        return -1;
+    }
+
+    printf("[P2P] Found presence data: %.*s\n", (int)value_len, value);
+
+    // Parse JSON to extract timestamp
+    peer_info_t peer_info;
+    memset(&peer_info, 0, sizeof(peer_info));
+
+    if (parse_presence_json((const char*)value, &peer_info) != 0) {
+        printf("[P2P] Failed to parse presence JSON\n");
+        free(value);
+        return -1;
+    }
+
+    *last_seen_out = peer_info.last_seen;
+    free(value);
+
+    printf("[P2P] Presence lookup successful: last_seen=%lu\n",
+           (unsigned long)*last_seen_out);
+
+    return 0;
+}
+
+/**
  * Send message to peer with 3-tier fallback (Phase 11 FIX: Connection Reuse)
  *
  * Tier 1: LAN DHT lookup + Direct TCP connection

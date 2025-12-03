@@ -1216,6 +1216,54 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // PRESENCE OPERATIONS
+  // ---------------------------------------------------------------------------
+
+  /// Lookup peer presence from DHT
+  /// Returns DateTime when peer was last online, or epoch (1970) if not found
+  Future<DateTime> lookupPresence(String fingerprint) async {
+    final completer = Completer<DateTime>();
+    final localId = _nextLocalId++;
+
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, int lastSeen, Pointer<Void> userData) {
+      calloc.free(fpPtr);
+
+      if (error == 0) {
+        // Convert Unix timestamp (seconds) to DateTime
+        if (lastSeen > 0) {
+          completer.complete(DateTime.fromMillisecondsSinceEpoch(lastSeen * 1000));
+        } else {
+          // Not found - return epoch
+          completer.complete(DateTime.fromMillisecondsSinceEpoch(0));
+        }
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaPresenceCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_lookup_presence(
+      _engine,
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
   // BIP39 OPERATIONS
   // ---------------------------------------------------------------------------
 

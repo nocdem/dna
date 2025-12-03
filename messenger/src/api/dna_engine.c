@@ -348,6 +348,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_REFRESH_PRESENCE:
             dna_handle_refresh_presence(engine, task);
             break;
+        case TASK_LOOKUP_PRESENCE:
+            dna_handle_lookup_presence(engine, task);
+            break;
         case TASK_SYNC_CONTACTS_TO_DHT:
             dna_handle_sync_contacts_to_dht(engine, task);
             break;
@@ -2527,6 +2530,25 @@ bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint) {
     return messenger_p2p_peer_online(engine->messenger, fingerprint);
 }
 
+dna_request_id_t dna_engine_lookup_presence(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_presence_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) {
+        return DNA_REQUEST_ID_INVALID;
+    }
+
+    dna_task_params_t params;
+    memset(&params, 0, sizeof(params));
+    snprintf(params.lookup_presence.fingerprint, sizeof(params.lookup_presence.fingerprint),
+             "%s", fingerprint);
+
+    dna_task_callback_t cb = { .presence = callback };
+    return dna_submit_task(engine, TASK_LOOKUP_PRESENCE, &params, cb, user_data);
+}
+
 dna_request_id_t dna_engine_sync_contacts_to_dht(
     dna_engine_t *engine,
     dna_completion_cb callback,
@@ -2611,6 +2633,28 @@ void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task) {
 
     if (task->callback.completion) {
         task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_lookup_presence(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+    uint64_t last_seen = 0;
+
+    if (!engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+    } else {
+        if (messenger_p2p_lookup_presence(engine->messenger,
+                task->params.lookup_presence.fingerprint,
+                &last_seen) != 0) {
+            /* Not found is not an error - just return 0 timestamp */
+            last_seen = 0;
+        }
+    }
+
+    if (task->callback.presence) {
+        task->callback.presence(task->request_id, error, last_seen, task->user_data);
     }
 }
 

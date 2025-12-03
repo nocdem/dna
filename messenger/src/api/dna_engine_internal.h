@@ -73,6 +73,7 @@ typedef enum {
 
     /* P2P & Presence */
     TASK_REFRESH_PRESENCE,
+    TASK_LOOKUP_PRESENCE,
     TASK_SYNC_CONTACTS_TO_DHT,
     TASK_SYNC_CONTACTS_FROM_DHT,
     TASK_SYNC_GROUPS,
@@ -223,6 +224,11 @@ typedef union {
         dna_profile_t profile;
     } update_profile;
 
+    /* Lookup presence */
+    struct {
+        char fingerprint[129];
+    } lookup_presence;
+
 } dna_task_params_t;
 
 /**
@@ -246,6 +252,7 @@ typedef union {
     dna_feed_posts_cb feed_posts;
     dna_feed_post_cb feed_post;
     dna_profile_cb profile;
+    dna_presence_cb presence;
 } dna_task_callback_t;
 
 /**
@@ -440,6 +447,7 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task);
 
 /* P2P & Presence */
 void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_lookup_presence(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_contacts_to_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_contacts_from_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task);

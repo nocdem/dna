@@ -1064,6 +1064,25 @@ int messenger_p2p_refresh_presence(messenger_context_t *ctx)
     return 0;
 }
 
+int messenger_p2p_lookup_presence(
+    messenger_context_t *ctx,
+    const char *fingerprint,
+    uint64_t *last_seen_out)
+{
+    if (!ctx || !fingerprint || !last_seen_out) {
+        return -1;
+    }
+
+    *last_seen_out = 0;
+
+    if (!ctx->p2p_enabled || !ctx->p2p_transport) {
+        fprintf(stderr, "[P2P] P2P not enabled or transport not initialized\n");
+        return -1;
+    }
+
+    return p2p_lookup_presence_by_fingerprint(ctx->p2p_transport, fingerprint, last_seen_out);
+}
+
 // ============================================================================
 // PUSH NOTIFICATION CALLBACKS (Phase 10.1)
 // ============================================================================
