@@ -500,7 +500,7 @@ class _PostCard extends ConsumerWidget {
                       child: Icon(Icons.verified, size: 14, color: DnaColors.textSuccess),
                     ),
                   // Expand indicator
-                  if (showExpandIndicator && post.replyCount > 0)
+                  if (showExpandIndicator)
                     Padding(
                       padding: const EdgeInsets.only(left: 8),
                       child: Icon(
@@ -620,17 +620,17 @@ class _ExpandablePostCard extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Parent post
+        // Parent post - always allow tap to expand/check for replies
         _PostCard(
           post: post,
           onReply: onReply,
           onVote: onVote,
-          onTap: post.replyCount > 0 ? onTap : null,
+          onTap: onTap,
           isExpanded: isExpanded,
           showExpandIndicator: true,
         ),
         // Replies (when expanded)
-        if (isExpanded && post.replyCount > 0)
+        if (isExpanded)
           _RepliesSection(
             postId: post.postId,
             onReply: (reply) => ref.read(replyToPostProvider.notifier).state = reply,
@@ -663,7 +663,10 @@ class _RepliesSection extends ConsumerWidget {
     return repliesAsync.when(
       data: (replies) {
         if (replies.isEmpty) {
-          return const SizedBox.shrink();
+          return Padding(
+            padding: const EdgeInsets.only(left: 32, top: 4, bottom: 8),
+            child: Text('No replies yet', style: TextStyle(color: DnaColors.textMuted, fontSize: 12)),
+          );
         }
         return Column(
           children: replies.map((reply) => _PostCard(
