@@ -396,7 +396,7 @@ class _ChannelTile extends StatelessWidget {
 // POST CARD
 // =============================================================================
 
-class _PostCard extends StatelessWidget {
+class _PostCard extends ConsumerWidget {
   final FeedPost post;
   final VoidCallback onReply;
   final void Function(int) onVote;
@@ -408,8 +408,12 @@ class _PostCard extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isReply = post.replyTo != null;
+
+    // Look up display name for author
+    final displayNameAsync = ref.watch(identityDisplayNameProvider(post.authorFingerprint));
+    final authorName = displayNameAsync.valueOrNull ?? _shortenFingerprint(post.authorFingerprint);
 
     return Container(
       margin: EdgeInsets.only(
@@ -443,7 +447,7 @@ class _PostCard extends StatelessWidget {
                   ),
                 Expanded(
                   child: Text(
-                    _shortenFingerprint(post.authorFingerprint),
+                    authorName,
                     style: TextStyle(
                       color: DnaColors.primary,
                       fontWeight: FontWeight.w500,
