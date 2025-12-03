@@ -688,6 +688,13 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Load DHT identity */
     messenger_load_dht_identity(fingerprint);
 
+    /* Initialize contacts database BEFORE P2P/offline message check
+     * This is required because offline message check queries contacts' outboxes */
+    if (contacts_db_init(fingerprint) != 0) {
+        printf("[DNA_ENGINE] Warning: Failed to initialize contacts database\n");
+        /* Non-fatal - continue, contacts will be initialized on first access */
+    }
+
     /* Initialize P2P transport for DHT and messaging */
     if (messenger_p2p_init(engine->messenger) != 0) {
         printf("[DNA_ENGINE] Warning: Failed to initialize P2P transport\n");

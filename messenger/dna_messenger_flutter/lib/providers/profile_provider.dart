@@ -44,6 +44,11 @@ class ProfileNotifier extends AsyncNotifier<UserProfile?> {
       return profile;
     });
   }
+
+  /// Update state directly (for optimistic updates after save)
+  void updateState(UserProfile profile) {
+    state = AsyncValue.data(profile);
+  }
 }
 
 /// Profile editor state for the edit screen
@@ -179,8 +184,9 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       final engine = await _ref.read(engineProvider.future);
       await engine.updateProfile(state.profile);
 
-      // Refresh the fullProfileProvider
-      _ref.invalidate(fullProfileProvider);
+      // Optimistic update: use local data instead of re-fetching from DHT
+      // This avoids race condition where GET happens before PUT propagates
+      _ref.read(fullProfileProvider.notifier).updateState(state.profile);
 
       state = state.copyWith(
         isSaving: false,
