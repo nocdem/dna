@@ -225,6 +225,13 @@ final castVoteProvider = FutureProvider.family<void, ({String postId, int value}
 final postVoteProvider = StateProvider.family<int, String>((ref, postId) => 0);
 
 // =============================================================================
+// EXPANSION STATE
+// =============================================================================
+
+/// Set of expanded post IDs (to show replies)
+final expandedPostsProvider = StateProvider<Set<String>>((ref) => {});
+
+// =============================================================================
 // REPLY STATE
 // =============================================================================
 
