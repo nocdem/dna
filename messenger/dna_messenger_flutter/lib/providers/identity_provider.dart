@@ -72,6 +72,15 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   Future<void> registerName(String name) async {
     final engine = await ref.read(engineProvider.future);
     await engine.registerName(name);
+
+    // Update identity name cache so it shows immediately in identity selection
+    final fingerprint = ref.read(currentFingerprintProvider);
+    if (fingerprint != null && name.isNotEmpty) {
+      final newCache = Map<String, String>.from(ref.read(identityNameCacheProvider));
+      newCache[fingerprint] = name;
+      ref.read(identityNameCacheProvider.notifier).state = newCache;
+    }
+
     // Invalidate user profile to refresh
     ref.invalidate(userProfileProvider);
   }
