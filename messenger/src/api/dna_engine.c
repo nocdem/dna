@@ -2083,55 +2083,137 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
                     sizeof(transactions[count].timestamp) - 1);
         }
 
-        /* Parse data array for direction, amount, token, address */
-        if (jdata && json_object_is_type(jdata, json_type_array)) {
-            int data_len = json_object_array_length(jdata);
-            for (int j = 0; j < data_len; j++) {
-                json_object *data_item = json_object_array_get_idx(jdata, j);
-                if (!data_item) continue;
+        /* Parse data - can be array (old format) or object (new format) */
+        if (jdata) {
+            json_object *jtx_type = NULL, *jtoken = NULL;
+            json_object *jrecv_coins = NULL, *jsend_coins = NULL;
+            json_object *jsrc_addr = NULL, *jdst_addr = NULL;
+            json_object *jaddr_from = NULL, *jaddrs_to = NULL;
 
-                json_object *jtx_type = NULL, *jtoken = NULL;
-                json_object *jrecv_coins = NULL, *jsend_coins = NULL;
-                json_object *jsrc_addr = NULL, *jdst_addr = NULL;
+            if (json_object_is_type(jdata, json_type_array)) {
+                /* Old format: data is array, use first item */
+                if (json_object_array_length(jdata) > 0) {
+                    json_object *data_item = json_object_array_get_idx(jdata, 0);
+                    if (data_item) {
+                        json_object_object_get_ex(data_item, "tx_type", &jtx_type);
+                        json_object_object_get_ex(data_item, "token", &jtoken);
+                        json_object_object_get_ex(data_item, "recv_coins", &jrecv_coins);
+                        json_object_object_get_ex(data_item, "send_coins", &jsend_coins);
+                        json_object_object_get_ex(data_item, "source_address", &jsrc_addr);
+                        json_object_object_get_ex(data_item, "destination_address", &jdst_addr);
+                    }
+                }
+            } else if (json_object_is_type(jdata, json_type_object)) {
+                /* New format: data is object with address_from, addresses_to */
+                json_object_object_get_ex(jdata, "ticker", &jtoken);
+                json_object_object_get_ex(jdata, "address_from", &jaddr_from);
+                json_object_object_get_ex(jdata, "addresses_to", &jaddrs_to);
+            }
 
-                json_object_object_get_ex(data_item, "tx_type", &jtx_type);
-                json_object_object_get_ex(data_item, "token", &jtoken);
-                json_object_object_get_ex(data_item, "recv_coins", &jrecv_coins);
-                json_object_object_get_ex(data_item, "send_coins", &jsend_coins);
-                json_object_object_get_ex(data_item, "source_address", &jsrc_addr);
-                json_object_object_get_ex(data_item, "destination_address", &jdst_addr);
-
-                if (jtx_type) {
-                    const char *tx_type = json_object_get_string(jtx_type);
-                    if (strcmp(tx_type, "recv") == 0) {
-                        strncpy(transactions[count].direction, "received",
-                                sizeof(transactions[count].direction) - 1);
-                        if (jrecv_coins) {
-                            strncpy(transactions[count].amount, json_object_get_string(jrecv_coins),
-                                    sizeof(transactions[count].amount) - 1);
-                        }
-                        if (jsrc_addr) {
-                            strncpy(transactions[count].other_address, json_object_get_string(jsrc_addr),
-                                    sizeof(transactions[count].other_address) - 1);
-                        }
-                    } else if (strcmp(tx_type, "send") == 0) {
-                        strncpy(transactions[count].direction, "sent",
-                                sizeof(transactions[count].direction) - 1);
-                        if (jsend_coins) {
-                            strncpy(transactions[count].amount, json_object_get_string(jsend_coins),
-                                    sizeof(transactions[count].amount) - 1);
-                        }
-                        if (jdst_addr) {
-                            strncpy(transactions[count].other_address, json_object_get_string(jdst_addr),
+            /* Determine direction and parse addresses */
+            if (jtx_type) {
+                /* Old format with tx_type */
+                const char *tx_type = json_object_get_string(jtx_type);
+                if (strcmp(tx_type, "recv") == 0) {
+                    strncpy(transactions[count].direction, "received",
+                            sizeof(transactions[count].direction) - 1);
+                    if (jrecv_coins) {
+                        strncpy(transactions[count].amount, json_object_get_string(jrecv_coins),
+                                sizeof(transactions[count].amount) - 1);
+                    }
+                    if (jsrc_addr) {
+                        strncpy(transactions[count].other_address, json_object_get_string(jsrc_addr),
+                                sizeof(transactions[count].other_address) - 1);
+                    }
+                } else if (strcmp(tx_type, "send") == 0) {
+                    strncpy(transactions[count].direction, "sent",
+                            sizeof(transactions[count].direction) - 1);
+                    if (jsend_coins) {
+                        strncpy(transactions[count].amount, json_object_get_string(jsend_coins),
+                                sizeof(transactions[count].amount) - 1);
+                    }
+                    /* For destination, skip network fee collector address */
+                    if (jdst_addr) {
+                        const char *dst = json_object_get_string(jdst_addr);
+                        if (dst && strcmp(dst, NETWORK_FEE_COLLECTOR) != 0 &&
+                            strstr(dst, "DAP_CHAIN") == NULL) {
+                            strncpy(transactions[count].other_address, dst,
                                     sizeof(transactions[count].other_address) - 1);
                         }
                     }
                 }
+            } else if (jaddr_from && jaddrs_to) {
+                /* New format: determine direction by comparing wallet address */
+                const char *from_addr = json_object_get_string(jaddr_from);
 
-                if (jtoken) {
-                    strncpy(transactions[count].token, json_object_get_string(jtoken),
-                            sizeof(transactions[count].token) - 1);
+                /* Check if we sent this (our address is sender) */
+                if (from_addr && strcmp(from_addr, wallet->address) == 0) {
+                    strncpy(transactions[count].direction, "sent",
+                            sizeof(transactions[count].direction) - 1);
+
+                    /* Find recipient (first non-fee address in addresses_to) */
+                    if (json_object_is_type(jaddrs_to, json_type_array)) {
+                        int addrs_len = json_object_array_length(jaddrs_to);
+                        for (int k = 0; k < addrs_len; k++) {
+                            json_object *addr_entry = json_object_array_get_idx(jaddrs_to, k);
+                            if (!addr_entry) continue;
+
+                            json_object *jaddr = NULL, *jval = NULL;
+                            json_object_object_get_ex(addr_entry, "address", &jaddr);
+                            json_object_object_get_ex(addr_entry, "value", &jval);
+
+                            if (jaddr) {
+                                const char *addr = json_object_get_string(jaddr);
+                                /* Skip fee collector and change addresses (back to sender) */
+                                if (addr && strcmp(addr, NETWORK_FEE_COLLECTOR) != 0 &&
+                                    strcmp(addr, from_addr) != 0) {
+                                    strncpy(transactions[count].other_address, addr,
+                                            sizeof(transactions[count].other_address) - 1);
+                                    if (jval) {
+                                        strncpy(transactions[count].amount, json_object_get_string(jval),
+                                                sizeof(transactions[count].amount) - 1);
+                                    }
+                                    break;  /* Use first valid recipient */
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    /* We received this */
+                    strncpy(transactions[count].direction, "received",
+                            sizeof(transactions[count].direction) - 1);
+                    if (from_addr) {
+                        strncpy(transactions[count].other_address, from_addr,
+                                sizeof(transactions[count].other_address) - 1);
+                    }
+
+                    /* Find amount sent to us */
+                    if (json_object_is_type(jaddrs_to, json_type_array)) {
+                        int addrs_len = json_object_array_length(jaddrs_to);
+                        for (int k = 0; k < addrs_len; k++) {
+                            json_object *addr_entry = json_object_array_get_idx(jaddrs_to, k);
+                            if (!addr_entry) continue;
+
+                            json_object *jaddr = NULL, *jval = NULL;
+                            json_object_object_get_ex(addr_entry, "address", &jaddr);
+                            json_object_object_get_ex(addr_entry, "value", &jval);
+
+                            if (jaddr) {
+                                const char *addr = json_object_get_string(jaddr);
+                                if (addr && strcmp(addr, wallet->address) == 0 && jval) {
+                                    strncpy(transactions[count].amount, json_object_get_string(jval),
+                                            sizeof(transactions[count].amount) - 1);
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
+            }
+
+            if (jtoken) {
+                strncpy(transactions[count].token, json_object_get_string(jtoken),
+                        sizeof(transactions[count].token) - 1);
             }
         }
 
