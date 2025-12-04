@@ -132,7 +132,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
  * Generates keys deterministically from provided seeds without user prompts.
  * Creates fingerprint-based identity (no name required).
  * Keys are saved as <data_dir>/<fingerprint>.dsa and <data_dir>/<fingerprint>.kem
- * To allow others to find you, register a name separately using messenger_register_name().
+ * To allow others to find you, register a name separately using dna_register_name().
  *
  * @param signing_seed: 32-byte seed for Dilithium5 key generation
  * @param encryption_seed: 32-byte seed for Kyber1024 key generation
@@ -147,25 +147,8 @@ int messenger_generate_keys_from_seeds(
     char *fingerprint_out
 );
 
-/**
- * Register a human-readable name for an existing fingerprint identity
- *
- * Uploads public keys to DHT keyserver with both forward and reverse mappings:
- * - Forward: name → keys (so others can find you)
- * - Reverse: fingerprint → name (for display purposes)
- *
- * Payment integration: Free for now (will require 1 CPUNK in future)
- *
- * @param ctx: Messenger context
- * @param fingerprint: 128-char fingerprint of existing identity
- * @param desired_name: Human-readable name to register (3-20 chars, alphanumeric + underscore)
- * @return: 0 on success, -1 on error
- */
-int messenger_register_name(
-    messenger_context_t *ctx,
-    const char *fingerprint,
-    const char *desired_name
-);
+// NOTE: messenger_register_name() REMOVED
+// Use dna_register_name() from dht/core/dht_keyserver.h instead
 
 /**
  * Restore key pair from BIP39 recovery seed

@@ -7,10 +7,11 @@
 #include "../core/dht_keyserver.h"
 
 // Publish public keys to DHT (FINGERPRINT-FIRST architecture)
+// Uses unified dna_unified_identity_t format for consistency with dna_load_identity()
 int dht_keyserver_publish(
     dht_context_t *dht_ctx,
     const char *fingerprint,
-    const char *display_name,  // Optional human-readable name
+    const char *display_name,  // Optional human-readable name (NOT registered name)
     const uint8_t *dilithium_pubkey,
     const uint8_t *kyber_pubkey,
     const uint8_t *dilithium_privkey
@@ -29,47 +30,113 @@ int dht_keyserver_publish(
         return -1;
     }
 
-    // Build entry
-    dht_pubkey_entry_t entry = {0};
-
-    // Store display name (or fingerprint if no name provided)
-    if (display_name && strlen(display_name) > 0) {
-        strncpy(entry.identity, display_name, sizeof(entry.identity) - 1);
-    } else {
-        strncpy(entry.identity, fingerprint, sizeof(entry.identity) - 1);
-    }
-
-    memcpy(entry.dilithium_pubkey, dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
-    memcpy(entry.kyber_pubkey, kyber_pubkey, DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
-    entry.timestamp = time(NULL);
-    entry.version = 1;  // Initial version
-
-    // Store fingerprint (should match computed one)
-    strncpy(entry.fingerprint, fingerprint, sizeof(entry.fingerprint) - 1);
-
-    // Sign entry
-    if (sign_entry(&entry, dilithium_privkey) != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to sign entry\n");
+    // Create unified identity (same format as dna_register_name uses)
+    dna_unified_identity_t *identity = dna_identity_create();
+    if (!identity) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to create identity\n");
         return -1;
     }
 
-    // Serialize to JSON
-    char *json = serialize_entry(&entry);
+    // Set identity data
+    strncpy(identity->fingerprint, fingerprint, sizeof(identity->fingerprint) - 1);
+    memcpy(identity->dilithium_pubkey, dilithium_pubkey, sizeof(identity->dilithium_pubkey));
+    memcpy(identity->kyber_pubkey, kyber_pubkey, sizeof(identity->kyber_pubkey));
+
+    // No registered name yet (use dna_register_name for that)
+    identity->has_registered_name = false;
+    identity->timestamp = time(NULL);
+    identity->version = 1;
+
+    // Sign the identity with Dilithium5
+    size_t msg_len = sizeof(identity->fingerprint) +
+                   sizeof(identity->dilithium_pubkey) +
+                   sizeof(identity->kyber_pubkey) +
+                   sizeof(bool) +
+                   sizeof(identity->registered_name) +
+                   sizeof(uint64_t) * 2 +
+                   sizeof(identity->registration_tx_hash) +
+                   sizeof(identity->registration_network) +
+                   sizeof(uint32_t) +
+                   sizeof(identity->wallets) +
+                   sizeof(identity->socials) +
+                   sizeof(identity->bio) +
+                   sizeof(identity->profile_picture_ipfs) +
+                   sizeof(uint64_t) +
+                   sizeof(uint32_t);
+
+    uint8_t *msg = malloc(msg_len);
+    if (!msg) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to allocate message buffer\n");
+        dna_identity_free(identity);
+        return -1;
+    }
+
+    size_t offset = 0;
+    memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
+    offset += sizeof(identity->fingerprint);
+    memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
+    offset += sizeof(identity->dilithium_pubkey);
+    memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
+    offset += sizeof(identity->kyber_pubkey);
+    memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
+    offset += sizeof(bool);
+    memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
+    offset += sizeof(identity->registered_name);
+
+    // Network byte order for integers
+    uint64_t registered_at_net = htonll(identity->name_registered_at);
+    uint64_t expires_at_net = htonll(identity->name_expires_at);
+    uint32_t name_version_net = htonl(identity->name_version);
+    uint64_t timestamp_net = htonll(identity->timestamp);
+    uint32_t version_net = htonl(identity->version);
+
+    memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+    offset += sizeof(identity->registration_tx_hash);
+    memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+    offset += sizeof(identity->registration_network);
+    memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
+    memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
+    offset += sizeof(identity->wallets);
+    memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
+    offset += sizeof(identity->socials);
+    memcpy(msg + offset, identity->bio, sizeof(identity->bio));
+    offset += sizeof(identity->bio);
+    memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
+    offset += sizeof(identity->profile_picture_ipfs);
+    memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, &version_net, sizeof(uint32_t));
+
+    // Sign with private key
+    size_t siglen = sizeof(identity->signature);
+    int sign_ret = qgp_dsa87_sign(identity->signature, &siglen, msg, msg_len, dilithium_privkey);
+    free(msg);
+
+    if (sign_ret != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to sign identity\n");
+        dna_identity_free(identity);
+        return -1;
+    }
+
+    // Serialize to JSON using unified format
+    char *json = dna_identity_to_json(identity);
     if (!json) {
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to serialize entry\n");
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to serialize identity\n");
+        dna_identity_free(identity);
         return -1;
     }
 
-    // Create base key for chunked layer (it handles hashing internally)
-    // UNIFIED: Single :identity key replaces :pubkey and :reverse
+    // Create base key for chunked layer
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:identity", fingerprint);
 
     // Store in DHT via chunked layer (7-day TTL for death privacy)
     printf("[DHT_KEYSERVER] Publishing identity for fingerprint '%s' to DHT\n", fingerprint);
-    if (display_name && strlen(display_name) > 0) {
-        printf("[DHT_KEYSERVER] Display name: %s\n", display_name);
-    }
     printf("[DHT_KEYSERVER] Base key: %s (TTL=7 days)\n", base_key);
 
     int ret = dht_chunked_publish(dht_ctx, base_key,
@@ -77,14 +144,12 @@ int dht_keyserver_publish(
                                   DHT_CHUNK_TTL_7DAY);
 
     free(json);
+    dna_identity_free(identity);
 
     if (ret != DHT_CHUNK_OK) {
         fprintf(stderr, "[DHT_KEYSERVER] Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
-
-    // NOTE: :reverse mapping removed - unified :identity record contains all needed data
-    // Display name lookup now uses dna_load_identity() which reads :identity
 
     printf("[DHT_KEYSERVER] ✓ Identity published successfully (TTL=7 days)\n");
     return 0;
