@@ -387,9 +387,8 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
     char comments_key[512];
     snprintf(comments_key, sizeof(comments_key), "dna:feed:post:%s:comments", post_id);
 
-    /* Get unique value_id for this author */
-    uint64_t value_id = 1;
-    dht_get_owner_value_id(dht_ctx, &value_id);
+    /* Use timestamp as unique value_id (each comment has different timestamp) */
+    uint64_t value_id = comment->timestamp;
 
     printf("[DNA_FEED] Publishing comment to DHT (value_id=%lu)...\n", value_id);
 
