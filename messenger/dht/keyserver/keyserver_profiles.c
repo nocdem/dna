@@ -368,6 +368,12 @@ int dna_get_display_name(
     int ret = dna_load_identity_ex(dht_ctx, fingerprint, false, &identity);
 
     if (ret == 0 && identity) {
+        // Debug: show what we got
+        printf("[DNA] DEBUG: has_registered_name=%d, registered_name='%s', expired=%d\n",
+               identity->has_registered_name,
+               identity->registered_name,
+               identity->has_registered_name ? dna_is_name_expired(identity) : -1);
+
         // Check if name is registered and not expired
         if (identity->has_registered_name && !dna_is_name_expired(identity)) {
             // Return registered name
