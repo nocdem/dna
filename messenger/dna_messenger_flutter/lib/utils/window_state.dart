@@ -94,22 +94,20 @@ class WindowStateManager with WindowListener {
     if (prefs == null) return;
 
     final isMaximized = await windowManager.isMaximized();
+    final isFullScreen = await windowManager.isFullScreen();
+    final position = await windowManager.getPosition();
+    final size = await windowManager.getSize();
+
+    print('[WindowState] State: maximized=$isMaximized, fullScreen=$isFullScreen, pos=$position, size=$size');
+
+    // Always save position/size (needed for restore after unmaximize)
+    await prefs.setDouble(_keyX, position.dx);
+    await prefs.setDouble(_keyY, position.dy);
+    await prefs.setDouble(_keyWidth, size.width);
+    await prefs.setDouble(_keyHeight, size.height);
     await prefs.setBool(_keyMaximized, isMaximized);
 
-    // Only save position/size if not maximized
-    if (!isMaximized) {
-      final position = await windowManager.getPosition();
-      final size = await windowManager.getSize();
-
-      await prefs.setDouble(_keyX, position.dx);
-      await prefs.setDouble(_keyY, position.dy);
-      await prefs.setDouble(_keyWidth, size.width);
-      await prefs.setDouble(_keyHeight, size.height);
-
-      print('[WindowState] Saved: x=${position.dx}, y=${position.dy}, w=${size.width}, h=${size.height}');
-    } else {
-      print('[WindowState] Saved: maximized=true');
-    }
+    print('[WindowState] Saved: x=${position.dx}, y=${position.dy}, w=${size.width}, h=${size.height}, maximized=$isMaximized');
   }
 
   // WindowListener callbacks
