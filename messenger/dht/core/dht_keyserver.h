@@ -160,22 +160,22 @@ void dna_compute_fingerprint(
 
 /**
  * Register DNA name for a fingerprint identity
- * Requires valid blockchain transaction hash as proof of payment (0.01 CPUNK)
+ * Simple version - no blockchain verification, free registration
  *
  * @param dht_ctx: DHT context
  * @param fingerprint: Fingerprint (128 hex chars)
  * @param name: DNA name to register (3-36 chars, alphanumeric + . _ -)
- * @param tx_hash: Blockchain transaction hash (proof of payment)
- * @param network: Network where tx was made (e.g., "Backbone")
+ * @param dilithium_pubkey: Dilithium5 public key (2592 bytes)
+ * @param kyber_pubkey: Kyber1024 public key (1568 bytes)
  * @param dilithium_privkey: Private key for signing
- * @return: 0 on success, -1 on error, -2 on name taken, -3 on invalid tx
+ * @return: 0 on success, -1 on error, -2 on name taken
  */
 int dna_register_name(
     dht_context_t *dht_ctx,
     const char *fingerprint,
     const char *name,
-    const char *tx_hash,
-    const char *network,
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *kyber_pubkey,
     const uint8_t *dilithium_privkey
 );
 
@@ -198,22 +198,6 @@ int dna_update_profile(
     const uint8_t *kyber_pubkey
 );
 
-/**
- * Renew DNA name registration
- * Extends expiration by 365 days. Requires new payment tx_hash.
- *
- * @param dht_ctx: DHT context
- * @param fingerprint: Fingerprint (128 hex chars)
- * @param renewal_tx_hash: New transaction hash (proof of renewal payment)
- * @param dilithium_privkey: Private key for signing
- * @return: 0 on success, -1 on error, -2 if name not registered, -3 on invalid tx
- */
-int dna_renew_name(
-    dht_context_t *dht_ctx,
-    const char *fingerprint,
-    const char *renewal_tx_hash,
-    const uint8_t *dilithium_privkey
-);
 
 /**
  * Load complete DNA identity from DHT (extended version)

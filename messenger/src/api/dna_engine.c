@@ -759,13 +759,47 @@ void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    int rc = messenger_register_name(
-        engine->messenger,
+    /* Get DHT context */
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    /* Load signing key (Dilithium5) */
+    qgp_key_t *sign_key = dna_load_private_key(engine);
+    if (!sign_key) {
+        error = DNA_ENGINE_ERROR_PERMISSION;
+        goto done;
+    }
+
+    /* Load encryption key (Kyber1024) */
+    char enc_key_path[512];
+    snprintf(enc_key_path, sizeof(enc_key_path), "%s/%s.kem",
+             engine->data_dir, engine->fingerprint);
+    qgp_key_t *enc_key = NULL;
+    if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
+        error = DNA_ENGINE_ERROR_PERMISSION;
+        qgp_key_free(sign_key);
+        goto done;
+    }
+
+    /* Register name using unified identity system */
+    int rc = dna_register_name(
+        dht,
         engine->fingerprint,
-        task->params.register_name.name
+        task->params.register_name.name,
+        sign_key->public_key,
+        enc_key->public_key,
+        sign_key->private_key
     );
 
-    if (rc != 0) {
+    qgp_key_free(sign_key);
+    qgp_key_free(enc_key);
+
+    if (rc == -2) {
+        error = DNA_ENGINE_ERROR_ALREADY_EXISTS;  /* Name taken */
+    } else if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
     }
 
