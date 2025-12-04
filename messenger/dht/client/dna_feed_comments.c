@@ -376,27 +376,123 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
     }
     comment->signature_len = sig_len;
 
-    /* Serialize comment */
-    char *json_data = NULL;
-    if (comment_to_json(comment, &json_data) != 0) {
-        free(comment);
-        return -1;
-    }
-
     /* Get DHT key for comments: dna:feed:post:{post_id}:comments */
     char comments_key[512];
     snprintf(comments_key, sizeof(comments_key), "dna:feed:post:%s:comments", post_id);
 
-    /* Use timestamp as unique value_id (each comment has different timestamp) */
-    uint64_t value_id = comment->timestamp;
+    /* Get my value_id */
+    uint64_t my_value_id = 1;
+    dht_get_owner_value_id(dht_ctx, &my_value_id);
 
-    printf("[DNA_FEED] Publishing comment to DHT (value_id=%lu)...\n", value_id);
+    /* Read-modify-write: fetch my existing comments, append new one */
+    dna_feed_comment_t *my_comments = NULL;
+    size_t my_count = 0;
+
+    uint8_t **values = NULL;
+    size_t *lens = NULL;
+    size_t value_count = 0;
+
+    ret = dht_get_all(dht_ctx, (const uint8_t *)comments_key, strlen(comments_key),
+                      &values, &lens, &value_count);
+
+    if (ret == 0 && value_count > 0) {
+        /* Find my existing comments by author fingerprint */
+        for (size_t i = 0; i < value_count; i++) {
+            if (values[i] && lens[i] > 0) {
+                char *json_str = malloc(lens[i] + 1);
+                if (json_str) {
+                    memcpy(json_str, values[i], lens[i]);
+                    json_str[lens[i]] = '\0';
+
+                    /* Try to parse as array first */
+                    json_object *arr = json_tokener_parse(json_str);
+                    if (arr && json_object_is_type(arr, json_type_array)) {
+                        int arr_len = json_object_array_length(arr);
+                        if (arr_len > 0) {
+                            json_object *first = json_object_array_get_idx(arr, 0);
+                            json_object *author_obj;
+                            if (json_object_object_get_ex(first, "author", &author_obj)) {
+                                const char *arr_author = json_object_get_string(author_obj);
+                                if (arr_author && strcmp(arr_author, author_fingerprint) == 0) {
+                                    /* These are my comments */
+                                    my_comments = calloc(arr_len, sizeof(dna_feed_comment_t));
+                                    if (my_comments) {
+                                        for (int j = 0; j < arr_len; j++) {
+                                            json_object *c = json_object_array_get_idx(arr, j);
+                                            char *c_str = strdup(json_object_to_json_string(c));
+                                            if (c_str) {
+                                                if (comment_from_json(c_str, &my_comments[my_count]) == 0) {
+                                                    my_count++;
+                                                }
+                                                free(c_str);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        json_object_put(arr);
+                    } else {
+                        /* Try single comment */
+                        dna_feed_comment_t tmp;
+                        if (comment_from_json(json_str, &tmp) == 0) {
+                            if (strcmp(tmp.author_fingerprint, author_fingerprint) == 0) {
+                                my_comments = calloc(1, sizeof(dna_feed_comment_t));
+                                if (my_comments) {
+                                    my_comments[0] = tmp;
+                                    my_count = 1;
+                                }
+                            }
+                        }
+                    }
+                    free(json_str);
+                }
+            }
+            free(values[i]);
+        }
+        free(values);
+        free(lens);
+    }
+
+    printf("[DNA_FEED] Found %zu existing comments from this author\n", my_count);
+
+    /* Build array with existing + new comment */
+    json_object *arr = json_object_new_array();
+
+    /* Add existing comments */
+    for (size_t i = 0; i < my_count; i++) {
+        char *c_json = NULL;
+        if (comment_to_json(&my_comments[i], &c_json) == 0) {
+            json_object *c_obj = json_tokener_parse(c_json);
+            if (c_obj) {
+                json_object_array_add(arr, c_obj);
+            }
+            free(c_json);
+        }
+    }
+    free(my_comments);
+
+    /* Add new comment */
+    char *new_json = NULL;
+    if (comment_to_json(comment, &new_json) != 0) {
+        json_object_put(arr);
+        free(comment);
+        return -1;
+    }
+    json_object *new_obj = json_tokener_parse(new_json);
+    free(new_json);
+    if (new_obj) {
+        json_object_array_add(arr, new_obj);
+    }
+
+    const char *json_data = json_object_to_json_string(arr);
+    printf("[DNA_FEED] Publishing %zu comments to DHT (value_id=%lu)...\n", my_count + 1, my_value_id);
 
     /* Publish as multi-owner signed value */
     ret = dht_put_signed(dht_ctx, (const uint8_t *)comments_key, strlen(comments_key),
                          (const uint8_t *)json_data, strlen(json_data),
-                         value_id, DNA_FEED_TTL_SECONDS);
-    free(json_data);
+                         my_value_id, DNA_FEED_TTL_SECONDS);
+    json_object_put(arr);
 
     if (ret != 0) {
         fprintf(stderr, "[DNA_FEED] Failed to publish comment\n");
@@ -468,16 +564,11 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
 
     printf("[DNA_FEED] Found %zu comment values\n", value_count);
 
-    /* Parse comments */
-    dna_feed_comment_t *comments = calloc(value_count, sizeof(dna_feed_comment_t));
-    if (!comments) {
-        for (size_t i = 0; i < value_count; i++) free(values[i]);
-        free(values);
-        free(value_lens);
-        return -1;
-    }
-
+    /* Parse comments - values can be arrays or single objects */
+    dna_feed_comment_t *comments = NULL;
+    size_t capacity = 0;
     size_t parsed = 0;
+
     for (size_t i = 0; i < value_count; i++) {
         if (values[i] && value_lens[i] > 0) {
             char *json_str = malloc(value_lens[i] + 1);
@@ -485,8 +576,45 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
                 memcpy(json_str, values[i], value_lens[i]);
                 json_str[value_lens[i]] = '\0';
 
-                if (comment_from_json(json_str, &comments[parsed]) == 0) {
-                    parsed++;
+                json_object *obj = json_tokener_parse(json_str);
+                if (obj) {
+                    if (json_object_is_type(obj, json_type_array)) {
+                        /* Array of comments from one author */
+                        int arr_len = json_object_array_length(obj);
+                        for (int j = 0; j < arr_len; j++) {
+                            json_object *c = json_object_array_get_idx(obj, j);
+                            const char *c_str = json_object_to_json_string(c);
+
+                            /* Expand array if needed */
+                            if (parsed >= capacity) {
+                                capacity = capacity ? capacity * 2 : 16;
+                                dna_feed_comment_t *tmp = realloc(comments, capacity * sizeof(dna_feed_comment_t));
+                                if (!tmp) break;
+                                comments = tmp;
+                            }
+
+                            if (comment_from_json(c_str, &comments[parsed]) == 0) {
+                                parsed++;
+                            }
+                        }
+                    } else {
+                        /* Single comment */
+                        if (parsed >= capacity) {
+                            capacity = capacity ? capacity * 2 : 16;
+                            dna_feed_comment_t *tmp = realloc(comments, capacity * sizeof(dna_feed_comment_t));
+                            if (!tmp) {
+                                json_object_put(obj);
+                                free(json_str);
+                                continue;
+                            }
+                            comments = tmp;
+                        }
+
+                        if (comment_from_json(json_str, &comments[parsed]) == 0) {
+                            parsed++;
+                        }
+                    }
+                    json_object_put(obj);
                 }
                 free(json_str);
             }
@@ -501,12 +629,6 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
         *comments_out = NULL;
         *count_out = 0;
         return -2;
-    }
-
-    /* Resize if needed */
-    if (parsed < value_count) {
-        dna_feed_comment_t *resized = realloc(comments, parsed * sizeof(dna_feed_comment_t));
-        if (resized) comments = resized;
     }
 
     printf("[DNA_FEED] Parsed %zu comments\n", parsed);
