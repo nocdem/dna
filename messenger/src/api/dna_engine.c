@@ -1000,13 +1000,17 @@ void dna_handle_refresh_identity(dna_engine_t *engine, dna_task_t *task) {
 
     int error = DNA_OK;
 
+    printf("[DNA_ENGINE] Refreshing identity...\n");
+
     if (!engine->identity_loaded || !engine->messenger) {
+        printf("[DNA_ENGINE] ✗ Refresh failed: identity not loaded\n");
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
     }
 
     dht_context_t *dht = dna_get_dht_ctx(engine);
     if (!dht) {
+        printf("[DNA_ENGINE] ✗ Refresh failed: DHT not ready (P2P transport not initialized)\n");
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
     }
@@ -1014,6 +1018,7 @@ void dna_handle_refresh_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Load private keys for signing */
     qgp_key_t *sign_key = dna_load_private_key(engine);
     if (!sign_key) {
+        printf("[DNA_ENGINE] ✗ Refresh failed: cannot load signing key\n");
         error = DNA_ENGINE_ERROR_PERMISSION;
         goto done;
     }
@@ -1024,17 +1029,19 @@ void dna_handle_refresh_identity(dna_engine_t *engine, dna_task_t *task) {
              engine->data_dir, engine->fingerprint);
     qgp_key_t *enc_key = NULL;
     if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
+        printf("[DNA_ENGINE] ✗ Refresh failed: cannot load encryption key\n");
         error = DNA_ENGINE_ERROR_PERMISSION;
         qgp_key_free(sign_key);
         goto done;
     }
 
-    /* Load current profile from DHT and republish it (refreshes 7-day TTL) */
+    /* Try to load existing profile, but don't fail if signature is bad (old format) */
     dna_unified_identity_t *identity = NULL;
     int rc = dna_load_identity(dht, engine->fingerprint, &identity);
 
     if (rc == 0 && identity) {
         /* Republish existing identity (with updated timestamp) */
+        printf("[DNA_ENGINE] Republishing existing identity...\n");
         dna_profile_data_t profile_data = {0};
         memcpy(&profile_data.wallets, &identity->wallets, sizeof(profile_data.wallets));
         memcpy(&profile_data.socials, &identity->socials, sizeof(profile_data.socials));
@@ -1046,7 +1053,8 @@ void dna_handle_refresh_identity(dna_engine_t *engine, dna_task_t *task) {
                                 enc_key->public_key);
         dna_identity_free(identity);
     } else {
-        /* No existing identity - create empty profile to republish keys */
+        /* No existing identity or signature invalid - create fresh identity with keys */
+        printf("[DNA_ENGINE] Creating fresh identity (no existing or invalid signature)...\n");
         dna_profile_data_t empty_profile = {0};
         rc = dna_update_profile(dht, engine->fingerprint, &empty_profile,
                                 sign_key->private_key, sign_key->public_key,
@@ -1057,6 +1065,7 @@ void dna_handle_refresh_identity(dna_engine_t *engine, dna_task_t *task) {
     qgp_key_free(enc_key);
 
     if (rc != 0) {
+        printf("[DNA_ENGINE] ✗ Refresh failed: DHT publish error\n");
         error = DNA_ENGINE_ERROR_NETWORK;
     } else {
         printf("[DNA_ENGINE] ✓ Identity refreshed (7-day TTL reset)\n");
