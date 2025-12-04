@@ -469,6 +469,7 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task);
 
 /* P2P & Presence */
 void dna_handle_refresh_presence(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_refresh_identity(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_lookup_presence(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_contacts_to_dht(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_sync_contacts_from_dht(dna_engine_t *engine, dna_task_t *task);
