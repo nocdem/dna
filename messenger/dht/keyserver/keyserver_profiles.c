@@ -335,6 +335,7 @@ int dna_load_identity(
 }
 
 // Get display name for fingerprint
+// Optimized: Try reverse lookup first (small, fast) before loading full profile
 int dna_get_display_name(
     dht_context_t *dht_ctx,
     const char *fingerprint,
@@ -344,9 +345,26 @@ int dna_get_display_name(
         return -1;
     }
 
-    // Try to load identity from DHT (profile lookup)
+    int ret;
+
+    // 1. Try reverse lookup first (fingerprint:reverse key) - fast, small payload
+    if (dht_ctx) {
+        char *registered_name = NULL;
+        ret = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &registered_name);
+        if (ret == 0 && registered_name && registered_name[0] != '\0') {
+            *display_name_out = registered_name;
+            printf("[DNA] ✓ Display name: %s (from reverse lookup)\n", registered_name);
+            return 0;
+        }
+        if (registered_name) {
+            free(registered_name);
+        }
+    }
+
+    // 2. Reverse lookup failed - try full profile as fallback
+    // This is slower but may have name in older profiles without reverse key
     dna_unified_identity_t *identity = NULL;
-    int ret = dna_load_identity(dht_ctx, fingerprint, &identity);
+    ret = dna_load_identity(dht_ctx, fingerprint, &identity);
 
     if (ret == 0 && identity) {
         // Check if name is registered and not expired
@@ -367,22 +385,7 @@ int dna_get_display_name(
         dna_identity_free(identity);
     }
 
-    // Profile lookup failed or no registered name in profile
-    // Try reverse lookup (fingerprint:reverse key) as fallback
-    if (dht_ctx) {
-        char *registered_name = NULL;
-        ret = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &registered_name);
-        if (ret == 0 && registered_name && registered_name[0] != '\0') {
-            *display_name_out = registered_name;
-            printf("[DNA] ✓ Display name: %s (from reverse lookup)\n", registered_name);
-            return 0;
-        }
-        if (registered_name) {
-            free(registered_name);
-        }
-    }
-
-    // Fallback: Return shortened fingerprint (first 16 chars + "...")
+    // 3. Fallback: Return shortened fingerprint (first 16 chars + "...")
     char *display = malloc(32);
     if (!display) {
         return -1;
