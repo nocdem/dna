@@ -14,6 +14,7 @@
 #include "dht/client/dna_profile.h"
 #include "p2p/p2p_transport.h"
 #include "database/presence_cache.h"
+#include "database/profile_cache.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 
@@ -770,26 +771,108 @@ done:
     task->callback.completion(task->request_id, error, task->user_data);
 }
 
+/* Helper: Update in-memory name cache */
+static void update_name_cache(dna_engine_t *engine, const char *fingerprint, const char *name) {
+    if (!name || strlen(name) == 0) return;
+    /* Only cache real names, not shortened fingerprints */
+    if (strlen(name) >= 20 && strstr(name, "...") != NULL) return;
+
+    pthread_mutex_lock(&engine->name_cache_mutex);
+    /* Check if already cached */
+    for (int i = 0; i < engine->name_cache_count; i++) {
+        if (strcmp(engine->name_cache[i].fingerprint, fingerprint) == 0) {
+            /* Update existing entry */
+            strncpy(engine->name_cache[i].display_name, name, 63);
+            pthread_mutex_unlock(&engine->name_cache_mutex);
+            return;
+        }
+    }
+    /* Add new entry */
+    if (engine->name_cache_count < DNA_NAME_CACHE_MAX) {
+        strncpy(engine->name_cache[engine->name_cache_count].fingerprint,
+                fingerprint, 128);
+        strncpy(engine->name_cache[engine->name_cache_count].display_name,
+                name, 63);
+        engine->name_cache_count++;
+        printf("[DNA_ENGINE] Cached name: %s -> %s\n", fingerprint, name);
+    }
+    pthread_mutex_unlock(&engine->name_cache_mutex);
+}
+
+/* Helper: Background DHT refresh for display name (runs in worker thread) */
+static void refresh_display_name_from_dht(dna_engine_t *engine, const char *fingerprint) {
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) return;
+
+    char *name_out = NULL;
+    int rc = dna_get_display_name(dht, fingerprint, &name_out);
+
+    if (rc == 0 && name_out && strlen(name_out) > 0) {
+        /* Update in-memory cache */
+        update_name_cache(engine, fingerprint, name_out);
+        printf("[DNA_ENGINE] Background refresh: %s -> %s\n", fingerprint, name_out);
+        free(name_out);
+    }
+}
+
 void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     char display_name_buf[256] = {0};
     int error = DNA_OK;
     char *display_name = NULL;
     const char *fingerprint = task->params.get_display_name.fingerprint;
+    bool need_background_refresh = false;
 
-    /* Check cache first */
+    /* 1. Check in-memory cache first (fastest) */
     pthread_mutex_lock(&engine->name_cache_mutex);
     for (int i = 0; i < engine->name_cache_count; i++) {
         if (strcmp(engine->name_cache[i].fingerprint, fingerprint) == 0) {
             strncpy(display_name_buf, engine->name_cache[i].display_name,
                     sizeof(display_name_buf) - 1);
             pthread_mutex_unlock(&engine->name_cache_mutex);
-            printf("[DNA_ENGINE] Cache hit: %s -> %s\n", fingerprint, display_name_buf);
+            printf("[DNA_ENGINE] Memory cache hit: %s -> %s\n", fingerprint, display_name_buf);
             goto done;
         }
     }
     pthread_mutex_unlock(&engine->name_cache_mutex);
 
-    /* Not in cache, fetch from DHT */
+    /* 2. Check persistent profile_cache (SQLite) */
+    dna_unified_identity_t *cached_identity = NULL;
+    uint64_t cached_at = 0;
+    int cache_rc = profile_cache_get(fingerprint, &cached_identity, &cached_at);
+
+    if (cache_rc == 0 && cached_identity && cached_identity->display_name[0] != '\0') {
+        /* Found in profile cache */
+        strncpy(display_name_buf, cached_identity->display_name, sizeof(display_name_buf) - 1);
+
+        /* Update in-memory cache */
+        update_name_cache(engine, fingerprint, cached_identity->display_name);
+
+        /* Check if expired (>7 days) - schedule background refresh */
+        uint64_t now = (uint64_t)time(NULL);
+        uint64_t age = now - cached_at;
+        if (age >= PROFILE_CACHE_TTL_SECONDS) {
+            need_background_refresh = true;
+            printf("[DNA_ENGINE] Profile cache hit (expired, will refresh): %s -> %s\n",
+                   fingerprint, display_name_buf);
+        } else {
+            printf("[DNA_ENGINE] Profile cache hit: %s -> %s (age: %lu sec)\n",
+                   fingerprint, display_name_buf, (unsigned long)age);
+        }
+
+        dna_identity_free(cached_identity);
+
+        if (need_background_refresh) {
+            /* Do background refresh after returning cached value */
+            refresh_display_name_from_dht(engine, fingerprint);
+        }
+        goto done;
+    }
+
+    if (cached_identity) {
+        dna_identity_free(cached_identity);
+    }
+
+    /* 3. Not in any cache - fetch from DHT */
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
         error = DNA_ENGINE_ERROR_NETWORK;
@@ -802,19 +885,8 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     if (rc == 0 && name_out) {
         strncpy(display_name_buf, name_out, sizeof(display_name_buf) - 1);
 
-        /* Cache the result if it's a real name */
-        if (strlen(name_out) < 20 || strstr(name_out, "...") == NULL) {
-            pthread_mutex_lock(&engine->name_cache_mutex);
-            if (engine->name_cache_count < DNA_NAME_CACHE_MAX) {
-                strncpy(engine->name_cache[engine->name_cache_count].fingerprint,
-                        fingerprint, 128);
-                strncpy(engine->name_cache[engine->name_cache_count].display_name,
-                        name_out, 63);
-                engine->name_cache_count++;
-                printf("[DNA_ENGINE] Cached name: %s -> %s\n", fingerprint, name_out);
-            }
-            pthread_mutex_unlock(&engine->name_cache_mutex);
-        }
+        /* Update in-memory cache */
+        update_name_cache(engine, fingerprint, name_out);
 
         free(name_out);
     } else {
