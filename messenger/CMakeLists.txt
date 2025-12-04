@@ -343,6 +343,7 @@ target_link_libraries(dna_lib
     OpenSSL::Crypto
     kem
     dsa
+    cellframe_minimal  # Blockchain transaction building (uint256, signing)
     dht_lib        # Phase 9.1: DHT library (MUST come BEFORE p2p_transport for Windows stub symbols)
     p2p_transport  # Phase 9.1b: P2P transport layer (links libjuice for NAT traversal)
     dht_lib        # Link dht_lib again to resolve circular deps with p2p_transport
