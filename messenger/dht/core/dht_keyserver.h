@@ -216,8 +216,25 @@ int dna_renew_name(
 );
 
 /**
- * Load complete DNA identity from DHT
+ * Load complete DNA identity from DHT (extended version)
  * Fetches unified identity structure with keys, name, profile data
+ *
+ * @param dht_ctx: DHT context
+ * @param fingerprint: Fingerprint (128 hex chars)
+ * @param verify_signature: If true, verifies Dilithium5 signature; if false, skips verification
+ * @param identity_out: Output identity (caller must free with dna_identity_free)
+ * @return: 0 on success, -1 on error, -2 if not found, -3 if signature verification failed
+ */
+int dna_load_identity_ex(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    bool verify_signature,
+    dna_unified_identity_t **identity_out
+);
+
+/**
+ * Load complete DNA identity from DHT (with signature verification)
+ * Wrapper for dna_load_identity_ex with verify_signature=true
  *
  * @param dht_ctx: DHT context
  * @param fingerprint: Fingerprint (128 hex chars)

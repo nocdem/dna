@@ -2967,14 +2967,16 @@ void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task) {
     } else {
         dht_context_t *dht_ctx = dht_singleton_get();
         if (dht_ctx) {
-            /* Load identity from unified :identity record */
-            dna_unified_identity_t *identity = NULL;
-            int ret = dna_load_identity(dht_ctx, engine->fingerprint, &identity);
-            if (ret == 0 && identity) {
-                if (identity->has_registered_name && !dna_is_name_expired(identity)) {
-                    name = strdup(identity->registered_name);
+            /* Try to get display name from unified identity (handles signature failures gracefully) */
+            char *display_name = NULL;
+            int ret = dna_get_display_name(dht_ctx, engine->fingerprint, &display_name);
+            if (ret == 0 && display_name) {
+                /* Check if it's a real name (not a shortened fingerprint) */
+                if (strlen(display_name) < 20) {
+                    name = display_name;  /* Transfer ownership */
+                } else {
+                    free(display_name);  /* It's just a shortened fingerprint, not a name */
                 }
-                dna_identity_free(identity);
             }
             /* Not found is not an error - just returns NULL name */
         }
