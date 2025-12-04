@@ -1098,6 +1098,12 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
+    } else {
+        /* Update avatar cache for identity selector */
+        if (p->avatar_base64[0] != '\0') {
+            keyserver_cache_put_avatar(engine->fingerprint, p->avatar_base64);
+            printf("[DNA_ENGINE] Avatar cached after profile save: %.16s...\n", engine->fingerprint);
+        }
     }
 
 done:

@@ -574,27 +574,33 @@ int keyserver_cache_put_avatar(const char *fingerprint, const char *avatar_base6
         return -1;
     }
 
-    const char *sql = "UPDATE name_cache SET avatar_base64 = ? WHERE fingerprint = ?";
+    // Use INSERT OR REPLACE to handle case where name_cache entry doesn't exist yet
+    // This ensures avatar is stored even if display name wasn't cached first
+    const char *sql =
+        "INSERT INTO name_cache (fingerprint, display_name, avatar_base64, cached_at, ttl_seconds) "
+        "VALUES (?, '', ?, ?, 604800) "
+        "ON CONFLICT(fingerprint) DO UPDATE SET avatar_base64 = excluded.avatar_base64";
 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[NAME_CACHE] Failed to prepare avatar update: %s\n", sqlite3_errmsg(g_cache_db));
+        fprintf(stderr, "[NAME_CACHE] Failed to prepare avatar upsert: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
     if (avatar_base64) {
-        sqlite3_bind_text(stmt, 1, avatar_base64, -1, SQLITE_STATIC);
+        sqlite3_bind_text(stmt, 2, avatar_base64, -1, SQLITE_STATIC);
     } else {
-        sqlite3_bind_null(stmt, 1);
+        sqlite3_bind_null(stmt, 2);
     }
-    sqlite3_bind_text(stmt, 2, fingerprint, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, time(NULL));
 
     rc = sqlite3_step(stmt);
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[NAME_CACHE] Failed to update avatar: %s\n", sqlite3_errmsg(g_cache_db));
+        fprintf(stderr, "[NAME_CACHE] Failed to upsert avatar: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
