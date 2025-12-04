@@ -2,6 +2,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
+import 'identity_provider.dart' show currentFingerprintProvider, identityAvatarCacheProvider;
 
 /// Full user profile data from DHT (wallets, socials, bio, avatar)
 final fullProfileProvider = AsyncNotifierProvider<ProfileNotifier, UserProfile?>(
@@ -189,6 +190,15 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       // Optimistic update: use local data instead of re-fetching from DHT
       // This avoids race condition where GET happens before PUT propagates
       _ref.read(fullProfileProvider.notifier).updateState(state.profile);
+
+      // Update avatar cache for identity selector (in-memory Flutter cache)
+      final fingerprint = _ref.read(currentFingerprintProvider);
+      if (fingerprint != null && state.profile.avatarBase64.isNotEmpty) {
+        final newCache = Map<String, String>.from(_ref.read(identityAvatarCacheProvider));
+        newCache[fingerprint] = state.profile.avatarBase64;
+        _ref.read(identityAvatarCacheProvider.notifier).state = newCache;
+        print('[ProfileEditor] Avatar cache updated for $fingerprint');
+      }
 
       state = state.copyWith(
         isSaving: false,
