@@ -218,6 +218,7 @@ int dna_load_identity_ex(
     }
 
     printf("[DNA] Loaded identity (%zu bytes)\n", value_len);
+    fflush(stdout);
 
     // Create null-terminated copy for JSON parsing
     char *json_str = (char*)malloc(value_len + 1);
@@ -373,6 +374,7 @@ int dna_get_display_name(
                identity->has_registered_name,
                identity->registered_name,
                identity->has_registered_name ? dna_is_name_expired(identity) : -1);
+        fflush(stdout);
 
         // Check if name is registered and not expired
         if (identity->has_registered_name && !dna_is_name_expired(identity)) {
