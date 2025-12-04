@@ -790,8 +790,7 @@ class _TransactionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isReceived = transaction.direction.toLowerCase().contains('recv') ||
-                       transaction.direction.toLowerCase().contains('in');
+    final isReceived = transaction.direction.toLowerCase() == 'received';
 
     return ListTile(
       leading: CircleAvatar(
@@ -851,8 +850,7 @@ class _TransactionTile extends StatelessWidget {
   }
 
   void _showDetails(BuildContext context) {
-    final isReceived = transaction.direction.toLowerCase().contains('recv') ||
-                       transaction.direction.toLowerCase().contains('in');
+    final isReceived = transaction.direction.toLowerCase() == 'received';
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
