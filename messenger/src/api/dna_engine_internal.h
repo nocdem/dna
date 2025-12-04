@@ -43,6 +43,7 @@ typedef enum {
     TASK_LOAD_IDENTITY,
     TASK_REGISTER_NAME,
     TASK_GET_DISPLAY_NAME,
+    TASK_GET_AVATAR,
     TASK_LOOKUP_NAME,
     TASK_GET_PROFILE,
     TASK_UPDATE_PROFILE,
@@ -122,6 +123,11 @@ typedef union {
     struct {
         char fingerprint[129];
     } get_display_name;
+
+    /* Get avatar */
+    struct {
+        char fingerprint[129];
+    } get_avatar;
 
     /* Lookup name */
     struct {
@@ -438,6 +444,7 @@ void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_avatar(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_lookup_name(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task);

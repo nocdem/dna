@@ -161,6 +161,9 @@ final userProfileProvider = FutureProvider<UserProfile?>((ref) async {
 /// This is used by the identity selection screen to show names instead of fingerprints
 final identityNameCacheProvider = StateProvider<Map<String, String>>((ref) => {});
 
+/// Cache for identity avatars (fingerprint -> base64 avatar)
+final identityAvatarCacheProvider = StateProvider<Map<String, String>>((ref) => {});
+
 /// Provider to fetch and cache display name for a fingerprint
 final identityDisplayNameProvider = FutureProvider.family<String?, String>((ref, fingerprint) async {
   // Watch cache so provider rebuilds when cache updates
@@ -186,6 +189,36 @@ final identityDisplayNameProvider = FutureProvider.family<String?, String>((ref,
     }
   } catch (e) {
     // DHT lookup failed, return null
+  }
+
+  return null;
+});
+
+/// Provider to fetch and cache avatar for a fingerprint
+final identityAvatarProvider = FutureProvider.family<String?, String>((ref, fingerprint) async {
+  // Watch cache so provider rebuilds when cache updates
+  final cache = ref.watch(identityAvatarCacheProvider);
+  if (cache.containsKey(fingerprint)) {
+    return cache[fingerprint];
+  }
+
+  // Fetch from backend (checks SQLite cache first, then DHT)
+  try {
+    final engine = await ref.read(engineProvider.future);
+    final avatar = await engine.getAvatar(fingerprint);
+
+    if (avatar != null && avatar.isNotEmpty) {
+      // Update cache
+      final currentCache = ref.read(identityAvatarCacheProvider);
+      if (!currentCache.containsKey(fingerprint)) {
+        final newCache = Map<String, String>.from(currentCache);
+        newCache[fingerprint] = avatar;
+        ref.read(identityAvatarCacheProvider.notifier).state = newCache;
+      }
+      return avatar;
+    }
+  } catch (e) {
+    // Lookup failed, return null
   }
 
   return null;

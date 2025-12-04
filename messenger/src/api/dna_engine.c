@@ -280,6 +280,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_GET_DISPLAY_NAME:
             dna_handle_get_display_name(engine, task);
             break;
+        case TASK_GET_AVATAR:
+            dna_handle_get_avatar(engine, task);
+            break;
         case TASK_LOOKUP_NAME:
             dna_handle_lookup_name(engine, task);
             break;
@@ -887,6 +890,54 @@ done:
     /* Allocate on heap for thread-safe callback - caller frees via dna_free_string */
     display_name = strdup(display_name_buf);
     task->callback.display_name(task->request_id, error, display_name, task->user_data);
+}
+
+void dna_handle_get_avatar(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;  /* Engine not needed for avatar lookup */
+    int error = DNA_OK;
+    char *avatar = NULL;
+    const char *fingerprint = task->params.get_avatar.fingerprint;
+
+    /* 1. Check avatar cache first */
+    char *cached_avatar = NULL;
+    int cache_rc = keyserver_cache_get_avatar(fingerprint, &cached_avatar);
+    if (cache_rc == 0 && cached_avatar) {
+        avatar = cached_avatar;  /* Caller will free */
+        printf("[DNA_ENGINE] Avatar cache hit: %.16s...\n", fingerprint);
+        goto done;
+    }
+
+    /* 2. Not in cache - fetch full profile from DHT */
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    dna_unified_identity_t *identity = NULL;
+    int rc = dna_load_identity(dht, fingerprint, &identity);
+
+    if (rc == 0 && identity) {
+        /* Check if profile has avatar */
+        if (identity->avatar_base64[0] != '\0') {
+            avatar = strdup(identity->avatar_base64);
+
+            /* Cache avatar for next time */
+            keyserver_cache_put_avatar(fingerprint, identity->avatar_base64);
+
+            /* Also cache the display name if we got it */
+            if (identity->has_registered_name && !dna_is_name_expired(identity)) {
+                keyserver_cache_put_name(fingerprint, identity->registered_name, 0);
+            }
+
+            printf("[DNA_ENGINE] Avatar fetched from DHT: %.16s...\n", fingerprint);
+        }
+        dna_identity_free(identity);
+    }
+
+done:
+    /* avatar may be NULL if no avatar set - that's OK */
+    task->callback.display_name(task->request_id, error, avatar, task->user_data);
 }
 
 void dna_handle_lookup_name(dna_engine_t *engine, dna_task_t *task) {
@@ -2378,6 +2429,21 @@ dna_request_id_t dna_engine_get_display_name(
 
     dna_task_callback_t cb = { .display_name = callback };
     return dna_submit_task(engine, TASK_GET_DISPLAY_NAME, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_avatar(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_display_name_cb callback,  /* Reuses display_name callback (returns string) */
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.get_avatar.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .display_name = callback };
+    return dna_submit_task(engine, TASK_GET_AVATAR, &params, cb, user_data);
 }
 
 dna_request_id_t dna_engine_lookup_name(
