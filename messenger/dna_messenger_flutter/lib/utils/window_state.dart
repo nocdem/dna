@@ -1,12 +1,14 @@
 // Window State Manager - Persist window position and size on desktop
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 /// Manages window state persistence for desktop platforms
-class WindowStateManager with WindowListener {
+class WindowStateManager with WindowListener, WidgetsBindingObserver {
   static const _keyX = 'window_x';
   static const _keyY = 'window_y';
   static const _keyWidth = 'window_width';
@@ -20,6 +22,8 @@ class WindowStateManager with WindowListener {
 
   SharedPreferences? _prefs;
   bool _isInitialized = false;
+  Timer? _saveDebounce;
+  Size? _lastSize;
 
   /// Check if running on a desktop platform
   static bool get isDesktop {
@@ -49,11 +53,28 @@ class WindowStateManager with WindowListener {
       // Add listener to save state on changes
       windowManager.addListener(this);
 
+      // Also use WidgetsBindingObserver for more reliable resize detection on Linux
+      WidgetsBinding.instance.addObserver(this);
+
       await windowManager.show();
       await windowManager.focus();
     });
 
     _isInitialized = true;
+  }
+
+  /// Called when window metrics change (size, position, etc.)
+  @override
+  void didChangeMetrics() {
+    _debouncedSave();
+  }
+
+  /// Debounce saves to avoid excessive writes during resize drag
+  void _debouncedSave() {
+    _saveDebounce?.cancel();
+    _saveDebounce = Timer(const Duration(milliseconds: 500), () {
+      _saveWindowState();
+    });
   }
 
   /// Restore window position and size from preferences
