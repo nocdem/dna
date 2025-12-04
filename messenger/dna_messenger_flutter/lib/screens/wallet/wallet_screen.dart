@@ -185,11 +185,15 @@ class _WalletSelector extends StatelessWidget {
   String _getSigTypeName(int sigType) {
     switch (sigType) {
       case 0:
-        return 'ML-DSA';
+        return 'Dilithium';
       case 1:
-        return 'ECDSA';
+        return 'Picnic';
+      case 2:
+        return 'Bliss';
+      case 3:
+        return 'Tesla';
       default:
-        return 'Unknown';
+        return 'Type $sigType';
     }
   }
 }
@@ -288,11 +292,15 @@ class _WalletCard extends StatelessWidget {
   String _getSigTypeName(int sigType) {
     switch (sigType) {
       case 0:
-        return 'ML-DSA (Post-Quantum)';
+        return 'Dilithium (Post-Quantum)';
       case 1:
-        return 'ECDSA (Legacy)';
+        return 'Picnic';
+      case 2:
+        return 'Bliss';
+      case 3:
+        return 'Tesla';
       default:
-        return 'Unknown';
+        return 'Type $sigType';
     }
   }
 }
