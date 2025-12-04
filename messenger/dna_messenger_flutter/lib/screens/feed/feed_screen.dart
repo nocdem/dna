@@ -672,7 +672,19 @@ class _CommentsSection extends ConsumerWidget {
                   color: DnaColors.border,
                 ),
                 itemBuilder: (context, index) {
-                  return _CommentCard(comment: comments[index]);
+                  return _CommentCard(
+                    comment: comments[index],
+                    onMention: (authorName) {
+                      final current = commentController.text;
+                      final mention = '@$authorName ';
+                      if (!current.startsWith(mention)) {
+                        commentController.text = mention + current;
+                        commentController.selection = TextSelection.collapsed(
+                          offset: commentController.text.length,
+                        );
+                      }
+                    },
+                  );
                 },
               );
             },
@@ -743,8 +755,9 @@ class _CommentsSection extends ConsumerWidget {
 
 class _CommentCard extends ConsumerWidget {
   final FeedComment comment;
+  final void Function(String authorName) onMention;
 
-  const _CommentCard({required this.comment});
+  const _CommentCard({required this.comment, required this.onMention});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -784,7 +797,7 @@ class _CommentCard extends ConsumerWidget {
           // Content
           Text(comment.text, style: const TextStyle(fontSize: 13)),
           const SizedBox(height: 6),
-          // Votes
+          // Votes + mention
           Row(
             children: [
               Builder(builder: (context) {
@@ -815,6 +828,16 @@ class _CommentCard extends ConsumerWidget {
                   onTap: comment.hasVoted ? null : () => _castCommentVote(ref, comment, -1),
                 );
               }),
+              const SizedBox(width: 8),
+              // Mention button
+              InkWell(
+                onTap: () => onMention(authorName),
+                borderRadius: BorderRadius.circular(12),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                  child: Icon(Icons.reply, size: 14, color: DnaColors.textMuted),
+                ),
+              ),
             ],
           ),
         ],
