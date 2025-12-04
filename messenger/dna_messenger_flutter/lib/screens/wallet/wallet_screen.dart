@@ -149,35 +149,66 @@ class _WalletSelector extends StatelessWidget {
   Widget build(BuildContext context) {
     if (wallets.length <= 1) return const SizedBox.shrink();
 
-    return SizedBox(
-      height: 80,
-      child: ListView.builder(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        itemCount: wallets.length,
-        itemBuilder: (context, index) {
+    final theme = Theme.of(context);
+
+    return Container(
+      height: 56,
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: BorderRadius.circular(28),
+      ),
+      child: Row(
+        children: List.generate(wallets.length, (index) {
           final wallet = wallets[index];
           final isSelected = index == selectedIndex;
-          final theme = Theme.of(context);
 
-          return Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: ChoiceChip(
-              label: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(wallet.name.isNotEmpty ? wallet.name : 'Wallet ${index + 1}'),
-                  Text(
-                    _getSigTypeName(wallet.sigType),
-                    style: theme.textTheme.labelSmall,
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => onSelected(index),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeInOut,
+                decoration: BoxDecoration(
+                  color: isSelected ? theme.colorScheme.primary : Colors.transparent,
+                  borderRadius: BorderRadius.circular(24),
+                ),
+                child: Center(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      AnimatedDefaultTextStyle(
+                        duration: const Duration(milliseconds: 200),
+                        style: theme.textTheme.bodyMedium!.copyWith(
+                          color: isSelected
+                              ? theme.colorScheme.onPrimary
+                              : theme.colorScheme.onSurface.withAlpha(180),
+                          fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                        ),
+                        child: Text(
+                          wallet.name.isNotEmpty ? wallet.name : 'Wallet ${index + 1}',
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                      const SizedBox(height: 2),
+                      AnimatedDefaultTextStyle(
+                        duration: const Duration(milliseconds: 200),
+                        style: theme.textTheme.labelSmall!.copyWith(
+                          color: isSelected
+                              ? theme.colorScheme.onPrimary.withAlpha(200)
+                              : theme.colorScheme.onSurface.withAlpha(120),
+                          fontSize: 10,
+                        ),
+                        child: Text(_getSigTypeName(wallet.sigType)),
+                      ),
+                    ],
                   ),
-                ],
+                ),
               ),
-              selected: isSelected,
-              onSelected: (_) => onSelected(index),
             ),
           );
-        },
+        }),
       ),
     );
   }
