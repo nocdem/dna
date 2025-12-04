@@ -826,7 +826,6 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     char *display_name = NULL;
     const char *fingerprint = task->params.get_display_name.fingerprint;
-    bool need_background_refresh = false;
 
     /* 1. Check in-memory cache first (fastest) */
     pthread_mutex_lock(&engine->name_cache_mutex);
@@ -854,13 +853,8 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
 
         printf("[DNA_ENGINE] Name cache hit: %s -> %s\n", fingerprint, display_name_buf);
 
-        /* Always do background refresh to keep names fresh */
-        need_background_refresh = true;
-
-        if (need_background_refresh) {
-            /* Do background refresh after returning cached value */
-            refresh_display_name_from_dht(engine, fingerprint);
-        }
+        /* Return cached value immediately - 7-day TTL handles freshness */
+        /* Note: True background refresh would require async task submission */
         goto done;
     }
 
