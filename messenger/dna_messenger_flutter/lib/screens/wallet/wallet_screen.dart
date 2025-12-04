@@ -152,9 +152,9 @@ class _WalletSelector extends StatelessWidget {
     final theme = Theme.of(context);
 
     return Container(
-      height: 56,
+      height: 64,
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-      padding: const EdgeInsets.all(4),
+      padding: const EdgeInsets.all(6),
       decoration: BoxDecoration(
         color: theme.colorScheme.surface,
         borderRadius: BorderRadius.circular(28),
