@@ -2919,9 +2919,27 @@ void dna_handle_get_feed_channels(dna_engine_t *engine, dna_task_t *task) {
                 strncpy(channels[i].description, registry->channels[i].description, 511);
                 strncpy(channels[i].creator_fingerprint, registry->channels[i].creator_fingerprint, 128);
                 channels[i].created_at = registry->channels[i].created_at;
-                channels[i].post_count = registry->channels[i].post_count;
                 channels[i].subscriber_count = registry->channels[i].subscriber_count;
                 channels[i].last_activity = registry->channels[i].last_activity;
+
+                /* Count posts from last 7 days */
+                int post_count = 0;
+                time_t now = time(NULL);
+                for (int day = 0; day < 7; day++) {
+                    time_t t = now - (day * 86400);
+                    struct tm *tm = gmtime(&t);
+                    char date[12];
+                    snprintf(date, sizeof(date), "%04d%02d%02d",
+                             tm->tm_year + 1900, tm->tm_mon + 1, tm->tm_mday);
+
+                    dna_feed_post_t *posts = NULL;
+                    size_t count = 0;
+                    if (dna_feed_posts_get_by_channel(dht, channels[i].channel_id, date, &posts, &count) == 0) {
+                        post_count += (int)count;
+                        free(posts);
+                    }
+                }
+                channels[i].post_count = post_count;
             }
             task->callback.feed_channels(task->request_id, DNA_OK,
                                          channels, (int)registry->channel_count, task->user_data);
