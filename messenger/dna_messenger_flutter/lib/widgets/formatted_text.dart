@@ -1,6 +1,26 @@
 // Formatted Text Widget - Renders markdown-style formatting
 // Supports: *bold*, _italic_, ~strikethrough~, `code`
+// Also renders single-emoji messages at larger size (like Telegram)
 import 'package:flutter/material.dart';
+
+/// Regex to match emoji characters
+final _emojiRegex = RegExp(
+  r'[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]',
+  unicode: true,
+);
+
+/// Check if text is exactly one emoji (no other text)
+bool _isSingleEmoji(String text) {
+  final trimmed = text.trim();
+  if (trimmed.isEmpty) return false;
+
+  final emojis = _emojiRegex.allMatches(trimmed).toList();
+  if (emojis.length != 1) return false;
+
+  // Check that removing the emoji leaves nothing
+  final withoutEmoji = trimmed.replaceAll(_emojiRegex, '');
+  return withoutEmoji.isEmpty;
+}
 
 /// Renders text with markdown-style formatting
 ///
@@ -10,6 +30,8 @@ import 'package:flutter/material.dart';
 /// - ~strikethrough~
 /// - `code`
 /// - ```code block```
+///
+/// Single-emoji messages are rendered at 48px (like Telegram)
 class FormattedText extends StatelessWidget {
   final String text;
   final TextStyle? style;
@@ -29,6 +51,16 @@ class FormattedText extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final defaultStyle = style ?? DefaultTextStyle.of(context).style;
+
+    // Single emoji = large size
+    if (_isSingleEmoji(text)) {
+      return Text(
+        text.trim(),
+        style: defaultStyle.copyWith(fontSize: 48),
+        textAlign: textAlign ?? TextAlign.start,
+      );
+    }
+
     final spans = _parseText(text, defaultStyle);
 
     return RichText(
