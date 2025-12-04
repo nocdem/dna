@@ -375,22 +375,28 @@ class _BalanceTile extends StatelessWidget {
       ),
       title: Text(balance.token),
       subtitle: Text(balance.network),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            balance.balance,
-            style: theme.textTheme.titleMedium?.copyWith(
-              fontWeight: FontWeight.bold,
+      trailing: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 150),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Flexible(
+              child: Text(
+                balance.balance,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
-          ),
-          const SizedBox(width: 4),
-          Icon(
-            Icons.chevron_right,
-            color: theme.colorScheme.primary.withAlpha(128),
-            size: 20,
-          ),
-        ],
+            const SizedBox(width: 4),
+            Icon(
+              Icons.chevron_right,
+              color: theme.colorScheme.primary.withAlpha(128),
+              size: 20,
+            ),
+          ],
+        ),
       ),
       onTap: () => _showTokenHistory(context),
     );
