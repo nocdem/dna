@@ -1004,9 +1004,10 @@ class _ComposeArea extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
+    return Stack(
+      clipBehavior: Clip.none,
       children: [
+        // Input area
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
@@ -1058,13 +1059,13 @@ class _ComposeArea extends StatelessWidget {
             ),
           ),
         ),
-        // Emoji picker (fixed size, aligned right)
+        // Emoji picker (overlays content, positioned above emoji button on left)
         if (showEmojiPicker)
-          Align(
-            alignment: Alignment.bottomRight,
+          Positioned(
+            left: 8,
+            bottom: 70, // Above input area
             child: Container(
               constraints: const BoxConstraints(maxWidth: 380, maxHeight: 280),
-              margin: const EdgeInsets.only(right: 8, bottom: 4),
               decoration: BoxDecoration(
                 color: theme.colorScheme.surface,
                 borderRadius: BorderRadius.circular(12),

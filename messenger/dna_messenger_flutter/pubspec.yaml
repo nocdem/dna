@@ -22,6 +22,7 @@ dependencies:
   # Utilities
   path_provider: ^2.1.0
   shared_preferences: ^2.2.0
+  window_manager: ^0.4.0
 
   # UI components
   qr_flutter: ^4.1.0

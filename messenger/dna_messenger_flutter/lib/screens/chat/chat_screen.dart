@@ -84,42 +84,47 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          // Messages list
-          Expanded(
-            child: messages.when(
-              data: (list) => _buildMessageList(context, list),
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (error, stack) => Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.error_outline, color: DnaColors.textWarning),
-                    const SizedBox(height: 8),
-                    Text('Failed to load messages'),
-                    TextButton(
-                      onPressed: () => ref.invalidate(
-                        conversationProvider(contact.fingerprint),
-                      ),
-                      child: const Text('Retry'),
+          // Main content
+          Column(
+            children: [
+              // Messages list
+              Expanded(
+                child: messages.when(
+                  data: (list) => _buildMessageList(context, list),
+                  loading: () => const Center(child: CircularProgressIndicator()),
+                  error: (error, stack) => Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.error_outline, color: DnaColors.textWarning),
+                        const SizedBox(height: 8),
+                        Text('Failed to load messages'),
+                        TextButton(
+                          onPressed: () => ref.invalidate(
+                            conversationProvider(contact.fingerprint),
+                          ),
+                          child: const Text('Retry'),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
-            ),
+
+              // Input area
+              _buildInputArea(context, contact),
+            ],
           ),
 
-          // Input area
-          _buildInputArea(context, contact),
-
-          // Emoji picker (fixed size, aligned right)
+          // Emoji picker (overlays chat, positioned above emoji button on left)
           if (_showEmojiPicker)
-            Align(
-              alignment: Alignment.bottomRight,
+            Positioned(
+              left: 8,
+              bottom: 70, // Above input area
               child: Container(
                 constraints: const BoxConstraints(maxWidth: 380, maxHeight: 280),
-                margin: const EdgeInsets.only(right: 8, bottom: 4),
                 decoration: BoxDecoration(
                   color: theme.colorScheme.surface,
                   borderRadius: BorderRadius.circular(12),

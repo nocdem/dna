@@ -5,9 +5,16 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'providers/providers.dart';
 import 'screens/screens.dart';
 import 'theme/dna_theme.dart';
+import 'utils/window_state.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize window manager on desktop (restores position/size)
+  if (WindowStateManager.isDesktop) {
+    await windowStateManager.init();
+  }
+
   runApp(
     const ProviderScope(
       child: DnaMessengerApp(),
