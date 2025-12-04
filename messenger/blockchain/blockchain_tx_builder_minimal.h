@@ -121,12 +121,22 @@ int cellframe_tx_add_signature(cellframe_tx_builder_t *builder,
                                 size_t dap_sign_size);
 
 /**
- * Parse decimal string to uint256_t (for amounts)
- * @param value_str Decimal string (e.g., "0.01", "10000000000000000")
- * @param value_out Output uint256_t
+ * Parse CELL amount string to uint256_t datoshi (for USER INPUT)
+ * Converts CELL to datoshi: "3000" or "3000.0" -> 3000 * 10^18 datoshi
+ * @param value_str CELL amount (e.g., "0.01", "3000", "3000.0")
+ * @param value_out Output uint256_t in datoshi
  * @return 0 on success, -1 on error
  */
 int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out);
+
+/**
+ * Parse raw datoshi string to uint256_t (for RPC/UTXO values)
+ * NO conversion - value is already in datoshi: "2419239505821527777" -> same value
+ * @param str Raw datoshi string from blockchain
+ * @param out Output uint256_t
+ * @return 0 on success, -1 on error
+ */
+int cellframe_uint256_scan_uninteger(const char *str, uint256_t *out);
 
 /**
  * Hex string to binary

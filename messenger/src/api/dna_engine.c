@@ -1853,7 +1853,8 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
                                     sscanf(hash_str + 2 + (j * 2), "%2hhx", &all_utxos[valid_utxos].hash.raw[j]);
                                 }
                                 all_utxos[valid_utxos].idx = json_object_get_int(jidx);
-                                cellframe_uint256_from_str(value_str, &all_utxos[valid_utxos].value);
+                                // UTXO values from RPC are already in datoshi - use raw parser
+                                cellframe_uint256_scan_uninteger(value_str, &all_utxos[valid_utxos].value);
                                 valid_utxos++;
                             }
                         }
