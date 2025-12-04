@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # DNA Messenger - Cross-Compilation Build Script
-# Builds binaries for all major platforms
+# Builds libdna_lib.so for all major platforms (Flutter uses this via FFI)
 #
 # Supported targets:
 #   - Linux x86_64 (native)
@@ -40,9 +40,6 @@ GIT_HASH=$(git log -1 --format=%h 2>/dev/null || echo "unknown")
 BUILD_DATE=$(date +%Y-%m-%d)
 FULL_VERSION="0.1.${VERSION}-${GIT_HASH}"
 
-# Dependency versions
-GLFW_VERSION="3.4"
-
 echo -e "${BLUE}=========================================${NC}"
 echo -e "${BLUE} DNA Messenger - Cross-Compilation${NC}"
 echo -e "${BLUE}=========================================${NC}"
@@ -80,13 +77,11 @@ build_linux_x64() {
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
 
-    # Build with optional CMAKE_PREFIX_PATH for custom dependencies
     CMAKE_ARGS=(
         "${PROJECT_ROOT}"
         -DCMAKE_BUILD_TYPE=Release
         -DCMAKE_C_FLAGS="-O3 -march=x86-64 -mtune=generic"
         -DCMAKE_CXX_FLAGS="-O3 -march=x86-64 -mtune=generic"
-        -DBUILD_GUI=ON
     )
 
     if [ -n "${CMAKE_PREFIX_PATH}" ]; then
@@ -95,15 +90,15 @@ build_linux_x64() {
 
     cmake "${CMAKE_ARGS[@]}"
 
-    make -j$(nproc)
+    make -j$(nproc) dna_lib
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64"
-    # Package ImGui GUI executable
-    if [ -f imgui_gui/dna-messenger ]; then
-        cp imgui_gui/dna-messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
+    if [ -f libdna_lib.so ]; then
+        cp libdna_lib.so "${PROJECT_ROOT}/${DIST_DIR}/linux-x64/"
+        echo -e "${GREEN}✓${NC} Packaged libdna_lib.so"
     else
-        echo -e "${RED}Error: GUI executable not found${NC}"
+        echo -e "${RED}Error: libdna_lib.so not found${NC}"
         return 1
     fi
 
@@ -122,11 +117,9 @@ build_linux_x64_debug() {
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
 
-    # Build with Debug mode (ASAN automatically enabled in CMakeLists.txt)
     CMAKE_ARGS=(
         "${PROJECT_ROOT}"
         -DCMAKE_BUILD_TYPE=Debug
-        -DBUILD_GUI=ON
     )
 
     if [ -n "${CMAKE_PREFIX_PATH}" ]; then
@@ -135,15 +128,15 @@ build_linux_x64_debug() {
 
     cmake "${CMAKE_ARGS[@]}"
 
-    make -j$(nproc)
+    make -j$(nproc) dna_lib
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug"
-    # Package ImGui GUI executable
-    if [ -f imgui_gui/dna-messenger ]; then
-        cp imgui_gui/dna-messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug/"
+    if [ -f libdna_lib.so ]; then
+        cp libdna_lib.so "${PROJECT_ROOT}/${DIST_DIR}/linux-x64-debug/"
+        echo -e "${GREEN}✓${NC} Packaged libdna_lib.so (debug)"
     else
-        echo -e "${RED}Error: GUI executable not found${NC}"
+        echo -e "${RED}Error: libdna_lib.so not found${NC}"
         return 1
     fi
 
@@ -183,12 +176,10 @@ set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)
 EOF
 
-    # Build with optional CMAKE_PREFIX_PATH for custom dependencies
     CMAKE_ARGS=(
         "${PROJECT_ROOT}"
         -DCMAKE_TOOLCHAIN_FILE=toolchain-arm64.cmake
         -DCMAKE_BUILD_TYPE=Release
-        -DBUILD_GUI=ON
     )
 
     if [ -n "${CMAKE_PREFIX_PATH}" ]; then
@@ -197,16 +188,15 @@ EOF
 
     cmake "${CMAKE_ARGS[@]}"
 
-    make -j$(nproc)
+    make -j$(nproc) dna_lib
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64"
-    # Package GUI executable
-    if [ -f imgui_gui/dna-messenger ]; then
-        cp imgui_gui/dna-messenger "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
-        echo -e "${GREEN}✓${NC} Packaged GUI executable"
+    if [ -f libdna_lib.so ]; then
+        cp libdna_lib.so "${PROJECT_ROOT}/${DIST_DIR}/linux-arm64/"
+        echo -e "${GREEN}✓${NC} Packaged libdna_lib.so"
     else
-        echo -e "${RED}Error: GUI executable not found${NC}"
+        echo -e "${RED}Error: libdna_lib.so not found${NC}"
         return 1
     fi
 
@@ -222,7 +212,6 @@ build_windows_x64() {
     echo -e "${BLUE}=========================================${NC}"
 
     # llvm-mingw directory - configurable via environment variable
-    # Download and setup llvm-mingw
     LLVM_MINGW_VERSION="20251118"
     LLVM_MINGW_DIR="${HOME}/.cache/llvm-mingw"
     LLVM_MINGW_RELEASE="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64"
@@ -259,36 +248,6 @@ build_windows_x64() {
     # Build OpenDHT and msgpack for Windows
     echo -e "${BLUE}Building P2P dependencies (OpenDHT, msgpack)...${NC}"
     "${PROJECT_ROOT}/setup-windows-build.sh"
-
-    # Download and install GLFW prebuilt binaries for Windows
-    GLFW_DIR="${HOME}/.cache/glfw-${GLFW_VERSION}"
-    GLFW_INSTALLED="${MINGW_TARGET_PREFIX}/include/GLFW/glfw3.h"
-
-    if [ ! -f "${GLFW_INSTALLED}" ]; then
-        echo -e "${BLUE}Downloading GLFW ${GLFW_VERSION} prebuilt binaries...${NC}"
-        mkdir -p "${GLFW_DIR}"
-        cd "${GLFW_DIR}"
-
-        if [ ! -f "glfw-${GLFW_VERSION}.bin.WIN64.zip" ]; then
-            wget "https://github.com/glfw/glfw/releases/download/${GLFW_VERSION}/glfw-${GLFW_VERSION}.bin.WIN64.zip"
-        fi
-
-        echo -e "${BLUE}Extracting GLFW ${GLFW_VERSION}...${NC}"
-        unzip -o "glfw-${GLFW_VERSION}.bin.WIN64.zip"
-
-        echo -e "${BLUE}Installing GLFW ${GLFW_VERSION} to ${MINGW_TARGET_PREFIX}...${NC}"
-        # Copy headers
-        mkdir -p "${MINGW_TARGET_PREFIX}/include"
-        cp -r "glfw-${GLFW_VERSION}.bin.WIN64/include/GLFW" "${MINGW_TARGET_PREFIX}/include/"
-
-        # Copy static library (lib-mingw-w64 is for 64-bit MinGW)
-        mkdir -p "${MINGW_TARGET_PREFIX}/lib"
-        cp "glfw-${GLFW_VERSION}.bin.WIN64/lib-mingw-w64/libglfw3.a" "${MINGW_TARGET_PREFIX}/lib/"
-
-        echo -e "${GREEN}✓${NC} GLFW ${GLFW_VERSION} installed"
-    else
-        echo -e "${GREEN}✓${NC} GLFW ${GLFW_VERSION} already installed"
-    fi
 
     BUILD_PATH="${PROJECT_ROOT}/${BUILD_DIR}/windows-x64"
     mkdir -p "$BUILD_PATH"
@@ -323,19 +282,18 @@ EOF
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-mingw64.cmake \
         -DCMAKE_PREFIX_PATH="${MINGW_TARGET_PREFIX};${MINGW_TARGET_PREFIX}/lib64" \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_GUI=ON
+        -DCMAKE_BUILD_TYPE=Release
 
     echo -e "${BLUE}Building...${NC}"
-    make -j$(nproc)
+    make -j$(nproc) dna_lib
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64"
-    # ImGui GUI executable
-    if [ -f imgui_gui/dna-messenger.exe ]; then
-        cp imgui_gui/dna-messenger.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
+    if [ -f dna_lib.dll ]; then
+        cp dna_lib.dll "${PROJECT_ROOT}/${DIST_DIR}/windows-x64/"
+        echo -e "${GREEN}✓${NC} Packaged dna_lib.dll"
     else
-        echo -e "${RED}Error: GUI executable not found${NC}"
+        echo -e "${RED}Error: dna_lib.dll not found${NC}"
         return 1
     fi
 
@@ -351,7 +309,6 @@ build_windows_x64_debug() {
     echo -e "${BLUE}=========================================${NC}"
 
     # llvm-mingw directory - configurable via environment variable
-    # Download and setup llvm-mingw
     LLVM_MINGW_VERSION="20251118"
     LLVM_MINGW_DIR="${HOME}/.cache/llvm-mingw"
     LLVM_MINGW_RELEASE="llvm-mingw-${LLVM_MINGW_VERSION}-ucrt-ubuntu-22.04-x86_64"
@@ -389,36 +346,6 @@ build_windows_x64_debug() {
     echo -e "${BLUE}Building P2P dependencies (OpenDHT, msgpack)...${NC}"
     "${PROJECT_ROOT}/setup-windows-build.sh"
 
-    # Download and install GLFW prebuilt binaries for Windows
-    GLFW_DIR="${HOME}/.cache/glfw-${GLFW_VERSION}"
-    GLFW_INSTALLED="${MINGW_TARGET_PREFIX}/include/GLFW/glfw3.h"
-
-    if [ ! -f "${GLFW_INSTALLED}" ]; then
-        echo -e "${BLUE}Downloading GLFW ${GLFW_VERSION} prebuilt binaries...${NC}"
-        mkdir -p "${GLFW_DIR}"
-        cd "${GLFW_DIR}"
-
-        if [ ! -f "glfw-${GLFW_VERSION}.bin.WIN64.zip" ]; then
-            wget "https://github.com/glfw/glfw/releases/download/${GLFW_VERSION}/glfw-${GLFW_VERSION}.bin.WIN64.zip"
-        fi
-
-        echo -e "${BLUE}Extracting GLFW ${GLFW_VERSION}...${NC}"
-        unzip -o "glfw-${GLFW_VERSION}.bin.WIN64.zip"
-
-        echo -e "${BLUE}Installing GLFW ${GLFW_VERSION} to ${MINGW_TARGET_PREFIX}...${NC}"
-        # Copy headers
-        mkdir -p "${MINGW_TARGET_PREFIX}/include"
-        cp -r "glfw-${GLFW_VERSION}.bin.WIN64/include/GLFW" "${MINGW_TARGET_PREFIX}/include/"
-
-        # Copy static library (lib-mingw-w64 is for 64-bit MinGW)
-        mkdir -p "${MINGW_TARGET_PREFIX}/lib"
-        cp "glfw-${GLFW_VERSION}.bin.WIN64/lib-mingw-w64/libglfw3.a" "${MINGW_TARGET_PREFIX}/lib/"
-
-        echo -e "${GREEN}✓${NC} GLFW ${GLFW_VERSION} installed"
-    else
-        echo -e "${GREEN}✓${NC} GLFW ${GLFW_VERSION} already installed"
-    fi
-
     BUILD_PATH="${PROJECT_ROOT}/${BUILD_DIR}/windows-x64-debug"
     mkdir -p "$BUILD_PATH"
     cd "$BUILD_PATH"
@@ -452,19 +379,18 @@ EOF
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-mingw64.cmake \
         -DCMAKE_PREFIX_PATH="${MINGW_TARGET_PREFIX};${MINGW_TARGET_PREFIX}/lib64" \
-        -DCMAKE_BUILD_TYPE=Debug \
-        -DBUILD_GUI=ON
+        -DCMAKE_BUILD_TYPE=Debug
 
     echo -e "${BLUE}Building...${NC}"
-    make -j$(nproc)
+    make -j$(nproc) dna_lib
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/windows-x64-debug"
-    # ImGui GUI executable
-    if [ -f imgui_gui/dna-messenger.exe ]; then
-        cp imgui_gui/dna-messenger.exe "${PROJECT_ROOT}/${DIST_DIR}/windows-x64-debug/"
+    if [ -f dna_lib.dll ]; then
+        cp dna_lib.dll "${PROJECT_ROOT}/${DIST_DIR}/windows-x64-debug/"
+        echo -e "${GREEN}✓${NC} Packaged dna_lib.dll (debug)"
     else
-        echo -e "${RED}Error: GUI executable not found${NC}"
+        echo -e "${RED}Error: dna_lib.dll not found${NC}"
         return 1
     fi
 
@@ -516,14 +442,19 @@ EOF
 
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-macos.cmake \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_GUI=OFF
+        -DCMAKE_BUILD_TYPE=Release
 
-    make -j$(nproc)
+    make -j$(nproc) dna_lib
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/macos-x64"
-    cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/macos-x64/"
+    if [ -f libdna_lib.dylib ]; then
+        cp libdna_lib.dylib "${PROJECT_ROOT}/${DIST_DIR}/macos-x64/"
+        echo -e "${GREEN}✓${NC} Packaged libdna_lib.dylib"
+    else
+        echo -e "${RED}Error: libdna_lib.dylib not found${NC}"
+        return 1
+    fi
 
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ macOS x86_64 build complete${NC}"
@@ -573,14 +504,19 @@ EOF
 
     cmake "${PROJECT_ROOT}" \
         -DCMAKE_TOOLCHAIN_FILE=toolchain-macos-arm64.cmake \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_GUI=OFF
+        -DCMAKE_BUILD_TYPE=Release
 
-    make -j$(nproc)
+    make -j$(nproc) dna_lib
 
     # Package
     mkdir -p "${PROJECT_ROOT}/${DIST_DIR}/macos-arm64"
-    cp dna_messenger "${PROJECT_ROOT}/${DIST_DIR}/macos-arm64/"
+    if [ -f libdna_lib.dylib ]; then
+        cp libdna_lib.dylib "${PROJECT_ROOT}/${DIST_DIR}/macos-arm64/"
+        echo -e "${GREEN}✓${NC} Packaged libdna_lib.dylib"
+    else
+        echo -e "${RED}Error: libdna_lib.dylib not found${NC}"
+        return 1
+    fi
 
     cd "${PROJECT_ROOT}"
     echo -e "${GREEN}✓ macOS ARM64 build complete${NC}"
@@ -627,6 +563,8 @@ show_usage() {
     echo "  macos-arm64        - macOS ARM64 (Apple Silicon)"
     echo "  clean              - Clean build directories"
     echo ""
+    echo "Output: libdna_lib.so/.dll/.dylib for Flutter FFI"
+    echo ""
     echo "Environment Variables:"
     echo "  LLVM_MINGW_DIR         - Custom llvm-mingw installation directory"
     echo "                           (default: ~/.cache/llvm-mingw)"
@@ -635,7 +573,6 @@ show_usage() {
     echo "  $0 all                                    # Build everything"
     echo "  $0 linux-x64                              # Build Linux only"
     echo "  $0 windows-x64                            # Build Windows only"
-    echo "  LLVM_MINGW_DIR=/opt/llvm-mingw $0 windows-x64  # Use custom llvm-mingw location"
     echo ""
 }
 
