@@ -800,7 +800,9 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     }
 
     char *name_out = NULL;
+    printf("[DNA_ENGINE] Calling dna_get_display_name for %s\n", fingerprint);
     int rc = dna_get_display_name(dht, fingerprint, &name_out);
+    printf("[DNA_ENGINE] dna_get_display_name returned rc=%d, name='%s'\n", rc, name_out ? name_out : "(null)");
 
     if (rc == 0 && name_out) {
         strncpy(display_name_buf, name_out, sizeof(display_name_buf) - 1);
