@@ -379,6 +379,321 @@ static inline uint256_t GET_256_FROM_64(uint64_t n) {
 }
 
 // ============================================================================
+// 256-BIT MATH OPERATIONS (Ported from Cellframe SDK dap_math_ops.h)
+// ============================================================================
+
+/**
+ * Zero constants
+ */
+static const uint128_t uint128_0 = {{ .lo = 0, .hi = 0 }};
+static const uint256_t uint256_0 = {{{ .hi = {{ .lo = 0, .hi = 0 }}, .lo = {{ .lo = 0, .hi = 0 }} }}};
+static const uint256_t uint256_1 = {{{ .hi = {{ .lo = 0, .hi = 0 }}, .lo = {{ .lo = 1, .hi = 0 }} }}};
+
+/**
+ * Compare two uint128_t values
+ * Returns: 1 if a > b, 0 if a == b, -1 if a < b
+ */
+static inline int compare128(uint128_t a, uint128_t b) {
+    return (((a.hi > b.hi) || ((a.hi == b.hi) && (a.lo > b.lo))) ? 1 : 0)
+         - (((a.hi < b.hi) || ((a.hi == b.hi) && (a.lo < b.lo))) ? 1 : 0);
+}
+
+/**
+ * Check if uint128_t equals zero
+ */
+static inline int EQUAL_128(uint128_t a, uint128_t b) {
+    return a.lo == b.lo && a.hi == b.hi;
+}
+
+static inline int IS_ZERO_128(uint128_t a) {
+    return EQUAL_128(a, uint128_0);
+}
+
+/**
+ * Check if uint256_t equals zero
+ */
+static inline int EQUAL_256(uint256_t a, uint256_t b) {
+    return a.lo.lo == b.lo.lo && a.lo.hi == b.lo.hi &&
+           a.hi.lo == b.hi.lo && a.hi.hi == b.hi.hi;
+}
+
+static inline int IS_ZERO_256(uint256_t a) {
+    return EQUAL_256(a, uint256_0);
+}
+
+/**
+ * Compare two uint256_t values
+ * Returns: 1 if a > b, 0 if a == b, -1 if a < b
+ */
+static inline int compare256(uint256_t a, uint256_t b) {
+    return ((compare128(a.hi, b.hi) == 1 || (compare128(a.hi, b.hi) == 0 && compare128(a.lo, b.lo) == 1)) ? 1 : 0)
+         - ((compare128(a.hi, b.hi) == -1 || (compare128(a.hi, b.hi) == 0 && compare128(a.lo, b.lo) == -1)) ? 1 : 0);
+}
+
+/**
+ * OR two uint128_t values
+ */
+static inline uint128_t OR_128(uint128_t a, uint128_t b) {
+    uint128_t result;
+    result.hi = a.hi | b.hi;
+    result.lo = a.lo | b.lo;
+    return result;
+}
+
+/**
+ * OR two uint256_t values
+ */
+static inline uint256_t OR_256(uint256_t a, uint256_t b) {
+    uint256_t result;
+    result.hi = OR_128(a.hi, b.hi);
+    result.lo = OR_128(a.lo, b.lo);
+    return result;
+}
+
+/**
+ * Left shift uint128_t by n bits
+ */
+static inline void LEFT_SHIFT_128(uint128_t a, uint128_t* b, int n) {
+    if (n >= 64) {
+        a.hi = a.lo;
+        a.lo = 0;
+        LEFT_SHIFT_128(a, b, n - 64);
+    } else if (n == 0) {
+        b->hi = a.hi;
+        b->lo = a.lo;
+    } else {
+        b->lo = a.lo << n;
+        b->hi = (a.hi << n) | (a.lo >> (64 - n));
+    }
+}
+
+/**
+ * Right shift uint128_t by n bits
+ */
+static inline void RIGHT_SHIFT_128(uint128_t a, uint128_t* b, int n) {
+    if (n >= 64) {
+        a.lo = a.hi;
+        a.hi = 0;
+        RIGHT_SHIFT_128(a, b, n - 64);
+    } else if (n == 0) {
+        b->hi = a.hi;
+        b->lo = a.lo;
+    } else {
+        b->hi = a.hi >> n;
+        b->lo = (a.lo >> n) | (a.hi << (64 - n));
+    }
+}
+
+/**
+ * Left shift uint256_t by n bits
+ */
+static inline void LEFT_SHIFT_256(uint256_t a, uint256_t* b, int n) {
+    if (n >= 128) {
+        a.hi = a.lo;
+        a.lo = uint128_0;
+        LEFT_SHIFT_256(a, b, n - 128);
+    } else if (n == 0) {
+        b->hi = a.hi;
+        b->lo = a.lo;
+    } else if (n < 128) {
+        uint128_t shift_temp = uint128_0;
+        LEFT_SHIFT_128(a.lo, &shift_temp, n);
+        b->lo = shift_temp;
+        uint128_t shift_temp_or_left = uint128_0;
+        uint128_t shift_temp_or_right = uint128_0;
+        LEFT_SHIFT_128(a.hi, &shift_temp_or_left, n);
+        RIGHT_SHIFT_128(a.lo, &shift_temp_or_right, 128 - n);
+        b->hi = OR_128(shift_temp_or_left, shift_temp_or_right);
+    }
+}
+
+/**
+ * Right shift uint256_t by n bits
+ */
+static inline void RIGHT_SHIFT_256(uint256_t a, uint256_t* b, int n) {
+    if (n >= 128) {
+        a.lo = a.hi;
+        a.hi = uint128_0;
+        RIGHT_SHIFT_256(a, b, n - 128);
+    } else if (n == 0) {
+        b->hi = a.hi;
+        b->lo = a.lo;
+    } else if (n < 128) {
+        uint128_t shift_temp = uint128_0;
+        RIGHT_SHIFT_128(a.hi, &shift_temp, n);
+        b->hi = shift_temp;
+        uint128_t shift_temp_or_left = uint128_0;
+        uint128_t shift_temp_or_right = uint128_0;
+        RIGHT_SHIFT_128(a.lo, &shift_temp_or_left, n);
+        LEFT_SHIFT_128(a.hi, &shift_temp_or_right, 128 - n);
+        b->lo = OR_128(shift_temp_or_left, shift_temp_or_right);
+    }
+}
+
+/**
+ * Sum two uint64_t values, returns overflow flag
+ */
+static inline int SUM_64_64(uint64_t a, uint64_t b, uint64_t* c) {
+    *c = a + b;
+    return (int)(*c < a);
+}
+
+/**
+ * Sum two uint128_t values, returns overflow flag
+ */
+static inline int SUM_128_128(uint128_t a, uint128_t b, uint128_t* c) {
+    int overflow_flag = 0;
+    int overflow_flag_intermediate;
+    uint64_t temp = 0;
+    overflow_flag = SUM_64_64(a.lo, b.lo, &temp);
+    c->lo = temp;
+    uint64_t carry_in_64 = overflow_flag;
+    uint64_t intermediate_value = 0;
+    overflow_flag = 0;
+    overflow_flag = SUM_64_64(carry_in_64, a.hi, &intermediate_value);
+    overflow_flag_intermediate = SUM_64_64(intermediate_value, b.hi, &temp);
+    c->hi = temp;
+    return overflow_flag | overflow_flag_intermediate;
+}
+
+/**
+ * Sum two uint256_t values, returns overflow flag
+ * SDK: SUM_256_256 (dap_math_ops.h:460-490)
+ */
+static inline int SUM_256_256(uint256_t a, uint256_t b, uint256_t* c) {
+    int overflow_flag = 0;
+    uint128_t intermediate_value = uint128_0;
+    uint256_t tmp = uint256_0;
+    overflow_flag = SUM_128_128(a.lo, b.lo, &tmp.lo);
+    uint128_t carry_in_128;
+    carry_in_128.hi = 0;
+    carry_in_128.lo = overflow_flag;
+    overflow_flag = 0;
+    overflow_flag = SUM_128_128(carry_in_128, a.hi, &intermediate_value);
+    int overflow_flag_bis = 0;
+    overflow_flag_bis = SUM_128_128(intermediate_value, b.hi, &tmp.hi);
+    c->hi = tmp.hi;
+    c->lo = tmp.lo;
+    overflow_flag |= overflow_flag_bis;
+    return overflow_flag;
+}
+
+/**
+ * Multiply two uint64_t values to uint128_t result
+ */
+static inline void MULT_64_128(uint64_t a, uint64_t b, uint128_t* c) {
+    uint64_t a_lo = (a & 0xffffffff);
+    uint64_t b_lo = (b & 0xffffffff);
+    uint64_t prod_lo = (a_lo * b_lo);
+    uint64_t w3 = (prod_lo & 0xffffffff);
+    uint64_t prod_lo_shift = (prod_lo >> 32);
+
+    a >>= 32;
+    prod_lo = (a * b_lo) + prod_lo_shift;
+    prod_lo_shift = (prod_lo & 0xffffffff);
+    uint64_t w1 = (prod_lo >> 32);
+
+    b >>= 32;
+    prod_lo = (a_lo * b) + prod_lo_shift;
+    prod_lo_shift = (prod_lo >> 32);
+
+    c->hi = (a * b) + w1 + prod_lo_shift;
+    c->lo = (prod_lo << 32) + w3;
+}
+
+/**
+ * Multiply two uint128_t values to uint256_t result
+ */
+static inline void MULT_128_256(uint128_t a, uint128_t b, uint256_t* c) {
+    // Product of .hi terms - stored in .hi field of c
+    MULT_64_128(a.hi, b.hi, &c->hi);
+
+    // Product of .lo terms - stored in .lo field of c
+    MULT_64_128(a.lo, b.lo, &c->lo);
+
+    uint128_t cross_product_one = uint128_0;
+    uint128_t cross_product_two = uint128_0;
+    MULT_64_128(a.hi, b.lo, &cross_product_one);
+    c->lo.hi += cross_product_one.lo;
+    if (c->lo.hi < cross_product_one.lo) {
+        c->hi.lo++;
+        if (c->hi.lo == 0) c->hi.hi++;
+    }
+    c->hi.lo += cross_product_one.hi;
+    if (c->hi.lo < cross_product_one.hi) {
+        c->hi.hi++;
+    }
+
+    MULT_64_128(a.lo, b.hi, &cross_product_two);
+    c->lo.hi += cross_product_two.lo;
+    if (c->lo.hi < cross_product_two.lo) {
+        c->hi.lo++;
+        if (c->hi.lo == 0) c->hi.hi++;
+    }
+    c->hi.lo += cross_product_two.hi;
+    if (c->hi.lo < cross_product_two.hi) {
+        c->hi.hi++;
+    }
+}
+
+/**
+ * 512-bit type for multiplication overflow
+ */
+typedef struct {
+    uint256_t hi;
+    uint256_t lo;
+} __attribute__((packed)) uint512_t;
+
+static const uint512_t uint512_0 = { .hi = {{{ .hi = {{ .lo = 0, .hi = 0 }}, .lo = {{ .lo = 0, .hi = 0 }} }}},
+                                     .lo = {{{ .hi = {{ .lo = 0, .hi = 0 }}, .lo = {{ .lo = 0, .hi = 0 }} }}} };
+
+/**
+ * Multiply two uint256_t values to uint512_t result
+ */
+static inline void MULT_256_512(uint256_t a, uint256_t b, uint512_t* c) {
+    // Product of .hi terms
+    MULT_128_256(a.hi, b.hi, &c->hi);
+    // Product of .lo terms
+    MULT_128_256(a.lo, b.lo, &c->lo);
+
+    // Cross products
+    uint256_t cross_product_first = uint256_0;
+    uint256_t cross_product_second = uint256_0;
+    uint256_t cross_product = uint256_0;
+    uint256_t cross_product_shift = uint256_0;
+    uint256_t temp_copy = uint256_0;
+
+    MULT_128_256(a.hi, b.lo, &cross_product_first);
+    MULT_128_256(a.lo, b.hi, &cross_product_second);
+    SUM_256_256(cross_product_first, cross_product_second, &cross_product);
+
+    LEFT_SHIFT_256(cross_product, &cross_product_shift, 128);
+    temp_copy = c->lo;
+    SUM_256_256(temp_copy, cross_product_shift, &c->lo);
+
+    cross_product_shift.hi = uint128_0;
+    cross_product_shift.lo = uint128_0;
+    RIGHT_SHIFT_256(cross_product, &cross_product_shift, 128);
+    temp_copy = c->hi;
+    SUM_256_256(temp_copy, cross_product_shift, &c->hi);
+}
+
+/**
+ * Multiply two uint256_t values, returns overflow flag
+ * SDK: MULT_256_256 (dap_math_ops.h:693-705)
+ */
+static inline int MULT_256_256(uint256_t a, uint256_t b, uint256_t* c) {
+    int overflow = 0;
+    uint512_t full_product = uint512_0;
+    MULT_256_512(a, b, &full_product);
+    *c = full_product.lo;
+    if (!EQUAL_256(full_product.hi, uint256_0)) {
+        overflow = 1;
+    }
+    return overflow;
+}
+
+// ============================================================================
 // HELPER MACROS
 // ============================================================================
 
