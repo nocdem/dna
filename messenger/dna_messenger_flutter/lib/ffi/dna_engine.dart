@@ -1681,37 +1681,6 @@ class DnaEngine {
     return completer.future;
   }
 
-  /// Refresh identity in DHT (re-publish to reset 7-day TTL)
-  Future<void> refreshIdentity() async {
-    final completer = Completer<void>();
-    final localId = _nextLocalId++;
-
-    void onComplete(int requestId, int error, Pointer<Void> userData) {
-      if (error == 0) {
-        completer.complete();
-      } else {
-        completer.completeError(DnaEngineException.fromCode(error, _bindings));
-      }
-      _cleanupRequest(localId);
-    }
-
-    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
-    _pendingRequests[localId] = _PendingRequest(callback: callback);
-
-    final requestId = _bindings.dna_engine_refresh_identity(
-      _engine,
-      callback.nativeFunction.cast(),
-      nullptr,
-    );
-
-    if (requestId == 0) {
-      _cleanupRequest(localId);
-      throw DnaEngineException(-1, 'Failed to submit request');
-    }
-
-    return completer.future;
-  }
-
   // ---------------------------------------------------------------------------
   // GROUPS OPERATIONS (continued)
   // ---------------------------------------------------------------------------

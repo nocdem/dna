@@ -1,6 +1,6 @@
 # DHT System Documentation
 
-**Last Updated:** 2025-12-04
+**Last Updated:** 2025-11-26
 
 Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system, covering both client operations and the dna-nodus bootstrap server.
 
@@ -200,11 +200,9 @@ Three custom ValueTypes with specific TTLs:
 
 | Type ID | Name | TTL | Use Case |
 |---------|------|-----|----------|
-| 0x1001 | DNA_7DAY | 7 days | Identity records, messages, offline queue, contact lists |
-| 0x1002 | DNA_365DAY | 365 days | Name lookups (legacy, being phased out) |
+| 0x1001 | DNA_7DAY | 7 days | Messages, offline queue, contact lists |
+| 0x1002 | DNA_365DAY | 365 days | Name registrations, profiles |
 | 0x1003 | DNA_30DAY | 30 days | Group metadata, message walls |
-
-**Privacy Note:** Identity records use 7-day TTL for "death privacy" - if a user goes offline permanently (e.g., dies), their identity expires from DHT within 7 days, preventing anyone from encrypting new messages to them.
 
 ValueTypes are registered on startup and handle automatic persistence to SQLite on bootstrap nodes.
 
@@ -576,10 +574,9 @@ Chunked storage for large GSK (Group Symmetric Key) packets.
 
 User profile storage in DHT.
 
-- **TTL**: 7 days (for privacy - expires if user goes offline)
-- **DHT Key**: `{fingerprint}:identity` (unified with identity record)
-- Contains: avatar, bio, wallet addresses, social links
-- Auto-refreshed on each app login
+- **TTL**: 365 days
+- **DHT Key**: Based on fingerprint
+- Unified identity structure with avatar, bio, etc.
 
 ---
 
@@ -587,31 +584,20 @@ User profile storage in DHT.
 
 ### Architecture
 
-Unified identity storage with optional name aliases. Identity data is consolidated into a single DHT record for simplicity.
+Fingerprint-first public key storage with optional name aliases.
 
-#### DHT Key Structure
-
-| Key Format | Content | TTL |
-|------------|---------|-----|
-| `{fingerprint}:identity` | All identity data (pubkeys, profile, name, wallets, sig) | **7 days** |
-| `{name}:lookup` | Fingerprint (128 hex chars) for name resolution | **7 days** |
-
-**Benefits of Unified Design:**
-- Single publish instead of 3 (previously: :pubkey, :reverse, :profile)
-- Single fetch gets everything needed
-- No fallback chains for display name lookup
-- 7-day TTL = "death privacy" (identity expires if user goes offline)
-
-**Auto-Refresh:** The app automatically republishes identity when loaded (via `dna_engine_refresh_identity()`) to maintain the 7-day TTL while user is active.
+- **Primary lookup**: By fingerprint (128-char hex)
+- **Alias lookup**: By registered name (human-readable)
+- **Self-signed entries**: All entries signed by owner's Dilithium5 key
 
 ### Operations
 
 | File | Purpose |
 |------|---------|
-| `keyserver_publish.c` | Publish unified identity to DHT (`:identity` key) |
-| `keyserver_lookup.c` | Lookup by fingerprint from `:identity` key |
-| `keyserver_names.c` | Name registration (`:lookup` key) and resolution |
-| `keyserver_profiles.c` | Profile operations (stored in `:identity`) |
+| `keyserver_publish.c` | Publish identity to keyserver |
+| `keyserver_lookup.c` | Lookup by fingerprint or name |
+| `keyserver_names.c` | Name registration and resolution |
+| `keyserver_profiles.c` | Profile operations |
 
 ---
 
@@ -727,16 +713,15 @@ Stats printed every 60 seconds:
 
 | Data Type | TTL | DHT Key Format | Persisted | Notes |
 |-----------|-----|----------------|-----------|-------|
-| **Identity** | 7 days | `SHA3-512(fingerprint:identity)` | No | Unified: pubkeys, profile, name |
 | **Presence** | 7 days | `SHA3-512(public_key)` = fingerprint | No | IP:port:timestamp |
 | Offline Messages | 7 days | `SHA3-512(sender:outbox:recipient)` | No | Model E outbox |
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
-| Name Registration | 7 days | `SHA3-512(name:lookup)` | No | Maps name → fingerprint |
+| Profiles | 365 days | `SHA3-512(fingerprint:profile)` | Yes | |
+| Public Keys | Permanent | `SHA3-512(fingerprint:pubkey)` | Yes | Identity keys |
+| Name Registration | 365 days | `SHA3-512(name:lookup)` | Yes | |
 | Group Metadata | 30 days | `SHA3-512(group_uuid)` | Yes | |
 | Message Wall | 30 days | `SHA3-512(fingerprint:message_wall)` | Yes | DNA Board |
 | Bootstrap Registry | 7 days | `SHA3-512("dna:bootstrap:registry")` | Special | Self-healing |
-
-**Privacy Design:** All user data uses 7-day TTL. If user goes offline permanently, their data expires from DHT within a week. App auto-refreshes on each login to maintain presence.
 
 ### 8.1 Presence Data
 

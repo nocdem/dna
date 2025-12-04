@@ -50,8 +50,23 @@ int messenger_generate_keys_from_seeds(
     char *fingerprint_out
 );
 
-// NOTE: messenger_register_name() REMOVED
-// Use dna_register_name() from dht/core/dht_keyserver.h instead
+/**
+ * Register human-readable name in DHT keyserver
+ *
+ * Maps display name → fingerprint in DHT (365-day TTL, FREE in alpha).
+ * Enables users to find each other by name instead of fingerprint.
+ * Also publishes reverse mapping (fingerprint → name) for sender ID display.
+ *
+ * @param ctx: Messenger context
+ * @param identity: Display name to register
+ * @param fingerprint: Identity fingerprint (128 hex chars)
+ * @return: 0 on success, -1 on error
+ */
+int messenger_register_name(
+    messenger_context_t *ctx,
+    const char *identity,
+    const char *fingerprint
+);
 
 /**
  * Restore identity from BIP39 seed (command-line workflow)

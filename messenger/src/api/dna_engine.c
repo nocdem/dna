@@ -288,9 +288,6 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_UPDATE_PROFILE:
             dna_handle_update_profile(engine, task);
             break;
-        case TASK_REFRESH_IDENTITY:
-            dna_handle_refresh_identity(engine, task);
-            break;
 
         /* Contacts */
         case TASK_GET_CONTACTS:
@@ -759,47 +756,13 @@ void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Get DHT context */
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        error = DNA_ENGINE_ERROR_NETWORK;
-        goto done;
-    }
-
-    /* Load signing key (Dilithium5) */
-    qgp_key_t *sign_key = dna_load_private_key(engine);
-    if (!sign_key) {
-        error = DNA_ENGINE_ERROR_PERMISSION;
-        goto done;
-    }
-
-    /* Load encryption key (Kyber1024) */
-    char enc_key_path[512];
-    snprintf(enc_key_path, sizeof(enc_key_path), "%s/%s.kem",
-             engine->data_dir, engine->fingerprint);
-    qgp_key_t *enc_key = NULL;
-    if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
-        error = DNA_ENGINE_ERROR_PERMISSION;
-        qgp_key_free(sign_key);
-        goto done;
-    }
-
-    /* Register name using unified identity system */
-    int rc = dna_register_name(
-        dht,
+    int rc = messenger_register_name(
+        engine->messenger,
         engine->fingerprint,
-        task->params.register_name.name,
-        sign_key->public_key,
-        enc_key->public_key,
-        sign_key->private_key
+        task->params.register_name.name
     );
 
-    qgp_key_free(sign_key);
-    qgp_key_free(enc_key);
-
-    if (rc == -2) {
-        error = DNA_ENGINE_ERROR_ALREADY_EXISTS;  /* Name taken */
-    } else if (rc != 0) {
+    if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
     }
 
@@ -834,9 +797,7 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
     }
 
     char *name_out = NULL;
-    printf("[DNA_ENGINE] Calling dna_get_display_name for %s\n", fingerprint);
     int rc = dna_get_display_name(dht, fingerprint, &name_out);
-    printf("[DNA_ENGINE] dna_get_display_name returned rc=%d, name='%s'\n", rc, name_out ? name_out : "(null)");
 
     if (rc == 0 && name_out) {
         strncpy(display_name_buf, name_out, sizeof(display_name_buf) - 1);
@@ -1025,86 +986,6 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
-    }
-
-done:
-    task->callback.completion(task->request_id, error, task->user_data);
-}
-
-void dna_handle_refresh_identity(dna_engine_t *engine, dna_task_t *task) {
-    if (task->cancelled) return;
-
-    int error = DNA_OK;
-
-    printf("[DNA_ENGINE] Refreshing identity...\n");
-
-    if (!engine->identity_loaded || !engine->messenger) {
-        printf("[DNA_ENGINE] ✗ Refresh failed: identity not loaded\n");
-        error = DNA_ENGINE_ERROR_NO_IDENTITY;
-        goto done;
-    }
-
-    dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        printf("[DNA_ENGINE] ✗ Refresh failed: DHT not ready (P2P transport not initialized)\n");
-        error = DNA_ENGINE_ERROR_NETWORK;
-        goto done;
-    }
-
-    /* Load private keys for signing */
-    qgp_key_t *sign_key = dna_load_private_key(engine);
-    if (!sign_key) {
-        printf("[DNA_ENGINE] ✗ Refresh failed: cannot load signing key\n");
-        error = DNA_ENGINE_ERROR_PERMISSION;
-        goto done;
-    }
-
-    /* Load encryption key for kyber pubkey */
-    char enc_key_path[512];
-    snprintf(enc_key_path, sizeof(enc_key_path), "%s/%s.kem",
-             engine->data_dir, engine->fingerprint);
-    qgp_key_t *enc_key = NULL;
-    if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
-        printf("[DNA_ENGINE] ✗ Refresh failed: cannot load encryption key\n");
-        error = DNA_ENGINE_ERROR_PERMISSION;
-        qgp_key_free(sign_key);
-        goto done;
-    }
-
-    /* Try to load existing profile, but don't fail if signature is bad (old format) */
-    dna_unified_identity_t *identity = NULL;
-    int rc = dna_load_identity(dht, engine->fingerprint, &identity);
-
-    if (rc == 0 && identity) {
-        /* Republish existing identity (with updated timestamp) */
-        printf("[DNA_ENGINE] Republishing existing identity...\n");
-        dna_profile_data_t profile_data = {0};
-        memcpy(&profile_data.wallets, &identity->wallets, sizeof(profile_data.wallets));
-        memcpy(&profile_data.socials, &identity->socials, sizeof(profile_data.socials));
-        strncpy(profile_data.bio, identity->bio, sizeof(profile_data.bio) - 1);
-        strncpy(profile_data.avatar_base64, identity->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
-
-        rc = dna_update_profile(dht, engine->fingerprint, &profile_data,
-                                sign_key->private_key, sign_key->public_key,
-                                enc_key->public_key);
-        dna_identity_free(identity);
-    } else {
-        /* No existing identity or signature invalid - create fresh identity with keys */
-        printf("[DNA_ENGINE] Creating fresh identity (no existing or invalid signature)...\n");
-        dna_profile_data_t empty_profile = {0};
-        rc = dna_update_profile(dht, engine->fingerprint, &empty_profile,
-                                sign_key->private_key, sign_key->public_key,
-                                enc_key->public_key);
-    }
-
-    qgp_key_free(sign_key);
-    qgp_key_free(enc_key);
-
-    if (rc != 0) {
-        printf("[DNA_ENGINE] ✗ Refresh failed: DHT publish error\n");
-        error = DNA_ENGINE_ERROR_NETWORK;
-    } else {
-        printf("[DNA_ENGINE] ✓ Identity refreshed (7-day TTL reset)\n");
     }
 
 done:
@@ -2481,18 +2362,6 @@ dna_request_id_t dna_engine_update_profile(
     return dna_submit_task(engine, TASK_UPDATE_PROFILE, &params, cb, user_data);
 }
 
-dna_request_id_t dna_engine_refresh_identity(
-    dna_engine_t *engine,
-    dna_completion_cb callback,
-    void *user_data
-) {
-    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
-    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
-
-    dna_task_callback_t cb = { .completion = callback };
-    return dna_submit_task(engine, TASK_REFRESH_IDENTITY, NULL, cb, user_data);
-}
-
 /* Contacts */
 dna_request_id_t dna_engine_get_contacts(
     dna_engine_t *engine,
@@ -3003,16 +2872,10 @@ void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task) {
     } else {
         dht_context_t *dht_ctx = dht_singleton_get();
         if (dht_ctx) {
-            /* Try to get display name from unified identity (handles signature failures gracefully) */
-            char *display_name = NULL;
-            int ret = dna_get_display_name(dht_ctx, engine->fingerprint, &display_name);
-            if (ret == 0 && display_name) {
-                /* Check if it's a real name (not a shortened fingerprint) */
-                if (strlen(display_name) < 20) {
-                    name = display_name;  /* Transfer ownership */
-                } else {
-                    free(display_name);  /* It's just a shortened fingerprint, not a name */
-                }
+            char *registered_name = NULL;
+            int ret = dht_keyserver_reverse_lookup(dht_ctx, engine->fingerprint, &registered_name);
+            if (ret == 0 && registered_name) {
+                name = registered_name; /* Transfer ownership */
             }
             /* Not found is not an error - just returns NULL name */
         }

@@ -66,15 +66,6 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     // NOTE: Do NOT invalidate engineProvider here - it would destroy the engine
     // and lose the loaded identity state
     ref.read(currentFingerprintProvider.notifier).state = fingerprint;
-
-    // Refresh identity in DHT to reset 7-day TTL
-    // This ensures identity stays published while user is active
-    try {
-      await engine.refreshIdentity();
-    } catch (e) {
-      // Non-fatal: identity still works locally even if DHT refresh fails
-      print('[Identity] DHT refresh failed: $e');
-    }
   }
 
   /// Register a nickname for the current identity

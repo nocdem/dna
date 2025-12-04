@@ -120,9 +120,36 @@ int dht_keyserver_update(
     const uint8_t *new_dilithium_privkey
 );
 
-// NOTE: dht_keyserver_reverse_lookup() and dht_keyserver_reverse_lookup_async() REMOVED
-// The unified :identity record contains all needed data including display name
-// Use dna_load_identity() or dna_get_display_name() instead
+/**
+ * Reverse lookup: Find identity from Dilithium pubkey fingerprint
+ * Used when receiving messages from unknown senders (synchronous, blocking)
+ *
+ * @param dht_ctx: DHT context
+ * @param fingerprint: SHA3-512 fingerprint of Dilithium pubkey (128 hex chars)
+ * @param identity_out: Output identity string (caller must free)
+ * @return: 0 on success, -1 on error, -2 if not found, -3 if signature verification failed
+ */
+int dht_keyserver_reverse_lookup(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    char **identity_out
+);
+
+/**
+ * Reverse lookup: Find identity from Dilithium pubkey fingerprint (asynchronous, non-blocking)
+ * Used when receiving messages from unknown senders
+ *
+ * @param dht_ctx: DHT context
+ * @param fingerprint: SHA3-512 fingerprint of Dilithium pubkey (128 hex chars)
+ * @param callback: Function called with (identity, userdata). Identity is NULL on error. Caller must free identity.
+ * @param userdata: User data passed to callback
+ */
+void dht_keyserver_reverse_lookup_async(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    void (*callback)(char *identity, void *userdata),
+    void *userdata
+);
 
 /**
  * Delete public keys from DHT
@@ -160,22 +187,22 @@ void dna_compute_fingerprint(
 
 /**
  * Register DNA name for a fingerprint identity
- * Simple version - no blockchain verification, free registration
+ * Requires valid blockchain transaction hash as proof of payment (0.01 CPUNK)
  *
  * @param dht_ctx: DHT context
  * @param fingerprint: Fingerprint (128 hex chars)
  * @param name: DNA name to register (3-36 chars, alphanumeric + . _ -)
- * @param dilithium_pubkey: Dilithium5 public key (2592 bytes)
- * @param kyber_pubkey: Kyber1024 public key (1568 bytes)
+ * @param tx_hash: Blockchain transaction hash (proof of payment)
+ * @param network: Network where tx was made (e.g., "Backbone")
  * @param dilithium_privkey: Private key for signing
- * @return: 0 on success, -1 on error, -2 on name taken
+ * @return: 0 on success, -1 on error, -2 on name taken, -3 on invalid tx
  */
 int dna_register_name(
     dht_context_t *dht_ctx,
     const char *fingerprint,
     const char *name,
-    const uint8_t *dilithium_pubkey,
-    const uint8_t *kyber_pubkey,
+    const char *tx_hash,
+    const char *network,
     const uint8_t *dilithium_privkey
 );
 
@@ -198,27 +225,26 @@ int dna_update_profile(
     const uint8_t *kyber_pubkey
 );
 
-
 /**
- * Load complete DNA identity from DHT (extended version)
- * Fetches unified identity structure with keys, name, profile data
+ * Renew DNA name registration
+ * Extends expiration by 365 days. Requires new payment tx_hash.
  *
  * @param dht_ctx: DHT context
  * @param fingerprint: Fingerprint (128 hex chars)
- * @param verify_signature: If true, verifies Dilithium5 signature; if false, skips verification
- * @param identity_out: Output identity (caller must free with dna_identity_free)
- * @return: 0 on success, -1 on error, -2 if not found, -3 if signature verification failed
+ * @param renewal_tx_hash: New transaction hash (proof of renewal payment)
+ * @param dilithium_privkey: Private key for signing
+ * @return: 0 on success, -1 on error, -2 if name not registered, -3 on invalid tx
  */
-int dna_load_identity_ex(
+int dna_renew_name(
     dht_context_t *dht_ctx,
     const char *fingerprint,
-    bool verify_signature,
-    dna_unified_identity_t **identity_out
+    const char *renewal_tx_hash,
+    const uint8_t *dilithium_privkey
 );
 
 /**
- * Load complete DNA identity from DHT (with signature verification)
- * Wrapper for dna_load_identity_ex with verify_signature=true
+ * Load complete DNA identity from DHT
+ * Fetches unified identity structure with keys, name, profile data
  *
  * @param dht_ctx: DHT context
  * @param fingerprint: Fingerprint (128 hex chars)

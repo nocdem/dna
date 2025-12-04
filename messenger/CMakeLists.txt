@@ -538,8 +538,11 @@ if(BUILD_DNA_SEND)
     target_include_directories(dna-send PRIVATE ${CMAKE_SOURCE_DIR})
 endif()
 
-# ImGui GUI - DEPRECATED (moved to archive/)
-# Use Flutter UI instead: dna_messenger_flutter/
+# ImGui GUI (Phase 11: Modern GUI)
+option(BUILD_GUI "Build ImGui GUI" ON)
+if(BUILD_GUI)
+    add_subdirectory(imgui_gui)
+endif()
 
 # JNI bindings for Android (Phase 6: Mobile)
 if(ANDROID)

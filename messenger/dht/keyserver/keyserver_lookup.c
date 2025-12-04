@@ -1,11 +1,12 @@
 /**
  * DHT Keyserver - Lookup Operations
- * Handles key lookups using unified :identity records.
- * Note: Reverse lookups removed - use dna_load_identity() instead.
+ * Handles key lookups, reverse lookups (sync/async)
+ * Now uses dht_chunked layer for all DHT operations.
  */
 
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
+#include <pthread.h>
 
 // Lookup public keys from DHT (supports both fingerprint and name)
 int dht_keyserver_lookup(
@@ -61,11 +62,10 @@ int dht_keyserver_lookup(
     }
 
     // Lookup by fingerprint using chunked layer
-    // UNIFIED: Uses :identity key (replaces old :pubkey)
     char base_key[256];
-    snprintf(base_key, sizeof(base_key), "%s:identity", fingerprint);
+    snprintf(base_key, sizeof(base_key), "%s:pubkey", fingerprint);
 
-    printf("[DHT_KEYSERVER] Fetching identity for fingerprint from DHT\n");
+    printf("[DHT_KEYSERVER] Fetching keys for fingerprint from DHT\n");
     printf("[DHT_KEYSERVER] Base key: %s\n", base_key);
 
     uint8_t *data = NULL;
@@ -119,6 +119,205 @@ int dht_keyserver_lookup(
     return 0;
 }
 
-// NOTE: dht_keyserver_reverse_lookup() and dht_keyserver_reverse_lookup_async() REMOVED
-// The unified :identity record contains all needed data including display name
-// Use dna_load_identity() from keyserver_profiles.c instead
+// Reverse lookup: fingerprint → identity (with signature verification)
+int dht_keyserver_reverse_lookup(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    char **identity_out
+) {
+    if (!dht_ctx || !fingerprint || !identity_out) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments to reverse_lookup\n");
+        return -1;
+    }
+
+    *identity_out = NULL;
+
+    // Create base key for reverse lookup (chunked layer handles hashing)
+    char reverse_base_key[256];
+    snprintf(reverse_base_key, sizeof(reverse_base_key), "%s:reverse", fingerprint);
+
+    printf("[DHT_KEYSERVER] Reverse lookup for fingerprint: %s\n", fingerprint);
+    printf("[DHT_KEYSERVER] Reverse base key: %s\n", reverse_base_key);
+
+    // Fetch from DHT via chunked layer
+    uint8_t *value = NULL;
+    size_t value_len = 0;
+
+    int ret = dht_chunked_fetch(dht_ctx, reverse_base_key, &value, &value_len);
+    if (ret != DHT_CHUNK_OK || !value) {
+        printf("[DHT_KEYSERVER] Reverse mapping not found in DHT: %s\n", dht_chunked_strerror(ret));
+        return -2;  // Not found
+    }
+
+    // Parse JSON (need to null-terminate first as DHT data isn't)
+    char *json_str = (char*)malloc(value_len + 1);
+    if (!json_str) {
+        free(value);
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to allocate memory for JSON string\n");
+        return -1;
+    }
+    memcpy(json_str, value, value_len);
+    json_str[value_len] = '\0';
+    free(value);
+
+    json_object *root = json_tokener_parse(json_str);
+    free(json_str);
+
+    if (!root) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to parse reverse mapping JSON\n");
+        return -1;
+    }
+
+    // Extract fields
+    json_object *dilithium_obj, *identity_obj, *timestamp_obj, *fingerprint_obj, *signature_obj;
+
+    if (!json_object_object_get_ex(root, "dilithium_pubkey", &dilithium_obj) ||
+        !json_object_object_get_ex(root, "identity", &identity_obj) ||
+        !json_object_object_get_ex(root, "timestamp", &timestamp_obj) ||
+        !json_object_object_get_ex(root, "fingerprint", &fingerprint_obj) ||
+        !json_object_object_get_ex(root, "signature", &signature_obj)) {
+        fprintf(stderr, "[DHT_KEYSERVER] Reverse mapping missing required fields\n");
+        json_object_put(root);
+        return -1;
+    }
+
+    // Parse dilithium pubkey
+    const char *dilithium_hex = json_object_get_string(dilithium_obj);
+    uint8_t dilithium_pubkey[DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE];
+    if (hex_to_bytes(dilithium_hex, dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid dilithium pubkey in reverse mapping\n");
+        json_object_put(root);
+        return -1;
+    }
+
+    // Verify fingerprint matches (prevents pubkey substitution)
+    char computed_fingerprint[129];
+    compute_fingerprint(dilithium_pubkey, computed_fingerprint);
+
+    if (strcmp(computed_fingerprint, fingerprint) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Fingerprint mismatch in reverse mapping\n");
+        json_object_put(root);
+        return -3;  // Signature verification failed (invalid data)
+    }
+
+    const char *identity = json_object_get_string(identity_obj);
+    uint64_t timestamp = json_object_get_int64(timestamp_obj);
+
+    // Parse signature
+    const char *sig_hex = json_object_get_string(signature_obj);
+    uint8_t signature[DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE];
+    if (hex_to_bytes(sig_hex, signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid signature in reverse mapping\n");
+        json_object_put(root);
+        return -1;
+    }
+
+    // Rebuild message to verify: dilithium_pubkey || identity || timestamp
+    size_t msg_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE + strlen(identity) + sizeof(uint64_t);
+    uint8_t *msg = (uint8_t*)malloc(msg_len);
+    if (!msg) {
+        json_object_put(root);
+        return -1;
+    }
+
+    size_t offset = 0;
+    memcpy(msg + offset, dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
+    offset += DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
+    memcpy(msg + offset, identity, strlen(identity));
+    offset += strlen(identity);
+
+    // Network byte order
+    uint64_t timestamp_net = htonll(timestamp);
+    memcpy(msg + offset, &timestamp_net, sizeof(timestamp_net));
+
+    // Verify signature
+    int verify_result = qgp_dsa87_verify(signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE,
+                                               msg, msg_len, dilithium_pubkey);
+    free(msg);
+
+    if (verify_result != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Reverse mapping signature verification failed\n");
+        json_object_put(root);
+        return -3;  // Signature verification failed
+    }
+
+    // All checks passed - return identity
+    *identity_out = strdup(identity);
+    printf("[DHT_KEYSERVER] ✓ Reverse lookup successful: %s\n", identity);
+
+    json_object_put(root);
+    return 0;
+}
+
+// Thread context for async reverse lookup
+typedef struct {
+    dht_context_t *dht_ctx;
+    char fingerprint[129];
+    void (*callback)(char *identity, void *userdata);
+    void *userdata;
+} reverse_lookup_async_ctx_t;
+
+// Worker thread for async reverse lookup
+static void *reverse_lookup_thread(void *arg) {
+    reverse_lookup_async_ctx_t *ctx = (reverse_lookup_async_ctx_t *)arg;
+
+    // Perform synchronous lookup in this thread
+    char *identity = NULL;
+    int ret = dht_keyserver_reverse_lookup(ctx->dht_ctx, ctx->fingerprint, &identity);
+
+    // Call the callback with the result
+    if (ret != 0) {
+        ctx->callback(NULL, ctx->userdata);
+    } else {
+        ctx->callback(identity, ctx->userdata);  // Caller is responsible for freeing identity
+    }
+
+    // Free the context
+    free(ctx);
+    return NULL;
+}
+
+// Async reverse lookup: fingerprint → identity (true async using pthread)
+// Spawns a detached thread to perform the lookup without blocking the caller
+void dht_keyserver_reverse_lookup_async(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    void (*callback)(char *identity, void *userdata),
+    void *userdata
+) {
+    if (!dht_ctx || !fingerprint || !callback) {
+        fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments to reverse_lookup_async\n");
+        if (callback) callback(NULL, userdata);
+        return;
+    }
+
+    printf("[DHT_KEYSERVER] Async reverse lookup for fingerprint: %s\n", fingerprint);
+
+    // Allocate context for the thread
+    reverse_lookup_async_ctx_t *ctx = malloc(sizeof(reverse_lookup_async_ctx_t));
+    if (!ctx) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to allocate async context\n");
+        callback(NULL, userdata);
+        return;
+    }
+
+    ctx->dht_ctx = dht_ctx;
+    strncpy(ctx->fingerprint, fingerprint, 128);
+    ctx->fingerprint[128] = '\0';
+    ctx->callback = callback;
+    ctx->userdata = userdata;
+
+    // Spawn detached thread
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+
+    if (pthread_create(&thread, &attr, reverse_lookup_thread, ctx) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to create async thread\n");
+        free(ctx);
+        callback(NULL, userdata);
+    }
+
+    pthread_attr_destroy(&attr);
+}
