@@ -2,7 +2,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
-import 'identity_provider.dart';
+import 'identity_provider.dart' show currentFingerprintProvider, identityAvatarCacheProvider;
 
 /// Full user profile data from DHT (wallets, socials, bio, avatar)
 final fullProfileProvider = AsyncNotifierProvider<ProfileNotifier, UserProfile?>(
