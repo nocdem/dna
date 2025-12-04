@@ -886,7 +886,12 @@ class _IdentityListTile extends ConsumerWidget {
           ),
           loading: () => Row(
             children: [
-              Text(shortFp),
+              Flexible(
+                child: Text(
+                  shortFp,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
               const SizedBox(width: 8),
               const SizedBox(
                 width: 12,
