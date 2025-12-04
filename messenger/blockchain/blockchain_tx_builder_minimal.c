@@ -16,6 +16,106 @@
 #define INITIAL_CAPACITY 4096
 
 // ============================================================================
+// DATOSHI CONSTANTS (from Cellframe SDK dap_math_convert.h)
+// ============================================================================
+
+#define DATOSHI_DEGREE 18      // 18 decimal places (1 CELL = 10^18 datoshi)
+#define DATOSHI_POW256 78      // Max digits for uint256 decimal representation
+
+/**
+ * Pre-computed powers of 10 for 256-bit decimal parsing
+ * SDK: c_pow10_double (dap_math_convert.c:5-178)
+ *
+ * Each entry is 10^i as a 256-bit value stored as 4 x uint64_t
+ * Layout: {u64[0], u64[1], u64[2], u64[3]} where u64[3] is the lowest 64 bits
+ *
+ * Using non-__int128 format for portability (matches SDK #else branch)
+ */
+static const union {
+    uint64_t u64[4];
+    uint32_t u32[8];
+} c_pow10_double[DATOSHI_POW256] = {
+    {.u64 = {0, 0, 0, 1ULL}},                          // 0
+    {.u64 = {0, 0, 0, 10ULL}},                         // 1
+    {.u64 = {0, 0, 0, 100ULL}},                        // 2
+    {.u64 = {0, 0, 0, 1000ULL}},                       // 3
+    {.u64 = {0, 0, 0, 10000ULL}},                      // 4
+    {.u64 = {0, 0, 0, 100000ULL}},                     // 5
+    {.u64 = {0, 0, 0, 1000000ULL}},                    // 6
+    {.u64 = {0, 0, 0, 10000000ULL}},                   // 7
+    {.u64 = {0, 0, 0, 100000000ULL}},                  // 8
+    {.u64 = {0, 0, 0, 1000000000ULL}},                 // 9
+    {.u64 = {0, 0, 0, 10000000000ULL}},                // 10
+    {.u64 = {0, 0, 0, 100000000000ULL}},               // 11
+    {.u64 = {0, 0, 0, 1000000000000ULL}},              // 12
+    {.u64 = {0, 0, 0, 10000000000000ULL}},             // 13
+    {.u64 = {0, 0, 0, 100000000000000ULL}},            // 14
+    {.u64 = {0, 0, 0, 1000000000000000ULL}},           // 15
+    {.u64 = {0, 0, 0, 10000000000000000ULL}},          // 16
+    {.u64 = {0, 0, 0, 100000000000000000ULL}},         // 17
+    {.u64 = {0, 0, 0, 1000000000000000000ULL}},        // 18
+    {.u64 = {0, 0, 0, 10000000000000000000ULL}},       // 19
+    {.u64 = {0, 0, 5ULL, 7766279631452241920ULL}},                    // 20
+    {.u64 = {0, 0, 54ULL, 3875820019684212736ULL}},                   // 21
+    {.u64 = {0, 0, 542ULL, 1864712049423024128ULL}},                  // 22
+    {.u64 = {0, 0, 5421ULL, 200376420520689664ULL}},                  // 23
+    {.u64 = {0, 0, 54210ULL, 2003764205206896640ULL}},                // 24
+    {.u64 = {0, 0, 542101ULL, 1590897978359414784ULL}},               // 25
+    {.u64 = {0, 0, 5421010ULL, 15908979783594147840ULL}},             // 26
+    {.u64 = {0, 0, 54210108ULL, 11515845246265065472ULL}},            // 27
+    {.u64 = {0, 0, 542101086ULL, 4477988020393345024ULL}},            // 28
+    {.u64 = {0, 0, 5421010862ULL, 7886392056514347008ULL}},           // 29
+    {.u64 = {0, 0, 54210108624ULL, 5076944270305263616ULL}},          // 30
+    {.u64 = {0, 0, 542101086242ULL, 13875954555633532928ULL}},        // 31
+    {.u64 = {0, 0, 5421010862427ULL, 9632337040368467968ULL}},        // 32
+    {.u64 = {0, 0, 54210108624275ULL, 4089650035136921600ULL}},       // 33
+    {.u64 = {0, 0, 542101086242752ULL, 4003012203950112768ULL}},      // 34
+    {.u64 = {0, 0, 5421010862427522ULL, 3136633892082024448ULL}},     // 35
+    {.u64 = {0, 0, 54210108624275221ULL, 12919594847110692864ULL}},   // 36
+    {.u64 = {0, 0, 542101086242752217ULL, 68739955140067328ULL}},     // 37
+    {.u64 = {0, 0, 5421010862427522170ULL, 687399551400673280ULL}},   // 38
+    {.u64 = {0, 2ULL, 17316620476856118468ULL, 6873995514006732800ULL}},              // 39
+    {.u64 = {0, 29ULL, 7145508105175220139ULL, 13399722918938673152ULL}},             // 40
+    {.u64 = {0, 293ULL, 16114848830623546549ULL, 4870020673419870208ULL}},            // 41
+    {.u64 = {0, 2938ULL, 13574535716559052564ULL, 11806718586779598848ULL}},          // 42
+    {.u64 = {0, 29387ULL, 6618148649623664334ULL, 7386721425538678784ULL}},           // 43
+    {.u64 = {0, 293873ULL, 10841254275107988496ULL, 80237960548581376ULL}},           // 44
+    {.u64 = {0, 2938735ULL, 16178822382532126880ULL, 802379605485813760ULL}},         // 45
+    {.u64 = {0, 29387358ULL, 14214271235644855872ULL, 8023796054858137600ULL}},       // 46
+    {.u64 = {0, 293873587ULL, 13015503840481697412ULL, 6450984253743169536ULL}},      // 47
+    {.u64 = {0, 2938735877ULL, 1027829888850112811ULL, 9169610316303040512ULL}},      // 48
+    {.u64 = {0, 29387358770ULL, 10278298888501128114ULL, 17909126868192198656ULL}},   // 49
+    {.u64 = {0, 293873587705ULL, 10549268516463523069ULL, 13070572018536022016ULL}},  // 50
+    {.u64 = {0, 2938735877055ULL, 13258964796087472617ULL, 1578511669393358848ULL}},  // 51
+    {.u64 = {0, 29387358770557ULL, 3462439444907864858ULL, 15785116693933588480ULL}}, // 52
+    {.u64 = {0, 293873587705571ULL, 16177650375369096972ULL, 10277214349659471872ULL}},   // 53
+    {.u64 = {0, 2938735877055718ULL, 14202551164014556797ULL, 10538423128046960640ULL}},  // 54
+    {.u64 = {0, 29387358770557187ULL, 12898303124178706663ULL, 13150510911921848320ULL}}, // 55
+    {.u64 = {0, 293873587705571876ULL, 18302566799529756941ULL, 2377900603251621888ULL}}, // 56
+    {.u64 = {0, 2938735877055718769ULL, 17004971331911604867ULL, 5332261958806667264ULL}},// 57
+    {.u64 = {1, 10940614696847636083ULL, 4029016655730084128ULL, 16429131440647569408ULL}},   // 58
+    {.u64 = {15ULL, 17172426599928602752ULL, 3396678409881738056ULL, 16717361816799281152ULL}},   // 59
+    {.u64 = {159ULL, 5703569335900062977ULL, 15520040025107828953ULL, 1152921504606846976ULL}},   // 60
+    {.u64 = {1593ULL, 1695461137871974930ULL, 7626447661401876602ULL, 11529215046068469760ULL}},  // 61
+    {.u64 = {15930ULL, 16954611378719749304ULL, 2477500319180559562ULL, 4611686018427387904ULL}}, // 62
+    {.u64 = {159309ULL, 3525417123811528497ULL, 6328259118096044006ULL, 9223372036854775808ULL}}, // 63
+    {.u64 = {1593091ULL, 16807427164405733357ULL, 7942358959831785217ULL, 0ULL}},                 // 64
+    {.u64 = {15930919ULL, 2053574980671369030ULL, 5636613303479645706ULL, 0ULL}},                 // 65
+    {.u64 = {159309191ULL, 2089005733004138687ULL, 1025900813667802212ULL, 0ULL}},                // 66
+    {.u64 = {1593091911ULL, 2443313256331835254ULL, 10259008136678022120ULL, 0ULL}},              // 67
+    {.u64 = {15930919111ULL, 5986388489608800929ULL, 10356360998232463120ULL, 0ULL}},             // 68
+    {.u64 = {159309191113ULL, 4523652674959354447ULL, 11329889613776873120ULL, 0ULL}},            // 69
+    {.u64 = {1593091911132ULL, 8343038602174441244ULL, 2618431695511421504ULL, 0ULL}},            // 70
+    {.u64 = {15930919111324ULL, 9643409726906205977ULL, 7737572881404663424ULL, 0ULL}},           // 71
+    {.u64 = {159309191113245ULL, 4200376900514301694ULL, 3588752519208427776ULL, 0ULL}},          // 72
+    {.u64 = {1593091911132452ULL, 5110280857723913709ULL, 17440781118374726144ULL, 0ULL}},        // 73
+    {.u64 = {15930919111324522ULL, 14209320429820033867ULL, 8387114520361296896ULL, 0ULL}},       // 74
+    {.u64 = {159309191113245227ULL, 12965995782233477362ULL, 10084168908774762496ULL, 0ULL}},     // 75
+    {.u64 = {1593091911132452277ULL, 532749306367912313ULL, 8607968719199866880ULL, 0ULL}},       // 76
+    {.u64 = {15930919111324522770ULL, 5327493063679123134ULL, 12292710897160462336ULL, 0ULL}},    // 77
+};
+
+// ============================================================================
 // INTERNAL HELPERS
 // ============================================================================
 
@@ -318,110 +418,144 @@ int cellframe_tx_add_signature(cellframe_tx_builder_t *builder,
 // UTILITY FUNCTIONS
 // ============================================================================
 
+/**
+ * Parse uninteger string (no decimal point) to uint256_t
+ * SDK: dap_uint256_scan_uninteger (dap_math_convert.c:233-378)
+ *
+ * Uses pre-computed c_pow10_double table for proper 256-bit arithmetic.
+ * Supports numbers up to 78 digits (full uint256_t range).
+ */
+static int cellframe_uint256_scan_uninteger(const char *str, uint256_t *out) {
+    if (!str || !out) {
+        return -1;
+    }
+
+    uint256_t result = uint256_0;
+    int len = (int)strlen(str);
+
+    // Check length limit
+    if (len > DATOSHI_POW256) {
+        fprintf(stderr, "[ERROR] Too many digits in '%s' (%d > %d)\n", str, len, DATOSHI_POW256);
+        return -1;
+    }
+
+    // Process each digit from right to left
+    for (int i = 0; i < len; i++) {
+        char c = str[len - i - 1];
+        if (!isdigit(c)) {
+            fprintf(stderr, "[ERROR] Non-digit character in amount: '%c'\n", c);
+            return -1;
+        }
+
+        uint8_t digit = c - '0';
+        if (digit == 0) {
+            continue;  // Skip zeros for efficiency
+        }
+
+        // Build uint256_t from lookup table entry for 10^i
+        // SDK uses 8x uint32_t in non-__int128 mode, we use 4x uint64_t
+        uint256_t pow10_val;
+        pow10_val.hi.hi = c_pow10_double[i].u64[0];
+        pow10_val.hi.lo = c_pow10_double[i].u64[1];
+        pow10_val.lo.hi = c_pow10_double[i].u64[2];
+        pow10_val.lo.lo = c_pow10_double[i].u64[3];
+
+        // Multiply pow10 by digit
+        uint256_t term = uint256_0;
+        uint256_t digit_256 = GET_256_FROM_64(digit);
+        if (MULT_256_256(pow10_val, digit_256, &term)) {
+            fprintf(stderr, "[ERROR] Overflow multiplying by digit %d at position %d\n", digit, i);
+            return -1;
+        }
+
+        // Add to result
+        if (SUM_256_256(result, term, &result)) {
+            fprintf(stderr, "[ERROR] Overflow adding digit %d at position %d\n", digit, i);
+            return -1;
+        }
+    }
+
+    *out = result;
+    return 0;
+}
+
+/**
+ * Parse decimal string (with decimal point) to uint256_t datoshi
+ * SDK: dap_uint256_scan_decimal (dap_math_convert.c:380-416)
+ *
+ * Converts "123.456" -> 123456000000000000000 datoshi (with 18 decimal places)
+ * REQUIRES decimal point - returns error if not present.
+ *
+ * Full 256-bit support - no more ~18 CELL limit!
+ */
 int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
     if (!value_str || !value_out) {
         return -1;
     }
 
-    uint64_t datoshi;
+    int len = (int)strlen(value_str);
 
-    // Handle decimal strings (e.g., "0.01")
-    const char *dot = strchr(value_str, '.');
-    if (dot != NULL) {
-        // Parse decimal CELL amount WITHOUT floating point to avoid precision loss
-        // 1 CELL = 10^18 datoshi
-
-        // Extract integer part
-        char int_part[32] = {0};
-        size_t int_len = dot - value_str;
-        if (int_len >= sizeof(int_part)) {
-            return -1;
-        }
-        strncpy(int_part, value_str, int_len);
-
-        // Extract fractional part (max 18 digits for datoshi precision)
-        char frac_part[32] = {0};
-        const char *frac_start = dot + 1;
-        size_t frac_len = strlen(frac_start);
-        if (frac_len > 18) {
-            frac_len = 18;  // Truncate to 18 decimal places
-        }
-        strncpy(frac_part, frac_start, frac_len);
-
-        // Pad fractional part to 18 digits with zeros
-        size_t current_len = strlen(frac_part);
-        while (current_len < 18) {
-            frac_part[current_len++] = '0';
-        }
-        frac_part[18] = '\0';
-
-        // Parse integer and fractional parts with overflow checking
-        // WORKAROUND: Manual parsing to avoid strtoull() bugs in cross-compiled environments
-        // Use 10ULL to force 64-bit arithmetic (critical for Windows cross-compile!)
-        uint64_t int_value = 0;
-        for (const char *p = int_part; *p; p++) {
-            if (*p < '0' || *p > '9') break;
-            uint64_t digit = (uint64_t)(*p - '0');
-            // Check for overflow BEFORE multiplication
-            if (int_value > (UINT64_MAX - digit) / 10) {
-                fprintf(stderr, "[ERROR] Integer overflow in amount parsing: %s\n", value_str);
-                return -1;
-            }
-            int_value = int_value * 10ULL + digit;
-        }
-
-        // Check range AFTER parsing (max ~18 CELL fits in uint64_t)
-        if (int_value > 18) {
-            fprintf(stderr, "[ERROR] Amount too large: %s CELL (max ~18 CELL)\n", value_str);
-            return -1;
-        }
-
-        uint64_t frac_value = 0;
-        for (const char *p = frac_part; *p; p++) {
-            if (*p < '0' || *p > '9') break;
-            uint64_t digit = (uint64_t)(*p - '0');
-            // Check for overflow BEFORE multiplication
-            if (frac_value > (UINT64_MAX - digit) / 10) {
-                fprintf(stderr, "[ERROR] Integer overflow in fractional parsing: %s\n", value_str);
-                return -1;
-            }
-            frac_value = frac_value * 10ULL + digit;
-        }
-
-        datoshi = (int_value * 1000000000000000000ULL) + frac_value;
-
-        printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> int:%llu frac:%llu -> datoshi: %llu (0x%llx)\n",
-               value_str, (unsigned long long)int_value, (unsigned long long)frac_value, (unsigned long long)datoshi, (unsigned long long)datoshi);
-    } else {
-        // Parse as integer datoshi string with overflow checking
-        // Manual parsing to avoid strtoull() 32-bit truncation on Windows
-        datoshi = 0;
-        for (const char *p = value_str; *p; p++) {
-            if (*p < '0' || *p > '9') break;
-            uint64_t digit = (uint64_t)(*p - '0');
-            // Check for overflow BEFORE multiplication
-            if (datoshi > (UINT64_MAX - digit) / 10) {
-                fprintf(stderr, "[ERROR] Integer overflow in datoshi parsing: %s\n", value_str);
-                return -1;
-            }
-            datoshi = datoshi * 10ULL + digit;
-        }
-        printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> datoshi: %llu (0x%llx)\n",
-               value_str, (unsigned long long)datoshi, (unsigned long long)datoshi);
+    // Check max length (78 digits + 1 decimal point)
+    if (len > DATOSHI_POW256 + 1) {
+        fprintf(stderr, "[ERROR] Amount string too long: '%s' (%d > %d)\n",
+                value_str, len, DATOSHI_POW256 + 1);
+        return -1;
     }
 
-    // Construct uint256_t using SDK method
-    // Binary layout: bytes 0-15 = 0, bytes 16-23 = datoshi, bytes 24-31 = 0
-    *value_out = GET_256_FROM_64(datoshi);
+    // Make local copy for manipulation
+    char buf[DATOSHI_POW256 + 8];
+    memset(buf, 0, sizeof(buf));
+    memcpy(buf, value_str, len);
 
-    printf("[DEBUG cellframe_uint256_from_str] After GET_256_FROM_64:\n");
-    printf("  _hi.a = %llu (0x%llx)\n", (unsigned long long)value_out->_hi.a, (unsigned long long)value_out->_hi.a);
-    printf("  _hi.b = %llu (0x%llx)\n", (unsigned long long)value_out->_hi.b, (unsigned long long)value_out->_hi.b);
-    printf("  _lo.a = %llu (0x%llx)\n", (unsigned long long)value_out->_lo.a, (unsigned long long)value_out->_lo.a);
-    printf("  _lo.b = %llu (0x%llx)\n", (unsigned long long)value_out->_lo.b, (unsigned long long)value_out->_lo.b);
-    printf("  lo.lo = %llu (0x%llx)\n", (unsigned long long)value_out->lo.lo, (unsigned long long)value_out->lo.lo);
+    // Find decimal point
+    char *point = strchr(buf, '.');
+    if (!point) {
+        // SDK requires decimal point - treat integer as CELL amount
+        // Append ".0" to make "3000" -> "3000.0"
+        fprintf(stderr, "[INFO] No decimal point in '%s', treating as CELL amount\n", value_str);
+        buf[len] = '.';
+        buf[len + 1] = '0';
+        len += 2;
+        point = &buf[len - 2];
+    }
 
-    return 0;
+    // Calculate position of decimal point and digits after it
+    int point_pos = (int)(point - buf);
+    int frac_len = len - point_pos - 1;
+
+    // Check precision
+    if (frac_len > DATOSHI_DEGREE) {
+        fprintf(stderr, "[ERROR] Too much precision in '%s' (%d > %d decimals)\n",
+                value_str, frac_len, DATOSHI_DEGREE);
+        return -1;
+    }
+
+    // Remove decimal point: "123.456" -> "123456"
+    memmove(point, point + 1, frac_len + 1);  // +1 for null terminator
+    len--;
+
+    // Pad with trailing zeros to reach 18 decimal places
+    // "123456" -> "123456000000000000000" (if frac_len was 3)
+    int zeros_to_add = DATOSHI_DEGREE - frac_len;
+    for (int i = 0; i < zeros_to_add; i++) {
+        buf[len + i] = '0';
+    }
+    buf[len + zeros_to_add] = '\0';
+
+    // Now parse as uninteger
+    int result = cellframe_uint256_scan_uninteger(buf, value_out);
+
+    if (result == 0) {
+        printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> datoshi string: '%s'\n",
+               value_str, buf);
+        printf("[DEBUG] uint256 = {hi.hi=%llu, hi.lo=%llu, lo.hi=%llu, lo.lo=%llu}\n",
+               (unsigned long long)value_out->hi.hi,
+               (unsigned long long)value_out->hi.lo,
+               (unsigned long long)value_out->lo.hi,
+               (unsigned long long)value_out->lo.lo);
+    }
+
+    return result;
 }
 
 int cellframe_hex_to_bin(const char *hex, uint8_t *bin, size_t bin_size) {
