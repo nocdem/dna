@@ -123,40 +123,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             Positioned(
               left: 8,
               bottom: 70, // Above input area
-              child: Container(
-                constraints: const BoxConstraints(maxWidth: 380, maxHeight: 280),
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.surface,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: Colors.black.withValues(alpha: 0.2),
-                      blurRadius: 8,
-                      offset: const Offset(0, -2),
-                    ),
-                  ],
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: EmojiPicker(
-                  onEmojiSelected: (category, emoji) {
-                    _onEmojiSelected(emoji);
-                  },
-                  config: Config(
-                    checkPlatformCompatibility: true,
-                    emojiViewConfig: EmojiViewConfig(
-                      columns: 7,
-                      emojiSizeMax: 28,
-                      backgroundColor: theme.colorScheme.surface,
-                    ),
-                    categoryViewConfig: CategoryViewConfig(
-                      indicatorColor: theme.colorScheme.primary,
-                      iconColorSelected: theme.colorScheme.primary,
-                      iconColor: DnaColors.textMuted,
-                      backgroundColor: theme.colorScheme.surface,
-                    ),
-                    bottomActionBarConfig: BottomActionBarConfig(
-                      backgroundColor: theme.colorScheme.surface,
-                      buttonColor: theme.colorScheme.primary,
+              child: Material(
+                elevation: 8,
+                borderRadius: BorderRadius.circular(12),
+                color: theme.colorScheme.surface,
+                child: Container(
+                  constraints: const BoxConstraints(maxWidth: 380, maxHeight: 280),
+                  clipBehavior: Clip.antiAlias,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: EmojiPicker(
+                    onEmojiSelected: (category, emoji) {
+                      _onEmojiSelected(emoji);
+                    },
+                    config: Config(
+                      checkPlatformCompatibility: true,
+                      emojiViewConfig: EmojiViewConfig(
+                        columns: 7,
+                        emojiSizeMax: 28,
+                        backgroundColor: theme.colorScheme.surface,
+                      ),
+                      categoryViewConfig: CategoryViewConfig(
+                        indicatorColor: theme.colorScheme.primary,
+                        iconColorSelected: theme.colorScheme.primary,
+                        iconColor: DnaColors.textMuted,
+                        backgroundColor: theme.colorScheme.surface,
+                      ),
+                      bottomActionBarConfig: BottomActionBarConfig(
+                        backgroundColor: theme.colorScheme.surface,
+                        buttonColor: theme.colorScheme.primary,
+                      ),
                     ),
                   ),
                 ),
