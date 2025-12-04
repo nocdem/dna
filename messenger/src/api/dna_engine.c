@@ -3025,7 +3025,17 @@ void dna_handle_get_feed_posts(dna_engine_t *engine, dna_task_t *task) {
                 out_posts[i].text = strdup(posts[i].text);
                 out_posts[i].timestamp = posts[i].timestamp;
                 out_posts[i].updated = posts[i].updated;
-                out_posts[i].comment_count = posts[i].comment_count;
+
+                /* Fetch actual comment count from DHT */
+                dna_feed_comment_t *comments = NULL;
+                size_t comment_count = 0;
+                if (dna_feed_comments_get(dht, posts[i].post_id, &comments, &comment_count) == 0) {
+                    out_posts[i].comment_count = (int)comment_count;
+                    dna_feed_comments_free(comments, comment_count);
+                } else {
+                    out_posts[i].comment_count = 0;
+                }
+
                 out_posts[i].upvotes = posts[i].upvotes;
                 out_posts[i].downvotes = posts[i].downvotes;
                 out_posts[i].user_vote = posts[i].user_vote;
