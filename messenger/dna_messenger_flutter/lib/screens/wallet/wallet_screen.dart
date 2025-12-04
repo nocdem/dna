@@ -175,7 +175,7 @@ class _WalletSelector extends StatelessWidget {
                   borderRadius: BorderRadius.circular(24),
                 ),
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
