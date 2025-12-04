@@ -163,6 +163,7 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
 
   /// Set avatar base64
   void setAvatar(String base64) {
+    print('[ProfileEditor] setAvatar called, length=${base64.length}');
     state = state.copyWith(
       profile: state.profile.copyWith(avatarBase64: base64),
       successMessage: null,
@@ -181,6 +182,7 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
   Future<bool> save() async {
     state = state.copyWith(isSaving: true, error: null, successMessage: null);
     try {
+      print('[ProfileEditor] Saving profile, avatarBase64 length=${state.profile.avatarBase64.length}');
       final engine = await _ref.read(engineProvider.future);
       await engine.updateProfile(state.profile);
 
