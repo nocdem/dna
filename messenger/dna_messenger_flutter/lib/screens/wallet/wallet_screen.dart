@@ -330,7 +330,10 @@ class _BalancesSection extends ConsumerWidget {
                   ),
                 )
               : Column(
-                  children: list.map((b) => _BalanceTile(balance: b)).toList(),
+                  children: list.map((b) => _BalanceTile(
+                    balance: b,
+                    walletIndex: walletIndex,
+                  )).toList(),
                 ),
           loading: () => const Padding(
             padding: EdgeInsets.all(16),
@@ -351,8 +354,9 @@ class _BalancesSection extends ConsumerWidget {
 
 class _BalanceTile extends StatelessWidget {
   final Balance balance;
+  final int walletIndex;
 
-  const _BalanceTile({required this.balance});
+  const _BalanceTile({required this.balance, required this.walletIndex});
 
   @override
   Widget build(BuildContext context) {
@@ -371,11 +375,34 @@ class _BalanceTile extends StatelessWidget {
       ),
       title: Text(balance.token),
       subtitle: Text(balance.network),
-      trailing: Text(
-        balance.balance,
-        style: theme.textTheme.titleMedium?.copyWith(
-          fontWeight: FontWeight.bold,
-        ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            balance.balance,
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          const SizedBox(width: 4),
+          Icon(
+            Icons.chevron_right,
+            color: theme.colorScheme.primary.withAlpha(128),
+            size: 20,
+          ),
+        ],
+      ),
+      onTap: () => _showTokenHistory(context),
+    );
+  }
+
+  void _showTokenHistory(BuildContext context) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _TransactionHistorySheet(
+        walletIndex: walletIndex,
+        tokenFilter: balance.token,
       ),
     );
   }
@@ -402,34 +429,21 @@ class _ActionButtons extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
+      child: Row(
         children: [
-          Row(
-            children: [
-              Expanded(
-                child: OutlinedButton.icon(
-                  onPressed: () => _showReceive(context),
-                  icon: const Icon(Icons.arrow_downward),
-                  label: const Text('Receive'),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: ElevatedButton.icon(
-                  onPressed: () => _showSend(context, ref),
-                  icon: const Icon(Icons.arrow_upward),
-                  label: const Text('Send'),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
+          Expanded(
             child: OutlinedButton.icon(
-              onPressed: () => _showHistory(context, ref),
-              icon: const Icon(Icons.history),
-              label: const Text('Transaction History'),
+              onPressed: () => _showReceive(context),
+              icon: const Icon(Icons.arrow_downward),
+              label: const Text('Receive'),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: ElevatedButton.icon(
+              onPressed: () => _showSend(context, ref),
+              icon: const Icon(Icons.arrow_upward),
+              label: const Text('Send'),
             ),
           ),
         ],
@@ -497,16 +511,6 @@ class _ActionButtons extends ConsumerWidget {
       builder: (context) => _SendSheet(
         walletIndex: walletIndex,
         ref: ref,
-      ),
-    );
-  }
-
-  void _showHistory(BuildContext context, WidgetRef ref) {
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => _TransactionHistorySheet(
-        walletIndex: walletIndex,
       ),
     );
   }
@@ -658,12 +662,16 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
 
 class _TransactionHistorySheet extends ConsumerWidget {
   final int walletIndex;
+  final String? tokenFilter;
 
-  const _TransactionHistorySheet({required this.walletIndex});
+  const _TransactionHistorySheet({
+    required this.walletIndex,
+    this.tokenFilter,
+  });
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final transactions = ref.watch(
+    final transactionsAsync = ref.watch(
       transactionsProvider((walletIndex: walletIndex, network: 'Backbone')),
     );
     final theme = Theme.of(context);
@@ -693,7 +701,7 @@ class _TransactionHistorySheet extends ConsumerWidget {
                 child: Row(
                   children: [
                     Text(
-                      'Transaction History',
+                      tokenFilter != null ? '$tokenFilter History' : 'Transaction History',
                       style: theme.textTheme.titleLarge,
                     ),
                     const Spacer(),
@@ -710,34 +718,45 @@ class _TransactionHistorySheet extends ConsumerWidget {
               const Divider(height: 1),
               // Content
               Expanded(
-                child: transactions.when(
-                  data: (list) => list.isEmpty
-                      ? Center(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Icon(
-                                Icons.receipt_long_outlined,
-                                size: 64,
-                                color: theme.colorScheme.primary.withAlpha(128),
-                              ),
-                              const SizedBox(height: 16),
-                              Text(
-                                'No transactions yet',
-                                style: theme.textTheme.titleMedium,
-                              ),
-                            ],
-                          ),
-                        )
-                      : ListView.separated(
-                          controller: scrollController,
-                          itemCount: list.length,
-                          separatorBuilder: (_, __) => const Divider(height: 1),
-                          itemBuilder: (context, index) {
-                            final tx = list[index];
-                            return _TransactionTile(transaction: tx);
-                          },
+                child: transactionsAsync.when(
+                  data: (list) {
+                    // Filter by token if specified
+                    final filtered = tokenFilter != null
+                        ? list.where((tx) => tx.token.toUpperCase() == tokenFilter!.toUpperCase()).toList()
+                        : list;
+
+                    if (filtered.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.receipt_long_outlined,
+                              size: 64,
+                              color: theme.colorScheme.primary.withAlpha(128),
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              tokenFilter != null
+                                  ? 'No $tokenFilter transactions yet'
+                                  : 'No transactions yet',
+                              style: theme.textTheme.titleMedium,
+                            ),
+                          ],
                         ),
+                      );
+                    }
+
+                    return ListView.separated(
+                      controller: scrollController,
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final tx = filtered[index];
+                        return _TransactionTile(transaction: tx);
+                      },
+                    );
+                  },
                   loading: () => const Center(child: CircularProgressIndicator()),
                   error: (error, _) => Center(
                     child: Padding(
@@ -790,8 +809,7 @@ class _TransactionTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final isReceived = transaction.direction.toLowerCase().contains('recv') ||
-                       transaction.direction.toLowerCase().contains('in');
+    final isReceived = transaction.direction.toLowerCase() == 'received';
 
     return ListTile(
       leading: CircleAvatar(
@@ -851,8 +869,7 @@ class _TransactionTile extends StatelessWidget {
   }
 
   void _showDetails(BuildContext context) {
-    final isReceived = transaction.direction.toLowerCase().contains('recv') ||
-                       transaction.direction.toLowerCase().contains('in');
+    final isReceived = transaction.direction.toLowerCase() == 'received';
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
