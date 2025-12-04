@@ -17,7 +17,6 @@ This project is in ALPHA. We use hard cutoffs for all changes:
 - NO backward compatibility
 - NO migration scripts
 - NO legacy support
-- Old data expires naturally (30-day TTL)
 - Breaking changes are expected and acceptable 
 
 
