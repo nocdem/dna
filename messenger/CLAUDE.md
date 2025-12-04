@@ -10,7 +10,15 @@ NO ASSUMPTIONS
 NO DUMMY DATA
 Souce of truth is the soucecode and documentation
 Always ask user what to do if unsure
-Anything aginst protcol mode breaks the blockchain / encryption . 
+Anything aginst protcol mode breaks the blockchain / encryption .
+
+## ALPHA PROJECT - HARD CUTOFFS ONLY
+This project is in ALPHA. We use hard cutoffs for all changes:
+- NO backward compatibility
+- NO migration scripts
+- NO legacy support
+- Old data expires naturally (30-day TTL)
+- Breaking changes are expected and acceptable 
 
 
 ## Protocol Mode
