@@ -1,7 +1,9 @@
 // Settings Screen - App settings and profile management
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../ffi/dna_engine.dart' as engine;
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
@@ -12,7 +14,8 @@ class SettingsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final fingerprint = ref.watch(currentFingerprintProvider);
-    final profile = ref.watch(userProfileProvider);
+    final simpleProfile = ref.watch(userProfileProvider);
+    final fullProfile = ref.watch(fullProfileProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -23,7 +26,8 @@ class SettingsScreen extends ConsumerWidget {
           // Profile section
           _ProfileSection(
             fingerprint: fingerprint,
-            profile: profile,
+            simpleProfile: simpleProfile,
+            fullProfile: fullProfile,
           ),
           const Divider(),
           // Security
@@ -39,11 +43,13 @@ class SettingsScreen extends ConsumerWidget {
 
 class _ProfileSection extends StatelessWidget {
   final String? fingerprint;
-  final AsyncValue<UserProfile?> profile;
+  final AsyncValue<UserProfile?> simpleProfile;
+  final AsyncValue<engine.UserProfile?> fullProfile;
 
   const _ProfileSection({
     required this.fingerprint,
-    required this.profile,
+    required this.simpleProfile,
+    required this.fullProfile,
   });
 
   @override
@@ -56,21 +62,13 @@ class _ProfileSection extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           child: Row(
             children: [
-              CircleAvatar(
-                radius: 32,
-                backgroundColor: theme.colorScheme.primary.withAlpha(51),
-                child: Icon(
-                  Icons.person,
-                  size: 32,
-                  color: theme.colorScheme.primary,
-                ),
-              ),
+              _buildAvatar(theme),
               const SizedBox(width: 16),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    profile.when(
+                    simpleProfile.when(
                       data: (p) => Text(
                         p?.nickname ?? 'Anonymous',
                         style: theme.textTheme.titleLarge,
@@ -119,6 +117,52 @@ class _ProfileSection extends StatelessWidget {
   String _shortenFingerprint(String fp) {
     if (fp.length <= 20) return fp;
     return '${fp.substring(0, 10)}...${fp.substring(fp.length - 10)}';
+  }
+
+  Widget _buildAvatar(ThemeData theme) {
+    return fullProfile.when(
+      data: (p) {
+        final avatarBase64 = p?.avatarBase64 ?? '';
+        if (avatarBase64.isNotEmpty) {
+          try {
+            final bytes = base64Decode(avatarBase64);
+            return CircleAvatar(
+              radius: 32,
+              backgroundImage: MemoryImage(bytes),
+            );
+          } catch (e) {
+            // Fall through to default avatar
+          }
+        }
+        return CircleAvatar(
+          radius: 32,
+          backgroundColor: theme.colorScheme.primary.withAlpha(51),
+          child: Icon(
+            Icons.person,
+            size: 32,
+            color: theme.colorScheme.primary,
+          ),
+        );
+      },
+      loading: () => CircleAvatar(
+        radius: 32,
+        backgroundColor: theme.colorScheme.primary.withAlpha(51),
+        child: const SizedBox(
+          width: 24,
+          height: 24,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+      error: (_, __) => CircleAvatar(
+        radius: 32,
+        backgroundColor: theme.colorScheme.primary.withAlpha(51),
+        child: Icon(
+          Icons.person,
+          size: 32,
+          color: theme.colorScheme.primary,
+        ),
+      ),
+    );
   }
 }
 
