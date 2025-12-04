@@ -174,7 +174,8 @@ class _WalletSelector extends StatelessWidget {
                   color: isSelected ? theme.colorScheme.primary : Colors.transparent,
                   borderRadius: BorderRadius.circular(24),
                 ),
-                child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
@@ -189,6 +190,7 @@ class _WalletSelector extends StatelessWidget {
                         child: Text(
                           wallet.name.isNotEmpty ? wallet.name : 'Wallet ${index + 1}',
                           overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
                         ),
                       ),
                       const SizedBox(height: 2),
@@ -200,7 +202,11 @@ class _WalletSelector extends StatelessWidget {
                               : theme.colorScheme.onSurface.withAlpha(120),
                           fontSize: 10,
                         ),
-                        child: Text(_getSigTypeName(wallet.sigType)),
+                        child: Text(
+                          _getSigTypeName(wallet.sigType),
+                          overflow: TextOverflow.ellipsis,
+                          maxLines: 1,
+                        ),
                       ),
                     ],
                   ),
@@ -216,6 +222,7 @@ class _WalletSelector extends StatelessWidget {
   String _getSigTypeName(int sigType) {
     switch (sigType) {
       case 0:
+      case 4:
         return 'Dilithium';
       case 1:
         return 'Picnic';
@@ -323,6 +330,7 @@ class _WalletCard extends StatelessWidget {
   String _getSigTypeName(int sigType) {
     switch (sigType) {
       case 0:
+      case 4:
         return 'Dilithium (Post-Quantum)';
       case 1:
         return 'Picnic';
