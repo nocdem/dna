@@ -145,17 +145,18 @@ int dna_update_profile(
         return -1;
     }
 
-    // Create base key for profile (chunked layer handles hashing)
+    // Create base key for unified identity (chunked layer handles hashing)
+    // UNIFIED: Uses :identity key (replaces old :profile)
     char base_key[256];
-    snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
+    snprintf(base_key, sizeof(base_key), "%s:identity", fingerprint);
 
-    printf("[DNA] Updating profile for fingerprint %.16s...\n", fingerprint);
-    printf("[DNA] Base key: %s\n", base_key);
+    printf("[DNA] Updating identity for fingerprint %.16s...\n", fingerprint);
+    printf("[DNA] Base key: %s (TTL=7 days)\n", base_key);
 
-    // Store in DHT via chunked layer (permanent storage)
+    // Store in DHT via chunked layer (7-day TTL for death privacy)
     ret = dht_chunked_publish(dht_ctx, base_key,
                               (uint8_t*)json, strlen(json),
-                              DHT_CHUNK_TTL_365DAY);
+                              DHT_CHUNK_TTL_7DAY);
 
     if (ret != DHT_CHUNK_OK) {
         fprintf(stderr, "[DNA] Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
@@ -195,9 +196,10 @@ int dna_load_identity(
         return -1;
     }
 
-    // Create base key for profile (chunked layer handles hashing)
+    // Create base key for unified identity (chunked layer handles hashing)
+    // UNIFIED: Uses :identity key (replaces old :profile)
     char base_key[256];
-    snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
+    snprintf(base_key, sizeof(base_key), "%s:identity", fingerprint);
 
     printf("[DNA] Loading identity for fingerprint %.16s...\n", fingerprint);
     printf("[DNA] Base key: %s\n", base_key);
@@ -367,20 +369,8 @@ int dna_get_display_name(
         dna_identity_free(identity);
     }
 
-    // Profile lookup failed or no registered name in profile
-    // Try reverse lookup (fingerprint:reverse key) as fallback
-    if (dht_ctx) {
-        char *registered_name = NULL;
-        ret = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &registered_name);
-        if (ret == 0 && registered_name && registered_name[0] != '\0') {
-            *display_name_out = registered_name;
-            printf("[DNA] ✓ Display name: %s (from reverse lookup)\n", registered_name);
-            return 0;
-        }
-        if (registered_name) {
-            free(registered_name);
-        }
-    }
+    // NOTE: Reverse lookup fallback REMOVED - unified :identity contains all data
+    // If identity not found or no registered name, use shortened fingerprint
 
     // Fallback: Return shortened fingerprint (first 16 chars + "...")
     char *display = malloc(32);
@@ -391,6 +381,6 @@ int dna_get_display_name(
     snprintf(display, 32, "%.16s...", fingerprint);
     *display_name_out = display;
 
-    printf("[DNA] Display name: %s (fingerprint)\n", display);
+    printf("[DNA] Display name: %s (fingerprint fallback)\n", display);
     return 0;
 }

@@ -715,6 +715,24 @@ dna_request_id_t dna_engine_update_profile(
     void *user_data
 );
 
+/**
+ * Refresh identity in DHT
+ *
+ * Re-publishes current identity to DHT to reset 7-day TTL.
+ * Call this on app start and periodically while app is running.
+ * Critical for "death privacy" - identity expires if not refreshed.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called on completion
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_refresh_identity(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+);
+
 /* ============================================================================
  * 3. CONTACTS (3 async functions)
  * ============================================================================ */

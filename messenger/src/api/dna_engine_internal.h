@@ -46,6 +46,7 @@ typedef enum {
     TASK_LOOKUP_NAME,
     TASK_GET_PROFILE,
     TASK_UPDATE_PROFILE,
+    TASK_REFRESH_IDENTITY,  /* Re-publish identity to DHT (7-day TTL refresh) */
 
     /* Contacts */
     TASK_GET_CONTACTS,

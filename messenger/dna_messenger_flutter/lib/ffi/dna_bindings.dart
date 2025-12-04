@@ -932,6 +932,20 @@ class DnaBindings {
     return _dna_engine_update_profile(engine, profile, callback, user_data);
   }
 
+  late final _dna_engine_refresh_identity = _lib.lookupFunction<
+      Uint64 Function(
+          Pointer<dna_engine_t>, Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaCompletionCb>,
+          Pointer<Void>)>('dna_engine_refresh_identity');
+
+  int dna_engine_refresh_identity(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_refresh_identity(engine, callback, user_data);
+  }
+
   // ---------------------------------------------------------------------------
   // CONTACTS
   // ---------------------------------------------------------------------------

@@ -288,6 +288,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_UPDATE_PROFILE:
             dna_handle_update_profile(engine, task);
             break;
+        case TASK_REFRESH_IDENTITY:
+            dna_handle_refresh_identity(engine, task);
+            break;
 
         /* Contacts */
         case TASK_GET_CONTACTS:
@@ -986,6 +989,77 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
+    }
+
+done:
+    task->callback.completion(task->request_id, error, task->user_data);
+}
+
+void dna_handle_refresh_identity(dna_engine_t *engine, dna_task_t *task) {
+    if (task->cancelled) return;
+
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    /* Load private keys for signing */
+    qgp_key_t *sign_key = dna_load_private_key(engine);
+    if (!sign_key) {
+        error = DNA_ENGINE_ERROR_PERMISSION;
+        goto done;
+    }
+
+    /* Load encryption key for kyber pubkey */
+    char enc_key_path[512];
+    snprintf(enc_key_path, sizeof(enc_key_path), "%s/%s.kem",
+             engine->data_dir, engine->fingerprint);
+    qgp_key_t *enc_key = NULL;
+    if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
+        error = DNA_ENGINE_ERROR_PERMISSION;
+        qgp_key_free(sign_key);
+        goto done;
+    }
+
+    /* Load current profile from DHT and republish it (refreshes 7-day TTL) */
+    dna_unified_identity_t *identity = NULL;
+    int rc = dna_load_identity(dht, engine->fingerprint, &identity);
+
+    if (rc == 0 && identity) {
+        /* Republish existing identity (with updated timestamp) */
+        dna_profile_data_t profile_data = {0};
+        memcpy(&profile_data.wallets, &identity->wallets, sizeof(profile_data.wallets));
+        memcpy(&profile_data.socials, &identity->socials, sizeof(profile_data.socials));
+        strncpy(profile_data.bio, identity->bio, sizeof(profile_data.bio) - 1);
+        strncpy(profile_data.avatar_base64, identity->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
+
+        rc = dna_update_profile(dht, engine->fingerprint, &profile_data,
+                                sign_key->private_key, sign_key->public_key,
+                                enc_key->public_key);
+        dna_identity_free(identity);
+    } else {
+        /* No existing identity - create empty profile to republish keys */
+        dna_profile_data_t empty_profile = {0};
+        rc = dna_update_profile(dht, engine->fingerprint, &empty_profile,
+                                sign_key->private_key, sign_key->public_key,
+                                enc_key->public_key);
+    }
+
+    qgp_key_free(sign_key);
+    qgp_key_free(enc_key);
+
+    if (rc != 0) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+    } else {
+        printf("[DNA_ENGINE] ✓ Identity refreshed (7-day TTL reset)\n");
     }
 
 done:
@@ -2280,6 +2354,18 @@ dna_request_id_t dna_engine_update_profile(
     return dna_submit_task(engine, TASK_UPDATE_PROFILE, &params, cb, user_data);
 }
 
+dna_request_id_t dna_engine_refresh_identity(
+    dna_engine_t *engine,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_REFRESH_IDENTITY, NULL, cb, user_data);
+}
+
 /* Contacts */
 dna_request_id_t dna_engine_get_contacts(
     dna_engine_t *engine,
@@ -2790,10 +2876,14 @@ void dna_handle_get_registered_name(dna_engine_t *engine, dna_task_t *task) {
     } else {
         dht_context_t *dht_ctx = dht_singleton_get();
         if (dht_ctx) {
-            char *registered_name = NULL;
-            int ret = dht_keyserver_reverse_lookup(dht_ctx, engine->fingerprint, &registered_name);
-            if (ret == 0 && registered_name) {
-                name = registered_name; /* Transfer ownership */
+            /* Load identity from unified :identity record */
+            dna_unified_identity_t *identity = NULL;
+            int ret = dna_load_identity(dht_ctx, engine->fingerprint, &identity);
+            if (ret == 0 && identity) {
+                if (identity->has_registered_name && !dna_is_name_expired(identity)) {
+                    name = strdup(identity->registered_name);
+                }
+                dna_identity_free(identity);
             }
             /* Not found is not an error - just returns NULL name */
         }

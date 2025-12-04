@@ -96,13 +96,14 @@ int dna_register_name(
         return -1;
     }
 
-    // Create base key for identity (chunked layer handles hashing)
+    // Create base key for unified identity (chunked layer handles hashing)
+    // UNIFIED: Uses :identity key (replaces old :profile)
     char base_key[256];
-    snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
+    snprintf(base_key, sizeof(base_key), "%s:identity", fingerprint);
 
     ret = dht_chunked_publish(dht_ctx, base_key,
                               (uint8_t*)json, strlen(json),
-                              DHT_CHUNK_TTL_365DAY);
+                              DHT_CHUNK_TTL_7DAY);
     free(json);
 
     if (ret != DHT_CHUNK_OK) {
@@ -111,7 +112,7 @@ int dna_register_name(
         return -1;
     }
 
-    // Store reverse mapping: name → fingerprint
+    // Store name → fingerprint mapping
     // Normalize name to lowercase
     char normalized_name[256];
     strncpy(normalized_name, name, sizeof(normalized_name) - 1);
@@ -126,7 +127,7 @@ int dna_register_name(
 
     ret = dht_chunked_publish(dht_ctx, name_base_key,
                               (uint8_t*)fingerprint, 128,
-                              DHT_CHUNK_TTL_365DAY);
+                              DHT_CHUNK_TTL_7DAY);
 
     if (ret != DHT_CHUNK_OK) {
         fprintf(stderr, "[DNA] Failed to store name mapping in DHT: %s\n", dht_chunked_strerror(ret));
@@ -203,13 +204,14 @@ int dna_renew_name(
         return -1;
     }
 
-    // Create base key for identity (chunked layer handles hashing)
+    // Create base key for unified identity (chunked layer handles hashing)
+    // UNIFIED: Uses :identity key (replaces old :profile)
     char base_key[256];
-    snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
+    snprintf(base_key, sizeof(base_key), "%s:identity", fingerprint);
 
     int ret = dht_chunked_publish(dht_ctx, base_key,
                                   (uint8_t*)json, strlen(json),
-                                  DHT_CHUNK_TTL_365DAY);
+                                  DHT_CHUNK_TTL_7DAY);
     free(json);
 
     if (ret != DHT_CHUNK_OK) {

@@ -120,36 +120,9 @@ int dht_keyserver_update(
     const uint8_t *new_dilithium_privkey
 );
 
-/**
- * Reverse lookup: Find identity from Dilithium pubkey fingerprint
- * Used when receiving messages from unknown senders (synchronous, blocking)
- *
- * @param dht_ctx: DHT context
- * @param fingerprint: SHA3-512 fingerprint of Dilithium pubkey (128 hex chars)
- * @param identity_out: Output identity string (caller must free)
- * @return: 0 on success, -1 on error, -2 if not found, -3 if signature verification failed
- */
-int dht_keyserver_reverse_lookup(
-    dht_context_t *dht_ctx,
-    const char *fingerprint,
-    char **identity_out
-);
-
-/**
- * Reverse lookup: Find identity from Dilithium pubkey fingerprint (asynchronous, non-blocking)
- * Used when receiving messages from unknown senders
- *
- * @param dht_ctx: DHT context
- * @param fingerprint: SHA3-512 fingerprint of Dilithium pubkey (128 hex chars)
- * @param callback: Function called with (identity, userdata). Identity is NULL on error. Caller must free identity.
- * @param userdata: User data passed to callback
- */
-void dht_keyserver_reverse_lookup_async(
-    dht_context_t *dht_ctx,
-    const char *fingerprint,
-    void (*callback)(char *identity, void *userdata),
-    void *userdata
-);
+// NOTE: dht_keyserver_reverse_lookup() and dht_keyserver_reverse_lookup_async() REMOVED
+// The unified :identity record contains all needed data including display name
+// Use dna_load_identity() or dna_get_display_name() instead
 
 /**
  * Delete public keys from DHT

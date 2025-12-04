@@ -472,26 +472,22 @@ static char* extract_sender_from_encrypted(
     // Get DHT context from P2P transport
     dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
     if (!dht_ctx) {
-        printf("[P2P] ✗ No DHT context available for reverse lookup\n");
+        printf("[P2P] ✗ No DHT context available for identity lookup\n");
         return NULL;
     }
 
-    // Query DHT for reverse mapping (fingerprint → identity)
+    // Query DHT for display name using unified :identity record
     char *identity = NULL;
-    int result = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &identity);
+    int result = dna_get_display_name(dht_ctx, fingerprint, &identity);
 
     if (result == 0 && identity) {
-        printf("[P2P] ✓ DHT reverse lookup found: %s (fingerprint: %.16s...)\n", identity, fingerprint);
+        printf("[P2P] ✓ DHT identity lookup found: %s (fingerprint: %.16s...)\n", identity, fingerprint);
 
         // Cache the identity in contacts for faster lookup next time
         // (User can add them to contacts manually later if they want)
         return identity;  // Caller must free
-    } else if (result == -2) {
-        printf("[P2P] ✗ Identity not found in DHT (fingerprint: %.16s...)\n", fingerprint);
-    } else if (result == -3) {
-        printf("[P2P] ✗ DHT reverse mapping signature verification failed (fingerprint: %.16s...)\n", fingerprint);
     } else {
-        printf("[P2P] ✗ DHT reverse lookup error (fingerprint: %.16s...)\n", fingerprint);
+        printf("[P2P] ✗ Identity not found in DHT (fingerprint: %.16s...)\n", fingerprint);
     }
 
     return NULL;  // No matching identity found
@@ -549,9 +545,9 @@ static char* lookup_identity_for_pubkey(
         return NULL;  // No DHT context
     }
 
-    // Query DHT for reverse mapping (fingerprint → identity)
+    // Query DHT for display name using unified :identity record
     char *identity = NULL;
-    int result = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &identity);
+    int result = dna_get_display_name(dht_ctx, fingerprint, &identity);
 
     if (result == 0 && identity) {
         // Successfully resolved identity via DHT
