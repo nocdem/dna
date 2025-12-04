@@ -2,6 +2,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
+import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
@@ -16,6 +17,7 @@ class FeedScreen extends ConsumerStatefulWidget {
 class _FeedScreenState extends ConsumerState<FeedScreen> {
   final _composeController = TextEditingController();
   final _commentControllers = <String, TextEditingController>{};
+  bool _showEmojiPicker = false;
 
   TextEditingController _getCommentController(String postId) {
     return _commentControllers.putIfAbsent(postId, () => TextEditingController());
@@ -241,6 +243,32 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
           controller: _composeController,
           hintText: 'Write a post...',
           onSend: () => _sendPost(channel),
+          showEmojiPicker: _showEmojiPicker,
+          onEmojiToggle: () {
+            setState(() {
+              _showEmojiPicker = !_showEmojiPicker;
+            });
+          },
+          onEmojiSelected: (emoji) {
+            final text = _composeController.text;
+            final selection = _composeController.selection;
+            final newText = text.replaceRange(
+              selection.start,
+              selection.end,
+              emoji.emoji,
+            );
+            _composeController.value = TextEditingValue(
+              text: newText,
+              selection: TextSelection.collapsed(
+                offset: selection.start + emoji.emoji.length,
+              ),
+            );
+          },
+          onTextFieldTap: () {
+            if (_showEmojiPicker) {
+              setState(() => _showEmojiPicker = false);
+            }
+          },
         ),
       ],
     );
@@ -667,7 +695,7 @@ class _CommentsSection extends ConsumerWidget {
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
                 itemCount: comments.length,
-                separatorBuilder: (_, __) => Divider(
+                separatorBuilder: (_, i) => Divider(
                   height: 1,
                   color: DnaColors.border,
                 ),
@@ -955,46 +983,99 @@ class _ComposeArea extends StatelessWidget {
   final TextEditingController controller;
   final String hintText;
   final VoidCallback onSend;
+  final bool showEmojiPicker;
+  final VoidCallback onEmojiToggle;
+  final void Function(Emoji) onEmojiSelected;
+  final VoidCallback onTextFieldTap;
 
   const _ComposeArea({
     required this.controller,
     required this.hintText,
     required this.onSend,
+    required this.showEmojiPicker,
+    required this.onEmojiToggle,
+    required this.onEmojiSelected,
+    required this.onTextFieldTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: DnaColors.surface,
-        border: Border(top: BorderSide(color: DnaColors.border)),
-      ),
-      child: SafeArea(
-        child: Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: controller,
-                decoration: InputDecoration(
-                  hintText: hintText,
-                  border: const OutlineInputBorder(),
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+    final theme = Theme.of(context);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: DnaColors.surface,
+            border: Border(top: BorderSide(color: DnaColors.border)),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Row(
+              children: [
+                // Emoji button
+                IconButton(
+                  icon: Icon(
+                    showEmojiPicker
+                        ? Icons.keyboard
+                        : Icons.emoji_emotions_outlined,
+                  ),
+                  onPressed: onEmojiToggle,
                 ),
-                maxLines: 3,
-                minLines: 1,
-                textInputAction: TextInputAction.send,
-                onSubmitted: (_) => onSend(),
+                // Text input
+                Expanded(
+                  child: TextField(
+                    controller: controller,
+                    decoration: InputDecoration(
+                      hintText: hintText,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(24),
+                        borderSide: BorderSide.none,
+                      ),
+                      filled: true,
+                      fillColor: theme.scaffoldBackgroundColor,
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    ),
+                    maxLines: 3,
+                    minLines: 1,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (_) => onSend(),
+                    onTap: onTextFieldTap,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                // Send button
+                IconButton(
+                  onPressed: onSend,
+                  icon: const Icon(Icons.send),
+                ),
+              ],
+            ),
+          ),
+        ),
+        // Emoji picker
+        if (showEmojiPicker)
+          SizedBox(
+            height: 250,
+            child: EmojiPicker(
+              onEmojiSelected: (category, emoji) {
+                onEmojiSelected(emoji);
+              },
+              config: Config(
+                columns: 7,
+                emojiSizeMax: 28,
+                bgColor: theme.colorScheme.surface,
+                indicatorColor: theme.colorScheme.primary,
+                iconColorSelected: theme.colorScheme.primary,
+                iconColor: DnaColors.textMuted,
+                backspaceColor: theme.colorScheme.primary,
+                checkPlatformCompatibility: true,
               ),
             ),
-            const SizedBox(width: 8),
-            IconButton.filled(
-              onPressed: onSend,
-              icon: const Icon(Icons.send),
-            ),
-          ],
-        ),
-      ),
+          ),
+      ],
     );
   }
 }
