@@ -6,6 +6,8 @@ import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
+import '../../widgets/emoji_shortcode_field.dart';
+import '../../widgets/formatted_text.dart';
 
 class FeedScreen extends ConsumerStatefulWidget {
   const FeedScreen({super.key});
@@ -538,7 +540,7 @@ class _PostCard extends ConsumerWidget {
               ),
               const SizedBox(height: 8),
               // Content
-              Text(post.text),
+              FormattedText(post.text),
               const SizedBox(height: 8),
               // Actions: votes + comments
               Row(
@@ -823,7 +825,7 @@ class _CommentCard extends ConsumerWidget {
           ),
           const SizedBox(height: 4),
           // Content
-          Text(comment.text, style: const TextStyle(fontSize: 13)),
+          FormattedText(comment.text, style: const TextStyle(fontSize: 13)),
           const SizedBox(height: 6),
           // Votes + mention
           Row(
@@ -1024,10 +1026,16 @@ class _ComposeArea extends StatelessWidget {
                   ),
                   onPressed: onEmojiToggle,
                 ),
-                // Text input
+                // Text input with :shortcode: support
                 Expanded(
-                  child: TextField(
+                  child: EmojiShortcodeField(
                     controller: controller,
+                    hintText: hintText,
+                    minLines: 1,
+                    maxLines: 3,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: onSend,
+                    onTap: onTextFieldTap,
                     decoration: InputDecoration(
                       hintText: hintText,
                       border: OutlineInputBorder(
@@ -1038,11 +1046,6 @@ class _ComposeArea extends StatelessWidget {
                       fillColor: theme.scaffoldBackgroundColor,
                       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                     ),
-                    maxLines: 3,
-                    minLines: 1,
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (_) => onSend(),
-                    onTap: onTextFieldTap,
                   ),
                 ),
                 const SizedBox(width: 8),
@@ -1055,23 +1058,47 @@ class _ComposeArea extends StatelessWidget {
             ),
           ),
         ),
-        // Emoji picker
+        // Emoji picker (fixed size, aligned right)
         if (showEmojiPicker)
-          SizedBox(
-            height: 250,
-            child: EmojiPicker(
-              onEmojiSelected: (category, emoji) {
-                onEmojiSelected(emoji);
-              },
-              config: Config(
-                columns: 7,
-                emojiSizeMax: 28,
-                bgColor: theme.colorScheme.surface,
-                indicatorColor: theme.colorScheme.primary,
-                iconColorSelected: theme.colorScheme.primary,
-                iconColor: DnaColors.textMuted,
-                backspaceColor: theme.colorScheme.primary,
-                checkPlatformCompatibility: true,
+          Align(
+            alignment: Alignment.bottomRight,
+            child: Container(
+              constraints: const BoxConstraints(maxWidth: 380, maxHeight: 280),
+              margin: const EdgeInsets.only(right: 8, bottom: 4),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withValues(alpha: 0.2),
+                    blurRadius: 8,
+                    offset: const Offset(0, -2),
+                  ),
+                ],
+              ),
+              clipBehavior: Clip.antiAlias,
+              child: EmojiPicker(
+                onEmojiSelected: (category, emoji) {
+                  onEmojiSelected(emoji);
+                },
+                config: Config(
+                  checkPlatformCompatibility: true,
+                  emojiViewConfig: EmojiViewConfig(
+                    columns: 7,
+                    emojiSizeMax: 28,
+                    backgroundColor: theme.colorScheme.surface,
+                  ),
+                  categoryViewConfig: CategoryViewConfig(
+                    indicatorColor: theme.colorScheme.primary,
+                    iconColorSelected: theme.colorScheme.primary,
+                    iconColor: DnaColors.textMuted,
+                    backgroundColor: theme.colorScheme.surface,
+                  ),
+                  bottomActionBarConfig: BottomActionBarConfig(
+                    backgroundColor: theme.colorScheme.surface,
+                    buttonColor: theme.colorScheme.primary,
+                  ),
+                ),
               ),
             ),
           ),

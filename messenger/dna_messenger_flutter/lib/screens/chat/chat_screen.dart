@@ -7,6 +7,8 @@ import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
+import '../../widgets/emoji_shortcode_field.dart';
+import '../../widgets/formatted_text.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -111,23 +113,47 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           // Input area
           _buildInputArea(context, contact),
 
-          // Emoji picker
+          // Emoji picker (fixed size, aligned right)
           if (_showEmojiPicker)
-            SizedBox(
-              height: 250,
-              child: EmojiPicker(
-                onEmojiSelected: (category, emoji) {
-                  _onEmojiSelected(emoji);
-                },
-                config: Config(
-                  columns: 7,
-                  emojiSizeMax: 28,
-                  bgColor: theme.colorScheme.surface,
-                  indicatorColor: theme.colorScheme.primary,
-                  iconColorSelected: theme.colorScheme.primary,
-                  iconColor: DnaColors.textMuted,
-                  backspaceColor: theme.colorScheme.primary,
-                  checkPlatformCompatibility: true,
+            Align(
+              alignment: Alignment.bottomRight,
+              child: Container(
+                constraints: const BoxConstraints(maxWidth: 380, maxHeight: 280),
+                margin: const EdgeInsets.only(right: 8, bottom: 4),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.surface,
+                  borderRadius: BorderRadius.circular(12),
+                  boxShadow: [
+                    BoxShadow(
+                      color: Colors.black.withValues(alpha: 0.2),
+                      blurRadius: 8,
+                      offset: const Offset(0, -2),
+                    ),
+                  ],
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: EmojiPicker(
+                  onEmojiSelected: (category, emoji) {
+                    _onEmojiSelected(emoji);
+                  },
+                  config: Config(
+                    checkPlatformCompatibility: true,
+                    emojiViewConfig: EmojiViewConfig(
+                      columns: 7,
+                      emojiSizeMax: 28,
+                      backgroundColor: theme.colorScheme.surface,
+                    ),
+                    categoryViewConfig: CategoryViewConfig(
+                      indicatorColor: theme.colorScheme.primary,
+                      iconColorSelected: theme.colorScheme.primary,
+                      iconColor: DnaColors.textMuted,
+                      backgroundColor: theme.colorScheme.surface,
+                    ),
+                    bottomActionBarConfig: BottomActionBarConfig(
+                      backgroundColor: theme.colorScheme.surface,
+                      buttonColor: theme.colorScheme.primary,
+                    ),
+                  ),
                 ),
               ),
             ),
@@ -289,7 +315,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               },
             ),
 
-            // Text input
+            // Text input with :shortcode: support
             Expanded(
               child: KeyboardListener(
                 focusNode: FocusNode(),
@@ -303,9 +329,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     }
                   }
                 },
-                child: TextField(
+                child: EmojiShortcodeField(
                   controller: _messageController,
                   focusNode: _focusNode,
+                  hintText: 'Type a message...',
+                  minLines: 1,
+                  maxLines: 5,
                   decoration: InputDecoration(
                     hintText: 'Type a message...',
                     border: OutlineInputBorder(
@@ -319,10 +348,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                       vertical: 8,
                     ),
                   ),
-                  minLines: 1,
-                  maxLines: 5,
-                  textCapitalization: TextCapitalization.sentences,
-                  onChanged: (_) => setState(() {}),
                   onTap: () {
                     // Hide emoji picker when text field is tapped
                     if (_showEmojiPicker) {
@@ -496,7 +521,7 @@ class _MessageBubble extends StatelessWidget {
           crossAxisAlignment:
               isOutgoing ? CrossAxisAlignment.end : CrossAxisAlignment.start,
           children: [
-            Text(
+            FormattedText(
               message.plaintext,
               style: TextStyle(
                 color: isOutgoing
