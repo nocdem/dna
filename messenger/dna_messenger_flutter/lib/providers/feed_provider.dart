@@ -52,7 +52,13 @@ class FeedChannelsNotifier extends AsyncNotifier<List<FeedChannel>> {
   Future<FeedChannel> createChannel(String name, String description) async {
     final engine = await ref.read(engineProvider.future);
     final channel = await engine.createFeedChannel(name, description);
-    await refresh();
+
+    // Optimistically add to local state (DHT propagation may take time)
+    final currentChannels = state.valueOrNull ?? [];
+    final updatedChannels = [channel, ...currentChannels];
+    updatedChannels.sort((a, b) => b.lastActivity.compareTo(a.lastActivity));
+    state = AsyncValue.data(updatedChannels);
+
     return channel;
   }
 
