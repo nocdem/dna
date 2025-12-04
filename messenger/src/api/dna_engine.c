@@ -1540,41 +1540,79 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Query balances via RPC for known tokens */
-    const char *tokens[] = {"CPUNK", "CELL", "KEL"};
-    const char *networks[] = {"Backbone", "Backbone", "KelVPN"};
-    int token_count = 3;
-
-    balances = calloc(token_count, sizeof(dna_balance_t));
+    /* Pre-allocate balances for CPUNK and CELL (only supported tokens) */
+    balances = calloc(2, sizeof(dna_balance_t));
     if (!balances) {
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
 
-    for (int i = 0; i < token_count; i++) {
-        strncpy(balances[i].token, tokens[i], sizeof(balances[i].token) - 1);
-        strncpy(balances[i].network, networks[i], sizeof(balances[i].network) - 1);
+    /* Initialize with defaults */
+    strncpy(balances[0].token, "CPUNK", sizeof(balances[0].token) - 1);
+    strncpy(balances[0].network, "Backbone", sizeof(balances[0].network) - 1);
+    strcpy(balances[0].balance, "0.0");
 
-        cellframe_rpc_response_t *response = NULL;
-        int rc = cellframe_rpc_get_balance(networks[i], address, tokens[i], &response);
+    strncpy(balances[1].token, "CELL", sizeof(balances[1].token) - 1);
+    strncpy(balances[1].network, "Backbone", sizeof(balances[1].network) - 1);
+    strcpy(balances[1].balance, "0.0");
 
-        if (rc == 0 && response && response->result) {
-            /* Parse balance from response */
-            json_object *balance_obj = NULL;
-            if (json_object_object_get_ex(response->result, "balance", &balance_obj)) {
-                const char *bal_str = json_object_get_string(balance_obj);
-                if (bal_str) {
-                    strncpy(balances[i].balance, bal_str, sizeof(balances[i].balance) - 1);
+    count = 2;
+
+    /* Query balance via RPC - response contains all tokens for address */
+    cellframe_rpc_response_t *response = NULL;
+    int rc = cellframe_rpc_get_balance("Backbone", address, "CPUNK", &response);
+
+    if (rc == 0 && response && response->result) {
+        json_object *jresult = response->result;
+
+        /* Parse response format: result[0][0]["tokens"][i] */
+        if (json_object_is_type(jresult, json_type_array) &&
+            json_object_array_length(jresult) > 0) {
+
+            json_object *first = json_object_array_get_idx(jresult, 0);
+            if (first && json_object_is_type(first, json_type_array) &&
+                json_object_array_length(first) > 0) {
+
+                json_object *wallet_obj = json_object_array_get_idx(first, 0);
+                json_object *tokens_obj = NULL;
+
+                if (wallet_obj && json_object_object_get_ex(wallet_obj, "tokens", &tokens_obj)) {
+                    int token_count = json_object_array_length(tokens_obj);
+
+                    for (int i = 0; i < token_count; i++) {
+                        json_object *token_entry = json_object_array_get_idx(tokens_obj, i);
+                        json_object *token_info_obj = NULL;
+                        json_object *coins_obj = NULL;
+
+                        if (!json_object_object_get_ex(token_entry, "coins", &coins_obj)) {
+                            continue;
+                        }
+
+                        if (!json_object_object_get_ex(token_entry, "token", &token_info_obj)) {
+                            continue;
+                        }
+
+                        json_object *ticker_obj = NULL;
+                        if (json_object_object_get_ex(token_info_obj, "ticker", &ticker_obj)) {
+                            const char *ticker = json_object_get_string(ticker_obj);
+                            const char *coins = json_object_get_string(coins_obj);
+
+                            /* Match ticker to our balance slots */
+                            if (ticker && coins) {
+                                if (strcmp(ticker, "CPUNK") == 0) {
+                                    strncpy(balances[0].balance, coins, sizeof(balances[0].balance) - 1);
+                                } else if (strcmp(ticker, "CELL") == 0) {
+                                    strncpy(balances[1].balance, coins, sizeof(balances[1].balance) - 1);
+                                }
+                            }
+                        }
+                    }
                 }
             }
-            cellframe_rpc_response_free(response);
         }
 
-        if (balances[i].balance[0] == '\0') {
-            strcpy(balances[i].balance, "0.0");
-        }
+        cellframe_rpc_response_free(response);
     }
-    count = token_count;
 
 done:
     task->callback.balances(task->request_id, error, balances, count, task->user_data);

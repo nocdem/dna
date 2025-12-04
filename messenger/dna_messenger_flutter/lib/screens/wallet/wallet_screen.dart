@@ -382,13 +382,10 @@ class _BalanceTile extends StatelessWidget {
 
   Color _getTokenColor(String token) {
     switch (token.toUpperCase()) {
-      case 'ETH':
-        return const Color(0xFF627EEA);
-      case 'BTC':
-        return const Color(0xFFF7931A);
-      case 'USDT':
-      case 'USDC':
-        return const Color(0xFF26A17B);
+      case 'CPUNK':
+        return const Color(0xFF00D4AA); // Cyan/Teal for CPUNK
+      case 'CELL':
+        return const Color(0xFF6B4CE6); // Purple for CELL
       default:
         return DnaColors.textInfo;
     }
@@ -405,21 +402,34 @@ class _ActionButtons extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
+      child: Column(
         children: [
-          Expanded(
-            child: OutlinedButton.icon(
-              onPressed: () => _showReceive(context),
-              icon: const Icon(Icons.arrow_downward),
-              label: const Text('Receive'),
-            ),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _showReceive(context),
+                  icon: const Icon(Icons.arrow_downward),
+                  label: const Text('Receive'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () => _showSend(context, ref),
+                  icon: const Icon(Icons.arrow_upward),
+                  label: const Text('Send'),
+                ),
+              ),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: ElevatedButton.icon(
-              onPressed: () => _showSend(context, ref),
-              icon: const Icon(Icons.arrow_upward),
-              label: const Text('Send'),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              onPressed: () => _showHistory(context, ref),
+              icon: const Icon(Icons.history),
+              label: const Text('Transaction History'),
             ),
           ),
         ],
@@ -490,6 +500,16 @@ class _ActionButtons extends ConsumerWidget {
       ),
     );
   }
+
+  void _showHistory(BuildContext context, WidgetRef ref) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _TransactionHistorySheet(
+        walletIndex: walletIndex,
+      ),
+    );
+  }
 }
 
 class _SendSheet extends ConsumerStatefulWidget {
@@ -506,7 +526,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   final _recipientController = TextEditingController();
   final _amountController = TextEditingController();
   String _selectedToken = 'CPUNK';
-  String _selectedNetwork = 'cellframe';
+  String _selectedNetwork = 'Backbone';
   bool _isSending = false;
 
   @override
@@ -562,8 +582,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                       decoration: const InputDecoration(labelText: 'Token'),
                       items: const [
                         DropdownMenuItem(value: 'CPUNK', child: Text('CPUNK')),
-                        DropdownMenuItem(value: 'ETH', child: Text('ETH')),
-                        DropdownMenuItem(value: 'BTC', child: Text('BTC')),
+                        DropdownMenuItem(value: 'CELL', child: Text('CELL')),
                       ],
                       onChanged: (v) => setState(() => _selectedToken = v ?? 'CPUNK'),
                     ),
@@ -574,11 +593,9 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                       value: _selectedNetwork,
                       decoration: const InputDecoration(labelText: 'Network'),
                       items: const [
-                        DropdownMenuItem(value: 'cellframe', child: Text('Cellframe')),
-                        DropdownMenuItem(value: 'ethereum', child: Text('Ethereum')),
-                        DropdownMenuItem(value: 'bitcoin', child: Text('Bitcoin')),
+                        DropdownMenuItem(value: 'Backbone', child: Text('Backbone')),
                       ],
-                      onChanged: (v) => setState(() => _selectedNetwork = v ?? 'cellframe'),
+                      onChanged: (v) => setState(() => _selectedNetwork = v ?? 'Backbone'),
                     ),
                   ),
                 ],
@@ -636,5 +653,319 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         );
       }
     }
+  }
+}
+
+class _TransactionHistorySheet extends ConsumerWidget {
+  final int walletIndex;
+
+  const _TransactionHistorySheet({required this.walletIndex});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final transactions = ref.watch(
+      transactionsProvider((walletIndex: walletIndex, network: 'Backbone')),
+    );
+    final theme = Theme.of(context);
+
+    return DraggableScrollableSheet(
+      initialChildSize: 0.7,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (context, scrollController) {
+        return SafeArea(
+          child: Column(
+            children: [
+              // Handle bar
+              Container(
+                margin: const EdgeInsets.only(top: 8),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.dividerColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              // Header
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Text(
+                      'Transaction History',
+                      style: theme.textTheme.titleLarge,
+                    ),
+                    const Spacer(),
+                    IconButton(
+                      icon: const Icon(Icons.refresh),
+                      onPressed: () => ref.invalidate(
+                        transactionsProvider((walletIndex: walletIndex, network: 'Backbone')),
+                      ),
+                      tooltip: 'Refresh',
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              // Content
+              Expanded(
+                child: transactions.when(
+                  data: (list) => list.isEmpty
+                      ? Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(
+                                Icons.receipt_long_outlined,
+                                size: 64,
+                                color: theme.colorScheme.primary.withAlpha(128),
+                              ),
+                              const SizedBox(height: 16),
+                              Text(
+                                'No transactions yet',
+                                style: theme.textTheme.titleMedium,
+                              ),
+                            ],
+                          ),
+                        )
+                      : ListView.separated(
+                          controller: scrollController,
+                          itemCount: list.length,
+                          separatorBuilder: (_, __) => const Divider(height: 1),
+                          itemBuilder: (context, index) {
+                            final tx = list[index];
+                            return _TransactionTile(transaction: tx);
+                          },
+                        ),
+                  loading: () => const Center(child: CircularProgressIndicator()),
+                  error: (error, _) => Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(24),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.error_outline,
+                            size: 48,
+                            color: DnaColors.textWarning,
+                          ),
+                          const SizedBox(height: 16),
+                          Text(
+                            'Failed to load transactions',
+                            style: theme.textTheme.titleMedium,
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            error.toString(),
+                            style: theme.textTheme.bodySmall,
+                            textAlign: TextAlign.center,
+                          ),
+                          const SizedBox(height: 16),
+                          ElevatedButton(
+                            onPressed: () => ref.invalidate(
+                              transactionsProvider((walletIndex: walletIndex, network: 'Backbone')),
+                            ),
+                            child: const Text('Retry'),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _TransactionTile extends StatelessWidget {
+  final Transaction transaction;
+
+  const _TransactionTile({required this.transaction});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isReceived = transaction.direction.toLowerCase().contains('recv') ||
+                       transaction.direction.toLowerCase().contains('in');
+
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: isReceived
+            ? const Color(0xFF00D4AA).withAlpha(51)
+            : const Color(0xFFFF6B6B).withAlpha(51),
+        child: Icon(
+          isReceived ? Icons.arrow_downward : Icons.arrow_upward,
+          color: isReceived ? const Color(0xFF00D4AA) : const Color(0xFFFF6B6B),
+        ),
+      ),
+      title: Text(
+        '${transaction.amount} ${transaction.token}',
+        style: theme.textTheme.titleMedium?.copyWith(
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      subtitle: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            _formatAddress(transaction.otherAddress),
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontFamily: 'monospace',
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            _formatTimestamp(transaction.timestamp),
+            style: theme.textTheme.labelSmall,
+          ),
+        ],
+      ),
+      trailing: _StatusChip(status: transaction.status),
+      isThreeLine: true,
+      onTap: () => _showDetails(context),
+    );
+  }
+
+  String _formatAddress(String address) {
+    if (address.isEmpty) return '-';
+    if (address.length <= 20) return address;
+    return '${address.substring(0, 10)}...${address.substring(address.length - 8)}';
+  }
+
+  String _formatTimestamp(String timestamp) {
+    if (timestamp.isEmpty) return '';
+    // Try to parse as unix timestamp
+    final ts = int.tryParse(timestamp);
+    if (ts != null && ts > 0) {
+      final date = DateTime.fromMillisecondsSinceEpoch(ts * 1000);
+      return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')} '
+             '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+    }
+    // Return as-is if not a unix timestamp
+    return timestamp;
+  }
+
+  void _showDetails(BuildContext context) {
+    final isReceived = transaction.direction.toLowerCase().contains('recv') ||
+                       transaction.direction.toLowerCase().contains('in');
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Transaction Details'),
+        content: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _DetailRow('Hash', transaction.txHash),
+              _DetailRow('Status', transaction.status),
+              _DetailRow('Direction', isReceived ? 'Received' : 'Sent'),
+              _DetailRow('Amount', '${transaction.amount} ${transaction.token}'),
+              _DetailRow(isReceived ? 'From' : 'To', transaction.otherAddress),
+              _DetailRow('Time', _formatTimestamp(transaction.timestamp)),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () {
+              Clipboard.setData(ClipboardData(text: transaction.txHash));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Transaction hash copied')),
+              );
+            },
+            child: const Text('Copy Hash'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _DetailRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _DetailRow(this.label, this.value);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.primary,
+            ),
+          ),
+          const SizedBox(height: 2),
+          SelectableText(
+            value.isNotEmpty ? value : '-',
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontFamily: label == 'Hash' || label == 'From' || label == 'To'
+                  ? 'monospace'
+                  : null,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusChip extends StatelessWidget {
+  final String status;
+
+  const _StatusChip({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    Color color;
+    switch (status.toUpperCase()) {
+      case 'ACCEPTED':
+      case 'CONFIRMED':
+        color = const Color(0xFF00D4AA);
+        break;
+      case 'PENDING':
+        color = const Color(0xFFFFAA00);
+        break;
+      case 'FAILED':
+      case 'REJECTED':
+        color = const Color(0xFFFF6B6B);
+        break;
+      default:
+        color = DnaColors.textInfo;
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: color.withAlpha(26),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: color.withAlpha(77)),
+      ),
+      child: Text(
+        status,
+        style: TextStyle(
+          color: color,
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
   }
 }

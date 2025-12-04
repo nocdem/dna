@@ -1,6 +1,6 @@
 # DNA Messenger Flutter UI
 
-**Last Updated:** 2025-12-01
+**Last Updated:** 2025-12-04
 **Status:** Phase 3 Complete (Full Features)
 **Target:** Android first, all platforms from single codebase
 
@@ -246,9 +246,10 @@ Future<List<Contact>> _updateContactsPresence(DnaEngine engine, List<Contact> co
    - Group list with member counts
 
 3. **Wallet:**
-   - Send tokens with recipient, amount, token, network selection
-   - Transaction history provider
-   - Balances display per wallet
+   - Send tokens with recipient, amount selection
+   - Supported tokens: **CPUNK, CELL only** (Backbone network)
+   - Transaction history UI with full details dialog
+   - Balances display per wallet (fetched via Cellframe RPC)
 
 4. **Profile/Identity:**
    - Nickname registration on DHT
@@ -287,7 +288,7 @@ getTransactions(index, net)  // Transaction history
 - `identity_selection_screen.dart`: Real BIP39 mnemonic generation/validation
 - `groups_screen.dart`: Create, accept, reject, open group chat
 - `GroupChatScreen`: New screen for group messaging
-- `wallet_screen.dart`: Functional send dialog with token/network selection
+- `wallet_screen.dart`: Send dialog (CPUNK/CELL on Backbone) + Transaction History UI
 - `settings_screen.dart`: Nickname registration works
 
 ---
