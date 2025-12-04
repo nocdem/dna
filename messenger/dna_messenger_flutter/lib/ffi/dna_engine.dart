@@ -1508,6 +1508,55 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Get avatar for fingerprint
+  /// Returns base64 encoded avatar, or null if no avatar set.
+  Future<String?> getAvatar(String fingerprint) async {
+    final completer = Completer<String?>();
+    final localId = _nextLocalId++;
+
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Utf8> avatar,
+                    Pointer<Void> userData) {
+      calloc.free(fpPtr);
+
+      if (error == 0) {
+        // nullptr means no avatar
+        if (avatar == nullptr) {
+          completer.complete(null);
+        } else {
+          try {
+            final avatarStr = avatar.toDartString();
+            completer.complete(avatarStr.isEmpty ? null : avatarStr);
+          } catch (e) {
+            completer.complete(null);
+          }
+        }
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaDisplayNameCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_avatar(
+      _engine,
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   /// Lookup name availability (name -> fingerprint)
   /// Returns fingerprint if name is taken, empty string if available.
   Future<String> lookupName(String name) async {

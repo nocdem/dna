@@ -122,6 +122,49 @@ int keyserver_cache_stats(int *total_entries, int *expired_entries);
  */
 void keyserver_cache_free_entry(keyserver_cache_entry_t *entry);
 
+/* ============================================================================
+ * DISPLAY NAME CACHE (Global, separate table in same database)
+ * Used for identity selector before login
+ * ============================================================================ */
+
+/**
+ * Get cached display name for fingerprint
+ *
+ * @param fingerprint: 128-char hex fingerprint
+ * @param name_out: Output buffer for name (caller provides, min 64 chars)
+ * @param name_out_size: Size of output buffer
+ * @return: 0 on success, -1 on error, -2 if not found/expired
+ */
+int keyserver_cache_get_name(const char *fingerprint, char *name_out, size_t name_out_size);
+
+/**
+ * Store display name for fingerprint
+ *
+ * @param fingerprint: 128-char hex fingerprint
+ * @param display_name: Display name to cache
+ * @param ttl_seconds: Time-to-live in seconds (0 = default 7 days)
+ * @return: 0 on success, -1 on error
+ */
+int keyserver_cache_put_name(const char *fingerprint, const char *display_name, uint64_t ttl_seconds);
+
+/**
+ * Get cached avatar for fingerprint
+ *
+ * @param fingerprint: 128-char hex fingerprint
+ * @param avatar_out: Output for avatar base64 (caller must free)
+ * @return: 0 on success, -1 on error, -2 if not found
+ */
+int keyserver_cache_get_avatar(const char *fingerprint, char **avatar_out);
+
+/**
+ * Store avatar for fingerprint (updates existing name_cache entry)
+ *
+ * @param fingerprint: 128-char hex fingerprint
+ * @param avatar_base64: Avatar in base64 encoding (can be NULL to clear)
+ * @return: 0 on success, -1 on error
+ */
+int keyserver_cache_put_avatar(const char *fingerprint, const char *avatar_base64);
+
 #ifdef __cplusplus
 }
 #endif

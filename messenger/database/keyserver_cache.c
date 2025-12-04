@@ -35,7 +35,19 @@ static const char *CACHE_SCHEMA =
     "    cached_at INTEGER NOT NULL,"  // Unix timestamp
     "    ttl_seconds INTEGER NOT NULL DEFAULT 604800"
     ");"
-    "CREATE INDEX IF NOT EXISTS idx_cached_at ON keyserver_cache(cached_at);";
+    "CREATE INDEX IF NOT EXISTS idx_cached_at ON keyserver_cache(cached_at);"
+    /* Display name + avatar cache - global, separate table */
+    "CREATE TABLE IF NOT EXISTS name_cache ("
+    "    fingerprint TEXT PRIMARY KEY,"
+    "    display_name TEXT NOT NULL,"
+    "    avatar_base64 TEXT,"  // Optional avatar (base64 encoded)
+    "    cached_at INTEGER NOT NULL,"
+    "    ttl_seconds INTEGER NOT NULL DEFAULT 604800"
+    ");";
+
+// Migration: Add avatar_base64 column if missing (for existing databases)
+static const char *MIGRATION_ADD_AVATAR =
+    "ALTER TABLE name_cache ADD COLUMN avatar_base64 TEXT;";
 
 // Helper: Get default cache path (~/.dna/keyserver_cache.db)
 static void get_default_cache_path(char *path_out, size_t path_size) {
@@ -118,6 +130,10 @@ int keyserver_cache_init(const char *db_path) {
         g_cache_db = NULL;
         return -1;
     }
+
+    // Run migration: add avatar_base64 column if missing
+    // This will fail silently if column already exists (expected)
+    sqlite3_exec(g_cache_db, MIGRATION_ADD_AVATAR, NULL, NULL, NULL);
 
     printf("[CACHE] Initialized: %s\n", db_path);
     return 0;
@@ -423,4 +439,169 @@ void keyserver_cache_free_entry(keyserver_cache_entry_t *entry) {
     }
 
     free(entry);
+}
+
+/* ============================================================================
+ * DISPLAY NAME CACHE IMPLEMENTATION
+ * ============================================================================ */
+
+// Get cached display name
+int keyserver_cache_get_name(const char *fingerprint, char *name_out, size_t name_out_size) {
+    if (!g_cache_db || !fingerprint || !name_out || name_out_size == 0) {
+        return -1;
+    }
+
+    const char *sql = "SELECT display_name, cached_at, ttl_seconds "
+                     "FROM name_cache WHERE fingerprint = ?";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[NAME_CACHE] Failed to prepare query: %s\n", sqlite3_errmsg(g_cache_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -2;  // Not found
+    }
+
+    const char *display_name = (const char*)sqlite3_column_text(stmt, 0);
+    uint64_t cached_at = sqlite3_column_int64(stmt, 1);
+    uint64_t ttl_seconds = sqlite3_column_int64(stmt, 2);
+
+    // Check if expired
+    uint64_t now = time(NULL);
+    if (now > cached_at + ttl_seconds) {
+        sqlite3_finalize(stmt);
+        printf("[NAME_CACHE] Entry expired for '%.16s...'\n", fingerprint);
+        return -2;  // Expired
+    }
+
+    // Copy result
+    if (display_name) {
+        strncpy(name_out, display_name, name_out_size - 1);
+        name_out[name_out_size - 1] = '\0';
+    } else {
+        name_out[0] = '\0';
+    }
+
+    sqlite3_finalize(stmt);
+    printf("[NAME_CACHE] Hit: %.16s... -> %s\n", fingerprint, name_out);
+    return 0;
+}
+
+// Store display name in cache
+int keyserver_cache_put_name(const char *fingerprint, const char *display_name, uint64_t ttl_seconds) {
+    if (!g_cache_db || !fingerprint || !display_name) {
+        return -1;
+    }
+
+    if (ttl_seconds == 0) {
+        ttl_seconds = DEFAULT_TTL_SECONDS;
+    }
+
+    const char *sql = "INSERT OR REPLACE INTO name_cache "
+                     "(fingerprint, display_name, cached_at, ttl_seconds) "
+                     "VALUES (?, ?, ?, ?)";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[NAME_CACHE] Failed to prepare insert: %s\n", sqlite3_errmsg(g_cache_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, display_name, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(stmt, 3, time(NULL));
+    sqlite3_bind_int64(stmt, 4, ttl_seconds);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "[NAME_CACHE] Failed to insert: %s\n", sqlite3_errmsg(g_cache_db));
+        return -1;
+    }
+
+    printf("[NAME_CACHE] Stored: %.16s... -> %s\n", fingerprint, display_name);
+    return 0;
+}
+
+// Get cached avatar
+int keyserver_cache_get_avatar(const char *fingerprint, char **avatar_out) {
+    if (!g_cache_db || !fingerprint || !avatar_out) {
+        return -1;
+    }
+
+    const char *sql = "SELECT avatar_base64 FROM name_cache WHERE fingerprint = ?";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[NAME_CACHE] Failed to prepare avatar query: %s\n", sqlite3_errmsg(g_cache_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(stmt);
+        return -2;  // Not found
+    }
+
+    const char *avatar = (const char*)sqlite3_column_text(stmt, 0);
+    if (!avatar || avatar[0] == '\0') {
+        sqlite3_finalize(stmt);
+        return -2;  // No avatar
+    }
+
+    *avatar_out = strdup(avatar);
+    sqlite3_finalize(stmt);
+
+    printf("[NAME_CACHE] Avatar hit: %.16s... (%zu bytes)\n", fingerprint, strlen(*avatar_out));
+    return 0;
+}
+
+// Store avatar for fingerprint
+int keyserver_cache_put_avatar(const char *fingerprint, const char *avatar_base64) {
+    if (!g_cache_db || !fingerprint) {
+        return -1;
+    }
+
+    const char *sql = "UPDATE name_cache SET avatar_base64 = ? WHERE fingerprint = ?";
+
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[NAME_CACHE] Failed to prepare avatar update: %s\n", sqlite3_errmsg(g_cache_db));
+        return -1;
+    }
+
+    if (avatar_base64) {
+        sqlite3_bind_text(stmt, 1, avatar_base64, -1, SQLITE_STATIC);
+    } else {
+        sqlite3_bind_null(stmt, 1);
+    }
+    sqlite3_bind_text(stmt, 2, fingerprint, -1, SQLITE_STATIC);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        fprintf(stderr, "[NAME_CACHE] Failed to update avatar: %s\n", sqlite3_errmsg(g_cache_db));
+        return -1;
+    }
+
+    if (avatar_base64) {
+        printf("[NAME_CACHE] Avatar stored: %.16s... (%zu bytes)\n", fingerprint, strlen(avatar_base64));
+    } else {
+        printf("[NAME_CACHE] Avatar cleared: %.16s...\n", fingerprint);
+    }
+    return 0;
 }

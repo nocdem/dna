@@ -662,6 +662,25 @@ dna_request_id_t dna_engine_get_display_name(
 );
 
 /**
+ * Get avatar for fingerprint
+ *
+ * Returns cached avatar or fetches from DHT if not cached.
+ * Avatar is base64 encoded.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Identity fingerprint
+ * @param callback    Called with avatar base64 (NULL if no avatar)
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_avatar(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_display_name_cb callback,
+    void *user_data
+);
+
+/**
  * Lookup name availability (name -> fingerprint)
  *
  * Checks if a name is already registered in DHT.

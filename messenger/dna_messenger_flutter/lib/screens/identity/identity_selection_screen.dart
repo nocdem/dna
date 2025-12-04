@@ -1,5 +1,6 @@
 // Identity Selection Screen - Choose or create identity
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -846,7 +847,7 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
   }
 }
 
-/// Identity list tile that fetches display name from DHT
+/// Identity list tile that fetches display name and avatar from DHT
 class _IdentityListTile extends ConsumerWidget {
   final String fingerprint;
   final VoidCallback onTap;
@@ -861,21 +862,40 @@ class _IdentityListTile extends ConsumerWidget {
     return '${fp.substring(0, 8)}...${fp.substring(fp.length - 8)}';
   }
 
+  Widget _buildAvatar(ThemeData theme, String? avatarBase64) {
+    if (avatarBase64 != null && avatarBase64.isNotEmpty) {
+      try {
+        final bytes = base64Decode(avatarBase64);
+        return CircleAvatar(
+          backgroundImage: MemoryImage(bytes),
+        );
+      } catch (e) {
+        // Invalid base64, fall through to default
+      }
+    }
+    return CircleAvatar(
+      backgroundColor: theme.colorScheme.primary.withAlpha(51),
+      child: Icon(
+        Icons.person,
+        color: theme.colorScheme.primary,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final displayNameAsync = ref.watch(identityDisplayNameProvider(fingerprint));
+    final avatarAsync = ref.watch(identityAvatarProvider(fingerprint));
     final shortFp = _shortenFingerprint(fingerprint);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
       child: ListTile(
-        leading: CircleAvatar(
-          backgroundColor: theme.colorScheme.primary.withAlpha(51),
-          child: Icon(
-            Icons.person,
-            color: theme.colorScheme.primary,
-          ),
+        leading: avatarAsync.when(
+          data: (avatar) => _buildAvatar(theme, avatar),
+          loading: () => _buildAvatar(theme, null),
+          error: (_, __) => _buildAvatar(theme, null),
         ),
         title: displayNameAsync.when(
           data: (name) => Text(
