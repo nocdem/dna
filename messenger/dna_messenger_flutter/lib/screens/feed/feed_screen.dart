@@ -15,12 +15,18 @@ class FeedScreen extends ConsumerStatefulWidget {
 
 class _FeedScreenState extends ConsumerState<FeedScreen> {
   final _composeController = TextEditingController();
-  final _commentController = TextEditingController();
+  final _commentControllers = <String, TextEditingController>{};
+
+  TextEditingController _getCommentController(String postId) {
+    return _commentControllers.putIfAbsent(postId, () => TextEditingController());
+  }
 
   @override
   void dispose() {
     _composeController.dispose();
-    _commentController.dispose();
+    for (final controller in _commentControllers.values) {
+      controller.dispose();
+    }
     super.dispose();
   }
 
@@ -213,13 +219,14 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
                     final post = list[index];
                     final isExpanded = expandedPosts.contains(post.postId);
 
+                    final commentController = _getCommentController(post.postId);
                     return _ExpandablePostCard(
                       post: post,
                       isExpanded: isExpanded,
                       onTap: () => _toggleExpansion(post.postId),
                       onVote: (value) => _castPostVote(post, value),
-                      commentController: _commentController,
-                      onSendComment: () => _sendComment(post.postId, channel.channelId),
+                      commentController: commentController,
+                      onSendComment: () => _sendComment(post.postId, channel.channelId, commentController),
                     );
                   },
                 ),
@@ -275,11 +282,11 @@ class _FeedScreenState extends ConsumerState<FeedScreen> {
     }
   }
 
-  Future<void> _sendComment(String postId, String channelId) async {
-    final text = _commentController.text.trim();
+  Future<void> _sendComment(String postId, String channelId, TextEditingController controller) async {
+    final text = controller.text.trim();
     if (text.isEmpty) return;
 
-    _commentController.clear();
+    controller.clear();
 
     try {
       await ref.read(postCommentsProvider(postId).notifier).addComment(text);
