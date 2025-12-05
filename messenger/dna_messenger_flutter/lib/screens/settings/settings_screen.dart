@@ -29,13 +29,36 @@ class SettingsScreen extends ConsumerWidget {
             simpleProfile: simpleProfile,
             fullProfile: fullProfile,
           ),
-          const Divider(),
           // Security
           _SecuritySection(),
-          const Divider(),
-          // About & Identity
+          // Identity
           _IdentitySection(fingerprint: fingerprint),
+          // About
+          _AboutSection(),
         ],
+      ),
+    );
+  }
+}
+
+/// Section header widget - clearly non-interactive
+class _SectionHeader extends StatelessWidget {
+  final String title;
+
+  const _SectionHeader(this.title);
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+      child: Text(
+        title.toUpperCase(),
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: theme.colorScheme.primary,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 1.2,
+        ),
       ),
     );
   }
@@ -57,50 +80,10 @@ class _ProfileSection extends StatelessWidget {
     final theme = Theme.of(context);
 
     return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Row(
-            children: [
-              _buildAvatar(theme),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    simpleProfile.when(
-                      data: (p) => Text(
-                        p?.nickname ?? 'Anonymous',
-                        style: theme.textTheme.titleLarge,
-                      ),
-                      loading: () => const SizedBox(
-                        width: 100,
-                        height: 20,
-                        child: LinearProgressIndicator(),
-                      ),
-                      error: (e, st) => Text(
-                        'Anonymous',
-                        style: theme.textTheme.titleLarge,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      fingerprint != null
-                          ? _shortenFingerprint(fingerprint!)
-                          : 'Not loaded',
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-        ListTile(
-          leading: Icon(Icons.edit, color: theme.colorScheme.primary),
-          title: const Text('Edit Profile'),
-          subtitle: const Text('Wallets, socials, bio, avatar'),
-          trailing: const Icon(Icons.chevron_right),
+        // Profile card - tappable to edit
+        InkWell(
           onTap: () {
             Navigator.push(
               context,
@@ -109,6 +92,57 @@ class _ProfileSection extends StatelessWidget {
               ),
             );
           },
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Row(
+              children: [
+                _buildAvatar(theme),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      simpleProfile.when(
+                        data: (p) => Text(
+                          p?.nickname ?? 'Anonymous',
+                          style: theme.textTheme.titleLarge,
+                        ),
+                        loading: () => const SizedBox(
+                          width: 100,
+                          height: 20,
+                          child: LinearProgressIndicator(),
+                        ),
+                        error: (e, st) => Text(
+                          'Anonymous',
+                          style: theme.textTheme.titleLarge,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        fingerprint != null
+                            ? _shortenFingerprint(fingerprint!)
+                            : 'Not loaded',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: DnaColors.textMuted,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Tap to edit profile',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                Icon(
+                  Icons.chevron_right,
+                  color: DnaColors.textMuted,
+                ),
+              ],
+            ),
+          ),
         ),
       ],
     );
@@ -169,27 +203,10 @@ class _ProfileSection extends StatelessWidget {
 class _SecuritySection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Row(
-            children: [
-              Icon(
-                Icons.security,
-                color: theme.colorScheme.primary,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Security',
-                style: theme.textTheme.titleMedium,
-              ),
-            ],
-          ),
-        ),
+        const _SectionHeader('Security'),
         ListTile(
           leading: const Icon(Icons.vpn_key),
           title: const Text('Export Seed Phrase'),
@@ -265,26 +282,11 @@ class _IdentitySection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-          child: Row(
-            children: [
-              Icon(
-                Icons.fingerprint,
-                color: theme.colorScheme.primary,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Identity',
-                style: theme.textTheme.titleMedium,
-              ),
-            ],
-          ),
-        ),
+        const _SectionHeader('Identity'),
         if (fingerprint != null)
           ListTile(
-            leading: const Icon(Icons.content_copy),
-            title: const Text('Copy Fingerprint'),
+            leading: const Icon(Icons.fingerprint),
+            title: const Text('Fingerprint'),
             subtitle: Text(
               fingerprint!,
               maxLines: 1,
@@ -293,6 +295,7 @@ class _IdentitySection extends ConsumerWidget {
                 fontFamily: 'monospace',
               ),
             ),
+            trailing: const Icon(Icons.content_copy),
             onTap: () {
               Clipboard.setData(ClipboardData(text: fingerprint!));
               ScaffoldMessenger.of(context).showSnackBar(
@@ -300,59 +303,49 @@ class _IdentitySection extends ConsumerWidget {
               );
             },
           ),
-        ListTile(
-          leading: Icon(Icons.swap_horiz, color: theme.colorScheme.secondary),
-          title: const Text('Switch Identity'),
-          subtitle: const Text('Use a different identity'),
-          trailing: const Icon(Icons.chevron_right),
-          onTap: () => _confirmSwitchIdentity(context, ref),
-        ),
-        const SizedBox(height: 16),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Text(
-            'DNA Messenger v1.0.0',
-            style: theme.textTheme.bodySmall,
-            textAlign: TextAlign.center,
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Text(
-            'Post-Quantum Encrypted',
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: theme.colorScheme.primary,
-            ),
-            textAlign: TextAlign.center,
-          ),
-        ),
-        const SizedBox(height: 16),
       ],
     );
   }
+}
 
-  void _confirmSwitchIdentity(BuildContext context, WidgetRef ref) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Switch Identity'),
-        content: const Text(
-          'Are you sure you want to switch to a different identity? You will need to sign in again.',
+class _AboutSection extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader('About'),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'DNA Messenger v1.0.0',
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Post-Quantum Encrypted Messenger',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: DnaColors.textMuted,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Kyber1024 + Dilithium5 + AES-256-GCM',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ],
+          ),
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          ElevatedButton(
-            onPressed: () {
-              Navigator.pop(context);
-              ref.read(identitiesProvider.notifier).unloadIdentity();
-            },
-            child: const Text('Switch'),
-          ),
-        ],
-      ),
+        const SizedBox(height: 24),
+      ],
     );
   }
 }
