@@ -6,7 +6,6 @@
 #include "theme_colors.h"
 #include "settings_manager.h"
 #include <GLFW/glfw3.h>
-#include "helpers/identity_helpers.h"
 #include "screens/register_name_screen.h"
 #include "screens/message_wall_screen.h"
 #include "screens/profile_editor_screen.h"
@@ -348,20 +347,4 @@ void DNAMessengerApp::renderDialogs() {
 
     // Register DNA Name dialog
     RegisterNameScreen::render(state);
-}
-
-
-
-// Static method: Input filter callback for identity name
-int DNAMessengerApp::IdentityNameInputFilter(ImGuiInputTextCallbackData* data) {
-    if (data->EventChar < 256) {
-        char c = (char)data->EventChar;
-        if ((c >= 'a' && c <= 'z') ||
-            (c >= 'A' && c <= 'Z') ||
-            (c >= '0' && c <= '9') ||
-            c == '_') {
-            return 0; // Accept
-        }
-    }
-    return 1; // Reject
 }

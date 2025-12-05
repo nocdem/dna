@@ -33,9 +33,6 @@ private:
     // Centralized application state
     AppState state;
 
-    // Identity helper (was static, now regular method)
-    static int IdentityNameInputFilter(ImGuiInputTextCallbackData* data);
-
     // Render loop helpers
     void handlePostLoginEvents();
     void processPendingRegistration();

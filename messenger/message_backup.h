@@ -204,32 +204,6 @@ int message_backup_search_by_identity(message_backup_context_t *ctx,
                                        int *count_out);
 
 /**
- * Get database statistics
- *
- * @param ctx Backup context
- * @param total_messages_out Total messages stored
- * @param unread_count_out Number of unread messages
- * @param db_size_bytes_out Database file size in bytes
- * @return 0 on success, -1 on error
- */
-int message_backup_get_stats(message_backup_context_t *ctx,
-                              int *total_messages_out,
-                              int *unread_count_out,
-                              long *db_size_bytes_out);
-
-/**
- * Export messages to JSON file
- *
- * Backup all messages to portable JSON format.
- *
- * @param ctx Backup context
- * @param output_path Path to JSON file (e.g., ~/backup.json)
- * @return 0 on success, -1 on error
- */
-int message_backup_export_json(message_backup_context_t *ctx,
-                                const char *output_path);
-
-/**
  * Delete a message by ID
  *
  * @param ctx Backup context

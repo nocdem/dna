@@ -539,49 +539,6 @@ void loadMessagesForContact(AppState& state, int contact_index) {
     });
 }
 
-void checkForNewMessages(AppState& state) {
-    messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
-    if (!ctx || !state.identity_loaded) {
-        return;
-    }
-
-    // Don't start a new poll if one is already running
-    if (state.message_poll_task.isRunning()) {
-        return;
-    }
-
-    // Start async poll task
-    state.message_poll_task.start([&state, ctx](AsyncTask* task) {
-        size_t messages_received = 0;
-
-        // 1. Refresh our presence in DHT (announce we're online)
-        printf("[Poll] Refreshing presence in DHT...\n");
-        messenger_p2p_refresh_presence(ctx);
-
-        // 2. Check DHT offline queue for new messages
-        int result = messenger_p2p_check_offline_messages(ctx, &messages_received);
-
-        if (result == 0 && messages_received > 0) {
-            printf("[Poll] [OK] Received %zu new message(s) from DHT offline queue\n", messages_received);
-            
-            // Show native OS notification for new message
-            DNA::NotificationManager::showNativeNotification(
-                "New Message - DNA Messenger",
-                "You have received " + std::to_string(messages_received) + " new message(s)",
-                DNA::NotificationType::MESSAGE
-            );
-            
-            // Set flag for main thread to reload messages
-            state.new_messages_received = true;
-        } else if (result != 0) {
-            printf("[Poll] Warning: Error checking offline messages\n");
-        }
-
-        // 3. Note: Contact presence update happens in main thread when reloading contacts
-        // (loadContactsForIdentity calls messenger_p2p_peer_online for each contact)
-    });
-}
-
 void fetchRegisteredName(AppState& state) {
     messenger_context_t *ctx = (messenger_context_t*)state.messenger_ctx;
     if (!ctx || !state.identity_loaded) {
