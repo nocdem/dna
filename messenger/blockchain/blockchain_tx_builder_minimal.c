@@ -425,7 +425,7 @@ int cellframe_tx_add_signature(cellframe_tx_builder_t *builder,
  * Uses pre-computed c_pow10_double table for proper 256-bit arithmetic.
  * Supports numbers up to 78 digits (full uint256_t range).
  */
-static int cellframe_uint256_scan_uninteger(const char *str, uint256_t *out) {
+int cellframe_uint256_scan_uninteger(const char *str, uint256_t *out) {
     if (!str || !out) {
         return -1;
     }
