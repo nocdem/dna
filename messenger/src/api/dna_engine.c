@@ -774,6 +774,11 @@ void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task) {
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
+    } else {
+        /* Cache the registered name to SQLite for identity selector */
+        keyserver_cache_put_name(engine->fingerprint, task->params.register_name.name, 0);
+        printf("[DNA_ENGINE] Name registered and cached: %.16s... -> %s\n",
+               engine->fingerprint, task->params.register_name.name);
     }
 
 done:
