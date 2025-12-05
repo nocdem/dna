@@ -196,18 +196,23 @@ final identityDisplayNameProvider = FutureProvider.family<String?, String>((ref,
 
 /// Provider to fetch and cache avatar for a fingerprint
 final identityAvatarProvider = FutureProvider.family<String?, String>((ref, fingerprint) async {
+  print('[AvatarProvider] Fetching avatar for ${fingerprint.substring(0, 16)}...');
+
   // Watch cache so provider rebuilds when cache updates
   final cache = ref.watch(identityAvatarCacheProvider);
   if (cache.containsKey(fingerprint)) {
+    print('[AvatarProvider] Found in memory cache: ${cache[fingerprint]!.length} bytes');
     return cache[fingerprint];
   }
 
   // Fetch from backend (checks SQLite cache first, then DHT)
   try {
     final engine = await ref.read(engineProvider.future);
+    print('[AvatarProvider] Calling engine.getAvatar...');
     final avatar = await engine.getAvatar(fingerprint);
 
     if (avatar != null && avatar.isNotEmpty) {
+      print('[AvatarProvider] Got avatar from backend: ${avatar.length} bytes');
       // Update cache
       final currentCache = ref.read(identityAvatarCacheProvider);
       if (!currentCache.containsKey(fingerprint)) {
@@ -216,9 +221,11 @@ final identityAvatarProvider = FutureProvider.family<String?, String>((ref, fing
         ref.read(identityAvatarCacheProvider.notifier).state = newCache;
       }
       return avatar;
+    } else {
+      print('[AvatarProvider] No avatar returned from backend');
     }
   } catch (e) {
-    // Lookup failed, return null
+    print('[AvatarProvider] Error fetching avatar: $e');
   }
 
   return null;
