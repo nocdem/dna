@@ -47,6 +47,9 @@ class _AppLoader extends ConsumerWidget {
     // Activate event handler when engine is ready
     ref.watch(eventHandlerActiveProvider);
 
+    // Activate background tasks (DHT offline message polling)
+    ref.watch(backgroundTasksActiveProvider);
+
     return engine.when(
       data: (_) => const HomeScreen(),
       loading: () => const _LoadingScreen(),

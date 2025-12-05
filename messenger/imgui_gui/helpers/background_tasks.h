@@ -5,6 +5,7 @@
  * Manages periodic background tasks:
  * - GSK discovery polling (every 2 minutes)
  * - Group outbox sync (every 30 seconds)
+ * - Direct message queue polling (every 2 minutes)
  *
  * Part of DNA Messenger v0.10 - Group Outbox
  *
@@ -76,6 +77,16 @@ public:
     void pollGroupOutbox();
 
     /**
+     * Poll direct message DHT offline queue
+     *
+     * Called every 2 minutes.
+     * Queries each contact's outbox for messages addressed to this user.
+     * This catches messages when Tier 1 (TCP) and Tier 2 (ICE) fail
+     * but both users are online.
+     */
+    void pollDirectMessageQueue();
+
+    /**
      * Force immediate poll (for testing or manual refresh)
      */
     void forcePoll();
@@ -85,6 +96,7 @@ private:
         : ctx_(nullptr)
         , last_gsk_poll_(0)
         , last_group_outbox_poll_(0)
+        , last_direct_msg_poll_(0)
         , initialized_(false)
     {}
     ~BackgroundTaskManager() = default;
@@ -99,12 +111,14 @@ private:
 
     uint64_t last_gsk_poll_;
     uint64_t last_group_outbox_poll_;
+    uint64_t last_direct_msg_poll_;
 
     bool initialized_;
 
     // Poll intervals (seconds)
     static constexpr uint64_t GSK_POLL_INTERVAL = 120;              // 2 minutes
     static constexpr uint64_t GROUP_OUTBOX_POLL_INTERVAL = 30;      // 30 seconds
+    static constexpr uint64_t DIRECT_MSG_POLL_INTERVAL = 120;       // 2 minutes
 };
 
 } // namespace DNA

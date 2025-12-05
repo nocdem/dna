@@ -85,7 +85,8 @@ dna_messenger_flutter/
 │   │   ├── groups_provider.dart    # ✅ Group actions
 │   │   ├── wallet_provider.dart    # ✅ Send/transactions
 │   │   ├── theme_provider.dart
-│   │   └── event_handler.dart      # ✅ Real-time event handling
+│   │   ├── event_handler.dart      # ✅ Real-time event handling
+│   │   └── background_tasks_provider.dart  # ✅ DHT offline message polling
 │   ├── screens/                # ✅ UI screens
 │   │   ├── identity/identity_selection_screen.dart  # ✅ BIP39 integrated
 │   │   ├── contacts/contacts_screen.dart

@@ -9,3 +9,4 @@ export 'groups_provider.dart';
 export 'wallet_provider.dart';
 export 'feed_provider.dart';
 export 'profile_provider.dart';
+export 'background_tasks_provider.dart';

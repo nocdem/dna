@@ -1,0 +1,147 @@
+// Background Tasks Provider - Periodic DHT polling for offline messages
+import 'dart:async';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../ffi/dna_engine.dart';
+import 'engine_provider.dart';
+import 'identity_provider.dart';
+import 'contacts_provider.dart';
+import 'messages_provider.dart';
+
+/// Poll interval for DHT offline messages (2 minutes)
+const _pollInterval = Duration(minutes: 2);
+
+/// Initial delay before first poll after identity load (15 seconds)
+const _initialDelay = Duration(seconds: 15);
+
+/// Background task manager state
+class BackgroundTasksState {
+  final bool isPolling;
+  final DateTime? lastPollTime;
+  final int messagesReceived;
+
+  const BackgroundTasksState({
+    this.isPolling = false,
+    this.lastPollTime,
+    this.messagesReceived = 0,
+  });
+
+  BackgroundTasksState copyWith({
+    bool? isPolling,
+    DateTime? lastPollTime,
+    int? messagesReceived,
+  }) {
+    return BackgroundTasksState(
+      isPolling: isPolling ?? this.isPolling,
+      lastPollTime: lastPollTime ?? this.lastPollTime,
+      messagesReceived: messagesReceived ?? this.messagesReceived,
+    );
+  }
+}
+
+/// Background tasks manager - handles periodic DHT polling
+final backgroundTasksProvider = StateNotifierProvider<BackgroundTasksNotifier, BackgroundTasksState>(
+  (ref) => BackgroundTasksNotifier(ref),
+);
+
+class BackgroundTasksNotifier extends StateNotifier<BackgroundTasksState> {
+  final Ref _ref;
+  Timer? _pollTimer;
+  bool _disposed = false;
+
+  BackgroundTasksNotifier(this._ref) : super(const BackgroundTasksState()) {
+    // Start polling when identity is loaded
+    _ref.listen(currentFingerprintProvider, (previous, next) {
+      if (next != null && previous == null) {
+        // Identity just loaded - start polling after initial delay
+        _startPolling();
+      } else if (next == null && previous != null) {
+        // Identity unloaded - stop polling
+        _stopPolling();
+      }
+    }, fireImmediately: true);
+  }
+
+  void _startPolling() {
+    if (_disposed) return;
+
+    print('[BackgroundTasks] Starting offline message polling (interval: ${_pollInterval.inSeconds}s)');
+
+    // Cancel existing timer if any
+    _pollTimer?.cancel();
+
+    // Initial poll after delay
+    Future.delayed(_initialDelay, () {
+      if (!_disposed && mounted) {
+        _pollOfflineMessages();
+      }
+    });
+
+    // Set up periodic timer
+    _pollTimer = Timer.periodic(_pollInterval, (_) {
+      if (!_disposed && mounted) {
+        _pollOfflineMessages();
+      }
+    });
+  }
+
+  void _stopPolling() {
+    print('[BackgroundTasks] Stopping offline message polling');
+    _pollTimer?.cancel();
+    _pollTimer = null;
+  }
+
+  Future<void> _pollOfflineMessages() async {
+    if (state.isPolling) {
+      print('[BackgroundTasks] Poll already in progress, skipping');
+      return;
+    }
+
+    print('[BackgroundTasks] Polling DHT offline message queue...');
+    state = state.copyWith(isPolling: true);
+
+    try {
+      final engine = await _ref.read(engineProvider.future);
+      await engine.checkOfflineMessages();
+
+      state = state.copyWith(
+        isPolling: false,
+        lastPollTime: DateTime.now(),
+      );
+
+      print('[BackgroundTasks] Poll complete');
+
+      // Refresh contacts and current conversation to show new messages
+      _ref.invalidate(contactsProvider);
+
+      // If a contact is selected, refresh their conversation
+      final selectedContact = _ref.read(selectedContactProvider);
+      if (selectedContact != null) {
+        _ref.invalidate(conversationProvider(selectedContact.fingerprint));
+      }
+
+    } catch (e) {
+      print('[BackgroundTasks] Poll failed: $e');
+      state = state.copyWith(isPolling: false);
+    }
+  }
+
+  /// Force an immediate poll (for manual refresh)
+  Future<void> forcePoll() async {
+    await _pollOfflineMessages();
+  }
+
+  @override
+  void dispose() {
+    _disposed = true;
+    _stopPolling();
+    super.dispose();
+  }
+}
+
+/// Provider to ensure background tasks are active
+/// Add this to your main widget tree to start background polling
+final backgroundTasksActiveProvider = Provider<bool>((ref) {
+  // Just watching the provider ensures it's created and running
+  ref.watch(backgroundTasksProvider);
+  return true;
+});

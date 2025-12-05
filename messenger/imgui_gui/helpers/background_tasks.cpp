@@ -10,6 +10,7 @@
 #include "background_tasks.h"
 #include "notification_manager.h"
 #include "../../messenger.h"
+#include "../../messenger_p2p.h"
 #include "../../p2p/p2p_transport.h"
 #include "../../messenger/gsk.h"
 #include "../../messenger/gsk_packet.h"
@@ -46,6 +47,7 @@ void BackgroundTaskManager::init(messenger_context_t* ctx, const std::string& id
     uint64_t now = static_cast<uint64_t>(std::time(nullptr));
     last_gsk_poll_ = now - GSK_POLL_INTERVAL + 10;                     // First poll in 10 seconds
     last_group_outbox_poll_ = now - GROUP_OUTBOX_POLL_INTERVAL + 5;    // First poll in 5 seconds
+    last_direct_msg_poll_ = now - DIRECT_MSG_POLL_INTERVAL + 15;       // First poll in 15 seconds
 
     printf("[BACKGROUND] Initialized background tasks (identity=%s, fingerprint=%s)\n",
            identity.c_str(), fingerprint_.c_str());
@@ -71,6 +73,13 @@ void BackgroundTaskManager::update() {
     if (now - last_group_outbox_poll_ >= GROUP_OUTBOX_POLL_INTERVAL) {
         pollGroupOutbox();
         last_group_outbox_poll_ = now;
+    }
+
+    // Direct message DHT queue polling (every 2 minutes)
+    // Catches messages when Tier 1 (TCP) and Tier 2 (ICE) fail
+    if (now - last_direct_msg_poll_ >= DIRECT_MSG_POLL_INTERVAL) {
+        pollDirectMessageQueue();
+        last_direct_msg_poll_ = now;
     }
 }
 
@@ -236,6 +245,37 @@ void BackgroundTaskManager::pollGroupOutbox() {
 }
 
 /**
+ * Poll direct message DHT offline queue
+ *
+ * Queries each contact's outbox for messages addressed to this user.
+ * This catches messages when Tier 1 (TCP) and Tier 2 (ICE) fail
+ * but both users are online.
+ */
+void BackgroundTaskManager::pollDirectMessageQueue() {
+    if (!ctx_) return;
+
+    printf("[BACKGROUND] Polling direct message DHT queue...\n");
+
+    size_t messages_received = 0;
+    int result = messenger_p2p_check_offline_messages(ctx_, &messages_received);
+
+    if (result == 0 && messages_received > 0) {
+        printf("[BACKGROUND] Received %zu direct message(s) from DHT offline queue\n", messages_received);
+
+        // Show native OS notification
+        NotificationManager::showNativeNotification(
+            "New Message",
+            std::to_string(messages_received) + " new message(s) received",
+            NotificationType::MESSAGE
+        );
+    } else if (result != 0) {
+        fprintf(stderr, "[BACKGROUND] Direct message queue poll failed\n");
+    }
+
+    printf("[BACKGROUND] Direct message queue poll complete\n");
+}
+
+/**
  * Force immediate poll (for testing or manual refresh)
  */
 void BackgroundTaskManager::forcePoll() {
@@ -247,11 +287,13 @@ void BackgroundTaskManager::forcePoll() {
 
     pollGSKDiscovery();
     pollGroupOutbox();
+    pollDirectMessageQueue();
 
     // Update timestamps
     uint64_t now = static_cast<uint64_t>(std::time(nullptr));
     last_gsk_poll_ = now;
     last_group_outbox_poll_ = now;
+    last_direct_msg_poll_ = now;
 }
 
 } // namespace DNA

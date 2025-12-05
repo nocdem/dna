@@ -2385,6 +2385,45 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // OFFLINE MESSAGE POLLING
+  // ---------------------------------------------------------------------------
+
+  /// Check DHT offline queue for new messages from contacts
+  ///
+  /// This polls all contacts' outboxes for messages addressed to this user.
+  /// Should be called periodically (every 2 minutes) to catch messages when
+  /// Tier 1 (TCP) and Tier 2 (ICE) connections fail.
+  Future<void> checkOfflineMessages() async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_check_offline_messages(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
   // CLEANUP
   // ---------------------------------------------------------------------------
 
