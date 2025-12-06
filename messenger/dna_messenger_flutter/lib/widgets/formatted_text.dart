@@ -77,6 +77,8 @@ class FormattedText extends StatelessWidget {
         TextSpan(children: spans),
         textAlign: textAlign ?? TextAlign.start,
         maxLines: maxLines,
+        selectionControls: MaterialTextSelectionControls(),
+        cursorColor: Theme.of(context).colorScheme.primary,
       );
     }
 

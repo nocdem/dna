@@ -162,5 +162,10 @@ class DnaTheme {
       selectedItemColor: DnaColors.primary,
       unselectedItemColor: DnaColors.textMuted,
     ),
+    textSelectionTheme: TextSelectionThemeData(
+      selectionColor: DnaColors.primary.withAlpha(100),
+      cursorColor: DnaColors.primary,
+      selectionHandleColor: DnaColors.primary,
+    ),
   );
 }
