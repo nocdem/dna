@@ -38,7 +38,7 @@ build:native-linux-x64:
     - apt-get update -qq
     - apt-get install -y -qq build-essential cmake git pkg-config xxd wget tar
     # Core dependencies
-    - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev
+    - apt-get install -y -qq libssl-dev libcurl4-openssl-dev libjson-c-dev libsqlite3-dev libzstd-dev
     # OpenDHT build dependencies
     - apt-get install -y -qq libgnutls28-dev libargon2-dev libmsgpack-dev libreadline-dev libncurses5-dev nettle-dev libjsoncpp-dev libfmt-dev libasio-dev libhttp-parser-dev libcppunit-dev
     # Flutter Linux desktop dependencies
