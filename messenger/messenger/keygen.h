@@ -38,14 +38,18 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
  * Creates encrypted DHT identity backup.
  * Optionally creates Cellframe wallet if wallet_seed provided.
  *
+ * Directory structure: ~/.dna/<name>/keys/, ~/.dna/<name>/wallets/
+ *
+ * @param name: Identity name (required, used for directory and wallet naming)
  * @param signing_seed: 32-byte seed for Dilithium5 key derivation
  * @param encryption_seed: 32-byte seed for Kyber1024 key derivation
  * @param wallet_seed: 32-byte seed for Cellframe wallet (optional, can be NULL)
- * @param data_dir: Directory to store keys (e.g., ~/.dna or app-specific dir)
+ * @param data_dir: Base directory (e.g., ~/.dna)
  * @param fingerprint_out: Output buffer for fingerprint (129 bytes)
  * @return: 0 on success, -1 on error
  */
 int messenger_generate_keys_from_seeds(
+    const char *name,
     const uint8_t *signing_seed,
     const uint8_t *encryption_seed,
     const uint8_t *wallet_seed,

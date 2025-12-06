@@ -107,6 +107,7 @@ typedef enum {
 typedef union {
     /* Create identity */
     struct {
+        char name[256];        /* Required: identity name for directory structure */
         uint8_t signing_seed[32];
         uint8_t encryption_seed[32];
         uint8_t *wallet_seed;  /* Optional: 32-byte Cellframe wallet seed (NULL if not provided) */

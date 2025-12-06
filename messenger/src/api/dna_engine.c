@@ -550,76 +550,104 @@ const char* dna_engine_get_fingerprint(dna_engine_t *engine) {
 
 /* ============================================================================
  * IDENTITY SCAN HELPER
+ * Scans ~/.dna/<name>/keys/ directories for identity key files
  * ============================================================================ */
 
+/* Helper to check if filename is a valid fingerprint.dsa */
+static bool is_valid_fingerprint_dsa(const char *filename) {
+    size_t len = strlen(filename);
+    if (len != 132 || strcmp(filename + 128, ".dsa") != 0) {
+        return false;
+    }
+    /* Check first 128 chars are hex */
+    for (int i = 0; i < 128; i++) {
+        char c = filename[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 int dna_scan_identities(const char *data_dir, char ***fingerprints_out, int *count_out) {
-    DIR *dir = opendir(data_dir);
-    if (!dir) {
+    DIR *base_dir = opendir(data_dir);
+    if (!base_dir) {
         *fingerprints_out = NULL;
         *count_out = 0;
         return 0; /* Empty result, not an error */
     }
 
-    /* First pass: count .dsa files with 128-char fingerprint names */
+    /* Dynamic array for fingerprints */
+    int capacity = 16;
     int count = 0;
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        size_t len = strlen(entry->d_name);
-        if (len == 132 && strcmp(entry->d_name + 128, ".dsa") == 0) {
-            /* Check it's all hex */
-            bool valid = true;
-            for (int i = 0; i < 128 && valid; i++) {
-                char c = entry->d_name[i];
-                valid = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-            }
-            if (valid) count++;
-        }
+    char **fingerprints = calloc(capacity, sizeof(char*));
+    if (!fingerprints) {
+        closedir(base_dir);
+        return -1;
     }
 
+    /* Scan each subdirectory in ~/.dna/ */
+    struct dirent *identity_entry;
+    while ((identity_entry = readdir(base_dir)) != NULL) {
+        /* Skip . and .. */
+        if (strcmp(identity_entry->d_name, ".") == 0 ||
+            strcmp(identity_entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        /* Build path to keys directory: ~/.dna/<name>/keys/ */
+        char keys_path[512];
+        snprintf(keys_path, sizeof(keys_path), "%s/%s/keys", data_dir, identity_entry->d_name);
+
+        DIR *keys_dir = opendir(keys_path);
+        if (!keys_dir) {
+            continue; /* No keys directory, skip */
+        }
+
+        /* Scan for .dsa files in keys directory */
+        struct dirent *key_entry;
+        while ((key_entry = readdir(keys_dir)) != NULL) {
+            if (is_valid_fingerprint_dsa(key_entry->d_name)) {
+                /* Expand array if needed */
+                if (count >= capacity) {
+                    capacity *= 2;
+                    char **new_fps = realloc(fingerprints, capacity * sizeof(char*));
+                    if (!new_fps) {
+                        for (int i = 0; i < count; i++) free(fingerprints[i]);
+                        free(fingerprints);
+                        closedir(keys_dir);
+                        closedir(base_dir);
+                        return -1;
+                    }
+                    fingerprints = new_fps;
+                }
+
+                /* Extract fingerprint (first 128 chars of filename) */
+                fingerprints[count] = strndup(key_entry->d_name, 128);
+                if (!fingerprints[count]) {
+                    for (int i = 0; i < count; i++) free(fingerprints[i]);
+                    free(fingerprints);
+                    closedir(keys_dir);
+                    closedir(base_dir);
+                    return -1;
+                }
+                count++;
+            }
+        }
+        closedir(keys_dir);
+    }
+
+    closedir(base_dir);
+
     if (count == 0) {
-        closedir(dir);
+        free(fingerprints);
         *fingerprints_out = NULL;
         *count_out = 0;
         return 0;
     }
 
-    /* Allocate array */
-    char **fingerprints = calloc(count, sizeof(char*));
-    if (!fingerprints) {
-        closedir(dir);
-        return -1;
-    }
-
-    /* Second pass: collect fingerprints */
-    rewinddir(dir);
-    int idx = 0;
-    while ((entry = readdir(dir)) != NULL && idx < count) {
-        size_t len = strlen(entry->d_name);
-        if (len == 132 && strcmp(entry->d_name + 128, ".dsa") == 0) {
-            bool valid = true;
-            for (int i = 0; i < 128 && valid; i++) {
-                char c = entry->d_name[i];
-                valid = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
-            }
-            if (valid) {
-                fingerprints[idx] = strndup(entry->d_name, 128);
-                if (!fingerprints[idx]) {
-                    /* Cleanup on error */
-                    for (int j = 0; j < idx; j++) {
-                        free(fingerprints[j]);
-                    }
-                    free(fingerprints);
-                    closedir(dir);
-                    return -1;
-                }
-                idx++;
-            }
-        }
-    }
-
-    closedir(dir);
     *fingerprints_out = fingerprints;
-    *count_out = idx;
+    *count_out = count;
     return 0;
 }
 
@@ -684,6 +712,7 @@ void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
     char fingerprint_buf[129] = {0};
 
     int rc = messenger_generate_keys_from_seeds(
+        task->params.create_identity.name,
         task->params.create_identity.signing_seed,
         task->params.create_identity.encryption_seed,
         task->params.create_identity.wallet_seed,  /* wallet_seed - may be NULL */
@@ -2678,18 +2707,27 @@ dna_request_id_t dna_engine_list_identities(
 
 dna_request_id_t dna_engine_create_identity(
     dna_engine_t *engine,
+    const char *name,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
+    const uint8_t *wallet_seed,
     dna_identity_created_cb callback,
     void *user_data
 ) {
-    if (!engine || !signing_seed || !encryption_seed || !callback) {
+    if (!engine || !name || !signing_seed || !encryption_seed || !callback) {
         return DNA_REQUEST_ID_INVALID;
     }
 
     dna_task_params_t params = {0};
+    strncpy(params.create_identity.name, name, sizeof(params.create_identity.name) - 1);
     memcpy(params.create_identity.signing_seed, signing_seed, 32);
     memcpy(params.create_identity.encryption_seed, encryption_seed, 32);
+    if (wallet_seed) {
+        params.create_identity.wallet_seed = malloc(32);
+        if (params.create_identity.wallet_seed) {
+            memcpy(params.create_identity.wallet_seed, wallet_seed, 32);
+        }
+    }
 
     dna_task_callback_t cb = { .identity_created = callback };
     return dna_submit_task(engine, TASK_CREATE_IDENTITY, &params, cb, user_data);
@@ -2697,16 +2735,17 @@ dna_request_id_t dna_engine_create_identity(
 
 int dna_engine_create_identity_sync(
     dna_engine_t *engine,
+    const char *name,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
     const uint8_t wallet_seed[32],
     char fingerprint_out[129]
 ) {
-    if (!engine || !signing_seed || !encryption_seed || !fingerprint_out) {
+    if (!engine || !name || !signing_seed || !encryption_seed || !fingerprint_out) {
         return DNA_ERROR_INVALID_ARG;
     }
 
-    int rc = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, wallet_seed, engine->data_dir, fingerprint_out);
+    int rc = messenger_generate_keys_from_seeds(name, signing_seed, encryption_seed, wallet_seed, engine->data_dir, fingerprint_out);
     return (rc == 0) ? DNA_OK : DNA_ERROR_CRYPTO;
 }
 

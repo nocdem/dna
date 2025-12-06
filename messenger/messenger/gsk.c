@@ -444,17 +444,17 @@ static int gsk_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
         const char *member_identity = meta->members[i];
 
         // Lookup member's public keys from DHT keyserver
-        dht_pubkey_entry_t *entry = NULL;
-        if (dht_keyserver_lookup(dht_ctx, member_identity, &entry) != 0 || !entry) {
+        dna_unified_identity_t *member_id = NULL;
+        if (dht_keyserver_lookup(dht_ctx, member_identity, &member_id) != 0 || !member_id) {
             fprintf(stderr, "[GSK] Warning: Failed to lookup keys for %s (skipping)\n", member_identity);
             continue;
         }
 
         // Calculate fingerprint (SHA3-512 of Dilithium pubkey)
         uint8_t fingerprint[64];
-        if (qgp_sha3_512(entry->dilithium_pubkey, 2592, fingerprint) != 0) {
+        if (qgp_sha3_512(member_id->dilithium_pubkey, 2592, fingerprint) != 0) {
             fprintf(stderr, "[GSK] Failed to calculate fingerprint for %s\n", member_identity);
-            dht_keyserver_free_entry(entry);
+            dna_identity_free(member_id);
             continue;
         }
 
@@ -462,19 +462,19 @@ static int gsk_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
         kyber_pubkeys[valid_members] = (uint8_t *)malloc(1568);  // Kyber1024 pubkey size
         if (!kyber_pubkeys[valid_members]) {
             fprintf(stderr, "[GSK] Memory allocation failed\n");
-            dht_keyserver_free_entry(entry);
+            dna_identity_free(member_id);
             continue;
         }
 
-        // Copy Kyber pubkey from entry
-        memcpy(kyber_pubkeys[valid_members], entry->kyber_pubkey, 1568);
+        // Copy Kyber pubkey from identity
+        memcpy(kyber_pubkeys[valid_members], member_id->kyber_pubkey, 1568);
 
         // Populate member entry
         memcpy(member_entries[valid_members].fingerprint, fingerprint, 64);
         member_entries[valid_members].kyber_pubkey = kyber_pubkeys[valid_members];
         valid_members++;
 
-        dht_keyserver_free_entry(entry);
+        dna_identity_free(member_id);
     }
 
     if (valid_members == 0) {

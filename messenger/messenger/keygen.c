@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <dirent.h>
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_types.h"
 #include "../crypto/utils/qgp_dilithium.h"
@@ -158,6 +159,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
 }
 
 int messenger_generate_keys_from_seeds(
+    const char *name,
     const uint8_t *signing_seed,
     const uint8_t *encryption_seed,
     const uint8_t *wallet_seed,
@@ -165,18 +167,11 @@ int messenger_generate_keys_from_seeds(
     char *fingerprint_out)
 {
     if (!signing_seed || !encryption_seed || !data_dir || !fingerprint_out) {
+        fprintf(stderr, "Error: Invalid arguments to messenger_generate_keys_from_seeds\n");
         return -1;
     }
 
-    // Create data directory if needed
-    if (!qgp_platform_is_directory(data_dir)) {
-        if (qgp_platform_mkdir(data_dir) != 0) {
-            fprintf(stderr, "Error: Cannot create directory: %s\n", data_dir);
-            return -1;
-        }
-    }
-
-    // Generate Dilithium5 (ML-DSA-87) signing key from seed
+    // Generate Dilithium5 (ML-DSA-87) signing key from seed FIRST (need fingerprint for directory)
     qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
     if (!sign_key) {
         fprintf(stderr, "Error: Memory allocation failed for signing key\n");
@@ -211,12 +206,62 @@ int messenger_generate_keys_from_seeds(
     char fingerprint[129];
     dna_compute_fingerprint(dilithium_pk, fingerprint);
 
+    // Determine directory name: use provided name, or fallback to fingerprint
+    const char *dir_name = (name && name[0]) ? name : fingerprint;
+
+    // Create directory structure: ~/.dna/<name>/keys/ and ~/.dna/<name>/wallets/
+    char identity_dir[512];
+    char keys_dir[512];
+    char wallets_dir[512];
+
+    snprintf(identity_dir, sizeof(identity_dir), "%s/%s", data_dir, dir_name);
+    snprintf(keys_dir, sizeof(keys_dir), "%s/%s/keys", data_dir, dir_name);
+    snprintf(wallets_dir, sizeof(wallets_dir), "%s/%s/wallets", data_dir, dir_name);
+
+    // Create base data dir if needed
+    if (!qgp_platform_is_directory(data_dir)) {
+        if (qgp_platform_mkdir(data_dir) != 0) {
+            fprintf(stderr, "Error: Cannot create directory: %s\n", data_dir);
+            qgp_key_free(sign_key);
+            return -1;
+        }
+    }
+
+    // Create identity directory
+    if (!qgp_platform_is_directory(identity_dir)) {
+        if (qgp_platform_mkdir(identity_dir) != 0) {
+            fprintf(stderr, "Error: Cannot create directory: %s\n", identity_dir);
+            qgp_key_free(sign_key);
+            return -1;
+        }
+    }
+
+    // Create keys directory
+    if (!qgp_platform_is_directory(keys_dir)) {
+        if (qgp_platform_mkdir(keys_dir) != 0) {
+            fprintf(stderr, "Error: Cannot create directory: %s\n", keys_dir);
+            qgp_key_free(sign_key);
+            return -1;
+        }
+    }
+
+    // Create wallets directory
+    if (!qgp_platform_is_directory(wallets_dir)) {
+        if (qgp_platform_mkdir(wallets_dir) != 0) {
+            fprintf(stderr, "Error: Cannot create directory: %s\n", wallets_dir);
+            qgp_key_free(sign_key);
+            return -1;
+        }
+    }
+
+    printf("[KEYGEN] Creating identity '%s' in %s\n", dir_name, identity_dir);
+
     printf("✓ ML-DSA-87 signing key generated from seed\n");
     printf("  Fingerprint: %s\n", fingerprint);
 
-    // Save with fingerprint-based filename (Phase 4: fingerprint-first)
+    // Save to keys directory
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", data_dir, fingerprint);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", keys_dir, fingerprint);
 
     if (qgp_key_save(sign_key, dilithium_path) != 0) {
         fprintf(stderr, "Error: Failed to save signing key\n");
@@ -272,9 +317,9 @@ int messenger_generate_keys_from_seeds(
     enc_key->private_key = kyber_sk;
     enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
-    // Save with fingerprint-based filename (Phase 4: fingerprint-first)
+    // Save to keys directory
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", data_dir, fingerprint);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", keys_dir, fingerprint);
 
     if (qgp_key_save(enc_key, kyber_path) != 0) {
         fprintf(stderr, "Error: Failed to save encryption key\n");
@@ -320,25 +365,10 @@ int messenger_generate_keys_from_seeds(
             dht_identity_free(dht_identity);
         }
 
-        // Publish public keys to DHT keyserver (even without a registered name)
-        printf("[DHT_KEYSERVER] Publishing public keys to DHT (fingerprint-only, no name)...\n");
-        if (dht_keyserver_publish(dht_ctx, fingerprint, NULL,
-                                  dilithium_pubkey_copy, kyber_pubkey_copy,
-                                  dilithium_privkey_copy) != 0) {
-            fprintf(stderr, "Warning: Failed to publish public keys to DHT\n");
-            fprintf(stderr, "         You may not be able to receive messages until you register a name\n");
-        } else {
-            printf("[DHT_KEYSERVER] ✓ Public keys published to DHT successfully\n");
-
-            // Add to local cache immediately (avoid DHT propagation delay)
-            printf("[DHT_KEYSERVER] Caching own public keys locally...\n");
-            if (keyserver_cache_put(fingerprint, dilithium_pubkey_copy, dilithium_pubkey_size,
-                                   kyber_pubkey_copy, kyber_pubkey_size, 365*24*60*60) == 0) {
-                printf("[DHT_KEYSERVER] ✓ Public keys cached locally\n");
-            } else {
-                fprintf(stderr, "Warning: Failed to cache public keys locally\n");
-            }
-        }
+        // NOTE: DHT publishing is now done via dht_keyserver_publish() with a name
+        // Name-first architecture: identities are only published when a DNA name is registered
+        // Keys are saved locally here, but not published to DHT until name registration
+        printf("[DHT_KEYSERVER] Keys saved locally. DHT publish requires DNA name registration.\n");
     }
 
     qgp_key_free(enc_key);
@@ -355,17 +385,11 @@ int messenger_generate_keys_from_seeds(
     if (wallet_seed) {
         printf("[WALLET] Creating Cellframe wallet...\n");
 
-        // Use short fingerprint prefix for wallet name (first 16 chars)
-        char wallet_name[64];
-        snprintf(wallet_name, sizeof(wallet_name), "dna_%.16s", fingerprint);
-
         char wallet_address[CF_WALLET_ADDRESS_MAX];
 
-        // Create in ~/.dna/wallets/
-        char wallets_dir[512];
-        snprintf(wallets_dir, sizeof(wallets_dir), "%s/wallets", data_dir);
-        if (cellframe_wallet_create_from_seed(wallet_seed, wallet_name, wallets_dir, wallet_address) == 0) {
-            printf("[WALLET] ✓ Cellframe wallet created: %s\n", wallet_name);
+        // Create wallet as <dir_name>.dwallet in ~/.dna/<dir_name>/wallets/
+        if (cellframe_wallet_create_from_seed(wallet_seed, dir_name, wallets_dir, wallet_address) == 0) {
+            printf("[WALLET] ✓ Cellframe wallet created: %s.dwallet\n", dir_name);
             printf("[WALLET] ✓ Address: %s\n", wallet_address);
         } else {
             fprintf(stderr, "[WALLET] Warning: Failed to create Cellframe wallet (non-fatal)\n");
@@ -380,6 +404,42 @@ int messenger_generate_keys_from_seeds(
     printf("✓ Fingerprint: %s\n", fingerprint);
     printf("\nNote: Register a name via Settings menu to allow others to find you.\n");
     return 0;
+}
+
+/**
+ * Find the path to a key file (.dsa or .kem) for a given fingerprint
+ * Searches through all ~/.dna/<name>/keys/ directories
+ */
+static int keygen_find_key_path(const char *dna_dir, const char *fingerprint,
+                                const char *extension, char *path_out) {
+    DIR *base_dir = opendir(dna_dir);
+    if (!base_dir) {
+        return -1;
+    }
+
+    struct dirent *identity_entry;
+    while ((identity_entry = readdir(base_dir)) != NULL) {
+        if (strcmp(identity_entry->d_name, ".") == 0 ||
+            strcmp(identity_entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        char test_path[512];
+        snprintf(test_path, sizeof(test_path), "%s/%s/keys/%s%s",
+                 dna_dir, identity_entry->d_name, fingerprint, extension);
+
+        FILE *f = fopen(test_path, "r");
+        if (f) {
+            fclose(f);
+            strncpy(path_out, test_path, 511);
+            path_out[511] = '\0';
+            closedir(base_dir);
+            return 0;
+        }
+    }
+
+    closedir(base_dir);
+    return -1;
 }
 
 int messenger_register_name(
@@ -436,10 +496,17 @@ int messenger_register_name(
     char dna_dir[512];
     snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
 
+    // Find key files in ~/.dna/*/keys/ structure
     char dilithium_path[512];
     char kyber_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", dna_dir, fingerprint);
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", dna_dir, fingerprint);
+    if (keygen_find_key_path(dna_dir, fingerprint, ".dsa", dilithium_path) != 0) {
+        fprintf(stderr, "Error: Signing key not found for fingerprint: %s\n", fingerprint);
+        return -1;
+    }
+    if (keygen_find_key_path(dna_dir, fingerprint, ".kem", kyber_path) != 0) {
+        fprintf(stderr, "Error: Encryption key not found for fingerprint: %s\n", fingerprint);
+        return -1;
+    }
 
     // Load Dilithium key
     qgp_key_t *sign_key = NULL;
@@ -456,18 +523,7 @@ int messenger_register_name(
         return -1;
     }
 
-    // Upload public keys to DHT keyserver (FINGERPRINT-FIRST)
-    // This publishes keys with fingerprint as primary key and name as display name
-    if (messenger_store_pubkey(ctx, fingerprint, desired_name,
-                                sign_key->public_key, sign_key->public_key_size,
-                                enc_key->public_key, enc_key->public_key_size) != 0) {
-        fprintf(stderr, "Error: Failed to publish keys to DHT keyserver\n");
-        qgp_key_free(sign_key);
-        qgp_key_free(enc_key);
-        return -1;
-    }
-
-    // Publish name → fingerprint alias for name-based lookups
+    // Get DHT context
     dht_context_t *dht_ctx = NULL;
     if (ctx->p2p_transport) {
         dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
@@ -476,131 +532,40 @@ int messenger_register_name(
     }
 
     if (!dht_ctx) {
-        fprintf(stderr, "Warning: DHT not available, alias not published\n");
-    } else {
-        if (dht_keyserver_publish_alias(dht_ctx, desired_name, fingerprint) != 0) {
-            fprintf(stderr, "Warning: Failed to publish name alias (name lookups may not work)\n");
-        }
+        fprintf(stderr, "Error: DHT not available, cannot register name\n");
+        qgp_key_free(sign_key);
+        qgp_key_free(enc_key);
+        return -1;
+    }
 
-        // Publish identity profile to DHT (for expiration checking)
-        dna_unified_identity_t *identity = dna_identity_create();
-        if (identity) {
-            strncpy(identity->fingerprint, fingerprint, sizeof(identity->fingerprint) - 1);
+    // Publish identity to DHT (unified: creates fingerprint:profile and name:lookup)
+    int publish_result = dht_keyserver_publish(
+        dht_ctx,
+        fingerprint,
+        desired_name,
+        sign_key->public_key,
+        enc_key->public_key,
+        sign_key->private_key
+    );
 
-            // Copy public keys for fingerprint verification
-            memcpy(identity->dilithium_pubkey, sign_key->public_key,
-                   sign_key->public_key_size < sizeof(identity->dilithium_pubkey) ?
-                   sign_key->public_key_size : sizeof(identity->dilithium_pubkey));
-            memcpy(identity->kyber_pubkey, enc_key->public_key,
-                   enc_key->public_key_size < sizeof(identity->kyber_pubkey) ?
-                   enc_key->public_key_size : sizeof(identity->kyber_pubkey));
+    if (publish_result == -2) {
+        fprintf(stderr, "Error: Name '%s' is already taken\n", desired_name);
+        qgp_key_free(sign_key);
+        qgp_key_free(enc_key);
+        return -1;
+    } else if (publish_result != 0) {
+        fprintf(stderr, "Error: Failed to publish identity to DHT\n");
+        qgp_key_free(sign_key);
+        qgp_key_free(enc_key);
+        return -1;
+    }
 
-            identity->has_registered_name = true;
-            strncpy(identity->registered_name, desired_name, sizeof(identity->registered_name) - 1);
-            identity->name_registered_at = time(NULL);
-            identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
-            strncpy(identity->registration_tx_hash, "FREE_REGISTRATION", sizeof(identity->registration_tx_hash) - 1);
-            strncpy(identity->registration_network, "DNA_NETWORK", sizeof(identity->registration_network) - 1);
-            identity->name_version = 1;
-            identity->timestamp = time(NULL);
-            identity->version = 1;
+    printf("[DNA] ✓ Identity published to DHT (fingerprint:profile + name:lookup)\n");
 
-            // Sign the identity profile with Dilithium5
-            // Message includes all fields except signature
-            size_t msg_len = sizeof(identity->fingerprint) +
-                           sizeof(identity->dilithium_pubkey) +
-                           sizeof(identity->kyber_pubkey) +
-                           sizeof(bool) +  // has_registered_name
-                           sizeof(identity->registered_name) +
-                           sizeof(uint64_t) * 2 +  // name_registered_at, name_expires_at
-                           sizeof(identity->registration_tx_hash) +
-                           sizeof(identity->registration_network) +
-                           sizeof(uint32_t) +  // name_version
-                           sizeof(identity->wallets) +
-                           sizeof(identity->socials) +
-                           sizeof(identity->bio) +
-                           sizeof(identity->profile_picture_ipfs) +
-                           sizeof(uint64_t) +  // timestamp
-                           sizeof(uint32_t);   // version
-
-            uint8_t *msg = malloc(msg_len);
-            if (msg) {
-                size_t offset = 0;
-                memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
-                offset += sizeof(identity->fingerprint);
-                memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
-                offset += sizeof(identity->dilithium_pubkey);
-                memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
-                offset += sizeof(identity->kyber_pubkey);
-                memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
-                offset += sizeof(bool);
-                memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
-                offset += sizeof(identity->registered_name);
-
-                // Network byte order for integers
-                uint64_t registered_at_net = htonll(identity->name_registered_at);
-                uint64_t expires_at_net = htonll(identity->name_expires_at);
-                uint32_t name_version_net = htonl(identity->name_version);
-                uint64_t timestamp_net = htonll(identity->timestamp);
-                uint32_t version_net = htonl(identity->version);
-
-                memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
-                offset += sizeof(uint64_t);
-                memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
-                offset += sizeof(uint64_t);
-                memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
-                offset += sizeof(identity->registration_tx_hash);
-                memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
-                offset += sizeof(identity->registration_network);
-                memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
-                offset += sizeof(uint32_t);
-                memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
-                offset += sizeof(identity->wallets);
-                memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
-                offset += sizeof(identity->socials);
-                memcpy(msg + offset, identity->bio, sizeof(identity->bio));
-                offset += sizeof(identity->bio);
-                memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
-                offset += sizeof(identity->profile_picture_ipfs);
-                memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
-                offset += sizeof(uint64_t);
-                memcpy(msg + offset, &version_net, sizeof(uint32_t));
-
-                // Sign with private key
-                size_t siglen = sizeof(identity->signature);
-                if (qgp_dsa87_sign(identity->signature, &siglen, msg, msg_len, sign_key->private_key) == 0) {
-                    printf("[DNA] ✓ Identity profile signed with Dilithium5\n");
-                } else {
-                    fprintf(stderr, "[DNA] Warning: Failed to sign identity profile\n");
-                }
-
-                free(msg);
-            }
-
-            char *json = dna_identity_to_json(identity);
-            if (json) {
-                char key_input[256];
-                snprintf(key_input, sizeof(key_input), "%s:profile", fingerprint);
-
-                unsigned char hash[64];
-                if (qgp_sha3_512((unsigned char*)key_input, strlen(key_input), hash) == 0) {
-                    char dht_key[129];
-                    for (int i = 0; i < 64; i++) {
-                        sprintf(dht_key + (i * 2), "%02x", hash[i]);
-                    }
-                    dht_key[128] = '\0';
-
-                    if (dht_put_permanent(dht_ctx, (uint8_t*)dht_key, strlen(dht_key),
-                                          (uint8_t*)json, strlen(json)) != 0) {
-                        fprintf(stderr, "Warning: Failed to publish identity profile to DHT\n");
-                    } else {
-                        printf("[DNA] ✓ Published identity profile to DHT\n");
-                    }
-                }
-                free(json);
-            }
-            dna_identity_free(identity);
-        }
+    // Cache public keys locally
+    if (keyserver_cache_put(fingerprint, sign_key->public_key, sign_key->public_key_size,
+                            enc_key->public_key, enc_key->public_key_size, 365*24*60*60) == 0) {
+        printf("[DNA] ✓ Public keys cached locally\n");
     }
 
     qgp_key_free(sign_key);

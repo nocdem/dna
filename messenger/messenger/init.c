@@ -8,6 +8,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_types.h"
 #include "../message_backup.h"
@@ -25,6 +26,40 @@ static bool file_exists(const char *path) {
         return true;
     }
     return false;
+}
+
+/**
+ * Find the path to a key file (.dsa or .kem) for a given fingerprint
+ * Searches through all ~/.dna/<name>/keys/ directories
+ */
+static int init_find_key_path(const char *dna_dir, const char *fingerprint,
+                              const char *extension, char *path_out) {
+    DIR *base_dir = opendir(dna_dir);
+    if (!base_dir) {
+        return -1;
+    }
+
+    struct dirent *identity_entry;
+    while ((identity_entry = readdir(base_dir)) != NULL) {
+        if (strcmp(identity_entry->d_name, ".") == 0 ||
+            strcmp(identity_entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        char test_path[512];
+        snprintf(test_path, sizeof(test_path), "%s/%s/keys/%s%s",
+                 dna_dir, identity_entry->d_name, fingerprint, extension);
+
+        if (file_exists(test_path)) {
+            strncpy(path_out, test_path, 511);
+            path_out[511] = '\0';
+            closedir(base_dir);
+            return 0;
+        }
+    }
+
+    closedir(base_dir);
+    return -1;
 }
 
 /**
@@ -222,8 +257,15 @@ int messenger_load_dht_identity(const char *fingerprint) {
         return -1;
     }
 
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
+    // Find key in ~/.dna/*/keys/ structure
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, fingerprint);
+    if (init_find_key_path(dna_dir, fingerprint, ".kem", kyber_path) != 0) {
+        fprintf(stderr, "[DHT Identity] Kyber key not found for fingerprint: %s\n", fingerprint);
+        return -1;
+    }
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {

@@ -815,8 +815,12 @@ class DnaEngine {
   }
 
   /// Create new identity from BIP39 seeds (synchronous)
+  /// name is required - used for directory structure and wallet naming
   /// walletSeed is used to create a Cellframe wallet (can be null to skip)
-  String createIdentitySync(List<int> signingSeed, List<int> encryptionSeed, List<int>? walletSeed) {
+  String createIdentitySync(String name, List<int> signingSeed, List<int> encryptionSeed, List<int>? walletSeed) {
+    if (name.isEmpty) {
+      throw ArgumentError('Name is required');
+    }
     if (signingSeed.length != 32 || encryptionSeed.length != 32) {
       throw ArgumentError('Seeds must be 32 bytes each');
     }
@@ -824,6 +828,7 @@ class DnaEngine {
       throw ArgumentError('Wallet seed must be 32 bytes');
     }
 
+    final namePtr = name.toNativeUtf8();
     final sigSeedPtr = calloc<Uint8>(32);
     final encSeedPtr = calloc<Uint8>(32);
     final walletSeedPtr = walletSeed != null ? calloc<Uint8>(32) : nullptr;
@@ -840,6 +845,7 @@ class DnaEngine {
 
       final error = _bindings.dna_engine_create_identity_sync(
         _engine,
+        namePtr.cast(),
         sigSeedPtr,
         encSeedPtr,
         walletSeedPtr,
@@ -852,6 +858,7 @@ class DnaEngine {
 
       return fingerprintPtr.cast<Utf8>().toDartString();
     } finally {
+      calloc.free(namePtr);
       calloc.free(sigSeedPtr);
       calloc.free(encSeedPtr);
       if (walletSeed != null) {
@@ -862,10 +869,11 @@ class DnaEngine {
   }
 
   /// Create new identity from BIP39 seeds (async wrapper)
+  /// name is required - used for directory structure and wallet naming
   /// walletSeed is used to create a Cellframe wallet (can be null to skip)
-  Future<String> createIdentity(List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed}) async {
+  Future<String> createIdentity(String name, List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed}) async {
     // Use sync version wrapped in compute to avoid blocking UI
-    return createIdentitySync(signingSeed, encryptionSeed, walletSeed);
+    return createIdentitySync(name, signingSeed, encryptionSeed, walletSeed);
   }
 
   /// Load and activate identity

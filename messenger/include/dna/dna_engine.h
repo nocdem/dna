@@ -568,19 +568,23 @@ dna_request_id_t dna_engine_list_identities(
  * Create new identity from BIP39 seeds
  *
  * Generates Dilithium5 + Kyber1024 keypairs deterministically
- * from provided seeds. Saves keys to ~/.dna/<fingerprint>.dsa/.kem
+ * from provided seeds. Saves keys to ~/.dna/<name>/keys/
  *
  * @param engine          Engine instance
+ * @param name            Identity name (required, used for directory structure)
  * @param signing_seed    32-byte seed for Dilithium5
  * @param encryption_seed 32-byte seed for Kyber1024
+ * @param wallet_seed     32-byte seed for Cellframe wallet (can be NULL)
  * @param callback        Called with new fingerprint
  * @param user_data       User data for callback
  * @return                Request ID (0 on immediate error)
  */
 dna_request_id_t dna_engine_create_identity(
     dna_engine_t *engine,
+    const char *name,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
+    const uint8_t *wallet_seed,
     dna_identity_created_cb callback,
     void *user_data
 );
@@ -592,6 +596,7 @@ dna_request_id_t dna_engine_create_identity(
  * Useful for FFI bindings where async callbacks are problematic.
  *
  * @param engine          Engine instance (can be NULL for keygen-only)
+ * @param name            Identity name (required, used for directory structure)
  * @param signing_seed    32-byte seed for Dilithium5
  * @param encryption_seed 32-byte seed for Kyber1024
  * @param wallet_seed     32-byte seed for Cellframe wallet (can be NULL)
@@ -600,6 +605,7 @@ dna_request_id_t dna_engine_create_identity(
  */
 int dna_engine_create_identity_sync(
     dna_engine_t *engine,
+    const char *name,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
     const uint8_t wallet_seed[32],

@@ -71,13 +71,13 @@ void checkNameAvailability(AppState& state) {
         }
 
         // Query DHT for name
-        dht_pubkey_entry_t *entry = NULL;
+        dna_unified_identity_t *entry = NULL;
         int result = dht_keyserver_lookup(dht_ctx, name_copy.c_str(), &entry);
 
         if (result == 0 && entry) {
             state.register_name_availability = "Name already registered";
             state.register_name_available = false;
-            dht_keyserver_free_entry(entry);
+            dna_identity_free(entry);
         } else {
             state.register_name_availability = "Name available!";
             state.register_name_available = true;

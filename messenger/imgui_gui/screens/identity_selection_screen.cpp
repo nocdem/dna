@@ -632,8 +632,9 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
 #endif
 
     // Generate keys from seeds (returns fingerprint) - also creates Cellframe wallet
+    // Pass NULL for name to use fingerprint as directory name (ImGui doesn't require name-first flow)
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, wallet_seed, dna_dir.c_str(), fingerprint);
+    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, wallet_seed, dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
@@ -876,8 +877,9 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
 #endif
 
     // Generate keys from seeds (fingerprint-first, no name required) - also creates Cellframe wallet
+    // Pass NULL for name to use fingerprint as directory name
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, wallet_seed, dna_dir.c_str(), fingerprint);
+    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, wallet_seed, dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));

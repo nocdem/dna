@@ -32,7 +32,7 @@
 
 // External dependencies
 #include "../core/dht_context.h"
-#include "../core/dht_keyserver.h"  // Includes type definitions (dht_pubkey_entry_t, sizes)
+#include "../core/dht_keyserver.h"  // Includes size constants and dna_unified_identity_t
 #include "../shared/dht_chunked.h"  // Chunked storage layer
 #include "../client/dna_profile.h"
 #include "../../crypto/utils/qgp_dilithium.h"
@@ -45,8 +45,7 @@
 extern "C" {
 #endif
 
-// Note: dht_pubkey_entry_t and size constants are defined in ../dht_keyserver.h
-// to avoid duplication
+// Note: Size constants and dna_unified_identity_t are defined in dht_keyserver.h and dna_profile.h
 
 // ===== HELPER FUNCTIONS (internal use by keyserver modules) =====
 
@@ -80,44 +79,8 @@ void compute_dht_key_by_name(const char *name, char *key_out);
  */
 void compute_fingerprint(const uint8_t *dilithium_pubkey, char *fingerprint_out);
 
-/**
- * Serialize entry to JSON
- * @param entry: Entry to serialize
- * @return: JSON string (caller must free), NULL on error
- */
-char* serialize_entry(const dht_pubkey_entry_t *entry);
-
-/**
- * Parse hex string to bytes
- * @param hex: Hex string
- * @param bytes: Output buffer
- * @param bytes_len: Expected byte length
- * @return: 0 on success, -1 on error
- */
-int hex_to_bytes(const char *hex, uint8_t *bytes, size_t bytes_len);
-
-/**
- * Deserialize JSON to entry
- * @param json_str: JSON string
- * @param entry: Output entry
- * @return: 0 on success, -1 on error
- */
-int deserialize_entry(const char *json_str, dht_pubkey_entry_t *entry);
-
-/**
- * Create signature for entry
- * @param entry: Entry to sign (signature field will be filled)
- * @param dilithium_privkey: Dilithium5 private key (4896 bytes)
- * @return: 0 on success, -1 on error
- */
-int sign_entry(dht_pubkey_entry_t *entry, const uint8_t *dilithium_privkey);
-
-/**
- * Verify entry signature
- * @param entry: Entry to verify
- * @return: 0 on success (valid signature), -1 on error
- */
-int verify_entry(const dht_pubkey_entry_t *entry);
+// NOTE: Old helper functions (serialize_entry, deserialize_entry, sign_entry, verify_entry)
+// have been removed. Use dna_identity_to_json/dna_identity_from_json from dna_profile.h instead.
 
 #ifdef __cplusplus
 }

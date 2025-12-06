@@ -289,17 +289,17 @@ int dna_load_votes(dht_context_t *dht_ctx,
     for (size_t i = 0; i < (*votes_out)->vote_count; i++) {
         dna_wall_vote_t *vote = &(*votes_out)->votes[i];
 
-        // Lookup voter's public key from keyserver
-        dht_pubkey_entry_t *pubkey_entry = NULL;
-        if (dht_keyserver_lookup(dht_ctx, vote->voter_fingerprint, &pubkey_entry) != 0) {
-            fprintf(stderr, "[DNA_VOTES] WARNING: Failed to lookup public key for voter %s, skipping vote\n",
+        // Lookup voter's identity from keyserver
+        dna_unified_identity_t *voter_identity = NULL;
+        if (dht_keyserver_lookup(dht_ctx, vote->voter_fingerprint, &voter_identity) != 0 || !voter_identity) {
+            fprintf(stderr, "[DNA_VOTES] WARNING: Failed to lookup identity for voter %s, skipping vote\n",
                     vote->voter_fingerprint);
             continue;
         }
 
         // Verify vote signature
-        int verify_ret = dna_verify_vote_signature(vote, post_id, pubkey_entry->dilithium_pubkey);
-        dht_keyserver_free_entry(pubkey_entry);
+        int verify_ret = dna_verify_vote_signature(vote, post_id, voter_identity->dilithium_pubkey);
+        dna_identity_free(voter_identity);
 
         if (verify_ret != 0) {
             fprintf(stderr, "[DNA_VOTES] WARNING: Invalid signature for vote from %s, vote rejected\n",

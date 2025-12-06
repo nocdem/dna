@@ -1,55 +1,57 @@
 /**
  * DHT Keyserver - Lookup Operations
- * Handles key lookups, reverse lookups (sync/async)
- * Now uses dht_chunked layer for all DHT operations.
+ * Handles identity lookups and reverse lookups (sync/async)
+ *
+ * DHT Keys (only 2):
+ * - fingerprint:profile  -> dna_unified_identity_t (keys + name + profile)
+ * - name:lookup          -> fingerprint (for name-based lookups)
  */
 
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
+#include "../client/dna_profile.h"
 #include <pthread.h>
 
-// Lookup public keys from DHT (supports both fingerprint and name)
+// Lookup identity from DHT (supports both fingerprint and name)
+// Returns dna_unified_identity_t from fingerprint:profile
 int dht_keyserver_lookup(
     dht_context_t *dht_ctx,
-    const char *identity_or_fingerprint,
-    dht_pubkey_entry_t **entry_out
+    const char *name_or_fingerprint,
+    dna_unified_identity_t **identity_out
 ) {
-    if (!dht_ctx || !identity_or_fingerprint || !entry_out) {
+    if (!dht_ctx || !name_or_fingerprint || !identity_out) {
         fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments\n");
         return -1;
     }
 
+    *identity_out = NULL;
     char fingerprint[129];
-    bool is_direct_fingerprint = false;
 
     // Detect input type: fingerprint (128 hex) or name (3-20 alphanumeric)
-    if (is_valid_fingerprint(identity_or_fingerprint)) {
+    if (is_valid_fingerprint(name_or_fingerprint)) {
         // Direct fingerprint lookup
-        strncpy(fingerprint, identity_or_fingerprint, 128);
+        strncpy(fingerprint, name_or_fingerprint, 128);
         fingerprint[128] = '\0';
-        is_direct_fingerprint = true;
-        printf("[DHT_KEYSERVER] Direct fingerprint lookup: %s\n", fingerprint);
+        printf("[DHT_KEYSERVER] Direct fingerprint lookup: %.16s...\n", fingerprint);
     } else {
-        // Name lookup: first resolve name → fingerprint via alias
-        printf("[DHT_KEYSERVER] Name lookup: resolving '%s' to fingerprint\n", identity_or_fingerprint);
+        // Name lookup: first resolve name → fingerprint via name:lookup
+        printf("[DHT_KEYSERVER] Name lookup: resolving '%s' to fingerprint\n", name_or_fingerprint);
 
-        // Create base key for alias lookup (chunked layer handles hashing)
         char alias_base_key[256];
-        snprintf(alias_base_key, sizeof(alias_base_key), "%s:lookup", identity_or_fingerprint);
+        snprintf(alias_base_key, sizeof(alias_base_key), "%s:lookup", name_or_fingerprint);
 
         uint8_t *alias_data = NULL;
         size_t alias_data_len = 0;
         int alias_ret = dht_chunked_fetch(dht_ctx, alias_base_key, &alias_data, &alias_data_len);
 
         if (alias_ret != DHT_CHUNK_OK || !alias_data) {
-            fprintf(stderr, "[DHT_KEYSERVER] Name '%s' not registered (alias not found): %s\n",
-                    identity_or_fingerprint, dht_chunked_strerror(alias_ret));
+            fprintf(stderr, "[DHT_KEYSERVER] Name '%s' not registered: %s\n",
+                    name_or_fingerprint, dht_chunked_strerror(alias_ret));
             return -2;  // Name not found
         }
 
-        // Parse fingerprint from alias (simple text storage)
         if (alias_data_len != 128) {
-            fprintf(stderr, "[DHT_KEYSERVER] Invalid alias data length: %zu (expected 128)\n", alias_data_len);
+            fprintf(stderr, "[DHT_KEYSERVER] Invalid alias data length: %zu\n", alias_data_len);
             free(alias_data);
             return -1;
         }
@@ -58,68 +60,137 @@ int dht_keyserver_lookup(
         fingerprint[128] = '\0';
         free(alias_data);
 
-        printf("[DHT_KEYSERVER] ✓ Name resolved to fingerprint: %s\n", fingerprint);
+        printf("[DHT_KEYSERVER] ✓ Name resolved to fingerprint: %.16s...\n", fingerprint);
     }
 
-    // Lookup by fingerprint using chunked layer
+    // Fetch identity from fingerprint:profile
     char base_key[256];
-    snprintf(base_key, sizeof(base_key), "%s:pubkey", fingerprint);
+    snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    printf("[DHT_KEYSERVER] Fetching keys for fingerprint from DHT\n");
-    printf("[DHT_KEYSERVER] Base key: %s\n", base_key);
+    printf("[DHT_KEYSERVER] Fetching identity from: %s\n", base_key);
 
     uint8_t *data = NULL;
     size_t data_len = 0;
     int ret = dht_chunked_fetch(dht_ctx, base_key, &data, &data_len);
 
     if (ret != DHT_CHUNK_OK || !data) {
-        fprintf(stderr, "[DHT_KEYSERVER] Keys not found in DHT for fingerprint %s: %s\n",
-                fingerprint, dht_chunked_strerror(ret));
+        fprintf(stderr, "[DHT_KEYSERVER] Identity not found: %s\n", dht_chunked_strerror(ret));
         return -2;  // Not found
     }
 
-    // Parse JSON (need to null-terminate first as DHT data isn't)
+    // Parse JSON
     char *json_str = (char*)malloc(data_len + 1);
     if (!json_str) {
         free(data);
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to allocate memory for JSON string\n");
         return -1;
     }
     memcpy(json_str, data, data_len);
     json_str[data_len] = '\0';
     free(data);
 
-    dht_pubkey_entry_t *entry = malloc(sizeof(dht_pubkey_entry_t));
-    if (!entry) {
+    dna_unified_identity_t *identity = NULL;
+    if (dna_identity_from_json(json_str, &identity) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Failed to parse identity JSON\n");
         free(json_str);
         return -1;
     }
-
-    if (deserialize_entry(json_str, entry) != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to parse entry\n");
-        free(json_str);
-        free(entry);
-        return -1;
-    }
-
     free(json_str);
 
     // Verify signature
-    if (verify_entry(entry) != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Signature verification failed\n");
-        free(entry);
-        return -3;  // Signature verification failed
+    size_t msg_len = sizeof(identity->fingerprint) +
+                     sizeof(identity->dilithium_pubkey) +
+                     sizeof(identity->kyber_pubkey) +
+                     sizeof(bool) +
+                     sizeof(identity->registered_name) +
+                     sizeof(identity->name_registered_at) +
+                     sizeof(identity->name_expires_at) +
+                     sizeof(identity->registration_tx_hash) +
+                     sizeof(identity->registration_network) +
+                     sizeof(identity->name_version) +
+                     sizeof(identity->wallets) +
+                     sizeof(identity->socials) +
+                     sizeof(identity->bio) +
+                     sizeof(identity->profile_picture_ipfs) +
+                     sizeof(identity->timestamp) +
+                     sizeof(identity->version);
+
+    uint8_t *msg = malloc(msg_len);
+    if (!msg) {
+        dna_identity_free(identity);
+        return -1;
     }
 
-    printf("[DHT_KEYSERVER] ✓ Keys retrieved and verified\n");
-    printf("[DHT_KEYSERVER] Fingerprint: %s\n", entry->fingerprint);
-    printf("[DHT_KEYSERVER] Version: %u\n", entry->version);
+    size_t offset = 0;
+    memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
+    offset += sizeof(identity->fingerprint);
+    memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
+    offset += sizeof(identity->dilithium_pubkey);
+    memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
+    offset += sizeof(identity->kyber_pubkey);
+    memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
+    offset += sizeof(bool);
+    memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
+    offset += sizeof(identity->registered_name);
 
-    *entry_out = entry;
+    uint64_t registered_at_net = htonll(identity->name_registered_at);
+    uint64_t expires_at_net = htonll(identity->name_expires_at);
+    uint32_t name_version_net = htonl(identity->name_version);
+    uint64_t timestamp_net = htonll(identity->timestamp);
+    uint32_t version_net = htonl(identity->version);
+
+    memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+    offset += sizeof(identity->registration_tx_hash);
+    memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+    offset += sizeof(identity->registration_network);
+    memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
+    offset += sizeof(uint32_t);
+    memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
+    offset += sizeof(identity->wallets);
+    memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
+    offset += sizeof(identity->socials);
+    memcpy(msg + offset, identity->bio, sizeof(identity->bio));
+    offset += sizeof(identity->bio);
+    memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
+    offset += sizeof(identity->profile_picture_ipfs);
+    memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
+    memcpy(msg + offset, &version_net, sizeof(uint32_t));
+
+    int sig_result = qgp_dsa87_verify(identity->signature, sizeof(identity->signature),
+                                       msg, msg_len, identity->dilithium_pubkey);
+    free(msg);
+
+    if (sig_result != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Signature verification failed\n");
+        dna_identity_free(identity);
+        return -3;
+    }
+
+    // Verify fingerprint matches pubkey
+    char computed_fingerprint[129];
+    compute_fingerprint(identity->dilithium_pubkey, computed_fingerprint);
+
+    if (strcmp(computed_fingerprint, fingerprint) != 0) {
+        fprintf(stderr, "[DHT_KEYSERVER] Fingerprint mismatch\n");
+        dna_identity_free(identity);
+        return -3;
+    }
+
+    printf("[DHT_KEYSERVER] ✓ Identity retrieved and verified\n");
+    printf("[DHT_KEYSERVER] Name: %s, Version: %u\n",
+           identity->has_registered_name ? identity->registered_name : "(none)",
+           identity->version);
+
+    *identity_out = identity;
     return 0;
 }
 
-// Reverse lookup: fingerprint → identity (with signature verification)
+// Reverse lookup: fingerprint → name
+// Fetches from fingerprint:profile and extracts registered_name
 int dht_keyserver_reverse_lookup(
     dht_context_t *dht_ctx,
     const char *fingerprint,
@@ -132,120 +203,30 @@ int dht_keyserver_reverse_lookup(
 
     *identity_out = NULL;
 
-    // Create base key for reverse lookup (chunked layer handles hashing)
-    char reverse_base_key[256];
-    snprintf(reverse_base_key, sizeof(reverse_base_key), "%s:reverse", fingerprint);
+    printf("[DHT_KEYSERVER] Reverse lookup for fingerprint: %.16s...\n", fingerprint);
 
-    printf("[DHT_KEYSERVER] Reverse lookup for fingerprint: %s\n", fingerprint);
-    printf("[DHT_KEYSERVER] Reverse base key: %s\n", reverse_base_key);
+    // Use dht_keyserver_lookup to fetch the full identity
+    dna_unified_identity_t *identity = NULL;
+    int ret = dht_keyserver_lookup(dht_ctx, fingerprint, &identity);
 
-    // Fetch from DHT via chunked layer
-    uint8_t *value = NULL;
-    size_t value_len = 0;
-
-    int ret = dht_chunked_fetch(dht_ctx, reverse_base_key, &value, &value_len);
-    if (ret != DHT_CHUNK_OK || !value) {
-        printf("[DHT_KEYSERVER] Reverse mapping not found in DHT: %s\n", dht_chunked_strerror(ret));
-        return -2;  // Not found
+    if (ret != 0 || !identity) {
+        printf("[DHT_KEYSERVER] Identity not found for fingerprint\n");
+        return ret;
     }
 
-    // Parse JSON (need to null-terminate first as DHT data isn't)
-    char *json_str = (char*)malloc(value_len + 1);
-    if (!json_str) {
-        free(value);
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to allocate memory for JSON string\n");
-        return -1;
-    }
-    memcpy(json_str, value, value_len);
-    json_str[value_len] = '\0';
-    free(value);
-
-    json_object *root = json_tokener_parse(json_str);
-    free(json_str);
-
-    if (!root) {
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to parse reverse mapping JSON\n");
-        return -1;
+    // Extract registered name
+    if (identity->has_registered_name && identity->registered_name[0] != '\0') {
+        *identity_out = strdup(identity->registered_name);
+        printf("[DHT_KEYSERVER] ✓ Reverse lookup successful: %s\n", identity->registered_name);
+    } else {
+        // No registered name - return shortened fingerprint
+        char short_fp[32];
+        snprintf(short_fp, sizeof(short_fp), "%.16s...", fingerprint);
+        *identity_out = strdup(short_fp);
+        printf("[DHT_KEYSERVER] No registered name, returning fingerprint prefix\n");
     }
 
-    // Extract fields
-    json_object *dilithium_obj, *identity_obj, *timestamp_obj, *fingerprint_obj, *signature_obj;
-
-    if (!json_object_object_get_ex(root, "dilithium_pubkey", &dilithium_obj) ||
-        !json_object_object_get_ex(root, "identity", &identity_obj) ||
-        !json_object_object_get_ex(root, "timestamp", &timestamp_obj) ||
-        !json_object_object_get_ex(root, "fingerprint", &fingerprint_obj) ||
-        !json_object_object_get_ex(root, "signature", &signature_obj)) {
-        fprintf(stderr, "[DHT_KEYSERVER] Reverse mapping missing required fields\n");
-        json_object_put(root);
-        return -1;
-    }
-
-    // Parse dilithium pubkey
-    const char *dilithium_hex = json_object_get_string(dilithium_obj);
-    uint8_t dilithium_pubkey[DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE];
-    if (hex_to_bytes(dilithium_hex, dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE) != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Invalid dilithium pubkey in reverse mapping\n");
-        json_object_put(root);
-        return -1;
-    }
-
-    // Verify fingerprint matches (prevents pubkey substitution)
-    char computed_fingerprint[129];
-    compute_fingerprint(dilithium_pubkey, computed_fingerprint);
-
-    if (strcmp(computed_fingerprint, fingerprint) != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Fingerprint mismatch in reverse mapping\n");
-        json_object_put(root);
-        return -3;  // Signature verification failed (invalid data)
-    }
-
-    const char *identity = json_object_get_string(identity_obj);
-    uint64_t timestamp = json_object_get_int64(timestamp_obj);
-
-    // Parse signature
-    const char *sig_hex = json_object_get_string(signature_obj);
-    uint8_t signature[DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE];
-    if (hex_to_bytes(sig_hex, signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE) != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Invalid signature in reverse mapping\n");
-        json_object_put(root);
-        return -1;
-    }
-
-    // Rebuild message to verify: dilithium_pubkey || identity || timestamp
-    size_t msg_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE + strlen(identity) + sizeof(uint64_t);
-    uint8_t *msg = (uint8_t*)malloc(msg_len);
-    if (!msg) {
-        json_object_put(root);
-        return -1;
-    }
-
-    size_t offset = 0;
-    memcpy(msg + offset, dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
-    offset += DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
-    memcpy(msg + offset, identity, strlen(identity));
-    offset += strlen(identity);
-
-    // Network byte order
-    uint64_t timestamp_net = htonll(timestamp);
-    memcpy(msg + offset, &timestamp_net, sizeof(timestamp_net));
-
-    // Verify signature
-    int verify_result = qgp_dsa87_verify(signature, DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE,
-                                               msg, msg_len, dilithium_pubkey);
-    free(msg);
-
-    if (verify_result != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Reverse mapping signature verification failed\n");
-        json_object_put(root);
-        return -3;  // Signature verification failed
-    }
-
-    // All checks passed - return identity
-    *identity_out = strdup(identity);
-    printf("[DHT_KEYSERVER] ✓ Reverse lookup successful: %s\n", identity);
-
-    json_object_put(root);
+    dna_identity_free(identity);
     return 0;
 }
 

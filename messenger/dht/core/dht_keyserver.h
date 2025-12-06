@@ -3,13 +3,15 @@
  * Decentralized public key storage and lookup
  *
  * Architecture:
- * - Public keys stored in DHT (distributed, permanent)
+ * - Unified identity stored in DHT (distributed, permanent)
  * - Local cache in keyserver_cache.db (7-day TTL)
- * - Self-signed keys with Dilithium5 signatures
+ * - Self-signed identities with Dilithium5 signatures
  * - Versioned updates (signature required)
- * - DNA name system support (optional human-readable names)
+ * - DNA name required for all identities
  *
- * DHT Key Format: SHA3-512(fingerprint + ":profile") - 128 hex chars
+ * DHT Keys (only 2):
+ * - fingerprint:profile  -> dna_unified_identity_t (keys + name + profile)
+ * - name:lookup          -> fingerprint (for name-based lookups)
  */
 
 #ifndef DHT_KEYSERVER_H
@@ -34,36 +36,25 @@ typedef struct dht_context dht_context_t;
 // Kyber1024 sizes (Category 5)
 #define DHT_KEYSERVER_KYBER_PUBKEY_SIZE 1568
 
-/**
- * DHT Public Key Entry
- * Stored in DHT at key: SHA3-512(identity + ":pubkey")
- */
-typedef struct {
-    char identity[256];                                  // DNA identity name
-    uint8_t dilithium_pubkey[DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE];  // Dilithium5 public key
-    uint8_t kyber_pubkey[DHT_KEYSERVER_KYBER_PUBKEY_SIZE];          // Kyber1024 public key
-    uint64_t timestamp;                                  // Unix timestamp
-    uint32_t version;                                    // Version number (for updates)
-    char fingerprint[129];                               // SHA3-512 hex of dilithium_pubkey (128 + null)
-    uint8_t signature[DHT_KEYSERVER_DILITHIUM_SIGNATURE_SIZE];      // Self-signature
-} dht_pubkey_entry_t;
+// NOTE: Old dht_pubkey_entry_t removed - use dna_unified_identity_t instead
 
 /**
- * Publish public keys to DHT (FINGERPRINT-FIRST architecture)
- * Creates self-signed entry and stores in DHT using fingerprint as primary key
+ * Publish identity to DHT (NAME-FIRST architecture)
+ * Creates dna_unified_identity_t and stores at fingerprint:profile
+ * Also publishes name:lookup alias for name-based lookups
  *
  * @param dht_ctx: DHT context
  * @param fingerprint: SHA3-512 fingerprint of Dilithium5 pubkey (128 hex chars)
- * @param display_name: Optional human-readable name (can be NULL)
+ * @param name: DNA name (REQUIRED, 3-20 chars, alphanumeric)
  * @param dilithium_pubkey: Dilithium5 public key (2592 bytes)
  * @param kyber_pubkey: Kyber1024 public key (1568 bytes)
  * @param dilithium_privkey: Dilithium5 private key for signing (4896 bytes)
- * @return: 0 on success, -1 on error
+ * @return: 0 on success, -1 on error, -2 if name already taken
  */
 int dht_keyserver_publish(
     dht_context_t *dht_ctx,
     const char *fingerprint,
-    const char *display_name,
+    const char *name,
     const uint8_t *dilithium_pubkey,
     const uint8_t *kyber_pubkey,
     const uint8_t *dilithium_privkey
@@ -85,20 +76,20 @@ int dht_keyserver_publish_alias(
 );
 
 /**
- * Lookup public keys from DHT (supports both fingerprint and name)
- * Fetches entry and verifies signature
+ * Lookup identity from DHT (supports both fingerprint and name)
+ * Fetches from fingerprint:profile and verifies signature
  * - If input is 128 hex chars: direct fingerprint lookup
- * - If input is 3-20 alphanumeric: resolves name → fingerprint first
+ * - If input is 3-20 alphanumeric: resolves name → fingerprint first via name:lookup
  *
  * @param dht_ctx: DHT context
- * @param identity_or_fingerprint: DNA identity name OR fingerprint (128 hex chars)
- * @param entry_out: Output entry (caller must free with dht_keyserver_free_entry)
+ * @param name_or_fingerprint: DNA name OR fingerprint (128 hex chars)
+ * @param identity_out: Output identity (caller must free with dna_identity_free)
  * @return: 0 on success, -1 on error, -2 if not found, -3 if signature verification failed
  */
 int dht_keyserver_lookup(
     dht_context_t *dht_ctx,
-    const char *identity_or_fingerprint,
-    dht_pubkey_entry_t **entry_out
+    const char *name_or_fingerprint,
+    dna_unified_identity_t **identity_out
 );
 
 /**
@@ -164,12 +155,7 @@ int dht_keyserver_delete(
     const char *identity
 );
 
-/**
- * Free public key entry
- *
- * @param entry: Entry to free
- */
-void dht_keyserver_free_entry(dht_pubkey_entry_t *entry);
+// NOTE: dht_keyserver_free_entry removed - use dna_identity_free instead
 
 // ===== DNA Name System Functions =====
 

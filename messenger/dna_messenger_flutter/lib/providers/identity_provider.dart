@@ -34,8 +34,16 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     return engine.validateMnemonic(mnemonic);
   }
 
-  /// Create identity from mnemonic
-  Future<String> createIdentityFromMnemonic(String mnemonic, {String passphrase = ''}) async {
+  /// Check if name is available in DHT
+  /// Returns true if available, false if taken
+  Future<bool> isNameAvailable(String name) async {
+    final engine = await ref.read(engineProvider.future);
+    final result = await engine.lookupName(name);
+    return result.isEmpty; // empty = not found = available
+  }
+
+  /// Create identity from mnemonic with required name
+  Future<String> createIdentityFromMnemonic(String name, String mnemonic, {String passphrase = ''}) async {
     final engine = await ref.read(engineProvider.future);
 
     // Derive seeds from mnemonic (includes walletSeed for Cellframe wallet)
@@ -43,6 +51,7 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
 
     // Create identity with derived seeds (including wallet seed)
     final fingerprint = await engine.createIdentity(
+      name,
       seeds.signingSeed,
       seeds.encryptionSeed,
       walletSeed: seeds.walletSeed,
@@ -52,9 +61,9 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     return fingerprint;
   }
 
-  Future<String> createIdentity(List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed}) async {
+  Future<String> createIdentity(String name, List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed}) async {
     final engine = await ref.read(engineProvider.future);
-    final fingerprint = await engine.createIdentity(signingSeed, encryptionSeed, walletSeed: walletSeed);
+    final fingerprint = await engine.createIdentity(name, signingSeed, encryptionSeed, walletSeed: walletSeed);
     await refresh();
     return fingerprint;
   }

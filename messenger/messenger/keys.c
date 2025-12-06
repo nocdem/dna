@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include <json-c/json.h>
 #include <openssl/bio.h>
 #include <openssl/evp.h>
@@ -47,6 +48,54 @@ static size_t keys_curl_write_cb(void *contents, size_t size, size_t nmemb, void
     buf->data[buf->size] = 0;
 
     return realsize;
+}
+
+// ============================================================================
+// KEY PATH FINDER
+// Finds key files in ~/.dna/<name>/keys/ structure
+// ============================================================================
+
+/**
+ * Find the path to a key file (.dsa or .kem) for a given fingerprint
+ * Searches through all ~/.dna/<name>/keys/ directories
+ * @param dna_dir Base directory (~/.dna)
+ * @param fingerprint The 128-char hex fingerprint
+ * @param extension The file extension (e.g., ".dsa" or ".kem")
+ * @param path_out Output buffer for found path (must be at least 512 bytes)
+ * @return 0 on success, -1 if not found
+ */
+static int find_key_path(const char *dna_dir, const char *fingerprint,
+                         const char *extension, char *path_out) {
+    DIR *base_dir = opendir(dna_dir);
+    if (!base_dir) {
+        return -1;
+    }
+
+    struct dirent *identity_entry;
+    while ((identity_entry = readdir(base_dir)) != NULL) {
+        if (strcmp(identity_entry->d_name, ".") == 0 ||
+            strcmp(identity_entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        /* Build path to potential key file */
+        char test_path[512];
+        snprintf(test_path, sizeof(test_path), "%s/%s/keys/%s%s",
+                 dna_dir, identity_entry->d_name, fingerprint, extension);
+
+        /* Check if file exists */
+        FILE *f = fopen(test_path, "r");
+        if (f) {
+            fclose(f);
+            strncpy(path_out, test_path, 511);
+            path_out[511] = '\0';
+            closedir(base_dir);
+            return 0;
+        }
+    }
+
+    closedir(base_dir);
+    return -1;
 }
 
 // ============================================================================
@@ -174,9 +223,12 @@ int messenger_store_pubkey(
     char dna_dir[512];
     snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
 
-    // Load private key for signing (using fingerprint)
+    // Find and load private key for signing (searches ~/.dna/*/keys/)
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s.dsa", dna_dir, fingerprint);
+    if (find_key_path(dna_dir, fingerprint, ".dsa", key_path) != 0) {
+        fprintf(stderr, "ERROR: Signing key not found for fingerprint: %s\n", fingerprint);
+        return -1;
+    }
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
@@ -274,8 +326,8 @@ int messenger_load_pubkey(
     }
 
     // Lookup in DHT
-    dht_pubkey_entry_t *entry = NULL;
-    ret = dht_keyserver_lookup(dht_ctx, identity, &entry);
+    dna_unified_identity_t *dht_identity = NULL;
+    ret = dht_keyserver_lookup(dht_ctx, identity, &dht_identity);
 
     if (ret != 0) {
         if (ret == -2) {
@@ -296,26 +348,26 @@ int messenger_load_pubkey(
         fprintf(stderr, "ERROR: Memory allocation failed\n");
         if (dil_decoded) free(dil_decoded);
         if (kyber_decoded) free(kyber_decoded);
-        dht_keyserver_free_entry(entry);
+        dna_identity_free(dht_identity);
         return -1;
     }
 
-    memcpy(dil_decoded, entry->dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
-    memcpy(kyber_decoded, entry->kyber_pubkey, DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
+    memcpy(dil_decoded, dht_identity->dilithium_pubkey, DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE);
+    memcpy(kyber_decoded, dht_identity->kyber_pubkey, DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
 
     size_t dil_len = DHT_KEYSERVER_DILITHIUM_PUBKEY_SIZE;
     size_t kyber_len = DHT_KEYSERVER_KYBER_PUBKEY_SIZE;
 
     // Store in cache for future lookups (using fingerprint as key)
-    keyserver_cache_put(entry->fingerprint, dil_decoded, dil_len, kyber_decoded, kyber_len, 0);
+    keyserver_cache_put(dht_identity->fingerprint, dil_decoded, dil_len, kyber_decoded, kyber_len, 0);
 
     // Return fingerprint if requested
     if (fingerprint_out) {
-        strcpy(fingerprint_out, entry->fingerprint);
+        strcpy(fingerprint_out, dht_identity->fingerprint);
     }
 
-    // Free DHT entry
-    dht_keyserver_free_entry(entry);
+    // Free DHT identity
+    dna_identity_free(dht_identity);
 
     // Return keys
     *signing_pubkey_out = dil_decoded;

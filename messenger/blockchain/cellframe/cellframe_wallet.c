@@ -391,44 +391,61 @@ int wallet_list_from_dna_dir(wallet_list_t **list_out) {
     if (!list_out) {
         return -1;
     }
-    
-    char wallets_dir[512];
-    get_dna_wallets_dir(wallets_dir, sizeof(wallets_dir));
-    
-    if (!file_exists(wallets_dir)) {
+
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
         return -1;
     }
-    
+
+    char dna_dir[512];
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+
     wallet_list_t *list = calloc(1, sizeof(wallet_list_t));
     if (!list) {
         return -1;
     }
-    
+
     size_t capacity = 10;
     list->wallets = calloc(capacity, sizeof(cellframe_wallet_t));
     if (!list->wallets) {
         free(list);
         return -1;
     }
-    
+
 #ifdef _WIN32
-    WIN32_FIND_DATA find_data;
-    char search_path[1024];
-    snprintf(search_path, sizeof(search_path), "%s\\*.dwallet", wallets_dir);
-    
-    HANDLE hFind = FindFirstFile(search_path, &find_data);
-    if (hFind == INVALID_HANDLE_VALUE) {
-        free(list->wallets);
-        free(list);
+    // Scan each identity directory in ~/.dna/
+    WIN32_FIND_DATA identity_data;
+    char identity_search[1024];
+    snprintf(identity_search, sizeof(identity_search), "%s\\*", dna_dir);
+
+    HANDLE hIdentity = FindFirstFile(identity_search, &identity_data);
+    if (hIdentity == INVALID_HANDLE_VALUE) {
         *list_out = list;
         return 0;
     }
-    
+
     do {
-        if (!(find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) {
+        if (!(identity_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
+        if (strcmp(identity_data.cFileName, ".") == 0) continue;
+        if (strcmp(identity_data.cFileName, "..") == 0) continue;
+
+        // Check wallets subdirectory
+        char wallets_dir[1024];
+        snprintf(wallets_dir, sizeof(wallets_dir), "%s\\%s\\wallets", dna_dir, identity_data.cFileName);
+
+        WIN32_FIND_DATA wallet_data;
+        char wallet_search[1024];
+        snprintf(wallet_search, sizeof(wallet_search), "%s\\*.dwallet", wallets_dir);
+
+        HANDLE hWallet = FindFirstFile(wallet_search, &wallet_data);
+        if (hWallet == INVALID_HANDLE_VALUE) continue;
+
+        do {
+            if (wallet_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+
             char full_path[1024];
-            snprintf(full_path, sizeof(full_path), "%s\\%s", wallets_dir, find_data.cFileName);
-            
+            snprintf(full_path, sizeof(full_path), "%s\\%s", wallets_dir, wallet_data.cFileName);
+
             cellframe_wallet_t *wallet = NULL;
             if (wallet_read_cellframe_path(full_path, &wallet) == 0 && wallet) {
                 if (list->count >= capacity) {
@@ -441,56 +458,69 @@ int wallet_list_from_dna_dir(wallet_list_t **list_out) {
                     }
                     list->wallets = new_wallets;
                 }
-                
+                memcpy(&list->wallets[list->count], wallet, sizeof(cellframe_wallet_t));
+                list->count++;
+                free(wallet);
+            }
+        } while (FindNextFile(hWallet, &wallet_data));
+
+        FindClose(hWallet);
+    } while (FindNextFile(hIdentity, &identity_data));
+
+    FindClose(hIdentity);
+#else
+    // Scan each identity directory in ~/.dna/
+    DIR *base_dir = opendir(dna_dir);
+    if (!base_dir) {
+        *list_out = list;
+        return 0;
+    }
+
+    struct dirent *identity_entry;
+    while ((identity_entry = readdir(base_dir)) != NULL) {
+        if (strcmp(identity_entry->d_name, ".") == 0) continue;
+        if (strcmp(identity_entry->d_name, "..") == 0) continue;
+
+        // Check wallets subdirectory
+        char wallets_dir[1024];
+        snprintf(wallets_dir, sizeof(wallets_dir), "%s/%s/wallets", dna_dir, identity_entry->d_name);
+
+        DIR *wallet_dir = opendir(wallets_dir);
+        if (!wallet_dir) continue;
+
+        struct dirent *wallet_entry;
+        while ((wallet_entry = readdir(wallet_dir)) != NULL) {
+            size_t name_len = strlen(wallet_entry->d_name);
+            if (name_len < 8 || strcmp(wallet_entry->d_name + name_len - 8, ".dwallet") != 0) {
+                continue;
+            }
+
+            char full_path[1024];
+            snprintf(full_path, sizeof(full_path), "%s/%s", wallets_dir, wallet_entry->d_name);
+
+            cellframe_wallet_t *wallet = NULL;
+            if (wallet_read_cellframe_path(full_path, &wallet) == 0 && wallet) {
+                if (list->count >= capacity) {
+                    capacity *= 2;
+                    cellframe_wallet_t *new_wallets = realloc(list->wallets,
+                                                              capacity * sizeof(cellframe_wallet_t));
+                    if (!new_wallets) {
+                        wallet_free(wallet);
+                        break;
+                    }
+                    list->wallets = new_wallets;
+                }
                 memcpy(&list->wallets[list->count], wallet, sizeof(cellframe_wallet_t));
                 list->count++;
                 free(wallet);
             }
         }
-    } while (FindNextFile(hFind, &find_data));
-    
-    FindClose(hFind);
-#else
-    DIR *dir = opendir(wallets_dir);
-    if (!dir) {
-        free(list->wallets);
-        free(list);
-        *list_out = list;
-        return 0;
+        closedir(wallet_dir);
     }
-    
-    struct dirent *entry;
-    while ((entry = readdir(dir)) != NULL) {
-        size_t name_len = strlen(entry->d_name);
-        if (name_len < 8 || strcmp(entry->d_name + name_len - 8, ".dwallet") != 0) {
-            continue;
-        }
-        
-        char full_path[1024];
-        snprintf(full_path, sizeof(full_path), "%s/%s", wallets_dir, entry->d_name);
-        
-        cellframe_wallet_t *wallet = NULL;
-        if (wallet_read_cellframe_path(full_path, &wallet) == 0 && wallet) {
-            if (list->count >= capacity) {
-                capacity *= 2;
-                cellframe_wallet_t *new_wallets = realloc(list->wallets,
-                                                          capacity * sizeof(cellframe_wallet_t));
-                if (!new_wallets) {
-                    wallet_free(wallet);
-                    break;
-                }
-                list->wallets = new_wallets;
-            }
-            
-            memcpy(&list->wallets[list->count], wallet, sizeof(cellframe_wallet_t));
-            list->count++;
-            free(wallet);
-        }
-    }
-    
-    closedir(dir);
+
+    closedir(base_dir);
 #endif
-    
+
     *list_out = list;
     return 0;
 }

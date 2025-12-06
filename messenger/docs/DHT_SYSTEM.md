@@ -1,6 +1,6 @@
 # DHT System Documentation
 
-**Last Updated:** 2025-11-26
+**Last Updated:** 2025-12-07
 
 Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system, covering both client operations and the dna-nodus bootstrap server.
 
@@ -585,20 +585,81 @@ User profile storage in DHT.
 
 ### Architecture
 
-Fingerprint-first public key storage with optional name aliases.
+**NAME-FIRST architecture** - DNA name required for all identities.
 
-- **Primary lookup**: By fingerprint (128-char hex)
-- **Alias lookup**: By registered name (human-readable)
-- **Self-signed entries**: All entries signed by owner's Dilithium5 key
+Only 2 DHT keys are used:
+- **`fingerprint:profile`** → Full `dna_unified_identity_t` (keys + name + profile data)
+- **`name:lookup`** → Fingerprint (128 hex chars) for name-based resolution
+
+All entries are self-signed with the owner's Dilithium5 key.
+
+### DHT Key Structure
+
+| DHT Key | Content | TTL |
+|---------|---------|-----|
+| `SHA3-512(fingerprint + ":profile")` | `dna_unified_identity_t` JSON | 365 days |
+| `SHA3-512(name + ":lookup")` | Fingerprint (128 hex) | 365 days |
+
+### Data Type: `dna_unified_identity_t`
+
+```c
+typedef struct {
+    char fingerprint[129];                    // SHA3-512 of Dilithium5 pubkey
+    uint8_t dilithium_pubkey[2592];          // Dilithium5 public key
+    uint8_t kyber_pubkey[1568];              // Kyber1024 public key
+    bool has_registered_name;
+    char registered_name[64];                 // DNA name (3-20 chars)
+    uint64_t name_registered_at;
+    uint64_t name_expires_at;
+    char registration_tx_hash[128];           // Blockchain tx hash
+    char registration_network[32];            // e.g., "Backbone"
+    uint32_t name_version;
+    dna_wallet_list_t wallets;                // Linked wallet addresses
+    dna_social_list_t socials;                // Social links
+    char bio[512];
+    char profile_picture_ipfs[128];
+    uint64_t timestamp;
+    uint32_t version;
+    uint8_t signature[4627];                  // Dilithium5 signature
+} dna_unified_identity_t;
+```
 
 ### Operations
 
 | File | Purpose |
 |------|---------|
-| `keyserver_publish.c` | Publish identity to keyserver |
-| `keyserver_lookup.c` | Lookup by fingerprint or name |
-| `keyserver_names.c` | Name registration and resolution |
-| `keyserver_profiles.c` | Profile operations |
+| `keyserver_publish.c` | Publish identity to `:profile`, create `:lookup` alias |
+| `keyserver_lookup.c` | Lookup by fingerprint or name, returns `dna_unified_identity_t` |
+| `keyserver_names.c` | Name validation and availability checking |
+| `keyserver_profiles.c` | Profile update operations |
+
+### API
+
+```c
+// Publish identity (name required)
+int dht_keyserver_publish(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    const char *name,              // REQUIRED
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *kyber_pubkey,
+    const uint8_t *dilithium_privkey
+);
+
+// Lookup identity (returns full unified identity)
+int dht_keyserver_lookup(
+    dht_context_t *dht_ctx,
+    const char *name_or_fingerprint,
+    dna_unified_identity_t **identity_out  // Caller must call dna_identity_free()
+);
+
+// Reverse lookup: fingerprint → name
+int dht_keyserver_reverse_lookup(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    char **name_out                // Caller must free()
+);
+```
 
 ---
 
@@ -717,9 +778,8 @@ Stats printed every 60 seconds:
 | **Presence** | 7 days | `SHA3-512(public_key)` = fingerprint | No | IP:port:timestamp |
 | Offline Messages | 7 days | `SHA3-512(sender:outbox:recipient)` | No | Model E outbox |
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
-| Profiles | 365 days | `SHA3-512(fingerprint:profile)` | Yes | |
-| Public Keys | Permanent | `SHA3-512(fingerprint:pubkey)` | Yes | Identity keys |
-| Name Registration | 365 days | `SHA3-512(name:lookup)` | Yes | |
+| **Identity** | 365 days | `SHA3-512(fingerprint:profile)` | Yes | Unified: keys + name + profile |
+| **Name Lookup** | 365 days | `SHA3-512(name:lookup)` | Yes | Name → fingerprint |
 | Group Metadata | 30 days | `SHA3-512(group_uuid)` | Yes | |
 | Message Wall | 30 days | `SHA3-512(fingerprint:message_wall)` | Yes | DNA Board |
 | Bootstrap Registry | 7 days | `SHA3-512("dna:bootstrap:registry")` | Special | Self-healing |
