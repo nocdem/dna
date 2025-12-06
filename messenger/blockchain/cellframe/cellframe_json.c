@@ -4,9 +4,9 @@
  * Converts signed binary transactions to JSON format for RPC submission.
  */
 
-#include "blockchain_json_minimal.h"
-#include "blockchain_sign_minimal.h"
-#include "../crypto/utils/base58.h"
+#include "cellframe_json.h"
+#include "cellframe_sign.h"
+#include "../../crypto/utils/base58.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

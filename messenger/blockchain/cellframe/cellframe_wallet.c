@@ -4,9 +4,9 @@
  * Reads Cellframe wallet files (.dwallet format) for CF20 token operations.
  */
 
-#include "wallet.h"
-#include "blockchain_addr.h"
-#include "../crypto/utils/qgp_platform.h"
+#include "cellframe_wallet.h"
+#include "cellframe_addr.h"
+#include "../../crypto/utils/qgp_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

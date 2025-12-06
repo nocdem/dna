@@ -332,9 +332,9 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     database/profile_manager.c  # Phase 10.1: Smart profile fetching (cache + DHT)
     database/cache_manager.c    # Phase 7: Unified cache lifecycle manager
     database/group_invitations.c  # Phase 6.1: Group invitation tracking database
-    blockchain/wallet.c           # Phase 8: Cellframe wallet integration
-    blockchain/blockchain_rpc.c    # Phase 8: Blockchain RPC client
-    blockchain/blockchain_addr.c   # Phase 8: Blockchain address utilities
+    blockchain/cellframe/cellframe_wallet.c           # Phase 8: Cellframe wallet integration
+    blockchain/cellframe/cellframe_rpc.c    # Phase 8: Blockchain RPC client
+    blockchain/cellframe/cellframe_addr.c   # Phase 8: Blockchain address utilities
     crypto/utils/base58.c           # Phase 8: Base58 encoding for addresses
     ${COMMON_SOURCES}
 )
@@ -402,6 +402,7 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/src/api  # Internal API headers
     ${CMAKE_SOURCE_DIR}/p2p  # Phase 9.1b: P2P transport headers
     ${CMAKE_SOURCE_DIR}/dht  # Phase 9.1: DHT headers
+    ${CMAKE_SOURCE_DIR}/blockchain/cellframe  # Cellframe blockchain headers
     ${OPENSSL_INCLUDE_DIR}
     ${JUICE_INCLUDE_DIRS}  # Phase 11: libjuice headers (replaces libnice + glib)
 )
@@ -429,9 +430,9 @@ endif()
 # Blockchain minimal library (transaction building and signing)
 # MUST be defined BEFORE GUI subdirectories that depend on it
 add_library(cellframe_minimal STATIC
-    blockchain/blockchain_tx_builder_minimal.c
-    blockchain/blockchain_sign_minimal.c
-    blockchain/blockchain_json_minimal.c
+    blockchain/cellframe/cellframe_tx_builder.c
+    blockchain/cellframe/cellframe_sign.c
+    blockchain/cellframe/cellframe_json.c
     crypto/utils/base58.c
 )
 target_link_libraries(cellframe_minimal
@@ -474,10 +475,10 @@ endif()
 option(BUILD_DNA_SEND "Build dna-send CLI tool" OFF)
 if(BUILD_DNA_SEND)
     add_executable(dna-send
-        blockchain/dna-send.c
-        blockchain/wallet.c
-        blockchain/blockchain_addr.c
-        blockchain/blockchain_rpc.c
+        blockchain/cellframe/cellframe_send.c
+        blockchain/cellframe/cellframe_wallet.c
+        blockchain/cellframe/cellframe_addr.c
+        blockchain/cellframe/cellframe_rpc.c
         crypto/utils/base58.c
         crypto/utils/qgp_platform_linux.c
     )

@@ -6,13 +6,13 @@
  * Builds, signs, and submits Cellframe transactions via Public RPC.
  */
 
-#include "blockchain_minimal.h"
-#include "blockchain_tx_builder_minimal.h"
-#include "blockchain_sign_minimal.h"
-#include "blockchain_json_minimal.h"
-#include "blockchain_rpc.h"
-#include "wallet.h"
-#include "crypto/utils/base58.h"
+#include "cellframe_minimal.h"
+#include "cellframe_tx_builder.h"
+#include "cellframe_sign.h"
+#include "cellframe_json.h"
+#include "cellframe_rpc.h"
+#include "cellframe_wallet.h"
+#include "../../crypto/utils/base58.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

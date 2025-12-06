@@ -10,8 +10,8 @@
 
 #include "dna/dna_engine.h"
 #include "messenger.h"
-#include "blockchain/wallet.h"
-#include "blockchain/blockchain_rpc.h"
+#include "cellframe_wallet.h"
+#include "cellframe_rpc.h"
 #include "database/contacts_db.h"
 #include "database/group_invitations.h"
 #include "dht/shared/dht_groups.h"

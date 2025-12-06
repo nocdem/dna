@@ -37,7 +37,7 @@
 #include "../client/dna_profile.h"
 #include "../../crypto/utils/qgp_dilithium.h"
 #include "../../crypto/utils/qgp_sha3.h"
-#include "../../blockchain/blockchain_rpc.h"
+#include "../../blockchain/cellframe/cellframe_rpc.h"
 #include <openssl/evp.h>
 #include <json-c/json.h>
 

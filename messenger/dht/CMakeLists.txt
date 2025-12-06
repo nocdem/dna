@@ -58,7 +58,7 @@ if(WIN32)
         ${DHT_COMMON_SOURCES}
         # Platform-specific
         gnutls_win_shim.c
-        ../blockchain/blockchain_rpc.c
+        ../blockchain/cellframe/cellframe_rpc.c
         ../crypto/utils/qgp_platform_windows.c
     )
 elseif(ANDROID)
@@ -71,7 +71,7 @@ else()
     # Linux/Unix
     add_library(dht_lib STATIC
         ${DHT_COMMON_SOURCES}
-        ../blockchain/blockchain_rpc.c
+        ../blockchain/cellframe/cellframe_rpc.c
         ../crypto/utils/qgp_platform_linux.c
     )
 endif()
@@ -82,7 +82,8 @@ target_include_directories(dht_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/shared    # Phase 4: Shared modules
     ${OPENDHT_INCLUDE_DIRS}
     ${CMAKE_CURRENT_SOURCE_DIR}/..
-    ${CMAKE_CURRENT_SOURCE_DIR}/../crypto)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../crypto
+    ${CMAKE_CURRENT_SOURCE_DIR}/../blockchain/cellframe)
 if(WIN32)
     target_link_libraries(dht_lib ${OPENSSL_LIBRARIES} dsa ${OPENDHT_LIBRARIES} ${OPENDHT_DEPS} ${SQLite3_LIBRARIES} zstd)
 elseif(ANDROID)

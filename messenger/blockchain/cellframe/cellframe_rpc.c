@@ -2,7 +2,7 @@
  * cellframe_rpc.c - Cellframe Public RPC Client
  */
 
-#include "blockchain_rpc.h"
+#include "cellframe_rpc.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

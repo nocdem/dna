@@ -6,8 +6,8 @@
 #include "../font_awesome.h"
 #include "../helpers/file_browser.h"
 #include "wallet_transaction_history_dialog.h"
-#include "../../blockchain/wallet.h"
-#include "../../blockchain/blockchain_rpc.h"
+#include "../../blockchain/cellframe/cellframe_wallet.h"
+#include "../../blockchain/cellframe/cellframe_rpc.h"
 
 #include <cstdio>
 #include <cstdlib>

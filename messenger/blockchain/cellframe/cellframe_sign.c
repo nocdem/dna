@@ -4,8 +4,8 @@
  * Signs transactions with Dilithium MODE_1 matching Cellframe SDK exactly.
  */
 
-#include "blockchain_sign_minimal.h"
-#include "../crypto/cellframe_dilithium/cellframe_dilithium_api.h"
+#include "cellframe_sign.h"
+#include "../../crypto/cellframe_dilithium/cellframe_dilithium_api.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

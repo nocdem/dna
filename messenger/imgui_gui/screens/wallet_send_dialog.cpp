@@ -9,11 +9,11 @@
 #include "../modal_helper.h"
 
 extern "C" {
-#include "../../blockchain/wallet.h"
-#include "../../blockchain/blockchain_rpc.h"
-#include "../../blockchain/blockchain_tx_builder_minimal.h"
-#include "../../blockchain/blockchain_sign_minimal.h"
-#include "../../blockchain/blockchain_json_minimal.h"
+#include "../../blockchain/cellframe/cellframe_wallet.h"
+#include "../../blockchain/cellframe/cellframe_rpc.h"
+#include "../../blockchain/cellframe/cellframe_tx_builder.h"
+#include "../../blockchain/cellframe/cellframe_sign.h"
+#include "../../blockchain/cellframe/cellframe_json.h"
 #include "../../crypto/utils/base58.h"
 #include <string.h>
 #include <time.h>

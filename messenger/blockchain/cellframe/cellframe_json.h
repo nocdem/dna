@@ -7,7 +7,7 @@
 #ifndef CELLFRAME_JSON_MINIMAL_H
 #define CELLFRAME_JSON_MINIMAL_H
 
-#include "blockchain_minimal.h"
+#include "cellframe_minimal.h"
 
 #ifdef __cplusplus
 extern "C" {

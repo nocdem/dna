@@ -21,11 +21,11 @@
 #include "crypto/utils/qgp_platform.h"
 
 /* Blockchain/Wallet includes for send_tokens */
-#include "blockchain/wallet.h"
-#include "blockchain/blockchain_rpc.h"
-#include "blockchain/blockchain_tx_builder_minimal.h"
-#include "blockchain/blockchain_sign_minimal.h"
-#include "blockchain/blockchain_json_minimal.h"
+#include "cellframe_wallet.h"
+#include "cellframe_rpc.h"
+#include "cellframe_tx_builder.h"
+#include "cellframe_sign.h"
+#include "cellframe_json.h"
 #include "crypto/utils/base58.h"
 #include <time.h>
 

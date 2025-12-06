@@ -4,7 +4,7 @@
  * Builds binary transactions matching Cellframe SDK format exactly.
  */
 
-#include "blockchain_tx_builder_minimal.h"
+#include "cellframe_tx_builder.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>

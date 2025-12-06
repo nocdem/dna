@@ -4,9 +4,9 @@
  * Generates Cellframe blockchain addresses from Dilithium keys
  */
 
-#include "blockchain_addr.h"
-#include "blockchain_minimal.h"  // For cellframe_addr_t (77 bytes)
-#include "crypto/utils/base58.h"
+#include "cellframe_addr.h"
+#include "cellframe_minimal.h"  // For cellframe_addr_t (77 bytes)
+#include "../../crypto/utils/base58.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

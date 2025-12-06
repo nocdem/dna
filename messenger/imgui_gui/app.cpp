@@ -52,13 +52,13 @@ extern "C" {
     #include "../crypto/utils/qgp_platform.h"  // For qgp_platform_home_dir
     #include "../database/contacts_db.h"  // For contacts_db_add, contacts_db_exists
     #include "../database/profile_manager.h"  // For profile caching and fetching
-    #include "../blockchain/wallet.h"  // For wallet functions
-    #include "../blockchain/blockchain_rpc.h"  // For RPC calls
-    #include "../blockchain/blockchain_tx_builder_minimal.h"  // Transaction builder
-    #include "../blockchain/blockchain_sign_minimal.h"  // Transaction signing
-    #include "../blockchain/blockchain_addr.h"  // Address utilities
-    #include "../blockchain/blockchain_json_minimal.h"  // JSON conversion
-    #include "../blockchain/blockchain_minimal.h"  // TSD types
+    #include "../blockchain/cellframe/cellframe_wallet.h"  // For wallet functions
+    #include "../blockchain/cellframe/cellframe_rpc.h"  // For RPC calls
+    #include "../blockchain/cellframe/cellframe_tx_builder.h"  // Transaction builder
+    #include "../blockchain/cellframe/cellframe_sign.h"  // Transaction signing
+    #include "../blockchain/cellframe/cellframe_addr.h"  // Address utilities
+    #include "../blockchain/cellframe/cellframe_json.h"  // JSON conversion
+    #include "../blockchain/cellframe/cellframe_minimal.h"  // TSD types
     #include "../crypto/utils/base58.h"  // Base58 encoding
     #include <time.h>
 }
