@@ -1,6 +1,6 @@
 # DNA Messenger Flutter UI
 
-**Last Updated:** 2025-12-04
+**Last Updated:** 2025-12-06
 **Status:** Phase 3 Complete (Full Features)
 **Target:** Android first, all platforms from single codebase
 
@@ -72,6 +72,14 @@ dna_messenger_flutter/
 ├── linux/                      # Linux platform (libs for .so)
 ├── windows/                    # Windows platform (libs for .dll)
 ├── macos/                      # macOS platform (Frameworks for .a)
+├── assets/
+│   └── fonts/                  # ✅ Bundled fonts
+│       ├── NotoSans-Regular.ttf
+│       ├── NotoSans-Bold.ttf
+│       ├── NotoSans-Italic.ttf
+│       ├── NotoSans-BoldItalic.ttf
+│       ├── NotoSansMono-Regular.ttf
+│       └── NotoSansMono-Bold.ttf
 ├── lib/
 │   ├── main.dart               # ✅ Entry point with Riverpod
 │   ├── ffi/
@@ -81,25 +89,30 @@ dna_messenger_flutter/
 │   │   ├── engine_provider.dart
 │   │   ├── identity_provider.dart  # ✅ BIP39 methods
 │   │   ├── contacts_provider.dart
-│   │   ├── messages_provider.dart
+│   │   ├── messages_provider.dart  # ✅ Async queue, optimistic UI
 │   │   ├── groups_provider.dart    # ✅ Group actions
 │   │   ├── wallet_provider.dart    # ✅ Send/transactions
+│   │   ├── profile_provider.dart   # ✅ User profile
 │   │   ├── theme_provider.dart
 │   │   ├── event_handler.dart      # ✅ Real-time event handling
-│   │   └── background_tasks_provider.dart  # ✅ DHT offline message polling
+│   │   ├── background_tasks_provider.dart  # ✅ DHT offline message polling
+│   │   └── feed_provider.dart      # 🔒 Disabled (placeholder)
 │   ├── screens/                # ✅ UI screens
 │   │   ├── identity/identity_selection_screen.dart  # ✅ BIP39 integrated
 │   │   ├── contacts/contacts_screen.dart
-│   │   ├── chat/chat_screen.dart
+│   │   ├── chat/chat_screen.dart   # ✅ Selectable text, status icons
 │   │   ├── groups/groups_screen.dart   # ✅ + GroupChatScreen
 │   │   ├── wallet/wallet_screen.dart   # ✅ Send dialog
 │   │   ├── settings/settings_screen.dart  # ✅ Name registration
+│   │   ├── feed/feed_screen.dart   # 🔒 Disabled (placeholder)
 │   │   └── home_screen.dart
-│   ├── widgets/                # 📋 Reusable widgets
+│   ├── widgets/                # ✅ Reusable widgets
+│   │   ├── emoji_shortcode_field.dart  # ✅ Enter to send, :shortcode:
+│   │   └── formatted_text.dart     # ✅ Markdown + selectable
 │   └── theme/
-│       └── dna_theme.dart      # ✅ cpunk.io theme
+│       └── dna_theme.dart      # ✅ cpunk.io theme + Noto Sans font
 ├── ffigen.yaml                 # FFI generator config (reference)
-└── pubspec.yaml                # Dependencies
+└── pubspec.yaml                # Dependencies + font declarations
 ```
 
 ---
@@ -330,30 +343,42 @@ dna_messenger_flutter/
 
 ---
 
-## Recent UI Changes (2025-12-02)
+## Recent UI Changes (2025-12-06)
 
-**Navigation Redesign (COMPLETE):**
-- Replaced bottom navigation bar with hamburger drawer navigation
-- Feed is now the default landing page (index 0)
+**Feed Disabled (PLACEHOLDER):**
+- Feed feature temporarily disabled pending reimplementation
+- Files preserved: `feed_screen.dart`, `feed_provider.dart`
+- Will be reimplemented in future update
+
+**Navigation:**
+- Hamburger drawer navigation
+- Chats is now the default landing page (index 0)
 - Drawer header shows: Avatar + display name + "Switch Identity" button
-- Navigation order: Feed, Chats, Groups, Wallet, Settings
+- Navigation order: Chats, Groups, Wallet, Settings
 
-**Feed Implementation (COMPLETE):**
-- Full Feed functionality ported from ImGui
-- Channels: list, create, init default channels
-- Posts: list, create, reply (max depth 2)
-- Voting: upvote/downvote with Dilithium5 signatures
-- Real-time updates via DHT
+**Typography:**
+- Custom fonts bundled: Noto Sans (regular, bold, italic, bold-italic)
+- Monospace font: Noto Sans Mono for code blocks
+- Fonts located in `assets/fonts/`
 
-**New files:**
-- `lib/screens/feed/feed_screen.dart` - Feed UI with channels and posts
-- `lib/providers/feed_provider.dart` - Riverpod state management for Feed
+**Chat Improvements:**
+- Selectable message text with copy support (Ctrl+C, context menu)
+- Selection highlight uses theme primary color
+- Markdown-style formatting: `*bold*`, `_italic_`, `~strikethrough~`
+- Code formatting: inline \`code\` and \`\`\`code blocks\`\`\` with monospace font
+- Async message queue with optimistic UI (spinner while sending)
+- Message status indicators: pending (spinner), sent (checkmark), failed (red X)
+- Enter sends message, Shift+Enter adds newline
+- Emoji picker with shortcode support (:smile: etc.)
 
-**Modified files:**
-- `lib/screens/home_screen.dart` - Drawer navigation, Feed as default
-- `lib/ffi/dna_bindings.dart` - Feed FFI bindings
-- `lib/ffi/dna_engine.dart` - Feed models and methods
-- `lib/providers/providers.dart` - Export feed_provider
+**Background Tasks:**
+- Periodic DHT offline message polling (2 minute interval)
+- Auto-refresh contacts and conversations on new messages
+
+**Linux Desktop:**
+- Native GTK window decorations (follows system theme)
+- Clean shutdown on window close button
+- Minimum window size: 400x600
 
 ---
 
@@ -416,7 +441,7 @@ flutter build apk --release
 
 ## Theming
 
-Single theme based on cpunk.io color palette:
+Single theme based on cpunk.io color palette with Noto Sans fonts:
 
 ```dart
 class DnaColors {
@@ -431,18 +456,30 @@ class DnaColors {
 }
 
 class DnaTheme {
+  static const String _fontFamily = 'NotoSans';
+
   static ThemeData get theme => ThemeData(
     useMaterial3: true,
     brightness: Brightness.dark,
+    fontFamily: _fontFamily,
     scaffoldBackgroundColor: DnaColors.background,
     colorScheme: ColorScheme.dark(
       surface: DnaColors.surface,
       primary: DnaColors.primary,
       secondary: DnaColors.accent,
     ),
+    textSelectionTheme: TextSelectionThemeData(
+      selectionColor: DnaColors.primary.withAlpha(100),
+      cursorColor: DnaColors.primary,
+      selectionHandleColor: DnaColors.primary,
+    ),
   );
 }
 ```
+
+**Fonts (bundled in assets/fonts/):**
+- `NotoSans` - Default UI font (Regular, Bold, Italic, BoldItalic)
+- `NotoSansMono` - Code blocks and inline code (Regular, Bold)
 
 ---
 
