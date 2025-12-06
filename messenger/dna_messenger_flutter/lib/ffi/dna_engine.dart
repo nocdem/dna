@@ -1448,8 +1448,8 @@ class DnaEngine {
   }
 
   /// Derive signing and encryption seeds from BIP39 mnemonic
-  /// Returns a record with (signingSeed, encryptionSeed) as List<int>
-  ({List<int> signingSeed, List<int> encryptionSeed}) deriveSeeds(
+  /// Returns a record with (signingSeed, encryptionSeed, walletSeed) as List<int>
+  ({List<int> signingSeed, List<int> encryptionSeed, List<int> walletSeed}) deriveSeeds(
     String mnemonic, {
     String passphrase = '',
   }) {
@@ -1457,6 +1457,7 @@ class DnaEngine {
     final passphrasePtr = passphrase.toNativeUtf8();
     final signingSeedPtr = calloc<Uint8>(32);
     final encryptionSeedPtr = calloc<Uint8>(32);
+    final walletSeedPtr = calloc<Uint8>(32);
 
     try {
       final result = _bindings.qgp_derive_seeds_from_mnemonic(
@@ -1464,6 +1465,7 @@ class DnaEngine {
         passphrasePtr.cast(),
         signingSeedPtr,
         encryptionSeedPtr,
+        walletSeedPtr,
       );
 
       if (result != 0) {
@@ -1472,18 +1474,21 @@ class DnaEngine {
 
       final signingSeed = <int>[];
       final encryptionSeed = <int>[];
+      final walletSeed = <int>[];
 
       for (var i = 0; i < 32; i++) {
         signingSeed.add(signingSeedPtr[i]);
         encryptionSeed.add(encryptionSeedPtr[i]);
+        walletSeed.add(walletSeedPtr[i]);
       }
 
-      return (signingSeed: signingSeed, encryptionSeed: encryptionSeed);
+      return (signingSeed: signingSeed, encryptionSeed: encryptionSeed, walletSeed: walletSeed);
     } finally {
       calloc.free(mnemonicPtr);
       calloc.free(passphrasePtr);
       calloc.free(signingSeedPtr);
       calloc.free(encryptionSeedPtr);
+      calloc.free(walletSeedPtr);
     }
   }
 

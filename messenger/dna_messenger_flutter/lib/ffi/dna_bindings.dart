@@ -1451,20 +1451,22 @@ class DnaBindings {
 
   late final _qgp_derive_seeds_from_mnemonic = _lib.lookupFunction<
       Int32 Function(
-          Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>),
+          Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>, Pointer<Uint8>),
       int Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>,
-          Pointer<Uint8>)>('qgp_derive_seeds_from_mnemonic');
+          Pointer<Uint8>, Pointer<Uint8>)>('qgp_derive_seeds_from_mnemonic');
 
-  /// Derive signing and encryption seeds from BIP39 mnemonic
+  /// Derive signing, encryption, and wallet seeds from BIP39 mnemonic
+  /// wallet_seed can be nullptr if not needed
   /// Returns 0 on success, -1 on error
   int qgp_derive_seeds_from_mnemonic(
     Pointer<Utf8> mnemonic,
     Pointer<Utf8> passphrase,
     Pointer<Uint8> signing_seed,
     Pointer<Uint8> encryption_seed,
+    Pointer<Uint8> wallet_seed,
   ) {
     return _qgp_derive_seeds_from_mnemonic(
-        mnemonic, passphrase, signing_seed, encryption_seed);
+        mnemonic, passphrase, signing_seed, encryption_seed, wallet_seed);
   }
 
   // ---------------------------------------------------------------------------
