@@ -50,6 +50,15 @@ class FormattedText extends StatelessWidget {
     this.selectable = false,
   });
 
+  Widget _buildContextMenu(
+    BuildContext context,
+    EditableTextState editableTextState,
+  ) {
+    return AdaptiveTextSelectionToolbar.editableText(
+      editableTextState: editableTextState,
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final defaultStyle = style ?? DefaultTextStyle.of(context).style;
@@ -61,6 +70,7 @@ class FormattedText extends StatelessWidget {
           text.trim(),
           style: defaultStyle.copyWith(fontSize: 48),
           textAlign: textAlign ?? TextAlign.start,
+          contextMenuBuilder: _buildContextMenu,
         );
       }
       return Text(
@@ -77,8 +87,7 @@ class FormattedText extends StatelessWidget {
         TextSpan(children: spans),
         textAlign: textAlign ?? TextAlign.start,
         maxLines: maxLines,
-        selectionControls: MaterialTextSelectionControls(),
-        cursorColor: Theme.of(context).colorScheme.primary,
+        contextMenuBuilder: _buildContextMenu,
       );
     }
 
