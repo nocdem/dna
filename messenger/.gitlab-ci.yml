@@ -249,6 +249,8 @@ build:native-android-arm64:
         cd /tmp && rm -rf openssl-*
         wget -q https://www.openssl.org/source/openssl-3.3.2.tar.gz
         tar xzf openssl-3.3.2.tar.gz && cd openssl-3.3.2
+        export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
+        export PATH="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
         ./Configure android-arm64 no-shared no-tests \
           --prefix="${DEPS_DIR}/openssl-arm64" \
           -D__ANDROID_API__=${API}
