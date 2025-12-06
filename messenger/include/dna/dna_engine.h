@@ -594,6 +594,7 @@ dna_request_id_t dna_engine_create_identity(
  * @param engine          Engine instance (can be NULL for keygen-only)
  * @param signing_seed    32-byte seed for Dilithium5
  * @param encryption_seed 32-byte seed for Kyber1024
+ * @param wallet_seed     32-byte seed for Cellframe wallet (can be NULL)
  * @param fingerprint_out Output buffer for fingerprint (129 bytes min)
  * @return                0 on success, error code on failure
  */
@@ -601,6 +602,7 @@ int dna_engine_create_identity_sync(
     dna_engine_t *engine,
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
+    const uint8_t wallet_seed[32],
     char fingerprint_out[129]
 );
 

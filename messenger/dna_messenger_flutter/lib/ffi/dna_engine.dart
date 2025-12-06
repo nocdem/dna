@@ -815,25 +815,34 @@ class DnaEngine {
   }
 
   /// Create new identity from BIP39 seeds (synchronous)
-  String createIdentitySync(List<int> signingSeed, List<int> encryptionSeed) {
+  /// walletSeed is used to create a Cellframe wallet (can be null to skip)
+  String createIdentitySync(List<int> signingSeed, List<int> encryptionSeed, List<int>? walletSeed) {
     if (signingSeed.length != 32 || encryptionSeed.length != 32) {
       throw ArgumentError('Seeds must be 32 bytes each');
+    }
+    if (walletSeed != null && walletSeed.length != 32) {
+      throw ArgumentError('Wallet seed must be 32 bytes');
     }
 
     final sigSeedPtr = calloc<Uint8>(32);
     final encSeedPtr = calloc<Uint8>(32);
+    final walletSeedPtr = walletSeed != null ? calloc<Uint8>(32) : nullptr;
     final fingerprintPtr = calloc<Uint8>(129); // 128 hex chars + null
 
     try {
       for (var i = 0; i < 32; i++) {
         sigSeedPtr[i] = signingSeed[i];
         encSeedPtr[i] = encryptionSeed[i];
+        if (walletSeed != null) {
+          walletSeedPtr[i] = walletSeed[i];
+        }
       }
 
       final error = _bindings.dna_engine_create_identity_sync(
         _engine,
         sigSeedPtr,
         encSeedPtr,
+        walletSeedPtr,
         fingerprintPtr.cast(),
       );
 
@@ -845,14 +854,18 @@ class DnaEngine {
     } finally {
       calloc.free(sigSeedPtr);
       calloc.free(encSeedPtr);
+      if (walletSeed != null) {
+        calloc.free(walletSeedPtr);
+      }
       calloc.free(fingerprintPtr);
     }
   }
 
   /// Create new identity from BIP39 seeds (async wrapper)
-  Future<String> createIdentity(List<int> signingSeed, List<int> encryptionSeed) async {
+  /// walletSeed is used to create a Cellframe wallet (can be null to skip)
+  Future<String> createIdentity(List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed}) async {
     // Use sync version wrapped in compute to avoid blocking UI
-    return createIdentitySync(signingSeed, encryptionSeed);
+    return createIdentitySync(signingSeed, encryptionSeed, walletSeed);
   }
 
   /// Load and activate identity

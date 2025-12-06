@@ -38,22 +38,23 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   Future<String> createIdentityFromMnemonic(String mnemonic, {String passphrase = ''}) async {
     final engine = await ref.read(engineProvider.future);
 
-    // Derive seeds from mnemonic
+    // Derive seeds from mnemonic (includes walletSeed for Cellframe wallet)
     final seeds = engine.deriveSeeds(mnemonic, passphrase: passphrase);
 
-    // Create identity with derived seeds
+    // Create identity with derived seeds (including wallet seed)
     final fingerprint = await engine.createIdentity(
       seeds.signingSeed,
       seeds.encryptionSeed,
+      walletSeed: seeds.walletSeed,
     );
 
     await refresh();
     return fingerprint;
   }
 
-  Future<String> createIdentity(List<int> signingSeed, List<int> encryptionSeed) async {
+  Future<String> createIdentity(List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed}) async {
     final engine = await ref.read(engineProvider.future);
-    final fingerprint = await engine.createIdentity(signingSeed, encryptionSeed);
+    final fingerprint = await engine.createIdentity(signingSeed, encryptionSeed, walletSeed: walletSeed);
     await refresh();
     return fingerprint;
   }
