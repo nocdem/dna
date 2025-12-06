@@ -1399,17 +1399,23 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
             messages[i].is_outgoing = (msg_infos[i].sender &&
                 strcmp(msg_infos[i].sender, engine->fingerprint) == 0);
 
-            /* Map status string to int */
+            /* Map status string to int: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read */
             if (msg_infos[i].status) {
                 if (strcmp(msg_infos[i].status, "read") == 0) {
-                    messages[i].status = 3;
+                    messages[i].status = 4;
                 } else if (strcmp(msg_infos[i].status, "delivered") == 0) {
+                    messages[i].status = 3;
+                } else if (strcmp(msg_infos[i].status, "failed") == 0) {
                     messages[i].status = 2;
                 } else if (strcmp(msg_infos[i].status, "sent") == 0) {
                     messages[i].status = 1;
-                } else {
+                } else if (strcmp(msg_infos[i].status, "pending") == 0) {
                     messages[i].status = 0;
+                } else {
+                    messages[i].status = 1;  /* default to sent for old messages */
                 }
+            } else {
+                messages[i].status = 1;  /* default to sent if no status */
             }
 
             messages[i].message_type = msg_infos[i].message_type;

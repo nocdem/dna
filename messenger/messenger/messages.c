@@ -1038,13 +1038,20 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
             strftime(messages[i].timestamp, 32, "%Y-%m-%d %H:%M:%S", tm_info);
         }
 
-        // Convert bool flags to status string
+        // Convert status int to string: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read
+        // First check the status field, fall back to read/delivered flags for old messages
         if (backup_messages[i].read) {
             messages[i].status = strdup("read");
         } else if (backup_messages[i].delivered) {
             messages[i].status = strdup("delivered");
-        } else {
+        } else if (backup_messages[i].status == 2) {
+            messages[i].status = strdup("failed");
+        } else if (backup_messages[i].status == 1) {
             messages[i].status = strdup("sent");
+        } else if (backup_messages[i].status == 0) {
+            messages[i].status = strdup("pending");
+        } else {
+            messages[i].status = strdup("sent");  // Default for old messages
         }
 
         // For now, we don't have separate timestamps for delivered/read
