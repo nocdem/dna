@@ -1897,6 +1897,25 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
                     free(all_utxos);
 
+                    /* Debug: Print selected UTXOs */
+                    fprintf(stderr, "[ENGINE] UTXO Selection Debug:\n");
+                    fprintf(stderr, "[ENGINE]   Amount to send: %lu datoshi\n", (unsigned long)amount.lo.lo);
+                    fprintf(stderr, "[ENGINE]   Fee: %lu datoshi\n", (unsigned long)fee.lo.lo);
+                    fprintf(stderr, "[ENGINE]   Network fee: %lu datoshi\n", (unsigned long)NETWORK_FEE_DATOSHI);
+                    fprintf(stderr, "[ENGINE]   Required total: %lu datoshi\n", (unsigned long)required_u64);
+                    fprintf(stderr, "[ENGINE]   Selected %d UTXOs:\n", num_selected_utxos);
+                    for (int i = 0; i < num_selected_utxos; i++) {
+                        char hash_hex[65];
+                        for (int j = 0; j < 32; j++) {
+                            sprintf(hash_hex + (j * 2), "%02x", selected_utxos[i].hash.raw[j]);
+                        }
+                        hash_hex[64] = '\0';
+                        fprintf(stderr, "[ENGINE]     UTXO %d: hash=%s idx=%d value=%lu\n",
+                                i, hash_hex, selected_utxos[i].idx,
+                                (unsigned long)selected_utxos[i].value.lo.lo);
+                    }
+                    fprintf(stderr, "[ENGINE]   Total input: %lu datoshi\n", (unsigned long)total_input_u64);
+
                     /* Check if we have enough */
                     if (total_input_u64 < required_u64) {
                         fprintf(stderr, "[ENGINE] Insufficient funds. Need: %lu, Have: %lu\n",
@@ -1904,6 +1923,10 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
                         error = DNA_ERROR_INTERNAL;
                         goto done;
                     }
+
+                    /* Debug: Print change calculation */
+                    uint64_t change_preview = total_input_u64 - amount.lo.lo - NETWORK_FEE_DATOSHI - fee.lo.lo;
+                    fprintf(stderr, "[ENGINE]   Change: %lu datoshi\n", (unsigned long)change_preview);
 
                 } else {
                     fprintf(stderr, "[ENGINE] Invalid UTXO response format\n");
@@ -2069,6 +2092,12 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     /* Check response */
     if (submit_resp->result) {
         bool tx_created = false;
+        const char *tx_hash = NULL;
+        const char *error_msg = NULL;
+
+        /* Debug: Print full RPC response */
+        fprintf(stderr, "[ENGINE] RPC Response: %s\n",
+                json_object_to_json_string_ext(submit_resp->result, JSON_C_TO_STRING_PRETTY));
 
         if (json_object_is_type(submit_resp->result, json_type_array) &&
             json_object_array_length(submit_resp->result) > 0) {
@@ -2076,19 +2105,42 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
             json_object *first_elem = json_object_array_get_idx(submit_resp->result, 0);
             if (first_elem) {
                 json_object *jtx_create = NULL;
+                json_object *jhash = NULL;
+                json_object *jerror = NULL;
+
                 if (json_object_object_get_ex(first_elem, "tx_create", &jtx_create)) {
                     tx_created = json_object_get_boolean(jtx_create);
+                }
+                if (json_object_object_get_ex(first_elem, "hash", &jhash)) {
+                    tx_hash = json_object_get_string(jhash);
+                }
+                if (json_object_object_get_ex(first_elem, "error", &jerror)) {
+                    error_msg = json_object_get_string(jerror);
                 }
             }
         }
 
         if (!tx_created) {
             fprintf(stderr, "[ENGINE] Transaction failed to create\n");
+            if (error_msg) {
+                fprintf(stderr, "[ENGINE] Error from node: %s\n", error_msg);
+            }
+            if (tx_hash) {
+                fprintf(stderr, "[ENGINE] TX Hash: %s\n", tx_hash);
+            }
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
 
         printf("[ENGINE] Transaction submitted successfully!\n");
+        if (tx_hash) {
+            printf("[ENGINE] TX Hash: %s\n", tx_hash);
+        }
+    } else if (submit_resp->error) {
+        /* Check for RPC error */
+        fprintf(stderr, "[ENGINE] RPC Error: %s\n", submit_resp->error);
+        error = DNA_ERROR_INTERNAL;
+        goto done;
     }
 
 done:

@@ -36,14 +36,29 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
     required String token,
     required String network,
   }) async {
+    print('[Wallet] Sending tokens:');
+    print('[Wallet]   Wallet index: $walletIndex');
+    print('[Wallet]   Recipient: $recipientAddress');
+    print('[Wallet]   Amount: $amount');
+    print('[Wallet]   Token: $token');
+    print('[Wallet]   Network: $network');
+
     final engine = await ref.read(engineProvider.future);
-    await engine.sendTokens(
-      walletIndex: walletIndex,
-      recipientAddress: recipientAddress,
-      amount: amount,
-      token: token,
-      network: network,
-    );
+
+    try {
+      await engine.sendTokens(
+        walletIndex: walletIndex,
+        recipientAddress: recipientAddress,
+        amount: amount,
+        token: token,
+        network: network,
+      );
+      print('[Wallet] Transaction submitted successfully!');
+    } catch (e) {
+      print('[Wallet] Transaction failed: $e');
+      rethrow;
+    }
+
     // Refresh balances after send
     ref.invalidate(balancesProvider(walletIndex));
   }
