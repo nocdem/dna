@@ -69,7 +69,7 @@ class Message {
           : native.plaintext.toDartString(),
       timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp * 1000),
       isOutgoing: native.is_outgoing,
-      status: MessageStatus.values[native.status.clamp(0, 3)],
+      status: MessageStatus.values[native.status.clamp(0, 4)],
       type: native.message_type == 0 ? MessageType.chat : MessageType.groupInvitation,
     );
   }
@@ -107,7 +107,7 @@ class Message {
   }
 }
 
-enum MessageStatus { pending, sent, delivered, read }
+enum MessageStatus { pending, sent, failed, delivered, read }
 enum MessageType { chat, groupInvitation }
 
 /// Group information

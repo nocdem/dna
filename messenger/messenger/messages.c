@@ -450,7 +450,13 @@ int messenger_send_message(
     printf("✓ Assigned message_group_id: %d\n", message_group_id);
 
     // Store in SQLite local database - one row per actual recipient (not sender)
+    // Track message IDs for status updates
     time_t now = time(NULL);
+    int *message_ids = malloc(recipient_count * sizeof(int));
+    if (!message_ids) {
+        free(ciphertext);
+        return -1;
+    }
 
     for (size_t i = 0; i < recipient_count; i++) {
         int result = message_backup_save(
@@ -465,25 +471,37 @@ int messenger_send_message(
             message_type        // message_type (chat or invitation) - Phase 6.2
         );
 
-        if (result != 0) {
+        if (result != 0 && result != 1) {  // 1 = duplicate, not an error
             fprintf(stderr, "Store message failed for recipient '%s' in SQLite\n", recipients[i]);
             free(ciphertext);
+            free(message_ids);
             return -1;
         }
 
-        printf("✓ Message stored locally for '%s'\n", recipients[i]);
+        // Get the message ID we just inserted
+        message_ids[i] = message_backup_get_last_id(ctx->backup_ctx);
+        printf("✓ Message stored locally for '%s' (id=%d)\n", recipients[i], message_ids[i]);
     }
 
     // Phase 9.1b: Try P2P delivery for each recipient
     // If P2P succeeds, message delivered instantly
     // If P2P fails, message queued in DHT offline queue
+    size_t p2p_success = 0;
     if (ctx->p2p_enabled && ctx->p2p_transport) {
         printf("\n[P2P] Attempting direct P2P delivery to %zu recipient(s)...\n", recipient_count);
 
-        size_t p2p_success = 0;
         for (size_t i = 0; i < recipient_count; i++) {
             if (messenger_send_p2p(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
                 p2p_success++;
+                // Update status to SENT (1)
+                if (message_ids[i] > 0) {
+                    message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
+                }
+            } else {
+                // Update status to FAILED (2) - P2P and DHT both failed
+                if (message_ids[i] > 0) {
+                    message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
+                }
             }
         }
 
@@ -491,8 +509,15 @@ int messenger_send_message(
                p2p_success, recipient_count, recipient_count - p2p_success);
     } else {
         printf("\n[P2P] P2P disabled - using DHT offline queue\n\n");
+        // Mark all as FAILED since P2P is disabled and no delivery attempted
+        for (size_t i = 0; i < recipient_count; i++) {
+            if (message_ids[i] > 0) {
+                message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
+            }
+        }
     }
 
+    free(message_ids);
     free(ciphertext);
 
     printf("✓ Message sent successfully to %zu recipient(s)\n\n", recipient_count);

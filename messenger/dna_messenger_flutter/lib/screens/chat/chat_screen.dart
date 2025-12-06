@@ -567,6 +567,15 @@ class _MessageBubble extends StatelessWidget {
       );
     }
 
+    if (status == MessageStatus.failed) {
+      // Show red error icon for failed messages
+      return Icon(
+        Icons.error_outline,
+        size: size,
+        color: DnaColors.textWarning,
+      );
+    }
+
     return Icon(
       _getStatusIcon(status),
       size: size,
@@ -580,6 +589,8 @@ class _MessageBubble extends StatelessWidget {
         return Icons.schedule;
       case MessageStatus.sent:
         return Icons.check;
+      case MessageStatus.failed:
+        return Icons.error_outline;
       case MessageStatus.delivered:
         return Icons.done_all;
       case MessageStatus.read:
