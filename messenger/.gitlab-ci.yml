@@ -62,7 +62,7 @@ build:native-linux-x64:
     - export CMAKE_PREFIX_PATH="${CI_PROJECT_DIR}/.cache/opendht:$CMAKE_PREFIX_PATH"
   script:
     - mkdir -p build && cd build
-    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_IMGUI_GUI=OFF -DBUILD_SHARED_LIBS=ON
+    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIBS=ON -DBUILD_DNA_NODUS=OFF
     - make -j$(nproc) dna_lib
     - mkdir -p ${CI_PROJECT_DIR}/native-libs/linux-x64
     - cp libdna_lib.so ${CI_PROJECT_DIR}/native-libs/linux-x64/
