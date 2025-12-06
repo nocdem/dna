@@ -29,7 +29,7 @@ build:native-linux-x64:
   stage: build-native
   tags:
     - linux
-  image: ubuntu:22.04
+  image: ubuntu:24.04
   cache:
     key: opendht-linux-x64-v2
     paths:
