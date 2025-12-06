@@ -1,4 +1,5 @@
 // Home Screen - Main navigation with drawer
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/providers.dart';
@@ -136,6 +137,7 @@ class _DrawerHeader extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final fingerprint = ref.watch(currentFingerprintProvider) ?? '';
     final userProfile = ref.watch(userProfileProvider);
+    final fullProfile = ref.watch(fullProfileProvider);
     final shortFp = fingerprint.length > 16
         ? '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}'
         : fingerprint;
@@ -150,18 +152,7 @@ class _DrawerHeader extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Avatar
-          CircleAvatar(
-            radius: 32,
-            backgroundColor: DnaColors.primarySoft,
-            child: Text(
-              _getInitials(userProfile.valueOrNull?.nickname ?? shortFp),
-              style: const TextStyle(
-                fontSize: 24,
-                fontWeight: FontWeight.bold,
-                color: DnaColors.primary,
-              ),
-            ),
-          ),
+          _buildAvatar(fullProfile, userProfile.valueOrNull?.nickname ?? shortFp),
           const SizedBox(height: 12),
           // Display name
           userProfile.when(
@@ -214,6 +205,58 @@ class _DrawerHeader extends ConsumerWidget {
       return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
     }
     return name[0].toUpperCase();
+  }
+
+  Widget _buildAvatar(AsyncValue<dynamic> fullProfile, String fallbackName) {
+    return fullProfile.when(
+      data: (profile) {
+        final avatarBase64 = profile?.avatarBase64 ?? '';
+        if (avatarBase64.isNotEmpty) {
+          try {
+            final bytes = base64Decode(avatarBase64);
+            return CircleAvatar(
+              radius: 32,
+              backgroundImage: MemoryImage(bytes),
+            );
+          } catch (e) {
+            // Fall through to initials
+          }
+        }
+        return CircleAvatar(
+          radius: 32,
+          backgroundColor: DnaColors.primarySoft,
+          child: Text(
+            _getInitials(fallbackName),
+            style: const TextStyle(
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+              color: DnaColors.primary,
+            ),
+          ),
+        );
+      },
+      loading: () => CircleAvatar(
+        radius: 32,
+        backgroundColor: DnaColors.primarySoft,
+        child: const SizedBox(
+          width: 24,
+          height: 24,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+      error: (_, __) => CircleAvatar(
+        radius: 32,
+        backgroundColor: DnaColors.primarySoft,
+        child: Text(
+          _getInitials(fallbackName),
+          style: const TextStyle(
+            fontSize: 24,
+            fontWeight: FontWeight.bold,
+            color: DnaColors.primary,
+          ),
+        ),
+      ),
+    );
   }
 
   void _showSwitchIdentityDialog(BuildContext context, WidgetRef ref) {

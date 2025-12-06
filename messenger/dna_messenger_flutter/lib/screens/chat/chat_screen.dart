@@ -1,6 +1,5 @@
 // Chat Screen - Conversation with message bubbles
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
@@ -319,44 +318,37 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
             // Text input with :shortcode: support
             Expanded(
-              child: KeyboardListener(
-                focusNode: FocusNode(),
-                onKeyEvent: (event) {
-                  // Send on Enter (without Shift)
-                  if (event is KeyDownEvent &&
-                      event.logicalKey == LogicalKeyboardKey.enter &&
-                      !HardwareKeyboard.instance.isShiftPressed) {
-                    if (_messageController.text.trim().isNotEmpty && !_isSending) {
-                      _sendMessage(contact);
-                    }
+              child: EmojiShortcodeField(
+                controller: _messageController,
+                focusNode: _focusNode,
+                autofocus: true,
+                hintText: 'Type a message...',
+                minLines: 1,
+                maxLines: 5,
+                onEnterPressed: () {
+                  if (_messageController.text.trim().isNotEmpty && !_isSending) {
+                    _sendMessage(contact);
                   }
                 },
-                child: EmojiShortcodeField(
-                  controller: _messageController,
-                  focusNode: _focusNode,
+                decoration: InputDecoration(
                   hintText: 'Type a message...',
-                  minLines: 1,
-                  maxLines: 5,
-                  decoration: InputDecoration(
-                    hintText: 'Type a message...',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: BorderSide.none,
-                    ),
-                    filled: true,
-                    fillColor: theme.scaffoldBackgroundColor,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(24),
+                    borderSide: BorderSide.none,
                   ),
-                  onTap: () {
-                    // Hide emoji picker when text field is tapped
-                    if (_showEmojiPicker) {
-                      setState(() => _showEmojiPicker = false);
-                    }
-                  },
+                  filled: true,
+                  fillColor: theme.scaffoldBackgroundColor,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
                 ),
+                onTap: () {
+                  // Hide emoji picker when text field is tapped
+                  if (_showEmojiPicker) {
+                    setState(() => _showEmojiPicker = false);
+                  }
+                },
               ),
             ),
 

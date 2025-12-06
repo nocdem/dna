@@ -503,27 +503,52 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
 
   Widget _buildMnemonicGrid(ThemeData theme) {
     final words = _mnemonic.split(' ');
-    return Wrap(
-      spacing: 8,
-      runSpacing: 8,
-      children: words.asMap().entries.map((entry) {
-        final index = entry.key + 1;
-        final word = entry.value;
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-          decoration: BoxDecoration(
-            color: theme.scaffoldBackgroundColor,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(color: theme.colorScheme.primary.withAlpha(51)),
-          ),
-          child: Text(
-            '$index. $word',
-            style: theme.textTheme.bodyMedium?.copyWith(
-              fontFamily: 'monospace',
-            ),
-          ),
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 2 columns on mobile (<400), 3 on tablet (<600), 4 on desktop
+        final columns = constraints.maxWidth < 400 ? 2 : (constraints.maxWidth < 600 ? 3 : 4);
+        final rows = (words.length / columns).ceil();
+
+        return Column(
+          children: List.generate(rows, (rowIndex) {
+            return Padding(
+              padding: EdgeInsets.only(bottom: rowIndex < rows - 1 ? 8 : 0),
+              child: Row(
+                children: List.generate(columns, (colIndex) {
+                  final wordIndex = rowIndex * columns + colIndex;
+                  if (wordIndex >= words.length) {
+                    return const Expanded(child: SizedBox());
+                  }
+                  final word = words[wordIndex];
+                  final displayIndex = wordIndex + 1;
+
+                  return Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.only(right: colIndex < columns - 1 ? 8 : 0),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: theme.scaffoldBackgroundColor,
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: theme.colorScheme.primary.withAlpha(51)),
+                        ),
+                        child: Text(
+                          '$displayIndex. $word',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontFamily: 'monospace',
+                          ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ),
+            );
+          }),
         );
-      }).toList(),
+      },
     );
   }
 
