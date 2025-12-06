@@ -38,6 +38,7 @@ class FormattedText extends StatelessWidget {
   final TextAlign? textAlign;
   final int? maxLines;
   final TextOverflow? overflow;
+  final bool selectable;
 
   const FormattedText(
     this.text, {
@@ -46,6 +47,7 @@ class FormattedText extends StatelessWidget {
     this.textAlign,
     this.maxLines,
     this.overflow,
+    this.selectable = false,
   });
 
   @override
@@ -54,6 +56,13 @@ class FormattedText extends StatelessWidget {
 
     // Single emoji = large size
     if (_isSingleEmoji(text)) {
+      if (selectable) {
+        return SelectableText(
+          text.trim(),
+          style: defaultStyle.copyWith(fontSize: 48),
+          textAlign: textAlign ?? TextAlign.start,
+        );
+      }
       return Text(
         text.trim(),
         style: defaultStyle.copyWith(fontSize: 48),
@@ -62,6 +71,14 @@ class FormattedText extends StatelessWidget {
     }
 
     final spans = _parseText(text, defaultStyle);
+
+    if (selectable) {
+      return SelectableText.rich(
+        TextSpan(children: spans),
+        textAlign: textAlign ?? TextAlign.start,
+        maxLines: maxLines,
+      );
+    }
 
     return RichText(
       text: TextSpan(children: spans),

@@ -520,6 +520,7 @@ class _MessageBubble extends StatelessWidget {
           children: [
             FormattedText(
               message.plaintext,
+              selectable: true,
               style: TextStyle(
                 color: isOutgoing
                     ? theme.colorScheme.onPrimary
