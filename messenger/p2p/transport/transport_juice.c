@@ -1058,8 +1058,8 @@ static int ice_request_turn_credentials(
 
     printf("[ICE] Requesting TURN credentials from dna-nodus...\n");
 
-    // Request credentials (30 second timeout)
-    int ret = turn_credentials_request(fingerprint, pubkey, privkey, creds, 30000);
+    // Request credentials (5 second timeout - nodus TURN not yet implemented)
+    int ret = turn_credentials_request(fingerprint, pubkey, privkey, creds, 5000);
     if (ret != 0) {
         fprintf(stderr, "[ICE] Failed to get TURN credentials\n");
         return -1;
