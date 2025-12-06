@@ -25,6 +25,7 @@
 #include "../dna_config.h"
 #include "keys.h"
 #include "../blockchain/cellframe/cellframe_wallet_create.h"
+#include "../blockchain/cellframe/cellframe_wallet.h"
 
 // Network byte order conversion
 #ifdef _WIN32
@@ -538,6 +539,31 @@ int messenger_register_name(
         return -1;
     }
 
+    // Find wallet address for this identity
+    char wallet_address[128] = {0};
+    char wallets_path[512];
+    snprintf(wallets_path, sizeof(wallets_path), "%s/%s/wallets", dna_dir, fingerprint);
+
+    DIR *wdir = opendir(wallets_path);
+    if (wdir) {
+        struct dirent *wentry;
+        while ((wentry = readdir(wdir)) != NULL) {
+            if (strstr(wentry->d_name, ".dwallet")) {
+                char wpath[768];
+                snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
+                cellframe_wallet_t *wallet = NULL;
+                if (wallet_read_cellframe_path(wpath, &wallet) == 0 && wallet) {
+                    if (wallet->address[0]) {
+                        strncpy(wallet_address, wallet->address, sizeof(wallet_address) - 1);
+                    }
+                    wallet_free(wallet);
+                    break;
+                }
+            }
+        }
+        closedir(wdir);
+    }
+
     // Publish identity to DHT (unified: creates fingerprint:profile and name:lookup)
     int publish_result = dht_keyserver_publish(
         dht_ctx,
@@ -545,7 +571,8 @@ int messenger_register_name(
         desired_name,
         sign_key->public_key,
         enc_key->public_key,
-        sign_key->private_key
+        sign_key->private_key,
+        wallet_address[0] ? wallet_address : NULL
     );
 
     if (publish_result == -2) {

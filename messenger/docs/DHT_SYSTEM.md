@@ -636,14 +636,15 @@ typedef struct {
 ### API
 
 ```c
-// Publish identity (name required)
+// Publish identity (name required, wallet optional)
 int dht_keyserver_publish(
     dht_context_t *dht_ctx,
     const char *fingerprint,
     const char *name,              // REQUIRED
     const uint8_t *dilithium_pubkey,
     const uint8_t *kyber_pubkey,
-    const uint8_t *dilithium_privkey
+    const uint8_t *dilithium_privkey,
+    const char *wallet_address     // Optional - Cellframe wallet address
 );
 
 // Lookup identity (returns full unified identity)

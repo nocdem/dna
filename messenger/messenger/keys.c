@@ -249,7 +249,8 @@ int messenger_store_pubkey(
         display_name,  // Optional human-readable name
         signing_pubkey,
         encryption_pubkey,
-        key->private_key
+        key->private_key,
+        NULL  // wallet_address not available here
     );
 
     qgp_key_free(key);

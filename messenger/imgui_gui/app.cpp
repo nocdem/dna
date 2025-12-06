@@ -233,7 +233,8 @@ void DNAMessengerApp::processPendingRegistration() {
                         state.pending_registration_name.c_str(),
                         sign_key->public_key,
                         enc_key->public_key,
-                        sign_key->private_key
+                        sign_key->private_key,
+                        nullptr  // wallet_address - loaded separately
                     );
 
                     qgp_key_free(sign_key);

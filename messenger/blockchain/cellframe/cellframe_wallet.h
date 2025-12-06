@@ -82,7 +82,7 @@ int wallet_list_cellframe(wallet_list_t **list_out);
 int wallet_list_from_dna_dir(wallet_list_t **list_out);
 
 /**
- * Get wallet address for specific network using cellframe-node-cli
+ * Get wallet address (returns address from loaded wallet struct)
  */
 int wallet_get_address(const cellframe_wallet_t *wallet, const char *network_name, char *address_out);
 

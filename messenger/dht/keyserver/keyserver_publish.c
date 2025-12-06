@@ -20,7 +20,8 @@ int dht_keyserver_publish(
     const char *name,  // REQUIRED - DNA name
     const uint8_t *dilithium_pubkey,
     const uint8_t *kyber_pubkey,
-    const uint8_t *dilithium_privkey
+    const uint8_t *dilithium_privkey,
+    const char *wallet_address  // Optional - Cellframe wallet address
 ) {
     printf("[DHT_KEYSERVER] Publishing identity: name=%s, fingerprint=%.16s...\n",
            name, fingerprint);
@@ -83,6 +84,11 @@ int dht_keyserver_publish(
     strncpy(identity->registration_tx_hash, "FREE_REGISTRATION", sizeof(identity->registration_tx_hash) - 1);
     strncpy(identity->registration_network, "DNA_NETWORK", sizeof(identity->registration_network) - 1);
     identity->name_version = 1;
+
+    // Set wallet address if provided
+    if (wallet_address && wallet_address[0]) {
+        strncpy(identity->wallets.backbone, wallet_address, sizeof(identity->wallets.backbone) - 1);
+    }
 
     // Set metadata
     identity->created_at = time(NULL);
