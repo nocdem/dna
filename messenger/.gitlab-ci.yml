@@ -405,11 +405,18 @@ build:windows:
   timeout: 2h
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
+  before_script:
+    # Install dependencies via chocolatey (if not already installed)
+    - choco install openssl -y --no-progress || true
+    - choco install curl -y --no-progress || true
+    - choco install pkgconfiglite -y --no-progress || true
+    # Refresh environment to pick up new installs
+    - $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
   script:
     # Build native library with CMake
     - mkdir -p build-windows
     - cd build-windows
-    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF
+    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF -DOPENSSL_ROOT_DIR="C:\Program Files\OpenSSL-Win64"
     - cmake --build . --config Release --target dna_lib
     - cd ..
     # Copy native library to Flutter
