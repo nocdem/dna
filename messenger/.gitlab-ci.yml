@@ -84,7 +84,7 @@ build:native-android-arm64:
     ANDROID_API_LEVEL: "24"
     ANDROID_ABI: "arm64-v8a"
   cache:
-    key: android-deps-arm64-v6
+    key: android-deps-arm64-v7
     paths:
       - .cache/android-ndk/
       - .cache/android-deps/
@@ -112,7 +112,9 @@ build:native-android-arm64:
     - export RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
     - export STRIP="${TOOLCHAIN}/bin/llvm-strip"
     - export PATH="${TOOLCHAIN}/bin:$PATH"
-    - export DEPS_DIR="${CI_PROJECT_DIR}/.cache/android-deps"
+    # AndroidBuild.cmake expects deps in $HOME/android-deps
+    - export HOME="${CI_PROJECT_DIR}/.cache"
+    - export DEPS_DIR="${HOME}/android-deps"
     - mkdir -p "${DEPS_DIR}"
     # Build GMP for Android (needed by GnuTLS/nettle)
     - |
@@ -315,8 +317,7 @@ build:native-android-arm64:
       fi
   script:
     - export ANDROID_NDK_HOME="${CI_PROJECT_DIR}/.cache/android-ndk/android-ndk-r${ANDROID_NDK_VERSION}"
-    - export DEPS_DIR="${CI_PROJECT_DIR}/.cache/android-deps"
-    - export HOME="${DEPS_DIR}"
+    - export HOME="${CI_PROJECT_DIR}/.cache"
     - mkdir -p build-android && cd build-android
     - |
       cmake .. \
@@ -398,6 +399,7 @@ build:flutter-android:
 
 # Full Windows build (native lib + Flutter) on Windows runner
 # Builds everything natively with MSVC/CMake
+# Prerequisites on runner: vcpkg with deps installed, Flutter SDK
 build:windows:
   stage: build-native
   tags:
@@ -405,18 +407,12 @@ build:windows:
   timeout: 2h
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
-  before_script:
-    # Install dependencies via chocolatey (if not already installed)
-    - choco install openssl -y --no-progress || true
-    - choco install curl -y --no-progress || true
-    - choco install pkgconfiglite -y --no-progress || true
-    # Refresh environment to pick up new installs
-    - $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+    VCPKG_ROOT: C:\vcpkg
   script:
-    # Build native library with CMake
+    # Build native library with CMake using vcpkg
     - mkdir -p build-windows
     - cd build-windows
-    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF -DOPENSSL_ROOT_DIR="C:\Program Files\OpenSSL-Win64"
+    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
     - cmake --build . --config Release --target dna_lib
     - cd ..
     # Copy native library to Flutter
