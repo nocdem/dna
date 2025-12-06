@@ -192,6 +192,40 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
 
             offset += sizeof(cellframe_tx_out_t);
 
+        } else if (type == TX_ITEM_TYPE_OUT_EXT) {
+            // OUT_EXT item: type (1) + value (32) + addr (77) + token (10) = 120 bytes
+            cellframe_tx_out_ext_t *out_ext_item = (cellframe_tx_out_ext_t*)item;
+
+            char value_str[80];
+            cellframe_uint256_to_str(&out_ext_item->header.value, value_str);
+
+            // Convert address to Base58
+            char addr_base58[BASE58_ENCODE_SIZE(sizeof(cellframe_addr_t)) + 1];
+            size_t addr_len = base58_encode(&out_ext_item->addr, sizeof(cellframe_addr_t), addr_base58);
+            if (addr_len == 0) {
+                fprintf(stderr, "[JSON] Failed to encode address to Base58\n");
+                free(json);
+                return -1;
+            }
+            addr_base58[addr_len] = '\0';
+
+            // Get token ticker (null-terminated)
+            char token[CELLFRAME_TICKER_SIZE_MAX + 1];
+            memcpy(token, out_ext_item->token, CELLFRAME_TICKER_SIZE_MAX);
+            token[CELLFRAME_TICKER_SIZE_MAX] = '\0';
+
+            ret = snprintf(json + json_len, remaining,
+                "    {\"type\":\"out_ext\", \"addr\":\"%s\", \"value\":\"%s\", \"token\":\"%s\"}",
+                addr_base58, value_str, token);
+            if (ret < 0 || (size_t)ret >= remaining) {
+                free(json);
+                return -1;
+            }
+            json_len += ret;
+            remaining -= ret;
+
+            offset += sizeof(cellframe_tx_out_ext_t);
+
         } else if (type == TX_ITEM_TYPE_OUT_COND) {
             // OUT_COND item: 340 bytes
             cellframe_tx_out_cond_t *cond_item = (cellframe_tx_out_cond_t*)item;

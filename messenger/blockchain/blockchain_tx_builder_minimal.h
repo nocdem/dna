@@ -56,6 +56,7 @@ int cellframe_tx_add_in(cellframe_tx_builder_t *builder,
 
 /**
  * Add OUT item (type 0x12 - current format, NO token field)
+ * Use for native CELL token only.
  * @param builder Builder context
  * @param addr Recipient address (77 bytes)
  * @param value Amount in datoshi
@@ -64,6 +65,20 @@ int cellframe_tx_add_in(cellframe_tx_builder_t *builder,
 int cellframe_tx_add_out(cellframe_tx_builder_t *builder,
                          const cellframe_addr_t *addr,
                          uint256_t value);
+
+/**
+ * Add OUT_EXT item (type 0x11 - has token field)
+ * Use for non-native tokens (CPUNK, etc.)
+ * @param builder Builder context
+ * @param addr Recipient address (77 bytes)
+ * @param value Amount in datoshi
+ * @param token Token ticker (max 10 chars, e.g., "CPUNK")
+ * @return 0 on success, -1 on error
+ */
+int cellframe_tx_add_out_ext(cellframe_tx_builder_t *builder,
+                              const cellframe_addr_t *addr,
+                              uint256_t value,
+                              const char *token);
 
 /**
  * Add OUT_COND item (type 0x61 - fee)
