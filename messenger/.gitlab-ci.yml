@@ -72,21 +72,25 @@ build:native-linux-x64:
     expire_in: 1 day
 
 # Build native library for Android (arm64-v8a)
+# This builds all dependencies from source for Android cross-compilation
 build:native-android-arm64:
   stage: build-native
   tags:
     - linux
   image: ubuntu:24.04
+  timeout: 3h
   variables:
     ANDROID_NDK_VERSION: "26b"
     ANDROID_API_LEVEL: "24"
+    ANDROID_ABI: "arm64-v8a"
   cache:
-    key: android-ndk-v2
+    key: android-deps-arm64-v6
     paths:
       - .cache/android-ndk/
+      - .cache/android-deps/
   before_script:
     - apt-get update -qq
-    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget unzip
+    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget unzip autoconf automake libtool python3 ninja-build m4 texinfo
     # Download Android NDK
     - |
       export HOME="${CI_PROJECT_DIR}"
@@ -94,22 +98,235 @@ build:native-android-arm64:
         mkdir -p .cache/android-ndk && cd .cache/android-ndk
         wget -q https://dl.google.com/android/repository/android-ndk-r${ANDROID_NDK_VERSION}-linux.zip
         unzip -q android-ndk-r${ANDROID_NDK_VERSION}-linux.zip
-        rm android-ndk-r${ANDROID_NDK_VERSION}-linux.zip
+        rm -f android-ndk-r${ANDROID_NDK_VERSION}-linux.zip
         cd "${CI_PROJECT_DIR}"
       fi
     - export ANDROID_NDK_HOME="${CI_PROJECT_DIR}/.cache/android-ndk/android-ndk-r${ANDROID_NDK_VERSION}"
-    - export PATH="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+    - export TOOLCHAIN="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
+    - export TARGET="aarch64-linux-android"
+    - export API="${ANDROID_API_LEVEL}"
+    - export AR="${TOOLCHAIN}/bin/llvm-ar"
+    - export CC="${TOOLCHAIN}/bin/${TARGET}${API}-clang"
+    - export CXX="${TOOLCHAIN}/bin/${TARGET}${API}-clang++"
+    - export LD="${TOOLCHAIN}/bin/ld"
+    - export RANLIB="${TOOLCHAIN}/bin/llvm-ranlib"
+    - export STRIP="${TOOLCHAIN}/bin/llvm-strip"
+    - export PATH="${TOOLCHAIN}/bin:$PATH"
+    - export DEPS_DIR="${CI_PROJECT_DIR}/.cache/android-deps"
+    - mkdir -p "${DEPS_DIR}"
+    # Build GMP for Android (needed by GnuTLS/nettle)
+    - |
+      if [ ! -f "${DEPS_DIR}/gmp-arm64/lib/libgmp.a" ]; then
+        echo "Building GMP for Android..."
+        cd /tmp && rm -rf gmp-6.3.0*
+        wget -q https://gmplib.org/download/gmp/gmp-6.3.0.tar.xz
+        tar xf gmp-6.3.0.tar.xz && cd gmp-6.3.0
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/gmp-arm64" \
+          --enable-static --disable-shared \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build Nettle for Android (needed by GnuTLS)
+    - |
+      if [ ! -f "${DEPS_DIR}/nettle-arm64/lib/libnettle.a" ]; then
+        echo "Building Nettle for Android..."
+        cd /tmp && rm -rf nettle-3.10*
+        wget -q https://ftp.gnu.org/gnu/nettle/nettle-3.10.tar.gz
+        tar xzf nettle-3.10.tar.gz && cd nettle-3.10
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/nettle-arm64" \
+          --enable-static --disable-shared \
+          --disable-documentation \
+          --with-lib-path="${DEPS_DIR}/gmp-arm64/lib" \
+          --with-include-path="${DEPS_DIR}/gmp-arm64/include" \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
+          CFLAGS="-I${DEPS_DIR}/gmp-arm64/include" \
+          LDFLAGS="-L${DEPS_DIR}/gmp-arm64/lib"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build libtasn1 for Android (needed by GnuTLS)
+    - |
+      if [ ! -f "${DEPS_DIR}/libtasn1-arm64/lib/libtasn1.a" ]; then
+        echo "Building libtasn1 for Android..."
+        cd /tmp && rm -rf libtasn1-4.19.0*
+        wget -q https://ftp.gnu.org/gnu/libtasn1/libtasn1-4.19.0.tar.gz
+        tar xzf libtasn1-4.19.0.tar.gz && cd libtasn1-4.19.0
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/libtasn1-arm64" \
+          --enable-static --disable-shared \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build GnuTLS for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/gnutls-arm64/lib/libgnutls.a" ]; then
+        echo "Building GnuTLS for Android..."
+        cd /tmp && rm -rf gnutls-3.8.7*
+        wget -q https://www.gnupg.org/ftp/gcrypt/gnutls/v3.8/gnutls-3.8.7.tar.xz
+        tar xf gnutls-3.8.7.tar.xz && cd gnutls-3.8.7
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/gnutls-arm64" \
+          --enable-static --disable-shared \
+          --disable-tools --disable-tests --disable-doc \
+          --disable-cxx --disable-nls \
+          --without-p11-kit --without-tpm --without-tpm2 \
+          --with-included-libtasn1=no \
+          --with-included-unistring \
+          GMP_CFLAGS="-I${DEPS_DIR}/gmp-arm64/include" \
+          GMP_LIBS="-L${DEPS_DIR}/gmp-arm64/lib -lgmp" \
+          NETTLE_CFLAGS="-I${DEPS_DIR}/nettle-arm64/include" \
+          NETTLE_LIBS="-L${DEPS_DIR}/nettle-arm64/lib -lnettle" \
+          HOGWEED_CFLAGS="-I${DEPS_DIR}/nettle-arm64/include" \
+          HOGWEED_LIBS="-L${DEPS_DIR}/nettle-arm64/lib -lhogweed -L${DEPS_DIR}/gmp-arm64/lib -lgmp" \
+          LIBTASN1_CFLAGS="-I${DEPS_DIR}/libtasn1-arm64/include" \
+          LIBTASN1_LIBS="-L${DEPS_DIR}/libtasn1-arm64/lib -ltasn1" \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
+          CFLAGS="-I${DEPS_DIR}/gmp-arm64/include -I${DEPS_DIR}/nettle-arm64/include -I${DEPS_DIR}/libtasn1-arm64/include" \
+          LDFLAGS="-L${DEPS_DIR}/gmp-arm64/lib -L${DEPS_DIR}/nettle-arm64/lib -L${DEPS_DIR}/libtasn1-arm64/lib"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build argon2 for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/argon2-arm64/lib/libargon2.a" ]; then
+        echo "Building argon2 for Android..."
+        cd /tmp && rm -rf phc-winner-argon2-*
+        wget -q https://github.com/P-H-C/phc-winner-argon2/archive/refs/tags/20190702.tar.gz -O argon2.tar.gz
+        tar xzf argon2.tar.gz && cd phc-winner-argon2-20190702
+        make CC="${CC}" AR="${AR}" LIBRARY_REL=lib PREFIX="${DEPS_DIR}/argon2-arm64" OPTTARGET=none libargon2.a
+        mkdir -p "${DEPS_DIR}/argon2-arm64/lib" "${DEPS_DIR}/argon2-arm64/include"
+        cp libargon2.a "${DEPS_DIR}/argon2-arm64/lib/"
+        cp include/argon2.h "${DEPS_DIR}/argon2-arm64/include/"
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build fmt for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/fmt-arm64/lib/libfmt.a" ]; then
+        echo "Building fmt for Android..."
+        cd /tmp && rm -rf fmt-*
+        wget -q https://github.com/fmtlib/fmt/archive/refs/tags/10.2.1.tar.gz -O fmt.tar.gz
+        tar xzf fmt.tar.gz && cd fmt-10.2.1 && mkdir build && cd build
+        cmake .. \
+          -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${ANDROID_ABI} \
+          -DANDROID_PLATFORM=android-${API} \
+          -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/fmt-arm64" \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DFMT_TEST=OFF
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Download ASIO (header-only)
+    - |
+      if [ ! -d "${DEPS_DIR}/asio-1.30.2" ]; then
+        echo "Downloading ASIO..."
+        cd /tmp && rm -rf asio-*
+        wget -q https://sourceforge.net/projects/asio/files/asio/1.30.2%20%28Stable%29/asio-1.30.2.tar.gz/download -O asio.tar.gz
+        tar xzf asio.tar.gz
+        mkdir -p "${DEPS_DIR}/asio-1.30.2/include"
+        cp -r asio-1.30.2/include/* "${DEPS_DIR}/asio-1.30.2/include/"
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Download msgpack (header-only)
+    - |
+      if [ ! -d "${DEPS_DIR}/msgpack-arm64" ]; then
+        echo "Downloading msgpack..."
+        cd /tmp && rm -rf msgpack-*
+        wget -q https://github.com/msgpack/msgpack-c/releases/download/cpp-6.1.1/msgpack-cxx-6.1.1.tar.gz
+        tar xzf msgpack-cxx-6.1.1.tar.gz
+        mkdir -p "${DEPS_DIR}/msgpack-arm64/include"
+        cp -r msgpack-cxx-6.1.1/include/* "${DEPS_DIR}/msgpack-arm64/include/"
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build OpenSSL for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/openssl-arm64/lib/libcrypto.a" ]; then
+        echo "Building OpenSSL for Android..."
+        cd /tmp && rm -rf openssl-*
+        wget -q https://www.openssl.org/source/openssl-3.3.2.tar.gz
+        tar xzf openssl-3.3.2.tar.gz && cd openssl-3.3.2
+        export ANDROID_NDK_ROOT="${ANDROID_NDK_HOME}"
+        export PATH="${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+        ./Configure android-arm64 no-shared no-tests \
+          --prefix="${DEPS_DIR}/openssl-arm64" \
+          -D__ANDROID_API__=${API}
+        make -j$(nproc)
+        make install_sw
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build SQLite for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/sqlite-arm64/lib/libsqlite3.a" ]; then
+        echo "Building SQLite for Android..."
+        cd /tmp && rm -rf sqlite-*
+        wget -q https://www.sqlite.org/2024/sqlite-autoconf-3460000.tar.gz
+        tar xzf sqlite-autoconf-3460000.tar.gz && cd sqlite-autoconf-3460000
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/sqlite-arm64" \
+          --enable-static --disable-shared \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build json-c for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/jsonc-arm64/lib/libjson-c.a" ]; then
+        echo "Building json-c for Android..."
+        cd /tmp && rm -rf json-c-*
+        wget -q https://github.com/json-c/json-c/archive/refs/tags/json-c-0.17-20230812.tar.gz
+        tar xzf json-c-0.17-20230812.tar.gz && cd json-c-json-c-0.17-20230812
+        mkdir build && cd build
+        cmake .. \
+          -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${ANDROID_ABI} \
+          -DANDROID_PLATFORM=android-${API} \
+          -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/jsonc-arm64" \
+          -DBUILD_SHARED_LIBS=OFF \
+          -DBUILD_STATIC_LIBS=ON
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
+    # Build libcurl for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/curl-arm64/lib/libcurl.a" ]; then
+        echo "Building curl for Android..."
+        cd /tmp && rm -rf curl-*
+        wget -q https://curl.se/download/curl-8.10.1.tar.gz
+        tar xzf curl-8.10.1.tar.gz && cd curl-8.10.1
+        ./configure --host=aarch64-linux-android \
+          --prefix="${DEPS_DIR}/curl-arm64" \
+          --with-openssl="${DEPS_DIR}/openssl-arm64" \
+          --enable-static --disable-shared \
+          --disable-ldap --disable-ldaps --disable-rtsp \
+          --disable-dict --disable-telnet --disable-tftp \
+          --disable-pop3 --disable-imap --disable-smb \
+          --disable-smtp --disable-gopher --disable-mqtt \
+          --disable-manual --disable-docs \
+          --without-libidn2 --without-librtmp --without-libpsl \
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
+          CFLAGS="-I${DEPS_DIR}/openssl-arm64/include" \
+          LDFLAGS="-L${DEPS_DIR}/openssl-arm64/lib"
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
   script:
+    - export ANDROID_NDK_HOME="${CI_PROJECT_DIR}/.cache/android-ndk/android-ndk-r${ANDROID_NDK_VERSION}"
+    - export DEPS_DIR="${CI_PROJECT_DIR}/.cache/android-deps"
+    - export HOME="${DEPS_DIR}"
     - mkdir -p build-android && cd build-android
     - |
       cmake .. \
         -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
-        -DANDROID_ABI=arm64-v8a \
+        -DANDROID_ABI=${ANDROID_ABI} \
         -DANDROID_PLATFORM=android-${ANDROID_API_LEVEL} \
         -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_IMGUI_GUI=OFF \
-        -DBUILD_SHARED_LIBS=ON \
-        -DBUILD_ANDROID=ON
+        -DBUILD_GUI=OFF \
+        -DBUILD_SHARED_LIB=ON \
+        -DBUILD_DNA_NODUS=OFF
     - make -j$(nproc) dna_lib
     - mkdir -p ${CI_PROJECT_DIR}/native-libs/android-arm64
     - cp libdna_lib.so ${CI_PROJECT_DIR}/native-libs/android-arm64/
@@ -117,7 +334,7 @@ build:native-android-arm64:
     paths:
       - native-libs/android-arm64/
     expire_in: 1 day
-  allow_failure: true  # Android NDK build may need additional config
+  allow_failure: true
 
 # Build native library for Windows x64 (cross-compile with MinGW)
 build:native-windows-x64:
