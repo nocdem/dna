@@ -421,6 +421,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         offset: selection.start + emoji.emoji.length,
       ),
     );
+    // Keep focus on the text field after emoji insert
+    _focusNode.requestFocus();
     setState(() {});
   }
 
