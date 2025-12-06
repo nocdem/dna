@@ -333,6 +333,7 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     database/cache_manager.c    # Phase 7: Unified cache lifecycle manager
     database/group_invitations.c  # Phase 6.1: Group invitation tracking database
     blockchain/cellframe/cellframe_wallet.c           # Phase 8: Cellframe wallet integration
+    blockchain/cellframe/cellframe_wallet_create.c    # Phase 8: Cellframe wallet creation from seed
     blockchain/cellframe/cellframe_rpc.c    # Phase 8: Blockchain RPC client
     blockchain/cellframe/cellframe_addr.c   # Phase 8: Blockchain address utilities
     crypto/utils/base58.c           # Phase 8: Base58 encoding for addresses
@@ -477,6 +478,7 @@ if(BUILD_DNA_SEND)
     add_executable(dna-send
         blockchain/cellframe/cellframe_send.c
         blockchain/cellframe/cellframe_wallet.c
+        blockchain/cellframe/cellframe_wallet_create.c
         blockchain/cellframe/cellframe_addr.c
         blockchain/cellframe/cellframe_rpc.c
         crypto/utils/base58.c

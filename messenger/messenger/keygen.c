@@ -23,6 +23,7 @@
 #include "../p2p/p2p_transport.h"
 #include "../dna_config.h"
 #include "keys.h"
+#include "../blockchain/cellframe/cellframe_wallet_create.h"
 
 // Network byte order conversion
 #ifdef _WIN32
@@ -159,6 +160,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
 int messenger_generate_keys_from_seeds(
     const uint8_t *signing_seed,
     const uint8_t *encryption_seed,
+    const uint8_t *wallet_seed,
     const char *data_dir,
     char *fingerprint_out)
 {
@@ -348,6 +350,33 @@ int messenger_generate_keys_from_seeds(
     }
     free(dilithium_pubkey_copy);
     free(kyber_pubkey_copy);
+
+    // Create Cellframe wallet if wallet_seed provided
+    if (wallet_seed) {
+        printf("[WALLET] Creating Cellframe wallet...\n");
+
+        // Use short fingerprint prefix for wallet name (first 16 chars)
+        char wallet_name[64];
+        snprintf(wallet_name, sizeof(wallet_name), "dna_%.16s", fingerprint);
+
+        char wallet_address[CF_WALLET_ADDRESS_MAX];
+
+        // Create in ~/.dna/wallets/
+        char wallets_dir[512];
+        snprintf(wallets_dir, sizeof(wallets_dir), "%s/wallets", data_dir);
+        if (cellframe_wallet_create_from_seed(wallet_seed, wallet_name, wallets_dir, wallet_address) == 0) {
+            printf("[WALLET] ✓ Cellframe wallet created: %s\n", wallet_name);
+            printf("[WALLET] ✓ Address: %s\n", wallet_address);
+        } else {
+            fprintf(stderr, "[WALLET] Warning: Failed to create Cellframe wallet (non-fatal)\n");
+        }
+
+        // Also create in Cellframe node wallet directory (for airdropper compatibility)
+        const char *cellframe_wallets_dir = "/opt/cellframe-node/var/lib/wallet";
+        if (cellframe_wallet_create_from_seed(wallet_seed, wallet_name, cellframe_wallets_dir, wallet_address) == 0) {
+            printf("[WALLET] ✓ Wallet also saved to: %s/%s.dwallet\n", cellframe_wallets_dir, wallet_name);
+        }
+    }
 
     // Copy fingerprint to output parameter
     strncpy(fingerprint_out, fingerprint, 128);
@@ -794,11 +823,11 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
         return -1;
     }
 
-    // Derive seeds from mnemonic
+    // Derive seeds from mnemonic (wallet_seed not used for restore - wallet already exists)
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
 
-    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed) != 0) {
+    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed, NULL) != 0) {
         fprintf(stderr, "Error: Seed derivation failed\n");
         memset(mnemonic, 0, sizeof(mnemonic));
         memset(passphrase, 0, sizeof(passphrase));

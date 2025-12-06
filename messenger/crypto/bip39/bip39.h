@@ -156,23 +156,26 @@ int bip39_pbkdf2_hmac_sha512(
 );
 
 /**
- * Derive QGP signing and encryption seeds from BIP39 mnemonic
+ * Derive QGP signing, encryption, and wallet seeds from BIP39 mnemonic
  *
  * @param mnemonic BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
  * @param passphrase Optional passphrase (empty string if none)
  * @param signing_seed Output buffer for signing seed (32 bytes)
  * @param encryption_seed Output buffer for encryption seed (32 bytes)
+ * @param wallet_seed Output buffer for Cellframe wallet seed (32 bytes), or NULL
  * @return 0 on success, -1 on error
  *
  * Uses BIP39 to generate a 64-byte master seed, then derives:
  * - signing_seed = SHAKE256(master_seed || "qgp-signing-v1", 32)
  * - encryption_seed = SHAKE256(master_seed || "qgp-encryption-v1", 32)
+ * - wallet_seed = SHAKE256(master_seed || "cellframe-wallet-v1", 32) [if not NULL]
  */
 int qgp_derive_seeds_from_mnemonic(
     const char *mnemonic,
     const char *passphrase,
     uint8_t signing_seed[32],
-    uint8_t encryption_seed[32]
+    uint8_t encryption_seed[32],
+    uint8_t wallet_seed[32]
 );
 
 /**

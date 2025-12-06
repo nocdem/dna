@@ -604,7 +604,7 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
 
-    if (qgp_derive_seeds_from_mnemonic(mnemonic, "", signing_seed, encryption_seed) != 0) {
+    if (qgp_derive_seeds_from_mnemonic(mnemonic, "", signing_seed, encryption_seed, NULL) != 0) {
         printf("[Identity] ERROR: Failed to derive seeds from mnemonic\n");
         return;
     }
@@ -632,7 +632,7 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
 
     // Generate keys from seeds (returns fingerprint)
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, dna_dir.c_str(), fingerprint);
+    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, NULL, dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
@@ -850,7 +850,7 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
     uint8_t signing_seed[32];
     uint8_t encryption_seed[32];
 
-    if (qgp_derive_seeds_from_mnemonic(normalized.c_str(), "", signing_seed, encryption_seed) != 0) {
+    if (qgp_derive_seeds_from_mnemonic(normalized.c_str(), "", signing_seed, encryption_seed, NULL) != 0) {
         printf("[Identity] ERROR: Failed to derive seeds from mnemonic\n");
         state.restore_error_message = "Failed to derive seeds from mnemonic. Please try again.";
         return;
@@ -874,7 +874,7 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
 
     // Generate keys from seeds (fingerprint-first, no name required)
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, dna_dir.c_str(), fingerprint);
+    int result = messenger_generate_keys_from_seeds(signing_seed, encryption_seed, NULL, dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));

@@ -36,9 +36,11 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
  * Used for identity restoration across devices (same seed → same keys).
  * Auto-publishes public keys to DHT keyserver.
  * Creates encrypted DHT identity backup.
+ * Optionally creates Cellframe wallet if wallet_seed provided.
  *
  * @param signing_seed: 32-byte seed for Dilithium5 key derivation
  * @param encryption_seed: 32-byte seed for Kyber1024 key derivation
+ * @param wallet_seed: 32-byte seed for Cellframe wallet (optional, can be NULL)
  * @param data_dir: Directory to store keys (e.g., ~/.dna or app-specific dir)
  * @param fingerprint_out: Output buffer for fingerprint (129 bytes)
  * @return: 0 on success, -1 on error
@@ -46,6 +48,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
 int messenger_generate_keys_from_seeds(
     const uint8_t *signing_seed,
     const uint8_t *encryption_seed,
+    const uint8_t *wallet_seed,
     const char *data_dir,
     char *fingerprint_out
 );

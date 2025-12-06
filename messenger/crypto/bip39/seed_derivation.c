@@ -23,23 +23,26 @@
 #include "crypto/kem/fips202_kyber.h"
 
 /**
- * Derive QGP signing and encryption seeds from BIP39 mnemonic
+ * Derive QGP signing, encryption, and wallet seeds from BIP39 mnemonic
  *
  * Uses BIP39 to generate a 64-byte master seed, then derives:
  * - signing_seed = SHAKE256(master_seed || "qgp-signing-v1", 32)
  * - encryption_seed = SHAKE256(master_seed || "qgp-encryption-v1", 32)
+ * - wallet_seed = SHAKE256(master_seed || "cellframe-wallet-v1", 32) [if not NULL]
  *
  * @param mnemonic BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
  * @param passphrase Optional passphrase (empty string if none)
  * @param signing_seed Output buffer for signing seed (32 bytes)
  * @param encryption_seed Output buffer for encryption seed (32 bytes)
+ * @param wallet_seed Output buffer for Cellframe wallet seed (32 bytes), or NULL
  * @return 0 on success, -1 on error
  */
 int qgp_derive_seeds_from_mnemonic(
     const char *mnemonic,
     const char *passphrase,
     uint8_t signing_seed[32],
-    uint8_t encryption_seed[32]
+    uint8_t encryption_seed[32],
+    uint8_t wallet_seed[32]
 ) {
     if (!mnemonic || !signing_seed || !encryption_seed) {
         return -1;
@@ -93,6 +96,25 @@ int qgp_derive_seeds_from_mnemonic(
         memcpy(input + BIP39_SEED_SIZE, encryption_context, context_len);
 
         shake256(encryption_seed, 32, input, input_len);
+        free(input);
+    }
+
+    // Derive wallet seed (optional): SHAKE256(master_seed || "cellframe-wallet-v1", 32)
+    if (wallet_seed) {
+        const char *wallet_context = "cellframe-wallet-v1";
+        size_t context_len = strlen(wallet_context);
+        size_t input_len = BIP39_SEED_SIZE + context_len;
+
+        uint8_t *input = malloc(input_len);
+        if (!input) {
+            fprintf(stderr, "Error: Memory allocation failed\n");
+            return -1;
+        }
+
+        memcpy(input, master_seed, BIP39_SEED_SIZE);
+        memcpy(input + BIP39_SEED_SIZE, wallet_context, context_len);
+
+        shake256(wallet_seed, 32, input, input_len);
         free(input);
     }
 

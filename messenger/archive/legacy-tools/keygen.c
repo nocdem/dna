@@ -463,7 +463,7 @@ int cmd_gen_key_from_seed(const char *name, const char *algo, const char *output
     // ======================================================================
 
     printf("\n[Step 3/4] Deriving seeds from mnemonic (PBKDF2 2048 iterations + SHAKE256)...\n");
-    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed) != 0) {
+    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed, NULL) != 0) {
         fprintf(stderr, "✗ Error: Seed derivation failed\n");
         memset(mnemonic, 0, sizeof(mnemonic));
         memset(passphrase, 0, sizeof(passphrase));
@@ -893,7 +893,7 @@ int cmd_restore_key_from_seed(const char *name, const char *algo, const char *ou
     // ======================================================================
 
     printf("\n[Step 4/4] Deriving seeds from mnemonic (PBKDF2 2048 iterations + SHAKE256)...\n");
-    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed) != 0) {
+    if (qgp_derive_seeds_from_mnemonic(mnemonic, passphrase, signing_seed, encryption_seed, NULL) != 0) {
         fprintf(stderr, "✗ Error: Seed derivation failed\n");
         memset(mnemonic, 0, sizeof(mnemonic));
         memset(passphrase, 0, sizeof(passphrase));

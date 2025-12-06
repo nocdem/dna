@@ -312,7 +312,8 @@ bool CreateIdentityDialog::performKeyGeneration()
     if (qgp_derive_seeds_from_mnemonic(mnemonicBytes.data(),
                                         passphraseBytes.data(),
                                         signing_seed,
-                                        encryption_seed) != 0) {
+                                        encryption_seed,
+                                        NULL) != 0) {
         return false;
     }
 
