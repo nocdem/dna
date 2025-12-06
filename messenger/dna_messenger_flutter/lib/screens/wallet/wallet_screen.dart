@@ -75,7 +75,7 @@ class WalletScreen extends ConsumerWidget {
       },
       child: ListView(
         children: [
-          // Wallet selector
+          // Wallet selector (only shows if multiple wallets)
           _WalletSelector(
             wallets: wallets,
             selectedIndex: selectedIndex,
@@ -83,10 +83,6 @@ class WalletScreen extends ConsumerWidget {
               ref.read(selectedWalletIndexProvider.notifier).state = index;
             },
           ),
-          const Divider(),
-          // Wallet details
-          _WalletCard(wallet: currentWallet),
-          const SizedBox(height: 16),
           // Balances
           _BalancesSection(walletIndex: selectedIndex),
           const SizedBox(height: 16),
