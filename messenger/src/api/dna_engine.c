@@ -1661,7 +1661,16 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         engine->wallet_list = NULL;
     }
 
-    int rc = wallet_list_cellframe(&engine->wallet_list);
+    /* Try ~/.dna/wallets/ first (our wallets), fall back to cellframe path */
+    int rc = wallet_list_from_dna_dir(&engine->wallet_list);
+    if (rc != 0 || !engine->wallet_list || engine->wallet_list->count == 0) {
+        /* Fall back to /opt/cellframe-node/var/lib/wallet */
+        if (engine->wallet_list) {
+            wallet_list_free(engine->wallet_list);
+            engine->wallet_list = NULL;
+        }
+        rc = wallet_list_cellframe(&engine->wallet_list);
+    }
     if (rc != 0 || !engine->wallet_list) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;

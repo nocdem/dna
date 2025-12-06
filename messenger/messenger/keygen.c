@@ -354,12 +354,10 @@ int messenger_generate_keys_from_seeds(
     // Create Cellframe wallet if wallet_seed provided
     if (wallet_seed) {
         printf("[WALLET] Creating Cellframe wallet...\n");
-        printf("[WALLET_DEBUG] wallet_seed ptr=%p\n", (void*)wallet_seed);
 
         // Use short fingerprint prefix for wallet name (first 16 chars)
         char wallet_name[64];
         snprintf(wallet_name, sizeof(wallet_name), "dna_%.16s", fingerprint);
-        printf("[WALLET_DEBUG] wallet_name=%s\n", wallet_name);
 
         char wallet_address[CF_WALLET_ADDRESS_MAX];
 
@@ -371,12 +369,6 @@ int messenger_generate_keys_from_seeds(
             printf("[WALLET] ✓ Address: %s\n", wallet_address);
         } else {
             fprintf(stderr, "[WALLET] Warning: Failed to create Cellframe wallet (non-fatal)\n");
-        }
-
-        // Also create in Cellframe node wallet directory (for airdropper compatibility)
-        const char *cellframe_wallets_dir = "/opt/cellframe-node/var/lib/wallet";
-        if (cellframe_wallet_create_from_seed(wallet_seed, wallet_name, cellframe_wallets_dir, wallet_address) == 0) {
-            printf("[WALLET] ✓ Wallet also saved to: %s/%s.dwallet\n", cellframe_wallets_dir, wallet_name);
         }
     }
 
