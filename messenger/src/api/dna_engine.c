@@ -2100,6 +2100,14 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
+    /* Debug: Print key sizes */
+    fprintf(stderr, "[ENGINE] Signing Debug:\n");
+    fprintf(stderr, "[ENGINE]   TX data size: %zu bytes\n", tx_size);
+    fprintf(stderr, "[ENGINE]   Public key size: %zu bytes\n", wallet->public_key_size);
+    fprintf(stderr, "[ENGINE]   Private key size: %zu bytes\n", wallet->private_key_size);
+    fprintf(stderr, "[ENGINE]   Wallet name: %s\n", wallet->name);
+    fprintf(stderr, "[ENGINE]   Wallet address: %s\n", wallet->address);
+
     /* Sign transaction */
     size_t dap_sign_size = 0;
     if (cellframe_sign_transaction(tx_data, tx_size,
@@ -2111,6 +2119,8 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ERROR_CRYPTO;
         goto done;
     }
+
+    fprintf(stderr, "[ENGINE]   Signature size: %zu bytes\n", dap_sign_size);
 
     free((void*)tx_data);
 
