@@ -399,7 +399,7 @@ build:flutter-android:
 # Full Windows build (native lib + Flutter) on Windows runner
 # Builds everything natively with MSVC/CMake
 build:windows:
-  stage: build-flutter
+  stage: build-native
   tags:
     - windows
   timeout: 2h
