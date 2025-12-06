@@ -579,6 +579,57 @@ static inline int SUM_256_256(uint256_t a, uint256_t b, uint256_t* c) {
 }
 
 /**
+ * Subtract uint256_t b from a, result in c (c = a - b)
+ * Returns 1 if underflow (b > a), 0 otherwise
+ * SDK: SUBTRACT_256_256 (dap_math_ops.h)
+ */
+static inline int SUBTRACT_256_256(uint256_t a, uint256_t b, uint256_t* c) {
+    uint256_t result = uint256_0;
+    int borrow = 0;
+
+    // Subtract lo.lo
+    if (a.lo.lo >= b.lo.lo) {
+        result.lo.lo = a.lo.lo - b.lo.lo;
+    } else {
+        result.lo.lo = (UINT64_MAX - b.lo.lo) + a.lo.lo + 1;
+        borrow = 1;
+    }
+
+    // Subtract lo.hi with borrow
+    uint64_t b_lo_hi = b.lo.hi + borrow;
+    borrow = (b_lo_hi < b.lo.hi) ? 1 : 0;  // Check if adding borrow overflowed
+    if (a.lo.hi >= b_lo_hi) {
+        result.lo.hi = a.lo.hi - b_lo_hi;
+    } else {
+        result.lo.hi = (UINT64_MAX - b_lo_hi) + a.lo.hi + 1;
+        borrow = 1;
+    }
+
+    // Subtract hi.lo with borrow
+    uint64_t b_hi_lo = b.hi.lo + borrow;
+    borrow = (b_hi_lo < b.hi.lo) ? 1 : 0;
+    if (a.hi.lo >= b_hi_lo) {
+        result.hi.lo = a.hi.lo - b_hi_lo;
+    } else {
+        result.hi.lo = (UINT64_MAX - b_hi_lo) + a.hi.lo + 1;
+        borrow = 1;
+    }
+
+    // Subtract hi.hi with borrow
+    uint64_t b_hi_hi = b.hi.hi + borrow;
+    borrow = (b_hi_hi < b.hi.hi) ? 1 : 0;
+    if (a.hi.hi >= b_hi_hi) {
+        result.hi.hi = a.hi.hi - b_hi_hi;
+    } else {
+        result.hi.hi = (UINT64_MAX - b_hi_hi) + a.hi.hi + 1;
+        borrow = 1;
+    }
+
+    *c = result;
+    return borrow;  // 1 if underflow (b > a)
+}
+
+/**
  * Multiply two uint64_t values to uint128_t result
  */
 static inline void MULT_64_128(uint64_t a, uint64_t b, uint128_t* c) {

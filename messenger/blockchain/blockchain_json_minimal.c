@@ -86,14 +86,79 @@ void cellframe_hash_to_hex(const cellframe_hash_t *hash, char *hex_out) {
     hex_out[66] = '\0';
 }
 
+/**
+ * Convert uint256_t to decimal string
+ * Full 256-bit support using repeated division by 10^18
+ */
 void cellframe_uint256_to_str(const uint256_t *value, char *str_out) {
     if (!value || !str_out) {
         return;
     }
 
-    // For amounts < 2^64, value is in lo.lo (bytes 16-23)
-    // SDK: uint256_t.lo.lo contains the datoshi amount
-    sprintf(str_out, "%llu", (unsigned long long)value->lo.lo);
+    // Fast path: if only lo.lo is non-zero, use simple sprintf
+    if (value->hi.hi == 0 && value->hi.lo == 0 && value->lo.hi == 0) {
+        sprintf(str_out, "%llu", (unsigned long long)value->lo.lo);
+        return;
+    }
+
+    // For larger values, we need proper 256-bit to decimal conversion
+    // We'll use the fact that 10^18 fits in uint64, so we can extract digits
+    // in groups of 18 by dividing by 10^18 repeatedly
+
+    // Copy value to work with
+    uint256_t remaining = *value;
+    char chunks[5][20];  // Up to 5 chunks of 18 digits each (256 bits = ~78 digits)
+    int chunk_count = 0;
+
+    uint64_t divisor = 1000000000000000000ULL;  // 10^18
+
+    while (!(remaining.hi.hi == 0 && remaining.hi.lo == 0 && remaining.lo.hi == 0 && remaining.lo.lo == 0)) {
+        // Divide remaining by 10^18, get remainder
+        // This is a simple long division algorithm for uint256 / uint64
+
+        uint64_t r = 0;
+        uint64_t parts[4] = {remaining.hi.hi, remaining.hi.lo, remaining.lo.hi, remaining.lo.lo};
+        uint64_t quotient[4] = {0, 0, 0, 0};
+
+        for (int i = 0; i < 4; i++) {
+            __uint128_t dividend = ((__uint128_t)r << 64) | parts[i];
+            quotient[i] = (uint64_t)(dividend / divisor);
+            r = (uint64_t)(dividend % divisor);
+        }
+
+        // Store remainder as this chunk
+        sprintf(chunks[chunk_count], "%018llu", (unsigned long long)r);
+        chunk_count++;
+
+        // Update remaining with quotient
+        remaining.hi.hi = quotient[0];
+        remaining.hi.lo = quotient[1];
+        remaining.lo.hi = quotient[2];
+        remaining.lo.lo = quotient[3];
+
+        if (chunk_count >= 5) break;  // Safety limit
+    }
+
+    if (chunk_count == 0) {
+        strcpy(str_out, "0");
+        return;
+    }
+
+    // Combine chunks in reverse order, stripping leading zeros from first chunk
+    char *out = str_out;
+    for (int i = chunk_count - 1; i >= 0; i--) {
+        if (i == chunk_count - 1) {
+            // First chunk: skip leading zeros
+            char *p = chunks[i];
+            while (*p == '0' && *(p+1) != '\0') p++;
+            strcpy(out, p);
+            out += strlen(p);
+        } else {
+            // Subsequent chunks: keep all 18 digits
+            strcpy(out, chunks[i]);
+            out += 18;
+        }
+    }
 }
 
 // ============================================================================

@@ -200,20 +200,36 @@ int main(int argc, char **argv) {
     // Step 3: Query and select UTXOs
     printf("[3/7] Querying UTXOs...\n");
 
+    // Check if using non-native token
+    int is_native_token = (strcmp(args.token, "CELL") == 0);
+
     utxo_t *selected_utxos = NULL;
     int num_selected_utxos = 0;
-    uint64_t total_input_u64 = 0;
+    uint256_t total_input = uint256_0;  // Full 256-bit to handle large token amounts
 
-    // Calculate required (simplified for now - assuming amounts fit in uint64)
-    uint64_t required_u64 = amount.lo.lo + NETWORK_FEE_DATOSHI + fee.lo.lo;
+    // For non-native tokens, we need separate CELL UTXOs for fees
+    utxo_t *selected_cell_utxos = NULL;
+    int num_selected_cell_utxos = 0;
+    uint256_t total_cell_input = uint256_0;
 
-    // Query UTXOs from RPC
+    // Required amounts (256-bit)
+    uint256_t required_token = amount;
+    uint256_t required_cell = uint256_0;
+    required_cell.lo.lo = NETWORK_FEE_DATOSHI + fee.lo.lo;
+    uint256_t required = uint256_0;
+    if (is_native_token) {
+        SUM_256_256(amount, required_cell, &required);
+    } else {
+        required = required_token;
+    }
+
+    // Query TOKEN UTXOs (or CELL if native)
     cellframe_rpc_response_t *utxo_resp = NULL;
     if (cellframe_rpc_get_utxo(args.network, wallet->address, args.token, &utxo_resp) == 0 && utxo_resp) {
         if (utxo_resp->result) {
             if (args.verbose) {
                 const char *result_str = json_object_to_json_string_ext(utxo_resp->result, JSON_C_TO_STRING_PRETTY);
-                printf("      UTXO Response:\n%s\n", result_str);
+                printf("      %s UTXO Response:\n%s\n", args.token, result_str);
             }
 
             // Parse UTXO response: result[0][0]["outs"][]
@@ -232,15 +248,14 @@ int main(int argc, char **argv) {
 
                         int num_utxos = json_object_array_length(outs_obj);
                         if (num_utxos == 0) {
-                            fprintf(stderr, "[ERROR] No UTXOs available for this address\n");
+                            fprintf(stderr, "[ERROR] No %s UTXOs available\n", args.token);
                             cellframe_rpc_response_free(utxo_resp);
                             wallet_free(wallet);
                             return 1;
                         }
 
-                        printf("      Found %d UTXO%s\n", num_utxos, num_utxos > 1 ? "s" : "");
+                        printf("      Found %d %s UTXO%s\n", num_utxos, args.token, num_utxos > 1 ? "s" : "");
 
-                        // Parse all UTXOs
                         utxo_t *all_utxos = malloc(sizeof(utxo_t) * num_utxos);
                         int valid_utxos = 0;
 
@@ -256,13 +271,11 @@ int main(int argc, char **argv) {
                                 const char *hash_str = json_object_get_string(jhash);
                                 const char *value_str = json_object_get_string(jvalue);
 
-                                // Parse hash
                                 if (hash_str && strlen(hash_str) >= 66 && hash_str[0] == '0' && hash_str[1] == 'x') {
                                     for (int j = 0; j < 32; j++) {
                                         sscanf(hash_str + 2 + (j * 2), "%2hhx", &all_utxos[valid_utxos].hash.raw[j]);
                                     }
                                     all_utxos[valid_utxos].idx = json_object_get_int(jidx);
-                                    // UTXO values from RPC are already in datoshi - use raw parser
                                     cellframe_uint256_scan_uninteger(value_str, &all_utxos[valid_utxos].value);
                                     valid_utxos++;
                                 }
@@ -270,44 +283,49 @@ int main(int argc, char **argv) {
                         }
 
                         if (valid_utxos == 0) {
-                            fprintf(stderr, "[ERROR] No valid UTXOs found\n");
+                            fprintf(stderr, "[ERROR] No valid %s UTXOs found\n", args.token);
                             free(all_utxos);
                             cellframe_rpc_response_free(utxo_resp);
                             wallet_free(wallet);
                             return 1;
                         }
 
-                        // Select UTXOs (greedy selection)
                         selected_utxos = malloc(sizeof(utxo_t) * valid_utxos);
                         for (int i = 0; i < valid_utxos; i++) {
                             selected_utxos[num_selected_utxos++] = all_utxos[i];
-                            total_input_u64 += all_utxos[i].value.lo.lo;
+                            SUM_256_256(total_input, all_utxos[i].value, &total_input);
 
-                            if (total_input_u64 >= required_u64) {
-                                break;  // Have enough
+                            // compare256 returns 1 if a>b, 0 if equal, -1 if a<b
+                            if (compare256(total_input, required) >= 0) {
+                                break;
                             }
                         }
 
                         free(all_utxos);
 
-                        // Check if we have enough
-                        if (total_input_u64 < required_u64) {
-                            fprintf(stderr, "[ERROR] Insufficient funds\n");
-                            fprintf(stderr, "        Available: %lu datoshi (%d UTXO%s)\n",
-                                    total_input_u64, num_selected_utxos, num_selected_utxos > 1 ? "s" : "");
-                            fprintf(stderr, "        Required:  %lu datoshi\n", required_u64);
+                        if (compare256(total_input, required) < 0) {
+                            fprintf(stderr, "[ERROR] Insufficient %s\n", args.token);
+                            // Print 256-bit values properly
+                            if (IS_ZERO_256((uint256_t){.hi = total_input.hi, .lo = {.hi = total_input.lo.hi, .lo = 0}})) {
+                                fprintf(stderr, "        Available: %lu datoshi\n", total_input.lo.lo);
+                            } else {
+                                fprintf(stderr, "        Available: (large value) hi.hi=%lu hi.lo=%lu lo.hi=%lu lo.lo=%lu\n",
+                                        total_input.hi.hi, total_input.hi.lo, total_input.lo.hi, total_input.lo.lo);
+                            }
+                            fprintf(stderr, "        Required:  %lu datoshi\n", required.lo.lo);
                             free(selected_utxos);
                             cellframe_rpc_response_free(utxo_resp);
                             wallet_free(wallet);
                             return 1;
                         }
 
-                        printf("      Selected %d UTXO%s (total: %lu datoshi)\n", num_selected_utxos,
-                               num_selected_utxos > 1 ? "s" : "", total_input_u64);
-                        for (int i = 0; i < num_selected_utxos; i++) {
-                            char hash_hex[67];
-                            cellframe_hash_to_hex(&selected_utxos[i].hash, hash_hex);
-                            printf("        UTXO %d: %.16s... idx=%u\n", i+1, hash_hex, selected_utxos[i].idx);
+                        // Print total with 256-bit awareness
+                        if (IS_ZERO_256((uint256_t){.hi = total_input.hi, .lo = {.hi = total_input.lo.hi, .lo = 0}})) {
+                            printf("      Selected %d %s UTXO%s (total: %lu datoshi)\n", num_selected_utxos,
+                                   args.token, num_selected_utxos > 1 ? "s" : "", total_input.lo.lo);
+                        } else {
+                            printf("      Selected %d %s UTXO%s (total: lo.hi=%lu lo.lo=%lu datoshi)\n", num_selected_utxos,
+                                   args.token, num_selected_utxos > 1 ? "s" : "", total_input.lo.hi, total_input.lo.lo);
                         }
 
                     } else {
@@ -331,9 +349,113 @@ int main(int argc, char **argv) {
         }
         cellframe_rpc_response_free(utxo_resp);
     } else {
-        fprintf(stderr, "[ERROR] Failed to query UTXOs from RPC\n");
+        fprintf(stderr, "[ERROR] Failed to query %s UTXOs from RPC\n", args.token);
         wallet_free(wallet);
         return 1;
+    }
+
+    // For non-native tokens, query CELL UTXOs for fees
+    if (!is_native_token) {
+        printf("      Querying CELL UTXOs for fees...\n");
+
+        cellframe_rpc_response_t *cell_utxo_resp = NULL;
+        if (cellframe_rpc_get_utxo(args.network, wallet->address, "CELL", &cell_utxo_resp) == 0 && cell_utxo_resp) {
+            if (cell_utxo_resp->result) {
+                if (json_object_is_type(cell_utxo_resp->result, json_type_array) &&
+                    json_object_array_length(cell_utxo_resp->result) > 0) {
+
+                    json_object *first_array = json_object_array_get_idx(cell_utxo_resp->result, 0);
+                    if (first_array && json_object_is_type(first_array, json_type_array) &&
+                        json_object_array_length(first_array) > 0) {
+
+                        json_object *first_item = json_object_array_get_idx(first_array, 0);
+                        json_object *outs_obj = NULL;
+
+                        if (first_item && json_object_object_get_ex(first_item, "outs", &outs_obj) &&
+                            json_object_is_type(outs_obj, json_type_array)) {
+
+                            int num_utxos = json_object_array_length(outs_obj);
+                            if (num_utxos == 0) {
+                                fprintf(stderr, "[ERROR] No CELL UTXOs for fees\n");
+                                free(selected_utxos);
+                                cellframe_rpc_response_free(cell_utxo_resp);
+                                wallet_free(wallet);
+                                return 1;
+                            }
+
+                            printf("      Found %d CELL UTXO%s for fees\n", num_utxos, num_utxos > 1 ? "s" : "");
+
+                            utxo_t *all_cell_utxos = malloc(sizeof(utxo_t) * num_utxos);
+                            int valid_cell_utxos = 0;
+
+                            for (int i = 0; i < num_utxos; i++) {
+                                json_object *utxo_obj = json_object_array_get_idx(outs_obj, i);
+                                json_object *jhash = NULL, *jidx = NULL, *jvalue = NULL;
+
+                                if (utxo_obj &&
+                                    json_object_object_get_ex(utxo_obj, "prev_hash", &jhash) &&
+                                    json_object_object_get_ex(utxo_obj, "out_prev_idx", &jidx) &&
+                                    json_object_object_get_ex(utxo_obj, "value_datoshi", &jvalue)) {
+
+                                    const char *hash_str = json_object_get_string(jhash);
+                                    const char *value_str = json_object_get_string(jvalue);
+
+                                    if (hash_str && strlen(hash_str) >= 66 && hash_str[0] == '0' && hash_str[1] == 'x') {
+                                        for (int j = 0; j < 32; j++) {
+                                            sscanf(hash_str + 2 + (j * 2), "%2hhx", &all_cell_utxos[valid_cell_utxos].hash.raw[j]);
+                                        }
+                                        all_cell_utxos[valid_cell_utxos].idx = json_object_get_int(jidx);
+                                        cellframe_uint256_scan_uninteger(value_str, &all_cell_utxos[valid_cell_utxos].value);
+                                        valid_cell_utxos++;
+                                    }
+                                }
+                            }
+
+                            if (valid_cell_utxos == 0) {
+                                fprintf(stderr, "[ERROR] No valid CELL UTXOs for fees\n");
+                                free(all_cell_utxos);
+                                free(selected_utxos);
+                                cellframe_rpc_response_free(cell_utxo_resp);
+                                wallet_free(wallet);
+                                return 1;
+                            }
+
+                            selected_cell_utxos = malloc(sizeof(utxo_t) * valid_cell_utxos);
+                            for (int i = 0; i < valid_cell_utxos; i++) {
+                                selected_cell_utxos[num_selected_cell_utxos++] = all_cell_utxos[i];
+                                SUM_256_256(total_cell_input, all_cell_utxos[i].value, &total_cell_input);
+
+                                if (compare256(total_cell_input, required_cell) >= 0) {
+                                    break;
+                                }
+                            }
+
+                            free(all_cell_utxos);
+
+                            if (compare256(total_cell_input, required_cell) < 0) {
+                                fprintf(stderr, "[ERROR] Insufficient CELL for fees\n");
+                                fprintf(stderr, "        Available: %lu datoshi\n", total_cell_input.lo.lo);
+                                fprintf(stderr, "        Required:  %lu datoshi\n", required_cell.lo.lo);
+                                free(selected_cell_utxos);
+                                free(selected_utxos);
+                                cellframe_rpc_response_free(cell_utxo_resp);
+                                wallet_free(wallet);
+                                return 1;
+                            }
+
+                            printf("      Selected %d CELL UTXO%s for fees (total: %lu datoshi)\n",
+                                   num_selected_cell_utxos, num_selected_cell_utxos > 1 ? "s" : "", total_cell_input.lo.lo);
+                        }
+                    }
+                }
+                cellframe_rpc_response_free(cell_utxo_resp);
+            }
+        } else {
+            fprintf(stderr, "[ERROR] Failed to query CELL UTXOs for fees\n");
+            free(selected_utxos);
+            wallet_free(wallet);
+            return 1;
+        }
     }
     printf("\n");
 
@@ -354,70 +476,110 @@ int main(int argc, char **argv) {
     }
 
     // Parse recipient address from Base58
-    cellframe_addr_t recipient_addr;
-    size_t decoded_size = base58_decode(args.recipient, &recipient_addr);
+    uint8_t recipient_addr_buf[BASE58_DECODE_SIZE(256)];
+    size_t decoded_size = base58_decode(args.recipient, recipient_addr_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
         fprintf(stderr, "[ERROR] Failed to decode recipient address (got %zu bytes, expected %zu)\n",
                 decoded_size, sizeof(cellframe_addr_t));
         free(selected_utxos);
+        if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
+    cellframe_addr_t recipient_addr;
+    memcpy(&recipient_addr, recipient_addr_buf, sizeof(cellframe_addr_t));
 
     // Parse network collector address from Base58
-    cellframe_addr_t network_collector_addr;
-    decoded_size = base58_decode(NETWORK_FEE_COLLECTOR, &network_collector_addr);
+    uint8_t network_collector_buf[BASE58_DECODE_SIZE(256)];
+    decoded_size = base58_decode(NETWORK_FEE_COLLECTOR, network_collector_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
         fprintf(stderr, "[ERROR] Failed to decode network collector address\n");
         free(selected_utxos);
+        if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
+    cellframe_addr_t network_collector_addr;
+    memcpy(&network_collector_addr, network_collector_buf, sizeof(cellframe_addr_t));
 
     // Parse sender address (for change output)
-    cellframe_addr_t sender_addr;
-    decoded_size = base58_decode(wallet->address, &sender_addr);
+    uint8_t sender_addr_buf[BASE58_DECODE_SIZE(256)];
+    decoded_size = base58_decode(wallet->address, sender_addr_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
         fprintf(stderr, "[ERROR] Failed to decode sender address\n");
         free(selected_utxos);
+        if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
+    cellframe_addr_t sender_addr;
+    memcpy(&sender_addr, sender_addr_buf, sizeof(cellframe_addr_t));
 
     // Calculate network fee
     uint256_t network_fee = {0};
     network_fee.lo.lo = NETWORK_FEE_DATOSHI;
 
-    // Calculate change (simplified - using uint64)
-    uint64_t change_u64 = total_input_u64 - amount.lo.lo - NETWORK_FEE_DATOSHI - fee.lo.lo;
-    uint256_t change = {0};
-    change.lo.lo = change_u64;
+    // Calculate change - different for native vs non-native tokens
+    // Using full 256-bit arithmetic for proper handling of large token amounts
+    uint256_t token_change = uint256_0;
+    uint256_t cell_change = uint256_0;
 
-    if (args.verbose) {
-        printf("      Transaction breakdown:\n");
-        printf("        Total input:     %lu datoshi\n", total_input_u64);
-        printf("        - Recipient:     %lu datoshi\n", amount.lo.lo);
-        printf("        - Network fee:   %lu datoshi\n", NETWORK_FEE_DATOSHI);
-        printf("        - Validator fee: %lu datoshi\n", fee.lo.lo);
-        printf("        = Change:        %lu datoshi\n", change_u64);
+    if (is_native_token) {
+        // CELL: single change = input - amount - network_fee - validator_fee
+        uint256_t fees_total = uint256_0;
+        fees_total.lo.lo = NETWORK_FEE_DATOSHI + fee.lo.lo;
+        uint256_t temp = uint256_0;
+        SUBTRACT_256_256(total_input, amount, &temp);  // temp = input - amount
+        SUBTRACT_256_256(temp, fees_total, &token_change);  // change = temp - fees
+        printf("      CELL change: %lu datoshi\n", token_change.lo.lo);
+    } else {
+        // Non-native: separate token change and CELL change
+        // Token change = total_input - amount (256-bit)
+        SUBTRACT_256_256(total_input, amount, &token_change);
+
+        // Print token change with 256-bit awareness
+        if (IS_ZERO_256((uint256_t){.hi = token_change.hi, .lo = {.hi = token_change.lo.hi, .lo = 0}})) {
+            printf("      %s change: %lu datoshi\n", args.token, token_change.lo.lo);
+        } else {
+            printf("      %s change: lo.hi=%lu lo.lo=%lu datoshi\n", args.token,
+                   token_change.lo.hi, token_change.lo.lo);
+        }
+
+        // CELL change = total_cell_input - network_fee - validator_fee (fits in 64-bit)
+        uint256_t fees_total = uint256_0;
+        fees_total.lo.lo = NETWORK_FEE_DATOSHI + fee.lo.lo;
+        SUBTRACT_256_256(total_cell_input, fees_total, &cell_change);
+        printf("      CELL change: %lu datoshi\n", cell_change.lo.lo);
     }
 
-    // Add all IN items
+    // Add all TOKEN IN items
     for (int i = 0; i < num_selected_utxos; i++) {
         if (cellframe_tx_add_in(builder, &selected_utxos[i].hash, selected_utxos[i].idx) != 0) {
-            fprintf(stderr, "[ERROR] Failed to add IN item %d\n", i);
+            fprintf(stderr, "[ERROR] Failed to add TOKEN IN item %d\n", i);
             free(selected_utxos);
+            if (selected_cell_utxos) free(selected_cell_utxos);
             cellframe_tx_builder_free(builder);
             wallet_free(wallet);
             return 1;
         }
     }
 
-    // Check if using non-native token (need OUT_EXT with token field)
-    int is_native_token = (strcmp(args.token, "CELL") == 0);
+    // Add CELL IN items (for non-native tokens, to pay fees)
+    if (!is_native_token && selected_cell_utxos) {
+        for (int i = 0; i < num_selected_cell_utxos; i++) {
+            if (cellframe_tx_add_in(builder, &selected_cell_utxos[i].hash, selected_cell_utxos[i].idx) != 0) {
+                fprintf(stderr, "[ERROR] Failed to add CELL IN item %d\n", i);
+                free(selected_utxos);
+                free(selected_cell_utxos);
+                cellframe_tx_builder_free(builder);
+                wallet_free(wallet);
+                return 1;
+            }
+        }
+    }
 
     // Add OUT item (recipient) - use OUT_EXT for non-native tokens
     int out_result;
@@ -429,36 +591,60 @@ int main(int argc, char **argv) {
     if (out_result != 0) {
         fprintf(stderr, "[ERROR] Failed to add recipient OUT item\n");
         free(selected_utxos);
+        if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
 
     // Add OUT item (network fee collector) - always CELL
-    if (cellframe_tx_add_out(builder, &network_collector_addr, network_fee) != 0) {
+    // For non-native token TXs, use out_ext with "CELL" ticker so ledger can track balance
+    if (is_native_token) {
+        out_result = cellframe_tx_add_out(builder, &network_collector_addr, network_fee);
+    } else {
+        out_result = cellframe_tx_add_out_ext(builder, &network_collector_addr, network_fee, "CELL");
+    }
+    if (out_result != 0) {
         fprintf(stderr, "[ERROR] Failed to add network fee OUT item\n");
         free(selected_utxos);
+        if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
 
-    // Add OUT item (change) - only if change > 0, use OUT_EXT for non-native tokens
-    int has_change = 0;
-    if (change.hi.hi != 0 || change.hi.lo != 0 || change.lo.hi != 0 || change.lo.lo != 0) {
+    // Add TOKEN change OUT - only if change > 0
+    int has_token_change = 0;
+    if (token_change.hi.hi != 0 || token_change.hi.lo != 0 || token_change.lo.hi != 0 || token_change.lo.lo != 0) {
         if (is_native_token) {
-            out_result = cellframe_tx_add_out(builder, &sender_addr, change);
+            out_result = cellframe_tx_add_out(builder, &sender_addr, token_change);
         } else {
-            out_result = cellframe_tx_add_out_ext(builder, &sender_addr, change, args.token);
+            out_result = cellframe_tx_add_out_ext(builder, &sender_addr, token_change, args.token);
         }
         if (out_result != 0) {
-            fprintf(stderr, "[ERROR] Failed to add change OUT item\n");
+            fprintf(stderr, "[ERROR] Failed to add token change OUT item\n");
             free(selected_utxos);
+            if (selected_cell_utxos) free(selected_cell_utxos);
             cellframe_tx_builder_free(builder);
             wallet_free(wallet);
             return 1;
         }
-        has_change = 1;
+        has_token_change = 1;
+    }
+
+    // Add CELL change OUT (for non-native tokens) - only if change > 0
+    // Use out_ext with "CELL" ticker so ledger can track balance in mixed-token TX
+    int has_cell_change = 0;
+    if (!is_native_token && (cell_change.hi.hi != 0 || cell_change.hi.lo != 0 || cell_change.lo.hi != 0 || cell_change.lo.lo != 0)) {
+        if (cellframe_tx_add_out_ext(builder, &sender_addr, cell_change, "CELL") != 0) {
+            fprintf(stderr, "[ERROR] Failed to add CELL change OUT item\n");
+            free(selected_utxos);
+            if (selected_cell_utxos) free(selected_cell_utxos);
+            cellframe_tx_builder_free(builder);
+            wallet_free(wallet);
+            return 1;
+        }
+        has_cell_change = 1;
     }
 
     // Add TSD item (optional) - BEFORE the fee
@@ -480,18 +666,28 @@ int main(int argc, char **argv) {
     if (cellframe_tx_add_fee(builder, fee) != 0) {
         fprintf(stderr, "[ERROR] Failed to add validator FEE item\n");
         free(selected_utxos);
+        if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
     }
 
+    int total_ins = num_selected_utxos + (is_native_token ? 0 : num_selected_cell_utxos);
+    int total_outs = 2 + has_token_change + has_cell_change;  // recipient + network_fee + changes
+
     printf("      Transaction items: %d IN + %d OUT + 1 FEE%s\n",
-           num_selected_utxos, 2 + has_change, has_tsd ? " + 1 TSD" : "");
-    printf("        - %d input%s\n", num_selected_utxos, num_selected_utxos > 1 ? "s" : "");
-    printf("        - 1 recipient output\n");
-    printf("        - 1 network fee output\n");
-    if (has_change) {
-        printf("        - 1 change output\n");
+           total_ins, total_outs, has_tsd ? " + 1 TSD" : "");
+    printf("        - %d %s input%s\n", num_selected_utxos, args.token, num_selected_utxos > 1 ? "s" : "");
+    if (!is_native_token) {
+        printf("        - %d CELL input%s (for fees)\n", num_selected_cell_utxos, num_selected_cell_utxos > 1 ? "s" : "");
+    }
+    printf("        - 1 recipient output (%s)\n", args.token);
+    printf("        - 1 network fee output (CELL)\n");
+    if (has_token_change) {
+        printf("        - 1 %s change output\n", args.token);
+    }
+    if (has_cell_change) {
+        printf("        - 1 CELL change output\n");
     }
     printf("        - 1 validator fee\n");
     if (has_tsd) {
@@ -501,6 +697,7 @@ int main(int argc, char **argv) {
 
     // Free selected UTXOs (no longer needed)
     free(selected_utxos);
+    if (selected_cell_utxos) free(selected_cell_utxos);
 
     // Step 4.5: Export unsigned transaction JSON (for testing with cellframe-tool-sign)
     printf("[4.5/7] Exporting unsigned transaction...\n");

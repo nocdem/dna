@@ -1864,12 +1864,30 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
     /* STEP 1: Query UTXOs */
     int num_selected_utxos = 0;
-    uint64_t total_input_u64 = 0;
-    uint64_t required_u64 = amount.lo.lo + NETWORK_FEE_DATOSHI + fee.lo.lo;
+    uint256_t total_input = uint256_0;  /* Full 256-bit for large token amounts */
 
+    /* For non-native tokens, we need separate CELL UTXOs for fees */
+    int num_selected_cell_utxos = 0;
+    uint256_t total_cell_input = uint256_0;
+    engine_utxo_t *selected_cell_utxos = NULL;
+    cellframe_rpc_response_t *cell_utxo_resp = NULL;
+
+    /* Required amounts (256-bit) */
+    uint256_t required_token = amount;
+    uint256_t required_cell = uint256_0;
+    required_cell.lo.lo = NETWORK_FEE_DATOSHI + fee.lo.lo;
+
+    /* Query TOKEN UTXOs (or CELL if native) */
     const char *utxo_token = is_native_token ? "CELL" : token;
+    uint256_t required = uint256_0;
+    if (is_native_token) {
+        SUM_256_256(amount, required_cell, &required);
+    } else {
+        required = required_token;
+    }
+
     if (cellframe_rpc_get_utxo(network, address, utxo_token, &utxo_resp) != 0 || !utxo_resp) {
-        fprintf(stderr, "[ENGINE] Failed to query UTXOs from RPC\n");
+        fprintf(stderr, "[ENGINE] Failed to query %s UTXOs from RPC\n", utxo_token);
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
     }
@@ -1891,7 +1909,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
                     int num_utxos = json_object_array_length(outs_obj);
                     if (num_utxos == 0) {
-                        fprintf(stderr, "[ENGINE] No UTXOs available\n");
+                        fprintf(stderr, "[ENGINE] No %s UTXOs available\n", utxo_token);
                         error = DNA_ERROR_NOT_FOUND;
                         goto done;
                     }
@@ -1922,7 +1940,6 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
                                     sscanf(hash_str + 2 + (j * 2), "%2hhx", &all_utxos[valid_utxos].hash.raw[j]);
                                 }
                                 all_utxos[valid_utxos].idx = json_object_get_int(jidx);
-                                // UTXO values from RPC are already in datoshi - use raw parser
                                 cellframe_uint256_scan_uninteger(value_str, &all_utxos[valid_utxos].value);
                                 valid_utxos++;
                             }
@@ -1930,7 +1947,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
                     }
 
                     if (valid_utxos == 0) {
-                        fprintf(stderr, "[ENGINE] No valid UTXOs\n");
+                        fprintf(stderr, "[ENGINE] No valid %s UTXOs\n", utxo_token);
                         free(all_utxos);
                         error = DNA_ERROR_NOT_FOUND;
                         goto done;
@@ -1946,45 +1963,34 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
                     for (int i = 0; i < valid_utxos; i++) {
                         selected_utxos[num_selected_utxos++] = all_utxos[i];
-                        total_input_u64 += all_utxos[i].value.lo.lo;
+                        SUM_256_256(total_input, all_utxos[i].value, &total_input);
 
-                        if (total_input_u64 >= required_u64) {
+                        /* compare256 returns 1 if a>b, 0 if equal, -1 if a<b */
+                        if (compare256(total_input, required) >= 0) {
                             break;
                         }
                     }
 
                     free(all_utxos);
 
-                    /* Debug: Print selected UTXOs */
-                    fprintf(stderr, "[ENGINE] UTXO Selection Debug:\n");
+                    /* Debug: Print selected TOKEN UTXOs */
+                    fprintf(stderr, "[ENGINE] %s UTXO Selection:\n", utxo_token);
                     fprintf(stderr, "[ENGINE]   Amount to send: %lu datoshi\n", (unsigned long)amount.lo.lo);
-                    fprintf(stderr, "[ENGINE]   Fee: %lu datoshi\n", (unsigned long)fee.lo.lo);
-                    fprintf(stderr, "[ENGINE]   Network fee: %lu datoshi\n", (unsigned long)NETWORK_FEE_DATOSHI);
-                    fprintf(stderr, "[ENGINE]   Required total: %lu datoshi\n", (unsigned long)required_u64);
-                    fprintf(stderr, "[ENGINE]   Selected %d UTXOs:\n", num_selected_utxos);
-                    for (int i = 0; i < num_selected_utxos; i++) {
-                        char hash_hex[65];
-                        for (int j = 0; j < 32; j++) {
-                            sprintf(hash_hex + (j * 2), "%02x", selected_utxos[i].hash.raw[j]);
-                        }
-                        hash_hex[64] = '\0';
-                        fprintf(stderr, "[ENGINE]     UTXO %d: hash=%s idx=%d value=%lu\n",
-                                i, hash_hex, selected_utxos[i].idx,
-                                (unsigned long)selected_utxos[i].value.lo.lo);
+                    fprintf(stderr, "[ENGINE]   Required: %lu datoshi\n", (unsigned long)required.lo.lo);
+                    if (total_input.lo.hi == 0) {
+                        fprintf(stderr, "[ENGINE]   Selected %d UTXOs, total: %lu datoshi\n",
+                                num_selected_utxos, (unsigned long)total_input.lo.lo);
+                    } else {
+                        fprintf(stderr, "[ENGINE]   Selected %d UTXOs, total: lo.hi=%lu lo.lo=%lu datoshi\n",
+                                num_selected_utxos, (unsigned long)total_input.lo.hi, (unsigned long)total_input.lo.lo);
                     }
-                    fprintf(stderr, "[ENGINE]   Total input: %lu datoshi\n", (unsigned long)total_input_u64);
 
-                    /* Check if we have enough */
-                    if (total_input_u64 < required_u64) {
-                        fprintf(stderr, "[ENGINE] Insufficient funds. Need: %lu, Have: %lu\n",
-                                (unsigned long)required_u64, (unsigned long)total_input_u64);
+                    if (compare256(total_input, required) < 0) {
+                        fprintf(stderr, "[ENGINE] Insufficient %s. Need: %lu, Have: %lu\n",
+                                utxo_token, (unsigned long)required.lo.lo, (unsigned long)total_input.lo.lo);
                         error = DNA_ERROR_INTERNAL;
                         goto done;
                     }
-
-                    /* Debug: Print change calculation */
-                    uint64_t change_preview = total_input_u64 - amount.lo.lo - NETWORK_FEE_DATOSHI - fee.lo.lo;
-                    fprintf(stderr, "[ENGINE]   Change: %lu datoshi\n", (unsigned long)change_preview);
 
                 } else {
                     fprintf(stderr, "[ENGINE] Invalid UTXO response format\n");
@@ -2001,6 +2007,113 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
             error = DNA_ENGINE_ERROR_NETWORK;
             goto done;
         }
+    }
+
+    /* STEP 1b: For non-native tokens, query CELL UTXOs for fees */
+    if (!is_native_token) {
+        fprintf(stderr, "[ENGINE] Querying CELL UTXOs for fees...\n");
+
+        if (cellframe_rpc_get_utxo(network, address, "CELL", &cell_utxo_resp) != 0 || !cell_utxo_resp) {
+            fprintf(stderr, "[ENGINE] Failed to query CELL UTXOs for fees\n");
+            error = DNA_ENGINE_ERROR_NETWORK;
+            goto done;
+        }
+
+        if (cell_utxo_resp->result) {
+            if (json_object_is_type(cell_utxo_resp->result, json_type_array) &&
+                json_object_array_length(cell_utxo_resp->result) > 0) {
+
+                json_object *first_array = json_object_array_get_idx(cell_utxo_resp->result, 0);
+                if (first_array && json_object_is_type(first_array, json_type_array) &&
+                    json_object_array_length(first_array) > 0) {
+
+                    json_object *first_item = json_object_array_get_idx(first_array, 0);
+                    json_object *outs_obj = NULL;
+
+                    if (first_item && json_object_object_get_ex(first_item, "outs", &outs_obj) &&
+                        json_object_is_type(outs_obj, json_type_array)) {
+
+                        int num_utxos = json_object_array_length(outs_obj);
+                        if (num_utxos == 0) {
+                            fprintf(stderr, "[ENGINE] No CELL UTXOs for fees\n");
+                            error = DNA_ERROR_NOT_FOUND;
+                            goto done;
+                        }
+
+                        engine_utxo_t *all_cell_utxos = (engine_utxo_t*)malloc(sizeof(engine_utxo_t) * num_utxos);
+                        if (!all_cell_utxos) {
+                            error = DNA_ERROR_INTERNAL;
+                            goto done;
+                        }
+                        int valid_cell_utxos = 0;
+
+                        for (int i = 0; i < num_utxos; i++) {
+                            json_object *utxo_obj = json_object_array_get_idx(outs_obj, i);
+                            json_object *jhash = NULL, *jidx = NULL, *jvalue = NULL;
+
+                            if (utxo_obj &&
+                                json_object_object_get_ex(utxo_obj, "prev_hash", &jhash) &&
+                                json_object_object_get_ex(utxo_obj, "out_prev_idx", &jidx) &&
+                                json_object_object_get_ex(utxo_obj, "value_datoshi", &jvalue)) {
+
+                                const char *hash_str = json_object_get_string(jhash);
+                                const char *value_str = json_object_get_string(jvalue);
+
+                                if (hash_str && strlen(hash_str) >= 66 && hash_str[0] == '0' && hash_str[1] == 'x') {
+                                    for (int j = 0; j < 32; j++) {
+                                        sscanf(hash_str + 2 + (j * 2), "%2hhx", &all_cell_utxos[valid_cell_utxos].hash.raw[j]);
+                                    }
+                                    all_cell_utxos[valid_cell_utxos].idx = json_object_get_int(jidx);
+                                    cellframe_uint256_scan_uninteger(value_str, &all_cell_utxos[valid_cell_utxos].value);
+                                    valid_cell_utxos++;
+                                }
+                            }
+                        }
+
+                        if (valid_cell_utxos == 0) {
+                            fprintf(stderr, "[ENGINE] No valid CELL UTXOs for fees\n");
+                            free(all_cell_utxos);
+                            error = DNA_ERROR_NOT_FOUND;
+                            goto done;
+                        }
+
+                        selected_cell_utxos = (engine_utxo_t*)malloc(sizeof(engine_utxo_t) * valid_cell_utxos);
+                        if (!selected_cell_utxos) {
+                            free(all_cell_utxos);
+                            error = DNA_ERROR_INTERNAL;
+                            goto done;
+                        }
+
+                        for (int i = 0; i < valid_cell_utxos; i++) {
+                            selected_cell_utxos[num_selected_cell_utxos++] = all_cell_utxos[i];
+                            SUM_256_256(total_cell_input, all_cell_utxos[i].value, &total_cell_input);
+
+                            if (compare256(total_cell_input, required_cell) >= 0) {
+                                break;
+                            }
+                        }
+
+                        free(all_cell_utxos);
+
+                        fprintf(stderr, "[ENGINE] CELL UTXO Selection (for fees):\n");
+                        fprintf(stderr, "[ENGINE]   Network fee: %lu datoshi\n", (unsigned long)NETWORK_FEE_DATOSHI);
+                        fprintf(stderr, "[ENGINE]   Validator fee: %lu datoshi\n", (unsigned long)fee.lo.lo);
+                        fprintf(stderr, "[ENGINE]   Required CELL: %lu datoshi\n", (unsigned long)required_cell.lo.lo);
+                        fprintf(stderr, "[ENGINE]   Selected %d CELL UTXOs, total: %lu datoshi\n",
+                                num_selected_cell_utxos, (unsigned long)total_cell_input.lo.lo);
+
+                        if (compare256(total_cell_input, required_cell) < 0) {
+                            fprintf(stderr, "[ENGINE] Insufficient CELL for fees. Need: %lu, Have: %lu\n",
+                                    (unsigned long)required_cell.lo.lo, (unsigned long)total_cell_input.lo.lo);
+                            error = DNA_ERROR_INTERNAL;
+                            goto done;
+                        }
+                    }
+                }
+            }
+        }
+        cellframe_rpc_response_free(cell_utxo_resp);
+        cell_utxo_resp = NULL;
     }
 
     /* STEP 2: Build transaction */
@@ -2052,17 +2165,56 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     uint256_t network_fee = {0};
     network_fee.lo.lo = NETWORK_FEE_DATOSHI;
 
-    /* Calculate change */
-    uint64_t change_u64 = total_input_u64 - amount.lo.lo - NETWORK_FEE_DATOSHI - fee.lo.lo;
-    uint256_t change = {0};
-    change.lo.lo = change_u64;
+    /* Calculate change - different for native vs non-native tokens */
+    /* Using full 256-bit arithmetic for proper handling of large token amounts */
+    uint256_t token_change = uint256_0;
+    uint256_t cell_change = uint256_0;
 
-    /* Add all IN items */
+    if (is_native_token) {
+        /* CELL: single change = input - amount - network_fee - validator_fee */
+        uint256_t fees_total = uint256_0;
+        fees_total.lo.lo = NETWORK_FEE_DATOSHI + fee.lo.lo;
+        uint256_t temp = uint256_0;
+        SUBTRACT_256_256(total_input, amount, &temp);  /* temp = input - amount */
+        SUBTRACT_256_256(temp, fees_total, &token_change);  /* change = temp - fees */
+        fprintf(stderr, "[ENGINE] CELL change: %lu datoshi\n", (unsigned long)token_change.lo.lo);
+    } else {
+        /* Non-native: separate token change and CELL change */
+        /* Token change = total_input - amount (256-bit) */
+        SUBTRACT_256_256(total_input, amount, &token_change);
+
+        /* Print token change with 256-bit awareness */
+        if (token_change.lo.hi == 0) {
+            fprintf(stderr, "[ENGINE] %s change: %lu datoshi\n", token, (unsigned long)token_change.lo.lo);
+        } else {
+            fprintf(stderr, "[ENGINE] %s change: lo.hi=%lu lo.lo=%lu datoshi\n", token,
+                    (unsigned long)token_change.lo.hi, (unsigned long)token_change.lo.lo);
+        }
+
+        /* CELL change = total_cell_input - network_fee - validator_fee */
+        uint256_t fees_total = uint256_0;
+        fees_total.lo.lo = NETWORK_FEE_DATOSHI + fee.lo.lo;
+        SUBTRACT_256_256(total_cell_input, fees_total, &cell_change);
+        fprintf(stderr, "[ENGINE] CELL change: %lu datoshi\n", (unsigned long)cell_change.lo.lo);
+    }
+
+    /* Add all TOKEN IN items */
     for (int i = 0; i < num_selected_utxos; i++) {
         if (cellframe_tx_add_in(builder, &selected_utxos[i].hash, selected_utxos[i].idx) != 0) {
-            fprintf(stderr, "[ENGINE] Failed to add IN item\n");
+            fprintf(stderr, "[ENGINE] Failed to add TOKEN IN item\n");
             error = DNA_ERROR_INTERNAL;
             goto done;
+        }
+    }
+
+    /* Add CELL IN items (for non-native tokens, to pay fees) */
+    if (!is_native_token && selected_cell_utxos) {
+        for (int i = 0; i < num_selected_cell_utxos; i++) {
+            if (cellframe_tx_add_in(builder, &selected_cell_utxos[i].hash, selected_cell_utxos[i].idx) != 0) {
+                fprintf(stderr, "[ENGINE] Failed to add CELL IN item\n");
+                error = DNA_ERROR_INTERNAL;
+                goto done;
+            }
         }
     }
 
@@ -2080,21 +2232,37 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Add OUT item (network fee collector) - always CELL */
-    if (cellframe_tx_add_out(builder, &network_collector_addr, network_fee) != 0) {
+    /* For non-native token TXs, use out_ext with "CELL" ticker so ledger can track balance */
+    if (is_native_token) {
+        out_result = cellframe_tx_add_out(builder, &network_collector_addr, network_fee);
+    } else {
+        out_result = cellframe_tx_add_out_ext(builder, &network_collector_addr, network_fee, "CELL");
+    }
+    if (out_result != 0) {
         fprintf(stderr, "[ENGINE] Failed to add network fee OUT\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
 
-    /* Add OUT item (change) - only if change > 0, use OUT_EXT for non-native tokens */
-    if (change.hi.hi != 0 || change.hi.lo != 0 || change.lo.hi != 0 || change.lo.lo != 0) {
+    /* Add TOKEN change OUT - only if change > 0 */
+    if (token_change.hi.hi != 0 || token_change.hi.lo != 0 || token_change.lo.hi != 0 || token_change.lo.lo != 0) {
         if (is_native_token) {
-            out_result = cellframe_tx_add_out(builder, &sender_addr, change);
+            out_result = cellframe_tx_add_out(builder, &sender_addr, token_change);
         } else {
-            out_result = cellframe_tx_add_out_ext(builder, &sender_addr, change, token);
+            out_result = cellframe_tx_add_out_ext(builder, &sender_addr, token_change, token);
         }
         if (out_result != 0) {
-            fprintf(stderr, "[ENGINE] Failed to add change OUT\n");
+            fprintf(stderr, "[ENGINE] Failed to add token change OUT\n");
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+    }
+
+    /* Add CELL change OUT (for non-native tokens) - only if change > 0 */
+    /* Use out_ext with "CELL" ticker so ledger can track balance in mixed-token TX */
+    if (!is_native_token && (cell_change.hi.hi != 0 || cell_change.hi.lo != 0 || cell_change.lo.hi != 0 || cell_change.lo.lo != 0)) {
+        if (cellframe_tx_add_out_ext(builder, &sender_addr, cell_change, "CELL") != 0) {
+            fprintf(stderr, "[ENGINE] Failed to add CELL change OUT\n");
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
@@ -2224,8 +2392,10 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     if (selected_utxos) free(selected_utxos);
+    if (selected_cell_utxos) free(selected_cell_utxos);
     if (builder) cellframe_tx_builder_free(builder);
     if (utxo_resp) cellframe_rpc_response_free(utxo_resp);
+    if (cell_utxo_resp) cellframe_rpc_response_free(cell_utxo_resp);
     if (submit_resp) cellframe_rpc_response_free(submit_resp);
     if (dap_sign) free(dap_sign);
     if (json) free(json);
