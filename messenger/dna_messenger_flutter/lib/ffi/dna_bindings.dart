@@ -1016,6 +1016,47 @@ class DnaBindings {
         engine, recipient_fingerprint, message, callback, user_data);
   }
 
+  // Queue message for async sending (returns immediately)
+  late final _dna_engine_queue_message = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<Utf8>)>('dna_engine_queue_message');
+
+  int dna_engine_queue_message(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> recipient_fingerprint,
+    Pointer<Utf8> message,
+  ) {
+    return _dna_engine_queue_message(engine, recipient_fingerprint, message);
+  }
+
+  // Get message queue capacity
+  late final _dna_engine_get_message_queue_capacity = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_get_message_queue_capacity');
+
+  int dna_engine_get_message_queue_capacity(Pointer<dna_engine_t> engine) {
+    return _dna_engine_get_message_queue_capacity(engine);
+  }
+
+  // Get current message queue size
+  late final _dna_engine_get_message_queue_size = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_get_message_queue_size');
+
+  int dna_engine_get_message_queue_size(Pointer<dna_engine_t> engine) {
+    return _dna_engine_get_message_queue_size(engine);
+  }
+
+  // Set message queue capacity
+  late final _dna_engine_set_message_queue_capacity = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Int32),
+      int Function(Pointer<dna_engine_t>, int)>('dna_engine_set_message_queue_capacity');
+
+  int dna_engine_set_message_queue_capacity(Pointer<dna_engine_t> engine, int capacity) {
+    return _dna_engine_set_message_queue_capacity(engine, capacity);
+  }
+
   late final _dna_engine_get_conversation = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
           Pointer<DnaMessagesCb>, Pointer<Void>),

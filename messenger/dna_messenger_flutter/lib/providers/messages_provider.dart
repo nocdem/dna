@@ -25,10 +25,51 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
     });
   }
 
-  Future<void> sendMessage(String text) async {
-    final engine = await ref.read(engineProvider.future);
-    await engine.sendMessage(arg, text);
-    await refresh();
+  /// Send message using async queue (fire-and-forget with optimistic UI)
+  ///
+  /// Returns:
+  /// - >= 0: success (queue slot ID)
+  /// - -1: queue full
+  /// - -2: other error
+  int sendMessage(String text) {
+    final engine = ref.read(engineProvider).valueOrNull;
+    final fingerprint = engine?.fingerprint;
+    if (fingerprint == null || engine == null) return -2;
+
+    // Create pending message for optimistic UI
+    final pendingMessage = Message.pending(
+      sender: fingerprint,
+      recipient: arg,
+      plaintext: text,
+    );
+
+    // Add to UI immediately with pending status
+    state.whenData((messages) {
+      state = AsyncValue.data([...messages, pendingMessage]);
+    });
+
+    // Queue message for async sending (returns immediately)
+    final result = engine.queueMessage(arg, text);
+
+    if (result < 0) {
+      // On error, remove the pending message
+      state.whenData((messages) {
+        final updated = messages.where((m) => m.id != pendingMessage.id).toList();
+        state = AsyncValue.data(updated);
+      });
+    } else {
+      // Start a background refresh to update message status
+      _scheduleRefresh();
+    }
+
+    return result;
+  }
+
+  /// Schedule a delayed refresh to pick up sent message status
+  void _scheduleRefresh() {
+    Future.delayed(const Duration(milliseconds: 500), () {
+      refresh();
+    });
   }
 
   void addMessage(Message message) {

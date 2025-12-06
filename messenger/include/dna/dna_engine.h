@@ -814,6 +814,51 @@ dna_request_id_t dna_engine_send_message(
 );
 
 /**
+ * Queue message for async sending (returns immediately)
+ *
+ * Adds message to internal send queue for background delivery.
+ * Messages are sent in order via worker threads. Use this for
+ * fire-and-forget messaging with optimistic UI.
+ *
+ * @param engine               Engine instance
+ * @param recipient_fingerprint Recipient fingerprint
+ * @param message              Message text
+ * @return                     >= 0: queue slot ID (success)
+ *                             -1: queue full (DNA_ENGINE_ERROR_BUSY)
+ *                             -2: invalid args (DNA_ENGINE_ERROR_NOT_INITIALIZED)
+ */
+int dna_engine_queue_message(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *message
+);
+
+/**
+ * Get message queue capacity
+ *
+ * @param engine Engine instance
+ * @return       Maximum number of messages that can be queued
+ */
+int dna_engine_get_message_queue_capacity(dna_engine_t *engine);
+
+/**
+ * Get current message queue size
+ *
+ * @param engine Engine instance
+ * @return       Number of messages currently in queue
+ */
+int dna_engine_get_message_queue_size(dna_engine_t *engine);
+
+/**
+ * Set message queue capacity (default: 20)
+ *
+ * @param engine   Engine instance
+ * @param capacity New capacity (1-100)
+ * @return         0 on success, -1 on invalid capacity
+ */
+int dna_engine_set_message_queue_capacity(dna_engine_t *engine, int capacity);
+
+/**
  * Get conversation with contact
  *
  * Returns all messages exchanged with contact.

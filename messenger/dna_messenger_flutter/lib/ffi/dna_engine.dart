@@ -73,6 +73,38 @@ class Message {
       type: native.message_type == 0 ? MessageType.chat : MessageType.groupInvitation,
     );
   }
+
+  /// Create a pending outgoing message (for optimistic UI)
+  factory Message.pending({
+    required String sender,
+    required String recipient,
+    required String plaintext,
+  }) {
+    return Message(
+      id: -DateTime.now().millisecondsSinceEpoch, // Negative temp ID
+      sender: sender,
+      recipient: recipient,
+      plaintext: plaintext,
+      timestamp: DateTime.now(),
+      isOutgoing: true,
+      status: MessageStatus.pending,
+      type: MessageType.chat,
+    );
+  }
+
+  /// Create a copy with updated status
+  Message copyWith({MessageStatus? status, int? id}) {
+    return Message(
+      id: id ?? this.id,
+      sender: sender,
+      recipient: recipient,
+      plaintext: plaintext,
+      timestamp: timestamp,
+      isOutgoing: isOutgoing,
+      status: status ?? this.status,
+      type: type,
+    );
+  }
 }
 
 enum MessageStatus { pending, sent, delivered, read }
@@ -944,7 +976,7 @@ class DnaEngine {
   // MESSAGING OPERATIONS
   // ---------------------------------------------------------------------------
 
-  /// Send message to contact
+  /// Send message to contact (async with callback)
   Future<void> sendMessage(String recipientFingerprint, String message) async {
     final completer = Completer<void>();
     final localId = _nextLocalId++;
@@ -983,6 +1015,40 @@ class DnaEngine {
     }
 
     return completer.future;
+  }
+
+  /// Queue message for async sending (returns immediately)
+  ///
+  /// Returns:
+  /// - >= 0: queue slot ID (success)
+  /// - -1: queue full (MessageQueueFullException)
+  /// - -2: invalid args or not initialized
+  int queueMessage(String recipientFingerprint, String message) {
+    final recipientPtr = recipientFingerprint.toNativeUtf8();
+    final messagePtr = message.toNativeUtf8();
+
+    try {
+      final result = _bindings.dna_engine_queue_message(
+        _engine,
+        recipientPtr.cast(),
+        messagePtr.cast(),
+      );
+      return result;
+    } finally {
+      calloc.free(recipientPtr);
+      calloc.free(messagePtr);
+    }
+  }
+
+  /// Get message queue capacity
+  int get messageQueueCapacity => _bindings.dna_engine_get_message_queue_capacity(_engine);
+
+  /// Get current message queue size
+  int get messageQueueSize => _bindings.dna_engine_get_message_queue_size(_engine);
+
+  /// Set message queue capacity (1-100)
+  bool setMessageQueueCapacity(int capacity) {
+    return _bindings.dna_engine_set_message_queue_capacity(_engine, capacity) == 0;
   }
 
   /// Get conversation with contact
