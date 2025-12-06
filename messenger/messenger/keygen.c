@@ -354,10 +354,12 @@ int messenger_generate_keys_from_seeds(
     // Create Cellframe wallet if wallet_seed provided
     if (wallet_seed) {
         printf("[WALLET] Creating Cellframe wallet...\n");
+        printf("[WALLET_DEBUG] wallet_seed ptr=%p\n", (void*)wallet_seed);
 
         // Use short fingerprint prefix for wallet name (first 16 chars)
         char wallet_name[64];
         snprintf(wallet_name, sizeof(wallet_name), "dna_%.16s", fingerprint);
+        printf("[WALLET_DEBUG] wallet_name=%s\n", wallet_name);
 
         char wallet_address[CF_WALLET_ADDRESS_MAX];
 
