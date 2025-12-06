@@ -206,33 +206,10 @@ int messenger_generate_keys_from_seeds(
     char fingerprint[129];
     dna_compute_fingerprint(dilithium_pk, fingerprint);
 
-    // Determine directory name: use provided name, or lookup from DHT, or fallback to fingerprint
-    char resolved_name[64] = {0};
-    const char *dir_name = fingerprint;  // Default fallback
+    // Directory is always fingerprint-based (deterministic, never changes)
+    const char *dir_name = fingerprint;
 
-    if (name && name[0]) {
-        // Name provided - use it
-        dir_name = name;
-    } else {
-        // No name provided - try to restore from DHT
-        printf("[KEYGEN] No name provided, attempting DHT lookup for restore...\n");
-        dht_context_t *dht_ctx = dht_singleton_get();
-        if (dht_ctx) {
-            char *dht_name = NULL;
-            if (dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &dht_name) == 0 && dht_name) {
-                strncpy(resolved_name, dht_name, sizeof(resolved_name) - 1);
-                dir_name = resolved_name;
-                printf("[KEYGEN] ✓ Found registered name in DHT: %s\n", resolved_name);
-                free(dht_name);
-            } else {
-                printf("[KEYGEN] No registered name found in DHT, using fingerprint as directory\n");
-            }
-        } else {
-            printf("[KEYGEN] DHT not available, using fingerprint as directory\n");
-        }
-    }
-
-    // Create directory structure: ~/.dna/<name>/keys/ and ~/.dna/<name>/wallets/
+    // Create directory structure: ~/.dna/<fingerprint>/keys/ and ~/.dna/<fingerprint>/wallets/
     char identity_dir[512];
     char keys_dir[512];
     char wallets_dir[512];
