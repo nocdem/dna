@@ -674,7 +674,7 @@ int messenger_sync_groups(messenger_context_t *ctx) {
     // Load recipient's private Kyber1024 key from filesystem (for decryption)
     const char *home = qgp_platform_home_dir();
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s/keys/%s.kem", home, ctx->identity, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {

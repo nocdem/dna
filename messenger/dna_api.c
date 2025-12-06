@@ -1228,14 +1228,14 @@ dna_error_t dna_sign_message(
         return DNA_ERROR_INVALID_ARG;
     }
 
-    // Build key file path: ~/.dna/<name>.dsa
+    // Build key file path: ~/.dna/<fingerprint>/keys/<fingerprint>.dsa
     char key_path[512];
     const char *home = getenv("HOME");
     if (!home) {
         fprintf(stderr, "[DNA API] HOME environment variable not set\n");
         return DNA_ERROR_INTERNAL;
     }
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, signer_key_name);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa", home, signer_key_name, signer_key_name);
 
     // Load signing key
     qgp_key_t *sign_key = NULL;

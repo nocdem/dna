@@ -893,7 +893,7 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
 
     printf("[OK] Identity restored successfully!\n");
     printf("[OK] Fingerprint: %s\n", fingerprint);
-    printf("[OK] Keys saved to: ~/.dna/%s.dsa and ~/.dna/%s.kem\n", fingerprint, fingerprint);
+    printf("[OK] Keys saved to: ~/.dna/%s/keys/%s.dsa and ~/.dna/%s/keys/%s.kem\n", fingerprint, fingerprint, fingerprint, fingerprint);
 
     // Try to fetch registered name via DHT reverse lookup
     dht_context_t *dht_ctx = dht_singleton_get();

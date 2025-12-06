@@ -190,7 +190,7 @@ void saveProfile(AppState& state) {
     // Load private key for signing
     const char *home = qgp_platform_home_dir();
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa", home, ctx->identity, ctx->identity);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
@@ -200,7 +200,7 @@ void saveProfile(AppState& state) {
 
     // Also load encryption key for kyber public key
     char enc_key_path[512];
-    snprintf(enc_key_path, sizeof(enc_key_path), "%s/.dna/%s.kem", home, ctx->identity);
+    snprintf(enc_key_path, sizeof(enc_key_path), "%s/.dna/%s/keys/%s.kem", home, ctx->identity, ctx->identity);
     qgp_key_t *enc_key = NULL;
     if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
         state.profile_status = "Failed to load encryption key";

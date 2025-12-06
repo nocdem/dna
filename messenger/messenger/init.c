@@ -88,7 +88,7 @@ static int resolve_identity_to_fingerprint(const char *identity_input, char *fin
     // Input is a name, compute fingerprint from key file
     const char *home = qgp_platform_home_dir();
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa", home, identity_input);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa", home, identity_input, identity_input);
 
     // Check if key file exists (no error message - expected for new identities)
     if (!file_exists(key_path)) {

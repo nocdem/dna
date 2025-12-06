@@ -44,7 +44,7 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
 
     // Load Kyber keypair
     char kyber_path[1024];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s/keys/%s.kem", home, ctx->identity, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
@@ -54,7 +54,7 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
 
     // Load Dilithium keypair
     char dilithium_path[1024];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s.dsa", home, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s/keys/%s.dsa", home, ctx->identity, ctx->identity);
 
     qgp_key_t *dilithium_key = NULL;
     if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
@@ -148,7 +148,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
 
     // Load Kyber private key for decryption
     char kyber_path[1024];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s.kem", home, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s/keys/%s.kem", home, ctx->identity, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
@@ -158,7 +158,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
 
     // Load Dilithium public key for signature verification
     char dilithium_path[1024];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s.dsa", home, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s/keys/%s.dsa", home, ctx->identity, ctx->identity);
 
     qgp_key_t *dilithium_key = NULL;
     if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {

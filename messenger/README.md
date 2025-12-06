@@ -197,7 +197,7 @@ DNA Messenger includes a **forked OpenDHT** with post-quantum cryptography:
 **Data Storage:**
 - Messages: Local SQLite (`~/.dna/messages.db`)
 - Contacts: Per-identity SQLite (`~/.dna/<identity>_contacts.db`)
-- Keys: Local encrypted (`~/.dna/*.dsa`, `*.kem`)
+- Keys: Local encrypted (`~/.dna/<fingerprint>/keys/*.dsa`, `*.kem`)
 - Public data: DHT with local cache
 
 ---

@@ -115,8 +115,8 @@ static int load_my_dilithium_pubkey(
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa",
-             home, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa",
+             home, ctx->identity, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {
@@ -256,8 +256,8 @@ static int load_my_privkey(
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.dsa",
-             home, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa",
+             home, ctx->identity, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {
@@ -330,8 +330,8 @@ static int load_my_kyber_key(
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s.kem",
-             home, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.kem",
+             home, ctx->identity, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {

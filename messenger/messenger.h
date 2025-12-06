@@ -2,7 +2,7 @@
  * DNA Messenger - CLI Messenger Module
  *
  * Storage Architecture:
- * - Private keys: ~/.dna/<identity>.dsa, <identity>.kem (filesystem)
+ * - Private keys: ~/.dna/<fingerprint>/keys/<fingerprint>.dsa, .kem (filesystem)
  * - Public keys: DHT-based keyserver (decentralized, permanent)
  * - Messages: SQLite local database (user owns their data)
  *
@@ -116,9 +116,9 @@ int messenger_load_dht_identity(const char *fingerprint);
  * Generate new key pair for identity
  *
  * Creates:
- * - ~/.dna/<identity>.dsa (private signing key)
- * - ~/.dna/<identity>.kem (private encryption key)
- * - Uploads public keys to PostgreSQL keyserver
+ * - ~/.dna/<fingerprint>/keys/<fingerprint>.dsa (private signing key)
+ * - ~/.dna/<fingerprint>/keys/<fingerprint>.kem (private encryption key)
+ * - Publishes public keys to DHT keyserver
  *
  * @param ctx: Messenger context
  * @param identity: Identity name (e.g., "alice")
@@ -207,7 +207,7 @@ int messenger_restore_keys_from_file(messenger_context_t *ctx, const char *ident
  * Reads the .dsa file and computes SHA3-512(dilithium_pubkey).
  * This is the primary identity in the fingerprint-first model.
  *
- * @param identity: Current identity name (used to locate ~/.dna/<identity>.dsa)
+ * @param identity: Fingerprint (used to locate ~/.dna/<fingerprint>/keys/<fingerprint>.dsa)
  * @param fingerprint_out: Output buffer (must be 129 bytes: 128 hex + null)
  * @return: 0 on success, -1 on error
  */
