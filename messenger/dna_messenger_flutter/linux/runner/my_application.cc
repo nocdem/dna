@@ -19,6 +19,14 @@ static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
 }
 
+// Handle window close - ensure clean shutdown
+static gboolean on_window_delete(GtkWidget* widget, GdkEvent* event,
+                                  gpointer user_data) {
+  GApplication* app = G_APPLICATION(user_data);
+  g_application_quit(app);
+  return TRUE;  // Prevent default handler, we handle shutdown ourselves
+}
+
 // Implements GApplication::activate.
 static void my_application_activate(GApplication* application) {
   MyApplication* self = MY_APPLICATION(application);
@@ -28,6 +36,10 @@ static void my_application_activate(GApplication* application) {
   // Let GTK handle window decorations natively - this ensures the title bar
   // follows the system theme (light/dark) correctly on GNOME and other DEs
   gtk_window_set_title(window, "DNA Messenger");
+
+  // Handle window close button for clean shutdown
+  g_signal_connect(window, "delete-event", G_CALLBACK(on_window_delete),
+                   application);
 
   gtk_window_set_default_size(window, 1280, 720);
 
