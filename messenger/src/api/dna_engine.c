@@ -4,6 +4,8 @@
  * Core engine implementation providing async API for DNA Messenger.
  */
 
+#define _XOPEN_SOURCE 700  /* For strptime */
+
 #include "dna_engine_internal.h"
 #include "dna_api.h"
 #include "messenger_p2p.h"
@@ -1389,10 +1391,16 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
                 messages[i].plaintext = strdup("[Decryption failed]");
             }
 
-            /* Parse timestamp */
+            /* Parse timestamp string (format: YYYY-MM-DD HH:MM:SS) */
             if (msg_infos[i].timestamp) {
-                /* Assume ISO format, convert to unix time */
-                messages[i].timestamp = (uint64_t)time(NULL); /* Simplified */
+                struct tm tm = {0};
+                if (strptime(msg_infos[i].timestamp, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
+                    messages[i].timestamp = (uint64_t)mktime(&tm);
+                } else {
+                    messages[i].timestamp = (uint64_t)time(NULL);
+                }
+            } else {
+                messages[i].timestamp = (uint64_t)time(NULL);
             }
 
             /* Determine if outgoing */
