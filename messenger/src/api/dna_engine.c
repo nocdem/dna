@@ -4,6 +4,8 @@
  * Core engine implementation providing async API for DNA Messenger.
  */
 
+#define _XOPEN_SOURCE 700  /* For strptime */
+
 #include "dna_engine_internal.h"
 #include "dna_api.h"
 #include "messenger_p2p.h"
@@ -451,6 +453,14 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize name cache */
     engine->name_cache_count = 0;
 
+    /* Initialize message send queue */
+    pthread_mutex_init(&engine->message_queue.mutex, NULL);
+    engine->message_queue.capacity = DNA_MESSAGE_QUEUE_DEFAULT_CAPACITY;
+    engine->message_queue.entries = calloc(engine->message_queue.capacity,
+                                           sizeof(dna_message_queue_entry_t));
+    engine->message_queue.size = 0;
+    engine->message_queue.next_slot_id = 1;
+
     /* Initialize task queue */
     dna_task_queue_init(&engine->task_queue);
 
@@ -504,6 +514,17 @@ void dna_engine_destroy(dna_engine_t *engine) {
     if (engine->wallet_list) {
         wallet_list_free(engine->wallet_list);
     }
+
+    /* Free message queue */
+    pthread_mutex_lock(&engine->message_queue.mutex);
+    for (int i = 0; i < engine->message_queue.capacity; i++) {
+        if (engine->message_queue.entries[i].in_use) {
+            free(engine->message_queue.entries[i].message);
+        }
+    }
+    free(engine->message_queue.entries);
+    pthread_mutex_unlock(&engine->message_queue.mutex);
+    pthread_mutex_destroy(&engine->message_queue.mutex);
 
     /* Cleanup synchronization */
     pthread_mutex_destroy(&engine->event_mutex);
@@ -1299,8 +1320,28 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_NETWORK;
     }
 
+    /* Clear message queue slot if this was a queued message */
+    intptr_t slot_id = (intptr_t)task->user_data;
+    if (slot_id > 0) {
+        pthread_mutex_lock(&engine->message_queue.mutex);
+        for (int i = 0; i < engine->message_queue.capacity; i++) {
+            if (engine->message_queue.entries[i].in_use &&
+                engine->message_queue.entries[i].slot_id == slot_id) {
+                free(engine->message_queue.entries[i].message);
+                engine->message_queue.entries[i].message = NULL;
+                engine->message_queue.entries[i].in_use = false;
+                engine->message_queue.size--;
+                break;
+            }
+        }
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+    }
+
 done:
-    task->callback.completion(task->request_id, error, task->user_data);
+    /* Only call callback if one was provided (not for queued messages) */
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
 }
 
 void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
@@ -1350,27 +1391,39 @@ void dna_handle_get_conversation(dna_engine_t *engine, dna_task_t *task) {
                 messages[i].plaintext = strdup("[Decryption failed]");
             }
 
-            /* Parse timestamp */
+            /* Parse timestamp string (format: YYYY-MM-DD HH:MM:SS) */
             if (msg_infos[i].timestamp) {
-                /* Assume ISO format, convert to unix time */
-                messages[i].timestamp = (uint64_t)time(NULL); /* Simplified */
+                struct tm tm = {0};
+                if (strptime(msg_infos[i].timestamp, "%Y-%m-%d %H:%M:%S", &tm) != NULL) {
+                    messages[i].timestamp = (uint64_t)mktime(&tm);
+                } else {
+                    messages[i].timestamp = (uint64_t)time(NULL);
+                }
+            } else {
+                messages[i].timestamp = (uint64_t)time(NULL);
             }
 
             /* Determine if outgoing */
             messages[i].is_outgoing = (msg_infos[i].sender &&
                 strcmp(msg_infos[i].sender, engine->fingerprint) == 0);
 
-            /* Map status string to int */
+            /* Map status string to int: 0=pending, 1=sent, 2=failed, 3=delivered, 4=read */
             if (msg_infos[i].status) {
                 if (strcmp(msg_infos[i].status, "read") == 0) {
-                    messages[i].status = 3;
+                    messages[i].status = 4;
                 } else if (strcmp(msg_infos[i].status, "delivered") == 0) {
+                    messages[i].status = 3;
+                } else if (strcmp(msg_infos[i].status, "failed") == 0) {
                     messages[i].status = 2;
                 } else if (strcmp(msg_infos[i].status, "sent") == 0) {
                     messages[i].status = 1;
-                } else {
+                } else if (strcmp(msg_infos[i].status, "pending") == 0) {
                     messages[i].status = 0;
+                } else {
+                    messages[i].status = 1;  /* default to sent for old messages */
                 }
+            } else {
+                messages[i].status = 1;  /* default to sent if no status */
             }
 
             messages[i].message_type = msg_infos[i].message_type;
@@ -2616,6 +2669,118 @@ dna_request_id_t dna_engine_send_message(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SEND_MESSAGE, &params, cb, user_data);
+}
+
+int dna_engine_queue_message(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *message
+) {
+    if (!engine || !recipient_fingerprint || !message) {
+        return -2; /* Invalid args */
+    }
+    if (!engine->identity_loaded) {
+        return -2; /* No identity loaded */
+    }
+
+    pthread_mutex_lock(&engine->message_queue.mutex);
+
+    /* Check if queue is full */
+    if (engine->message_queue.size >= engine->message_queue.capacity) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -1; /* Queue full */
+    }
+
+    /* Find empty slot */
+    int slot_index = -1;
+    for (int i = 0; i < engine->message_queue.capacity; i++) {
+        if (!engine->message_queue.entries[i].in_use) {
+            slot_index = i;
+            break;
+        }
+    }
+
+    if (slot_index < 0) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -1; /* No slot available */
+    }
+
+    /* Fill the slot */
+    dna_message_queue_entry_t *entry = &engine->message_queue.entries[slot_index];
+    strncpy(entry->recipient, recipient_fingerprint, 128);
+    entry->recipient[128] = '\0';
+    entry->message = strdup(message);
+    if (!entry->message) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -2; /* Memory error */
+    }
+    entry->slot_id = engine->message_queue.next_slot_id++;
+    entry->in_use = true;
+    engine->message_queue.size++;
+
+    int slot_id = entry->slot_id;
+    pthread_mutex_unlock(&engine->message_queue.mutex);
+
+    /* Submit task to worker queue (fire-and-forget, no callback) */
+    dna_task_params_t params = {0};
+    strncpy(params.send_message.recipient, recipient_fingerprint, 128);
+    params.send_message.message = strdup(message);
+    if (params.send_message.message) {
+        dna_task_callback_t cb = { .completion = NULL };
+        dna_submit_task(engine, TASK_SEND_MESSAGE, &params, cb, (void*)(intptr_t)slot_id);
+    }
+
+    return slot_id;
+}
+
+int dna_engine_get_message_queue_capacity(dna_engine_t *engine) {
+    if (!engine) return 0;
+    return engine->message_queue.capacity;
+}
+
+int dna_engine_get_message_queue_size(dna_engine_t *engine) {
+    if (!engine) return 0;
+
+    pthread_mutex_lock(&engine->message_queue.mutex);
+    int size = engine->message_queue.size;
+    pthread_mutex_unlock(&engine->message_queue.mutex);
+
+    return size;
+}
+
+int dna_engine_set_message_queue_capacity(dna_engine_t *engine, int capacity) {
+    if (!engine || capacity < 1 || capacity > DNA_MESSAGE_QUEUE_MAX_CAPACITY) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&engine->message_queue.mutex);
+
+    /* Can't shrink below current size */
+    if (capacity < engine->message_queue.size) {
+        pthread_mutex_unlock(&engine->message_queue.mutex);
+        return -1;
+    }
+
+    /* Reallocate if needed */
+    if (capacity != engine->message_queue.capacity) {
+        dna_message_queue_entry_t *new_entries = realloc(
+            engine->message_queue.entries,
+            capacity * sizeof(dna_message_queue_entry_t)
+        );
+        if (!new_entries) {
+            pthread_mutex_unlock(&engine->message_queue.mutex);
+            return -1;
+        }
+        /* Initialize new slots */
+        for (int i = engine->message_queue.capacity; i < capacity; i++) {
+            memset(&new_entries[i], 0, sizeof(dna_message_queue_entry_t));
+        }
+        engine->message_queue.entries = new_entries;
+        engine->message_queue.capacity = capacity;
+    }
+
+    pthread_mutex_unlock(&engine->message_queue.mutex);
+    return 0;
 }
 
 dna_request_id_t dna_engine_get_conversation(

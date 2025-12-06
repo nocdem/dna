@@ -141,6 +141,34 @@ int message_backup_mark_read(message_backup_context_t *ctx, int message_id);
 int message_backup_update_status(message_backup_context_t *ctx, int message_id, int status);
 
 /**
+ * Update message status by sender/recipient/timestamp
+ *
+ * Useful when message ID is not known (e.g., after async send)
+ *
+ * @param ctx Message backup context
+ * @param sender Sender fingerprint
+ * @param recipient Recipient fingerprint
+ * @param timestamp Message timestamp
+ * @param status New status (0=PENDING, 1=SENT, 2=FAILED)
+ * @return 0 on success, -1 on error
+ */
+int message_backup_update_status_by_key(
+    message_backup_context_t *ctx,
+    const char *sender,
+    const char *recipient,
+    time_t timestamp,
+    int status
+);
+
+/**
+ * Get the last inserted message ID
+ *
+ * @param ctx Message backup context
+ * @return Last inserted message ID, or -1 on error
+ */
+int message_backup_get_last_id(message_backup_context_t *ctx);
+
+/**
  * Get conversation history
  *
  * Returns all messages between current user and specified contact.

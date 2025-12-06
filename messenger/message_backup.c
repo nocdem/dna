@@ -560,6 +560,43 @@ int message_backup_update_status(message_backup_context_t *ctx, int message_id, 
 }
 
 /**
+ * Update message status by sender/recipient/timestamp
+ * Useful when message ID is not known (e.g., after async send)
+ */
+int message_backup_update_status_by_key(
+    message_backup_context_t *ctx,
+    const char *sender,
+    const char *recipient,
+    time_t timestamp,
+    int status
+) {
+    if (!ctx || !ctx->db || !sender || !recipient) return -1;
+
+    const char *sql = "UPDATE messages SET status = ? WHERE sender = ? AND recipient = ? AND timestamp = ?";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    sqlite3_bind_int(stmt, 1, status);
+    sqlite3_bind_text(stmt, 2, sender, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, recipient, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, (sqlite3_int64)timestamp);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+/**
+ * Get the last inserted message ID
+ */
+int message_backup_get_last_id(message_backup_context_t *ctx) {
+    if (!ctx || !ctx->db) return -1;
+    return (int)sqlite3_last_insert_rowid(ctx->db);
+}
+
+/**
  * Get recent contacts
  */
 int message_backup_get_recent_contacts(message_backup_context_t *ctx,

@@ -31,6 +31,8 @@ extern "C" {
 #define DNA_TASK_QUEUE_SIZE 256
 #define DNA_WORKER_THREAD_COUNT 4
 #define DNA_REQUEST_ID_INVALID 0
+#define DNA_MESSAGE_QUEUE_DEFAULT_CAPACITY 20
+#define DNA_MESSAGE_QUEUE_MAX_CAPACITY 100
 
 /* ============================================================================
  * TASK TYPES
@@ -319,6 +321,27 @@ typedef struct {
 } dna_name_cache_entry_t;
 
 /**
+ * Message queue entry for async sending
+ */
+typedef struct {
+    char recipient[129];
+    char *message;           /* Heap allocated, queue owns */
+    int slot_id;             /* Unique slot ID for tracking */
+    bool in_use;             /* True if slot contains valid message */
+} dna_message_queue_entry_t;
+
+/**
+ * Message send queue (for fire-and-forget messaging)
+ */
+typedef struct {
+    dna_message_queue_entry_t *entries;  /* Dynamic array */
+    int capacity;                         /* Current capacity */
+    int size;                             /* Number of messages in queue */
+    int next_slot_id;                     /* Next slot ID to assign */
+    pthread_mutex_t mutex;                /* Thread safety */
+} dna_message_queue_t;
+
+/**
  * DNA Engine internal state
  */
 struct dna_engine {
@@ -338,6 +361,9 @@ struct dna_engine {
     dna_name_cache_entry_t name_cache[DNA_NAME_CACHE_MAX];
     int name_cache_count;
     pthread_mutex_t name_cache_mutex;
+
+    /* Message send queue (for async fire-and-forget messaging) */
+    dna_message_queue_t message_queue;
 
     /* Event callback */
     dna_event_cb event_callback;

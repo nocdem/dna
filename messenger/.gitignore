@@ -37,7 +37,13 @@ pqsignum/
 # Build artifacts
 build/
 build-release/
+build-*/
+build-android*/
+build-windows*/
+build-linux*/
+build-macos*/
 dist/
+native-libs/
 *.a
 *.o
 *.so

@@ -1,5 +1,6 @@
 // Emoji Shortcode TextField - Supports :shortcode: search like Telegram/Discord
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
 import '../theme/dna_theme.dart';
 
@@ -7,16 +8,20 @@ import '../theme/dna_theme.dart';
 ///
 /// When user types `:` followed by 2+ characters, shows matching emoji suggestions
 /// in an overlay above the text field. Uses same emoji database as the picker.
+///
+/// Enter key sends message (calls onEnterPressed), Shift+Enter adds newline.
 class EmojiShortcodeField extends StatefulWidget {
   final TextEditingController controller;
   final String hintText;
   final int minLines;
   final int maxLines;
   final VoidCallback? onSubmitted;
+  final VoidCallback? onEnterPressed;
   final VoidCallback? onTap;
   final InputDecoration? decoration;
   final TextInputAction? textInputAction;
   final FocusNode? focusNode;
+  final bool autofocus;
 
   const EmojiShortcodeField({
     super.key,
@@ -25,10 +30,12 @@ class EmojiShortcodeField extends StatefulWidget {
     this.minLines = 1,
     this.maxLines = 5,
     this.onSubmitted,
+    this.onEnterPressed,
     this.onTap,
     this.decoration,
     this.textInputAction,
     this.focusNode,
+    this.autofocus = false,
   });
 
   @override
@@ -40,18 +47,38 @@ class _EmojiShortcodeFieldState extends State<EmojiShortcodeField> {
   OverlayEntry? _overlayEntry;
   List<Emoji> _matchingEmojis = [];
   int _colonIndex = -1;
+  late FocusNode _focusNode;
 
   @override
   void initState() {
     super.initState();
     widget.controller.addListener(_onTextChanged);
+    _focusNode = widget.focusNode ?? FocusNode();
   }
 
   @override
   void dispose() {
     widget.controller.removeListener(_onTextChanged);
     _removeOverlay();
+    // Only dispose if we created the focus node
+    if (widget.focusNode == null) {
+      _focusNode.dispose();
+    }
     super.dispose();
+  }
+
+  /// Handle keyboard events - Enter sends, Shift+Enter adds newline
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.enter &&
+        !HardwareKeyboard.instance.isShiftPressed) {
+      // Enter without Shift - send message
+      if (widget.onEnterPressed != null) {
+        widget.onEnterPressed!();
+        return KeyEventResult.handled; // Consume the event, no newline
+      }
+    }
+    return KeyEventResult.ignored; // Let other handlers process
   }
 
   void _onTextChanged() {
@@ -208,11 +235,15 @@ class _EmojiShortcodeFieldState extends State<EmojiShortcodeField> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
+    // Attach key handler to focus node
+    _focusNode.onKeyEvent = _handleKeyEvent;
+
     return CompositedTransformTarget(
       link: _layerLink,
       child: TextField(
         controller: widget.controller,
-        focusNode: widget.focusNode,
+        focusNode: _focusNode,
+        autofocus: widget.autofocus,
         decoration: widget.decoration ?? InputDecoration(
           hintText: widget.hintText,
           border: OutlineInputBorder(

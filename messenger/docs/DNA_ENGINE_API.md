@@ -600,6 +600,80 @@ Sends end-to-end encrypted message.
 
 ---
 
+### dna_engine_queue_message
+
+```c
+int dna_engine_queue_message(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *message
+);
+```
+
+Queues message for async sending (returns immediately).
+
+Adds message to internal send queue for background delivery via worker threads.
+Use this for fire-and-forget messaging with optimistic UI patterns.
+
+**Parameters:**
+- `engine` - Engine instance
+- `recipient_fingerprint` - Recipient fingerprint
+- `message` - Message text
+
+**Returns:**
+- `>= 0` - Queue slot ID (success)
+- `-1` - Queue full (`DNA_ENGINE_ERROR_BUSY`)
+- `-2` - Invalid args or not initialized
+
+**Usage (Optimistic UI):**
+```c
+// Add message to UI immediately with "pending" status
+// Then queue for background send
+int slot = dna_engine_queue_message(engine, recipient, text);
+if (slot < 0) {
+    // Handle error (remove from UI, show notification)
+}
+// Worker thread sends message, clears queue slot when done
+```
+
+---
+
+### dna_engine_get_message_queue_capacity
+
+```c
+int dna_engine_get_message_queue_capacity(dna_engine_t *engine);
+```
+
+Returns maximum number of messages that can be queued (default: 20).
+
+---
+
+### dna_engine_get_message_queue_size
+
+```c
+int dna_engine_get_message_queue_size(dna_engine_t *engine);
+```
+
+Returns number of messages currently in queue.
+
+---
+
+### dna_engine_set_message_queue_capacity
+
+```c
+int dna_engine_set_message_queue_capacity(dna_engine_t *engine, int capacity);
+```
+
+Sets message queue capacity (1-100).
+
+**Parameters:**
+- `engine` - Engine instance
+- `capacity` - New capacity (1-100)
+
+**Returns:** 0 on success, -1 on invalid capacity or if shrinking below current size.
+
+---
+
 ### dna_engine_get_conversation
 
 ```c

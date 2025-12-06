@@ -38,6 +38,7 @@ class FormattedText extends StatelessWidget {
   final TextAlign? textAlign;
   final int? maxLines;
   final TextOverflow? overflow;
+  final bool selectable;
 
   const FormattedText(
     this.text, {
@@ -46,7 +47,17 @@ class FormattedText extends StatelessWidget {
     this.textAlign,
     this.maxLines,
     this.overflow,
+    this.selectable = false,
   });
+
+  Widget _buildContextMenu(
+    BuildContext context,
+    EditableTextState editableTextState,
+  ) {
+    return AdaptiveTextSelectionToolbar.editableText(
+      editableTextState: editableTextState,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -54,6 +65,14 @@ class FormattedText extends StatelessWidget {
 
     // Single emoji = large size
     if (_isSingleEmoji(text)) {
+      if (selectable) {
+        return SelectableText(
+          text.trim(),
+          style: defaultStyle.copyWith(fontSize: 48),
+          textAlign: textAlign ?? TextAlign.start,
+          contextMenuBuilder: _buildContextMenu,
+        );
+      }
       return Text(
         text.trim(),
         style: defaultStyle.copyWith(fontSize: 48),
@@ -62,6 +81,15 @@ class FormattedText extends StatelessWidget {
     }
 
     final spans = _parseText(text, defaultStyle);
+
+    if (selectable) {
+      return SelectableText.rich(
+        TextSpan(children: spans),
+        textAlign: textAlign ?? TextAlign.start,
+        maxLines: maxLines,
+        contextMenuBuilder: _buildContextMenu,
+      );
+    }
 
     return RichText(
       text: TextSpan(children: spans),
@@ -91,7 +119,7 @@ class FormattedText extends StatelessWidget {
           spans.add(TextSpan(
             text: code,
             style: baseStyle.copyWith(
-              fontFamily: 'monospace',
+              fontFamily: 'NotoSansMono',
               backgroundColor: Colors.grey.withValues(alpha: 0.2),
             ),
           ));
@@ -114,7 +142,7 @@ class FormattedText extends StatelessWidget {
           spans.add(TextSpan(
             text: code,
             style: baseStyle.copyWith(
-              fontFamily: 'monospace',
+              fontFamily: 'NotoSansMono',
               backgroundColor: Colors.grey.withValues(alpha: 0.2),
             ),
           ));

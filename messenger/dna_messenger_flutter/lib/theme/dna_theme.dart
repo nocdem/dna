@@ -33,9 +33,12 @@ class DnaColors {
 }
 
 class DnaTheme {
+  static const String _fontFamily = 'NotoSans';
+
   static ThemeData get theme => ThemeData(
     useMaterial3: true,
     brightness: Brightness.dark,
+    fontFamily: _fontFamily,
     scaffoldBackgroundColor: DnaColors.background,
     colorScheme: ColorScheme.dark(
       surface: DnaColors.surface,
@@ -158,6 +161,11 @@ class DnaTheme {
       backgroundColor: DnaColors.background,
       selectedItemColor: DnaColors.primary,
       unselectedItemColor: DnaColors.textMuted,
+    ),
+    textSelectionTheme: TextSelectionThemeData(
+      selectionColor: DnaColors.primary.withAlpha(100),
+      cursorColor: DnaColors.primary,
+      selectionHandleColor: DnaColors.primary,
     ),
   );
 }

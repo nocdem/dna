@@ -1,6 +1,5 @@
 // Chat Screen - Conversation with message bubbles
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
@@ -21,7 +20,6 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
   final _focusNode = FocusNode();
-  bool _isSending = false;
   bool _showEmojiPicker = false;
 
   @override
@@ -319,97 +317,94 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
 
             // Text input with :shortcode: support
             Expanded(
-              child: KeyboardListener(
-                focusNode: FocusNode(),
-                onKeyEvent: (event) {
-                  // Send on Enter (without Shift)
-                  if (event is KeyDownEvent &&
-                      event.logicalKey == LogicalKeyboardKey.enter &&
-                      !HardwareKeyboard.instance.isShiftPressed) {
-                    if (_messageController.text.trim().isNotEmpty && !_isSending) {
-                      _sendMessage(contact);
-                    }
+              child: EmojiShortcodeField(
+                controller: _messageController,
+                focusNode: _focusNode,
+                autofocus: true,
+                hintText: 'Type a message...',
+                minLines: 1,
+                maxLines: 5,
+                onEnterPressed: () {
+                  if (_messageController.text.trim().isNotEmpty) {
+                    _sendMessage(contact);
                   }
                 },
-                child: EmojiShortcodeField(
-                  controller: _messageController,
-                  focusNode: _focusNode,
+                decoration: InputDecoration(
                   hintText: 'Type a message...',
-                  minLines: 1,
-                  maxLines: 5,
-                  decoration: InputDecoration(
-                    hintText: 'Type a message...',
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(24),
-                      borderSide: BorderSide.none,
-                    ),
-                    filled: true,
-                    fillColor: theme.scaffoldBackgroundColor,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 16,
-                      vertical: 8,
-                    ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(24),
+                    borderSide: BorderSide.none,
                   ),
-                  onTap: () {
-                    // Hide emoji picker when text field is tapped
-                    if (_showEmojiPicker) {
-                      setState(() => _showEmojiPicker = false);
-                    }
-                  },
+                  filled: true,
+                  fillColor: theme.scaffoldBackgroundColor,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
                 ),
+                onTap: () {
+                  // Hide emoji picker when text field is tapped
+                  if (_showEmojiPicker) {
+                    setState(() => _showEmojiPicker = false);
+                  }
+                },
               ),
             ),
 
             const SizedBox(width: 8),
 
             // Send button
-            _isSending
-                ? const SizedBox(
-                    width: 48,
-                    height: 48,
-                    child: Padding(
-                      padding: EdgeInsets.all(12),
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    ),
-                  )
-                : IconButton(
-                    icon: const Icon(Icons.send),
-                    onPressed: _messageController.text.trim().isEmpty
-                        ? null
-                        : () => _sendMessage(contact),
-                  ),
+            IconButton(
+              icon: const Icon(Icons.send),
+              onPressed: _messageController.text.trim().isEmpty
+                  ? null
+                  : () => _sendMessage(contact),
+            ),
           ],
         ),
       ),
     );
   }
 
-  Future<void> _sendMessage(Contact contact) async {
+  void _sendMessage(Contact contact) {
     final text = _messageController.text.trim();
     if (text.isEmpty) return;
 
-    setState(() => _isSending = true);
     _messageController.clear();
 
-    try {
-      await ref.read(conversationProvider(contact.fingerprint).notifier)
-          .sendMessage(text);
-    } catch (e) {
+    // Queue message for async sending (returns immediately)
+    final result = ref.read(conversationProvider(contact.fingerprint).notifier)
+        .sendMessage(text);
+
+    if (result == -1) {
+      // Queue full - show error and restore text
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to send message: $e'),
+            content: const Text('Message queue full. Please wait and try again.'),
+            backgroundColor: DnaColors.textWarning,
+            action: SnackBarAction(
+              label: 'OK',
+              textColor: Colors.white,
+              onPressed: () {},
+            ),
+          ),
+        );
+        _messageController.text = text;
+      }
+    } else if (result == -2) {
+      // Other error
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Failed to send message. Please try again.'),
             backgroundColor: DnaColors.textWarning,
           ),
         );
-        // Restore text
         _messageController.text = text;
       }
-    } finally {
-      if (mounted) {
-        setState(() => _isSending = false);
-      }
     }
+    // On success (result >= 0), message is already shown in UI with spinner
   }
 
   void _onEmojiSelected(Emoji emoji) {
@@ -426,6 +421,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         offset: selection.start + emoji.emoji.length,
       ),
     );
+    // Keep focus on the text field after emoji insert
+    _focusNode.requestFocus();
     setState(() {});
   }
 
@@ -525,6 +522,7 @@ class _MessageBubble extends StatelessWidget {
           children: [
             FormattedText(
               message.plaintext,
+              selectable: true,
               style: TextStyle(
                 color: isOutgoing
                     ? theme.colorScheme.onPrimary
@@ -546,11 +544,7 @@ class _MessageBubble extends StatelessWidget {
                 ),
                 if (isOutgoing) ...[
                   const SizedBox(width: 4),
-                  Icon(
-                    _getStatusIcon(message.status),
-                    size: 14,
-                    color: theme.colorScheme.onPrimary.withAlpha(179),
-                  ),
+                  _buildStatusIndicator(message.status, theme),
                 ],
               ],
             ),
@@ -560,12 +554,46 @@ class _MessageBubble extends StatelessWidget {
     );
   }
 
+  Widget _buildStatusIndicator(MessageStatus status, ThemeData theme) {
+    final color = theme.colorScheme.onPrimary.withAlpha(179);
+    const size = 16.0;
+
+    if (status == MessageStatus.pending) {
+      // Show spinner for pending messages
+      return SizedBox(
+        width: size,
+        height: size,
+        child: CircularProgressIndicator(
+          strokeWidth: 1.5,
+          color: color,
+        ),
+      );
+    }
+
+    if (status == MessageStatus.failed) {
+      // Show red error icon for failed messages
+      return Icon(
+        Icons.error_outline,
+        size: size,
+        color: DnaColors.textWarning,
+      );
+    }
+
+    return Icon(
+      _getStatusIcon(status),
+      size: size,
+      color: color,
+    );
+  }
+
   IconData _getStatusIcon(MessageStatus status) {
     switch (status) {
       case MessageStatus.pending:
         return Icons.schedule;
       case MessageStatus.sent:
         return Icons.check;
+      case MessageStatus.failed:
+        return Icons.error_outline;
       case MessageStatus.delivered:
         return Icons.done_all;
       case MessageStatus.read:

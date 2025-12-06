@@ -989,6 +989,7 @@ class _ComposeArea extends StatelessWidget {
   final VoidCallback onEmojiToggle;
   final void Function(Emoji) onEmojiSelected;
   final VoidCallback onTextFieldTap;
+  final bool autofocus;
 
   const _ComposeArea({
     required this.controller,
@@ -998,6 +999,7 @@ class _ComposeArea extends StatelessWidget {
     required this.onEmojiToggle,
     required this.onEmojiSelected,
     required this.onTextFieldTap,
+    this.autofocus = false,
   });
 
   @override
@@ -1032,10 +1034,16 @@ class _ComposeArea extends StatelessWidget {
                   child: EmojiShortcodeField(
                     controller: controller,
                     hintText: hintText,
+                    autofocus: autofocus,
                     minLines: 1,
                     maxLines: 3,
                     textInputAction: TextInputAction.send,
                     onSubmitted: onSend,
+                    onEnterPressed: () {
+                      if (controller.text.trim().isNotEmpty) {
+                        onSend();
+                      }
+                    },
                     onTap: onTextFieldTap,
                     decoration: InputDecoration(
                       hintText: hintText,
