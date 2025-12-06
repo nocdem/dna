@@ -42,7 +42,7 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     return result.isEmpty; // empty = not found = available
   }
 
-  /// Create identity from mnemonic with required name
+  /// Create identity from mnemonic with required name (for NEW identities)
   Future<String> createIdentityFromMnemonic(String name, String mnemonic, {String passphrase = ''}) async {
     final engine = await ref.read(engineProvider.future);
 
@@ -52,6 +52,25 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     // Create identity with derived seeds (including wallet seed)
     final fingerprint = await engine.createIdentity(
       name,
+      seeds.signingSeed,
+      seeds.encryptionSeed,
+      walletSeed: seeds.walletSeed,
+    );
+
+    await refresh();
+    return fingerprint;
+  }
+
+  /// Restore identity from mnemonic (looks up existing name from DHT)
+  Future<String> restoreIdentityFromMnemonic(String mnemonic, {String passphrase = ''}) async {
+    final engine = await ref.read(engineProvider.future);
+
+    // Derive seeds from mnemonic
+    final seeds = engine.deriveSeeds(mnemonic, passphrase: passphrase);
+
+    // Create identity locally with empty name (will lookup from DHT)
+    final fingerprint = await engine.createIdentity(
+      '', // Empty name - will be looked up from DHT
       seeds.signingSeed,
       seeds.encryptionSeed,
       walletSeed: seeds.walletSeed,

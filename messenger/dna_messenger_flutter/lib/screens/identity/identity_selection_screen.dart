@@ -724,24 +724,13 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
     setState(() => _step = _CreateStep.creating);
 
     try {
-      // Create identity from mnemonic using real BIP39
-      final fingerprint = await ref.read(identitiesProvider.notifier)
-          .createIdentityFromMnemonic(_mnemonic);
-
-      // Load the identity first (required before nickname registration)
-      await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
-
-      // Register nickname on DHT (must be after identity is loaded)
+      // Create identity from mnemonic with name (name-first architecture)
       final nickname = _nicknameController.text.trim();
-      if (nickname.isNotEmpty) {
-        try {
-          await ref.read(identitiesProvider.notifier).registerName(nickname);
-        } catch (e) {
-          // Nickname registration failed, but identity was created
-          // User can register later in settings
-          debugPrint('Nickname registration failed: $e');
-        }
-      }
+      final fingerprint = await ref.read(identitiesProvider.notifier)
+          .createIdentityFromMnemonic(nickname, _mnemonic);
+
+      // Load the identity
+      await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
 
       if (mounted) {
         Navigator.of(context).popUntil((route) => route.isFirst);
@@ -849,9 +838,9 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
         throw Exception('Invalid seed phrase. Please check your words.');
       }
 
-      // Create identity from mnemonic using real BIP39
+      // Restore identity from mnemonic (looks up name from DHT)
       final fingerprint = await ref.read(identitiesProvider.notifier)
-          .createIdentityFromMnemonic(mnemonic);
+          .restoreIdentityFromMnemonic(mnemonic);
 
       await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
 
