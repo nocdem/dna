@@ -479,6 +479,7 @@ if(BUILD_DNA_SEND)
         blockchain/blockchain_addr.c
         blockchain/blockchain_rpc.c
         crypto/utils/base58.c
+        crypto/utils/qgp_platform_linux.c
     )
 
     # For static CURL on Windows, define CURL_STATICLIB
