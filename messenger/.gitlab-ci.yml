@@ -76,7 +76,7 @@ build:native-android-arm64:
   stage: build-native
   tags:
     - linux
-  image: ubuntu:22.04
+  image: ubuntu:24.04
   variables:
     ANDROID_NDK_VERSION: "26b"
     ANDROID_API_LEVEL: "24"
@@ -124,7 +124,7 @@ build:native-windows-x64:
   stage: build-native
   tags:
     - linux
-  image: ubuntu:22.04
+  image: ubuntu:24.04
   timeout: 2h
   cache:
     key: llvm-mingw-v2
