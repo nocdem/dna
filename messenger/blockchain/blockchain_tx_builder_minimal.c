@@ -293,6 +293,30 @@ int cellframe_tx_add_out(cellframe_tx_builder_t *builder,
     return append_data(builder, &item, sizeof(item));
 }
 
+int cellframe_tx_add_out_ext(cellframe_tx_builder_t *builder,
+                              const cellframe_addr_t *addr,
+                              uint256_t value,
+                              const char *token) {
+    if (!builder || !addr || !token) {
+        return -1;
+    }
+
+    cellframe_tx_out_ext_t item = {
+        .header = {
+            .type = TX_ITEM_TYPE_OUT_EXT,  // 0x11 - has token field
+            .value = value
+        }
+    };
+
+    memcpy(&item.addr, addr, sizeof(cellframe_addr_t));
+
+    // Copy token ticker (max 10 chars, null-padded)
+    memset(item.token, 0, CELLFRAME_TICKER_SIZE_MAX);
+    strncpy(item.token, token, CELLFRAME_TICKER_SIZE_MAX - 1);
+
+    return append_data(builder, &item, sizeof(item));
+}
+
 int cellframe_tx_add_fee(cellframe_tx_builder_t *builder, uint256_t value) {
     if (!builder) {
         return -1;

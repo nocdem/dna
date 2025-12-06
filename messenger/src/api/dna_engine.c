@@ -1825,6 +1825,10 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     const char *recipient = task->params.send_tokens.recipient;
     const char *amount_str = task->params.send_tokens.amount;
     const char *network = task->params.send_tokens.network;
+    const char *token = task->params.send_tokens.token;
+
+    /* Check if using non-native token */
+    int is_native_token = (token[0] == '\0' || strcmp(token, "CELL") == 0);
 
     /* Get wallet */
     wallet_list_t *wallets = (wallet_list_t*)engine->wallet_list;
@@ -1863,7 +1867,8 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     uint64_t total_input_u64 = 0;
     uint64_t required_u64 = amount.lo.lo + NETWORK_FEE_DATOSHI + fee.lo.lo;
 
-    if (cellframe_rpc_get_utxo(network, address, "CELL", &utxo_resp) != 0 || !utxo_resp) {
+    const char *utxo_token = is_native_token ? "CELL" : token;
+    if (cellframe_rpc_get_utxo(network, address, utxo_token, &utxo_resp) != 0 || !utxo_resp) {
         fprintf(stderr, "[ENGINE] Failed to query UTXOs from RPC\n");
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
@@ -2061,23 +2066,34 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
-    /* Add OUT item (recipient) */
-    if (cellframe_tx_add_out(builder, &recipient_addr, amount) != 0) {
+    /* Add OUT item (recipient) - use OUT_EXT for non-native tokens */
+    int out_result;
+    if (is_native_token) {
+        out_result = cellframe_tx_add_out(builder, &recipient_addr, amount);
+    } else {
+        out_result = cellframe_tx_add_out_ext(builder, &recipient_addr, amount, token);
+    }
+    if (out_result != 0) {
         fprintf(stderr, "[ENGINE] Failed to add recipient OUT\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
 
-    /* Add OUT item (network fee collector) */
+    /* Add OUT item (network fee collector) - always CELL */
     if (cellframe_tx_add_out(builder, &network_collector_addr, network_fee) != 0) {
         fprintf(stderr, "[ENGINE] Failed to add network fee OUT\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
 
-    /* Add OUT item (change) - only if change > 0 */
+    /* Add OUT item (change) - only if change > 0, use OUT_EXT for non-native tokens */
     if (change.hi.hi != 0 || change.hi.lo != 0 || change.lo.hi != 0 || change.lo.lo != 0) {
-        if (cellframe_tx_add_out(builder, &sender_addr, change) != 0) {
+        if (is_native_token) {
+            out_result = cellframe_tx_add_out(builder, &sender_addr, change);
+        } else {
+            out_result = cellframe_tx_add_out_ext(builder, &sender_addr, change, token);
+        }
+        if (out_result != 0) {
             fprintf(stderr, "[ENGINE] Failed to add change OUT\n");
             error = DNA_ERROR_INTERNAL;
             goto done;

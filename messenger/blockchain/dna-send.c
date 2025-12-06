@@ -416,8 +416,17 @@ int main(int argc, char **argv) {
         }
     }
 
-    // Add OUT item (recipient)
-    if (cellframe_tx_add_out(builder, &recipient_addr, amount) != 0) {
+    // Check if using non-native token (need OUT_EXT with token field)
+    int is_native_token = (strcmp(args.token, "CELL") == 0);
+
+    // Add OUT item (recipient) - use OUT_EXT for non-native tokens
+    int out_result;
+    if (is_native_token) {
+        out_result = cellframe_tx_add_out(builder, &recipient_addr, amount);
+    } else {
+        out_result = cellframe_tx_add_out_ext(builder, &recipient_addr, amount, args.token);
+    }
+    if (out_result != 0) {
         fprintf(stderr, "[ERROR] Failed to add recipient OUT item\n");
         free(selected_utxos);
         cellframe_tx_builder_free(builder);
@@ -425,7 +434,7 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Add OUT item (network fee collector)
+    // Add OUT item (network fee collector) - always CELL
     if (cellframe_tx_add_out(builder, &network_collector_addr, network_fee) != 0) {
         fprintf(stderr, "[ERROR] Failed to add network fee OUT item\n");
         free(selected_utxos);
@@ -434,10 +443,15 @@ int main(int argc, char **argv) {
         return 1;
     }
 
-    // Add OUT item (change) - only if change > 0
+    // Add OUT item (change) - only if change > 0, use OUT_EXT for non-native tokens
     int has_change = 0;
     if (change.hi.hi != 0 || change.hi.lo != 0 || change.lo.hi != 0 || change.lo.lo != 0) {
-        if (cellframe_tx_add_out(builder, &sender_addr, change) != 0) {
+        if (is_native_token) {
+            out_result = cellframe_tx_add_out(builder, &sender_addr, change);
+        } else {
+            out_result = cellframe_tx_add_out_ext(builder, &sender_addr, change, args.token);
+        }
+        if (out_result != 0) {
             fprintf(stderr, "[ERROR] Failed to add change OUT item\n");
             free(selected_utxos);
             cellframe_tx_builder_free(builder);
