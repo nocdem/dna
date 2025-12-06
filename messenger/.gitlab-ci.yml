@@ -336,44 +336,6 @@ build:native-android-arm64:
     expire_in: 1 day
   allow_failure: true
 
-# Build native library for Windows x64 (cross-compile with MinGW)
-build:native-windows-x64:
-  stage: build-native
-  tags:
-    - linux
-  image: ubuntu:24.04
-  timeout: 2h
-  cache:
-    key: llvm-mingw-v2
-    paths:
-      - .cache/llvm-mingw/
-  before_script:
-    - apt-get update -qq
-    - apt-get install -y -qq build-essential cmake git pkg-config xxd wget tar xz-utils zip unzip
-    # Download llvm-mingw toolchain
-    - |
-      export HOME="${CI_PROJECT_DIR}"
-      if [ ! -d ".cache/llvm-mingw/llvm-mingw-20241030-ucrt-ubuntu-20.04-x86_64" ]; then
-        mkdir -p .cache/llvm-mingw && cd .cache/llvm-mingw
-        wget -q https://github.com/mstorsjo/llvm-mingw/releases/download/20241030/llvm-mingw-20241030-ucrt-ubuntu-20.04-x86_64.tar.xz
-        tar xf llvm-mingw-20241030-ucrt-ubuntu-20.04-x86_64.tar.xz
-        rm llvm-mingw-20241030-ucrt-ubuntu-20.04-x86_64.tar.xz
-        cd "${CI_PROJECT_DIR}"
-      fi
-    - export MINGW_ROOT="${CI_PROJECT_DIR}/.cache/llvm-mingw/llvm-mingw-20241030-ucrt-ubuntu-20.04-x86_64"
-    - export PATH="${MINGW_ROOT}/bin:$PATH"
-  script:
-    - chmod +x build-cross-compile.sh setup-windows-build.sh
-    - ./build-cross-compile.sh windows-x64
-    - mkdir -p native-libs/windows-x64
-    - cp dist/windows-x64/*.dll native-libs/windows-x64/ || cp build-windows-x64/dna_lib.dll native-libs/windows-x64/ || true
-  artifacts:
-    paths:
-      - native-libs/windows-x64/
-      - dist/windows-x64/
-    expire_in: 1 day
-  allow_failure: true
-
 # =============================================================================
 # STAGE 2: Build Flutter Apps
 # =============================================================================
@@ -434,36 +396,42 @@ build:flutter-android:
     expire_in: 1 week
   allow_failure: true  # Depends on Android native build
 
-# Flutter Windows build (requires Windows runner or cross-compilation)
-build:flutter-windows:
+# Full Windows build (native lib + Flutter) on Windows runner
+# Builds everything natively with MSVC/CMake
+build:windows:
   stage: build-flutter
   tags:
     - windows
-  needs:
-    - build:native-windows-x64
-  before_script:
-    - choco install flutter --version=3.27.0 -y || true
-    - refreshenv
+  timeout: 2h
+  variables:
+    GIT_SUBMODULE_STRATEGY: recursive
   script:
-    - cd dna_messenger_flutter
-    # Copy native library
-    - mkdir -p windows/libs
-    - copy ${CI_PROJECT_DIR}/native-libs/windows-x64/*.dll windows/libs/
+    # Build native library with CMake
+    - mkdir -p build-windows
+    - cd build-windows
+    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF
+    - cmake --build . --config Release --target dna_lib
+    - cd ..
+    # Copy native library to Flutter
+    - mkdir -p dna_messenger_flutter\windows\libs
+    - copy build-windows\Release\dna_lib.dll dna_messenger_flutter\windows\libs\ || copy build-windows\dna_lib.dll dna_messenger_flutter\windows\libs\
     # Build Flutter Windows app
+    - cd dna_messenger_flutter
     - flutter pub get
     - flutter build windows --release
     # Package
-    - mkdir -p ${CI_PROJECT_DIR}/dist/flutter-windows
-    - xcopy /E /I build\windows\x64\runner\Release ${CI_PROJECT_DIR}/dist/flutter-windows
+    - mkdir -p ..\dist\flutter-windows
+    - xcopy /E /I build\windows\x64\runner\Release ..\dist\flutter-windows
+    - copy windows\libs\dna_lib.dll ..\dist\flutter-windows\
   artifacts:
-    name: "dna-messenger-flutter-windows-${CI_COMMIT_SHORT_SHA}"
+    name: "dna-messenger-windows-${CI_COMMIT_SHORT_SHA}"
     paths:
       - dist/flutter-windows/
     expire_in: 1 week
-  allow_failure: true  # Requires Windows runner
+  allow_failure: true
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
-      when: manual  # Manual trigger for Windows builds
+      when: always
 
 # Flutter macOS build (requires macOS runner)
 build:flutter-macos:
