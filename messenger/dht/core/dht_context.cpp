@@ -18,10 +18,22 @@
 #include <memory>
 #include <vector>
 #include <iostream>
+#include <sstream>
 #include <chrono>
 #include <future>
 #include <thread>
 #include <fstream>
+
+// Android logging support
+#if defined(__ANDROID__)
+#include <android/log.h>
+#define DHT_LOG_TAG "DHT_CONTEXT"
+#define DHT_LOGI(...) __android_log_print(ANDROID_LOG_INFO, DHT_LOG_TAG, __VA_ARGS__)
+#define DHT_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, DHT_LOG_TAG, __VA_ARGS__)
+#else
+#define DHT_LOGI(...) do { fprintf(stdout, "[DHT_CONTEXT] "); fprintf(stdout, __VA_ARGS__); fprintf(stdout, "\n"); } while(0)
+#define DHT_LOGE(...) do { fprintf(stderr, "[DHT_CONTEXT] ERROR: "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
+#endif
 
 // Opaque handle for DHT Identity (wraps C++ dht::crypto::Identity)
 // Must be defined before any functions that use it
@@ -346,18 +358,20 @@ extern "C" dht_context_t* dht_context_new(const dht_config_t *config) {
  */
 extern "C" int dht_context_start(dht_context_t *ctx) {
     if (!ctx) {
-        std::cerr << "[DHT] ERROR: NULL context" << std::endl;
+        DHT_LOGE("NULL context");
         return -1;
     }
 
     if (ctx->running) {
-        std::cout << "[DHT] Already running" << std::endl;
+        DHT_LOGI("Already running");
         return 0;
     }
 
     try {
         // Load or generate persistent node identity
         dht::crypto::Identity identity;
+
+        DHT_LOGI("Generating ephemeral Dilithium5 identity...");
 
         if (ctx->config.persistence_path[0] != '\0') {
             // Bootstrap nodes: Use persistent identity (OpenDHT 2.x/3.x compatible)
@@ -366,28 +380,29 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
             try {
                 // Try to load existing identity from Dilithium5 binary files
                 identity = load_identity_dilithium5(identity_path);
-                std::cout << "[DHT] Loaded persistent identity from: " << identity_path << std::endl;
+                DHT_LOGI("Loaded persistent identity from: %s", identity_path.c_str());
             } catch (const std::exception& e) {
                 // Generate new identity if files don't exist
-                std::cout << "[DHT] Generating new persistent identity..." << std::endl;
+                DHT_LOGI("Generating new persistent identity...");
                 identity = dht::crypto::generateDilithiumIdentity("dht_node");
 
                 // Save for future restarts (Dilithium5 binary format)
                 if (!save_identity_dilithium5(identity, identity_path)) {
-                    std::cerr << "[DHT] WARNING: Failed to save identity, will be ephemeral!" << std::endl;
+                    DHT_LOGE("WARNING: Failed to save identity, will be ephemeral!");
                 }
             }
         } else {
             // User nodes: Ephemeral random Dilithium5 identity
             identity = dht::crypto::generateDilithiumIdentity("dht_node");
+            DHT_LOGI("Generated ephemeral identity");
         }
 
         // Check if disk persistence is requested
         if (ctx->config.persistence_path[0] != '\0') {
             // Bootstrap nodes: Enable disk persistence
             std::string persist_path(ctx->config.persistence_path);
-            std::cout << "[DHT] Enabling disk persistence: " << persist_path << std::endl;
-            std::cout << "[DHT] Bootstrap mode: " << (ctx->config.is_bootstrap ? "enabled" : "disabled") << std::endl;
+            DHT_LOGI("Enabling disk persistence: %s", persist_path.c_str());
+            DHT_LOGI("Bootstrap mode: %s", ctx->config.is_bootstrap ? "enabled" : "disabled");
 
             // Create DhtRunner::Config with persistence
             dht::DhtRunner::Config config;
@@ -400,60 +415,62 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
             config.dht_config.id = identity;
             config.threaded = true;
 
-            std::cout << "[DHT] Configured persistence:" << std::endl;
-            std::cout << "[DHT]   maintain_storage = " << config.dht_config.node_config.maintain_storage << std::endl;
-            std::cout << "[DHT]   persist_path = " << config.dht_config.node_config.persist_path << std::endl;
-            std::cout << "[DHT]   max_store_size = " << config.dht_config.node_config.max_store_size << std::endl;
-            std::cout << "[DHT]   is_bootstrap = " << config.dht_config.node_config.is_bootstrap << std::endl;
-            std::cout << "[DHT]   public_stable = " << config.dht_config.node_config.public_stable << std::endl;
+            DHT_LOGI("Configured persistence: maintain_storage=1, max_store_size=-1");
+            DHT_LOGI("  is_bootstrap=%d, public_stable=%d",
+                     config.dht_config.node_config.is_bootstrap,
+                     config.dht_config.node_config.public_stable);
 
             ctx->runner.run(ctx->config.port, config);
         } else {
             // User nodes: Memory-only (fast, no disk I/O)
-            std::cout << "[DHT] Running in memory-only mode (no disk persistence)" << std::endl;
+            DHT_LOGI("Running in memory-only mode (no disk persistence)");
+            DHT_LOGI("Starting DHT on port %d...", ctx->config.port);
             ctx->runner.run(ctx->config.port, identity, true);
         }
 
-        std::cout << "[DHT] Node started on port " << ctx->config.port << std::endl;
+        DHT_LOGI("Node started on port %d", ctx->config.port);
 
         // Initialize value storage BEFORE ValueTypes (bootstrap nodes only)
         // CRITICAL: Storage must be initialized before ValueTypes so storeCallback can use it
         if (ctx->config.persistence_path[0] != '\0') {
             std::string storage_path = std::string(ctx->config.persistence_path) + ".values.db";
-            std::cout << "[DHT] Initializing value storage: " << storage_path << std::endl;
+            DHT_LOGI("Initializing value storage: %s", storage_path.c_str());
 
             ctx->storage = dht_value_storage_new(storage_path.c_str());
             if (ctx->storage) {
-                std::cout << "[DHT] ✓ Value storage initialized" << std::endl;
+                DHT_LOGI("Value storage initialized");
 
                 // Set global storage pointer (used by ValueType store callbacks)
                 {
                     std::lock_guard<std::mutex> lock(g_storage_mutex);
                     g_global_storage = ctx->storage;
                 }
-                std::cout << "[DHT] ✓ Storage callbacks enabled in ValueTypes" << std::endl;
+                DHT_LOGI("Storage callbacks enabled in ValueTypes");
 
                 // Launch async republish in background
                 if (dht_value_storage_restore_async(ctx->storage, ctx) == 0) {
-                    std::cout << "[DHT] ✓ Async value republish started" << std::endl;
+                    DHT_LOGI("Async value republish started");
                 } else {
-                    std::cerr << "[DHT] WARNING: Failed to start async republish" << std::endl;
+                    DHT_LOGE("WARNING: Failed to start async republish");
                 }
             } else {
-                std::cerr << "[DHT] WARNING: Value storage initialization failed" << std::endl;
+                DHT_LOGE("WARNING: Value storage initialization failed");
             }
         }
 
         // Register custom ValueTypes (CRITICAL: all nodes must know these types!)
+        DHT_LOGI("Registering custom ValueTypes...");
         register_value_types(ctx);
 
         // Bootstrap to other nodes
+        DHT_LOGI("Bootstrapping to seed nodes...");
         bootstrap_to_nodes(ctx);
 
         ctx->running = true;
+        DHT_LOGI("DHT context started successfully");
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[DHT] Exception in dht_context_start: " << e.what() << std::endl;
+        DHT_LOGE("Exception in dht_context_start: %s", e.what());
         return -1;
     }
 }
