@@ -8,6 +8,10 @@
 
 #ifdef _WIN32
 #include <direct.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <string.h>
+#include <time.h>
 #define platform_mkdir(path, mode) _mkdir(path)
 
 /* Windows doesn't have strndup */
