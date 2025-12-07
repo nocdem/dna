@@ -397,7 +397,17 @@ endif()
 if(NOT WIN32 AND NOT ANDROID)
     target_link_libraries(dna_lib m pthread)
 elseif(ANDROID)
-    target_link_libraries(dna_lib m)  # pthread is part of bionic on Android
+    # Android: Link GnuTLS and its dependencies (required by OpenDHT)
+    # Order matters: libraries must come AFTER libraries that depend on them
+    target_link_libraries(dna_lib
+        gnutls      # TLS library used by OpenDHT
+        tasn1       # ASN.1 library (required by GnuTLS)
+        hogweed     # Public-key crypto (required by GnuTLS)
+        nettle      # Crypto library (required by GnuTLS)
+        gmp         # Big integer library (required by GnuTLS/Nettle)
+        zstd        # Zstandard compression
+        m           # Math library (pthread is part of bionic on Android)
+    )
 endif()
 
 target_include_directories(dna_lib PUBLIC
