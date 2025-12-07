@@ -64,39 +64,34 @@ class BackgroundTasksNotifier extends StateNotifier<BackgroundTasksState> {
   void _startPolling() {
     if (_disposed) return;
 
-    print('[BackgroundTasks] Starting offline message polling (interval: ${_pollInterval.inSeconds}s)');
-
     // Cancel existing timer if any
     _pollTimer?.cancel();
 
     // Initial poll after delay
     Future.delayed(_initialDelay, () {
-      if (!_disposed && mounted) {
+      if (!_disposed) {
         _pollOfflineMessages();
       }
     });
 
     // Set up periodic timer
     _pollTimer = Timer.periodic(_pollInterval, (_) {
-      if (!_disposed && mounted) {
+      if (!_disposed) {
         _pollOfflineMessages();
       }
     });
   }
 
   void _stopPolling() {
-    print('[BackgroundTasks] Stopping offline message polling');
     _pollTimer?.cancel();
     _pollTimer = null;
   }
 
   Future<void> _pollOfflineMessages() async {
     if (state.isPolling) {
-      print('[BackgroundTasks] Poll already in progress, skipping');
       return;
     }
 
-    print('[BackgroundTasks] Polling DHT offline message queue...');
     state = state.copyWith(isPolling: true);
 
     try {
@@ -108,8 +103,6 @@ class BackgroundTasksNotifier extends StateNotifier<BackgroundTasksState> {
         lastPollTime: DateTime.now(),
       );
 
-      print('[BackgroundTasks] Poll complete');
-
       // Refresh contacts and current conversation to show new messages
       _ref.invalidate(contactsProvider);
 
@@ -120,7 +113,6 @@ class BackgroundTasksNotifier extends StateNotifier<BackgroundTasksState> {
       }
 
     } catch (e) {
-      print('[BackgroundTasks] Poll failed: $e');
       state = state.copyWith(isPolling: false);
     }
   }
