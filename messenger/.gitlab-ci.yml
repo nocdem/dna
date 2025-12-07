@@ -390,6 +390,15 @@ build:flutter-linux:
     - mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
     - cp -r dna_messenger_flutter/build/linux/x64/release/bundle/* AppDir/usr/bin/
     - cp native-libs/linux-x64/libdna_lib.so AppDir/usr/lib/
+    # Bundle system libraries that libdna_lib.so depends on
+    - |
+      for lib in libfmt.so libgnutls.so libhogweed.so libnettle.so libgmp.so libtasn1.so libargon2.so; do
+        libpath=$(ldconfig -p | grep -m1 "$lib" | awk '{print $NF}')
+        if [ -n "$libpath" ] && [ -f "$libpath" ]; then
+          cp -L "$libpath" AppDir/usr/lib/
+          echo "Bundled: $libpath"
+        fi
+      done
     # Create desktop file
     - |
       cat > AppDir/usr/share/applications/dna-messenger.desktop << 'DESKTOP'
@@ -485,8 +494,11 @@ build:windows:
     - mkdir -p ..\dist\flutter-windows
     - xcopy /E /I build\windows\x64\runner\Release ..\dist\flutter-windows
     - copy windows\libs\dna_lib.dll ..\dist\flutter-windows\
+    # Bundle MinGW runtime DLLs that dna_lib.dll depends on
+    - cd ..
+    - C:\tools\msys64\usr\bin\bash.exe -lc "for dll in libfmt.dll libgnutls-30.dll libhogweed-6.dll libnettle-8.dll libgmp-10.dll libtasn1-6.dll libargon2.dll libgcc_s_seh-1.dll libstdc++-6.dll libwinpthread-1.dll zlib1.dll libbrotlidec.dll libbrotlicommon.dll libidn2-0.dll libp11-kit-0.dll libunistring-5.dll libintl-8.dll libiconv-2.dll libffi-8.dll libzstd.dll; do src=/mingw64/bin/\$dll; if [ -f \$src ]; then cp \$src dist/flutter-windows/; echo Bundled: \$dll; fi; done"
     # Check artifact size
-    - powershell -Command "(Get-ChildItem -Path ..\dist\flutter-windows -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB"
+    - powershell -Command "(Get-ChildItem -Path dist\flutter-windows -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB"
   artifacts:
     name: "dna-messenger-windows-${CI_COMMIT_SHORT_SHA}"
     paths:
