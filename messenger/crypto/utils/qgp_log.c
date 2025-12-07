@@ -15,7 +15,7 @@
 #define QGP_LOG_MAX_TAG_LEN 32
 
 /* Global log configuration (thread-safe via simple atomics would be ideal) */
-static qgp_log_level_t g_log_level = QGP_LOG_LEVEL_DEBUG;  /* Show all by default */
+static qgp_log_level_t g_log_level = QGP_LOG_LEVEL_WARN;  /* WARN and ERROR by default */
 static qgp_log_filter_mode_t g_filter_mode = QGP_LOG_FILTER_BLACKLIST;
 
 /* Tag filter lists */

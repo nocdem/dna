@@ -392,19 +392,30 @@ Provides: secure random, directory ops, path handling, app data dirs, network st
 Unified logging that redirects to Android logcat on mobile:
 
 ```c
-// Option 1: Direct logging API (all platforms)
 #include "crypto/utils/qgp_log.h"
-QGP_LOG_INFO("TAG", "Message: %d", value);
-QGP_LOG_ERROR("TAG", "Error: %s", msg);
 QGP_LOG_DEBUG("TAG", "Debug info");
+QGP_LOG_INFO("TAG", "Message: %d", value);
 QGP_LOG_WARN("TAG", "Warning");
+QGP_LOG_ERROR("TAG", "Error: %s", msg);
+```
 
-// Option 2: Redirect existing printf/fprintf to logcat (Android)
-#include <stdio.h>
-#define QGP_LOG_TAG "MyModule"
-#define QGP_LOG_REDIRECT_STDIO 1
-#include "crypto/utils/qgp_log.h"
-// Now printf() -> logcat INFO, fprintf(stderr,...) -> logcat ERROR
+**Log Levels:** DEBUG < INFO < WARN < ERROR < NONE
+
+**Default:** WARN (shows WARN and ERROR only)
+
+**Config File Settings** (`~/.dna/config`):
+```
+# Log level: DEBUG, INFO, WARN, ERROR, NONE
+log_level=WARN
+
+# Tags to show (comma-separated, empty = all)
+log_tags=
+```
+
+To see only specific modules:
+```
+log_level=DEBUG
+log_tags=DHT,P2P,MESSENGER
 ```
 
 **Active Log Tags:**
@@ -417,10 +428,30 @@ QGP_LOG_WARN("TAG", "Warning");
 | `KEYSERVER` | keyserver_*.c | Identity/name lookups |
 | `DNA_ENGINE` | dna_engine.c | Main API layer |
 | `DNA-JNI` | dna_jni.c | Android JNI bridge |
+| `MESSENGER` | messenger.c | Messenger core |
+| `MSG_INIT` | messenger/init.c | Messenger init |
+| `MSG_IDENTITY` | messenger/identity.c | Identity management |
+| `MSG_STATUS` | messenger/status.c | Message status/receipts |
+| `MSG_KEYS` | messenger/keys.c | Key operations |
+| `MSG_MESSAGES` | messenger/messages.c | Send/receive messages |
+| `KEYGEN` | messenger/keygen.c | Key generation |
 
-**Filtering in logcat:**
+**Filtering in logcat (Android):**
 ```bash
 adb logcat -s DHT:* KEYSERVER:* DNA_ENGINE:* DNA-JNI:*
+```
+
+**Programmatic Control:**
+```c
+#include "crypto/utils/qgp_log.h"
+
+// Set log level
+qgp_log_set_level(QGP_LOG_LEVEL_DEBUG);
+
+// Filter by tags (whitelist mode)
+qgp_log_set_filter_mode(QGP_LOG_FILTER_WHITELIST);
+qgp_log_enable_tag("DHT");
+qgp_log_enable_tag("P2P");
 ```
 
 ### Key Storage

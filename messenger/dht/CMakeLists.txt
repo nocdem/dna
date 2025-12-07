@@ -51,6 +51,7 @@ set(DHT_COMMON_SOURCES
     ../crypto/utils/qgp_dilithium.c
     ../crypto/utils/qgp_random.c
     ../crypto/utils/qgp_aes.c
+    ../crypto/utils/qgp_log.c
 )
 
 if(WIN32)

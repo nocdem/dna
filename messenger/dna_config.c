@@ -4,6 +4,7 @@
 
 #include "dna_config.h"
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -32,6 +33,8 @@ int dna_config_load(dna_config_t *config) {
         strcpy(config->database, "dna_messenger");
         strcpy(config->username, "dna");
         strcpy(config->password, "dna_password");
+        strcpy(config->log_level, "WARN");
+        config->log_tags[0] = '\0';  // Empty = show all
         return 0;
     }
 
@@ -66,7 +69,16 @@ int dna_config_load(dna_config_t *config) {
             strncpy(config->username, value, sizeof(config->username) - 1);
         } else if (strcmp(key, "password") == 0) {
             strncpy(config->password, value, sizeof(config->password) - 1);
+        } else if (strcmp(key, "log_level") == 0) {
+            strncpy(config->log_level, value, sizeof(config->log_level) - 1);
+        } else if (strcmp(key, "log_tags") == 0) {
+            strncpy(config->log_tags, value, sizeof(config->log_tags) - 1);
         }
+    }
+
+    // Set defaults for log settings if not in config
+    if (config->log_level[0] == '\0') {
+        strcpy(config->log_level, "WARN");
     }
 
     fclose(f);
@@ -102,6 +114,11 @@ int dna_config_save(const dna_config_t *config) {
     fprintf(f, "database=%s\n", config->database);
     fprintf(f, "username=%s\n", config->username);
     fprintf(f, "password=%s\n", config->password);
+    fprintf(f, "\n# Log settings\n");
+    fprintf(f, "# log_level: DEBUG, INFO, WARN, ERROR, NONE\n");
+    fprintf(f, "log_level=%s\n", config->log_level);
+    fprintf(f, "# log_tags: comma-separated list of tags to show (empty = all)\n");
+    fprintf(f, "log_tags=%s\n", config->log_tags);
 
     fclose(f);
     printf("✓ Configuration saved to %s\n", config_path);
@@ -146,4 +163,51 @@ int dna_config_setup(dna_config_t *config) {
     printf("\n✓ Server configured: %s:%d\n", config->server_host, config->server_port);
     printf("\n");
     return 0;
+}
+
+void dna_config_apply_log_settings(const dna_config_t *config) {
+    if (!config) {
+        return;
+    }
+
+    // Set log level
+    qgp_log_level_t level = QGP_LOG_LEVEL_WARN;  // default
+    if (strcmp(config->log_level, "DEBUG") == 0) {
+        level = QGP_LOG_LEVEL_DEBUG;
+    } else if (strcmp(config->log_level, "INFO") == 0) {
+        level = QGP_LOG_LEVEL_INFO;
+    } else if (strcmp(config->log_level, "WARN") == 0) {
+        level = QGP_LOG_LEVEL_WARN;
+    } else if (strcmp(config->log_level, "ERROR") == 0) {
+        level = QGP_LOG_LEVEL_ERROR;
+    } else if (strcmp(config->log_level, "NONE") == 0) {
+        level = QGP_LOG_LEVEL_NONE;
+    }
+    qgp_log_set_level(level);
+
+    // Set tag filter if specified
+    if (config->log_tags[0] != '\0') {
+        // Use whitelist mode - only show specified tags
+        qgp_log_set_filter_mode(QGP_LOG_FILTER_WHITELIST);
+        qgp_log_clear_filters();
+
+        // Parse comma-separated tags
+        char tags_copy[512];
+        strncpy(tags_copy, config->log_tags, sizeof(tags_copy) - 1);
+        tags_copy[sizeof(tags_copy) - 1] = '\0';
+
+        char *token = strtok(tags_copy, ",");
+        while (token != NULL) {
+            // Trim whitespace
+            while (*token == ' ') token++;
+            char *end = token + strlen(token) - 1;
+            while (end > token && *end == ' ') *end-- = '\0';
+
+            if (*token != '\0') {
+                qgp_log_enable_tag(token);
+            }
+            token = strtok(NULL, ",");
+        }
+    }
+    // If log_tags is empty, default blacklist mode shows all
 }

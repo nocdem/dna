@@ -20,6 +20,10 @@ typedef struct {
     char database[64];         // e.g., "dna_messenger"
     char username[64];         // e.g., "dna"
     char password[128];        // e.g., "dna_password"
+
+    // Log settings
+    char log_level[16];        // DEBUG, INFO, WARN, ERROR, NONE
+    char log_tags[512];        // Comma-separated tags to show (empty = all)
 } dna_config_t;
 
 /**
@@ -44,6 +48,12 @@ void dna_config_build_connstring(const dna_config_t *config, char *connstring, s
  * Interactive configuration setup
  */
 int dna_config_setup(dna_config_t *config);
+
+/**
+ * Apply log settings from config
+ * Call this after dna_config_load() to enable log filtering
+ */
+void dna_config_apply_log_settings(const dna_config_t *config);
 
 #ifdef __cplusplus
 }
