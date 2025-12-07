@@ -6,6 +6,7 @@
 #include "../core/dht_context.h"
 #include "../core/dht_bootstrap_registry.h"
 #include "crypto/utils/qgp_log.h"
+#include "dna_config.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -25,6 +26,7 @@
 
 // Global DHT context (singleton)
 static dht_context_t *g_dht_context = NULL;
+static bool g_log_settings_applied = false;
 
 // Bootstrap node addresses (SEED NODE for cold start + fallback)
 static const char *SEED_NODE = "154.38.182.161:4000";  // US-1 (always available)
@@ -37,6 +39,15 @@ static const size_t FALLBACK_COUNT = 3;
 
 int dht_singleton_init(void)
 {
+    // Apply log settings once at first entry point
+    if (!g_log_settings_applied) {
+        dna_config_t config;
+        memset(&config, 0, sizeof(config));
+        dna_config_load(&config);
+        dna_config_apply_log_settings(&config);
+        g_log_settings_applied = true;
+    }
+
     if (g_dht_context != NULL) {
         QGP_LOG_WARN(LOG_TAG, "Already initialized");
         return 0;  // Already initialized, not an error
@@ -166,6 +177,15 @@ bool dht_singleton_is_initialized(void)
 
 int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 {
+    // Apply log settings once at first entry point
+    if (!g_log_settings_applied) {
+        dna_config_t config;
+        memset(&config, 0, sizeof(config));
+        dna_config_load(&config);
+        dna_config_apply_log_settings(&config);
+        g_log_settings_applied = true;
+    }
+
     if (!user_identity) {
         QGP_LOG_ERROR(LOG_TAG, "NULL identity");
         return -1;
