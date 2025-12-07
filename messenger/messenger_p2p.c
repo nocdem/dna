@@ -776,13 +776,6 @@ int messenger_send_p2p(
             return -1;
         }
 
-        printf("[P2P] Resolved '%s' → fingerprint for DHT queue\n", recipient);
-
-        // DEBUG: Log key components
-        printf("[P2P DEBUG QUEUE] sender_identity='%s'\n", ctx->identity);
-        printf("[P2P DEBUG QUEUE] recipient_fingerprint='%s'\n", recipient_fingerprint);
-        printf("[P2P DEBUG QUEUE] expected_base_key='%s:outbox:%s'\n", ctx->identity, recipient_fingerprint);
-
         int queue_result = p2p_queue_offline_message(
             ctx->p2p_transport,
             ctx->identity,      // sender (should already be fingerprint)

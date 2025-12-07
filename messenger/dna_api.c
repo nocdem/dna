@@ -799,18 +799,14 @@ dna_error_t dna_decrypt_message_raw(
 
     // Validate header
     if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0) {
-        fprintf(stderr, "[DEBUG] Invalid magic bytes in header\n");
         return DNA_ERROR_DECRYPT;
     }
     if (header.version != DNA_ENC_VERSION) {
-        fprintf(stderr, "[DEBUG] Version mismatch: got 0x%02x, expected 0x%02x\n", header.version, DNA_ENC_VERSION);
         return DNA_ERROR_DECRYPT;
     }
     if (header.message_type != MSG_TYPE_DIRECT_PQC) {
-        fprintf(stderr, "[DEBUG] Unsupported message type: 0x%02x (expected MSG_TYPE_DIRECT_PQC)\n", header.message_type);
         return DNA_ERROR_DECRYPT;
     }
-    fprintf(stderr, "[DEBUG] Header validated: version 0x%02x, %u recipients, type 0x%02x\n", header.version, header.recipient_count, header.message_type);
 
     uint8_t recipient_count = header.recipient_count;
     size_t encrypted_size = header.encrypted_size;
@@ -855,11 +851,9 @@ dna_error_t dna_decrypt_message_raw(
     }
 
     if (found_entry == -1) {
-        fprintf(stderr, "[DEBUG] Kyber decapsulation failed for all %d recipients - wrong key or corrupted ciphertext\n", recipient_count);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
-    fprintf(stderr, "[DEBUG] Kyber decapsulation succeeded for recipient %d\n", found_entry);
 
     // Read nonce, encrypted data, tag
     if (offset + 12 + encrypted_size + 16 > ciphertext_len) {
@@ -882,14 +876,11 @@ dna_error_t dna_decrypt_message_raw(
     if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
         if (qgp_signature_deserialize(ciphertext + offset, signature_size,
                                        &signature) != 0) {
-            fprintf(stderr, "[DEBUG] Signature deserialization failed\n");
             result = DNA_ERROR_DECRYPT;
             goto cleanup;
         }
         offset += signature_size;
-        fprintf(stderr, "[DEBUG] Signature parsed (%zu bytes)\n", signature_size);
     } else {
-        fprintf(stderr, "[DEBUG] Invalid signature size or bounds check failed\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -908,15 +899,12 @@ dna_error_t dna_decrypt_message_raw(
     if (qgp_aes256_decrypt(dek, encrypted_data, encrypted_size,
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            nonce, tag, decrypted, &decrypted_size) != 0) {
-        fprintf(stderr, "[DEBUG] AES-256-GCM decryption failed - wrong DEK or corrupted ciphertext\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
-    fprintf(stderr, "[DEBUG] AES-256-GCM decryption succeeded (%zu bytes)\n", decrypted_size);
 
     // v0.08: Extract fingerprint + timestamp from decrypted payload
     if (decrypted_size < 72) {  // 64 (fingerprint) + 8 (timestamp)
-        fprintf(stderr, "[DEBUG] Decrypted payload too small (< 72 bytes for fingerprint+timestamp)\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -929,14 +917,12 @@ dna_error_t dna_decrypt_message_raw(
         goto cleanup;
     }
     memcpy(*sender_sign_pubkey_out, decrypted, 64);
-    fprintf(stderr, "[DEBUG] Extracted sender fingerprint (64 bytes)\n");
 
     // Extract timestamp (bytes 64-71, big-endian)
     if (timestamp_out) {
         uint64_t timestamp_be;
         memcpy(&timestamp_be, decrypted + 64, 8);
         *timestamp_out = be64toh(timestamp_be);
-        fprintf(stderr, "[DEBUG] Extracted timestamp (%lu)\n", (unsigned long)*timestamp_out);
     }
 
     // Extract actual plaintext (everything after fingerprint + timestamp)
@@ -950,7 +936,6 @@ dna_error_t dna_decrypt_message_raw(
         goto cleanup;
     }
     memcpy(*plaintext_out, decrypted + 72, actual_plaintext_len);
-    fprintf(stderr, "[DEBUG] Extracted plaintext (%zu bytes)\n", actual_plaintext_len);
 
     // v0.07: Return signature to caller for verification
     if (signature_out && signature_len_out && signature) {
@@ -967,7 +952,6 @@ dna_error_t dna_decrypt_message_raw(
             goto cleanup;
         }
         memcpy(*signature_out, qgp_signature_get_bytes(signature), sig_bytes_len);
-        fprintf(stderr, "[DEBUG] Signature returned to caller (%zu bytes)\n", sig_bytes_len);
     }
 
     // v0.07: Signature verification must be done by caller
@@ -1028,18 +1012,14 @@ dna_error_t dna_decrypt_message(
 
     // Validate header
     if (memcmp(header.magic, DNA_ENC_MAGIC, 8) != 0) {
-        fprintf(stderr, "[DEBUG] Invalid magic bytes in header\n");
         return DNA_ERROR_DECRYPT;
     }
     if (header.version != DNA_ENC_VERSION) {
-        fprintf(stderr, "[DEBUG] Version mismatch: got 0x%02x, expected 0x%02x\n", header.version, DNA_ENC_VERSION);
         return DNA_ERROR_DECRYPT;
     }
     if (header.message_type != MSG_TYPE_DIRECT_PQC) {
-        fprintf(stderr, "[DEBUG] Unsupported message type: 0x%02x (expected MSG_TYPE_DIRECT_PQC)\n", header.message_type);
         return DNA_ERROR_DECRYPT;
     }
-    fprintf(stderr, "[DEBUG] Header validated: version 0x%02x, %u recipients, type 0x%02x\n", header.version, header.recipient_count, header.message_type);
 
     uint8_t recipient_count = header.recipient_count;
     size_t encrypted_size = header.encrypted_size;
@@ -1101,11 +1081,9 @@ dna_error_t dna_decrypt_message(
     }
 
     if (found_entry == -1) {
-        fprintf(stderr, "[DEBUG] Kyber decapsulation failed for all %d recipients - wrong key or corrupted ciphertext\n", recipient_count);
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
-    fprintf(stderr, "[DEBUG] Kyber decapsulation succeeded for recipient %d\n", found_entry);
 
     // Read nonce, encrypted data, tag
     if (offset + 12 + encrypted_size + 16 > ciphertext_len) {
@@ -1128,14 +1106,11 @@ dna_error_t dna_decrypt_message(
     if (signature_size > 0 && offset + signature_size <= ciphertext_len) {
         if (qgp_signature_deserialize(ciphertext + offset, signature_size,
                                        &signature) != 0) {
-            fprintf(stderr, "[DEBUG] Signature deserialization failed\n");
             result = DNA_ERROR_DECRYPT;
             goto cleanup;
         }
         offset += signature_size;
-        fprintf(stderr, "[DEBUG] Signature parsed (%zu bytes)\n", signature_size);
     } else {
-        fprintf(stderr, "[DEBUG] Invalid signature size or bounds check failed\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -1154,15 +1129,12 @@ dna_error_t dna_decrypt_message(
     if (qgp_aes256_decrypt(dek, encrypted_data, encrypted_size,
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            nonce, tag, decrypted, &decrypted_size) != 0) {
-        fprintf(stderr, "[DEBUG] AES-256-GCM decryption failed - wrong DEK or corrupted ciphertext\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
-    fprintf(stderr, "[DEBUG] AES-256-GCM decryption succeeded (%zu bytes)\n", decrypted_size);
 
     // v0.08: Extract fingerprint + timestamp from decrypted payload
     if (decrypted_size < 72) {  // 64 (fingerprint) + 8 (timestamp)
-        fprintf(stderr, "[DEBUG] Decrypted payload too small (< 72 bytes for fingerprint+timestamp)\n");
         result = DNA_ERROR_DECRYPT;
         goto cleanup;
     }
@@ -1175,7 +1147,6 @@ dna_error_t dna_decrypt_message(
         goto cleanup;
     }
     memcpy(*sender_pubkey_out, decrypted, 64);
-    fprintf(stderr, "[DEBUG] Extracted sender fingerprint (64 bytes)\n");
 
     // Extract timestamp (bytes 64-71, big-endian) - ignored in this function
     // (dna_decrypt_message doesn't expose timestamp, use dna_decrypt_message_raw if needed)
@@ -1191,7 +1162,6 @@ dna_error_t dna_decrypt_message(
         goto cleanup;
     }
     memcpy(*plaintext_out, decrypted + 72, actual_plaintext_len);
-    fprintf(stderr, "[DEBUG] Extracted plaintext (%zu bytes)\n", actual_plaintext_len);
 
     // v0.07: dna_decrypt_message doesn't expose signature
     // Use dna_decrypt_message_raw if you need signature verification
@@ -1365,7 +1335,6 @@ dna_error_t dna_encrypt_message_gsk(
         return DNA_ERROR_INVALID_ARG;
     }
 
-    fprintf(stderr, "[DEBUG GSK] Encrypting group message: %zu bytes\n", plaintext_len);
 
     // === PREPARE PAYLOAD ===
     // Payload: sender_fingerprint(64) || timestamp(8) || plaintext
@@ -1516,7 +1485,6 @@ dna_error_t dna_encrypt_message_gsk(
 
     free(encrypted_payload);
 
-    fprintf(stderr, "[DEBUG GSK] Encrypted message: %zu bytes total\n", total_len);
 
     *ciphertext_out = final_ciphertext;
     *ciphertext_len_out = total_len;
@@ -1545,11 +1513,9 @@ dna_error_t dna_decrypt_message_gsk(
     }
 
     if (ciphertext_len < 12 + 37 + 4 + 12 + 16 + 1 + 2) {
-        fprintf(stderr, "[DEBUG GSK] Ciphertext too short: %zu bytes\n", ciphertext_len);
         return DNA_ERROR_DECRYPT;
     }
 
-    fprintf(stderr, "[DEBUG GSK] Decrypting group message: %zu bytes\n", ciphertext_len);
 
     size_t offset = 0;
 
@@ -1567,11 +1533,9 @@ dna_error_t dna_decrypt_message_gsk(
     offset += 4;
 
     if (header.version != DNA_ENC_VERSION) {
-        fprintf(stderr, "[DEBUG GSK] Version mismatch: got 0x%02x, expected 0x%02x\n", header.version, DNA_ENC_VERSION);
         return DNA_ERROR_DECRYPT;
     }
     if (header.message_type != MSG_TYPE_GROUP_GSK) {
-        fprintf(stderr, "[DEBUG GSK] Wrong message type: 0x%02x (expected MSG_TYPE_GROUP_GSK)\n", header.message_type);
         return DNA_ERROR_DECRYPT;
     }
 
@@ -1602,7 +1566,6 @@ dna_error_t dna_decrypt_message_gsk(
     // === PARSE ENCRYPTED PAYLOAD + TAG ===
     size_t encrypted_payload_len = header.encrypted_size;
     if (offset + encrypted_payload_len + 16 > ciphertext_len) {
-        fprintf(stderr, "[DEBUG GSK] Ciphertext truncated\n");
         return DNA_ERROR_DECRYPT;
     }
 
@@ -1614,13 +1577,11 @@ dna_error_t dna_decrypt_message_gsk(
 
     // === PARSE SIGNATURE ===
     if (offset + 3 > ciphertext_len) {
-        fprintf(stderr, "[DEBUG GSK] Signature block truncated\n");
         return DNA_ERROR_DECRYPT;
     }
 
     uint8_t sig_type = ciphertext[offset++];
     if (sig_type != 23) {
-        fprintf(stderr, "[DEBUG GSK] Invalid signature type: %u\n", sig_type);
         return DNA_ERROR_DECRYPT;
     }
 
@@ -1630,7 +1591,6 @@ dna_error_t dna_decrypt_message_gsk(
     offset += 2;
 
     if (offset + sig_size > ciphertext_len) {
-        fprintf(stderr, "[DEBUG GSK] Signature truncated\n");
         return DNA_ERROR_DECRYPT;
     }
 
@@ -1660,7 +1620,6 @@ dna_error_t dna_decrypt_message_gsk(
     free(data_to_verify);
 
     if (verify_ret != 0) {
-        fprintf(stderr, "[DEBUG GSK] Signature verification failed\n");
         return DNA_ERROR_VERIFY;
     }
 
@@ -1682,14 +1641,12 @@ dna_error_t dna_decrypt_message_gsk(
 
     if (dec_ret != 0) {
         free(decrypted_payload);
-        fprintf(stderr, "[DEBUG GSK] Decryption failed\n");
         return DNA_ERROR_DECRYPT;
     }
 
     // === EXTRACT PAYLOAD FIELDS ===
     if (encrypted_payload_len < 72) {
         free(decrypted_payload);
-        fprintf(stderr, "[DEBUG GSK] Payload too short\n");
         return DNA_ERROR_DECRYPT;
     }
 
@@ -1717,7 +1674,6 @@ dna_error_t dna_decrypt_message_gsk(
     memcpy(plaintext, decrypted_payload + 72, plaintext_len);
     free(decrypted_payload);
 
-    fprintf(stderr, "[DEBUG GSK] Decrypted message: %zu bytes plaintext\n", plaintext_len);
 
     *plaintext_out = plaintext;
     *plaintext_len_out = plaintext_len;
