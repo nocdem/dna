@@ -25,7 +25,7 @@ variables:
 # =============================================================================
 
 # Build native library for Linux x64
-.build:native-linux-x64:  # DISABLED - prefix with . to skip
+build:native-linux-x64:
   stage: build-native
   tags:
     - linux
@@ -366,7 +366,7 @@ build:native-android-arm64:
 # =============================================================================
 
 # Flutter Linux build
-.build:flutter-linux:  # DISABLED - prefix with . to skip
+build:flutter-linux:
   stage: build-flutter
   tags:
     - linux
