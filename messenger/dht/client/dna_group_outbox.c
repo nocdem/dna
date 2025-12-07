@@ -26,6 +26,9 @@
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DNA_OUTBOX"
 #endif
 
 /* External DHT functions */
@@ -385,13 +388,13 @@ int dna_group_outbox_send(
         return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
     }
 
-    printf("[GROUP_OUTBOX] Sending message to group %s\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Sending message to group %s\n", group_uuid);
 
     /* Step 1: Load active GSK */
     uint8_t gsk[GSK_KEY_SIZE];
     uint32_t gsk_version = 0;
     if (gsk_load_active(group_uuid, gsk, &gsk_version) != 0) {
-        fprintf(stderr, "[GROUP_OUTBOX] No active GSK for group %s\n", group_uuid);
+        QGP_LOG_ERROR(LOG_TAG, "No active GSK for group %s\n", group_uuid);
         return DNA_GROUP_OUTBOX_ERR_NO_GSK;
     }
 
@@ -426,7 +429,7 @@ int dna_group_outbox_send(
     if (qgp_aes256_encrypt(gsk, (const uint8_t *)plaintext, plaintext_len,
                            (const uint8_t *)message_id, strlen(message_id),
                            ciphertext, &ciphertext_len, nonce, tag) != 0) {
-        fprintf(stderr, "[GROUP_OUTBOX] AES encryption failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "AES encryption failed\n");
         free(ciphertext);
         return DNA_GROUP_OUTBOX_ERR_ENCRYPT;
     }
@@ -456,7 +459,7 @@ int dna_group_outbox_send(
     free(sign_data);
 
     if (ret != 0) {
-        fprintf(stderr, "[GROUP_OUTBOX] Dilithium signing failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Dilithium signing failed\n");
         free(ciphertext);
         return DNA_GROUP_OUTBOX_ERR_SIGN;
     }
@@ -525,7 +528,7 @@ int dna_group_outbox_send(
         free(lens);
     }
 
-    printf("[GROUP_OUTBOX] Found %zu existing messages in my bucket\n", existing_count);
+    QGP_LOG_INFO(LOG_TAG, "Found %zu existing messages in my bucket\n", existing_count);
 
     /* Step 10: Append new message to my array */
     size_t new_count = existing_count + 1;
@@ -560,7 +563,7 @@ int dna_group_outbox_send(
         return DNA_GROUP_OUTBOX_ERR_SERIALIZE;
     }
 
-    printf("[GROUP_OUTBOX] Publishing %zu messages to DHT key %s (value_id=%lu)\n",
+    QGP_LOG_INFO(LOG_TAG, "Publishing %zu messages to DHT key %s (value_id=%lu)\n",
            new_count, dht_key, (unsigned long)my_value_id);
 
     ret = dht_put_signed(dht_ctx, (const uint8_t *)dht_key, strlen(dht_key),
@@ -571,7 +574,7 @@ int dna_group_outbox_send(
     dna_group_outbox_free_messages(all_msgs, new_count);
 
     if (ret != 0) {
-        fprintf(stderr, "[GROUP_OUTBOX] DHT put failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT put failed\n");
         return DNA_GROUP_OUTBOX_ERR_DHT_PUT;
     }
 
@@ -581,7 +584,7 @@ int dna_group_outbox_send(
     dna_group_outbox_db_store_message(&new_msg);
     free(new_msg.plaintext);
 
-    printf("[GROUP_OUTBOX] Message sent: %s\n", message_id);
+    QGP_LOG_INFO(LOG_TAG, "Message sent: %s\n", message_id);
     return DNA_GROUP_OUTBOX_OK;
 }
 
@@ -609,7 +612,7 @@ int dna_group_outbox_fetch(
     char dht_key[128];
     dna_group_outbox_make_key(group_uuid, hour_bucket, dht_key, sizeof(dht_key));
 
-    printf("[GROUP_OUTBOX] Fetching bucket %s\n", dht_key);
+    QGP_LOG_INFO(LOG_TAG, "Fetching bucket %s\n", dht_key);
 
     /* Fetch all senders' messages with dht_get_all() */
     uint8_t **values = NULL;
@@ -625,7 +628,7 @@ int dna_group_outbox_fetch(
         return DNA_GROUP_OUTBOX_OK; /* No messages is OK */
     }
 
-    printf("[GROUP_OUTBOX] Got %zu sender buckets\n", value_count);
+    QGP_LOG_INFO(LOG_TAG, "Got %zu sender buckets\n", value_count);
 
     /* Merge all messages from all senders */
     dna_group_message_t *all_messages = NULL;
@@ -677,7 +680,7 @@ int dna_group_outbox_fetch(
     *messages_out = all_messages;
     *count_out = total_count;
 
-    printf("[GROUP_OUTBOX] Merged %zu messages from bucket\n", total_count);
+    QGP_LOG_INFO(LOG_TAG, "Merged %zu messages from bucket\n", total_count);
     return DNA_GROUP_OUTBOX_OK;
 }
 
@@ -690,7 +693,7 @@ int dna_group_outbox_sync(
         return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
     }
 
-    printf("[GROUP_OUTBOX] Syncing group %s\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Syncing group %s\n", group_uuid);
 
     /* Get last sync hour */
     uint64_t last_sync_hour = 0;
@@ -702,7 +705,7 @@ int dna_group_outbox_sync(
     /* Load GSK for decryption */
     uint8_t gsk[GSK_KEY_SIZE];
     if (gsk_load_active(group_uuid, gsk, NULL) != 0) {
-        fprintf(stderr, "[GROUP_OUTBOX] No active GSK for group %s (skipping sync)\n", group_uuid);
+        QGP_LOG_ERROR(LOG_TAG, "No active GSK for group %s (skipping sync)\n", group_uuid);
         return DNA_GROUP_OUTBOX_ERR_NO_GSK;
     }
 
@@ -719,7 +722,7 @@ int dna_group_outbox_sync(
             continue;
         }
 
-        printf("[GROUP_OUTBOX] Processing %zu messages from hour %lu\n", count, (unsigned long)hour);
+        QGP_LOG_INFO(LOG_TAG, "Processing %zu messages from hour %lu\n", count, (unsigned long)hour);
 
         for (size_t i = 0; i < count; i++) {
             /* Check if already stored */
@@ -765,7 +768,7 @@ int dna_group_outbox_sync(
         *new_message_count_out = new_count;
     }
 
-    printf("[GROUP_OUTBOX] Sync complete: %zu new messages\n", new_count);
+    QGP_LOG_INFO(LOG_TAG, "Sync complete: %zu new messages\n", new_count);
     return DNA_GROUP_OUTBOX_OK;
 }
 
@@ -778,7 +781,7 @@ int dna_group_outbox_sync_all(
         return DNA_GROUP_OUTBOX_ERR_NULL_PARAM;
     }
 
-    printf("[GROUP_OUTBOX] Syncing all groups for %s\n", my_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Syncing all groups for %s\n", my_fingerprint);
 
     /* Query all groups the user is a member of */
     const char *sql = "SELECT DISTINCT group_uuid FROM dht_group_members WHERE member_fingerprint = ?";
@@ -786,7 +789,7 @@ int dna_group_outbox_sync_all(
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(group_outbox_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_OUTBOX] Failed to query groups: %s\n", sqlite3_errmsg(group_outbox_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to query groups: %s\n", sqlite3_errmsg(group_outbox_db));
         return DNA_GROUP_OUTBOX_ERR_DB;
     }
 
@@ -811,7 +814,7 @@ int dna_group_outbox_sync_all(
         *total_new_messages_out = total_new;
     }
 
-    printf("[GROUP_OUTBOX] Total: %zu new messages across all groups\n", total_new);
+    QGP_LOG_INFO(LOG_TAG, "Total: %zu new messages across all groups\n", total_new);
     return DNA_GROUP_OUTBOX_OK;
 }
 
@@ -823,7 +826,7 @@ int dna_group_outbox_db_init(void) {
     /* Get database from message backup context (will be set by caller) */
     /* For now, we assume msg_db is already set */
     if (!group_outbox_db) {
-        fprintf(stderr, "[GROUP_OUTBOX] Database not set - call with backup context first\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not set - call with backup context first\n");
         return -1;
     }
 
@@ -849,7 +852,7 @@ int dna_group_outbox_db_init(void) {
     char *err_msg = NULL;
     int rc = sqlite3_exec(group_outbox_db, create_messages, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_OUTBOX] Failed to create group_messages table: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create group_messages table: %s\n", err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
@@ -873,12 +876,12 @@ int dna_group_outbox_db_init(void) {
 
     rc = sqlite3_exec(group_outbox_db, create_sync, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_OUTBOX] Failed to create group_sync_state table: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create group_sync_state table: %s\n", err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
 
-    printf("[GROUP_OUTBOX] Database tables initialized\n");
+    QGP_LOG_INFO(LOG_TAG, "Database tables initialized\n");
     return 0;
 }
 

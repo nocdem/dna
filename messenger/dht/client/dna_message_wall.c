@@ -18,6 +18,9 @@
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DNA_WALL"
 #endif
 
 // Dilithium5 functions (actual exported symbols from dsa library)
@@ -421,7 +424,7 @@ int dna_load_wall(dht_context_t *dht_ctx,
         return -1;
     }
 
-    printf("[DNA_WALL] Loading wall for %.16s... (owner-namespaced)\n", fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Loading wall for %.16s... (owner-namespaced)\n", fingerprint);
 
     // Step 1: Get contributors index (multi-owner, small fingerprint list)
     char contrib_key[512];
@@ -471,7 +474,7 @@ int dna_load_wall(dht_context_t *dht_ctx,
         free(contrib_lens);
     }
 
-    printf("[DNA_WALL] Found %zu unique contributors\n", num_contributors);
+    QGP_LOG_INFO(LOG_TAG, "Found %zu unique contributors\n", num_contributors);
 
     // Step 2: Create merged wall
     dna_message_wall_t *merged_wall = calloc(1, sizeof(dna_message_wall_t));
@@ -503,7 +506,7 @@ int dna_load_wall(dht_context_t *dht_ctx,
 
         ret = dht_chunked_fetch(dht_ctx, poster_key, &data, &data_len);
         if (ret != DHT_CHUNK_OK || !data) {
-            printf("[DNA_WALL] Contributor %.16s...: no data\n", contributors[c]);
+            QGP_LOG_INFO(LOG_TAG, "Contributor %.16s...: no data\n", contributors[c]);
             continue;
         }
 
@@ -519,13 +522,13 @@ int dna_load_wall(dht_context_t *dht_ctx,
 
         dna_message_wall_t *contrib_wall = NULL;
         if (dna_message_wall_from_json(json_str, &contrib_wall) != 0) {
-            printf("[DNA_WALL] Contributor %.16s...: parse failed\n", contributors[c]);
+            QGP_LOG_INFO(LOG_TAG, "Contributor %.16s...: parse failed\n", contributors[c]);
             free(json_str);
             continue;
         }
         free(json_str);
 
-        printf("[DNA_WALL] Contributor %.16s...: %zu messages\n",
+        QGP_LOG_INFO(LOG_TAG, "Contributor %.16s...: %zu messages\n",
                contributors[c], contrib_wall->message_count);
 
         // Merge messages into main wall
@@ -567,12 +570,12 @@ int dna_load_wall(dht_context_t *dht_ctx,
     dna_wall_update_reply_counts(merged_wall);
 
     if (merged_wall->message_count == 0) {
-        printf("[DNA_WALL] Wall is empty\n");
+        QGP_LOG_INFO(LOG_TAG, "Wall is empty\n");
         dna_message_wall_free(merged_wall);
         return -2;  // Not found
     }
 
-    printf("[DNA_WALL] ✓ Loaded wall: %zu messages from %zu contributors\n",
+    QGP_LOG_INFO(LOG_TAG, "✓ Loaded wall: %zu messages from %zu contributors\n",
            merged_wall->message_count, num_contributors);
 
     *wall_out = merged_wall;
@@ -599,11 +602,11 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     // Validate message length
     size_t text_len = strlen(message_text);
     if (text_len == 0 || text_len >= DNA_MESSAGE_WALL_MAX_TEXT_LEN) {
-        fprintf(stderr, "[DNA_WALL] Message text invalid (len=%zu)\n", text_len);
+        QGP_LOG_ERROR(LOG_TAG, "Message text invalid (len=%zu)\n", text_len);
         return -1;
     }
 
-    printf("[DNA_WALL] Posting to wall %.16s... as poster %.16s...\n",
+    QGP_LOG_INFO(LOG_TAG, "Posting to wall %.16s... as poster %.16s...\n",
            wall_owner_fingerprint, poster_fingerprint);
 
     // Step 1: Load poster's OWN existing messages for this wall (not entire wall)
@@ -636,7 +639,7 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
         strncpy(poster_wall->fingerprint, wall_owner_fingerprint, sizeof(poster_wall->fingerprint) - 1);
     }
 
-    printf("[DNA_WALL] Poster has %zu existing messages on this wall\n", poster_wall->message_count);
+    QGP_LOG_INFO(LOG_TAG, "Poster has %zu existing messages on this wall\n", poster_wall->message_count);
 
     // Step 2: Handle reply depth (need to load full wall to find parent)
     int reply_depth = 0;
@@ -653,7 +656,7 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
             dna_message_wall_free(full_wall);
         }
         if (reply_depth > 2) {
-            fprintf(stderr, "[DNA_WALL] Max thread depth exceeded (max 3 levels)\n");
+            QGP_LOG_ERROR(LOG_TAG, "Max thread depth exceeded (max 3 levels)\n");
             dna_message_wall_free(poster_wall);
             return -2;
         }
@@ -688,7 +691,7 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     free(sign_data);
 
     if (ret != 0) {
-        fprintf(stderr, "[DNA_WALL] Failed to sign message\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign message\n");
         dna_message_wall_free(poster_wall);
         return -1;
     }
@@ -722,12 +725,12 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     char *json_data = NULL;
     ret = dna_message_wall_to_json(poster_wall, &json_data);
     if (ret != 0 || !json_data) {
-        fprintf(stderr, "[DNA_WALL] Failed to serialize wall\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize wall\n");
         dna_message_wall_free(poster_wall);
         return -1;
     }
 
-    printf("[DNA_WALL] Publishing poster's %zu messages via chunked\n", poster_wall->message_count);
+    QGP_LOG_INFO(LOG_TAG, "Publishing poster's %zu messages via chunked\n", poster_wall->message_count);
     ret = dht_chunked_publish(dht_ctx, poster_key,
                                (uint8_t*)json_data, strlen(json_data),
                                DHT_CHUNK_TTL_30DAY);
@@ -735,7 +738,7 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     dna_message_wall_free(poster_wall);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA_WALL] Failed to publish poster data: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish poster data: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
@@ -743,17 +746,17 @@ int dna_post_to_wall(dht_context_t *dht_ctx,
     char contrib_key[512];
     make_contributors_key(wall_owner_fingerprint, contrib_key, sizeof(contrib_key));
 
-    printf("[DNA_WALL] Registering contributor in index\n");
+    QGP_LOG_INFO(LOG_TAG, "Registering contributor in index\n");
     ret = dht_put_signed(dht_ctx, (const uint8_t *)contrib_key, strlen(contrib_key),
                          (const uint8_t *)poster_fingerprint, strlen(poster_fingerprint),
                          1, DHT_CHUNK_TTL_30DAY);
 
     if (ret != 0) {
         // Non-fatal - poster data is already stored
-        fprintf(stderr, "[DNA_WALL] Warning: Failed to register in contributors index\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to register in contributors index\n");
     }
 
-    printf("[DNA_WALL] ✓ Posted message (wall=%.16s..., poster=%.16s...)\n",
+    QGP_LOG_INFO(LOG_TAG, "✓ Posted message (wall=%.16s..., poster=%.16s...)\n",
            wall_owner_fingerprint, poster_fingerprint);
     return 0;
 }

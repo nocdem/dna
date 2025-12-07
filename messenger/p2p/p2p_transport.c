@@ -18,6 +18,9 @@
 
 #include "p2p_transport.h"
 #include "transport/transport_core.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "P2P"
 
 // ============================================================================
 // Core Lifecycle Management
@@ -57,7 +60,7 @@ p2p_transport_t* p2p_transport_init(
     }
     ctx->my_fingerprint[128] = '\0';
 
-    printf("[P2P] My fingerprint: %.32s...\n", ctx->my_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "My fingerprint: %.32s...\n", ctx->my_fingerprint);
 
     // Callbacks
     ctx->message_callback = message_callback;
@@ -76,17 +79,17 @@ p2p_transport_t* p2p_transport_init(
     // No need to create/start DHT here - it's already running
     ctx->dht = dht_singleton_get();
     if (!ctx->dht) {
-        printf("[P2P] ERROR: Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
+        QGP_LOG_INFO(LOG_TAG, "ERROR: Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
         free(ctx);
         return NULL;
     }
 
-    printf("[P2P] Using global DHT singleton for P2P transport\n");
+    QGP_LOG_INFO(LOG_TAG, "Using global DHT singleton for P2P transport\n");
 
     ctx->listen_sockfd = -1;
     ctx->running = false;
 
-    printf("[P2P] Transport initialized (TCP port: %d, using global DHT)\n",
+    QGP_LOG_INFO(LOG_TAG, "Transport initialized (TCP port: %d, using global DHT)\n",
            config->listen_port);
 
     return ctx;
@@ -99,7 +102,7 @@ int p2p_transport_start(p2p_transport_t *ctx) {
 
     // DHT is already running (global singleton)
     // No need to start it here
-    printf("[P2P] Using global DHT (already running)\n");
+    QGP_LOG_INFO(LOG_TAG, "Using global DHT (already running)\n");
 
     // Create TCP listening socket
     if (tcp_create_listener(ctx) != 0) {
@@ -113,15 +116,15 @@ int p2p_transport_start(p2p_transport_t *ctx) {
     }
 
     // Initialize ICE context for NAT traversal (libjuice)
-    printf("[P2P] Initializing ICE for NAT traversal (libjuice)...\n");
+    QGP_LOG_INFO(LOG_TAG, "Initializing ICE for NAT traversal (libjuice)...\n");
 
     pthread_mutex_init(&ctx->ice_mutex, NULL);
     pthread_mutex_lock(&ctx->ice_mutex);
 
     ctx->ice_context = ice_context_new();
     if (!ctx->ice_context) {
-        fprintf(stderr, "[P2P] WARNING: ICE initialization failed (NAT traversal unavailable)\n");
-        fprintf(stderr, "[P2P] Continuing with TCP-only mode...\n");
+        QGP_LOG_ERROR(LOG_TAG, "WARNING: ICE initialization failed (NAT traversal unavailable)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Continuing with TCP-only mode...\n");
         pthread_mutex_unlock(&ctx->ice_mutex);
         return 0;  // Not fatal - continue with TCP-only mode
     }
@@ -132,16 +135,16 @@ int p2p_transport_start(p2p_transport_t *ctx) {
     const uint16_t stun_ports[] = {19302, 19302, 3478};
 
     for (size_t i = 0; i < 3 && !gathered; i++) {
-        printf("[P2P] Trying STUN server: %s:%d\n", stun_servers[i], stun_ports[i]);
+        QGP_LOG_INFO(LOG_TAG, "Trying STUN server: %s:%d\n", stun_servers[i], stun_ports[i]);
         if (ice_gather_candidates(ctx->ice_context, stun_servers[i], stun_ports[i]) == 0) {
             gathered = 1;
-            printf("[P2P] ✓ Successfully gathered ICE candidates via %s:%d\n", stun_servers[i], stun_ports[i]);
+            QGP_LOG_INFO(LOG_TAG, "✓ Successfully gathered ICE candidates via %s:%d\n", stun_servers[i], stun_ports[i]);
             break;
         }
     }
 
     if (!gathered) {
-        fprintf(stderr, "[P2P] WARNING: Failed to gather candidates from all STUN servers\n");
+        QGP_LOG_ERROR(LOG_TAG, "WARNING: Failed to gather candidates from all STUN servers\n");
         ice_context_free(ctx->ice_context);
         ctx->ice_context = NULL;
         pthread_mutex_unlock(&ctx->ice_mutex);
@@ -150,18 +153,18 @@ int p2p_transport_start(p2p_transport_t *ctx) {
 
     // Publish ICE candidates to DHT
     if (ice_publish_to_dht(ctx->ice_context, ctx->my_fingerprint) != 0) {
-        fprintf(stderr, "[P2P] WARNING: Failed to publish ICE candidates to DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "WARNING: Failed to publish ICE candidates to DHT\n");
         ice_context_free(ctx->ice_context);
         ctx->ice_context = NULL;
         pthread_mutex_unlock(&ctx->ice_mutex);
         return 0;  // Not fatal - continue with TCP-only mode
     }
 
-    printf("[P2P] ✓ Published ICE candidates to DHT (key: %s:ice_candidates)\n", ctx->my_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "✓ Published ICE candidates to DHT (key: %s:ice_candidates)\n", ctx->my_fingerprint);
     ctx->ice_ready = true;
     pthread_mutex_unlock(&ctx->ice_mutex);
 
-    printf("[P2P] ✓ ICE ready for NAT traversal\n");
+    QGP_LOG_INFO(LOG_TAG, "✓ ICE ready for NAT traversal\n");
     return 0;
 }
 
@@ -170,7 +173,7 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
         return;
     }
 
-    printf("[P2P] Stopping transport...\n");
+    QGP_LOG_INFO(LOG_TAG, "Stopping transport...\n");
     ctx->running = false;
 
     // Close all peer connections (TCP and ICE)
@@ -186,7 +189,7 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
                 }
             } else if (conn->type == CONNECTION_TYPE_ICE) {
                 if (conn->ice_ctx) {
-                    printf("[P2P] Shutting down ICE connection to %.16s...\n", conn->peer_fingerprint);
+                    QGP_LOG_INFO(LOG_TAG, "Shutting down ICE connection to %.16s...\n", conn->peer_fingerprint);
                     ice_shutdown(conn->ice_ctx);
                     ice_context_free(conn->ice_ctx);
                     conn->ice_ctx = NULL;
@@ -215,7 +218,7 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
 
     // Shutdown persistent ICE context
     if (ctx->ice_ready) {
-        printf("[P2P] Shutting down persistent ICE...\n");
+        QGP_LOG_INFO(LOG_TAG, "Shutting down persistent ICE...\n");
         pthread_mutex_lock(&ctx->ice_mutex);
         if (ctx->ice_context) {
             ice_shutdown(ctx->ice_context);
@@ -231,7 +234,7 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
 
     // Don't stop DHT - it's a global singleton managed at app level
 
-    printf("[P2P] Transport stopped\n");
+    QGP_LOG_INFO(LOG_TAG, "Transport stopped\n");
 }
 
 void p2p_transport_free(p2p_transport_t *ctx) {

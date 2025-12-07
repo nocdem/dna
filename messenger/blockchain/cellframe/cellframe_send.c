@@ -19,6 +19,9 @@
 #include <getopt.h>
 #include <time.h>
 #include <json-c/json.h>
+#include "../../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "WALLET_TX"
 
 #define DEFAULT_RPC_URL "http://rpc.cellframe.net/connect"
 #define DEFAULT_NETWORK "Backbone"
@@ -152,7 +155,7 @@ int main(int argc, char **argv) {
     }
 
     if (args.verbose) {
-        printf("[CONFIG]\n");
+        QGP_LOG_INFO(LOG_TAG, "\n");
         printf("  Wallet:    %s\n", args.wallet_file);
         printf("  Recipient: %s\n", args.recipient);
         printf("  Amount:    %s %s\n", args.amount, args.token);
@@ -163,10 +166,10 @@ int main(int argc, char **argv) {
     }
 
     // Step 1: Load wallet
-    printf("[1/6] Loading wallet...\n");
+    QGP_LOG_INFO(LOG_TAG, "Loading wallet...\n");
     cellframe_wallet_t *wallet = NULL;
     if (wallet_read_cellframe_path(args.wallet_file, &wallet) != 0 || !wallet) {
-        fprintf(stderr, "[ERROR] Failed to load wallet: %s\n", args.wallet_file);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load wallet: %s\n", args.wallet_file);
         return 1;
     }
 
@@ -176,17 +179,17 @@ int main(int argc, char **argv) {
     printf("      Privkey: %zu bytes\n\n", wallet->private_key_size);
 
     // Step 2: Parse transaction parameters
-    printf("[2/7] Parsing transaction parameters...\n");
+    QGP_LOG_INFO(LOG_TAG, "Parsing transaction parameters...\n");
 
     // Parse amounts
     uint256_t amount, fee;
     if (cellframe_uint256_from_str(args.amount, &amount) != 0) {
-        fprintf(stderr, "[ERROR] Failed to parse amount: %s\n", args.amount);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse amount: %s\n", args.amount);
         wallet_free(wallet);
         return 1;
     }
     if (cellframe_uint256_from_str(args.fee, &fee) != 0) {
-        fprintf(stderr, "[ERROR] Failed to parse fee: %s\n", args.fee);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse fee: %s\n", args.fee);
         wallet_free(wallet);
         return 1;
     }
@@ -198,7 +201,7 @@ int main(int argc, char **argv) {
     printf("\n");
 
     // Step 3: Query and select UTXOs
-    printf("[3/7] Querying UTXOs...\n");
+    QGP_LOG_INFO(LOG_TAG, "Querying UTXOs...\n");
 
     // Check if using non-native token
     int is_native_token = (strcmp(args.token, "CELL") == 0);
@@ -248,7 +251,7 @@ int main(int argc, char **argv) {
 
                         int num_utxos = json_object_array_length(outs_obj);
                         if (num_utxos == 0) {
-                            fprintf(stderr, "[ERROR] No %s UTXOs available\n", args.token);
+                            QGP_LOG_ERROR(LOG_TAG, "No %s UTXOs available\n", args.token);
                             cellframe_rpc_response_free(utxo_resp);
                             wallet_free(wallet);
                             return 1;
@@ -283,7 +286,7 @@ int main(int argc, char **argv) {
                         }
 
                         if (valid_utxos == 0) {
-                            fprintf(stderr, "[ERROR] No valid %s UTXOs found\n", args.token);
+                            QGP_LOG_ERROR(LOG_TAG, "No valid %s UTXOs found\n", args.token);
                             free(all_utxos);
                             cellframe_rpc_response_free(utxo_resp);
                             wallet_free(wallet);
@@ -304,7 +307,7 @@ int main(int argc, char **argv) {
                         free(all_utxos);
 
                         if (compare256(total_input, required) < 0) {
-                            fprintf(stderr, "[ERROR] Insufficient %s\n", args.token);
+                            QGP_LOG_ERROR(LOG_TAG, "Insufficient %s\n", args.token);
                             // Print 256-bit values properly
                             if (IS_ZERO_256((uint256_t){.hi = total_input.hi, .lo = {.hi = total_input.lo.hi, .lo = 0}})) {
                                 fprintf(stderr, "        Available: %lu datoshi\n", total_input.lo.lo);
@@ -329,19 +332,19 @@ int main(int argc, char **argv) {
                         }
 
                     } else {
-                        fprintf(stderr, "[ERROR] No UTXOs found in response\n");
+                        QGP_LOG_ERROR(LOG_TAG, "No UTXOs found in response\n");
                         cellframe_rpc_response_free(utxo_resp);
                         wallet_free(wallet);
                         return 1;
                     }
                 } else {
-                    fprintf(stderr, "[ERROR] Invalid UTXO response structure\n");
+                    QGP_LOG_ERROR(LOG_TAG, "Invalid UTXO response structure\n");
                     cellframe_rpc_response_free(utxo_resp);
                     wallet_free(wallet);
                     return 1;
                 }
             } else {
-                fprintf(stderr, "[ERROR] Invalid UTXO response format\n");
+                QGP_LOG_ERROR(LOG_TAG, "Invalid UTXO response format\n");
                 cellframe_rpc_response_free(utxo_resp);
                 wallet_free(wallet);
                 return 1;
@@ -349,7 +352,7 @@ int main(int argc, char **argv) {
         }
         cellframe_rpc_response_free(utxo_resp);
     } else {
-        fprintf(stderr, "[ERROR] Failed to query %s UTXOs from RPC\n", args.token);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to query %s UTXOs from RPC\n", args.token);
         wallet_free(wallet);
         return 1;
     }
@@ -376,7 +379,7 @@ int main(int argc, char **argv) {
 
                             int num_utxos = json_object_array_length(outs_obj);
                             if (num_utxos == 0) {
-                                fprintf(stderr, "[ERROR] No CELL UTXOs for fees\n");
+                                QGP_LOG_ERROR(LOG_TAG, "No CELL UTXOs for fees\n");
                                 free(selected_utxos);
                                 cellframe_rpc_response_free(cell_utxo_resp);
                                 wallet_free(wallet);
@@ -412,7 +415,7 @@ int main(int argc, char **argv) {
                             }
 
                             if (valid_cell_utxos == 0) {
-                                fprintf(stderr, "[ERROR] No valid CELL UTXOs for fees\n");
+                                QGP_LOG_ERROR(LOG_TAG, "No valid CELL UTXOs for fees\n");
                                 free(all_cell_utxos);
                                 free(selected_utxos);
                                 cellframe_rpc_response_free(cell_utxo_resp);
@@ -433,7 +436,7 @@ int main(int argc, char **argv) {
                             free(all_cell_utxos);
 
                             if (compare256(total_cell_input, required_cell) < 0) {
-                                fprintf(stderr, "[ERROR] Insufficient CELL for fees\n");
+                                QGP_LOG_ERROR(LOG_TAG, "Insufficient CELL for fees\n");
                                 fprintf(stderr, "        Available: %lu datoshi\n", total_cell_input.lo.lo);
                                 fprintf(stderr, "        Required:  %lu datoshi\n", required_cell.lo.lo);
                                 free(selected_cell_utxos);
@@ -451,7 +454,7 @@ int main(int argc, char **argv) {
                 cellframe_rpc_response_free(cell_utxo_resp);
             }
         } else {
-            fprintf(stderr, "[ERROR] Failed to query CELL UTXOs for fees\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to query CELL UTXOs for fees\n");
             free(selected_utxos);
             wallet_free(wallet);
             return 1;
@@ -460,10 +463,10 @@ int main(int argc, char **argv) {
     printf("\n");
 
     // Step 4: Build transaction
-    printf("[4/7] Building transaction...\n");
+    QGP_LOG_INFO(LOG_TAG, "Building transaction...\n");
     cellframe_tx_builder_t *builder = cellframe_tx_builder_new();
     if (!builder) {
-        fprintf(stderr, "[ERROR] Failed to create transaction builder\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create transaction builder\n");
         wallet_free(wallet);
         return 1;
     }
@@ -479,7 +482,7 @@ int main(int argc, char **argv) {
     uint8_t recipient_addr_buf[BASE58_DECODE_SIZE(256)];
     size_t decoded_size = base58_decode(args.recipient, recipient_addr_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
-        fprintf(stderr, "[ERROR] Failed to decode recipient address (got %zu bytes, expected %zu)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to decode recipient address (got %zu bytes, expected %zu)\n",
                 decoded_size, sizeof(cellframe_addr_t));
         free(selected_utxos);
         if (selected_cell_utxos) free(selected_cell_utxos);
@@ -494,7 +497,7 @@ int main(int argc, char **argv) {
     uint8_t network_collector_buf[BASE58_DECODE_SIZE(256)];
     decoded_size = base58_decode(NETWORK_FEE_COLLECTOR, network_collector_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
-        fprintf(stderr, "[ERROR] Failed to decode network collector address\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to decode network collector address\n");
         free(selected_utxos);
         if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
@@ -508,7 +511,7 @@ int main(int argc, char **argv) {
     uint8_t sender_addr_buf[BASE58_DECODE_SIZE(256)];
     decoded_size = base58_decode(wallet->address, sender_addr_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
-        fprintf(stderr, "[ERROR] Failed to decode sender address\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to decode sender address\n");
         free(selected_utxos);
         if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
@@ -558,7 +561,7 @@ int main(int argc, char **argv) {
     // Add all TOKEN IN items
     for (int i = 0; i < num_selected_utxos; i++) {
         if (cellframe_tx_add_in(builder, &selected_utxos[i].hash, selected_utxos[i].idx) != 0) {
-            fprintf(stderr, "[ERROR] Failed to add TOKEN IN item %d\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "Failed to add TOKEN IN item %d\n", i);
             free(selected_utxos);
             if (selected_cell_utxos) free(selected_cell_utxos);
             cellframe_tx_builder_free(builder);
@@ -571,7 +574,7 @@ int main(int argc, char **argv) {
     if (!is_native_token && selected_cell_utxos) {
         for (int i = 0; i < num_selected_cell_utxos; i++) {
             if (cellframe_tx_add_in(builder, &selected_cell_utxos[i].hash, selected_cell_utxos[i].idx) != 0) {
-                fprintf(stderr, "[ERROR] Failed to add CELL IN item %d\n", i);
+                QGP_LOG_ERROR(LOG_TAG, "Failed to add CELL IN item %d\n", i);
                 free(selected_utxos);
                 free(selected_cell_utxos);
                 cellframe_tx_builder_free(builder);
@@ -589,7 +592,7 @@ int main(int argc, char **argv) {
         out_result = cellframe_tx_add_out_ext(builder, &recipient_addr, amount, args.token);
     }
     if (out_result != 0) {
-        fprintf(stderr, "[ERROR] Failed to add recipient OUT item\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add recipient OUT item\n");
         free(selected_utxos);
         if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
@@ -605,7 +608,7 @@ int main(int argc, char **argv) {
         out_result = cellframe_tx_add_out_ext(builder, &network_collector_addr, network_fee, "CELL");
     }
     if (out_result != 0) {
-        fprintf(stderr, "[ERROR] Failed to add network fee OUT item\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add network fee OUT item\n");
         free(selected_utxos);
         if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
@@ -622,7 +625,7 @@ int main(int argc, char **argv) {
             out_result = cellframe_tx_add_out_ext(builder, &sender_addr, token_change, args.token);
         }
         if (out_result != 0) {
-            fprintf(stderr, "[ERROR] Failed to add token change OUT item\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to add token change OUT item\n");
             free(selected_utxos);
             if (selected_cell_utxos) free(selected_cell_utxos);
             cellframe_tx_builder_free(builder);
@@ -637,7 +640,7 @@ int main(int argc, char **argv) {
     int has_cell_change = 0;
     if (!is_native_token && (cell_change.hi.hi != 0 || cell_change.hi.lo != 0 || cell_change.lo.hi != 0 || cell_change.lo.lo != 0)) {
         if (cellframe_tx_add_out_ext(builder, &sender_addr, cell_change, "CELL") != 0) {
-            fprintf(stderr, "[ERROR] Failed to add CELL change OUT item\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to add CELL change OUT item\n");
             free(selected_utxos);
             if (selected_cell_utxos) free(selected_cell_utxos);
             cellframe_tx_builder_free(builder);
@@ -653,7 +656,7 @@ int main(int argc, char **argv) {
         size_t tsd_len = strlen(args.tsd_data);  // NO null terminator (matches cellframe-tool-sign)
         if (cellframe_tx_add_tsd(builder, TSD_TYPE_CUSTOM_STRING,
                                  (const uint8_t*)args.tsd_data, tsd_len) != 0) {
-            fprintf(stderr, "[ERROR] Failed to add TSD item\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to add TSD item\n");
             free(selected_utxos);
             cellframe_tx_builder_free(builder);
             wallet_free(wallet);
@@ -664,7 +667,7 @@ int main(int argc, char **argv) {
 
     // Add OUT_COND item (validator fee)
     if (cellframe_tx_add_fee(builder, fee) != 0) {
-        fprintf(stderr, "[ERROR] Failed to add validator FEE item\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add validator FEE item\n");
         free(selected_utxos);
         if (selected_cell_utxos) free(selected_cell_utxos);
         cellframe_tx_builder_free(builder);
@@ -700,14 +703,14 @@ int main(int argc, char **argv) {
     if (selected_cell_utxos) free(selected_cell_utxos);
 
     // Step 4.5: Export unsigned transaction JSON (for testing with cellframe-tool-sign)
-    printf("[4.5/7] Exporting unsigned transaction...\n");
+    QGP_LOG_INFO(LOG_TAG, "Exporting unsigned transaction...\n");
 
     // Get unsigned transaction data (use get_data, NOT get_signing_data!)
     // We need the REAL tx_items_size for JSON export
     size_t unsigned_tx_size;
     const uint8_t *unsigned_tx_data = cellframe_tx_get_data(builder, &unsigned_tx_size);
     if (!unsigned_tx_data) {
-        fprintf(stderr, "[ERROR] Failed to get unsigned transaction data\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get unsigned transaction data\n");
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
@@ -716,7 +719,7 @@ int main(int argc, char **argv) {
     // Convert to JSON
     char *unsigned_json = NULL;
     if (cellframe_tx_to_json(unsigned_tx_data, unsigned_tx_size, &unsigned_json) != 0) {
-        fprintf(stderr, "[ERROR] Failed to convert unsigned transaction to JSON\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to convert unsigned transaction to JSON\n");
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
@@ -729,7 +732,7 @@ int main(int argc, char **argv) {
         fclose(f);
         printf("      Unsigned JSON saved: /tmp/unsigned_tx.json\n");
     } else {
-        fprintf(stderr, "[WARN] Could not save unsigned transaction to file\n");
+        QGP_LOG_ERROR(LOG_TAG, "Could not save unsigned transaction to file\n");
     }
 
     if (args.verbose) {
@@ -742,7 +745,7 @@ int main(int argc, char **argv) {
     printf("\n");
 
     // Step 5: Sign transaction
-    printf("[5/7] Signing transaction...\n");
+    QGP_LOG_INFO(LOG_TAG, "Signing transaction...\n");
 
 #ifdef DEBUG_BLOCKCHAIN_SIGNING
     // Debug: Save ORIGINAL unsigned binary (with actual tx_items_size)
@@ -753,11 +756,11 @@ int main(int argc, char **argv) {
         if (f_bin) {
             fwrite(orig_data, 1, orig_size, f_bin);
             fclose(f_bin);
-            fprintf(stderr, "[DEBUG] Unsigned binary saved: /tmp/unsigned_tx_our.bin (%zu bytes)\n", orig_size);
+            QGP_LOG_ERROR(LOG_TAG, "Unsigned binary saved: /tmp/unsigned_tx_our.bin (%zu bytes)\n", orig_size);
         }
 
         // Debug: Print hex dump of first 100 bytes
-        fprintf(stderr, "[DEBUG] First 100 bytes of unsigned transaction:\n");
+        QGP_LOG_ERROR(LOG_TAG, "First 100 bytes of unsigned transaction:\n");
         for (size_t i = 0; i < (orig_size < 100 ? orig_size : 100); i++) {
             fprintf(stderr, "%02x", orig_data[i]);
             if ((i + 1) % 32 == 0) fprintf(stderr, "\n");
@@ -770,7 +773,7 @@ int main(int argc, char **argv) {
     size_t tx_size;
     const uint8_t *tx_data = cellframe_tx_get_signing_data(builder, &tx_size);
     if (!tx_data) {
-        fprintf(stderr, "[ERROR] Failed to get transaction data for signing\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get transaction data for signing\n");
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
@@ -787,7 +790,7 @@ int main(int argc, char **argv) {
                                     wallet->private_key, wallet->private_key_size,
                                     wallet->public_key, wallet->public_key_size,
                                     &dap_sign, &dap_sign_size) != 0) {
-        fprintf(stderr, "[ERROR] Failed to sign transaction\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign transaction\n");
         free((void*)tx_data);  // Free temporary copy
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
@@ -801,7 +804,7 @@ int main(int argc, char **argv) {
 
     // Add signature to transaction
     if (cellframe_tx_add_signature(builder, dap_sign, dap_sign_size) != 0) {
-        fprintf(stderr, "[ERROR] Failed to add signature\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add signature\n");
         free(dap_sign);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
@@ -811,12 +814,12 @@ int main(int argc, char **argv) {
     printf("      Signature added\n\n");
 
     // Step 6: Convert to JSON
-    printf("[6/7] Converting to JSON...\n");
+    QGP_LOG_INFO(LOG_TAG, "Converting to JSON...\n");
 
     // Get complete signed transaction
     const uint8_t *signed_tx = cellframe_tx_get_data(builder, &tx_size);
     if (!signed_tx) {
-        fprintf(stderr, "[ERROR] Failed to get signed transaction data\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get signed transaction data\n");
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
@@ -825,7 +828,7 @@ int main(int argc, char **argv) {
     // Convert to JSON
     char *json = NULL;
     if (cellframe_tx_to_json(signed_tx, tx_size, &json) != 0) {
-        fprintf(stderr, "[ERROR] Failed to convert transaction to JSON\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to convert transaction to JSON\n");
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);
         return 1;
@@ -847,7 +850,7 @@ int main(int argc, char **argv) {
     printf("================================\n\n");
 
     // Step 7: Submit to RPC
-    printf("[7/7] Submitting to RPC...\n");
+    QGP_LOG_INFO(LOG_TAG, "Submitting to RPC...\n");
 
     cellframe_rpc_response_t *submit_resp = NULL;
     if (cellframe_rpc_submit_tx(args.network, args.chain, json, &submit_resp) == 0 && submit_resp) {
@@ -870,7 +873,7 @@ int main(int argc, char **argv) {
 
         cellframe_rpc_response_free(submit_resp);
     } else {
-        fprintf(stderr, "[ERROR] Failed to submit transaction to RPC\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to submit transaction to RPC\n");
         free(json);
         cellframe_tx_builder_free(builder);
         wallet_free(wallet);

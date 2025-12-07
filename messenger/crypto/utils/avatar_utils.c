@@ -23,6 +23,9 @@
 #include "../../vendor/stb/stb_image.h"
 #include "../../vendor/stb/stb_image_resize2.h"
 #include "../../vendor/stb/stb_image_write.h"
+#include "qgp_log.h"
+
+#define LOG_TAG "AVATAR"
 
 // Base64 encoding table
 static const char base64_chars[] =
@@ -40,7 +43,7 @@ static const char base64_chars[] =
 static int base64_encode(const unsigned char *data, size_t len, char *out, size_t out_len) {
     size_t encoded_len = ((len + 2) / 3) * 4;
     if (encoded_len >= out_len) {
-        fprintf(stderr, "[ERROR] Base64 output buffer too small\n");
+        QGP_LOG_ERROR(LOG_TAG, "Base64 output buffer too small\n");
         return -1;
     }
 
@@ -112,7 +115,7 @@ static int base64_decode_char(char c) {
 static int base64_decode(const char *data, unsigned char **out, size_t *out_len) {
     size_t len = strlen(data);
     if (len % 4 != 0) {
-        fprintf(stderr, "[ERROR] Invalid base64 length\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid base64 length\n");
         return -1;
     }
 
@@ -123,7 +126,7 @@ static int base64_decode(const char *data, unsigned char **out, size_t *out_len)
     size_t decoded_len = (len / 4) * 3 - padding;
     *out = (unsigned char*)malloc(decoded_len);
     if (!*out) {
-        fprintf(stderr, "[ERROR] Failed to allocate decode buffer\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate decode buffer\n");
         return -1;
     }
 
@@ -134,7 +137,7 @@ static int base64_decode(const char *data, unsigned char **out, size_t *out_len)
         for (size_t k = 0; k < 4; k++) {
             int val = base64_decode_char(data[i++]);
             if (val == -2) {
-                fprintf(stderr, "[ERROR] Invalid base64 character\n");
+                QGP_LOG_ERROR(LOG_TAG, "Invalid base64 character\n");
                 free(*out);
                 *out = NULL;
                 return -1;
@@ -194,7 +197,7 @@ static void png_write_callback(void *context, void *data, int size) {
  */
 int avatar_load_and_encode(const char *file_path, char *base64_out, size_t max_len) {
     if (!file_path || !base64_out || max_len < 12288) {
-        fprintf(stderr, "[ERROR] Invalid parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return -1;
     }
 
@@ -202,14 +205,14 @@ int avatar_load_and_encode(const char *file_path, char *base64_out, size_t max_l
     int width, height, channels;
     unsigned char *img = stbi_load(file_path, &width, &height, &channels, 4); // Force RGBA
     if (!img) {
-        fprintf(stderr, "[ERROR] Failed to load image: %s\n", stbi_failure_reason());
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load image: %s\n", stbi_failure_reason());
         return -1;
     }
 
     // Resize to 64x64
     unsigned char *resized = (unsigned char*)malloc(64 * 64 * 4);
     if (!resized) {
-        fprintf(stderr, "[ERROR] Failed to allocate resize buffer\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate resize buffer\n");
         stbi_image_free(img);
         return -1;
     }
@@ -217,7 +220,7 @@ int avatar_load_and_encode(const char *file_path, char *base64_out, size_t max_l
     if (!stbir_resize_uint8_linear(img, width, height, 0,
                                     resized, 64, 64, 0,
                                     STBIR_RGBA)) {
-        fprintf(stderr, "[ERROR] Failed to resize image\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to resize image\n");
         free(resized);
         stbi_image_free(img);
         return -1;
@@ -234,18 +237,18 @@ int avatar_load_and_encode(const char *file_path, char *base64_out, size_t max_l
     free(resized);
 
     if (!jpeg_output.data || jpeg_output.len == 0) {
-        fprintf(stderr, "[ERROR] Failed to encode JPEG\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to encode JPEG\n");
         return -1;
     }
     
-    printf("[Avatar] JPEG size: %d bytes\n", jpeg_output.len);
+    QGP_LOG_INFO(LOG_TAG, "JPEG size: %d bytes\n", jpeg_output.len);
     
     // Check if base64 will fit (base64 is ~4/3 of original size)
     size_t estimated_base64_size = ((jpeg_output.len + 2) / 3) * 4;
     if (estimated_base64_size >= max_len) {
-        fprintf(stderr, "[ERROR] Avatar too large: %zu bytes base64 (max: %zu)\n", 
+        QGP_LOG_ERROR(LOG_TAG, "Avatar too large: %zu bytes base64 (max: %zu)\n", 
                 estimated_base64_size, max_len);
-        fprintf(stderr, "[ERROR] Please use a simpler image with less detail\n");
+        QGP_LOG_ERROR(LOG_TAG, "Please use a simpler image with less detail\n");
         free(jpeg_output.data);
         return -1;
     }
@@ -255,11 +258,11 @@ int avatar_load_and_encode(const char *file_path, char *base64_out, size_t max_l
     free(jpeg_output.data);
 
     if (ret != 0) {
-        fprintf(stderr, "[ERROR] Failed to encode base64\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to encode base64\n");
         return -1;
     }
     
-    printf("[Avatar] Base64 size: %zu bytes\n", strlen(base64_out));
+    QGP_LOG_INFO(LOG_TAG, "Base64 size: %zu bytes\n", strlen(base64_out));
 
     return 0;
 }
@@ -280,7 +283,7 @@ unsigned char* avatar_decode_base64(const char *base64_str,
                                     int *height_out,
                                     int *channels_out) {
     if (!base64_str || !width_out || !height_out || !channels_out) {
-        fprintf(stderr, "[ERROR] Invalid parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return NULL;
     }
 
@@ -288,7 +291,7 @@ unsigned char* avatar_decode_base64(const char *base64_str,
     unsigned char *png_data = NULL;
     size_t png_len = 0;
     if (base64_decode(base64_str, &png_data, &png_len) != 0) {
-        fprintf(stderr, "[ERROR] Failed to decode base64\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to decode base64\n");
         return NULL;
     }
 
@@ -298,7 +301,7 @@ unsigned char* avatar_decode_base64(const char *base64_str,
     free(png_data);
 
     if (!img) {
-        fprintf(stderr, "[ERROR] Failed to load PNG from memory: %s\n", stbi_failure_reason());
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load PNG from memory: %s\n", stbi_failure_reason());
         return NULL;
     }
 

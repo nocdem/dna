@@ -8,11 +8,9 @@
 #include <pthread.h>
 #include <errno.h>
 
-/* Redirect printf/fprintf to Android logcat */
-#define QGP_LOG_TAG "DHT_OFFLINE"
-#define QGP_LOG_REDIRECT_STDIO 1
-#include "../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
+#define LOG_TAG "DHT_OFFLINE"
 // Platform-specific network byte order functions
 #ifdef _WIN32
     #include <winsock2.h>  // For htonl/ntohl on Windows
@@ -98,7 +96,7 @@ int dht_serialize_messages(
     size_t *len_out)
 {
     if (!messages && count > 0) {
-        fprintf(stderr, "[DHT Queue] Invalid parameters for serialization\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for serialization\n");
         return -1;
     }
 
@@ -121,7 +119,7 @@ int dht_serialize_messages(
     // Allocate buffer
     uint8_t *buffer = (uint8_t*)malloc(total_size);
     if (!buffer) {
-        fprintf(stderr, "[DHT Queue] Failed to allocate %zu bytes for serialization\n", total_size);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate %zu bytes for serialization\n", total_size);
         return -1;
     }
 
@@ -200,7 +198,7 @@ int dht_deserialize_messages(
     size_t *count_out)
 {
     if (!data || len < sizeof(uint32_t)) {
-        fprintf(stderr, "[DHT Queue] Invalid data for deserialization\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid data for deserialization\n");
         return -1;
     }
 
@@ -209,7 +207,7 @@ int dht_deserialize_messages(
 
     // Read message count
     if (ptr + sizeof(uint32_t) > end) {
-        fprintf(stderr, "[DHT Queue] Truncated data (count)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Truncated data (count)\n");
         return -1;
     }
     uint32_t count_network;
@@ -226,7 +224,7 @@ int dht_deserialize_messages(
     // Allocate message array
     dht_offline_message_t *messages = (dht_offline_message_t*)calloc(count, sizeof(dht_offline_message_t));
     if (!messages) {
-        fprintf(stderr, "[DHT Queue] Failed to allocate message array\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate message array\n");
         return -1;
     }
 
@@ -240,7 +238,7 @@ int dht_deserialize_messages(
         memcpy(&magic_network, ptr, sizeof(uint32_t));
         uint32_t magic = ntohl(magic_network);
         if (magic != DHT_OFFLINE_QUEUE_MAGIC) {
-            fprintf(stderr, "[DHT Queue] Invalid magic bytes: 0x%08X\n", magic);
+            QGP_LOG_ERROR(LOG_TAG, "Invalid magic bytes: 0x%08X\n", magic);
             goto error;
         }
         ptr += sizeof(uint32_t);
@@ -249,7 +247,7 @@ int dht_deserialize_messages(
         if (ptr + 1 > end) goto truncated;
         uint8_t version = *ptr++;
         if (version != DHT_OFFLINE_QUEUE_VERSION) {
-            fprintf(stderr, "[DHT Queue] Unsupported version: %u\n", version);
+            QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %u\n", version);
             goto error;
         }
 
@@ -318,7 +316,7 @@ int dht_deserialize_messages(
     return 0;
 
 truncated:
-    fprintf(stderr, "[DHT Queue] Truncated message data\n");
+    QGP_LOG_ERROR(LOG_TAG, "Truncated message data\n");
 error:
     dht_offline_messages_free(messages, count);
     return -1;
@@ -336,7 +334,7 @@ int dht_queue_message(
     uint32_t ttl_seconds)
 {
     if (!ctx || !sender || !recipient || !ciphertext || ciphertext_len == 0) {
-        fprintf(stderr, "[DHT Queue] Invalid parameters for queueing message\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for queueing message\n");
         return -1;
     }
 
@@ -347,14 +345,14 @@ int dht_queue_message(
     struct timespec queue_start, get_start, deserialize_start, serialize_start, put_start;
     clock_gettime(CLOCK_MONOTONIC, &queue_start);
 
-    printf("[DHT Queue] Queueing message from %s to %s (%zu bytes, TTL=%u)\n",
+    QGP_LOG_INFO(LOG_TAG, "Queueing message from %s to %s (%zu bytes, TTL=%u)\n",
            sender, recipient, ciphertext_len, ttl_seconds);
 
     // Generate sender's outbox base key (Model E)
     char base_key[512];
     make_outbox_base_key(sender, recipient, base_key, sizeof(base_key));
 
-    printf("[DHT Queue] Outbox base key: %s\n", base_key);
+    QGP_LOG_INFO(LOG_TAG, "Outbox base key: %s\n", base_key);
 
     // 1. Try to retrieve existing queue via chunked layer
     uint8_t *existing_data = NULL;
@@ -362,7 +360,7 @@ int dht_queue_message(
     dht_offline_message_t *existing_messages = NULL;
     size_t existing_count = 0;
 
-    printf("[DHT Queue] → DHT CHUNKED_FETCH: Checking existing offline queue\n");
+    QGP_LOG_INFO(LOG_TAG, "→ DHT CHUNKED_FETCH: Checking existing offline queue\n");
 
     clock_gettime(CLOCK_MONOTONIC, &get_start);
     int get_result = dht_chunked_fetch(ctx, base_key, &existing_data, &existing_len);
@@ -372,7 +370,7 @@ int dht_queue_message(
                   (get_end.tv_nsec - get_start.tv_nsec) / 1000000;
 
     if (get_result == DHT_CHUNK_OK && existing_data && existing_len > 0) {
-        printf("[DHT Queue] Found existing queue (%zu bytes, get took %ld ms)\n", existing_len, get_ms);
+        QGP_LOG_INFO(LOG_TAG, "Found existing queue (%zu bytes, get took %ld ms)\n", existing_len, get_ms);
 
         clock_gettime(CLOCK_MONOTONIC, &deserialize_start);
         if (dht_deserialize_messages(existing_data, existing_len, &existing_messages, &existing_count) == 0) {
@@ -380,13 +378,13 @@ int dht_queue_message(
             clock_gettime(CLOCK_MONOTONIC, &deserialize_end);
             long deserialize_ms = (deserialize_end.tv_sec - deserialize_start.tv_sec) * 1000 +
                                   (deserialize_end.tv_nsec - deserialize_start.tv_nsec) / 1000000;
-            printf("[DHT Queue] Existing queue has %zu messages (deserialize took %ld ms)\n",
+            QGP_LOG_INFO(LOG_TAG, "Existing queue has %zu messages (deserialize took %ld ms)\n",
                    existing_count, deserialize_ms);
         }
 
         free(existing_data);
     } else {
-        printf("[DHT Queue] No existing queue found, creating new (get took %ld ms)\n", get_ms);
+        QGP_LOG_INFO(LOG_TAG, "No existing queue found, creating new (get took %ld ms)\n", get_ms);
     }
 
     // 2. Create new message
@@ -400,7 +398,7 @@ int dht_queue_message(
     };
 
     if (!new_msg.sender || !new_msg.recipient || !new_msg.ciphertext) {
-        fprintf(stderr, "[DHT Queue] Failed to allocate memory for new message\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate memory for new message\n");
         dht_offline_message_free(&new_msg);
         dht_offline_messages_free(existing_messages, existing_count);
         return -1;
@@ -414,7 +412,7 @@ int dht_queue_message(
     size_t new_count = existing_count + 1;
     dht_offline_message_t *all_messages = (dht_offline_message_t*)calloc(new_count, sizeof(dht_offline_message_t));
     if (!all_messages) {
-        fprintf(stderr, "[DHT Queue] Failed to allocate combined message array\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate combined message array\n");
         dht_offline_message_free(&new_msg);
         dht_offline_messages_free(existing_messages, existing_count);
         return -1;
@@ -433,14 +431,14 @@ int dht_queue_message(
         free(existing_messages);
     }
 
-    printf("[DHT Queue] Appended new message to outbox (%zu total messages)\n", new_count);
+    QGP_LOG_INFO(LOG_TAG, "Appended new message to outbox (%zu total messages)\n", new_count);
 
     // 4. Serialize combined queue
     uint8_t *serialized = NULL;
     size_t serialized_len = 0;
     clock_gettime(CLOCK_MONOTONIC, &serialize_start);
     if (dht_serialize_messages(all_messages, new_count, &serialized, &serialized_len) != 0) {
-        fprintf(stderr, "[DHT Queue] Failed to serialize message queue\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize message queue\n");
         dht_offline_messages_free(all_messages, new_count);
         return -1;
     }
@@ -449,11 +447,11 @@ int dht_queue_message(
     long serialize_ms = (serialize_end.tv_sec - serialize_start.tv_sec) * 1000 +
                         (serialize_end.tv_nsec - serialize_start.tv_nsec) / 1000000;
 
-    printf("[DHT Queue] Serialized queue: %zu messages, %zu bytes (took %ld ms)\n",
+    QGP_LOG_INFO(LOG_TAG, "Serialized queue: %zu messages, %zu bytes (took %ld ms)\n",
            new_count, serialized_len, serialize_ms);
 
     // 5. Store in DHT via chunked layer (7-day TTL for offline queue)
-    printf("[DHT Queue] → DHT CHUNKED_PUBLISH: Queueing offline message (%zu total in queue)\n", new_count);
+    QGP_LOG_INFO(LOG_TAG, "→ DHT CHUNKED_PUBLISH: Queueing offline message (%zu total in queue)\n", new_count);
     clock_gettime(CLOCK_MONOTONIC, &put_start);
     int put_result = dht_chunked_publish(ctx, base_key, serialized, serialized_len, DHT_CHUNK_TTL_7DAY);
     struct timespec put_end;
@@ -465,7 +463,7 @@ int dht_queue_message(
     dht_offline_messages_free(all_messages, new_count);
 
     if (put_result != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT Queue] Failed to store queue in DHT: %s (put took %ld ms)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store queue in DHT: %s (put took %ld ms)\n",
                 dht_chunked_strerror(put_result), put_ms);
         return -1;
     }
@@ -475,7 +473,7 @@ int dht_queue_message(
     long total_queue_ms = (queue_end.tv_sec - queue_start.tv_sec) * 1000 +
                           (queue_end.tv_nsec - queue_start.tv_nsec) / 1000000;
 
-    printf("[DHT Queue] ✓ Message queued successfully (total: %ld ms, get: %ld ms, put: %ld ms)\n",
+    QGP_LOG_INFO(LOG_TAG, "✓ Message queued successfully (total: %ld ms, get: %ld ms, put: %ld ms)\n",
            total_queue_ms, get_ms, put_ms);
     return 0;
 }
@@ -495,14 +493,14 @@ int dht_retrieve_queued_messages_from_contacts(
     size_t *count_out)
 {
     if (!ctx || !recipient || !sender_list || sender_count == 0 || !messages_out || !count_out) {
-        fprintf(stderr, "[DHT Queue] Invalid parameters for retrieval\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for retrieval\n");
         return -1;
     }
 
     struct timespec function_start;
     clock_gettime(CLOCK_MONOTONIC, &function_start);
 
-    printf("[DHT Queue] Retrieving queued messages for %s from %zu contacts\n", recipient, sender_count);
+    QGP_LOG_INFO(LOG_TAG, "Retrieving queued messages for %s from %zu contacts\n", recipient, sender_count);
 
     // Allocate temporary array to accumulate messages from all senders
     dht_offline_message_t *all_messages = NULL;
@@ -522,7 +520,7 @@ int dht_retrieve_queued_messages_from_contacts(
         char outbox_base_key[512];
         make_outbox_base_key(sender, recipient, outbox_base_key, sizeof(outbox_base_key));
 
-        printf("[DHT Queue] [%zu/%zu] Checking sender %.20s... outbox\n",
+        QGP_LOG_INFO(LOG_TAG, "[%zu/%zu] Checking sender %.20s... outbox\n",
                contact_idx + 1, sender_count, sender);
 
         // Query DHT for this sender's outbox via chunked layer
@@ -538,11 +536,11 @@ int dht_retrieve_queued_messages_from_contacts(
 
         if (get_result != DHT_CHUNK_OK || !outbox_data || outbox_len == 0) {
             // No messages from this sender (outbox empty or doesn't exist)
-            printf("[DHT Queue]   ✗ No messages (chunked_fetch took %ld ms)\n", dht_get_ms);
+            QGP_LOG_INFO(LOG_TAG, "✗ No messages (chunked_fetch took %ld ms)\n", dht_get_ms);
             continue;
         }
 
-        printf("[DHT Queue]   ✓ Found outbox (%zu bytes, chunked_fetch took %ld ms)\n", outbox_len, dht_get_ms);
+        QGP_LOG_INFO(LOG_TAG, "✓ Found outbox (%zu bytes, chunked_fetch took %ld ms)\n", outbox_len, dht_get_ms);
 
         // Deserialize messages from this sender's outbox
         dht_offline_message_t *sender_messages = NULL;
@@ -550,7 +548,7 @@ int dht_retrieve_queued_messages_from_contacts(
 
         clock_gettime(CLOCK_MONOTONIC, &deserialize_start);
         if (dht_deserialize_messages(outbox_data, outbox_len, &sender_messages, &sender_count_msgs) != 0) {
-            fprintf(stderr, "[DHT Queue]   ✗ Failed to deserialize sender's outbox\n");
+            QGP_LOG_ERROR(LOG_TAG, "✗ Failed to deserialize sender's outbox\n");
             free(outbox_data);
             continue;
         }
@@ -561,7 +559,7 @@ int dht_retrieve_queued_messages_from_contacts(
         long deserialize_ms = (deserialize_end.tv_sec - deserialize_start.tv_sec) * 1000 +
                               (deserialize_end.tv_nsec - deserialize_start.tv_nsec) / 1000000;
 
-        printf("[DHT Queue]   Deserialized %zu message(s) from this sender (took %ld ms)\n",
+        QGP_LOG_INFO(LOG_TAG, "Deserialized %zu message(s) from this sender (took %ld ms)\n",
                sender_count_msgs, deserialize_ms);
 
         // Filter out expired messages and append valid ones to all_messages
@@ -574,7 +572,7 @@ int dht_retrieve_queued_messages_from_contacts(
                     dht_offline_message_t *new_array = (dht_offline_message_t*)realloc(
                         all_messages, new_capacity * sizeof(dht_offline_message_t));
                     if (!new_array) {
-                        fprintf(stderr, "[DHT Queue] Failed to grow message array\n");
+                        QGP_LOG_ERROR(LOG_TAG, "Failed to grow message array\n");
                         dht_offline_messages_free(all_messages, all_count);
                         dht_offline_messages_free(sender_messages, sender_count_msgs);
                         return -1;
@@ -587,7 +585,7 @@ int dht_retrieve_queued_messages_from_contacts(
                 all_messages[all_count++] = sender_messages[i];
             } else {
                 // Expired message - free it
-                printf("[DHT Queue]   Message %zu expired (expiry=%lu, now=%lu)\n",
+                QGP_LOG_INFO(LOG_TAG, "Message %zu expired (expiry=%lu, now=%lu)\n",
                        i, sender_messages[i].expiry, now);
                 dht_offline_message_free(&sender_messages[i]);
             }
@@ -603,7 +601,7 @@ int dht_retrieve_queued_messages_from_contacts(
                     (function_end.tv_nsec - function_start.tv_nsec) / 1000000;
     long avg_ms_per_contact = sender_count > 0 ? total_ms / sender_count : 0;
 
-    printf("[DHT Queue] ✓ Retrieved %zu valid messages from %zu contacts (total: %ld ms, avg per contact: %ld ms)\n",
+    QGP_LOG_INFO(LOG_TAG, "✓ Retrieved %zu valid messages from %zu contacts (total: %ld ms, avg per contact: %ld ms)\n",
            all_count, sender_count, total_ms, avg_ms_per_contact);
 
     *messages_out = all_messages;
@@ -646,7 +644,7 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
 {
     // With chunked layer, delegate to sequential version
     // Chunked layer provides compression benefits and parallel chunk fetching internally
-    printf("[DHT Queue] Note: Using chunked layer sequential fetch (parallel chunk fetching enabled internally)\n");
+    QGP_LOG_INFO(LOG_TAG, "Note: Using chunked layer sequential fetch (parallel chunk fetching enabled internally)\n");
     return dht_retrieve_queued_messages_from_contacts(ctx, recipient, sender_list, sender_count,
                                                        messages_out, count_out);
 }

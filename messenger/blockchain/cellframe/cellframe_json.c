@@ -13,6 +13,9 @@
 #include <openssl/bio.h>
 #include <openssl/evp.h>
 #include <openssl/buffer.h>
+#include "../../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "WALLET_JSON"
 
 // ============================================================================
 // BASE64 ENCODING (Using OpenSSL)
@@ -239,7 +242,7 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
             char addr_base58[BASE58_ENCODE_SIZE(sizeof(cellframe_addr_t)) + 1];
             size_t addr_len = base58_encode(&out_item->addr, sizeof(cellframe_addr_t), addr_base58);
             if (addr_len == 0) {
-                fprintf(stderr, "[JSON] Failed to encode address to Base58\n");
+                QGP_LOG_ERROR(LOG_TAG, "Failed to encode address to Base58\n");
                 free(json);
                 return -1;
             }
@@ -268,7 +271,7 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
             char addr_base58[BASE58_ENCODE_SIZE(sizeof(cellframe_addr_t)) + 1];
             size_t addr_len = base58_encode(&out_ext_item->addr, sizeof(cellframe_addr_t), addr_base58);
             if (addr_len == 0) {
-                fprintf(stderr, "[JSON] Failed to encode address to Base58\n");
+                QGP_LOG_ERROR(LOG_TAG, "Failed to encode address to Base58\n");
                 free(json);
                 return -1;
             }
@@ -340,7 +343,7 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
 
                 // Check we have at least 2 bytes remaining for worst case (escape + char)
                 if (remaining < 3) {
-                    fprintf(stderr, "[JSON] TSD data too large, buffer full\n");
+                    QGP_LOG_ERROR(LOG_TAG, "TSD data too large, buffer full\n");
                     free(json);
                     return -1;
                 }
@@ -407,7 +410,7 @@ static int build_json_items(const uint8_t *tx_items, size_t tx_items_size,
             offset += sizeof(cellframe_tx_sig_header_t) + sig_header->sig_size;
 
         } else {
-            fprintf(stderr, "[JSON] Unknown item type: 0x%02X at offset %zu\n", type, offset);
+            QGP_LOG_ERROR(LOG_TAG, "Unknown item type: 0x%02X at offset %zu\n", type, offset);
             free(json);
             return -1;
         }

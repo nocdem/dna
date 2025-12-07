@@ -17,11 +17,9 @@
 #include <stdatomic.h>
 #include <zlib.h>  // For crc32
 
-/* Redirect printf/fprintf to Android logcat */
-#define QGP_LOG_TAG "DHT_CHUNK"
-#define QGP_LOG_REDIRECT_STDIO 1
-#include "../../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
+#define LOG_TAG "DHT_CHUNK"
 #ifdef _WIN32
 #include <winsock2.h>
 #else
@@ -111,7 +109,7 @@ static int compress_data(const uint8_t *in, size_t in_len,
     size_t bound = ZSTD_compressBound(in_len);
     uint8_t *buf = (uint8_t *)malloc(bound);
     if (!buf) {
-        fprintf(stderr, "[DHT_CHUNK] Failed to allocate compression buffer\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate compression buffer\n");
         return -1;
     }
 
@@ -120,7 +118,7 @@ static int compress_data(const uint8_t *in, size_t in_len,
     size_t compressed_size = ZSTD_compress(buf, bound, in, in_len, level);
 
     if (ZSTD_isError(compressed_size)) {
-        fprintf(stderr, "[DHT_CHUNK] ZSTD compression failed: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "ZSTD compression failed: %s\n",
                 ZSTD_getErrorName(compressed_size));
         free(buf);
         return -1;
@@ -154,27 +152,27 @@ static int decompress_data(const uint8_t *in, size_t in_len,
 
     // Sanity check on expected size (100MB max)
     if (expected_size > 100 * 1024 * 1024) {
-        fprintf(stderr, "[DHT_CHUNK] Expected size too large: %zu\n", expected_size);
+        QGP_LOG_ERROR(LOG_TAG, "Expected size too large: %zu\n", expected_size);
         return -1;
     }
 
     uint8_t *buf = (uint8_t *)malloc(expected_size);
     if (!buf) {
-        fprintf(stderr, "[DHT_CHUNK] Failed to allocate decompression buffer\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate decompression buffer\n");
         return -1;
     }
 
     size_t decompressed_size = ZSTD_decompress(buf, expected_size, in, in_len);
 
     if (ZSTD_isError(decompressed_size)) {
-        fprintf(stderr, "[DHT_CHUNK] ZSTD decompression failed: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "ZSTD decompression failed: %s\n",
                 ZSTD_getErrorName(decompressed_size));
         free(buf);
         return -1;
     }
 
     if (decompressed_size != expected_size) {
-        fprintf(stderr, "[DHT_CHUNK] Decompressed size mismatch: %zu != %zu\n",
+        QGP_LOG_ERROR(LOG_TAG, "Decompressed size mismatch: %zu != %zu\n",
                 decompressed_size, expected_size);
         free(buf);
         return -1;
@@ -276,7 +274,7 @@ static int deserialize_chunk(const uint8_t *data, size_t data_len,
     ptr += 4;
 
     if (header->magic != DHT_CHUNK_MAGIC) {
-        fprintf(stderr, "[DHT_CHUNK] Invalid magic: 0x%08X (expected 0x%08X)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Invalid magic: 0x%08X (expected 0x%08X)\n",
                 header->magic, DHT_CHUNK_MAGIC);
         return -1;
     }
@@ -284,7 +282,7 @@ static int deserialize_chunk(const uint8_t *data, size_t data_len,
     // Version
     header->version = *ptr++;
     if (header->version != DHT_CHUNK_VERSION) {
-        fprintf(stderr, "[DHT_CHUNK] Invalid version: %u (expected %u)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Invalid version: %u (expected %u)\n",
                 header->version, DHT_CHUNK_VERSION);
         return -1;
     }
@@ -321,7 +319,7 @@ static int deserialize_chunk(const uint8_t *data, size_t data_len,
 
     // Validate payload size
     if (DHT_CHUNK_HEADER_SIZE + header->chunk_data_size > data_len) {
-        fprintf(stderr, "[DHT_CHUNK] Chunk size mismatch: %u + %u > %zu\n",
+        QGP_LOG_ERROR(LOG_TAG, "Chunk size mismatch: %u + %u > %zu\n",
                 DHT_CHUNK_HEADER_SIZE, header->chunk_data_size, data_len);
         return -1;
     }
@@ -329,7 +327,7 @@ static int deserialize_chunk(const uint8_t *data, size_t data_len,
     // Verify CRC32
     uint32_t computed_crc = compute_crc32(ptr, header->chunk_data_size);
     if (computed_crc != header->checksum) {
-        fprintf(stderr, "[DHT_CHUNK] CRC32 mismatch: 0x%08X != 0x%08X\n",
+        QGP_LOG_ERROR(LOG_TAG, "CRC32 mismatch: 0x%08X != 0x%08X\n",
                 computed_crc, header->checksum);
         return -1;
     }
@@ -394,7 +392,7 @@ int dht_chunked_make_key(const char *base_key, uint32_t chunk_index,
     // Hash with SHA3-512 and take first 32 bytes
     uint8_t full_hash[64];
     if (qgp_sha3_512((const uint8_t *)key_input, strlen(key_input), full_hash) != 0) {
-        fprintf(stderr, "[DHT_CHUNK] SHA3-512 failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "SHA3-512 failed\n");
         return -1;
     }
 
@@ -432,7 +430,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
     uint64_t value_id = 1;
     dht_get_owner_value_id(ctx, &value_id);
 
-    printf("[DHT_CHUNK] Publishing %zu bytes -> %zu compressed -> %u chunks (key=%s)\n",
+    QGP_LOG_INFO(LOG_TAG, "Publishing %zu bytes -> %zu compressed -> %u chunks (key=%s)\n",
            data_len, compressed_len, total_chunks, base_key);
 
     // Step 4: Publish each chunk
@@ -458,7 +456,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
         size_t serialized_len = 0;
         if (serialize_chunk(&header, compressed + offset, chunk_size,
                            &serialized, &serialized_len) != 0) {
-            fprintf(stderr, "[DHT_CHUNK] Failed to serialize chunk %u\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "Failed to serialize chunk %u\n", i);
             free(compressed);
             return DHT_CHUNK_ERR_ALLOC;
         }
@@ -466,7 +464,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
         // Generate DHT key
         uint8_t dht_key[DHT_CHUNK_KEY_SIZE];
         if (dht_chunked_make_key(base_key, i, dht_key) != 0) {
-            fprintf(stderr, "[DHT_CHUNK] Failed to generate key for chunk %u\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "Failed to generate key for chunk %u\n", i);
             free(serialized);
             free(compressed);
             return DHT_CHUNK_ERR_ALLOC;
@@ -476,7 +474,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
         if (dht_put_signed(ctx, dht_key, DHT_CHUNK_KEY_SIZE,
                           serialized, serialized_len,
                           value_id, ttl_seconds) != 0) {
-            fprintf(stderr, "[DHT_CHUNK] Failed to publish chunk %u to DHT\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "Failed to publish chunk %u to DHT\n", i);
             free(serialized);
             free(compressed);
             return DHT_CHUNK_ERR_DHT_PUT;
@@ -486,7 +484,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
     }
 
     free(compressed);
-    printf("[DHT_CHUNK] Published %u chunks successfully\n", total_chunks);
+    QGP_LOG_INFO(LOG_TAG, "Published %u chunks successfully\n", total_chunks);
     return DHT_CHUNK_OK;
 }
 
@@ -508,7 +506,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     uint8_t *chunk0_data = NULL;
     size_t chunk0_len = 0;
     if (dht_get(ctx, chunk0_key, DHT_CHUNK_KEY_SIZE, &chunk0_data, &chunk0_len) != 0) {
-        fprintf(stderr, "[DHT_CHUNK] Failed to fetch chunk0 for key=%s\n", base_key);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch chunk0 for key=%s\n", base_key);
         return DHT_CHUNK_ERR_DHT_GET;
     }
 
@@ -522,7 +520,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     uint32_t total_chunks = header0.total_chunks;
     uint32_t original_size = header0.original_size;
 
-    printf("[DHT_CHUNK] Fetching: total_chunks=%u, original_size=%u (key=%s)\n",
+    QGP_LOG_INFO(LOG_TAG, "Fetching: total_chunks=%u, original_size=%u (key=%s)\n",
            total_chunks, original_size, base_key);
 
     // If only 1 chunk, handle directly
@@ -539,7 +537,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
         free(chunk0_data);
         *data_out = decompressed;
         *data_len_out = decompressed_len;
-        printf("[DHT_CHUNK] Fetched %zu bytes from 1 chunk\n", decompressed_len);
+        QGP_LOG_INFO(LOG_TAG, "Fetched %zu bytes from 1 chunk\n", decompressed_len);
         return DHT_CHUNK_OK;
     }
 
@@ -591,7 +589,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     while (atomic_load(&pctx.completed) < total_chunks) {
         int rc = pthread_cond_timedwait(&pctx.cond, &pctx.mutex, &timeout);
         if (rc != 0) {
-            fprintf(stderr, "[DHT_CHUNK] Timeout waiting for chunks (%u/%u)\n",
+            QGP_LOG_ERROR(LOG_TAG, "Timeout waiting for chunks (%u/%u)\n",
                     atomic_load(&pctx.completed), total_chunks);
             pthread_mutex_unlock(&pctx.mutex);
             goto cleanup_error;
@@ -602,7 +600,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
     // Step 5: Verify all chunks received
     for (uint32_t i = 0; i < total_chunks; i++) {
         if (!pctx.slots[i].received || pctx.slots[i].error) {
-            fprintf(stderr, "[DHT_CHUNK] Missing or error chunk %u\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "Missing or error chunk %u\n", i);
             goto cleanup_error;
         }
     }
@@ -614,7 +612,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
         const uint8_t *payload;
         if (deserialize_chunk(pctx.slots[i].data, pctx.slots[i].data_len,
                              &hdr, &payload) != 0) {
-            fprintf(stderr, "[DHT_CHUNK] Failed to deserialize chunk %u\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize chunk %u\n", i);
             goto cleanup_error;
         }
         total_compressed += hdr.chunk_data_size;
@@ -638,7 +636,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
 
         // Verify chunk index matches expected
         if (hdr.chunk_index != i) {
-            fprintf(stderr, "[DHT_CHUNK] Chunk index mismatch: %u != %u\n", hdr.chunk_index, i);
+            QGP_LOG_ERROR(LOG_TAG, "Chunk index mismatch: %u != %u\n", hdr.chunk_index, i);
             free(compressed);
             goto cleanup_error;
         }
@@ -670,7 +668,7 @@ int dht_chunked_fetch(dht_context_t *ctx, const char *base_key,
 
     *data_out = decompressed;
     *data_len_out = decompressed_len;
-    printf("[DHT_CHUNK] Fetched %zu bytes from %u chunks\n", decompressed_len, total_chunks);
+    QGP_LOG_INFO(LOG_TAG, "Fetched %zu bytes from %u chunks\n", decompressed_len, total_chunks);
     return DHT_CHUNK_OK;
 
 cleanup_error:
@@ -717,7 +715,7 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
         free(chunk0_data);
     }
 
-    printf("[DHT_CHUNK] Deleting %u chunks (key=%s)\n", total_chunks, base_key);
+    QGP_LOG_INFO(LOG_TAG, "Deleting %u chunks (key=%s)\n", total_chunks, base_key);
 
     // Get value_id for replacement
     uint64_t value_id = 1;
@@ -754,7 +752,7 @@ int dht_chunked_delete(dht_context_t *ctx, const char *base_key,
     }
 
     free(serialized);
-    printf("[DHT_CHUNK] Deleted %u chunks\n", total_chunks);
+    QGP_LOG_INFO(LOG_TAG, "Deleted %u chunks\n", total_chunks);
     return DHT_CHUNK_OK;
 }
 

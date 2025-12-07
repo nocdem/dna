@@ -13,6 +13,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DNA_WALL"
 
 #ifdef _WIN32
     #include <winsock2.h>
@@ -46,7 +49,7 @@ static int dna_wall_votes_make_base_key(const char *post_id, char *key_out, size
 
     int ret = snprintf(key_out, key_out_size, "%s:votes", post_id);
     if (ret < 0 || (size_t)ret >= key_out_size) {
-        fprintf(stderr, "[DNA_VOTES] Base key buffer too small\n");
+        QGP_LOG_ERROR(LOG_TAG, "Base key buffer too small\n");
         return -1;
     }
 
@@ -105,7 +108,7 @@ static int dna_wall_votes_from_json(const char *json, dna_wall_votes_t **votes_o
 
     json_object *j_root = json_tokener_parse(json);
     if (!j_root) {
-        fprintf(stderr, "[DNA_VOTES] Failed to parse JSON\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse JSON\n");
         return -1;
     }
 
@@ -251,7 +254,7 @@ int dna_load_votes(dht_context_t *dht_ctx,
         return -1;
     }
 
-    printf("[DNA_VOTES] → DHT CHUNKED_FETCH: Loading votes for post\n");
+    QGP_LOG_INFO(LOG_TAG, "→ DHT CHUNKED_FETCH: Loading votes for post\n");
 
     // Query DHT via chunked layer
     uint8_t *value_data = NULL;
@@ -259,11 +262,11 @@ int dna_load_votes(dht_context_t *dht_ctx,
     int ret = dht_chunked_fetch(dht_ctx, base_key, &value_data, &value_size);
 
     if (ret != DHT_CHUNK_OK) {
-        printf("[DNA_VOTES] No votes found in DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_INFO(LOG_TAG, "No votes found in DHT: %s\n", dht_chunked_strerror(ret));
         return -2;  // No votes
     }
 
-    printf("[DNA_VOTES] ✓ Found votes in DHT (%zu bytes)\n", value_size);
+    QGP_LOG_INFO(LOG_TAG, "✓ Found votes in DHT (%zu bytes)\n", value_size);
 
     // Parse JSON
     char *json_str = strndup((const char *)value_data, value_size);
@@ -273,11 +276,11 @@ int dna_load_votes(dht_context_t *dht_ctx,
     free(json_str);
 
     if (ret != 0) {
-        fprintf(stderr, "[DNA_VOTES] Failed to parse votes JSON\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse votes JSON\n");
         return -1;
     }
 
-    printf("[DNA_VOTES] ✓ Loaded votes (up=%d, down=%d, total=%zu) - verifying signatures...\n",
+    QGP_LOG_INFO(LOG_TAG, "✓ Loaded votes (up=%d, down=%d, total=%zu) - verifying signatures...\n",
            (*votes_out)->upvote_count, (*votes_out)->downvote_count, (*votes_out)->vote_count);
 
     // SECURITY: Verify all vote signatures before accepting them
@@ -292,7 +295,7 @@ int dna_load_votes(dht_context_t *dht_ctx,
         // Lookup voter's identity from keyserver
         dna_unified_identity_t *voter_identity = NULL;
         if (dht_keyserver_lookup(dht_ctx, vote->voter_fingerprint, &voter_identity) != 0 || !voter_identity) {
-            fprintf(stderr, "[DNA_VOTES] WARNING: Failed to lookup identity for voter %s, skipping vote\n",
+            QGP_LOG_ERROR(LOG_TAG, "WARNING: Failed to lookup identity for voter %s, skipping vote\n",
                     vote->voter_fingerprint);
             continue;
         }
@@ -302,7 +305,7 @@ int dna_load_votes(dht_context_t *dht_ctx,
         dna_identity_free(voter_identity);
 
         if (verify_ret != 0) {
-            fprintf(stderr, "[DNA_VOTES] WARNING: Invalid signature for vote from %s, vote rejected\n",
+            QGP_LOG_ERROR(LOG_TAG, "WARNING: Invalid signature for vote from %s, vote rejected\n",
                     vote->voter_fingerprint);
             continue;
         }
@@ -320,11 +323,11 @@ int dna_load_votes(dht_context_t *dht_ctx,
     (*votes_out)->upvote_count = upvote_count;
     (*votes_out)->downvote_count = downvote_count;
 
-    printf("[DNA_VOTES] ✓ Verified %zu/%zu votes (up=%d, down=%d)\n",
+    QGP_LOG_INFO(LOG_TAG, "✓ Verified %zu/%zu votes (up=%d, down=%d)\n",
            verified_count, (*votes_out)->vote_count, upvote_count, downvote_count);
 
     if (verified_count < (*votes_out)->vote_count) {
-        fprintf(stderr, "[DNA_VOTES] WARNING: %zu votes failed verification and were rejected\n",
+        QGP_LOG_ERROR(LOG_TAG, "WARNING: %zu votes failed verification and were rejected\n",
                 (*votes_out)->vote_count - verified_count);
     }
 
@@ -344,7 +347,7 @@ int dna_cast_vote(dht_context_t *dht_ctx,
     }
 
     if (vote_value != 1 && vote_value != -1) {
-        fprintf(stderr, "[DNA_VOTES] Invalid vote value (must be +1 or -1)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid vote value (must be +1 or -1)\n");
         return -1;
     }
 
@@ -364,14 +367,14 @@ int dna_cast_vote(dht_context_t *dht_ctx,
         votes->vote_count = 0;
         votes->allocated_count = 0;
     } else if (ret != 0) {
-        fprintf(stderr, "[DNA_VOTES] Failed to load existing votes\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load existing votes\n");
         return -1;
     }
 
     // Check if user already voted (votes are permanent)
     int8_t existing_vote = dna_get_user_vote(votes, voter_fingerprint);
     if (existing_vote != 0) {
-        fprintf(stderr, "[DNA_VOTES] User already voted (votes are permanent)\n");
+        QGP_LOG_ERROR(LOG_TAG, "User already voted (votes are permanent)\n");
         dna_wall_votes_free(votes);
         return -2;  // Already voted
     }
@@ -416,7 +419,7 @@ int dna_cast_vote(dht_context_t *dht_ctx,
     free(sign_data);
 
     if (ret != 0) {
-        fprintf(stderr, "[DNA_VOTES] Failed to sign vote\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign vote\n");
         dna_wall_votes_free(votes);
         return -1;
     }
@@ -446,7 +449,7 @@ int dna_cast_vote(dht_context_t *dht_ctx,
         return -1;
     }
 
-    printf("[DNA_VOTES] → DHT CHUNKED_PUBLISH: Publishing votes (up=%d, down=%d, total=%zu)\n",
+    QGP_LOG_INFO(LOG_TAG, "→ DHT CHUNKED_PUBLISH: Publishing votes (up=%d, down=%d, total=%zu)\n",
            votes->upvote_count, votes->downvote_count, votes->vote_count);
 
     ret = dht_chunked_publish(dht_ctx, base_key,
@@ -457,11 +460,11 @@ int dna_cast_vote(dht_context_t *dht_ctx,
     dna_wall_votes_free(votes);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA_VOTES] Failed to publish votes to DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish votes to DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    printf("[DNA_VOTES] ✓ Vote cast successfully (signed, post=%s, voter=%s, value=%+d)\n",
+    QGP_LOG_INFO(LOG_TAG, "✓ Vote cast successfully (signed, post=%s, voter=%s, value=%+d)\n",
            post_id, voter_fingerprint, vote_value);
 
     return 0;

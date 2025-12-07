@@ -10,6 +10,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DB_PRESENCE"
 
 #define PRESENCE_CACHE_SIZE 1024
 #define PRESENCE_TTL_SECONDS 300  // 5 minutes
@@ -59,7 +62,7 @@ int presence_cache_init(void) {
 
     pthread_mutex_unlock(&cache_mutex);
 
-    printf("[Presence] Cache initialized (TTL=%d seconds)\n", PRESENCE_TTL_SECONDS);
+    QGP_LOG_INFO(LOG_TAG, "Cache initialized (TTL=%d seconds)\n", PRESENCE_TTL_SECONDS);
     return 0;
 }
 
@@ -92,7 +95,7 @@ void presence_cache_update(const char *fingerprint, bool is_online, time_t times
 
             char fp_short[20];
             snprintf(fp_short, sizeof(fp_short), "%.8s...%.8s", fingerprint, fingerprint + 120);
-            printf("[Presence] Updated %s: %s\n", fp_short, is_online ? "ONLINE" : "OFFLINE");
+            QGP_LOG_INFO(LOG_TAG, "Updated %s: %s\n", fp_short, is_online ? "ONLINE" : "OFFLINE");
             return;
         }
         node = node->next;
@@ -117,7 +120,7 @@ void presence_cache_update(const char *fingerprint, bool is_online, time_t times
 
     char fp_short[20];
     snprintf(fp_short, sizeof(fp_short), "%.8s...%.8s", fingerprint, fingerprint + 120);
-    printf("[Presence] Added %s: %s\n", fp_short, is_online ? "ONLINE" : "OFFLINE");
+    QGP_LOG_INFO(LOG_TAG, "Added %s: %s\n", fp_short, is_online ? "ONLINE" : "OFFLINE");
 }
 
 /**
@@ -206,7 +209,7 @@ void presence_cache_clear(void) {
     }
 
     pthread_mutex_unlock(&cache_mutex);
-    printf("[Presence] Cache cleared\n");
+    QGP_LOG_INFO(LOG_TAG, "Cache cleared\n");
 }
 
 /**

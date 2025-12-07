@@ -16,6 +16,9 @@
 #include <string.h>
 #include <stdbool.h>
 #include <pthread.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DB_CACHE"
 
 static pthread_mutex_t g_init_mutex = PTHREAD_MUTEX_INITIALIZER;
 static bool g_initialized = false;
@@ -30,16 +33,16 @@ int cache_manager_init(const char *identity) {
 
     if (g_initialized) {
         pthread_mutex_unlock(&g_init_mutex);
-        fprintf(stderr, "[CACHE_MGR] Already initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Already initialized\n");
         return 0;
     }
 
-    printf("[CACHE_MGR] Initializing cache subsystem...\n");
+    QGP_LOG_INFO(LOG_TAG, "Initializing cache subsystem...\n");
 
     // 1. Global caches first
-    printf("[CACHE_MGR] [1/4] Initializing keyserver cache (global)...\n");
+    QGP_LOG_INFO(LOG_TAG, "[1/4] Initializing keyserver cache (global)...\n");
     if (keyserver_cache_init(NULL) != 0) {
-        fprintf(stderr, "[CACHE_MGR] Failed to initialize keyserver cache\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize keyserver cache\n");
         pthread_mutex_unlock(&g_init_mutex);
         return -1;
     }
@@ -48,31 +51,31 @@ int cache_manager_init(const char *identity) {
     if (identity && strlen(identity) > 0) {
         strncpy(g_current_identity, identity, sizeof(g_current_identity) - 1);
 
-        printf("[CACHE_MGR] [2/4] Initializing profile cache for identity: %s\n", identity);
+        QGP_LOG_INFO(LOG_TAG, "[2/4] Initializing profile cache for identity: %s\n", identity);
         if (profile_cache_init(identity) != 0) {
-            fprintf(stderr, "[CACHE_MGR] Failed to initialize profile cache\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to initialize profile cache\n");
             keyserver_cache_cleanup();
             pthread_mutex_unlock(&g_init_mutex);
             return -1;
         }
 
-        printf("[CACHE_MGR] [3/4] Initializing contacts database for identity: %s\n", identity);
+        QGP_LOG_INFO(LOG_TAG, "[3/4] Initializing contacts database for identity: %s\n", identity);
         if (contacts_db_init(identity) != 0) {
-            fprintf(stderr, "[CACHE_MGR] Failed to initialize contacts database\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to initialize contacts database\n");
             profile_cache_close();
             keyserver_cache_cleanup();
             pthread_mutex_unlock(&g_init_mutex);
             return -1;
         }
     } else {
-        printf("[CACHE_MGR] [2/4] Skipping profile cache (no identity provided)\n");
-        printf("[CACHE_MGR] [3/4] Skipping contacts database (no identity provided)\n");
+        QGP_LOG_INFO(LOG_TAG, "[2/4] Skipping profile cache (no identity provided)\n");
+        QGP_LOG_INFO(LOG_TAG, "[3/4] Skipping contacts database (no identity provided)\n");
     }
 
     // 3. In-memory caches last
-    printf("[CACHE_MGR] [4/4] Initializing presence cache (in-memory)...\n");
+    QGP_LOG_INFO(LOG_TAG, "[4/4] Initializing presence cache (in-memory)...\n");
     if (presence_cache_init() != 0) {
-        fprintf(stderr, "[CACHE_MGR] Failed to initialize presence cache\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize presence cache\n");
         if (identity && strlen(identity) > 0) {
             contacts_db_close();
             profile_cache_close();
@@ -83,15 +86,15 @@ int cache_manager_init(const char *identity) {
     }
 
     // 4. Run startup eviction (clean expired entries from previous run)
-    printf("[CACHE_MGR] Running startup eviction...\n");
+    QGP_LOG_INFO(LOG_TAG, "Running startup eviction...\n");
     int evicted = cache_manager_evict_expired();
     if (evicted >= 0) {
-        printf("[CACHE_MGR] Evicted %d expired entries\n", evicted);
+        QGP_LOG_INFO(LOG_TAG, "Evicted %d expired entries\n", evicted);
     }
 
     g_initialized = true;
     pthread_mutex_unlock(&g_init_mutex);
-    printf("[CACHE_MGR] Cache subsystem initialized successfully\n");
+    QGP_LOG_INFO(LOG_TAG, "Cache subsystem initialized successfully\n");
     return 0;
 }
 
@@ -107,7 +110,7 @@ void cache_manager_cleanup(void) {
         return;
     }
 
-    printf("[CACHE_MGR] Cleaning up cache subsystem...\n");
+    QGP_LOG_INFO(LOG_TAG, "Cleaning up cache subsystem...\n");
 
     // Reverse order from init
     presence_cache_free();
@@ -122,7 +125,7 @@ void cache_manager_cleanup(void) {
     g_initialized = false;
     g_current_identity[0] = '\0';
     pthread_mutex_unlock(&g_init_mutex);
-    printf("[CACHE_MGR] Cache subsystem cleaned up\n");
+    QGP_LOG_INFO(LOG_TAG, "Cache subsystem cleaned up\n");
 }
 
 /**
@@ -130,7 +133,7 @@ void cache_manager_cleanup(void) {
  */
 int cache_manager_evict_expired(void) {
     if (!g_initialized) {
-        fprintf(stderr, "[CACHE_MGR] Not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
         return -1;
     }
 
@@ -141,7 +144,7 @@ int cache_manager_evict_expired(void) {
     if (evicted >= 0) {
         total_evicted += evicted;
         if (evicted > 0) {
-            printf("[CACHE_MGR] Keyserver cache: evicted %d entries\n", evicted);
+            QGP_LOG_INFO(LOG_TAG, "Keyserver cache: evicted %d entries\n", evicted);
         }
     }
 
@@ -155,7 +158,7 @@ int cache_manager_evict_expired(void) {
                 profile_cache_delete(expired_fingerprints[i]);
             }
             total_evicted += (int)expired_count;
-            printf("[CACHE_MGR] Profile cache: evicted %zu entries\n", expired_count);
+            QGP_LOG_INFO(LOG_TAG, "Profile cache: evicted %zu entries\n", expired_count);
 
             // Free the fingerprint list
             for (size_t i = 0; i < expired_count; i++) {
@@ -182,7 +185,7 @@ int cache_manager_stats(cache_manager_stats_t *stats_out) {
     memset(stats_out, 0, sizeof(cache_manager_stats_t));
 
     if (!g_initialized) {
-        fprintf(stderr, "[CACHE_MGR] Not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
         return -1;
     }
 
@@ -230,25 +233,25 @@ int cache_manager_stats(cache_manager_stats_t *stats_out) {
  */
 void cache_manager_clear_all(void) {
     if (!g_initialized) {
-        fprintf(stderr, "[CACHE_MGR] Not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
         return;
     }
 
-    printf("[CACHE_MGR] Clearing ALL caches...\n");
+    QGP_LOG_INFO(LOG_TAG, "Clearing ALL caches...\n");
 
     // Clear presence cache (in-memory)
     presence_cache_clear();
-    printf("[CACHE_MGR] Cleared presence cache\n");
+    QGP_LOG_INFO(LOG_TAG, "Cleared presence cache\n");
 
     // Profile cache (if initialized)
     if (strlen(g_current_identity) > 0) {
         profile_cache_clear_all();
-        printf("[CACHE_MGR] Cleared profile cache\n");
+        QGP_LOG_INFO(LOG_TAG, "Cleared profile cache\n");
     }
 
     // Keyserver cache - no clear_all function
     // To fully clear keyserver cache, user must delete ~/.dna/keyserver_cache.db manually
 
-    printf("[CACHE_MGR] Cache clear complete\n");
-    printf("[CACHE_MGR] Note: Keyserver cache not cleared (delete ~/.dna/keyserver_cache.db manually if needed)\n");
+    QGP_LOG_INFO(LOG_TAG, "Cache clear complete\n");
+    QGP_LOG_INFO(LOG_TAG, "Note: Keyserver cache not cleared (delete ~/.dna/keyserver_cache.db manually if needed)\n");
 }

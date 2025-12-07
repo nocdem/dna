@@ -4,6 +4,9 @@
  */
 
 #include "transport_core.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "P2P_OFFLINE"
 
 /**
  * Queue offline message in sender's DHT outbox (Model E)
@@ -23,7 +26,7 @@ int p2p_queue_offline_message(
     size_t message_len)
 {
     if (!ctx || !sender || !recipient || !message || message_len == 0) {
-        fprintf(stderr, "[P2P] Invalid parameters for queuing offline message\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for queuing offline message\n");
         return -1;
     }
 
@@ -77,7 +80,7 @@ int p2p_check_offline_messages(
     // 2. Build array of sender fingerprints
     const char **sender_fps = (const char**)malloc(contacts->count * sizeof(char*));
     if (!sender_fps) {
-        fprintf(stderr, "[P2P] Failed to allocate sender fingerprint array\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate sender fingerprint array\n");
         contacts_db_free_list(contacts);
         if (messages_received) *messages_received = 0;
         return -1;
@@ -106,7 +109,7 @@ int p2p_check_offline_messages(
     contacts_db_free_list(contacts);
 
     if (result != 0) {
-        fprintf(stderr, "[P2P] Failed to retrieve offline messages from contacts' outboxes\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to retrieve offline messages from contacts' outboxes\n");
         if (messages_received) *messages_received = 0;
         return -1;
     }

@@ -17,6 +17,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DHT_GSK"
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -92,7 +95,7 @@ int dht_gsk_serialize_chunk(const dht_gsk_chunk_t *chunk,
                              uint8_t **serialized_out,
                              size_t *serialized_size_out) {
     if (!chunk || !serialized_out || !serialized_size_out) {
-        fprintf(stderr, "[DHT_GSK] serialize_chunk: NULL parameter\n");
+        QGP_LOG_ERROR(LOG_TAG, "serialize_chunk: NULL parameter\n");
         return -1;
     }
 
@@ -102,7 +105,7 @@ int dht_gsk_serialize_chunk(const dht_gsk_chunk_t *chunk,
 
     uint8_t *serialized = (uint8_t *)malloc(total_size);
     if (!serialized) {
-        fprintf(stderr, "[DHT_GSK] Failed to allocate serialized buffer\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate serialized buffer\n");
         return -1;
     }
 
@@ -149,7 +152,7 @@ int dht_gsk_deserialize_chunk(const uint8_t *serialized,
                                size_t serialized_size,
                                dht_gsk_chunk_t *chunk_out) {
     if (!serialized || !chunk_out || serialized_size < 17) {
-        fprintf(stderr, "[DHT_GSK] deserialize_chunk: Invalid parameter\n");
+        QGP_LOG_ERROR(LOG_TAG, "deserialize_chunk: Invalid parameter\n");
         return -1;
     }
 
@@ -162,7 +165,7 @@ int dht_gsk_deserialize_chunk(const uint8_t *serialized,
     offset += 4;
 
     if (chunk_out->magic != DHT_GSK_MAGIC) {
-        fprintf(stderr, "[DHT_GSK] Invalid magic: 0x%08X (expected 0x%08X)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Invalid magic: 0x%08X (expected 0x%08X)\n",
                 chunk_out->magic, DHT_GSK_MAGIC);
         return -1;
     }
@@ -172,7 +175,7 @@ int dht_gsk_deserialize_chunk(const uint8_t *serialized,
     offset += 1;
 
     if (chunk_out->version != DHT_GSK_VERSION) {
-        fprintf(stderr, "[DHT_GSK] Invalid version: %u (expected %u)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Invalid version: %u (expected %u)\n",
                 chunk_out->version, DHT_GSK_VERSION);
         return -1;
     }
@@ -197,7 +200,7 @@ int dht_gsk_deserialize_chunk(const uint8_t *serialized,
 
     // Validate chunk size
     if (offset + chunk_out->chunk_size > serialized_size) {
-        fprintf(stderr, "[DHT_GSK] Chunk size mismatch: %u + %u > %zu\n",
+        QGP_LOG_ERROR(LOG_TAG, "Chunk size mismatch: %u + %u > %zu\n",
                 (uint32_t)offset, chunk_out->chunk_size, serialized_size);
         return -1;
     }
@@ -205,7 +208,7 @@ int dht_gsk_deserialize_chunk(const uint8_t *serialized,
     // Allocate and copy chunk data
     chunk_out->chunk_data = (uint8_t *)malloc(chunk_out->chunk_size);
     if (!chunk_out->chunk_data) {
-        fprintf(stderr, "[DHT_GSK] Failed to allocate chunk data\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate chunk data\n");
         return -1;
     }
 
@@ -240,29 +243,29 @@ int dht_gsk_publish(dht_context_t *ctx,
                     const uint8_t *packet,
                     size_t packet_size) {
     if (!ctx || !group_uuid || !packet || packet_size == 0) {
-        fprintf(stderr, "[DHT_GSK] publish: NULL parameter\n");
+        QGP_LOG_ERROR(LOG_TAG, "publish: NULL parameter\n");
         return -1;
     }
 
     // Generate base key for this GSK packet
     char base_key[256];
     if (make_gsk_base_key(group_uuid, gsk_version, base_key, sizeof(base_key)) != 0) {
-        fprintf(stderr, "[DHT_GSK] Failed to generate base key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate base key\n");
         return -1;
     }
 
-    printf("[DHT_GSK] Publishing packet (group=%s v%u): %zu bytes\n",
+    QGP_LOG_INFO(LOG_TAG, "Publishing packet (group=%s v%u): %zu bytes\n",
            group_uuid, gsk_version, packet_size);
 
     // Use the generic chunked layer
     int ret = dht_chunked_publish(ctx, base_key, packet, packet_size, DHT_GSK_DEFAULT_TTL);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT_GSK] Failed to publish: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    printf("[DHT_GSK] Published successfully\n");
+    QGP_LOG_INFO(LOG_TAG, "Published successfully\n");
     return 0;
 }
 
@@ -278,27 +281,27 @@ int dht_gsk_fetch(dht_context_t *ctx,
                   uint8_t **packet_out,
                   size_t *packet_size_out) {
     if (!ctx || !group_uuid || !packet_out || !packet_size_out) {
-        fprintf(stderr, "[DHT_GSK] fetch: NULL parameter\n");
+        QGP_LOG_ERROR(LOG_TAG, "fetch: NULL parameter\n");
         return -1;
     }
 
     // Generate base key for this GSK packet
     char base_key[256];
     if (make_gsk_base_key(group_uuid, gsk_version, base_key, sizeof(base_key)) != 0) {
-        fprintf(stderr, "[DHT_GSK] Failed to generate base key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate base key\n");
         return -1;
     }
 
-    printf("[DHT_GSK] Fetching packet (group=%s v%u)...\n", group_uuid, gsk_version);
+    QGP_LOG_INFO(LOG_TAG, "Fetching packet (group=%s v%u)...\n", group_uuid, gsk_version);
 
     // Use the generic chunked layer
     int ret = dht_chunked_fetch(ctx, base_key, packet_out, packet_size_out);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT_GSK] Failed to fetch: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    printf("[DHT_GSK] Fetched %zu bytes successfully\n", *packet_size_out);
+    QGP_LOG_INFO(LOG_TAG, "Fetched %zu bytes successfully\n", *packet_size_out);
     return 0;
 }

@@ -19,6 +19,9 @@
 #else
 #include <unistd.h>
 #include <pwd.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MSG_CONTACTS"
 #endif
 
 static sqlite3 *g_db = NULL;
@@ -27,7 +30,7 @@ static char g_owner_identity[256] = {0};  // Current database owner
 // Get database path for specific identity
 static int get_db_path(const char *owner_identity, char *path_out, size_t path_size) {
     if (!owner_identity || strlen(owner_identity) == 0) {
-        fprintf(stderr, "[CONTACTS_DB] Invalid owner_identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity\n");
         return -1;
     }
 
@@ -35,7 +38,7 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
     // Use whitelist approach: only allow alphanumeric, dash, underscore
     size_t identity_len = strlen(owner_identity);
     if (identity_len == 0 || identity_len > 128) {
-        fprintf(stderr, "[CONTACTS_DB] Invalid identity length: %zu (must be 1-128 chars)\n", identity_len);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid identity length: %zu (must be 1-128 chars)\n", identity_len);
         return -1;
     }
 
@@ -44,18 +47,18 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
 
         // Explicitly block path traversal characters on all platforms
         if (c == '\\' || c == '/' || c == ':' || c == '.') {
-            fprintf(stderr, "[CONTACTS_DB] Path traversal character blocked: 0x%02X at position %zu\n",
+            QGP_LOG_ERROR(LOG_TAG, "Path traversal character blocked: 0x%02X at position %zu\n",
                     (unsigned char)c, i);
-            fprintf(stderr, "[CONTACTS_DB] Backslash, slash, colon, and dot not allowed\n");
+            QGP_LOG_ERROR(LOG_TAG, "Backslash, slash, colon, and dot not allowed\n");
             return -1;
         }
 
         // Whitelist: only allow alphanumeric, dash, underscore
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
               (c >= '0' && c <= '9') || c == '-' || c == '_')) {
-            fprintf(stderr, "[CONTACTS_DB] Invalid character in identity: 0x%02X at position %zu\n",
+            QGP_LOG_ERROR(LOG_TAG, "Invalid character in identity: 0x%02X at position %zu\n",
                     (unsigned char)c, i);
-            fprintf(stderr, "[CONTACTS_DB] Only alphanumeric, dash, and underscore allowed\n");
+            QGP_LOG_ERROR(LOG_TAG, "Only alphanumeric, dash, and underscore allowed\n");
             return -1;
         }
     }
@@ -63,7 +66,7 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
 #ifdef _WIN32
     char appdata[MAX_PATH];
     if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to get AppData path\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get AppData path\n");
         return -1;
     }
     snprintf(path_out, path_size, "%s\\.dna\\%s_contacts.db", appdata, owner_identity);
@@ -76,7 +79,7 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
         }
     }
     if (!home) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
         return -1;
     }
 
@@ -105,7 +108,7 @@ static int ensure_directory(const char *db_path) {
     if (stat(dir_path, &st) != 0) {
         // Create directory
         if (mkdir(dir_path, 0700) != 0) {
-            fprintf(stderr, "[CONTACTS_DB] Failed to create directory: %s\n", dir_path);
+            QGP_LOG_ERROR(LOG_TAG, "Failed to create directory: %s\n", dir_path);
             return -1;
         }
     }
@@ -116,7 +119,7 @@ static int ensure_directory(const char *db_path) {
 // Initialize database
 int contacts_db_init(const char *owner_identity) {
     if (!owner_identity || strlen(owner_identity) == 0) {
-        fprintf(stderr, "[CONTACTS_DB] Invalid owner_identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity\n");
         return -1;
     }
 
@@ -127,7 +130,7 @@ int contacts_db_init(const char *owner_identity) {
 
     // If initialized for different identity, close first
     if (g_db) {
-        printf("[CONTACTS_DB] Closing previous database for '%s'\n", g_owner_identity);
+        QGP_LOG_INFO(LOG_TAG, "Closing previous database for '%s'\n", g_owner_identity);
         contacts_db_close();
     }
 
@@ -149,7 +152,7 @@ int contacts_db_init(const char *owner_identity) {
     // Open database
     int rc = sqlite3_open(db_path, &g_db);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to open database: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(g_db));
         sqlite3_close(g_db);
         g_db = NULL;
         g_owner_identity[0] = '\0';
@@ -166,7 +169,7 @@ int contacts_db_init(const char *owner_identity) {
     char *err_msg = NULL;
     rc = sqlite3_exec(g_db, pragmas, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to set pragmas: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to set pragmas: %s\n", err_msg);
         sqlite3_free(err_msg);
         // Continue anyway - not fatal
     }
@@ -181,7 +184,7 @@ int contacts_db_init(const char *owner_identity) {
 
     rc = sqlite3_exec(g_db, sql, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to create table: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create table: %s\n", err_msg);
         sqlite3_free(err_msg);
         sqlite3_close(g_db);
         g_db = NULL;
@@ -189,19 +192,19 @@ int contacts_db_init(const char *owner_identity) {
         return -1;
     }
 
-    printf("[CONTACTS_DB] Initialized for identity '%s': %s\n", owner_identity, db_path);
+    QGP_LOG_INFO(LOG_TAG, "Initialized for identity '%s': %s\n", owner_identity, db_path);
     return 0;
 }
 
 // Add contact
 int contacts_db_add(const char *identity, const char *notes) {
     if (!g_db) {
-        fprintf(stderr, "[CONTACTS_DB] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!identity) {
-        fprintf(stderr, "[CONTACTS_DB] Invalid identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid identity\n");
         return -1;
     }
 
@@ -216,7 +219,7 @@ int contacts_db_add(const char *identity, const char *notes) {
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -232,23 +235,23 @@ int contacts_db_add(const char *identity, const char *notes) {
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to insert: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to insert: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
-    printf("[CONTACTS_DB] Added contact: %s\n", identity);
+    QGP_LOG_INFO(LOG_TAG, "Added contact: %s\n", identity);
     return 0;
 }
 
 // Remove contact
 int contacts_db_remove(const char *identity) {
     if (!g_db) {
-        fprintf(stderr, "[CONTACTS_DB] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!identity) {
-        fprintf(stderr, "[CONTACTS_DB] Invalid identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid identity\n");
         return -1;
     }
 
@@ -257,7 +260,7 @@ int contacts_db_remove(const char *identity) {
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -267,23 +270,23 @@ int contacts_db_remove(const char *identity) {
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to delete: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
-    printf("[CONTACTS_DB] Removed contact: %s\n", identity);
+    QGP_LOG_INFO(LOG_TAG, "Removed contact: %s\n", identity);
     return 0;
 }
 
 // Update notes
 int contacts_db_update_notes(const char *identity, const char *notes) {
     if (!g_db) {
-        fprintf(stderr, "[CONTACTS_DB] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!identity) {
-        fprintf(stderr, "[CONTACTS_DB] Invalid identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid identity\n");
         return -1;
     }
 
@@ -292,7 +295,7 @@ int contacts_db_update_notes(const char *identity, const char *notes) {
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -307,7 +310,7 @@ int contacts_db_update_notes(const char *identity, const char *notes) {
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to update: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -343,12 +346,12 @@ bool contacts_db_exists(const char *identity) {
 // List all contacts
 int contacts_db_list(contact_list_t **list_out) {
     if (!g_db) {
-        fprintf(stderr, "[CONTACTS_DB] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!list_out) {
-        fprintf(stderr, "[CONTACTS_DB] Invalid output parameter\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid output parameter\n");
         return -1;
     }
 
@@ -384,7 +387,7 @@ int contacts_db_list(contact_list_t **list_out) {
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
         free(list->contacts);
         free(list);
         return -1;
@@ -440,7 +443,7 @@ int contacts_db_count(void) {
 // Clear all contacts from database
 int contacts_db_clear_all(void) {
     if (!g_db) {
-        fprintf(stderr, "[CONTACTS_DB] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
@@ -449,12 +452,12 @@ int contacts_db_clear_all(void) {
 
     int rc = sqlite3_exec(g_db, sql, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to clear contacts: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to clear contacts: %s\n", err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
 
-    printf("[CONTACTS_DB] Cleared all contacts\n");
+    QGP_LOG_INFO(LOG_TAG, "Cleared all contacts\n");
     return 0;
 }
 
@@ -473,7 +476,7 @@ void contacts_db_close(void) {
     if (g_db) {
         sqlite3_close(g_db);
         g_db = NULL;
-        printf("[CONTACTS_DB] Closed database for identity '%s'\n", g_owner_identity);
+        QGP_LOG_INFO(LOG_TAG, "Closed database for identity '%s'\n", g_owner_identity);
         g_owner_identity[0] = '\0';  // Clear owner identity
     }
 }
@@ -481,7 +484,7 @@ void contacts_db_close(void) {
 // Migrate contacts from global database to per-identity database
 int contacts_db_migrate_from_global(const char *owner_identity) {
     if (!owner_identity || strlen(owner_identity) == 0) {
-        fprintf(stderr, "[CONTACTS_DB] Invalid owner_identity for migration\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity for migration\n");
         return -1;
     }
 
@@ -490,7 +493,7 @@ int contacts_db_migrate_from_global(const char *owner_identity) {
 #ifdef _WIN32
     char appdata[MAX_PATH];
     if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to get AppData path\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get AppData path\n");
         return -1;
     }
     snprintf(old_db_path, sizeof(old_db_path), "%s\\.dna\\contacts.db", appdata);
@@ -503,7 +506,7 @@ int contacts_db_migrate_from_global(const char *owner_identity) {
         }
     }
     if (!home) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
         return -1;
     }
     snprintf(old_db_path, sizeof(old_db_path), "%s/.dna/contacts.db", home);
@@ -524,17 +527,17 @@ int contacts_db_migrate_from_global(const char *owner_identity) {
 
     // Check if new database already exists
     if (stat(new_db_path, &st) == 0) {
-        printf("[CONTACTS_DB] Per-identity database already exists, skipping migration\n");
+        QGP_LOG_INFO(LOG_TAG, "Per-identity database already exists, skipping migration\n");
         return 0;
     }
 
-    printf("[CONTACTS_DB] Migrating contacts from global database to '%s'\n", owner_identity);
+    QGP_LOG_INFO(LOG_TAG, "Migrating contacts from global database to '%s'\n", owner_identity);
 
     // Open old database
     sqlite3 *old_db = NULL;
     int rc = sqlite3_open(old_db_path, &old_db);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to open old database: %s\n", sqlite3_errmsg(old_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open old database: %s\n", sqlite3_errmsg(old_db));
         if (old_db) sqlite3_close(old_db);
         return -1;
     }
@@ -544,7 +547,7 @@ int contacts_db_migrate_from_global(const char *owner_identity) {
     sqlite3_stmt *stmt = NULL;
     rc = sqlite3_prepare_v2(old_db, query, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to prepare query: %s\n", sqlite3_errmsg(old_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(old_db));
         sqlite3_close(old_db);
         return -1;
     }
@@ -562,7 +565,7 @@ int contacts_db_migrate_from_global(const char *owner_identity) {
 
     contacts = (migrate_contact_t*)malloc(capacity * sizeof(migrate_contact_t));
     if (!contacts) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to allocate memory for migration\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate memory for migration\n");
         sqlite3_finalize(stmt);
         sqlite3_close(old_db);
         return -1;
@@ -573,7 +576,7 @@ int contacts_db_migrate_from_global(const char *owner_identity) {
             capacity *= 2;
             migrate_contact_t *new_contacts = (migrate_contact_t*)realloc(contacts, capacity * sizeof(migrate_contact_t));
             if (!new_contacts) {
-                fprintf(stderr, "[CONTACTS_DB] Failed to reallocate memory\n");
+                QGP_LOG_ERROR(LOG_TAG, "Failed to reallocate memory\n");
                 free(contacts);
                 sqlite3_finalize(stmt);
                 sqlite3_close(old_db);
@@ -604,16 +607,16 @@ int contacts_db_migrate_from_global(const char *owner_identity) {
     sqlite3_close(old_db);
 
     if (contact_count == 0) {
-        printf("[CONTACTS_DB] No contacts to migrate\n");
+        QGP_LOG_INFO(LOG_TAG, "No contacts to migrate\n");
         free(contacts);
         return 0;
     }
 
-    printf("[CONTACTS_DB] Found %zu contacts to migrate\n", contact_count);
+    QGP_LOG_INFO(LOG_TAG, "Found %zu contacts to migrate\n", contact_count);
 
     // Initialize new per-identity database
     if (contacts_db_init(owner_identity) != 0) {
-        fprintf(stderr, "[CONTACTS_DB] Failed to initialize new database\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize new database\n");
         free(contacts);
         return -1;
     }
@@ -626,21 +629,21 @@ int contacts_db_migrate_from_global(const char *owner_identity) {
         if (result == 0 || result == -2) {  // Success or already exists
             migrated++;
         } else {
-            fprintf(stderr, "[CONTACTS_DB] Warning: Failed to migrate contact '%s'\n", contacts[i].identity);
+            QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to migrate contact '%s'\n", contacts[i].identity);
         }
     }
 
     free(contacts);
 
-    printf("[CONTACTS_DB] Migration complete: %zu/%zu contacts migrated\n", migrated, contact_count);
+    QGP_LOG_INFO(LOG_TAG, "Migration complete: %zu/%zu contacts migrated\n", migrated, contact_count);
 
     // Rename old database to backup
     char backup_path[512];
     snprintf(backup_path, sizeof(backup_path), "%s.migrated", old_db_path);
     if (rename(old_db_path, backup_path) == 0) {
-        printf("[CONTACTS_DB] Old database backed up to: %s\n", backup_path);
+        QGP_LOG_INFO(LOG_TAG, "Old database backed up to: %s\n", backup_path);
     } else {
-        printf("[CONTACTS_DB] Warning: Could not rename old database (you can delete it manually)\n");
+        QGP_LOG_INFO(LOG_TAG, "Warning: Could not rename old database (you can delete it manually)\n");
     }
 
     return (int)migrated;

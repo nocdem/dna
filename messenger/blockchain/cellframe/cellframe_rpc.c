@@ -10,6 +10,9 @@
 #define CURL_STATICLIB  // Required for static linking on Windows
 #endif
 #include <curl/curl.h>
+#include "../../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "WALLET_RPC"
 
 // Response buffer for curl
 struct response_buffer {
@@ -471,23 +474,23 @@ void cellframe_rpc_response_free(cellframe_rpc_response_t *response) {
  */
 int cellframe_verify_registration_tx(const char *tx_hash, const char *network, const char *expected_name) {
     if (!tx_hash || !network || !expected_name) {
-        fprintf(stderr, "[TX_VERIFY] NULL parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "NULL parameters\n");
         return -1;
     }
 
-    printf("[TX_VERIFY] Verifying transaction: %s\n", tx_hash);
-    printf("[TX_VERIFY] Network: %s, Expected name: %s\n", network, expected_name);
+    QGP_LOG_INFO(LOG_TAG, "Verifying transaction: %s\n", tx_hash);
+    QGP_LOG_INFO(LOG_TAG, "Network: %s, Expected name: %s\n", network, expected_name);
 
     // 1. Query transaction from blockchain
     cellframe_rpc_response_t *response = NULL;
     int ret = cellframe_rpc_get_tx(network, tx_hash, &response);
     if (ret != 0 || !response) {
-        fprintf(stderr, "[TX_VERIFY] Failed to query transaction\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to query transaction\n");
         return -1;
     }
 
     if (!response->result) {
-        fprintf(stderr, "[TX_VERIFY] No result in response\n");
+        QGP_LOG_ERROR(LOG_TAG, "No result in response\n");
         cellframe_rpc_response_free(response);
         return -1;
     }
@@ -497,7 +500,7 @@ int cellframe_verify_registration_tx(const char *tx_hash, const char *network, c
     json_object *tx_obj = NULL;
     if (json_object_is_type(response->result, json_type_array)) {
         if (json_object_array_length(response->result) == 0) {
-            fprintf(stderr, "[TX_VERIFY] Transaction not found\n");
+            QGP_LOG_ERROR(LOG_TAG, "Transaction not found\n");
             cellframe_rpc_response_free(response);
             return -2;
         }
@@ -507,7 +510,7 @@ int cellframe_verify_registration_tx(const char *tx_hash, const char *network, c
     }
 
     if (!tx_obj) {
-        fprintf(stderr, "[TX_VERIFY] No transaction object in response\n");
+        QGP_LOG_ERROR(LOG_TAG, "No transaction object in response\n");
         cellframe_rpc_response_free(response);
         return -1;
     }
@@ -527,21 +530,21 @@ int cellframe_verify_registration_tx(const char *tx_hash, const char *network, c
 
     // 4. Verify status = "ACCEPTED"
     if (!j_status) {
-        fprintf(stderr, "[TX_VERIFY] No status field\n");
+        QGP_LOG_ERROR(LOG_TAG, "No status field\n");
         cellframe_rpc_response_free(response);
         return -2;
     }
 
     const char *status = json_object_get_string(j_status);
     if (strcmp(status, "ACCEPTED") != 0) {
-        fprintf(stderr, "[TX_VERIFY] Transaction not accepted (status: %s)\n", status);
+        QGP_LOG_ERROR(LOG_TAG, "Transaction not accepted (status: %s)\n", status);
         cellframe_rpc_response_free(response);
         return -2;
     }
 
     // 5. Verify amount = "0.01" (stored as string)
     if (!j_value) {
-        fprintf(stderr, "[TX_VERIFY] No value field\n");
+        QGP_LOG_ERROR(LOG_TAG, "No value field\n");
         cellframe_rpc_response_free(response);
         return -2;
     }
@@ -549,59 +552,59 @@ int cellframe_verify_registration_tx(const char *tx_hash, const char *network, c
     const char *value_str = json_object_get_string(j_value);
     double value = atof(value_str);
     if (value < 0.009 || value > 0.011) {  // Allow small floating point error
-        fprintf(stderr, "[TX_VERIFY] Invalid amount: %s (expected 0.01)\n", value_str);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid amount: %s (expected 0.01)\n", value_str);
         cellframe_rpc_response_free(response);
         return -2;
     }
 
     // 6. Verify recipient address
     if (!j_to_addr) {
-        fprintf(stderr, "[TX_VERIFY] No recv_addr field\n");
+        QGP_LOG_ERROR(LOG_TAG, "No recv_addr field\n");
         cellframe_rpc_response_free(response);
         return -2;
     }
 
     const char *to_addr = json_object_get_string(j_to_addr);
     if (strcmp(to_addr, DNA_REGISTRATION_ADDRESS) != 0) {
-        fprintf(stderr, "[TX_VERIFY] Invalid recipient: %s\n", to_addr);
-        fprintf(stderr, "[TX_VERIFY] Expected: %s\n", DNA_REGISTRATION_ADDRESS);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid recipient: %s\n", to_addr);
+        QGP_LOG_ERROR(LOG_TAG, "Expected: %s\n", DNA_REGISTRATION_ADDRESS);
         cellframe_rpc_response_free(response);
         return -2;
     }
 
     // 7. Verify token = "CPUNK"
     if (!j_token) {
-        fprintf(stderr, "[TX_VERIFY] No token field\n");
+        QGP_LOG_ERROR(LOG_TAG, "No token field\n");
         cellframe_rpc_response_free(response);
         return -2;
     }
 
     const char *token = json_object_get_string(j_token);
     if (strcmp(token, "CPUNK") != 0) {
-        fprintf(stderr, "[TX_VERIFY] Invalid token: %s (expected CPUNK)\n", token);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid token: %s (expected CPUNK)\n", token);
         cellframe_rpc_response_free(response);
         return -2;
     }
 
     // 8. Verify memo = expected_name
     if (!j_memo) {
-        fprintf(stderr, "[TX_VERIFY] No memo field\n");
+        QGP_LOG_ERROR(LOG_TAG, "No memo field\n");
         cellframe_rpc_response_free(response);
         return -2;
     }
 
     const char *memo = json_object_get_string(j_memo);
     if (strcmp(memo, expected_name) != 0) {
-        fprintf(stderr, "[TX_VERIFY] Invalid memo: %s (expected: %s)\n", memo, expected_name);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid memo: %s (expected: %s)\n", memo, expected_name);
         cellframe_rpc_response_free(response);
         return -2;
     }
 
-    printf("[TX_VERIFY] ✓ Transaction verified successfully\n");
-    printf("[TX_VERIFY]   Amount: %s CPUNK\n", value_str);
-    printf("[TX_VERIFY]   To: %s\n", to_addr);
-    printf("[TX_VERIFY]   Memo: %s\n", memo);
-    printf("[TX_VERIFY]   Status: %s\n", status);
+    QGP_LOG_INFO(LOG_TAG, "✓ Transaction verified successfully\n");
+    QGP_LOG_INFO(LOG_TAG, "Amount: %s CPUNK\n", value_str);
+    QGP_LOG_INFO(LOG_TAG, "To: %s\n", to_addr);
+    QGP_LOG_INFO(LOG_TAG, "Memo: %s\n", memo);
+    QGP_LOG_INFO(LOG_TAG, "Status: %s\n", status);
 
     cellframe_rpc_response_free(response);
     return 0;  // Valid ✅

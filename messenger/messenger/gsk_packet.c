@@ -19,6 +19,9 @@
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MSG_GSK"
 #endif
 
 /**
@@ -41,7 +44,7 @@ int gsk_packet_build(const char *group_uuid,
                      size_t *packet_size_out) {
     if (!group_uuid || !gsk || !members || member_count == 0 ||
         !owner_dilithium_privkey || !packet_out || !packet_size_out) {
-        fprintf(stderr, "[GSK_PACKET] build: NULL parameter\n");
+        QGP_LOG_ERROR(LOG_TAG, "build: NULL parameter\n");
         return -1;
     }
 
@@ -49,7 +52,7 @@ int gsk_packet_build(const char *group_uuid,
     size_t packet_size = gsk_packet_calculate_size(member_count);
     uint8_t *packet = (uint8_t *)malloc(packet_size);
     if (!packet) {
-        fprintf(stderr, "[GSK_PACKET] Failed to allocate packet buffer\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate packet buffer\n");
         return -1;
     }
 
@@ -69,7 +72,7 @@ int gsk_packet_build(const char *group_uuid,
     packet[offset] = (uint8_t)member_count;
     offset += 1;
 
-    printf("[GSK_PACKET] Building packet for group %s v%u with %zu members\n",
+    QGP_LOG_INFO(LOG_TAG, "Building packet for group %s v%u with %zu members\n",
            group_uuid, version, member_count);
 
     // === PER-MEMBER ENTRIES ===
@@ -87,7 +90,7 @@ int gsk_packet_build(const char *group_uuid,
         int ret = qgp_kem1024_encapsulate(kyber_ct, kek, member->kyber_pubkey);
 
         if (ret != 0) {
-            fprintf(stderr, "[GSK_PACKET] Kyber1024 encapsulation failed for member %zu\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "Kyber1024 encapsulation failed for member %zu\n", i);
             free(packet);
             return -1;
         }
@@ -98,7 +101,7 @@ int gsk_packet_build(const char *group_uuid,
         // AES key wrap: Wrap GSK with KEK
         uint8_t wrapped_gsk[40];  // AES-wrap output: 32-byte key -> 40 bytes
         if (aes256_wrap_key(gsk, GSK_KEY_SIZE, kek, wrapped_gsk) != 0) {
-            fprintf(stderr, "[GSK_PACKET] AES key wrap failed for member %zu\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "AES key wrap failed for member %zu\n", i);
             free(packet);
             return -1;
         }
@@ -106,7 +109,7 @@ int gsk_packet_build(const char *group_uuid,
         memcpy(packet + offset, wrapped_gsk, 40);
         offset += 40;
 
-        printf("[GSK_PACKET]   Member %zu: Kyber+Wrap OK\n", i);
+        QGP_LOG_INFO(LOG_TAG, "Member %zu: Kyber+Wrap OK\n", i);
     }
 
     // === SIGNATURE ===
@@ -119,7 +122,7 @@ int gsk_packet_build(const char *group_uuid,
                               owner_dilithium_privkey);
 
     if (ret != 0) {
-        fprintf(stderr, "[GSK_PACKET] Dilithium5 signing failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Dilithium5 signing failed\n");
         free(packet);
         return -1;
     }
@@ -137,7 +140,7 @@ int gsk_packet_build(const char *group_uuid,
     memcpy(packet + offset, signature, sig_len);
     offset += sig_len;
 
-    printf("[GSK_PACKET] Packet built: %zu bytes (signed)\n", offset);
+    QGP_LOG_INFO(LOG_TAG, "Packet built: %zu bytes (signed)\n", offset);
 
     *packet_out = packet;
     *packet_size_out = offset;
@@ -155,7 +158,7 @@ int gsk_packet_extract(const uint8_t *packet,
                        uint32_t *version_out) {
     if (!packet || packet_size < GSK_PACKET_HEADER_SIZE ||
         !my_fingerprint_bin || !my_kyber_privkey || !gsk_out) {
-        fprintf(stderr, "[GSK_PACKET] extract: Invalid parameter\n");
+        QGP_LOG_ERROR(LOG_TAG, "extract: Invalid parameter\n");
         return -1;
     }
 
@@ -181,14 +184,14 @@ int gsk_packet_extract(const uint8_t *packet,
     uint8_t member_count = packet[offset];
     offset += 1;
 
-    printf("[GSK_PACKET] Extracting from packet: group=%s v%u members=%u\n",
+    QGP_LOG_INFO(LOG_TAG, "Extracting from packet: group=%s v%u members=%u\n",
            group_uuid, version, member_count);
 
     // === SEARCH FOR MY ENTRY ===
     for (size_t i = 0; i < member_count; i++) {
         // Read fingerprint (64 bytes)
         if (offset + 64 > packet_size) {
-            fprintf(stderr, "[GSK_PACKET] Packet truncated at member %zu\n", i);
+            QGP_LOG_ERROR(LOG_TAG, "Packet truncated at member %zu\n", i);
             return -1;
         }
 
@@ -196,13 +199,13 @@ int gsk_packet_extract(const uint8_t *packet,
 
         // Check if this is my entry
         if (memcmp(entry_fingerprint, my_fingerprint_bin, 64) == 0) {
-            printf("[GSK_PACKET] Found my entry at position %zu\n", i);
+            QGP_LOG_INFO(LOG_TAG, "Found my entry at position %zu\n", i);
 
             offset += 64;
 
             // Kyber1024 ciphertext (1568 bytes)
             if (offset + 1568 > packet_size) {
-                fprintf(stderr, "[GSK_PACKET] Packet truncated at kyber_ct\n");
+                QGP_LOG_ERROR(LOG_TAG, "Packet truncated at kyber_ct\n");
                 return -1;
             }
             const uint8_t *kyber_ct = packet + offset;
@@ -210,7 +213,7 @@ int gsk_packet_extract(const uint8_t *packet,
 
             // Wrapped GSK (40 bytes)
             if (offset + 40 > packet_size) {
-                fprintf(stderr, "[GSK_PACKET] Packet truncated at wrapped_gsk\n");
+                QGP_LOG_ERROR(LOG_TAG, "Packet truncated at wrapped_gsk\n");
                 return -1;
             }
             const uint8_t *wrapped_gsk = packet + offset;
@@ -220,17 +223,17 @@ int gsk_packet_extract(const uint8_t *packet,
             int ret = qgp_kem1024_decapsulate(kek, kyber_ct, my_kyber_privkey);
 
             if (ret != 0) {
-                fprintf(stderr, "[GSK_PACKET] Kyber1024 decapsulation failed\n");
+                QGP_LOG_ERROR(LOG_TAG, "Kyber1024 decapsulation failed\n");
                 return -1;
             }
 
             // AES key unwrap: wrapped_gsk + KEK -> GSK
             if (aes256_unwrap_key(wrapped_gsk, 40, kek, gsk_out) != 0) {
-                fprintf(stderr, "[GSK_PACKET] AES key unwrap failed\n");
+                QGP_LOG_ERROR(LOG_TAG, "AES key unwrap failed\n");
                 return -1;
             }
 
-            printf("[GSK_PACKET] Successfully extracted GSK\n");
+            QGP_LOG_INFO(LOG_TAG, "Successfully extracted GSK\n");
             return 0;
         }
 
@@ -238,7 +241,7 @@ int gsk_packet_extract(const uint8_t *packet,
         offset += 64 + 1568 + 40;  // fingerprint + kyber_ct + wrapped_gsk
     }
 
-    fprintf(stderr, "[GSK_PACKET] My fingerprint not found in packet\n");
+    QGP_LOG_ERROR(LOG_TAG, "My fingerprint not found in packet\n");
     return -1;
 }
 
@@ -250,7 +253,7 @@ int gsk_packet_verify(const uint8_t *packet,
                       const uint8_t *owner_dilithium_pubkey) {
     if (!packet || packet_size < GSK_PACKET_HEADER_SIZE ||
         !owner_dilithium_pubkey) {
-        fprintf(stderr, "[GSK_PACKET] verify: Invalid parameter\n");
+        QGP_LOG_ERROR(LOG_TAG, "verify: Invalid parameter\n");
         return -1;
     }
 
@@ -261,14 +264,14 @@ int gsk_packet_verify(const uint8_t *packet,
     size_t signature_offset = GSK_PACKET_HEADER_SIZE + (GSK_MEMBER_ENTRY_SIZE * member_count);
 
     if (signature_offset + 3 > packet_size) {
-        fprintf(stderr, "[GSK_PACKET] Packet too small for signature\n");
+        QGP_LOG_ERROR(LOG_TAG, "Packet too small for signature\n");
         return -1;
     }
 
     // Parse signature block
     uint8_t sig_type = packet[signature_offset];
     if (sig_type != 23) {
-        fprintf(stderr, "[GSK_PACKET] Invalid signature type: %u (expected 23)\n", sig_type);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid signature type: %u (expected 23)\n", sig_type);
         return -1;
     }
 
@@ -279,7 +282,7 @@ int gsk_packet_verify(const uint8_t *packet,
     const uint8_t *signature = packet + signature_offset + 3;
 
     if (signature_offset + 3 + sig_size > packet_size) {
-        fprintf(stderr, "[GSK_PACKET] Signature size mismatch\n");
+        QGP_LOG_ERROR(LOG_TAG, "Signature size mismatch\n");
         return -1;
     }
 
@@ -288,10 +291,10 @@ int gsk_packet_verify(const uint8_t *packet,
                                 owner_dilithium_pubkey);
 
     if (ret != 0) {
-        fprintf(stderr, "[GSK_PACKET] Signature verification FAILED\n");
+        QGP_LOG_ERROR(LOG_TAG, "Signature verification FAILED\n");
         return -1;
     }
 
-    printf("[GSK_PACKET] Signature verification OK\n");
+    QGP_LOG_INFO(LOG_TAG, "Signature verification OK\n");
     return 0;
 }

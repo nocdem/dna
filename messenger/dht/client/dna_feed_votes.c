@@ -17,6 +17,9 @@
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DNA_FEED"
 #endif
 
 /* Dilithium5 functions */
@@ -258,7 +261,7 @@ int dna_feed_votes_get(dht_context_t *dht_ctx, const char *post_id, dna_feed_vot
     char base_key[512];
     snprintf(base_key, sizeof(base_key), "dna:feed:post:%s:votes", post_id);
 
-    printf("[DNA_FEED] Fetching votes for post %s...\n", post_id);
+    QGP_LOG_INFO(LOG_TAG, "Fetching votes for post %s...\n", post_id);
 
     uint8_t *value = NULL;
     size_t value_len = 0;
@@ -286,7 +289,7 @@ int dna_feed_votes_get(dht_context_t *dht_ctx, const char *post_id, dna_feed_vot
     free(json_str);
 
     if (ret == 0) {
-        printf("[DNA_FEED] Loaded %zu votes (up=%d, down=%d)\n",
+        QGP_LOG_INFO(LOG_TAG, "Loaded %zu votes (up=%d, down=%d)\n",
                (*votes_out)->vote_count, (*votes_out)->upvote_count, (*votes_out)->downvote_count);
     }
 
@@ -302,7 +305,7 @@ int dna_feed_vote_cast(dht_context_t *dht_ctx,
 
     /* Validate vote value */
     if (vote_value != 1 && vote_value != -1) {
-        fprintf(stderr, "[DNA_FEED] Invalid vote value (must be +1 or -1)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid vote value (must be +1 or -1)\n");
         return -1;
     }
 
@@ -313,7 +316,7 @@ int dna_feed_vote_cast(dht_context_t *dht_ctx,
 
     /* Check if user already voted */
     if (dna_feed_get_user_vote(votes, voter_fingerprint) != 0) {
-        fprintf(stderr, "[DNA_FEED] User already voted on this post\n");
+        QGP_LOG_ERROR(LOG_TAG, "User already voted on this post\n");
         dna_feed_votes_free(votes);
         return -2;
     }
@@ -345,7 +348,7 @@ int dna_feed_vote_cast(dht_context_t *dht_ctx,
     free(sign_data);
 
     if (ret != 0) {
-        fprintf(stderr, "[DNA_FEED] Failed to sign vote\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign vote\n");
         dna_feed_votes_free(votes);
         return -1;
     }
@@ -381,19 +384,19 @@ int dna_feed_vote_cast(dht_context_t *dht_ctx,
     char base_key[512];
     snprintf(base_key, sizeof(base_key), "dna:feed:post:%s:votes", post_id);
 
-    printf("[DNA_FEED] Publishing vote to DHT...\n");
+    QGP_LOG_INFO(LOG_TAG, "Publishing vote to DHT...\n");
     ret = dht_chunked_publish(dht_ctx, base_key,
                               (const uint8_t *)json_data, strlen(json_data),
                               DNA_FEED_TTL_SECONDS);
     free(json_data);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA_FEED] Failed to publish vote: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish vote: %s\n", dht_chunked_strerror(ret));
         dna_feed_votes_free(votes);
         return -1;
     }
 
-    printf("[DNA_FEED] Successfully cast %s on post %s\n",
+    QGP_LOG_INFO(LOG_TAG, "Successfully cast %s on post %s\n",
            vote_value == 1 ? "upvote" : "downvote", post_id);
 
     dna_feed_votes_free(votes);

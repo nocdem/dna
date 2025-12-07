@@ -44,6 +44,9 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "P2P_ICE"
 #endif
 
 #define MAX_CANDIDATES_SIZE 4096
@@ -157,7 +160,7 @@ static int queue_push(message_queue_t *q, ice_message_t *msg) {
 
     // If queue is full, drop oldest message
     if (q->count >= MAX_MESSAGE_QUEUE_SIZE) {
-        fprintf(stderr, "[ICE] Queue full (%zu messages), dropping oldest\n", q->count);
+        QGP_LOG_ERROR(LOG_TAG, "Queue full (%zu messages), dropping oldest\n", q->count);
 
         ice_message_t *old = q->messages[q->head];
         if (old) {
@@ -237,26 +240,26 @@ static void on_juice_recv(juice_agent_t *agent, const char *data, size_t size, v
     ice_context_t *ctx = (ice_context_t*)user_ptr;
 
     if (!ctx) {
-        fprintf(stderr, "[ICE] Receive callback: NULL context\n");
+        QGP_LOG_ERROR(LOG_TAG, "Receive callback: NULL context\n");
         return;
     }
 
     // Check message size (reject oversized messages)
     if (size == 0 || size > 65536) {
-        fprintf(stderr, "[ICE] Receive callback: Invalid message size (%zu bytes)\n", size);
+        QGP_LOG_ERROR(LOG_TAG, "Receive callback: Invalid message size (%zu bytes)\n", size);
         return;
     }
 
     // Allocate new message
     ice_message_t *msg = malloc(sizeof(ice_message_t));
     if (!msg) {
-        fprintf(stderr, "[ICE] Failed to allocate message structure\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate message structure\n");
         return;
     }
 
     msg->data = malloc(size);
     if (!msg->data) {
-        fprintf(stderr, "[ICE] Failed to allocate message data\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate message data\n");
         free(msg);
         return;
     }
@@ -267,13 +270,13 @@ static void on_juice_recv(juice_agent_t *agent, const char *data, size_t size, v
 
     // Enqueue message
     if (queue_push(ctx->recv_queue, msg) < 0) {
-        fprintf(stderr, "[ICE] Failed to enqueue message\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to enqueue message\n");
         free(msg->data);
         free(msg);
         return;
     }
 
-    printf("[ICE] Received %zu bytes (queued, %zu messages total)\n",
+    QGP_LOG_INFO(LOG_TAG, "Received %zu bytes (queued, %zu messages total)\n",
            size, queue_length(ctx->recv_queue));
 }
 
@@ -295,7 +298,7 @@ static void on_juice_state_changed(juice_agent_t *agent, juice_state_t state, vo
         case JUICE_STATE_FAILED: state_str = "FAILED"; break;
     }
 
-    printf("[ICE] State changed: %s\n", state_str);
+    QGP_LOG_INFO(LOG_TAG, "State changed: %s\n", state_str);
 
     pthread_mutex_lock(&ctx->state_mutex);
 
@@ -318,7 +321,7 @@ static void on_juice_candidate(juice_agent_t *agent, const char *sdp, void *user
 
     if (!ctx || !sdp) return;
 
-    printf("[ICE] Local candidate: %s\n", sdp);
+    QGP_LOG_INFO(LOG_TAG, "Local candidate: %s\n", sdp);
 
     pthread_mutex_lock(&ctx->candidates_mutex);
 
@@ -327,7 +330,7 @@ static void on_juice_candidate(juice_agent_t *agent, const char *sdp, void *user
     size_t remaining = MAX_CANDIDATES_SIZE - ctx->candidates_len - 1;
 
     if (sdp_len + 1 > remaining) {
-        fprintf(stderr, "[ICE] Candidate buffer full, skipping candidate\n");
+        QGP_LOG_ERROR(LOG_TAG, "Candidate buffer full, skipping candidate\n");
         pthread_mutex_unlock(&ctx->candidates_mutex);
         return;
     }
@@ -353,7 +356,7 @@ static void on_juice_gathering_done(juice_agent_t *agent, void *user_ptr) {
 
     if (!ctx) return;
 
-    printf("[ICE] Candidate gathering completed\n");
+    QGP_LOG_INFO(LOG_TAG, "Candidate gathering completed\n");
 
     pthread_mutex_lock(&ctx->gathering_mutex);
     ctx->gathering_done = 1;
@@ -368,7 +371,7 @@ static void on_juice_gathering_done(juice_agent_t *agent, void *user_ptr) {
 ice_context_t* ice_context_new(void) {
     ice_context_t *ctx = calloc(1, sizeof(ice_context_t));
     if (!ctx) {
-        fprintf(stderr, "[ICE] Failed to allocate context\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate context\n");
         return NULL;
     }
 
@@ -398,7 +401,7 @@ ice_context_t* ice_context_new(void) {
     // Initialize message queue
     ctx->recv_queue = queue_new();
     if (!ctx->recv_queue) {
-        fprintf(stderr, "[ICE] Failed to create receive queue\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create receive queue\n");
         pthread_mutex_destroy(&ctx->state_mutex);
         pthread_cond_destroy(&ctx->state_cond);
         pthread_mutex_destroy(&ctx->gathering_mutex);
@@ -408,14 +411,14 @@ ice_context_t* ice_context_new(void) {
         return NULL;
     }
 
-    printf("[ICE] ICE context created (using libjuice)\n");
+    QGP_LOG_INFO(LOG_TAG, "ICE context created (using libjuice)\n");
     return ctx;
 }
 
 void ice_context_free(ice_context_t *ctx) {
     if (!ctx) return;
 
-    printf("[ICE] Freeing ICE context\n");
+    QGP_LOG_INFO(LOG_TAG, "Freeing ICE context\n");
 
     // Destroy libjuice agent
     if (ctx->agent) {
@@ -437,7 +440,7 @@ void ice_context_free(ice_context_t *ctx) {
     pthread_mutex_destroy(&ctx->candidates_mutex);
 
     free(ctx);
-    printf("[ICE] ICE context freed\n");
+    QGP_LOG_INFO(LOG_TAG, "ICE context freed\n");
 }
 
 // =============================================================================
@@ -446,11 +449,11 @@ void ice_context_free(ice_context_t *ctx) {
 
 int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t stun_port) {
     if (!ctx || !stun_server) {
-        fprintf(stderr, "[ICE] Invalid arguments to ice_gather_candidates\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to ice_gather_candidates\n");
         return -1;
     }
 
-    printf("[ICE] Starting candidate gathering (STUN: %s:%u)\n", stun_server, stun_port);
+    QGP_LOG_INFO(LOG_TAG, "Starting candidate gathering (STUN: %s:%u)\n", stun_server, stun_port);
 
     // Store STUN server info
     snprintf(ctx->stun_server, sizeof(ctx->stun_server), "%s", stun_server);
@@ -491,27 +494,27 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
         config.turn_servers = &turn_server;
         config.turn_servers_count = 1;
 
-        printf("[ICE] TURN server configured: %s:%u (user: %s)\n",
+        QGP_LOG_INFO(LOG_TAG, "TURN server configured: %s:%u (user: %s)\n",
                ctx->turn_server, ctx->turn_port, ctx->turn_username);
     }
 
     // Create libjuice agent
     ctx->agent = juice_create(&config);
     if (!ctx->agent) {
-        fprintf(stderr, "[ICE] Failed to create libjuice agent\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create libjuice agent\n");
         return -1;
     }
 
     // Set log level to WARN (suppress verbose STUN debug messages)
     juice_set_log_level(JUICE_LOG_LEVEL_WARN);
 
-    printf("[ICE] libjuice agent created%s\n",
+    QGP_LOG_INFO(LOG_TAG, "libjuice agent created%s\n",
            ctx->turn_enabled ? " (with TURN)" : "");
 
     // Start gathering candidates
     int ret = juice_gather_candidates(ctx->agent);
     if (ret < 0) {
-        fprintf(stderr, "[ICE] Failed to start candidate gathering\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start candidate gathering\n");
         return -1;
     }
 
@@ -522,7 +525,7 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
     while (!ctx->gathering_done) {
         int64_t now = get_monotonic_time_ms();
         if (now >= deadline) {
-            fprintf(stderr, "[ICE] Candidate gathering timeout\n");
+            QGP_LOG_ERROR(LOG_TAG, "Candidate gathering timeout\n");
             pthread_mutex_unlock(&ctx->gathering_mutex);
             return -1;
         }
@@ -533,7 +536,7 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
 
         int wait_ret = pthread_cond_timedwait(&ctx->gathering_cond, &ctx->gathering_mutex, &ts);
         if (wait_ret != 0 && wait_ret != ETIMEDOUT) {
-            fprintf(stderr, "[ICE] pthread_cond_timedwait failed: %d\n", wait_ret);
+            QGP_LOG_ERROR(LOG_TAG, "pthread_cond_timedwait failed: %d\n", wait_ret);
             pthread_mutex_unlock(&ctx->gathering_mutex);
             return -1;
         }
@@ -541,7 +544,7 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
 
     pthread_mutex_unlock(&ctx->gathering_mutex);
 
-    printf("[ICE] Candidate gathering complete\n");
+    QGP_LOG_INFO(LOG_TAG, "Candidate gathering complete\n");
     return 0;
 }
 
@@ -551,14 +554,14 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
 
 int ice_publish_to_dht(ice_context_t *ctx, const char *my_fingerprint) {
     if (!ctx || !my_fingerprint) {
-        fprintf(stderr, "[ICE] Invalid arguments to ice_publish_to_dht\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to ice_publish_to_dht\n");
         return -1;
     }
 
     pthread_mutex_lock(&ctx->candidates_mutex);
 
     if (ctx->candidates_len == 0) {
-        fprintf(stderr, "[ICE] No local candidates to publish\n");
+        QGP_LOG_ERROR(LOG_TAG, "No local candidates to publish\n");
         pthread_mutex_unlock(&ctx->candidates_mutex);
         return -1;
     }
@@ -566,7 +569,7 @@ int ice_publish_to_dht(ice_context_t *ctx, const char *my_fingerprint) {
     // Get DHT instance
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
-        fprintf(stderr, "[ICE] DHT not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
         pthread_mutex_unlock(&ctx->candidates_mutex);
         return -1;
     }
@@ -579,14 +582,14 @@ int ice_publish_to_dht(ice_context_t *ctx, const char *my_fingerprint) {
     char hex_key[129];  // 128 hex chars + null terminator
     if (qgp_sha3_512_hex((uint8_t*)key_input, strlen(key_input),
                          hex_key, sizeof(hex_key)) != 0) {
-        fprintf(stderr, "[ICE] Failed to hash DHT key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to hash DHT key\n");
         pthread_mutex_unlock(&ctx->candidates_mutex);
         return -1;
     }
 
     // Publish to DHT (signed, 7-day TTL, value_id=1 for replacement)
     // ICE candidates are ephemeral and refreshed regularly
-    printf("[ICE] Publishing %zu bytes of candidates to DHT\n", ctx->candidates_len);
+    QGP_LOG_INFO(LOG_TAG, "Publishing %zu bytes of candidates to DHT\n", ctx->candidates_len);
 
     unsigned int ttl_7days = 7 * 24 * 3600;  // 604800 seconds
     int ret = dht_put_signed(dht, (uint8_t*)hex_key, strlen(hex_key),
@@ -596,24 +599,24 @@ int ice_publish_to_dht(ice_context_t *ctx, const char *my_fingerprint) {
     pthread_mutex_unlock(&ctx->candidates_mutex);
 
     if (ret < 0) {
-        fprintf(stderr, "[ICE] Failed to publish candidates to DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish candidates to DHT\n");
         return -1;
     }
 
-    printf("[ICE] Candidates published to DHT (signed)\n");
+    QGP_LOG_INFO(LOG_TAG, "Candidates published to DHT (signed)\n");
     return 0;
 }
 
 int ice_fetch_from_dht(ice_context_t *ctx, const char *peer_fingerprint) {
     if (!ctx || !peer_fingerprint) {
-        fprintf(stderr, "[ICE] Invalid arguments to ice_fetch_from_dht\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to ice_fetch_from_dht\n");
         return -1;
     }
 
     // Get DHT instance
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
-        fprintf(stderr, "[ICE] DHT not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
         return -1;
     }
 
@@ -625,26 +628,26 @@ int ice_fetch_from_dht(ice_context_t *ctx, const char *peer_fingerprint) {
     char hex_key[129];  // 128 hex chars + null terminator
     if (qgp_sha3_512_hex((uint8_t*)key_input, strlen(key_input),
                          hex_key, sizeof(hex_key)) != 0) {
-        fprintf(stderr, "[ICE] Failed to hash DHT key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to hash DHT key\n");
         return -1;
     }
 
     // Fetch from DHT
-    printf("[ICE] Fetching candidates from DHT for peer: %.16s...\n", peer_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Fetching candidates from DHT for peer: %.16s...\n", peer_fingerprint);
 
     uint8_t *value_data = NULL;
     size_t value_len = 0;
 
     int ret = dht_get(dht, (uint8_t*)hex_key, strlen(hex_key), &value_data, &value_len);
     if (ret != 0 || !value_data) {
-        fprintf(stderr, "[ICE] No candidates found in DHT for peer\n");
+        QGP_LOG_ERROR(LOG_TAG, "No candidates found in DHT for peer\n");
         if (value_data) free(value_data);
         return -1;
     }
 
     // Check size
     if (value_len >= MAX_CANDIDATES_SIZE) {
-        fprintf(stderr, "[ICE] Candidate data too large (%zu bytes)\n", value_len);
+        QGP_LOG_ERROR(LOG_TAG, "Candidate data too large (%zu bytes)\n", value_len);
         free(value_data);
         return -1;
     }
@@ -654,7 +657,7 @@ int ice_fetch_from_dht(ice_context_t *ctx, const char *peer_fingerprint) {
     ctx->remote_candidates[value_len] = '\0';
     free(value_data);
 
-    printf("[ICE] Fetched %zu bytes of remote candidates from DHT\n", value_len);
+    QGP_LOG_INFO(LOG_TAG, "Fetched %zu bytes of remote candidates from DHT\n", value_len);
     return 0;
 }
 
@@ -664,26 +667,26 @@ int ice_fetch_from_dht(ice_context_t *ctx, const char *peer_fingerprint) {
 
 int ice_connect(ice_context_t *ctx) {
     if (!ctx) {
-        fprintf(stderr, "[ICE] Invalid context\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context\n");
         return -1;
     }
 
     if (!ctx->agent) {
-        fprintf(stderr, "[ICE] Agent not initialized (call ice_gather_candidates first)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Agent not initialized (call ice_gather_candidates first)\n");
         return -1;
     }
 
     if (strlen(ctx->remote_candidates) == 0) {
-        fprintf(stderr, "[ICE] No remote candidates (call ice_fetch_from_dht first)\n");
+        QGP_LOG_ERROR(LOG_TAG, "No remote candidates (call ice_fetch_from_dht first)\n");
         return -1;
     }
 
-    printf("[ICE] Starting ICE connectivity checks\n");
+    QGP_LOG_INFO(LOG_TAG, "Starting ICE connectivity checks\n");
 
     // Parse and add remote candidates (newline-separated SDP)
     char *candidates_copy = strdup(ctx->remote_candidates);
     if (!candidates_copy) {
-        fprintf(stderr, "[ICE] Failed to allocate memory for candidates\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate memory for candidates\n");
         return -1;
     }
 
@@ -695,7 +698,7 @@ int ice_connect(ice_context_t *ctx) {
         if (strlen(line) > 0) {
             int ret = juice_add_remote_candidate(ctx->agent, line);
             if (ret < 0) {
-                fprintf(stderr, "[ICE] Failed to add remote candidate: %s\n", line);
+                QGP_LOG_ERROR(LOG_TAG, "Failed to add remote candidate: %s\n", line);
             } else {
                 candidate_count++;
             }
@@ -706,11 +709,11 @@ int ice_connect(ice_context_t *ctx) {
     free(candidates_copy);
 
     if (candidate_count == 0) {
-        fprintf(stderr, "[ICE] No valid remote candidates added\n");
+        QGP_LOG_ERROR(LOG_TAG, "No valid remote candidates added\n");
         return -1;
     }
 
-    printf("[ICE] Added %d remote candidates\n", candidate_count);
+    QGP_LOG_INFO(LOG_TAG, "Added %d remote candidates\n", candidate_count);
 
     // Wait for connection (max 10 seconds)
     pthread_mutex_lock(&ctx->state_mutex);
@@ -719,7 +722,7 @@ int ice_connect(ice_context_t *ctx) {
     while (!ctx->connected) {
         int64_t now = get_monotonic_time_ms();
         if (now >= deadline) {
-            fprintf(stderr, "[ICE] Connection timeout\n");
+            QGP_LOG_ERROR(LOG_TAG, "Connection timeout\n");
             pthread_mutex_unlock(&ctx->state_mutex);
             return -1;
         }
@@ -730,7 +733,7 @@ int ice_connect(ice_context_t *ctx) {
 
         int wait_ret = pthread_cond_timedwait(&ctx->state_cond, &ctx->state_mutex, &ts);
         if (wait_ret != 0 && wait_ret != ETIMEDOUT) {
-            fprintf(stderr, "[ICE] pthread_cond_timedwait failed: %d\n", wait_ret);
+            QGP_LOG_ERROR(LOG_TAG, "pthread_cond_timedwait failed: %d\n", wait_ret);
             pthread_mutex_unlock(&ctx->state_mutex);
             return -1;
         }
@@ -738,7 +741,7 @@ int ice_connect(ice_context_t *ctx) {
 
     pthread_mutex_unlock(&ctx->state_mutex);
 
-    printf("[ICE] ICE connection established\n");
+    QGP_LOG_INFO(LOG_TAG, "ICE connection established\n");
     return 0;
 }
 
@@ -748,40 +751,40 @@ int ice_connect(ice_context_t *ctx) {
 
 int ice_send(ice_context_t *ctx, const uint8_t *data, size_t len) {
     if (!ctx || !data || len == 0) {
-        fprintf(stderr, "[ICE] Invalid arguments to ice_send\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to ice_send\n");
         return -1;
     }
 
     if (!ctx->agent) {
-        fprintf(stderr, "[ICE] Agent not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Agent not initialized\n");
         return -1;
     }
 
     if (!ctx->connected) {
-        fprintf(stderr, "[ICE] Not connected\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not connected\n");
         return -1;
     }
 
     // Send data (libjuice handles retries internally)
     int ret = juice_send(ctx->agent, (const char*)data, len);
     if (ret < 0) {
-        fprintf(stderr, "[ICE] juice_send failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "juice_send failed\n");
         return -1;
     }
 
-    printf("[ICE] Sent %zu bytes\n", len);
+    QGP_LOG_INFO(LOG_TAG, "Sent %zu bytes\n", len);
     return (int)len;
 }
 
 int ice_recv_timeout(ice_context_t *ctx, uint8_t *buf, size_t buflen, int timeout_ms) {
     if (!ctx || !buf || buflen == 0) {
-        fprintf(stderr, "[ICE] Invalid arguments to ice_recv_timeout\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to ice_recv_timeout\n");
         return -1;
     }
 
     message_queue_t *q = ctx->recv_queue;
     if (!q) {
-        fprintf(stderr, "[ICE] Receive queue not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Receive queue not initialized\n");
         return -1;
     }
 
@@ -831,7 +834,7 @@ int ice_recv_timeout(ice_context_t *ctx, uint8_t *buf, size_t buflen, int timeou
 
     // Check buffer size
     if (msg->len > buflen) {
-        fprintf(stderr, "[ICE] Buffer too small (%zu bytes needed, %zu available)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Buffer too small (%zu bytes needed, %zu available)\n",
                 msg->len, buflen);
 
         // Return message to front of queue
@@ -876,7 +879,7 @@ int ice_is_connected(ice_context_t *ctx) {
 void ice_shutdown(ice_context_t *ctx) {
     if (!ctx) return;
 
-    printf("[ICE] Shutting down ICE connection\n");
+    QGP_LOG_INFO(LOG_TAG, "Shutting down ICE connection\n");
 
     pthread_mutex_lock(&ctx->state_mutex);
     ctx->connected = 0;
@@ -1027,7 +1030,7 @@ static int ice_configure_turn(ice_context_t *ice_ctx, const turn_credentials_t *
     strncpy(ice_ctx->turn_password, server->password, sizeof(ice_ctx->turn_password) - 1);
     ice_ctx->turn_enabled = 1;
 
-    printf("[ICE] TURN configured: %s:%u\n", server->host, server->port);
+    QGP_LOG_INFO(LOG_TAG, "TURN configured: %s:%u\n", server->host, server->port);
     return 0;
 }
 
@@ -1052,20 +1055,20 @@ static int ice_request_turn_credentials(
     if (!pubkey || !privkey) {
         // Keys not available - TURN request not possible
         // This is expected when p2p_transport doesn't have key access
-        printf("[ICE] TURN credentials not available (no keys)\n");
+        QGP_LOG_INFO(LOG_TAG, "TURN credentials not available (no keys)\n");
         return -1;
     }
 
-    printf("[ICE] Requesting TURN credentials from dna-nodus...\n");
+    QGP_LOG_INFO(LOG_TAG, "Requesting TURN credentials from dna-nodus...\n");
 
     // Request credentials (5 second timeout - nodus TURN not yet implemented)
     int ret = turn_credentials_request(fingerprint, pubkey, privkey, creds, 5000);
     if (ret != 0) {
-        fprintf(stderr, "[ICE] Failed to get TURN credentials\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get TURN credentials\n");
         return -1;
     }
 
-    printf("[ICE] ✓ Got TURN credentials (%zu servers)\n", creds->server_count);
+    QGP_LOG_INFO(LOG_TAG, "✓ Got TURN credentials (%zu servers)\n", creds->server_count);
     return 0;
 }
 

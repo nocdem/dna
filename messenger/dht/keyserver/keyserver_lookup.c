@@ -11,6 +11,9 @@
 #include "../core/dht_keyserver.h"
 #include "../client/dna_profile.h"
 #include <pthread.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "KEYSERVER"
 
 // Lookup identity from DHT (supports both fingerprint and name)
 // Returns dna_unified_identity_t from fingerprint:profile
@@ -20,7 +23,7 @@ int dht_keyserver_lookup(
     dna_unified_identity_t **identity_out
 ) {
     if (!dht_ctx || !name_or_fingerprint || !identity_out) {
-        fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments\n");
         return -1;
     }
 
@@ -32,10 +35,10 @@ int dht_keyserver_lookup(
         // Direct fingerprint lookup
         strncpy(fingerprint, name_or_fingerprint, 128);
         fingerprint[128] = '\0';
-        printf("[DHT_KEYSERVER] Direct fingerprint lookup: %.16s...\n", fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Direct fingerprint lookup: %.16s...\n", fingerprint);
     } else {
         // Name lookup: first resolve name → fingerprint via name:lookup
-        printf("[DHT_KEYSERVER] Name lookup: resolving '%s' to fingerprint\n", name_or_fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Name lookup: resolving '%s' to fingerprint\n", name_or_fingerprint);
 
         char alias_base_key[256];
         snprintf(alias_base_key, sizeof(alias_base_key), "%s:lookup", name_or_fingerprint);
@@ -45,13 +48,13 @@ int dht_keyserver_lookup(
         int alias_ret = dht_chunked_fetch(dht_ctx, alias_base_key, &alias_data, &alias_data_len);
 
         if (alias_ret != DHT_CHUNK_OK || !alias_data) {
-            fprintf(stderr, "[DHT_KEYSERVER] Name '%s' not registered: %s\n",
+            QGP_LOG_ERROR(LOG_TAG, "Name '%s' not registered: %s\n",
                     name_or_fingerprint, dht_chunked_strerror(alias_ret));
             return -2;  // Name not found
         }
 
         if (alias_data_len != 128) {
-            fprintf(stderr, "[DHT_KEYSERVER] Invalid alias data length: %zu\n", alias_data_len);
+            QGP_LOG_ERROR(LOG_TAG, "Invalid alias data length: %zu\n", alias_data_len);
             free(alias_data);
             return -1;
         }
@@ -60,21 +63,21 @@ int dht_keyserver_lookup(
         fingerprint[128] = '\0';
         free(alias_data);
 
-        printf("[DHT_KEYSERVER] ✓ Name resolved to fingerprint: %.16s...\n", fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "✓ Name resolved to fingerprint: %.16s...\n", fingerprint);
     }
 
     // Fetch identity from fingerprint:profile
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    printf("[DHT_KEYSERVER] Fetching identity from: %s\n", base_key);
+    QGP_LOG_INFO(LOG_TAG, "Fetching identity from: %s\n", base_key);
 
     uint8_t *data = NULL;
     size_t data_len = 0;
     int ret = dht_chunked_fetch(dht_ctx, base_key, &data, &data_len);
 
     if (ret != DHT_CHUNK_OK || !data) {
-        fprintf(stderr, "[DHT_KEYSERVER] Identity not found: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Identity not found: %s\n", dht_chunked_strerror(ret));
         return -2;  // Not found
     }
 
@@ -90,7 +93,7 @@ int dht_keyserver_lookup(
 
     dna_unified_identity_t *identity = NULL;
     if (dna_identity_from_json(json_str, &identity) != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to parse identity JSON\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse identity JSON\n");
         free(json_str);
         return -1;
     }
@@ -165,7 +168,7 @@ int dht_keyserver_lookup(
     free(msg);
 
     if (sig_result != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Signature verification failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Signature verification failed\n");
         dna_identity_free(identity);
         return -3;
     }
@@ -175,13 +178,13 @@ int dht_keyserver_lookup(
     compute_fingerprint(identity->dilithium_pubkey, computed_fingerprint);
 
     if (strcmp(computed_fingerprint, fingerprint) != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Fingerprint mismatch\n");
+        QGP_LOG_ERROR(LOG_TAG, "Fingerprint mismatch\n");
         dna_identity_free(identity);
         return -3;
     }
 
-    printf("[DHT_KEYSERVER] ✓ Identity retrieved and verified\n");
-    printf("[DHT_KEYSERVER] Name: %s, Version: %u\n",
+    QGP_LOG_INFO(LOG_TAG, "✓ Identity retrieved and verified\n");
+    QGP_LOG_INFO(LOG_TAG, "Name: %s, Version: %u\n",
            identity->has_registered_name ? identity->registered_name : "(none)",
            identity->version);
 
@@ -197,33 +200,33 @@ int dht_keyserver_reverse_lookup(
     char **identity_out
 ) {
     if (!dht_ctx || !fingerprint || !identity_out) {
-        fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments to reverse_lookup\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to reverse_lookup\n");
         return -1;
     }
 
     *identity_out = NULL;
 
-    printf("[DHT_KEYSERVER] Reverse lookup for fingerprint: %.16s...\n", fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Reverse lookup for fingerprint: %.16s...\n", fingerprint);
 
     // Use dht_keyserver_lookup to fetch the full identity
     dna_unified_identity_t *identity = NULL;
     int ret = dht_keyserver_lookup(dht_ctx, fingerprint, &identity);
 
     if (ret != 0 || !identity) {
-        printf("[DHT_KEYSERVER] Identity not found for fingerprint\n");
+        QGP_LOG_INFO(LOG_TAG, "Identity not found for fingerprint\n");
         return ret;
     }
 
     // Extract registered name
     if (identity->has_registered_name && identity->registered_name[0] != '\0') {
         *identity_out = strdup(identity->registered_name);
-        printf("[DHT_KEYSERVER] ✓ Reverse lookup successful: %s\n", identity->registered_name);
+        QGP_LOG_INFO(LOG_TAG, "✓ Reverse lookup successful: %s\n", identity->registered_name);
     } else {
         // No registered name - return shortened fingerprint
         char short_fp[32];
         snprintf(short_fp, sizeof(short_fp), "%.16s...", fingerprint);
         *identity_out = strdup(short_fp);
-        printf("[DHT_KEYSERVER] No registered name, returning fingerprint prefix\n");
+        QGP_LOG_INFO(LOG_TAG, "No registered name, returning fingerprint prefix\n");
     }
 
     dna_identity_free(identity);
@@ -267,17 +270,17 @@ void dht_keyserver_reverse_lookup_async(
     void *userdata
 ) {
     if (!dht_ctx || !fingerprint || !callback) {
-        fprintf(stderr, "[DHT_KEYSERVER] Invalid arguments to reverse_lookup_async\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to reverse_lookup_async\n");
         if (callback) callback(NULL, userdata);
         return;
     }
 
-    printf("[DHT_KEYSERVER] Async reverse lookup for fingerprint: %s\n", fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Async reverse lookup for fingerprint: %s\n", fingerprint);
 
     // Allocate context for the thread
     reverse_lookup_async_ctx_t *ctx = malloc(sizeof(reverse_lookup_async_ctx_t));
     if (!ctx) {
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to allocate async context\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate async context\n");
         callback(NULL, userdata);
         return;
     }
@@ -295,7 +298,7 @@ void dht_keyserver_reverse_lookup_async(
     pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
 
     if (pthread_create(&thread, &attr, reverse_lookup_thread, ctx) != 0) {
-        fprintf(stderr, "[DHT_KEYSERVER] Failed to create async thread\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create async thread\n");
         free(ctx);
         callback(NULL, userdata);
     }

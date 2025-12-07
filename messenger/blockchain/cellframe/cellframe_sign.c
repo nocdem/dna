@@ -10,6 +10,9 @@
 #include <string.h>
 #include <stdio.h>
 #include <openssl/evp.h>
+#include "../../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "WALLET_SIGN"
 
 // ============================================================================
 // SHA3-256 IMPLEMENTATION (Using OpenSSL)
@@ -176,7 +179,7 @@ int cellframe_sign_transaction(const uint8_t *tx_data, size_t tx_size,
         if (f_sign) {
             fwrite(tx_data, 1, tx_size, f_sign);
             fclose(f_sign);
-            fprintf(stderr, "[SIGN] DEBUG: Saved signing data to /tmp/signing_data_our.bin\n");
+            QGP_LOG_ERROR(LOG_TAG, "DEBUG: Saved signing data to /tmp/signing_data_our.bin\n");
         }
     }
 #endif

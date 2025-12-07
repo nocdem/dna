@@ -4,6 +4,9 @@
  */
 
 #include "transport_core.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "P2P_TCP"
 
 /**
  * NOTE: This function is for future persistent bidirectional P2P connections (not currently used).
@@ -19,7 +22,7 @@
 void* listener_thread(void *arg) {
     p2p_transport_t *ctx = (p2p_transport_t*)arg;
 
-    printf("[P2P] Listener thread started on port %d\n", ctx->config.listen_port);
+    QGP_LOG_INFO(LOG_TAG, "Listener thread started on port %d\n", ctx->config.listen_port);
 
     while (ctx->running) {
         struct sockaddr_in client_addr;
@@ -31,12 +34,12 @@ void* listener_thread(void *arg) {
 
         if (client_sock < 0) {
             if (ctx->running) {
-                printf("[P2P] Accept error: %s\n", strerror(errno));
+                QGP_LOG_INFO(LOG_TAG, "Accept error: %s\n", strerror(errno));
             }
             continue;
         }
 
-        printf("[P2P] New connection from %s:%d\n",
+        QGP_LOG_INFO(LOG_TAG, "New connection from %s:%d\n",
                inet_ntoa(client_addr.sin_addr),
                ntohs(client_addr.sin_port));
 
@@ -46,7 +49,7 @@ void* listener_thread(void *arg) {
         ssize_t received = recv(client_sock, (char*)&msg_len_network, sizeof(msg_len_network), 0);
 
         if (received != sizeof(msg_len_network)) {
-            printf("[P2P] Failed to receive message length header\n");
+            QGP_LOG_INFO(LOG_TAG, "Failed to receive message length header\n");
             close(client_sock);
             continue;
         }
@@ -55,7 +58,7 @@ void* listener_thread(void *arg) {
 
         // Sanity check: max 10MB message
         if (msg_len == 0 || msg_len > 10 * 1024 * 1024) {
-            printf("[P2P] Invalid message length: %u bytes\n", msg_len);
+            QGP_LOG_INFO(LOG_TAG, "Invalid message length: %u bytes\n", msg_len);
             close(client_sock);
             continue;
         }
@@ -63,7 +66,7 @@ void* listener_thread(void *arg) {
         // Allocate buffer and receive message
         uint8_t *message = (uint8_t*)malloc(msg_len);
         if (!message) {
-            printf("[P2P] Failed to allocate %u bytes for message\n", msg_len);
+            QGP_LOG_INFO(LOG_TAG, "Failed to allocate %u bytes for message\n", msg_len);
             close(client_sock);
             continue;
         }
@@ -73,7 +76,7 @@ void* listener_thread(void *arg) {
             received = recv(client_sock, (char*)message + total_received,
                           msg_len - total_received, 0);
             if (received <= 0) {
-                printf("[P2P] Connection closed while receiving message\n");
+                QGP_LOG_INFO(LOG_TAG, "Connection closed while receiving message\n");
                 free(message);
                 close(client_sock);
                 goto next_connection;
@@ -81,7 +84,7 @@ void* listener_thread(void *arg) {
             total_received += received;
         }
 
-        printf("[P2P] ✓ Received %u bytes from peer\n", msg_len);
+        QGP_LOG_INFO(LOG_TAG, "✓ Received %u bytes from peer\n", msg_len);
 
         // Call message callback if registered (stores message in SQLite)
         // Protected by callback_mutex to prevent TOCTOU race condition
@@ -97,9 +100,9 @@ void* listener_thread(void *arg) {
         uint8_t ack = 0x01;
         ssize_t ack_sent = send(client_sock, (char*)&ack, 1, 0);
         if (ack_sent == 1) {
-            printf("[P2P] ✓ Sent ACK to peer\n");
+            QGP_LOG_INFO(LOG_TAG, "✓ Sent ACK to peer\n");
         } else {
-            printf("[P2P] Failed to send ACK (peer may assume failure)\n");
+            QGP_LOG_INFO(LOG_TAG, "Failed to send ACK (peer may assume failure)\n");
         }
 
         free(message);
@@ -125,7 +128,7 @@ int tcp_create_listener(p2p_transport_t *ctx) {
     // Create TCP listening socket
     ctx->listen_sockfd = socket(AF_INET, SOCK_STREAM, 0);
     if (ctx->listen_sockfd < 0) {
-        printf("[P2P] Failed to create listening socket: %s\n", strerror(errno));
+        QGP_LOG_INFO(LOG_TAG, "Failed to create listening socket: %s\n", strerror(errno));
         return -1;
     }
 
@@ -144,7 +147,7 @@ int tcp_create_listener(p2p_transport_t *ctx) {
     server_addr.sin_port = htons(ctx->config.listen_port);
 
     if (bind(ctx->listen_sockfd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-        printf("[P2P] Failed to bind to port %d: %s\n",
+        QGP_LOG_INFO(LOG_TAG, "Failed to bind to port %d: %s\n",
                ctx->config.listen_port, strerror(errno));
         close(ctx->listen_sockfd);
         return -1;
@@ -152,12 +155,12 @@ int tcp_create_listener(p2p_transport_t *ctx) {
 
     // Start listening
     if (listen(ctx->listen_sockfd, 32) < 0) {
-        printf("[P2P] Failed to listen: %s\n", strerror(errno));
+        QGP_LOG_INFO(LOG_TAG, "Failed to listen: %s\n", strerror(errno));
         close(ctx->listen_sockfd);
         return -1;
     }
 
-    printf("[P2P] TCP listener started on port %d\n", ctx->config.listen_port);
+    QGP_LOG_INFO(LOG_TAG, "TCP listener started on port %d\n", ctx->config.listen_port);
 
     return 0;
 }
@@ -174,12 +177,12 @@ int tcp_start_listener_thread(p2p_transport_t *ctx) {
 
     ctx->running = true;
     if (pthread_create(&ctx->listen_thread, NULL, listener_thread, ctx) != 0) {
-        printf("[P2P] Failed to create listener thread\n");
+        QGP_LOG_INFO(LOG_TAG, "Failed to create listener thread\n");
         ctx->running = false;
         return -1;
     }
 
-    printf("[P2P] Listener thread started\n");
+    QGP_LOG_INFO(LOG_TAG, "Listener thread started\n");
 
     return 0;
 }

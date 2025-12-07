@@ -5,6 +5,9 @@
 
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "KEYSERVER"
 
 // Resolve DNA name to wallet address
 int dna_resolve_address(
@@ -14,7 +17,7 @@ int dna_resolve_address(
     char **address_out
 ) {
     if (!dht_ctx || !name || !network || !address_out) {
-        fprintf(stderr, "[DNA] Invalid arguments to dna_resolve_address\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_resolve_address\n");
         return -1;
     }
 
@@ -56,7 +59,7 @@ int dna_resolve_address(
     const char *address = dna_identity_get_wallet(identity, network);
 
     if (!address || address[0] == '\0') {
-        fprintf(stderr, "[DNA] No address for network '%s'\n", network);
+        QGP_LOG_ERROR(LOG_TAG, "No address for network '%s'\n", network);
         dna_identity_free(identity);
         return -3;  // No address for network
     }
@@ -68,7 +71,7 @@ int dna_resolve_address(
         return -1;
     }
 
-    printf("[DNA] ✓ Resolved: %s → %s on %s\n", name, result, network);
+    QGP_LOG_INFO(LOG_TAG, "✓ Resolved: %s → %s on %s\n", name, result, network);
 
     *address_out = result;
     return 0;

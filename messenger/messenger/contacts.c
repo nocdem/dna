@@ -12,6 +12,9 @@
 #include "../dht/core/dht_context.h"
 #include "../database/contacts_db.h"
 #include "../p2p/p2p_transport.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MSG_CONTACTS"
 
 // ============================================================================
 // DHT CONTACT SYNCHRONIZATION
@@ -22,23 +25,23 @@
  */
 int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
     if (!ctx || !ctx->identity) {
-        fprintf(stderr, "[MESSENGER] Invalid context for DHT sync\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context for DHT sync\n");
         return -1;
     }
 
     // Get DHT context
     dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
     if (!dht_ctx) {
-        fprintf(stderr, "[MESSENGER] DHT not available\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
-    printf("[MESSENGER] Syncing contacts to DHT for '%s'\n", ctx->identity);
+    QGP_LOG_INFO(LOG_TAG, "Syncing contacts to DHT for '%s'\n", ctx->identity);
 
     // Load user's keys
     const char *home = qgp_platform_home_dir();
     if (!home) {
-        fprintf(stderr, "[MESSENGER] Failed to get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
         return -1;
     }
 
@@ -48,7 +51,7 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to load Kyber key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key\n");
         return -1;
     }
 
@@ -58,7 +61,7 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
 
     qgp_key_t *dilithium_key = NULL;
     if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to load Dilithium key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key\n");
         qgp_key_free(kyber_key);
         return -1;
     }
@@ -66,7 +69,7 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
     // Get contact list from local database
     contact_list_t *list = NULL;
     if (contacts_db_list(&list) != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to get contact list\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get contact list\n");
         qgp_key_free(kyber_key);
         qgp_key_free(dilithium_key);
         return -1;
@@ -77,7 +80,7 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
     if (list->count > 0) {
         contacts = malloc(list->count * sizeof(char*));
         if (!contacts) {
-            fprintf(stderr, "[MESSENGER] Failed to allocate contacts array\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate contacts array\n");
             contacts_db_free_list(list);
             qgp_key_free(kyber_key);
             qgp_key_free(dilithium_key);
@@ -112,9 +115,9 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
     qgp_key_free(dilithium_key);
 
     if (result == 0) {
-        printf("[MESSENGER] Successfully synced %zu contacts to DHT\n", contact_count);
+        QGP_LOG_INFO(LOG_TAG, "Successfully synced %zu contacts to DHT\n", contact_count);
     } else {
-        fprintf(stderr, "[MESSENGER] Failed to sync contacts to DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sync contacts to DHT\n");
     }
 
     return result;
@@ -126,23 +129,23 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
  */
 int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     if (!ctx || !ctx->identity) {
-        fprintf(stderr, "[MESSENGER] Invalid context for DHT sync\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context for DHT sync\n");
         return -1;
     }
 
     // Get DHT context
     dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
     if (!dht_ctx) {
-        fprintf(stderr, "[MESSENGER] DHT not available\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
-    printf("[MESSENGER] Syncing contacts from DHT for '%s'\n", ctx->identity);
+    QGP_LOG_INFO(LOG_TAG, "Syncing contacts from DHT for '%s'\n", ctx->identity);
 
     // Load user's keys
     const char *home = qgp_platform_home_dir();
     if (!home) {
-        fprintf(stderr, "[MESSENGER] Failed to get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
         return -1;
     }
 
@@ -152,7 +155,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to load Kyber key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key\n");
         return -1;
     }
 
@@ -162,7 +165,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
 
     qgp_key_t *dilithium_key = NULL;
     if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to load Dilithium key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key\n");
         qgp_key_free(kyber_key);
         return -1;
     }
@@ -185,23 +188,23 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
 
     if (result == -2) {
         // Not found in DHT - this is OK for first time users
-        printf("[MESSENGER] No contacts found in DHT (first time user)\n");
+        QGP_LOG_INFO(LOG_TAG, "No contacts found in DHT (first time user)\n");
         return 0;
     }
 
     if (result != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to fetch contacts from DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch contacts from DHT\n");
         return -1;
     }
 
-    printf("[MESSENGER] Fetched %zu contacts from DHT\n", count);
+    QGP_LOG_INFO(LOG_TAG, "Fetched %zu contacts from DHT\n", count);
 
     // REPLACE mode: DHT is source of truth (deletions propagate)
     // With safety checks to prevent data loss from DHT failures
 
     // SAFETY CHECK 1: Verify DHT is actually connected
     if (!dht_context_is_ready(dht_ctx)) {
-        fprintf(stderr, "[MESSENGER] SAFETY: DHT not ready, keeping local contacts\n");
+        QGP_LOG_ERROR(LOG_TAG, "SAFETY: DHT not ready, keeping local contacts\n");
         dht_contactlist_free_contacts(contacts, count);
         return -1;
     }
@@ -209,7 +212,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     // SAFETY CHECK 2: Get local contact count for comparison
     int local_count = contacts_db_count();
     if (local_count < 0) {
-        fprintf(stderr, "[MESSENGER] Failed to get local contact count\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get local contact count\n");
         dht_contactlist_free_contacts(contacts, count);
         return -1;
     }
@@ -218,8 +221,8 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     // If local has MORE contacts than DHT, abort (DHT is stale or incomplete)
     // Only sync from DHT if it has MORE or EQUAL contacts
     if (local_count > 0 && count < (size_t)local_count) {
-        printf("[MESSENGER] SAFETY: Local has %d contacts but DHT has %zu\n", local_count, count);
-        printf("[MESSENGER] SAFETY: DHT appears stale - using MERGE mode instead of REPLACE\n");
+        QGP_LOG_INFO(LOG_TAG, "SAFETY: Local has %d contacts but DHT has %zu\n", local_count, count);
+        QGP_LOG_INFO(LOG_TAG, "SAFETY: DHT appears stale - using MERGE mode instead of REPLACE\n");
 
         // MERGE mode: only ADD contacts from DHT that don't exist locally
         size_t added = 0;
@@ -227,20 +230,20 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
             if (!contacts_db_exists(contacts[i])) {
                 if (contacts_db_add(contacts[i], NULL) == 0) {
                     added++;
-                    printf("[MESSENGER] MERGE: Added new contact from DHT: %s\n", contacts[i]);
+                    QGP_LOG_INFO(LOG_TAG, "MERGE: Added new contact from DHT: %s\n", contacts[i]);
                 }
             }
         }
         dht_contactlist_free_contacts(contacts, count);
-        printf("[MESSENGER] MERGE sync complete: added %zu new contacts from DHT\n", added);
+        QGP_LOG_INFO(LOG_TAG, "MERGE sync complete: added %zu new contacts from DHT\n", added);
         return 0;
     }
 
     // DHT has equal or more contacts - safe to REPLACE
-    printf("[MESSENGER] REPLACE sync: DHT has %zu contacts (local had %d)\n", count, local_count);
+    QGP_LOG_INFO(LOG_TAG, "REPLACE sync: DHT has %zu contacts (local had %d)\n", count, local_count);
 
     if (contacts_db_clear_all() != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to clear local contacts\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to clear local contacts\n");
         dht_contactlist_free_contacts(contacts, count);
         return -1;
     }
@@ -251,13 +254,13 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         if (contacts_db_add(contacts[i], NULL) == 0) {
             added++;
         } else {
-            fprintf(stderr, "[MESSENGER] Warning: Failed to add contact '%s'\n", contacts[i]);
+            QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to add contact '%s'\n", contacts[i]);
         }
     }
 
     dht_contactlist_free_contacts(contacts, count);
 
-    printf("[MESSENGER] REPLACE sync complete: %zu contacts from DHT (was %d local)\n",
+    QGP_LOG_INFO(LOG_TAG, "REPLACE sync complete: %zu contacts from DHT (was %d local)\n",
            added, local_count);
     return 0;
 }
@@ -277,17 +280,17 @@ int messenger_contacts_auto_sync(messenger_context_t *ctx) {
     }
     sync_attempted = true;
 
-    printf("[MESSENGER] Auto-sync: Checking DHT for existing contacts\n");
+    QGP_LOG_INFO(LOG_TAG, "Auto-sync: Checking DHT for existing contacts\n");
 
     // Try to sync from DHT first (DHT is source of truth)
     int result = messenger_sync_contacts_from_dht(ctx);
 
     if (result == 0) {
-        printf("[MESSENGER] Auto-sync: Successfully synced from DHT\n");
+        QGP_LOG_INFO(LOG_TAG, "Auto-sync: Successfully synced from DHT\n");
         return 0;
     }
 
     // If DHT fetch failed or not found, publish local contacts to DHT
-    printf("[MESSENGER] Auto-sync: Publishing local contacts to DHT\n");
+    QGP_LOG_INFO(LOG_TAG, "Auto-sync: Publishing local contacts to DHT\n");
     return messenger_sync_contacts_to_dht(ctx);
 }

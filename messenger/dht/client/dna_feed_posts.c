@@ -23,6 +23,9 @@
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DNA_FEED"
 #endif
 
 /* Dilithium5 functions */
@@ -349,7 +352,7 @@ int dna_feed_post_get(dht_context_t *dht_ctx, const char *post_id, dna_feed_post
     char base_key[512];
     snprintf(base_key, sizeof(base_key), "dna:feed:post:%s", post_id);
 
-    printf("[DNA_FEED] Fetching post %s...\n", post_id);
+    QGP_LOG_INFO(LOG_TAG, "Fetching post %s...\n", post_id);
 
     uint8_t *value = NULL;
     size_t value_len = 0;
@@ -380,7 +383,7 @@ int dna_feed_post_get(dht_context_t *dht_ctx, const char *post_id, dna_feed_post
  */
 static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char *date,
                       dna_feed_bucket_t **bucket_out) {
-    printf("[DNA_FEED] get_bucket: channel=%s date=%s (owner-namespaced)\n", channel_id, date);
+    QGP_LOG_INFO(LOG_TAG, "get_bucket: channel=%s date=%s (owner-namespaced)\n", channel_id, date);
 
     /* Step 1: Get contributors index (multi-owner, small poster fingerprints) */
     char contrib_key[512];
@@ -429,7 +432,7 @@ static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char
         free(contrib_lens);
     }
 
-    printf("[DNA_FEED] Found %zu unique bucket contributors\n", num_contributors);
+    QGP_LOG_INFO(LOG_TAG, "Found %zu unique bucket contributors\n", num_contributors);
 
     if (num_contributors == 0) {
         free(contributors);
@@ -515,7 +518,7 @@ static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char
         return -2;
     }
 
-    printf("[DNA_FEED] Merged bucket: %zu unique posts from %zu contributors\n", all_count, num_contributors);
+    QGP_LOG_INFO(LOG_TAG, "Merged bucket: %zu unique posts from %zu contributors\n", all_count, num_contributors);
 
     *bucket_out = merged;
     return 0;
@@ -529,7 +532,7 @@ static int get_bucket(dht_context_t *dht_ctx, const char *channel_id, const char
  */
 static int save_poster_bucket(dht_context_t *dht_ctx, const char *channel_id, const char *date,
                                const char *poster_fingerprint, const char *new_post_id) {
-    printf("[DNA_FEED] save_poster_bucket: channel=%s date=%s poster=%.16s...\n",
+    QGP_LOG_INFO(LOG_TAG, "save_poster_bucket: channel=%s date=%s poster=%.16s...\n",
            channel_id, date, poster_fingerprint);
 
     /* Step 1: Load poster's existing post_ids for this bucket */
@@ -563,7 +566,7 @@ static int save_poster_bucket(dht_context_t *dht_ctx, const char *channel_id, co
     /* Check if post_id already exists */
     for (size_t i = 0; i < poster_bucket->post_count; i++) {
         if (strcmp(poster_bucket->post_ids[i], new_post_id) == 0) {
-            printf("[DNA_FEED] Post already in poster's bucket\n");
+            QGP_LOG_INFO(LOG_TAG, "Post already in poster's bucket\n");
             dna_feed_bucket_free(poster_bucket);
             return 0;  /* Already exists, success */
         }
@@ -588,7 +591,7 @@ static int save_poster_bucket(dht_context_t *dht_ctx, const char *channel_id, co
         return -1;
     }
 
-    printf("[DNA_FEED] Publishing poster's bucket (%zu post_ids) via chunked\n", poster_bucket->post_count);
+    QGP_LOG_INFO(LOG_TAG, "Publishing poster's bucket (%zu post_ids) via chunked\n", poster_bucket->post_count);
     ret = dht_chunked_publish(dht_ctx, poster_key,
                                (const uint8_t *)json_data, strlen(json_data),
                                DNA_FEED_TTL_SECONDS);
@@ -596,7 +599,7 @@ static int save_poster_bucket(dht_context_t *dht_ctx, const char *channel_id, co
     dna_feed_bucket_free(poster_bucket);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA_FEED] Failed to publish poster bucket: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish poster bucket: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
@@ -608,17 +611,17 @@ static int save_poster_bucket(dht_context_t *dht_ctx, const char *channel_id, co
     uint64_t contrib_value_id = 1;
     dht_get_owner_value_id(dht_ctx, &contrib_value_id);
 
-    printf("[DNA_FEED] Registering contributor in bucket index (value_id=%lu)\n", contrib_value_id);
+    QGP_LOG_INFO(LOG_TAG, "Registering contributor in bucket index (value_id=%lu)\n", contrib_value_id);
     ret = dht_put_signed(dht_ctx, (const uint8_t *)contrib_key, strlen(contrib_key),
                          (const uint8_t *)poster_fingerprint, strlen(poster_fingerprint),
                          contrib_value_id, DNA_FEED_TTL_SECONDS);
 
     if (ret != 0) {
         /* Non-fatal - poster bucket is already stored */
-        fprintf(stderr, "[DNA_FEED] Warning: Failed to register in contributors index\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to register in contributors index\n");
     }
 
-    printf("[DNA_FEED] ✓ Saved poster bucket\n");
+    QGP_LOG_INFO(LOG_TAG, "✓ Saved poster bucket\n");
     return 0;
 }
 
@@ -633,7 +636,7 @@ int dna_feed_post_create(dht_context_t *dht_ctx,
     /* Validate text length */
     size_t text_len = strlen(text);
     if (text_len == 0 || text_len >= DNA_FEED_MAX_POST_TEXT) {
-        fprintf(stderr, "[DNA_FEED] Invalid post text length\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid post text length\n");
         return -1;
     }
 
@@ -676,7 +679,7 @@ int dna_feed_post_create(dht_context_t *dht_ctx,
     free(sign_data);
 
     if (ret != 0) {
-        fprintf(stderr, "[DNA_FEED] Failed to sign post\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign post\n");
         free(post);
         return -1;
     }
@@ -692,14 +695,14 @@ int dna_feed_post_create(dht_context_t *dht_ctx,
     char base_key[512];
     snprintf(base_key, sizeof(base_key), "dna:feed:post:%s", post->post_id);
 
-    printf("[DNA_FEED] Publishing post to DHT...\n");
+    QGP_LOG_INFO(LOG_TAG, "Publishing post to DHT...\n");
     ret = dht_chunked_publish(dht_ctx, base_key,
                               (const uint8_t *)json_data, strlen(json_data),
                               DNA_FEED_TTL_SECONDS);
     free(json_data);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA_FEED] Failed to publish post: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish post: %s\n", dht_chunked_strerror(ret));
         free(post);
         return -1;
     }
@@ -710,11 +713,11 @@ int dna_feed_post_create(dht_context_t *dht_ctx,
 
     /* Save poster's bucket (handles loading, adding, and publishing) */
     if (save_poster_bucket(dht_ctx, channel_id, today, author_fingerprint, post->post_id) != 0) {
-        fprintf(stderr, "[DNA_FEED] Warning: Failed to add to bucket index\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to add to bucket index\n");
         /* Continue anyway - post itself was published successfully */
     }
 
-    printf("[DNA_FEED] Successfully created post %s\n", post->post_id);
+    QGP_LOG_INFO(LOG_TAG, "Successfully created post %s\n", post->post_id);
 
     if (post_out) {
         *post_out = post;
@@ -739,7 +742,7 @@ int dna_feed_posts_get_by_channel(dht_context_t *dht_ctx,
         date = date_buf;
     }
 
-    printf("[DNA_FEED] Fetching posts for channel %s, date %s...\n", channel_id, date);
+    QGP_LOG_INFO(LOG_TAG, "Fetching posts for channel %s, date %s...\n", channel_id, date);
 
     /* Get bucket */
     dna_feed_bucket_t *bucket = NULL;
@@ -782,7 +785,7 @@ int dna_feed_posts_get_by_channel(dht_context_t *dht_ctx,
         if (resized) posts = resized;
     }
 
-    printf("[DNA_FEED] Fetched %zu posts\n", fetched);
+    QGP_LOG_INFO(LOG_TAG, "Fetched %zu posts\n", fetched);
 
     *posts_out = posts;
     *count_out = fetched;

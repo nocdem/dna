@@ -15,6 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include "../../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DHT_REGISTRY"
 
 /**
  * Make base key for a node's entry
@@ -134,7 +137,7 @@ int dht_bootstrap_registry_from_json(const char *json_str, bootstrap_registry_t 
 
     json_object *root = json_tokener_parse(json_str);
     if (!root) {
-        fprintf(stderr, "[REGISTRY] Failed to parse JSON\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse JSON\n");
         return -1;
     }
 
@@ -201,7 +204,7 @@ int dht_bootstrap_registry_register(
 {
     if (!dht_ctx || !my_ip || !node_id || !version) return -1;
 
-    printf("[REGISTRY] Registering bootstrap node: %s:%d (owner-namespaced)\n", my_ip, my_port);
+    QGP_LOG_INFO(LOG_TAG, "Registering bootstrap node: %s:%d (owner-namespaced)\n", my_ip, my_port);
 
     // Step 1: Create this node's entry
     bootstrap_node_entry_t node_entry;
@@ -217,21 +220,21 @@ int dht_bootstrap_registry_register(
     // Step 2: Serialize and publish this node's entry via chunked
     char *json = node_entry_to_json(&node_entry);
     if (!json) {
-        fprintf(stderr, "[REGISTRY] Failed to serialize node entry\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize node entry\n");
         return -1;
     }
 
     char node_key[256];
     make_node_base_key(node_id, node_key, sizeof(node_key));
 
-    printf("[REGISTRY] Publishing node entry via chunked\n");
+    QGP_LOG_INFO(LOG_TAG, "Publishing node entry via chunked\n");
     int ret = dht_chunked_publish(dht_ctx, node_key,
                                    (uint8_t*)json, strlen(json),
                                    DHT_CHUNK_TTL_7DAY);
     free(json);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[REGISTRY] Failed to publish node entry: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish node entry: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
@@ -243,17 +246,17 @@ int dht_bootstrap_registry_register(
     uint64_t value_id = 1;
     dht_get_owner_value_id(dht_ctx, &value_id);
 
-    printf("[REGISTRY] Registering node_id in index (value_id=%lu)\n", value_id);
+    QGP_LOG_INFO(LOG_TAG, "Registering node_id in index (value_id=%lu)\n", value_id);
     ret = dht_put_signed(dht_ctx, (uint8_t*)index_key, strlen(index_key),
                          (uint8_t*)node_id, strlen(node_id),
                          value_id, DHT_CHUNK_TTL_7DAY);
 
     if (ret != 0) {
         // Non-fatal - node entry is already stored
-        fprintf(stderr, "[REGISTRY] Warning: Failed to register in nodes index\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to register in nodes index\n");
     }
 
-    printf("[REGISTRY] ✓ Successfully registered node %s\n", node_id);
+    QGP_LOG_INFO(LOG_TAG, "✓ Successfully registered node %s\n", node_id);
     return 0;
 }
 
@@ -277,7 +280,7 @@ static int find_node_by_ip_port(const bootstrap_registry_t *reg, const char *ip,
 int dht_bootstrap_registry_fetch(dht_context_t *dht_ctx, bootstrap_registry_t *registry_out) {
     if (!dht_ctx || !registry_out) return -1;
 
-    printf("[REGISTRY] Fetching bootstrap registry (owner-namespaced)...\n");
+    QGP_LOG_INFO(LOG_TAG, "Fetching bootstrap registry (owner-namespaced)...\n");
 
     // Step 1: Get node index (multi-owner, small node_id list)
     char index_key[256];
@@ -326,7 +329,7 @@ int dht_bootstrap_registry_fetch(dht_context_t *dht_ctx, bootstrap_registry_t *r
         free(index_lens);
     }
 
-    printf("[REGISTRY] Found %zu unique node_ids in index\n", num_node_ids);
+    QGP_LOG_INFO(LOG_TAG, "Found %zu unique node_ids in index\n", num_node_ids);
 
     // Initialize output registry
     memset(registry_out, 0, sizeof(bootstrap_registry_t));
@@ -341,7 +344,7 @@ int dht_bootstrap_registry_fetch(dht_context_t *dht_ctx, bootstrap_registry_t *r
 
         ret = dht_chunked_fetch(dht_ctx, node_key, &data, &data_len);
         if (ret != DHT_CHUNK_OK || !data) {
-            printf("[REGISTRY] Node %s: no data\n", node_ids[n]);
+            QGP_LOG_INFO(LOG_TAG, "Node %s: no data\n", node_ids[n]);
             continue;
         }
 
@@ -376,7 +379,7 @@ int dht_bootstrap_registry_fetch(dht_context_t *dht_ctx, bootstrap_registry_t *r
     for (size_t i = 0; i < num_node_ids; i++) free(node_ids[i]);
     free(node_ids);
 
-    printf("[REGISTRY] ✓ Fetched registry: %zu nodes\n", registry_out->node_count);
+    QGP_LOG_INFO(LOG_TAG, "✓ Fetched registry: %zu nodes\n", registry_out->node_count);
 
     return (registry_out->node_count > 0) ? 0 : -1;
 }
@@ -404,6 +407,6 @@ void dht_bootstrap_registry_filter_active(bootstrap_registry_t *registry) {
     registry->node_count = active_count;
 
     if (filtered > 0) {
-        printf("[REGISTRY] Filtered %zu stale nodes (active: %zu)\n", filtered, active_count);
+        QGP_LOG_INFO(LOG_TAG, "Filtered %zu stale nodes (active: %zu)\n", filtered, active_count);
     }
 }

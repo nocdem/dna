@@ -11,6 +11,9 @@
 #endif
 
 #include <juice/juice.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "P2P"
 
 /**
  * Compute SHA3-512 hash (Category 5 security)
@@ -157,7 +160,7 @@ static void on_stun_candidate(juice_agent_t *agent, const char *sdp, void *user_
             pthread_mutex_lock(&state->mutex);
             if (state->public_ip[0] == '\0') {
                 strncpy(state->public_ip, ip, sizeof(state->public_ip) - 1);
-                printf("[STUN] Discovered public IP: %s\n", ip);
+                QGP_LOG_INFO(LOG_TAG, "Discovered public IP: %s\n", ip);
             }
             pthread_mutex_unlock(&state->mutex);
         }

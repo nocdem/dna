@@ -10,6 +10,9 @@
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <sys/types.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MSG_KEYS"
 
 #ifdef _WIN32
     #include <windows.h>
@@ -55,7 +58,7 @@ static void get_default_cache_path(char *path_out, size_t path_size) {
     // Windows: Use SHGetFolderPathA to get AppData
     char appdata[MAX_PATH];
     if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK) {
-        fprintf(stderr, "[CACHE] Failed to get AppData path\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get AppData path\n");
         snprintf(path_out, path_size, "C:\\Temp\\.dna\\keyserver_cache.db");
         return;
     }
@@ -79,7 +82,7 @@ static void get_default_cache_path(char *path_out, size_t path_size) {
         }
     }
     if (!home) {
-        fprintf(stderr, "[CACHE] Failed to get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
         snprintf(path_out, path_size, "/tmp/.dna/keyserver_cache.db");
         return;
     }
@@ -99,7 +102,7 @@ static void get_default_cache_path(char *path_out, size_t path_size) {
 // Initialize keyserver cache
 int keyserver_cache_init(const char *db_path) {
     if (g_cache_db) {
-        fprintf(stderr, "[CACHE] Already initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Already initialized\n");
         return 0;
     }
 
@@ -111,7 +114,7 @@ int keyserver_cache_init(const char *db_path) {
 
     int rc = sqlite3_open(db_path, &g_cache_db);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CACHE] Failed to open database: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(g_cache_db));
         sqlite3_close(g_cache_db);
         g_cache_db = NULL;
         return -1;
@@ -124,7 +127,7 @@ int keyserver_cache_init(const char *db_path) {
     char *err_msg = NULL;
     rc = sqlite3_exec(g_cache_db, CACHE_SCHEMA, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CACHE] Failed to create tables: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create tables: %s\n", err_msg);
         sqlite3_free(err_msg);
         sqlite3_close(g_cache_db);
         g_cache_db = NULL;
@@ -135,28 +138,28 @@ int keyserver_cache_init(const char *db_path) {
     // This will fail silently if column already exists (expected)
     sqlite3_exec(g_cache_db, MIGRATION_ADD_AVATAR, NULL, NULL, NULL);
 
-    printf("[CACHE] Initialized: %s\n", db_path);
+    QGP_LOG_INFO(LOG_TAG, "Initialized: %s\n", db_path);
     return 0;
 }
 
 // Cleanup keyserver cache
 void keyserver_cache_cleanup(void) {
     if (g_cache_db) {
-        printf("[CACHE] !!! CLEANING UP DATABASE !!! (g_cache_db=%p)\n", g_cache_db);
+        QGP_LOG_INFO(LOG_TAG, "!!! CLEANING UP DATABASE !!! (g_cache_db=%p)\n", g_cache_db);
         sqlite3_close(g_cache_db);
         g_cache_db = NULL;
-        printf("[CACHE] Cleanup complete (g_cache_db now NULL)\n");
+        QGP_LOG_INFO(LOG_TAG, "Cleanup complete (g_cache_db now NULL)\n");
     } else {
-        printf("[CACHE] Cleanup called but g_cache_db already NULL\n");
+        QGP_LOG_INFO(LOG_TAG, "Cleanup called but g_cache_db already NULL\n");
     }
 }
 
 // Get cached public key
 int keyserver_cache_get(const char *identity, keyserver_cache_entry_t **entry_out) {
     if (!g_cache_db || !identity || !entry_out) {
-        fprintf(stderr, "[CACHE] Invalid arguments to get: g_cache_db=%p, identity=%p, entry_out=%p\n",
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get: g_cache_db=%p, identity=%p, entry_out=%p\n",
                 g_cache_db, (void*)identity, (void*)entry_out);
-        if (identity) fprintf(stderr, "[CACHE] identity=%.32s...\n", identity);
+        if (identity) QGP_LOG_ERROR(LOG_TAG, "identity=%.32s...\n", identity);
         return -1;
     }
 
@@ -168,7 +171,7 @@ int keyserver_cache_get(const char *identity, keyserver_cache_entry_t **entry_ou
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CACHE] Failed to prepare query: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
@@ -192,7 +195,7 @@ int keyserver_cache_get(const char *identity, keyserver_cache_entry_t **entry_ou
     uint64_t now = time(NULL);
     if (now > cached_at + ttl_seconds) {
         sqlite3_finalize(stmt);
-        printf("[CACHE] Entry expired for '%s'\n", identity);
+        QGP_LOG_INFO(LOG_TAG, "Entry expired for '%s'\n", identity);
         return -2;  // Expired
     }
 
@@ -233,7 +236,7 @@ int keyserver_cache_get(const char *identity, keyserver_cache_entry_t **entry_ou
     sqlite3_finalize(stmt);
 
     *entry_out = entry;
-    printf("[CACHE] Hit: '%s' (cached %ld seconds ago)\n", identity, (long)(now - cached_at));
+    QGP_LOG_INFO(LOG_TAG, "Hit: '%s' (cached %ld seconds ago)\n", identity, (long)(now - cached_at));
     return 0;
 }
 
@@ -247,9 +250,9 @@ int keyserver_cache_put(
     uint64_t ttl_seconds
 ) {
     if (!g_cache_db || !identity || !dilithium_pubkey || !kyber_pubkey) {
-        fprintf(stderr, "[CACHE] Invalid arguments to put: g_cache_db=%p, identity=%p, dil=%p, kyber=%p\n",
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to put: g_cache_db=%p, identity=%p, dil=%p, kyber=%p\n",
                 g_cache_db, (void*)identity, (void*)dilithium_pubkey, (void*)kyber_pubkey);
-        if (identity) fprintf(stderr, "[CACHE] identity=%.32s...\n", identity);
+        if (identity) QGP_LOG_ERROR(LOG_TAG, "identity=%.32s...\n", identity);
         return -1;
     }
 
@@ -264,7 +267,7 @@ int keyserver_cache_put(
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CACHE] Failed to prepare insert: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare insert: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
@@ -278,18 +281,18 @@ int keyserver_cache_put(
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[CACHE] Failed to insert: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to insert: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
-    printf("[CACHE] Stored: '%s' (TTL: %ld seconds)\n", identity, (long)ttl_seconds);
+    QGP_LOG_INFO(LOG_TAG, "Stored: '%s' (TTL: %ld seconds)\n", identity, (long)ttl_seconds);
     return 0;
 }
 
 // Delete cached entry
 int keyserver_cache_delete(const char *identity) {
     if (!g_cache_db || !identity) {
-        fprintf(stderr, "[CACHE] Invalid arguments to delete\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to delete\n");
         return -1;
     }
 
@@ -298,7 +301,7 @@ int keyserver_cache_delete(const char *identity) {
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CACHE] Failed to prepare delete: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare delete: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
@@ -308,18 +311,18 @@ int keyserver_cache_delete(const char *identity) {
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[CACHE] Failed to delete: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
-    printf("[CACHE] Deleted: '%s'\n", identity);
+    QGP_LOG_INFO(LOG_TAG, "Deleted: '%s'\n", identity);
     return 0;
 }
 
 // Clear all expired entries
 int keyserver_cache_expire_old(void) {
     if (!g_cache_db) {
-        fprintf(stderr, "[CACHE] Not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
         return -1;
     }
 
@@ -331,7 +334,7 @@ int keyserver_cache_expire_old(void) {
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[CACHE] Failed to prepare expire: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare expire: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
@@ -341,13 +344,13 @@ int keyserver_cache_expire_old(void) {
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[CACHE] Failed to expire: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to expire: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
     int deleted = sqlite3_changes(g_cache_db);
     if (deleted > 0) {
-        printf("[CACHE] Expired %d old entries\n", deleted);
+        QGP_LOG_INFO(LOG_TAG, "Expired %d old entries\n", deleted);
     }
 
     return deleted;
@@ -386,7 +389,7 @@ bool keyserver_cache_exists(const char *identity) {
 // Get cache statistics
 int keyserver_cache_stats(int *total_entries, int *expired_entries) {
     if (!g_cache_db || !total_entries || !expired_entries) {
-        fprintf(stderr, "[CACHE] Invalid arguments to stats\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to stats\n");
         return -1;
     }
 
@@ -457,7 +460,7 @@ int keyserver_cache_get_name(const char *fingerprint, char *name_out, size_t nam
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[NAME_CACHE] Failed to prepare query: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
@@ -477,7 +480,7 @@ int keyserver_cache_get_name(const char *fingerprint, char *name_out, size_t nam
     uint64_t now = time(NULL);
     if (now > cached_at + ttl_seconds) {
         sqlite3_finalize(stmt);
-        printf("[NAME_CACHE] Entry expired for '%.16s...'\n", fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Entry expired for '%.16s...'\n", fingerprint);
         return -2;  // Expired
     }
 
@@ -490,7 +493,7 @@ int keyserver_cache_get_name(const char *fingerprint, char *name_out, size_t nam
     }
 
     sqlite3_finalize(stmt);
-    printf("[NAME_CACHE] Hit: %.16s... -> %s\n", fingerprint, name_out);
+    QGP_LOG_INFO(LOG_TAG, "Hit: %.16s... -> %s\n", fingerprint, name_out);
     return 0;
 }
 
@@ -511,7 +514,7 @@ int keyserver_cache_put_name(const char *fingerprint, const char *display_name, 
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[NAME_CACHE] Failed to prepare insert: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare insert: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
@@ -524,11 +527,11 @@ int keyserver_cache_put_name(const char *fingerprint, const char *display_name, 
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[NAME_CACHE] Failed to insert: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to insert: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
-    printf("[NAME_CACHE] Stored: %.16s... -> %s\n", fingerprint, display_name);
+    QGP_LOG_INFO(LOG_TAG, "Stored: %.16s... -> %s\n", fingerprint, display_name);
     return 0;
 }
 
@@ -543,7 +546,7 @@ int keyserver_cache_get_avatar(const char *fingerprint, char **avatar_out) {
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[NAME_CACHE] Failed to prepare avatar query: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare avatar query: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
@@ -564,7 +567,7 @@ int keyserver_cache_get_avatar(const char *fingerprint, char **avatar_out) {
     *avatar_out = strdup(avatar);
     sqlite3_finalize(stmt);
 
-    printf("[NAME_CACHE] Avatar hit: %.16s... (%zu bytes)\n", fingerprint, strlen(*avatar_out));
+    QGP_LOG_INFO(LOG_TAG, "Avatar hit: %.16s... (%zu bytes)\n", fingerprint, strlen(*avatar_out));
     return 0;
 }
 
@@ -584,7 +587,7 @@ int keyserver_cache_put_avatar(const char *fingerprint, const char *avatar_base6
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_cache_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[NAME_CACHE] Failed to prepare avatar upsert: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare avatar upsert: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
@@ -600,14 +603,14 @@ int keyserver_cache_put_avatar(const char *fingerprint, const char *avatar_base6
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[NAME_CACHE] Failed to upsert avatar: %s\n", sqlite3_errmsg(g_cache_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to upsert avatar: %s\n", sqlite3_errmsg(g_cache_db));
         return -1;
     }
 
     if (avatar_base64) {
-        printf("[NAME_CACHE] Avatar stored: %.16s... (%zu bytes)\n", fingerprint, strlen(avatar_base64));
+        QGP_LOG_INFO(LOG_TAG, "Avatar stored: %.16s... (%zu bytes)\n", fingerprint, strlen(avatar_base64));
     } else {
-        printf("[NAME_CACHE] Avatar cleared: %.16s...\n", fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Avatar cleared: %.16s...\n", fingerprint);
     }
     return 0;
 }

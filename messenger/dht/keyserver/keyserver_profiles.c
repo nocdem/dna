@@ -5,6 +5,9 @@
 
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "KEYSERVER"
 
 // Update DNA profile data
 int dna_update_profile(
@@ -16,7 +19,7 @@ int dna_update_profile(
     const uint8_t *kyber_pubkey
 ) {
     if (!dht_ctx || !fingerprint || !profile || !dilithium_privkey || !dilithium_pubkey || !kyber_pubkey) {
-        fprintf(stderr, "[DNA] Invalid arguments to dna_update_profile\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_update_profile\n");
         return -1;
     }
 
@@ -45,7 +48,7 @@ int dna_update_profile(
         memset(identity->registration_network, 0, sizeof(identity->registration_network));
         identity->name_version = 0;
 
-        printf("[DNA] Created new identity (old profile signature verification failed)\n");
+        QGP_LOG_INFO(LOG_TAG, "Created new identity (old profile signature verification failed)\n");
     }
 
     // Update profile data
@@ -77,7 +80,7 @@ int dna_update_profile(
 
     uint8_t *msg = malloc(msg_len);
     if (!msg) {
-        fprintf(stderr, "[DNA] Failed to allocate message buffer for signing\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate message buffer for signing\n");
         dna_identity_free(identity);
         return -1;
     }
@@ -130,17 +133,17 @@ int dna_update_profile(
     free(msg);
 
     if (ret != 0) {
-        fprintf(stderr, "[DNA] Failed to sign identity profile\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign identity profile\n");
         dna_identity_free(identity);
         return -1;
     }
 
-    printf("[DNA] ✓ Identity profile signed with Dilithium5\n");
+    QGP_LOG_INFO(LOG_TAG, "✓ Identity profile signed with Dilithium5\n");
 
     // Serialize to JSON
     char *json = dna_identity_to_json(identity);
     if (!json) {
-        fprintf(stderr, "[DNA] Failed to serialize identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize identity\n");
         dna_identity_free(identity);
         return -1;
     }
@@ -149,8 +152,8 @@ int dna_update_profile(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    printf("[DNA] Updating profile for fingerprint %.16s...\n", fingerprint);
-    printf("[DNA] Base key: %s\n", base_key);
+    QGP_LOG_INFO(LOG_TAG, "Updating profile for fingerprint %.16s...\n", fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Base key: %s\n", base_key);
 
     // Store in DHT via chunked layer (permanent storage)
     ret = dht_chunked_publish(dht_ctx, base_key,
@@ -158,7 +161,7 @@ int dna_update_profile(
                               DHT_CHUNK_TTL_365DAY);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA] Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
         free(json);
         dna_identity_free(identity);
         return -1;
@@ -177,7 +180,7 @@ int dna_load_identity(
     dna_unified_identity_t **identity_out
 ) {
     if (!dht_ctx || !fingerprint || !identity_out) {
-        fprintf(stderr, "[DNA] Invalid arguments to dna_load_identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_load_identity\n");
         return -1;
     }
 
@@ -185,8 +188,8 @@ int dna_load_identity(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    printf("[DNA] Loading identity for fingerprint %.16s...\n", fingerprint);
-    printf("[DNA] Base key: %s\n", base_key);
+    QGP_LOG_INFO(LOG_TAG, "Loading identity for fingerprint %.16s...\n", fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Base key: %s\n", base_key);
 
     // Fetch from DHT via chunked layer (single value, chunked handles versioning)
     uint8_t *value = NULL;
@@ -194,16 +197,16 @@ int dna_load_identity(
 
     int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
     if (ret != DHT_CHUNK_OK || !value) {
-        fprintf(stderr, "[DNA] Identity not found in DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Identity not found in DHT: %s\n", dht_chunked_strerror(ret));
         return -2;  // Not found
     }
 
-    printf("[DNA] Loaded profile (%zu bytes), verifying...\n", value_len);
+    QGP_LOG_INFO(LOG_TAG, "Loaded profile (%zu bytes), verifying...\n", value_len);
 
     // Create null-terminated copy for JSON parsing
     char *json_str = (char*)malloc(value_len + 1);
     if (!json_str) {
-        fprintf(stderr, "[DNA] Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
         free(value);
         return -1;
     }
@@ -214,7 +217,7 @@ int dna_load_identity(
     // Parse JSON
     dna_unified_identity_t *identity = NULL;
     if (dna_identity_from_json(json_str, &identity) != 0) {
-        fprintf(stderr, "[DNA] JSON parse failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "JSON parse failed\n");
         free(json_str);
         return -1;
     }
@@ -294,7 +297,7 @@ int dna_load_identity(
     free(msg);
 
     if (sig_result != 0) {
-        fprintf(stderr, "[DNA] ✗ Signature verification failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "✗ Signature verification failed\n");
         dna_identity_free(identity);
         return -3;  // Verification failed
     }
@@ -304,15 +307,15 @@ int dna_load_identity(
     compute_fingerprint(identity->dilithium_pubkey, computed_fingerprint);
 
     if (strcmp(computed_fingerprint, fingerprint) != 0) {
-        fprintf(stderr, "[DNA] ✗ Fingerprint mismatch\n");
+        QGP_LOG_ERROR(LOG_TAG, "✗ Fingerprint mismatch\n");
         dna_identity_free(identity);
         return -3;  // Verification failed
     }
 
-    printf("[DNA] ✓ Profile loaded and verified (timestamp=%lu, version=%u)\n",
+    QGP_LOG_INFO(LOG_TAG, "✓ Profile loaded and verified (timestamp=%lu, version=%u)\n",
            identity->timestamp, identity->version);
     if (identity->has_registered_name) {
-        printf("[DNA] Name: %s (expires: %lu)\n",
+        QGP_LOG_INFO(LOG_TAG, "Name: %s (expires: %lu)\n",
                identity->registered_name, identity->name_expires_at);
     }
 
@@ -339,7 +342,7 @@ int dna_get_display_name(
         ret = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &registered_name);
         if (ret == 0 && registered_name && registered_name[0] != '\0') {
             *display_name_out = registered_name;
-            printf("[DNA] ✓ Display name: %s (from reverse lookup)\n", registered_name);
+            QGP_LOG_INFO(LOG_TAG, "✓ Display name: %s (from reverse lookup)\n", registered_name);
             return 0;
         }
         if (registered_name) {
@@ -364,7 +367,7 @@ int dna_get_display_name(
             }
 
             *display_name_out = display;
-            printf("[DNA] ✓ Display name: %s (from profile)\n", display);
+            QGP_LOG_INFO(LOG_TAG, "✓ Display name: %s (from profile)\n", display);
             return 0;
         }
 
@@ -380,6 +383,6 @@ int dna_get_display_name(
     snprintf(display, 32, "%.16s...", fingerprint);
     *display_name_out = display;
 
-    printf("[DNA] Display name: %s (fingerprint)\n", display);
+    QGP_LOG_INFO(LOG_TAG, "Display name: %s (fingerprint)\n", display);
     return 0;
 }

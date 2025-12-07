@@ -13,6 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include "../../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "WALLET"
 
 #ifdef _WIN32
 #include <direct.h>
@@ -91,7 +94,7 @@ static int write_dwallet_file(
 ) {
     FILE *fp = fopen(path, "wb");
     if (!fp) {
-        fprintf(stderr, "[WALLET] Failed to create wallet file: %s\n", path);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create wallet file: %s\n", path);
         return -1;
     }
 
@@ -207,7 +210,7 @@ int cellframe_wallet_create_from_seed(
     char *address_out
 ) {
     if (!seed || !wallet_name || !wallet_dir || !address_out) {
-        fprintf(stderr, "[WALLET] Invalid arguments\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments\n");
         return -1;
     }
 
@@ -219,13 +222,13 @@ int cellframe_wallet_create_from_seed(
 
     /* Generate Dilithium MODE_1 keypair from seed */
     if (dilithium_crypto_sign_keypair(&pubkey, &privkey, MODE_1, seed, 32) != 0) {
-        fprintf(stderr, "[WALLET] Failed to generate Dilithium keypair\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate Dilithium keypair\n");
         goto cleanup;
     }
 
     /* Verify key sizes match expectations */
     if (pubkey.kind != MODE_1 || privkey.kind != MODE_1) {
-        fprintf(stderr, "[WALLET] Unexpected key kind\n");
+        QGP_LOG_ERROR(LOG_TAG, "Unexpected key kind\n");
         goto cleanup;
     }
 
@@ -238,7 +241,7 @@ int cellframe_wallet_create_from_seed(
     serialized_privkey = malloc(serialized_privkey_size);
 
     if (!serialized_pubkey || !serialized_privkey) {
-        fprintf(stderr, "[WALLET] Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
         goto cleanup;
     }
 
@@ -263,14 +266,14 @@ int cellframe_wallet_create_from_seed(
     if (write_dwallet_file(wallet_path, wallet_name,
                           serialized_pubkey, actual_pubkey_size,
                           serialized_privkey, actual_privkey_size) != 0) {
-        fprintf(stderr, "[WALLET] Failed to write wallet file\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to write wallet file\n");
         goto cleanup;
     }
 
     /* Generate address from serialized public key */
     if (cellframe_addr_from_pubkey(serialized_pubkey, actual_pubkey_size,
                                    CELLFRAME_NET_BACKBONE, address_out) != 0) {
-        fprintf(stderr, "[WALLET] Failed to generate address\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate address\n");
         goto cleanup;
     }
 

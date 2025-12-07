@@ -23,6 +23,9 @@
 #else
 #include <unistd.h>
 #include <pwd.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DB_PROFILE"
 #endif
 
 static sqlite3 *g_db = NULL;
@@ -31,14 +34,14 @@ static char g_owner_identity[256] = {0};  // Current database owner
 // Get database path for specific identity
 static int get_db_path(const char *owner_identity, char *path_out, size_t path_size) {
     if (!owner_identity || strlen(owner_identity) == 0) {
-        fprintf(stderr, "[PROFILE_CACHE] Invalid owner_identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity\n");
         return -1;
     }
 
 #ifdef _WIN32
     char appdata[MAX_PATH];
     if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to get AppData path\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get AppData path\n");
         return -1;
     }
     snprintf(path_out, path_size, "%s\\.dna\\%s_profiles.db", appdata, owner_identity);
@@ -51,7 +54,7 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
         }
     }
     if (!home) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
         return -1;
     }
 
@@ -66,7 +69,7 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
  */
 int profile_cache_init(const char *owner_identity) {
     if (!owner_identity || strlen(owner_identity) == 0) {
-        fprintf(stderr, "[PROFILE_CACHE] Invalid owner_identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity\n");
         return -1;
     }
 
@@ -85,12 +88,12 @@ int profile_cache_init(const char *owner_identity) {
         return -1;
     }
 
-    printf("[PROFILE_CACHE] Opening database: %s\n", db_path);
+    QGP_LOG_INFO(LOG_TAG, "Opening database: %s\n", db_path);
 
     // Open database
     int rc = sqlite3_open(db_path, &g_db);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to open database: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(g_db));
         sqlite3_close(g_db);
         g_db = NULL;
         return -1;
@@ -104,11 +107,11 @@ int profile_cache_init(const char *owner_identity) {
 
     if (rc != SQLITE_OK) {
         // Table doesn't exist or has wrong schema - drop and recreate
-        printf("[PROFILE_CACHE] Migrating to new schema (fingerprint column)\n");
+        QGP_LOG_INFO(LOG_TAG, "Migrating to new schema (fingerprint column)\n");
         char *err_msg = NULL;
         sqlite3_exec(g_db, "DROP TABLE IF EXISTS profiles;", NULL, NULL, &err_msg);
         if (err_msg) {
-            fprintf(stderr, "[PROFILE_CACHE] Migration warning: %s\n", err_msg);
+            QGP_LOG_ERROR(LOG_TAG, "Migration warning: %s\n", err_msg);
             sqlite3_free(err_msg);
         }
     } else {
@@ -126,7 +129,7 @@ int profile_cache_init(const char *owner_identity) {
     char *err_msg = NULL;
     rc = sqlite3_exec(g_db, sql, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to create table: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create table: %s\n", err_msg);
         sqlite3_free(err_msg);
         sqlite3_close(g_db);
         g_db = NULL;
@@ -137,7 +140,7 @@ int profile_cache_init(const char *owner_identity) {
     const char *index_sql = "CREATE INDEX IF NOT EXISTS idx_cached_at ON profiles(cached_at);";
     rc = sqlite3_exec(g_db, index_sql, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to create index: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create index: %s\n", err_msg);
         sqlite3_free(err_msg);
         // Non-fatal, continue
     }
@@ -146,7 +149,7 @@ int profile_cache_init(const char *owner_identity) {
     strncpy(g_owner_identity, owner_identity, sizeof(g_owner_identity) - 1);
     g_owner_identity[sizeof(g_owner_identity) - 1] = '\0';
 
-    printf("[PROFILE_CACHE] Initialized for owner: %s\n", owner_identity);
+    QGP_LOG_INFO(LOG_TAG, "Initialized for owner: %s\n", owner_identity);
     return 0;
 }
 
@@ -155,19 +158,19 @@ int profile_cache_init(const char *owner_identity) {
  */
 int profile_cache_add_or_update(const char *user_fingerprint, const dna_unified_identity_t *identity) {
     if (!g_db) {
-        fprintf(stderr, "[PROFILE_CACHE] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!user_fingerprint || !identity) {
-        fprintf(stderr, "[PROFILE_CACHE] Invalid parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return -1;
     }
 
     // Serialize identity to JSON
     char *identity_json = dna_identity_to_json(identity);
     if (!identity_json) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to serialize identity to JSON\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize identity to JSON\n");
         return -1;
     }
 
@@ -179,7 +182,7 @@ int profile_cache_add_or_update(const char *user_fingerprint, const dna_unified_
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
         free(identity_json);
         return -1;
     }
@@ -195,11 +198,11 @@ int profile_cache_add_or_update(const char *user_fingerprint, const dna_unified_
     free(identity_json);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to insert/update: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to insert/update: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
-    printf("[PROFILE_CACHE] Cached identity for: %s\n", user_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Cached identity for: %s\n", user_fingerprint);
     return 0;
 }
 
@@ -208,12 +211,12 @@ int profile_cache_add_or_update(const char *user_fingerprint, const dna_unified_
  */
 int profile_cache_get(const char *user_fingerprint, dna_unified_identity_t **identity_out, uint64_t *cached_at_out) {
     if (!g_db) {
-        fprintf(stderr, "[PROFILE_CACHE] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!user_fingerprint || !identity_out) {
-        fprintf(stderr, "[PROFILE_CACHE] Invalid parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return -1;
     }
 
@@ -224,7 +227,7 @@ int profile_cache_get(const char *user_fingerprint, dna_unified_identity_t **ide
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -239,7 +242,7 @@ int profile_cache_get(const char *user_fingerprint, dna_unified_identity_t **ide
     // Read JSON and deserialize
     const char *identity_json = (const char*)sqlite3_column_text(stmt, 0);
     if (!identity_json) {
-        fprintf(stderr, "[PROFILE_CACHE] NULL identity_json in database\n");
+        QGP_LOG_ERROR(LOG_TAG, "NULL identity_json in database\n");
         sqlite3_finalize(stmt);
         return -1;
     }
@@ -247,7 +250,7 @@ int profile_cache_get(const char *user_fingerprint, dna_unified_identity_t **ide
     dna_unified_identity_t *identity = NULL;
     int parse_result = dna_identity_from_json(identity_json, &identity);
     if (parse_result != 0 || !identity) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to parse identity JSON\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse identity JSON\n");
         sqlite3_finalize(stmt);
         return -1;
     }
@@ -324,12 +327,12 @@ bool profile_cache_is_expired(const char *user_fingerprint) {
  */
 int profile_cache_delete(const char *user_fingerprint) {
     if (!g_db) {
-        fprintf(stderr, "[PROFILE_CACHE] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!user_fingerprint) {
-        fprintf(stderr, "[PROFILE_CACHE] Invalid fingerprint\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint\n");
         return -1;
     }
 
@@ -338,7 +341,7 @@ int profile_cache_delete(const char *user_fingerprint) {
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -348,7 +351,7 @@ int profile_cache_delete(const char *user_fingerprint) {
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to delete: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -476,7 +479,7 @@ int profile_cache_list_all(profile_cache_list_t **list_out) {
                 entry->identity = identity;
             } else {
                 // Skip entries with invalid JSON
-                fprintf(stderr, "[PROFILE_CACHE] Skipping entry with invalid JSON: %s\n", fp);
+                QGP_LOG_ERROR(LOG_TAG, "Skipping entry with invalid JSON: %s\n", fp);
                 continue;
             }
         }
@@ -524,7 +527,7 @@ int profile_cache_count(void) {
  */
 int profile_cache_clear_all(void) {
     if (!g_db) {
-        fprintf(stderr, "[PROFILE_CACHE] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
@@ -533,12 +536,12 @@ int profile_cache_clear_all(void) {
 
     int rc = sqlite3_exec(g_db, sql, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[PROFILE_CACHE] Failed to clear profiles: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to clear profiles: %s\n", err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
 
-    printf("[PROFILE_CACHE] Cleared all profiles\n");
+    QGP_LOG_INFO(LOG_TAG, "Cleared all profiles\n");
     return 0;
 }
 
@@ -568,6 +571,6 @@ void profile_cache_close(void) {
         sqlite3_close(g_db);
         g_db = NULL;
         g_owner_identity[0] = '\0';
-        printf("[PROFILE_CACHE] Closed database\n");
+        QGP_LOG_INFO(LOG_TAG, "Closed database\n");
     }
 }

@@ -80,11 +80,9 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include <errno.h>
 #include <unistd.h>
 
-/* Redirect printf/fprintf to Android logcat */
-#define QGP_LOG_TAG "DNA_ENGINE"
-#define QGP_LOG_REDIRECT_STDIO 1
 #include "crypto/utils/qgp_log.h"
 
+#define LOG_TAG "DNA_ENGINE"
 /* Use engine-specific error codes */
 #define DNA_OK 0
 
@@ -737,7 +735,7 @@ void dna_handle_list_identities(dna_engine_t *engine, dna_task_t *task) {
                                 strncpy(engine->name_cache[engine->name_cache_count].display_name,
                                         display_name, 63);
                                 engine->name_cache_count++;
-                                printf("[DNA_ENGINE] Cached name: %s -> %s\n",
+                                QGP_LOG_INFO(LOG_TAG, "Cached name: %s -> %s\n",
                                        fingerprints[i], display_name);
                             }
                         }
@@ -813,13 +811,13 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Initialize contacts database BEFORE P2P/offline message check
      * This is required because offline message check queries contacts' outboxes */
     if (contacts_db_init(fingerprint) != 0) {
-        printf("[DNA_ENGINE] Warning: Failed to initialize contacts database\n");
+        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize contacts database\n");
         /* Non-fatal - continue, contacts will be initialized on first access */
     }
 
     /* Initialize P2P transport for DHT and messaging */
     if (messenger_p2p_init(engine->messenger) != 0) {
-        printf("[DNA_ENGINE] Warning: Failed to initialize P2P transport\n");
+        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize P2P transport\n");
         /* Non-fatal - continue without P2P, DHT operations will still work via singleton */
     } else {
         /* P2P initialized successfully - complete P2P setup */
@@ -827,21 +825,21 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
 
         /* 1. Subscribe to contacts for push notifications */
         if (messenger_p2p_subscribe_to_contacts(engine->messenger) == 0) {
-            printf("[DNA_ENGINE] Subscribed to contacts for push notifications\n");
+            QGP_LOG_INFO(LOG_TAG, "Subscribed to contacts for push notifications\n");
         } else {
-            printf("[DNA_ENGINE] Warning: Failed to subscribe to contacts\n");
+            QGP_LOG_INFO(LOG_TAG, "Warning: Failed to subscribe to contacts\n");
         }
 
         /* 2. Check for offline messages (Model E: query contacts' outboxes) */
         size_t offline_count = 0;
         if (messenger_p2p_check_offline_messages(engine->messenger, &offline_count) == 0) {
             if (offline_count > 0) {
-                printf("[DNA_ENGINE] Received %zu offline messages\n", offline_count);
+                QGP_LOG_INFO(LOG_TAG, "Received %zu offline messages\n", offline_count);
             } else {
-                printf("[DNA_ENGINE] No offline messages found\n");
+                QGP_LOG_INFO(LOG_TAG, "No offline messages found\n");
             }
         } else {
-            printf("[DNA_ENGINE] Warning: Failed to check offline messages\n");
+            QGP_LOG_INFO(LOG_TAG, "Warning: Failed to check offline messages\n");
         }
     }
 
@@ -876,7 +874,7 @@ void dna_handle_register_name(dna_engine_t *engine, dna_task_t *task) {
     } else {
         /* Cache the registered name to SQLite for identity selector */
         keyserver_cache_put_name(engine->fingerprint, task->params.register_name.name, 0);
-        printf("[DNA_ENGINE] Name registered and cached: %.16s... -> %s\n",
+        QGP_LOG_INFO(LOG_TAG, "Name registered and cached: %.16s... -> %s\n",
                engine->fingerprint, task->params.register_name.name);
     }
 
@@ -907,7 +905,7 @@ static void update_name_cache(dna_engine_t *engine, const char *fingerprint, con
         strncpy(engine->name_cache[engine->name_cache_count].display_name,
                 name, 63);
         engine->name_cache_count++;
-        printf("[DNA_ENGINE] Cached name: %s -> %s\n", fingerprint, name);
+        QGP_LOG_INFO(LOG_TAG, "Cached name: %s -> %s\n", fingerprint, name);
     }
     pthread_mutex_unlock(&engine->name_cache_mutex);
 }
@@ -923,7 +921,7 @@ static void refresh_display_name_from_dht(dna_engine_t *engine, const char *fing
     if (rc == 0 && name_out && strlen(name_out) > 0) {
         /* Update in-memory cache */
         update_name_cache(engine, fingerprint, name_out);
-        printf("[DNA_ENGINE] Background refresh: %s -> %s\n", fingerprint, name_out);
+        QGP_LOG_INFO(LOG_TAG, "Background refresh: %s -> %s\n", fingerprint, name_out);
         free(name_out);
     }
 }
@@ -941,7 +939,7 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
             strncpy(display_name_buf, engine->name_cache[i].display_name,
                     sizeof(display_name_buf) - 1);
             pthread_mutex_unlock(&engine->name_cache_mutex);
-            printf("[DNA_ENGINE] Memory cache hit: %s -> %s\n", fingerprint, display_name_buf);
+            QGP_LOG_INFO(LOG_TAG, "Memory cache hit: %s -> %s\n", fingerprint, display_name_buf);
             goto done;
         }
     }
@@ -958,7 +956,7 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
         /* Update in-memory cache */
         update_name_cache(engine, fingerprint, cached_name);
 
-        printf("[DNA_ENGINE] Name cache hit: %s -> %s\n", fingerprint, display_name_buf);
+        QGP_LOG_INFO(LOG_TAG, "Name cache hit: %s -> %s\n", fingerprint, display_name_buf);
 
         /* Return cached value immediately - 7-day TTL handles freshness */
         /* Note: True background refresh would require async task submission */
@@ -1007,7 +1005,7 @@ void dna_handle_get_avatar(dna_engine_t *engine, dna_task_t *task) {
     int cache_rc = keyserver_cache_get_avatar(fingerprint, &cached_avatar);
     if (cache_rc == 0 && cached_avatar) {
         avatar = cached_avatar;  /* Caller will free */
-        printf("[DNA_ENGINE] Avatar cache hit: %.16s...\n", fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Avatar cache hit: %.16s...\n", fingerprint);
         goto done;
     }
 
@@ -1034,7 +1032,7 @@ void dna_handle_get_avatar(dna_engine_t *engine, dna_task_t *task) {
                 keyserver_cache_put_name(fingerprint, identity->registered_name, 0);
             }
 
-            printf("[DNA_ENGINE] Avatar fetched from DHT: %.16s...\n", fingerprint);
+            QGP_LOG_INFO(LOG_TAG, "Avatar fetched from DHT: %.16s...\n", fingerprint);
         }
         dna_identity_free(identity);
     }
@@ -1206,7 +1204,7 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
         /* Update avatar cache for identity selector */
         if (p->avatar_base64[0] != '\0') {
             keyserver_cache_put_avatar(engine->fingerprint, p->avatar_base64);
-            printf("[DNA_ENGINE] Avatar cached after profile save: %.16s...\n", engine->fingerprint);
+            QGP_LOG_INFO(LOG_TAG, "Avatar cached after profile save: %.16s...\n", engine->fingerprint);
         }
     }
 
@@ -1928,7 +1926,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
     /* Check if address is available */
     if (wallet->address[0] == '\0') {
-        fprintf(stderr, "[ENGINE] Wallet address not available\n");
+        QGP_LOG_ERROR(LOG_TAG, "Wallet address not available\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
@@ -1940,7 +1938,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     /* Parse amount */
     uint256_t amount = {0};
     if (cellframe_uint256_from_str(amount_str, &amount) != 0) {
-        fprintf(stderr, "[ENGINE] Failed to parse amount: %s\n", amount_str);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse amount: %s\n", amount_str);
         error = DNA_ERROR_INVALID_ARG;
         goto done;
     }
@@ -1974,7 +1972,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     }
 
     if (cellframe_rpc_get_utxo(network, address, utxo_token, &utxo_resp) != 0 || !utxo_resp) {
-        fprintf(stderr, "[ENGINE] Failed to query %s UTXOs from RPC\n", utxo_token);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to query %s UTXOs from RPC\n", utxo_token);
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
     }
@@ -1996,7 +1994,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
                     int num_utxos = json_object_array_length(outs_obj);
                     if (num_utxos == 0) {
-                        fprintf(stderr, "[ENGINE] No %s UTXOs available\n", utxo_token);
+                        QGP_LOG_ERROR(LOG_TAG, "No %s UTXOs available\n", utxo_token);
                         error = DNA_ERROR_NOT_FOUND;
                         goto done;
                     }
@@ -2034,7 +2032,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
                     }
 
                     if (valid_utxos == 0) {
-                        fprintf(stderr, "[ENGINE] No valid %s UTXOs\n", utxo_token);
+                        QGP_LOG_ERROR(LOG_TAG, "No valid %s UTXOs\n", utxo_token);
                         free(all_utxos);
                         error = DNA_ERROR_NOT_FOUND;
                         goto done;
@@ -2061,36 +2059,36 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
                     free(all_utxos);
 
                     /* Debug: Print selected TOKEN UTXOs */
-                    fprintf(stderr, "[ENGINE] %s UTXO Selection:\n", utxo_token);
-                    fprintf(stderr, "[ENGINE]   Amount to send: %lu datoshi\n", (unsigned long)amount.lo.lo);
-                    fprintf(stderr, "[ENGINE]   Required: %lu datoshi\n", (unsigned long)required.lo.lo);
+                    QGP_LOG_ERROR(LOG_TAG, "%s UTXO Selection:\n", utxo_token);
+                    QGP_LOG_ERROR(LOG_TAG, "Amount to send: %lu datoshi\n", (unsigned long)amount.lo.lo);
+                    QGP_LOG_ERROR(LOG_TAG, "Required: %lu datoshi\n", (unsigned long)required.lo.lo);
                     if (total_input.lo.hi == 0) {
-                        fprintf(stderr, "[ENGINE]   Selected %d UTXOs, total: %lu datoshi\n",
+                        QGP_LOG_ERROR(LOG_TAG, "Selected %d UTXOs, total: %lu datoshi\n",
                                 num_selected_utxos, (unsigned long)total_input.lo.lo);
                     } else {
-                        fprintf(stderr, "[ENGINE]   Selected %d UTXOs, total: lo.hi=%lu lo.lo=%lu datoshi\n",
+                        QGP_LOG_ERROR(LOG_TAG, "Selected %d UTXOs, total: lo.hi=%lu lo.lo=%lu datoshi\n",
                                 num_selected_utxos, (unsigned long)total_input.lo.hi, (unsigned long)total_input.lo.lo);
                     }
 
                     if (compare256(total_input, required) < 0) {
-                        fprintf(stderr, "[ENGINE] Insufficient %s. Need: %lu, Have: %lu\n",
+                        QGP_LOG_ERROR(LOG_TAG, "Insufficient %s. Need: %lu, Have: %lu\n",
                                 utxo_token, (unsigned long)required.lo.lo, (unsigned long)total_input.lo.lo);
                         error = DNA_ERROR_INTERNAL;
                         goto done;
                     }
 
                 } else {
-                    fprintf(stderr, "[ENGINE] Invalid UTXO response format\n");
+                    QGP_LOG_ERROR(LOG_TAG, "Invalid UTXO response format\n");
                     error = DNA_ENGINE_ERROR_NETWORK;
                     goto done;
                 }
             } else {
-                fprintf(stderr, "[ENGINE] Invalid UTXO response format\n");
+                QGP_LOG_ERROR(LOG_TAG, "Invalid UTXO response format\n");
                 error = DNA_ENGINE_ERROR_NETWORK;
                 goto done;
             }
         } else {
-            fprintf(stderr, "[ENGINE] Invalid UTXO response format\n");
+            QGP_LOG_ERROR(LOG_TAG, "Invalid UTXO response format\n");
             error = DNA_ENGINE_ERROR_NETWORK;
             goto done;
         }
@@ -2098,10 +2096,10 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
     /* STEP 1b: For non-native tokens, query CELL UTXOs for fees */
     if (!is_native_token) {
-        fprintf(stderr, "[ENGINE] Querying CELL UTXOs for fees...\n");
+        QGP_LOG_ERROR(LOG_TAG, "Querying CELL UTXOs for fees...\n");
 
         if (cellframe_rpc_get_utxo(network, address, "CELL", &cell_utxo_resp) != 0 || !cell_utxo_resp) {
-            fprintf(stderr, "[ENGINE] Failed to query CELL UTXOs for fees\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to query CELL UTXOs for fees\n");
             error = DNA_ENGINE_ERROR_NETWORK;
             goto done;
         }
@@ -2122,7 +2120,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
                         int num_utxos = json_object_array_length(outs_obj);
                         if (num_utxos == 0) {
-                            fprintf(stderr, "[ENGINE] No CELL UTXOs for fees\n");
+                            QGP_LOG_ERROR(LOG_TAG, "No CELL UTXOs for fees\n");
                             error = DNA_ERROR_NOT_FOUND;
                             goto done;
                         }
@@ -2158,7 +2156,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
                         }
 
                         if (valid_cell_utxos == 0) {
-                            fprintf(stderr, "[ENGINE] No valid CELL UTXOs for fees\n");
+                            QGP_LOG_ERROR(LOG_TAG, "No valid CELL UTXOs for fees\n");
                             free(all_cell_utxos);
                             error = DNA_ERROR_NOT_FOUND;
                             goto done;
@@ -2182,15 +2180,15 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
                         free(all_cell_utxos);
 
-                        fprintf(stderr, "[ENGINE] CELL UTXO Selection (for fees):\n");
-                        fprintf(stderr, "[ENGINE]   Network fee: %lu datoshi\n", (unsigned long)NETWORK_FEE_DATOSHI);
-                        fprintf(stderr, "[ENGINE]   Validator fee: %lu datoshi\n", (unsigned long)fee.lo.lo);
-                        fprintf(stderr, "[ENGINE]   Required CELL: %lu datoshi\n", (unsigned long)required_cell.lo.lo);
-                        fprintf(stderr, "[ENGINE]   Selected %d CELL UTXOs, total: %lu datoshi\n",
+                        QGP_LOG_ERROR(LOG_TAG, "CELL UTXO Selection (for fees):\n");
+                        QGP_LOG_ERROR(LOG_TAG, "Network fee: %lu datoshi\n", (unsigned long)NETWORK_FEE_DATOSHI);
+                        QGP_LOG_ERROR(LOG_TAG, "Validator fee: %lu datoshi\n", (unsigned long)fee.lo.lo);
+                        QGP_LOG_ERROR(LOG_TAG, "Required CELL: %lu datoshi\n", (unsigned long)required_cell.lo.lo);
+                        QGP_LOG_ERROR(LOG_TAG, "Selected %d CELL UTXOs, total: %lu datoshi\n",
                                 num_selected_cell_utxos, (unsigned long)total_cell_input.lo.lo);
 
                         if (compare256(total_cell_input, required_cell) < 0) {
-                            fprintf(stderr, "[ENGINE] Insufficient CELL for fees. Need: %lu, Have: %lu\n",
+                            QGP_LOG_ERROR(LOG_TAG, "Insufficient CELL for fees. Need: %lu, Have: %lu\n",
                                     (unsigned long)required_cell.lo.lo, (unsigned long)total_cell_input.lo.lo);
                             error = DNA_ERROR_INTERNAL;
                             goto done;
@@ -2206,7 +2204,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     /* STEP 2: Build transaction */
     builder = cellframe_tx_builder_new();
     if (!builder) {
-        fprintf(stderr, "[ENGINE] Failed to create tx builder\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create tx builder\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
@@ -2219,7 +2217,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     uint8_t recipient_addr_buf[BASE58_DECODE_SIZE(256)];
     size_t decoded_size = base58_decode(recipient, recipient_addr_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
-        fprintf(stderr, "[ENGINE] Invalid recipient address\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid recipient address\n");
         error = DNA_ERROR_INVALID_ARG;
         goto done;
     }
@@ -2230,7 +2228,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     uint8_t network_collector_buf[BASE58_DECODE_SIZE(256)];
     decoded_size = base58_decode(NETWORK_FEE_COLLECTOR, network_collector_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
-        fprintf(stderr, "[ENGINE] Invalid network collector address\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid network collector address\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
@@ -2241,7 +2239,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     uint8_t sender_addr_buf[BASE58_DECODE_SIZE(256)];
     decoded_size = base58_decode(address, sender_addr_buf);
     if (decoded_size != sizeof(cellframe_addr_t)) {
-        fprintf(stderr, "[ENGINE] Invalid sender address\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid sender address\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
@@ -2264,7 +2262,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         uint256_t temp = uint256_0;
         SUBTRACT_256_256(total_input, amount, &temp);  /* temp = input - amount */
         SUBTRACT_256_256(temp, fees_total, &token_change);  /* change = temp - fees */
-        fprintf(stderr, "[ENGINE] CELL change: %lu datoshi\n", (unsigned long)token_change.lo.lo);
+        QGP_LOG_ERROR(LOG_TAG, "CELL change: %lu datoshi\n", (unsigned long)token_change.lo.lo);
     } else {
         /* Non-native: separate token change and CELL change */
         /* Token change = total_input - amount (256-bit) */
@@ -2272,9 +2270,9 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
         /* Print token change with 256-bit awareness */
         if (token_change.lo.hi == 0) {
-            fprintf(stderr, "[ENGINE] %s change: %lu datoshi\n", token, (unsigned long)token_change.lo.lo);
+            QGP_LOG_ERROR(LOG_TAG, "%s change: %lu datoshi\n", token, (unsigned long)token_change.lo.lo);
         } else {
-            fprintf(stderr, "[ENGINE] %s change: lo.hi=%lu lo.lo=%lu datoshi\n", token,
+            QGP_LOG_ERROR(LOG_TAG, "%s change: lo.hi=%lu lo.lo=%lu datoshi\n", token,
                     (unsigned long)token_change.lo.hi, (unsigned long)token_change.lo.lo);
         }
 
@@ -2282,13 +2280,13 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         uint256_t fees_total = uint256_0;
         fees_total.lo.lo = NETWORK_FEE_DATOSHI + fee.lo.lo;
         SUBTRACT_256_256(total_cell_input, fees_total, &cell_change);
-        fprintf(stderr, "[ENGINE] CELL change: %lu datoshi\n", (unsigned long)cell_change.lo.lo);
+        QGP_LOG_ERROR(LOG_TAG, "CELL change: %lu datoshi\n", (unsigned long)cell_change.lo.lo);
     }
 
     /* Add all TOKEN IN items */
     for (int i = 0; i < num_selected_utxos; i++) {
         if (cellframe_tx_add_in(builder, &selected_utxos[i].hash, selected_utxos[i].idx) != 0) {
-            fprintf(stderr, "[ENGINE] Failed to add TOKEN IN item\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to add TOKEN IN item\n");
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
@@ -2298,7 +2296,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     if (!is_native_token && selected_cell_utxos) {
         for (int i = 0; i < num_selected_cell_utxos; i++) {
             if (cellframe_tx_add_in(builder, &selected_cell_utxos[i].hash, selected_cell_utxos[i].idx) != 0) {
-                fprintf(stderr, "[ENGINE] Failed to add CELL IN item\n");
+                QGP_LOG_ERROR(LOG_TAG, "Failed to add CELL IN item\n");
                 error = DNA_ERROR_INTERNAL;
                 goto done;
             }
@@ -2313,7 +2311,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         out_result = cellframe_tx_add_out_ext(builder, &recipient_addr, amount, token);
     }
     if (out_result != 0) {
-        fprintf(stderr, "[ENGINE] Failed to add recipient OUT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add recipient OUT\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
@@ -2326,7 +2324,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         out_result = cellframe_tx_add_out_ext(builder, &network_collector_addr, network_fee, "CELL");
     }
     if (out_result != 0) {
-        fprintf(stderr, "[ENGINE] Failed to add network fee OUT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add network fee OUT\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
@@ -2339,7 +2337,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
             out_result = cellframe_tx_add_out_ext(builder, &sender_addr, token_change, token);
         }
         if (out_result != 0) {
-            fprintf(stderr, "[ENGINE] Failed to add token change OUT\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to add token change OUT\n");
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
@@ -2349,7 +2347,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     /* Use out_ext with "CELL" ticker so ledger can track balance in mixed-token TX */
     if (!is_native_token && (cell_change.hi.hi != 0 || cell_change.hi.lo != 0 || cell_change.lo.hi != 0 || cell_change.lo.lo != 0)) {
         if (cellframe_tx_add_out_ext(builder, &sender_addr, cell_change, "CELL") != 0) {
-            fprintf(stderr, "[ENGINE] Failed to add CELL change OUT\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to add CELL change OUT\n");
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
@@ -2357,7 +2355,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
     /* Add OUT_COND item (validator fee) */
     if (cellframe_tx_add_fee(builder, fee) != 0) {
-        fprintf(stderr, "[ENGINE] Failed to add validator fee\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add validator fee\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
@@ -2366,18 +2364,18 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     size_t tx_size;
     const uint8_t *tx_data = cellframe_tx_get_signing_data(builder, &tx_size);
     if (!tx_data) {
-        fprintf(stderr, "[ENGINE] Failed to get transaction data\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get transaction data\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
 
     /* Debug: Print key sizes */
-    fprintf(stderr, "[ENGINE] Signing Debug:\n");
-    fprintf(stderr, "[ENGINE]   TX data size: %zu bytes\n", tx_size);
-    fprintf(stderr, "[ENGINE]   Public key size: %zu bytes\n", wallet->public_key_size);
-    fprintf(stderr, "[ENGINE]   Private key size: %zu bytes\n", wallet->private_key_size);
-    fprintf(stderr, "[ENGINE]   Wallet name: %s\n", wallet->name);
-    fprintf(stderr, "[ENGINE]   Wallet address: %s\n", wallet->address);
+    QGP_LOG_ERROR(LOG_TAG, "Signing Debug:\n");
+    QGP_LOG_ERROR(LOG_TAG, "TX data size: %zu bytes\n", tx_size);
+    QGP_LOG_ERROR(LOG_TAG, "Public key size: %zu bytes\n", wallet->public_key_size);
+    QGP_LOG_ERROR(LOG_TAG, "Private key size: %zu bytes\n", wallet->private_key_size);
+    QGP_LOG_ERROR(LOG_TAG, "Wallet name: %s\n", wallet->name);
+    QGP_LOG_ERROR(LOG_TAG, "Wallet address: %s\n", wallet->address);
 
     /* Sign transaction */
     size_t dap_sign_size = 0;
@@ -2385,19 +2383,19 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
                                     wallet->private_key, wallet->private_key_size,
                                     wallet->public_key, wallet->public_key_size,
                                     &dap_sign, &dap_sign_size) != 0) {
-        fprintf(stderr, "[ENGINE] Failed to sign transaction\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign transaction\n");
         free((void*)tx_data);
         error = DNA_ERROR_CRYPTO;
         goto done;
     }
 
-    fprintf(stderr, "[ENGINE]   Signature size: %zu bytes\n", dap_sign_size);
+    QGP_LOG_ERROR(LOG_TAG, "Signature size: %zu bytes\n", dap_sign_size);
 
     free((void*)tx_data);
 
     /* Add signature to transaction */
     if (cellframe_tx_add_signature(builder, dap_sign, dap_sign_size) != 0) {
-        fprintf(stderr, "[ENGINE] Failed to add signature\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add signature\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
@@ -2405,20 +2403,20 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     /* STEP 4: Convert to JSON */
     const uint8_t *signed_tx = cellframe_tx_get_data(builder, &tx_size);
     if (!signed_tx) {
-        fprintf(stderr, "[ENGINE] Failed to get signed transaction\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get signed transaction\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
 
     if (cellframe_tx_to_json(signed_tx, tx_size, &json) != 0) {
-        fprintf(stderr, "[ENGINE] Failed to convert to JSON\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to convert to JSON\n");
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
 
     /* STEP 5: Submit to RPC */
     if (cellframe_rpc_submit_tx(network, "main", json, &submit_resp) != 0 || !submit_resp) {
-        fprintf(stderr, "[ENGINE] Failed to submit transaction to RPC\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to submit transaction to RPC\n");
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
     }
@@ -2430,7 +2428,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         const char *error_msg = NULL;
 
         /* Debug: Print full RPC response */
-        fprintf(stderr, "[ENGINE] RPC Response: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "RPC Response: %s\n",
                 json_object_to_json_string_ext(submit_resp->result, JSON_C_TO_STRING_PRETTY));
 
         if (json_object_is_type(submit_resp->result, json_type_array) &&
@@ -2455,24 +2453,24 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         }
 
         if (!tx_created) {
-            fprintf(stderr, "[ENGINE] Transaction failed to create\n");
+            QGP_LOG_ERROR(LOG_TAG, "Transaction failed to create\n");
             if (error_msg) {
-                fprintf(stderr, "[ENGINE] Error from node: %s\n", error_msg);
+                QGP_LOG_ERROR(LOG_TAG, "Error from node: %s\n", error_msg);
             }
             if (tx_hash) {
-                fprintf(stderr, "[ENGINE] TX Hash: %s\n", tx_hash);
+                QGP_LOG_ERROR(LOG_TAG, "TX Hash: %s\n", tx_hash);
             }
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
 
-        printf("[ENGINE] Transaction submitted successfully!\n");
+        QGP_LOG_INFO(LOG_TAG, "Transaction submitted successfully!\n");
         if (tx_hash) {
-            printf("[ENGINE] TX Hash: %s\n", tx_hash);
+            QGP_LOG_INFO(LOG_TAG, "TX Hash: %s\n", tx_hash);
         }
     } else if (submit_resp->error) {
         /* Check for RPC error */
-        fprintf(stderr, "[ENGINE] RPC Error: %s\n", submit_resp->error);
+        QGP_LOG_ERROR(LOG_TAG, "RPC Error: %s\n", submit_resp->error);
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
@@ -2519,7 +2517,7 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
 
     /* Query transaction history from RPC */
     if (cellframe_rpc_get_tx_history(network, wallet->address, &resp) != 0 || !resp) {
-        fprintf(stderr, "[ENGINE] Failed to query tx history from RPC\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to query tx history from RPC\n");
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
     }

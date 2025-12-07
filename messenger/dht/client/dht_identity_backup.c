@@ -21,6 +21,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include "../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DHT_BACKUP"
 
 //=============================================================================
 // Helper Functions
@@ -37,13 +40,13 @@ static int make_base_key(const char *user_fingerprint, char *key_out, size_t key
     // Fingerprint is 128-char hex string
     size_t fp_len = strlen(user_fingerprint);
     if (fp_len != 128) {
-        fprintf(stderr, "[DHT Identity] Invalid fingerprint length: %zu (expected 128)\n", fp_len);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint length: %zu (expected 128)\n", fp_len);
         return -1;
     }
 
     int ret = snprintf(key_out, key_out_size, "%s:dht_identity", user_fingerprint);
     if (ret < 0 || (size_t)ret >= key_out_size) {
-        fprintf(stderr, "[DHT Identity] Base key buffer too small\n");
+        QGP_LOG_ERROR(LOG_TAG, "Base key buffer too small\n");
         return -1;
     }
 
@@ -58,7 +61,7 @@ int dht_identity_get_local_path(const char *user_fingerprint, char *path_out) {
 
     const char *home = qgp_platform_home_dir();
     if (!home) {
-        fprintf(stderr, "[DHT Identity] Failed to get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
         return -1;
     }
 
@@ -88,7 +91,7 @@ static int save_to_local_file(
 
     FILE *fp = fopen(path, "wb");
     if (!fp) {
-        fprintf(stderr, "[DHT Identity] Failed to create file: %s (errno %d)\n", path, errno);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create file: %s (errno %d)\n", path, errno);
         return -1;
     }
 
@@ -96,7 +99,7 @@ static int save_to_local_file(
     fclose(fp);
 
     if (written != encrypted_size) {
-        fprintf(stderr, "[DHT Identity] Failed to write complete file\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to write complete file\n");
         return -1;
     }
 
@@ -105,7 +108,7 @@ static int save_to_local_file(
     chmod(path, S_IRUSR | S_IWUSR);
 #endif
 
-    printf("[DHT Identity] Saved to local file: %s (%zu bytes)\n", path, encrypted_size);
+    QGP_LOG_INFO(LOG_TAG, "Saved to local file: %s (%zu bytes)\n", path, encrypted_size);
     return 0;
 }
 
@@ -136,14 +139,14 @@ static int read_from_local_file(
     fseek(fp, 0, SEEK_SET);
 
     if (file_size <= 0 || file_size > 10 * 1024 * 1024) {  // Max 10MB
-        fprintf(stderr, "[DHT Identity] Invalid file size: %ld\n", file_size);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid file size: %ld\n", file_size);
         fclose(fp);
         return -1;
     }
 
     uint8_t *data = (uint8_t*)malloc(file_size);
     if (!data) {
-        fprintf(stderr, "[DHT Identity] Failed to allocate buffer\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate buffer\n");
         fclose(fp);
         return -1;
     }
@@ -152,7 +155,7 @@ static int read_from_local_file(
     fclose(fp);
 
     if ((long)read_size != file_size) {
-        fprintf(stderr, "[DHT Identity] Failed to read complete file\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to read complete file\n");
         free(data);
         return -1;
     }
@@ -160,7 +163,7 @@ static int read_from_local_file(
     *data_out = data;
     *size_out = read_size;
 
-    printf("[DHT Identity] Read from local file: %s (%zu bytes)\n", path, read_size);
+    QGP_LOG_INFO(LOG_TAG, "Read from local file: %s (%zu bytes)\n", path, read_size);
     return 0;
 }
 
@@ -178,16 +181,16 @@ int dht_identity_create_and_backup(
     dht_identity_t **identity_out)
 {
     if (!user_fingerprint || !kyber_pubkey || !dht_ctx || !identity_out) {
-        fprintf(stderr, "[DHT Identity] Invalid parameters for create_and_backup\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for create_and_backup\n");
         return -1;
     }
 
-    printf("[DHT Identity] Creating new random DHT identity for %s\n", user_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Creating new random DHT identity for %s\n", user_fingerprint);
 
     // Step 1: Generate random DHT identity (RSA-2048)
     dht_identity_t *identity = NULL;
     if (dht_identity_generate_random(&identity) != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to generate random identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate random identity\n");
         return -1;
     }
 
@@ -195,12 +198,12 @@ int dht_identity_create_and_backup(
     uint8_t *pem_buffer = NULL;
     size_t pem_size = 0;
     if (dht_identity_export_to_buffer(identity, &pem_buffer, &pem_size) != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to export identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to export identity\n");
         dht_identity_free(identity);
         return -1;
     }
 
-    printf("[DHT Identity] Exported identity to PEM buffer (%zu bytes)\n", pem_size);
+    QGP_LOG_INFO(LOG_TAG, "Exported identity to PEM buffer (%zu bytes)\n", pem_size);
 
     // Step 3: Encrypt with Kyber1024 public key using Kyber KEM + AES-256-GCM
     // Format: [kyber_ct(1568)][aes_iv(12)][aes_tag(16)][encrypted_pem]
@@ -210,7 +213,7 @@ int dht_identity_create_and_backup(
     uint8_t shared_secret[32];  // Kyber output is 32 bytes
 
     if (crypto_kem_enc(kyber_ct, shared_secret, kyber_pubkey) != 0) {
-        fprintf(stderr, "[DHT Identity] Kyber encapsulation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Kyber encapsulation failed\n");
         free(pem_buffer);
         dht_identity_free(identity);
         return -1;
@@ -223,7 +226,7 @@ int dht_identity_create_and_backup(
 
     uint8_t *encrypted_pem = (uint8_t*)malloc(pem_size);
     if (!encrypted_pem) {
-        fprintf(stderr, "[DHT Identity] Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
         free(pem_buffer);
         dht_identity_free(identity);
         return -1;
@@ -232,7 +235,7 @@ int dht_identity_create_and_backup(
     size_t encrypted_pem_len = pem_size;
     if (qgp_aes256_encrypt(shared_secret, pem_buffer, pem_size, NULL, 0,
                            encrypted_pem, &encrypted_pem_len, iv, tag) != 0) {
-        fprintf(stderr, "[DHT Identity] AES encryption failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "AES encryption failed\n");
         free(pem_buffer);
         free(encrypted_pem);
         dht_identity_free(identity);
@@ -245,7 +248,7 @@ int dht_identity_create_and_backup(
     size_t total_size = 1568 + 12 + 16 + pem_size;
     uint8_t *encrypted_data = (uint8_t*)malloc(total_size);
     if (!encrypted_data) {
-        fprintf(stderr, "[DHT Identity] Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
         free(encrypted_pem);
         dht_identity_free(identity);
         return -1;
@@ -257,11 +260,11 @@ int dht_identity_create_and_backup(
     memcpy(encrypted_data + 1568 + 12 + 16, encrypted_pem, pem_size);
     free(encrypted_pem);
 
-    printf("[DHT Identity] Encrypted identity (%zu bytes)\n", total_size);
+    QGP_LOG_INFO(LOG_TAG, "Encrypted identity (%zu bytes)\n", total_size);
 
     // Step 4: Save to local file
     if (save_to_local_file(user_fingerprint, encrypted_data, total_size) != 0) {
-        fprintf(stderr, "[DHT Identity] Warning: Failed to save to local file\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to save to local file\n");
         // Continue anyway - try DHT
     }
 
@@ -270,14 +273,14 @@ int dht_identity_create_and_backup(
         user_fingerprint, encrypted_data, total_size, dht_ctx);
 
     if (publish_result != 0) {
-        fprintf(stderr, "[DHT Identity] Warning: Failed to publish to DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to publish to DHT\n");
         // Continue anyway - local file exists
     }
 
     free(encrypted_data);
 
     *identity_out = identity;
-    printf("[DHT Identity] Successfully created and backed up identity\n");
+    QGP_LOG_INFO(LOG_TAG, "Successfully created and backed up identity\n");
     return 0;
 }
 
@@ -290,17 +293,17 @@ int dht_identity_load_from_local(
     dht_identity_t **identity_out)
 {
     if (!user_fingerprint || !kyber_privkey || !identity_out) {
-        fprintf(stderr, "[DHT Identity] Invalid parameters for load_from_local\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for load_from_local\n");
         return -1;
     }
 
-    printf("[DHT Identity] Loading from local file for %s\n", user_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Loading from local file for %s\n", user_fingerprint);
 
     // Step 1: Read encrypted backup from file
     uint8_t *encrypted_data = NULL;
     size_t encrypted_size = 0;
     if (read_from_local_file(user_fingerprint, &encrypted_data, &encrypted_size) != 0) {
-        fprintf(stderr, "[DHT Identity] Local file not found\n");
+        QGP_LOG_ERROR(LOG_TAG, "Local file not found\n");
         return -1;
     }
 
@@ -308,7 +311,7 @@ int dht_identity_load_from_local(
     // Format: [kyber_ct(1568)][aes_iv(12)][aes_tag(16)][encrypted_pem]
 
     if (encrypted_size < 1568 + 12 + 16) {
-        fprintf(stderr, "[DHT Identity] Invalid encrypted backup size: %zu\n", encrypted_size);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid encrypted backup size: %zu\n", encrypted_size);
         free(encrypted_data);
         return -1;
     }
@@ -323,7 +326,7 @@ int dht_identity_load_from_local(
     // Kyber decapsulation (recover shared secret)
     uint8_t shared_secret[32];
     if (crypto_kem_dec(shared_secret, kyber_ct, kyber_privkey) != 0) {
-        fprintf(stderr, "[DHT Identity] Kyber decapsulation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Kyber decapsulation failed\n");
         free(encrypted_data);
         return -1;
     }
@@ -331,7 +334,7 @@ int dht_identity_load_from_local(
     // AES-256-GCM decryption
     uint8_t *decrypted_pem = malloc(encrypted_pem_size);
     if (!decrypted_pem) {
-        fprintf(stderr, "[DHT Identity] Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
         free(encrypted_data);
         return -1;
     }
@@ -339,19 +342,19 @@ int dht_identity_load_from_local(
     size_t decrypted_pem_len = encrypted_pem_size;
     if (qgp_aes256_decrypt(shared_secret, encrypted_pem, encrypted_pem_size, NULL, 0,
                            iv, tag, decrypted_pem, &decrypted_pem_len) != 0) {
-        fprintf(stderr, "[DHT Identity] AES decryption failed (corrupted or wrong key)\n");
+        QGP_LOG_ERROR(LOG_TAG, "AES decryption failed (corrupted or wrong key)\n");
         free(encrypted_data);
         free(decrypted_pem);
         return -1;
     }
 
     free(encrypted_data);
-    printf("[DHT Identity] Decrypted identity (%zu bytes)\n", decrypted_pem_len);
+    QGP_LOG_INFO(LOG_TAG, "Decrypted identity (%zu bytes)\n", decrypted_pem_len);
 
     // Step 3: Import PEM data to DHT identity
     dht_identity_t *identity = NULL;
     if (dht_identity_import_from_buffer(decrypted_pem, decrypted_pem_len, &identity) != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to import identity from buffer\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to import identity from buffer\n");
         free(decrypted_pem);
         return -1;
     }
@@ -359,7 +362,7 @@ int dht_identity_load_from_local(
     free(decrypted_pem);
 
     *identity_out = identity;
-    printf("[DHT Identity] Successfully loaded from local file\n");
+    QGP_LOG_INFO(LOG_TAG, "Successfully loaded from local file\n");
     return 0;
 }
 
@@ -373,16 +376,16 @@ int dht_identity_fetch_from_dht(
     dht_identity_t **identity_out)
 {
     if (!user_fingerprint || !kyber_privkey || !dht_ctx || !identity_out) {
-        fprintf(stderr, "[DHT Identity] Invalid parameters for fetch_from_dht\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for fetch_from_dht\n");
         return -1;
     }
 
-    printf("[DHT Identity] Fetching from DHT for %s\n", user_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Fetching from DHT for %s\n", user_fingerprint);
 
     // Step 1: Generate base key for chunked storage
     char base_key[256];
     if (make_base_key(user_fingerprint, base_key, sizeof(base_key)) != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to generate base key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate base key\n");
         return -1;
     }
 
@@ -391,17 +394,17 @@ int dht_identity_fetch_from_dht(
     size_t encrypted_size = 0;
 
     if (dht_chunked_fetch(dht_ctx, base_key, &encrypted_data, &encrypted_size) != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT Identity] Not found in DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not found in DHT\n");
         return -1;
     }
 
-    printf("[DHT Identity] Fetched from DHT (%zu bytes)\n", encrypted_size);
+    QGP_LOG_INFO(LOG_TAG, "Fetched from DHT (%zu bytes)\n", encrypted_size);
 
     // Step 3: Decrypt with Kyber1024 private key using Kyber KEM + AES-256-GCM
     // Format: [kyber_ct(1568)][aes_iv(12)][aes_tag(16)][encrypted_pem]
 
     if (encrypted_size < 1568 + 12 + 16) {
-        fprintf(stderr, "[DHT Identity] Invalid DHT backup size: %zu\n", encrypted_size);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid DHT backup size: %zu\n", encrypted_size);
         free(encrypted_data);
         return -1;
     }
@@ -416,7 +419,7 @@ int dht_identity_fetch_from_dht(
     // Kyber decapsulation (recover shared secret)
     uint8_t shared_secret[32];
     if (crypto_kem_dec(shared_secret, kyber_ct, kyber_privkey) != 0) {
-        fprintf(stderr, "[DHT Identity] Kyber decapsulation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Kyber decapsulation failed\n");
         free(encrypted_data);
         return -1;
     }
@@ -424,7 +427,7 @@ int dht_identity_fetch_from_dht(
     // AES-256-GCM decryption
     uint8_t *decrypted_pem = malloc(encrypted_pem_size);
     if (!decrypted_pem) {
-        fprintf(stderr, "[DHT Identity] Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
         free(encrypted_data);
         return -1;
     }
@@ -432,17 +435,17 @@ int dht_identity_fetch_from_dht(
     size_t decrypted_pem_len2 = encrypted_pem_size;
     if (qgp_aes256_decrypt(shared_secret, encrypted_pem, encrypted_pem_size, NULL, 0,
                            iv, tag, decrypted_pem, &decrypted_pem_len2) != 0) {
-        fprintf(stderr, "[DHT Identity] AES decryption failed (corrupted or wrong key)\n");
+        QGP_LOG_ERROR(LOG_TAG, "AES decryption failed (corrupted or wrong key)\n");
         free(encrypted_data);
         free(decrypted_pem);
         return -1;
     }
 
-    printf("[DHT Identity] Decrypted identity (%zu bytes)\n", decrypted_pem_len2);
+    QGP_LOG_INFO(LOG_TAG, "Decrypted identity (%zu bytes)\n", decrypted_pem_len2);
 
     // Step 4: Save to local file (for next login)
     if (save_to_local_file(user_fingerprint, encrypted_data, encrypted_size) != 0) {
-        fprintf(stderr, "[DHT Identity] Warning: Failed to save to local file\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to save to local file\n");
         // Continue anyway
     }
 
@@ -451,7 +454,7 @@ int dht_identity_fetch_from_dht(
     // Step 5: Import to DHT identity
     dht_identity_t *identity = NULL;
     if (dht_identity_import_from_buffer(decrypted_pem, decrypted_pem_len2, &identity) != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to import identity from buffer\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to import identity from buffer\n");
         free(decrypted_pem);
         return -1;
     }
@@ -459,7 +462,7 @@ int dht_identity_fetch_from_dht(
     free(decrypted_pem);
 
     *identity_out = identity;
-    printf("[DHT Identity] Successfully fetched and recovered from DHT\n");
+    QGP_LOG_INFO(LOG_TAG, "Successfully fetched and recovered from DHT\n");
     return 0;
 }
 
@@ -473,17 +476,17 @@ int dht_identity_publish_backup(
     dht_context_t *dht_ctx)
 {
     if (!user_fingerprint || !encrypted_backup || !dht_ctx) {
-        fprintf(stderr, "[DHT Identity] Invalid parameters for publish_backup\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for publish_backup\n");
         return -1;
     }
 
-    printf("[DHT Identity] Publishing backup to DHT for %s (%zu bytes)\n",
+    QGP_LOG_INFO(LOG_TAG, "Publishing backup to DHT for %s (%zu bytes)\n",
            user_fingerprint, backup_size);
 
     // Generate base key for chunked storage
     char base_key[256];
     if (make_base_key(user_fingerprint, base_key, sizeof(base_key)) != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to generate base key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate base key\n");
         return -1;
     }
 
@@ -491,11 +494,11 @@ int dht_identity_publish_backup(
     int result = dht_chunked_publish(dht_ctx, base_key, encrypted_backup, backup_size, DHT_CHUNK_TTL_365DAY);
 
     if (result != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT Identity] Failed to publish to DHT: %s\n", dht_chunked_strerror(result));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish to DHT: %s\n", dht_chunked_strerror(result));
         return -1;
     }
 
-    printf("[DHT Identity] Successfully published to DHT\n");
+    QGP_LOG_INFO(LOG_TAG, "Successfully published to DHT\n");
     return 0;
 }
 

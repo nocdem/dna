@@ -21,6 +21,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MSG_GROUPS"
 
 // Helper: Convert timestamp to string
 static char* timestamp_to_string(uint64_t timestamp) {
@@ -36,7 +39,7 @@ static char* timestamp_to_string(uint64_t timestamp) {
 // Helper: Get group UUID from local group_id (Phase 6.1)
 static int get_group_uuid_by_id(const char *identity, int group_id, char *uuid_out) {
     if (!identity || !uuid_out) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to get_group_uuid_by_id\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get_group_uuid_by_id\n");
         return -1;
     }
 
@@ -44,9 +47,9 @@ static int get_group_uuid_by_id(const char *identity, int group_id, char *uuid_o
     int ret = dht_groups_get_uuid_by_local_id(identity, group_id, uuid_out);
     if (ret != 0) {
         if (ret == -2) {
-            fprintf(stderr, "[MESSENGER] Group ID %d not found or access denied\n", group_id);
+            QGP_LOG_ERROR(LOG_TAG, "Group ID %d not found or access denied\n", group_id);
         } else {
-            fprintf(stderr, "[MESSENGER] Failed to lookup group UUID for ID %d\n", group_id);
+            QGP_LOG_ERROR(LOG_TAG, "Failed to lookup group UUID for ID %d\n", group_id);
         }
         return -1;
     }
@@ -61,13 +64,13 @@ static int get_group_uuid_by_id(const char *identity, int group_id, char *uuid_o
 int messenger_create_group(messenger_context_t *ctx, const char *name, const char *description,
                             const char **members, size_t member_count, int *group_id_out) {
     if (!ctx || !name || !group_id_out) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to create_group\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to create_group\n");
         return -1;
     }
 
     dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
     if (!dht_ctx) {
-        fprintf(stderr, "[MESSENGER] P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
         return -1;
     }
 
@@ -83,7 +86,7 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
     );
 
     if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to create group in DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create group in DHT\n");
         return -1;
     }
 
@@ -93,7 +96,7 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
     int count = 0;
     ret = dht_groups_list_for_user(ctx->identity, &groups, &count);
     if (ret != 0 || count == 0) {
-        fprintf(stderr, "[MESSENGER] Failed to retrieve created group from cache\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to retrieve created group from cache\n");
         return -1;
     }
 
@@ -109,32 +112,32 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
     dht_groups_free_cache_entries(groups, count);
 
     if (local_id == -1) {
-        fprintf(stderr, "[MESSENGER] Failed to find local_id for created group\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to find local_id for created group\n");
         return -1;
     }
 
     *group_id_out = local_id;
-    printf("[MESSENGER] Created group '%s' (local_id=%d, uuid=%s)\n", name, local_id, group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Created group '%s' (local_id=%d, uuid=%s)\n", name, local_id, group_uuid);
 
     // Phase 13: Create initial GSK (version 0) and publish to DHT
-    printf("[MESSENGER] Creating initial GSK for group %s...\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Creating initial GSK for group %s...\n", group_uuid);
     if (gsk_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
-        fprintf(stderr, "[MESSENGER] Warning: Initial GSK creation failed (non-fatal)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Initial GSK creation failed (non-fatal)\n");
         // Continue - group is created, but GSK needs to be created later
     } else {
-        printf("[MESSENGER] Initial GSK created and published to DHT\n");
+        QGP_LOG_INFO(LOG_TAG, "Initial GSK created and published to DHT\n");
     }
 
     // Send invitations to all initial members (not the creator)
     if (member_count > 0) {
-        printf("[MESSENGER] Sending invitations to %zu initial members...\n", member_count);
+        QGP_LOG_INFO(LOG_TAG, "Sending invitations to %zu initial members...\n", member_count);
         for (size_t i = 0; i < member_count; i++) {
             ret = messenger_send_group_invitation(ctx, group_uuid, members[i],
                                                    name, (int)(member_count + 1));
             if (ret == 0) {
-                printf("[MESSENGER] Sent invitation to %s\n", members[i]);
+                QGP_LOG_INFO(LOG_TAG, "Sent invitation to %s\n", members[i]);
             } else {
-                fprintf(stderr, "[MESSENGER] Warning: Failed to send invitation to %s\n", members[i]);
+                QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to send invitation to %s\n", members[i]);
                 // Non-fatal - continue with other members
             }
         }
@@ -145,7 +148,7 @@ int messenger_create_group(messenger_context_t *ctx, const char *name, const cha
 
 int messenger_get_groups(messenger_context_t *ctx, group_info_t **groups_out, int *count_out) {
     if (!ctx || !groups_out || !count_out) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to get_groups\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get_groups\n");
         return -1;
     }
 
@@ -157,7 +160,7 @@ int messenger_get_groups(messenger_context_t *ctx, group_info_t **groups_out, in
     int count = 0;
     int ret = dht_groups_list_for_user(ctx->identity, &cache_entries, &count);
     if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to list groups from cache\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to list groups from cache\n");
         return -1;
     }
 
@@ -188,19 +191,19 @@ int messenger_get_groups(messenger_context_t *ctx, group_info_t **groups_out, in
     *groups_out = groups;
     *count_out = count;
 
-    printf("[MESSENGER] Retrieved %d groups for user %s\n", count, ctx->identity);
+    QGP_LOG_INFO(LOG_TAG, "Retrieved %d groups for user %s\n", count, ctx->identity);
     return 0;
 }
 
 int messenger_get_group_info(messenger_context_t *ctx, int group_id, group_info_t *info_out) {
     if (!ctx || !info_out) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to get_group_info\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get_group_info\n");
         return -1;
     }
 
     dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
     if (!dht_ctx) {
-        fprintf(stderr, "[MESSENGER] P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
         return -1;
     }
 
@@ -214,7 +217,7 @@ int messenger_get_group_info(messenger_context_t *ctx, int group_id, group_info_
     dht_group_metadata_t *meta = NULL;
     int ret = dht_groups_get(dht_ctx, group_uuid, &meta);
     if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to get group metadata from DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get group metadata from DHT\n");
         return -1;
     }
 
@@ -228,19 +231,19 @@ int messenger_get_group_info(messenger_context_t *ctx, int group_id, group_info_
 
     dht_groups_free_metadata(meta);
 
-    printf("[MESSENGER] Retrieved info for group %d (%s)\n", group_id, group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Retrieved info for group %d (%s)\n", group_id, group_uuid);
     return 0;
 }
 
 int messenger_get_group_members(messenger_context_t *ctx, int group_id, char ***members_out, int *count_out) {
     if (!ctx || !members_out || !count_out) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to get_group_members\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get_group_members\n");
         return -1;
     }
 
     dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
     if (!dht_ctx) {
-        fprintf(stderr, "[MESSENGER] P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
         return -1;
     }
 
@@ -276,19 +279,19 @@ int messenger_get_group_members(messenger_context_t *ctx, int group_id, char ***
 
     dht_groups_free_metadata(meta);
 
-    printf("[MESSENGER] Retrieved %d members for group %d\n", *count_out, group_id);
+    QGP_LOG_INFO(LOG_TAG, "Retrieved %d members for group %d\n", *count_out, group_id);
     return 0;
 }
 
 int messenger_add_group_member(messenger_context_t *ctx, int group_id, const char *identity) {
     if (!ctx || !identity) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to add_group_member\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to add_group_member\n");
         return -1;
     }
 
     dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
     if (!dht_ctx) {
-        fprintf(stderr, "[MESSENGER] P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
         return -1;
     }
 
@@ -301,7 +304,7 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
     // Add member in DHT
     int ret = dht_groups_add_member(dht_ctx, group_uuid, identity, ctx->identity);
     if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to add member to DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add member to DHT\n");
         return -1;
     }
 
@@ -309,9 +312,9 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
     dht_groups_sync_from_dht(dht_ctx, group_uuid);
 
     // Phase 5 (v0.09): Rotate GSK when member is added
-    printf("[MESSENGER] Rotating GSK for group %s after adding member...\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Rotating GSK for group %s after adding member...\n", group_uuid);
     if (gsk_rotate_on_member_add(dht_ctx, group_uuid, ctx->identity) != 0) {
-        fprintf(stderr, "[MESSENGER] Warning: GSK rotation failed (non-fatal)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: GSK rotation failed (non-fatal)\n");
         // Continue - member is still added, but GSK rotation failed
     }
 
@@ -323,31 +326,31 @@ int messenger_add_group_member(messenger_context_t *ctx, int group_id, const cha
         ret = messenger_send_group_invitation(ctx, group_uuid, identity,
                                                meta->name, meta->member_count);
         if (ret == 0) {
-            printf("[MESSENGER] Sent group invitation to %s for group '%s'\n",
+            QGP_LOG_INFO(LOG_TAG, "Sent group invitation to %s for group '%s'\n",
                    identity, meta->name);
         } else {
-            fprintf(stderr, "[MESSENGER] Warning: Failed to send invitation to %s\n", identity);
+            QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to send invitation to %s\n", identity);
             // Non-fatal - member is still added to DHT
         }
         dht_groups_free_metadata(meta);
     } else {
-        fprintf(stderr, "[MESSENGER] Warning: Could not fetch group metadata to send invitation\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: Could not fetch group metadata to send invitation\n");
         // Non-fatal - member is still added to DHT
     }
 
-    printf("[MESSENGER] Added member %s to group %d\n", identity, group_id);
+    QGP_LOG_INFO(LOG_TAG, "Added member %s to group %d\n", identity, group_id);
     return 0;
 }
 
 int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const char *identity) {
     if (!ctx || !identity) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to remove_group_member\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to remove_group_member\n");
         return -1;
     }
 
     dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
     if (!dht_ctx) {
-        fprintf(stderr, "[MESSENGER] P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
         return -1;
     }
 
@@ -360,7 +363,7 @@ int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const 
     // Remove member from DHT
     int ret = dht_groups_remove_member(dht_ctx, group_uuid, identity, ctx->identity);
     if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to remove member from DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to remove member from DHT\n");
         return -1;
     }
 
@@ -368,19 +371,19 @@ int messenger_remove_group_member(messenger_context_t *ctx, int group_id, const 
     dht_groups_sync_from_dht(dht_ctx, group_uuid);
 
     // Phase 5 (v0.09): Rotate GSK when member is removed
-    printf("[MESSENGER] Rotating GSK for group %s after removing member...\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Rotating GSK for group %s after removing member...\n", group_uuid);
     if (gsk_rotate_on_member_remove(dht_ctx, group_uuid, ctx->identity) != 0) {
-        fprintf(stderr, "[MESSENGER] Warning: GSK rotation failed (non-fatal)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Warning: GSK rotation failed (non-fatal)\n");
         // Continue - member is still removed, but GSK rotation failed
     }
 
-    printf("[MESSENGER] Removed member %s from group %d\n", identity, group_id);
+    QGP_LOG_INFO(LOG_TAG, "Removed member %s from group %d\n", identity, group_id);
     return 0;
 }
 
 int messenger_leave_group(messenger_context_t *ctx, int group_id) {
     if (!ctx) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to leave_group\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to leave_group\n");
         return -1;
     }
 
@@ -390,13 +393,13 @@ int messenger_leave_group(messenger_context_t *ctx, int group_id) {
 
 int messenger_delete_group(messenger_context_t *ctx, int group_id) {
     if (!ctx) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to delete_group\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to delete_group\n");
         return -1;
     }
 
     dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
     if (!dht_ctx) {
-        fprintf(stderr, "[MESSENGER] P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
         return -1;
     }
 
@@ -409,23 +412,23 @@ int messenger_delete_group(messenger_context_t *ctx, int group_id) {
     // Delete from DHT (only creator can do this)
     int ret = dht_groups_delete(dht_ctx, group_uuid, ctx->identity);
     if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to delete group from DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete group from DHT\n");
         return -1;
     }
 
-    printf("[MESSENGER] Deleted group %d\n", group_id);
+    QGP_LOG_INFO(LOG_TAG, "Deleted group %d\n", group_id);
     return 0;
 }
 
 int messenger_update_group_info(messenger_context_t *ctx, int group_id, const char *new_name, const char *new_description) {
     if (!ctx) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to update_group_info\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to update_group_info\n");
         return -1;
     }
 
     dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
     if (!dht_ctx) {
-        fprintf(stderr, "[MESSENGER] P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized\n");
         return -1;
     }
 
@@ -438,20 +441,20 @@ int messenger_update_group_info(messenger_context_t *ctx, int group_id, const ch
     // Update in DHT
     int ret = dht_groups_update(dht_ctx, group_uuid, new_name, new_description, ctx->identity);
     if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to update group in DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update group in DHT\n");
         return -1;
     }
 
     // Sync back to local cache
     dht_groups_sync_from_dht(dht_ctx, group_uuid);
 
-    printf("[MESSENGER] Updated group %d\n", group_id);
+    QGP_LOG_INFO(LOG_TAG, "Updated group %d\n", group_id);
     return 0;
 }
 
 int messenger_get_group_conversation(messenger_context_t *ctx, int group_id, message_info_t **messages_out, int *count_out) {
     if (!ctx || !messages_out || !count_out) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to get_group_conversation\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get_group_conversation\n");
         return -1;
     }
 
@@ -463,7 +466,7 @@ int messenger_get_group_conversation(messenger_context_t *ctx, int group_id, mes
     const char *db_identity = ctx->fingerprint ? ctx->fingerprint : ctx->identity;
     message_backup_context_t *backup_ctx = message_backup_init(db_identity);
     if (!backup_ctx) {
-        fprintf(stderr, "[MESSENGER] Failed to init message backup\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to init message backup\n");
         return -1;
     }
 
@@ -510,7 +513,7 @@ int messenger_get_group_conversation(messenger_context_t *ctx, int group_id, mes
     *messages_out = messages;
     *count_out = backup_count;
 
-    printf("[MESSENGER] Retrieved %d group messages (group_id=%d)\n", backup_count, group_id);
+    QGP_LOG_INFO(LOG_TAG, "Retrieved %d group messages (group_id=%d)\n", backup_count, group_id);
     return 0;
 }
 
@@ -543,7 +546,7 @@ int messenger_send_group_invitation(messenger_context_t *ctx, const char *group_
                                      const char *recipient, const char *group_name,
                                      int member_count) {
     if (!ctx || !group_uuid || !recipient || !group_name) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to send_group_invitation\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to send_group_invitation\n");
         return -1;
     }
 
@@ -563,11 +566,11 @@ int messenger_send_group_invitation(messenger_context_t *ctx, const char *group_
     json_object_put(j_invite);
 
     if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to send group invitation\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to send group invitation\n");
         return -1;
     }
 
-    printf("[MESSENGER] Sent group invitation to %s for group '%s' (UUID: %s)\n",
+    QGP_LOG_INFO(LOG_TAG, "Sent group invitation to %s for group '%s' (UUID: %s)\n",
            recipient, group_name, group_uuid);
     return 0;
 }
@@ -577,7 +580,7 @@ int messenger_send_group_invitation(messenger_context_t *ctx, const char *group_
  */
 int messenger_accept_group_invitation(messenger_context_t *ctx, const char *group_uuid) {
     if (!ctx || !group_uuid) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to accept_group_invitation\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to accept_group_invitation\n");
         return -1;
     }
 
@@ -585,21 +588,21 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
     group_invitation_t *invitation = NULL;
     int ret = group_invitations_get(group_uuid, &invitation);
     if (ret != 0 || !invitation) {
-        fprintf(stderr, "[MESSENGER] Invitation not found: %s\n", group_uuid);
+        QGP_LOG_ERROR(LOG_TAG, "Invitation not found: %s\n", group_uuid);
         return -1;
     }
 
     // Sync group metadata from DHT
     dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        fprintf(stderr, "[MESSENGER] DHT not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
         group_invitations_free(invitation, 1);
         return -1;
     }
 
     ret = dht_groups_sync_from_dht(dht_ctx, group_uuid);
     if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to sync group from DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sync group from DHT\n");
         group_invitations_free(invitation, 1);
         return -1;
     }
@@ -609,7 +612,7 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
 
     group_invitations_free(invitation, 1);
 
-    printf("[MESSENGER] Accepted group invitation: %s\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Accepted group invitation: %s\n", group_uuid);
     return 0;
 }
 
@@ -618,18 +621,18 @@ int messenger_accept_group_invitation(messenger_context_t *ctx, const char *grou
  */
 int messenger_reject_group_invitation(messenger_context_t *ctx, const char *group_uuid) {
     if (!ctx || !group_uuid) {
-        fprintf(stderr, "[MESSENGER] Invalid arguments to reject_group_invitation\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to reject_group_invitation\n");
         return -1;
     }
 
     // Update invitation status to rejected
     int ret = group_invitations_update_status(group_uuid, INVITATION_STATUS_REJECTED);
     if (ret != 0) {
-        fprintf(stderr, "[MESSENGER] Failed to update invitation status\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update invitation status\n");
         return -1;
     }
 
-    printf("[MESSENGER] Rejected group invitation: %s\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Rejected group invitation: %s\n", group_uuid);
     return 0;
 }
 
@@ -644,18 +647,18 @@ int messenger_reject_group_invitation(messenger_context_t *ctx, const char *grou
  */
 int messenger_sync_groups(messenger_context_t *ctx) {
     if (!ctx) {
-        fprintf(stderr, "[MESSENGER] Invalid context for sync_groups\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context for sync_groups\n");
         return -1;
     }
 
-    printf("[MESSENGER] Syncing groups and invitations...\n");
+    QGP_LOG_INFO(LOG_TAG, "Syncing groups and invitations...\n");
 
     // Step 1: Check for offline messages (which may contain invitations)
     if (ctx->p2p_enabled && ctx->p2p_transport) {
         size_t offline_count = 0;
         messenger_p2p_check_offline_messages(ctx, &offline_count);
         if (offline_count > 0) {
-            printf("[MESSENGER] Retrieved %zu offline messages (may include invitations)\n", offline_count);
+            QGP_LOG_INFO(LOG_TAG, "Retrieved %zu offline messages (may include invitations)\n", offline_count);
         }
     }
 
@@ -665,11 +668,11 @@ int messenger_sync_groups(messenger_context_t *ctx) {
 
     int ret = message_backup_get_recent_contacts(ctx->backup_ctx, &contacts, &contact_count);
     if (ret != 0 || contact_count == 0) {
-        printf("[MESSENGER] No recent messages to scan for invitations\n");
+        QGP_LOG_INFO(LOG_TAG, "No recent messages to scan for invitations\n");
         return 0;
     }
 
-    printf("[MESSENGER] Scanning %d recent contacts for group invitations...\n", contact_count);
+    QGP_LOG_INFO(LOG_TAG, "Scanning %d recent contacts for group invitations...\n", contact_count);
 
     // Load recipient's private Kyber1024 key from filesystem (for decryption)
     const char *home = qgp_platform_home_dir();
@@ -678,7 +681,7 @@ int messenger_sync_groups(messenger_context_t *ctx) {
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
-        fprintf(stderr, "[MESSENGER] Failed to load Kyber key for decryption\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key for decryption\n");
         // Free contacts list
         for (int i = 0; i < contact_count; i++) {
             free(contacts[i]);
@@ -688,7 +691,7 @@ int messenger_sync_groups(messenger_context_t *ctx) {
     }
 
     if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
-        fprintf(stderr, "[MESSENGER] Invalid Kyber key size: %zu (expected 3168)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber key size: %zu (expected 3168)\n",
                 kyber_key->private_key_size);
         qgp_key_free(kyber_key);
         // Free contacts list
@@ -785,7 +788,7 @@ int messenger_sync_groups(messenger_context_t *ctx) {
                         // Store invitation (handles duplicates with return code -2)
                         ret = group_invitations_store(&invitation);
                         if (ret == 0) {
-                            printf("[MESSENGER] Found new group invitation: '%s' from %s\n",
+                            QGP_LOG_INFO(LOG_TAG, "Found new group invitation: '%s' from %s\n",
                                    invitation.group_name, invitation.inviter);
                             invitations_found++;
                         } else if (ret == -2) {
@@ -818,9 +821,9 @@ int messenger_sync_groups(messenger_context_t *ctx) {
     free(contacts);
 
     if (invitations_found > 0) {
-        printf("[MESSENGER] ✓ Sync complete: %d new invitation(s) found\n", invitations_found);
+        QGP_LOG_INFO(LOG_TAG, "✓ Sync complete: %d new invitation(s) found\n", invitations_found);
     } else {
-        printf("[MESSENGER] ✓ Sync complete: no new invitations\n");
+        QGP_LOG_INFO(LOG_TAG, "✓ Sync complete: no new invitations\n");
     }
 
     return 0;
@@ -846,16 +849,16 @@ int messenger_sync_groups(messenger_context_t *ctx) {
  */
 int messenger_send_group_message(messenger_context_t *ctx, const char *group_uuid, const char *message) {
     if (!ctx || !group_uuid || !message) {
-        fprintf(stderr, "[GROUP MSG] Invalid parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return -1;
     }
 
-    printf("[GROUP MSG] Sending message to group %s (feed pattern)\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Sending message to group %s (feed pattern)\n", group_uuid);
 
     // Step 1: Get DHT context
     dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        fprintf(stderr, "[GROUP MSG] DHT not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not initialized\n");
         return -1;
     }
 
@@ -867,13 +870,13 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
 
     FILE *fp = fopen(dilithium_path, "rb");
     if (!fp) {
-        fprintf(stderr, "[GROUP MSG] Failed to open Dilithium key: %s\n", dilithium_path);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open Dilithium key: %s\n", dilithium_path);
         return -1;
     }
 
     uint8_t dilithium_privkey[4896];  // Dilithium5 private key size
     if (fread(dilithium_privkey, 1, 4896, fp) != 4896) {
-        fprintf(stderr, "[GROUP MSG] Failed to read Dilithium private key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to read Dilithium private key\n");
         fclose(fp);
         return -1;
     }
@@ -897,10 +900,10 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
     memset(dilithium_privkey, 0, sizeof(dilithium_privkey));
 
     if (result == DNA_GROUP_OUTBOX_OK) {
-        printf("[GROUP MSG] Message sent via group outbox: %s\n", message_id);
+        QGP_LOG_INFO(LOG_TAG, "Message sent via group outbox: %s\n", message_id);
         return 0;
     } else {
-        fprintf(stderr, "[GROUP MSG] Failed to send group message: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to send group message: %s\n",
                 dna_group_outbox_strerror(result));
         return -1;
     }
@@ -922,11 +925,11 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
 int messenger_load_group_messages(messenger_context_t *ctx, const char *group_uuid,
                                    backup_message_t **messages_out, int *count_out) {
     if (!ctx || !group_uuid || !messages_out || !count_out) {
-        fprintf(stderr, "[GROUP MSG] Invalid parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return -1;
     }
 
-    printf("[GROUP MSG] Loading messages for group %s (from group_messages table)\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Loading messages for group %s (from group_messages table)\n", group_uuid);
 
     // Load from new group_messages table
     dna_group_message_t *group_msgs = NULL;
@@ -934,7 +937,7 @@ int messenger_load_group_messages(messenger_context_t *ctx, const char *group_uu
 
     int result = dna_group_outbox_db_get_messages(group_uuid, 0, 0, &group_msgs, &group_count);
     if (result != 0) {
-        fprintf(stderr, "[GROUP MSG] Failed to load group messages from database\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load group messages from database\n");
         *messages_out = NULL;
         *count_out = 0;
         return -1;
@@ -979,6 +982,6 @@ int messenger_load_group_messages(messenger_context_t *ctx, const char *group_uu
     *messages_out = messages;
     *count_out = (int)group_count;
 
-    printf("[GROUP MSG] Loaded %zu group messages\n", group_count);
+    QGP_LOG_INFO(LOG_TAG, "Loaded %zu group messages\n", group_count);
     return 0;
 }

@@ -13,6 +13,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DB_PROFILE"
 
 static dht_context_t *g_dht_ctx = NULL;
 static bool g_initialized = false;
@@ -22,20 +25,20 @@ static bool g_initialized = false;
  */
 int profile_manager_init(dht_context_t *dht_ctx, const char *owner_identity) {
     if (!dht_ctx || !owner_identity) {
-        fprintf(stderr, "[PROFILE_MGR] Invalid parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return -1;
     }
 
     // Initialize cache
     if (profile_cache_init(owner_identity) != 0) {
-        fprintf(stderr, "[PROFILE_MGR] Failed to initialize cache\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize cache\n");
         return -1;
     }
 
     g_dht_ctx = dht_ctx;
     g_initialized = true;
 
-    printf("[PROFILE_MGR] Initialized for %s\n", owner_identity);
+    QGP_LOG_INFO(LOG_TAG, "Initialized for %s\n", owner_identity);
     return 0;
 }
 
@@ -44,12 +47,12 @@ int profile_manager_init(dht_context_t *dht_ctx, const char *owner_identity) {
  */
 int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identity_t **identity_out) {
     if (!g_initialized || !g_dht_ctx) {
-        fprintf(stderr, "[PROFILE_MGR] Not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
         return -1;
     }
 
     if (!user_fingerprint || !identity_out) {
-        fprintf(stderr, "[PROFILE_MGR] Invalid parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return -1;
     }
 
@@ -62,16 +65,16 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
         // Found in cache - check if fresh
         if (!profile_cache_is_expired(user_fingerprint)) {
             // Cache hit (fresh)
-            printf("[PROFILE_MGR] Cache hit (fresh): %s\n", user_fingerprint);
+            QGP_LOG_INFO(LOG_TAG, "Cache hit (fresh): %s\n", user_fingerprint);
             *identity_out = cached_identity;
             return 0;
         } else {
             // Cache hit but expired - keep for fallback
-            printf("[PROFILE_MGR] Cache hit (expired): %s, refreshing from DHT\n", user_fingerprint);
+            QGP_LOG_INFO(LOG_TAG, "Cache hit (expired): %s, refreshing from DHT\n", user_fingerprint);
         }
     } else {
         // Not in cache
-        printf("[PROFILE_MGR] Cache miss: %s, fetching from DHT\n", user_fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Cache miss: %s, fetching from DHT\n", user_fingerprint);
     }
 
     // Step 2: Fetch from DHT (using keyserver)
@@ -80,11 +83,11 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
 
     if (result == -2) {
         // Not found in DHT
-        printf("[PROFILE_MGR] Identity not found in DHT: %s\n", user_fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Identity not found in DHT: %s\n", user_fingerprint);
 
         // Return cached if available (better than nothing)
         if (cached_identity) {
-            printf("[PROFILE_MGR] Returning stale cached identity as fallback\n");
+            QGP_LOG_INFO(LOG_TAG, "Returning stale cached identity as fallback\n");
             *identity_out = cached_identity;
             return 0;
         }
@@ -94,11 +97,11 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
 
     if (result != 0) {
         // DHT error
-        fprintf(stderr, "[PROFILE_MGR] DHT fetch failed: %s\n", user_fingerprint);
+        QGP_LOG_ERROR(LOG_TAG, "DHT fetch failed: %s\n", user_fingerprint);
 
         // Return cached if available (stale fallback)
         if (cached_identity) {
-            printf("[PROFILE_MGR] Returning stale cached identity as fallback\n");
+            QGP_LOG_INFO(LOG_TAG, "Returning stale cached identity as fallback\n");
             *identity_out = cached_identity;
             return 0;
         }
@@ -107,7 +110,7 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
     }
 
     // Step 3: Update cache with fresh data
-    printf("[PROFILE_MGR] Fetched from DHT, updating cache: %s\n", user_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Fetched from DHT, updating cache: %s\n", user_fingerprint);
     profile_cache_add_or_update(user_fingerprint, fresh_identity);
 
     // Free old cached copy if we had one
@@ -124,28 +127,28 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
  */
 int profile_manager_refresh_profile(const char *user_fingerprint, dna_unified_identity_t **identity_out) {
     if (!g_initialized || !g_dht_ctx) {
-        fprintf(stderr, "[PROFILE_MGR] Not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
         return -1;
     }
 
     if (!user_fingerprint) {
-        fprintf(stderr, "[PROFILE_MGR] Invalid fingerprint\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint\n");
         return -1;
     }
 
-    printf("[PROFILE_MGR] Force refresh from DHT: %s\n", user_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Force refresh from DHT: %s\n", user_fingerprint);
 
     // Fetch from DHT (using keyserver)
     dna_unified_identity_t *identity = NULL;
     int result = dna_load_identity(g_dht_ctx, user_fingerprint, &identity);
 
     if (result == -2) {
-        printf("[PROFILE_MGR] Identity not found in DHT: %s\n", user_fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Identity not found in DHT: %s\n", user_fingerprint);
         return -2;
     }
 
     if (result != 0) {
-        fprintf(stderr, "[PROFILE_MGR] DHT fetch failed: %s\n", user_fingerprint);
+        QGP_LOG_ERROR(LOG_TAG, "DHT fetch failed: %s\n", user_fingerprint);
         return -1;
     }
 
@@ -160,7 +163,7 @@ int profile_manager_refresh_profile(const char *user_fingerprint, dna_unified_id
         dna_identity_free(identity);
     }
 
-    printf("[PROFILE_MGR] Refreshed identity: %s\n", user_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Refreshed identity: %s\n", user_fingerprint);
     return 0;
 }
 
@@ -169,7 +172,7 @@ int profile_manager_refresh_profile(const char *user_fingerprint, dna_unified_id
  */
 int profile_manager_refresh_all_expired(void) {
     if (!g_initialized || !g_dht_ctx) {
-        fprintf(stderr, "[PROFILE_MGR] Not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
         return -1;
     }
 
@@ -178,16 +181,16 @@ int profile_manager_refresh_all_expired(void) {
     size_t count = 0;
 
     if (profile_cache_list_expired(&fingerprints, &count) != 0) {
-        fprintf(stderr, "[PROFILE_MGR] Failed to list expired profiles\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to list expired profiles\n");
         return -1;
     }
 
     if (count == 0) {
-        printf("[PROFILE_MGR] No expired profiles to refresh\n");
+        QGP_LOG_INFO(LOG_TAG, "No expired profiles to refresh\n");
         return 0;
     }
 
-    printf("[PROFILE_MGR] Refreshing %zu expired profiles\n", count);
+    QGP_LOG_INFO(LOG_TAG, "Refreshing %zu expired profiles\n", count);
 
     // Refresh each expired profile (Phase 5: Unified Identity)
     int success_count = 0;
@@ -202,12 +205,12 @@ int profile_manager_refresh_all_expired(void) {
             success_count++;
         } else if (result == -2) {
             // Not found in DHT - delete from cache
-            printf("[PROFILE_MGR] Identity no longer in DHT, removing from cache: %s\n",
+            QGP_LOG_INFO(LOG_TAG, "Identity no longer in DHT, removing from cache: %s\n",
                    fingerprints[i]);
             profile_cache_delete(fingerprints[i]);
         } else {
             // DHT error - keep stale cache
-            fprintf(stderr, "[PROFILE_MGR] Failed to refresh: %s\n", fingerprints[i]);
+            QGP_LOG_ERROR(LOG_TAG, "Failed to refresh: %s\n", fingerprints[i]);
         }
 
         free(fingerprints[i]);
@@ -215,7 +218,7 @@ int profile_manager_refresh_all_expired(void) {
 
     free(fingerprints);
 
-    printf("[PROFILE_MGR] Refreshed %d of %zu expired profiles\n", success_count, count);
+    QGP_LOG_INFO(LOG_TAG, "Refreshed %d of %zu expired profiles\n", success_count, count);
     return success_count;
 }
 
@@ -239,7 +242,7 @@ bool profile_manager_is_cached_and_fresh(const char *user_fingerprint) {
  */
 int profile_manager_delete_cached(const char *user_fingerprint) {
     if (!g_initialized) {
-        fprintf(stderr, "[PROFILE_MGR] Not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
         return -1;
     }
 
@@ -293,6 +296,6 @@ void profile_manager_close(void) {
         profile_cache_close();
         g_dht_ctx = NULL;
         g_initialized = false;
-        printf("[PROFILE_MGR] Closed\n");
+        QGP_LOG_INFO(LOG_TAG, "Closed\n");
     }
 }

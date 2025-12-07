@@ -12,6 +12,9 @@
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <errno.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MSG_BACKUP"
 
 /**
  * Backup Context
@@ -75,7 +78,7 @@ static int get_db_path(const char *identity, char *path_out, size_t path_len) {
     if (!home) {
         home = getenv("USERPROFILE");  // Windows fallback
         if (!home) {
-            fprintf(stderr, "[Backup] HOME/USERPROFILE environment variable not set\n");
+            QGP_LOG_ERROR(LOG_TAG, "HOME/USERPROFILE environment variable not set\n");
             return -1;
         }
     }
@@ -93,7 +96,7 @@ static int get_db_path(const char *identity, char *path_out, size_t path_len) {
         // POSIX mkdir() takes mode as second argument
         if (mkdir(dna_dir, 0700) != 0) {
 #endif
-            fprintf(stderr, "[Backup] Failed to create %s: %s\n", dna_dir, strerror(errno));
+            QGP_LOG_ERROR(LOG_TAG, "Failed to create %s: %s\n", dna_dir, strerror(errno));
             return -1;
         }
     }
@@ -108,13 +111,13 @@ static int get_db_path(const char *identity, char *path_out, size_t path_len) {
  */
 message_backup_context_t* message_backup_init(const char *identity) {
     if (!identity) {
-        fprintf(stderr, "[Backup] Identity cannot be NULL\n");
+        QGP_LOG_ERROR(LOG_TAG, "Identity cannot be NULL\n");
         return NULL;
     }
 
     message_backup_context_t *ctx = calloc(1, sizeof(message_backup_context_t));
     if (!ctx) {
-        fprintf(stderr, "[Backup] Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
         return NULL;
     }
 
@@ -126,12 +129,12 @@ message_backup_context_t* message_backup_init(const char *identity) {
         return NULL;
     }
 
-    printf("[Backup] Opening database: %s\n", ctx->db_path);
+    QGP_LOG_INFO(LOG_TAG, "Opening database: %s\n", ctx->db_path);
 
     // Open SQLite database
     int rc = sqlite3_open(ctx->db_path, &ctx->db);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[Backup] Failed to open database: %s\n", sqlite3_errmsg(ctx->db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(ctx->db));
         sqlite3_close(ctx->db);
         free(ctx);
         return NULL;
@@ -141,7 +144,7 @@ message_backup_context_t* message_backup_init(const char *identity) {
     char *err_msg = NULL;
     rc = sqlite3_exec(ctx->db, SCHEMA_SQL, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[Backup] Failed to create schema: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create schema: %s\n", err_msg);
         sqlite3_free(err_msg);
         sqlite3_close(ctx->db);
         free(ctx);
@@ -154,11 +157,11 @@ message_backup_context_t* message_backup_init(const char *identity) {
     if (rc != SQLITE_OK) {
         // Column might already exist (not an error)
         if (strstr(err_msg, "duplicate column") == NULL) {
-            fprintf(stderr, "[Backup] Migration warning: %s\n", err_msg);
+            QGP_LOG_ERROR(LOG_TAG, "Migration warning: %s\n", err_msg);
         }
         sqlite3_free(err_msg);
     } else {
-        printf("[Backup] Migrated database schema to v2 (added status column)\n");
+        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v2 (added status column)\n");
     }
 
     // Migration: Add group_id column if it doesn't exist (v2 -> v3, Phase 5.2)
@@ -167,18 +170,18 @@ message_backup_context_t* message_backup_init(const char *identity) {
     if (rc != SQLITE_OK) {
         // Column might already exist (not an error)
         if (strstr(err_msg, "duplicate column") == NULL) {
-            fprintf(stderr, "[Backup] Migration warning (v3): %s\n", err_msg);
+            QGP_LOG_ERROR(LOG_TAG, "Migration warning (v3): %s\n", err_msg);
         }
         sqlite3_free(err_msg);
     } else {
-        printf("[Backup] Migrated database schema to v3 (added group_id column)\n");
+        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v3 (added group_id column)\n");
     }
 
     // Create index on group_id (safe to run now that column exists)
     const char *index_sql = "CREATE INDEX IF NOT EXISTS idx_group_id ON messages(group_id);";
     rc = sqlite3_exec(ctx->db, index_sql, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[Backup] Failed to create group_id index: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create group_id index: %s\n", err_msg);
         sqlite3_free(err_msg);
     }
 
@@ -188,11 +191,11 @@ message_backup_context_t* message_backup_init(const char *identity) {
     if (rc != SQLITE_OK) {
         // Column might already exist (not an error)
         if (strstr(err_msg, "duplicate column") == NULL) {
-            fprintf(stderr, "[Backup] Migration warning (v4): %s\n", err_msg);
+            QGP_LOG_ERROR(LOG_TAG, "Migration warning (v4): %s\n", err_msg);
         }
         sqlite3_free(err_msg);
     } else {
-        printf("[Backup] Migrated database schema to v4 (added message_type column)\n");
+        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v4 (added message_type column)\n");
     }
 
     // Migration: Add invitation_status column if it doesn't exist (v4 -> v5, Phase 6.2)
@@ -201,11 +204,11 @@ message_backup_context_t* message_backup_init(const char *identity) {
     if (rc != SQLITE_OK) {
         // Column might already exist (not an error)
         if (strstr(err_msg, "duplicate column") == NULL) {
-            fprintf(stderr, "[Backup] Migration warning (v5): %s\n", err_msg);
+            QGP_LOG_ERROR(LOG_TAG, "Migration warning (v5): %s\n", err_msg);
         }
         sqlite3_free(err_msg);
     } else {
-        printf("[Backup] Migrated database schema to v5 (added invitation_status column)\n");
+        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v5 (added invitation_status column)\n");
     }
 
     // Migration: Add sender_fingerprint column if it doesn't exist (v5 -> v6, Phase 12)
@@ -214,18 +217,18 @@ message_backup_context_t* message_backup_init(const char *identity) {
     if (rc != SQLITE_OK) {
         // Column might already exist (not an error)
         if (strstr(err_msg, "duplicate column") == NULL) {
-            fprintf(stderr, "[Backup] Migration warning (v6): %s\n", err_msg);
+            QGP_LOG_ERROR(LOG_TAG, "Migration warning (v6): %s\n", err_msg);
         }
         sqlite3_free(err_msg);
     } else {
-        printf("[Backup] Migrated database schema to v6 (added sender_fingerprint column)\n");
+        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v6 (added sender_fingerprint column)\n");
     }
 
     // Create index on sender_fingerprint (safe to run now that column exists)
     const char *index_sql_v6 = "CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint);";
     rc = sqlite3_exec(ctx->db, index_sql_v6, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[Backup] Failed to create sender_fingerprint index: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create sender_fingerprint index: %s\n", err_msg);
         sqlite3_free(err_msg);
     }
 
@@ -235,14 +238,14 @@ message_backup_context_t* message_backup_init(const char *identity) {
     if (rc != SQLITE_OK) {
         // Column might already exist (not an error)
         if (strstr(err_msg, "duplicate column") == NULL) {
-            fprintf(stderr, "[Backup] Migration warning (v7): %s\n", err_msg);
+            QGP_LOG_ERROR(LOG_TAG, "Migration warning (v7): %s\n", err_msg);
         }
         sqlite3_free(err_msg);
     } else {
-        printf("[Backup] Migrated database schema to v7 (added gsk_version column)\n");
+        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v7 (added gsk_version column)\n");
     }
 
-    printf("[Backup] Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
+    QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
     return ctx;
 }
 
@@ -262,7 +265,7 @@ bool message_backup_exists_ciphertext(message_backup_context_t *ctx,
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[Backup] Failed to prepare duplicate check: %s\n", sqlite3_errmsg(ctx->db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare duplicate check: %s\n", sqlite3_errmsg(ctx->db));
         return false;
     }
 
@@ -296,7 +299,7 @@ int message_backup_save(message_backup_context_t *ctx,
 
     // Check for duplicate (Model E: same message may be in multiple contacts' outboxes)
     if (message_backup_exists_ciphertext(ctx, encrypted_message, encrypted_len)) {
-        printf("[Backup] Skipping duplicate message: %s → %s (%zu bytes, already exists)\n",
+        QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s → %s (%zu bytes, already exists)\n",
                sender, recipient, encrypted_len);
         return 1;  // Return 1 to indicate duplicate (not an error)
     }
@@ -308,7 +311,7 @@ int message_backup_save(message_backup_context_t *ctx,
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[Backup] Failed to prepare statement: %s\n", sqlite3_errmsg(ctx->db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(ctx->db));
         return -1;
     }
 
@@ -326,11 +329,11 @@ int message_backup_save(message_backup_context_t *ctx,
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[Backup] Failed to save message: %s\n", sqlite3_errmsg(ctx->db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to save message: %s\n", sqlite3_errmsg(ctx->db));
         return -1;
     }
 
-    printf("[Backup] Saved ENCRYPTED message: %s → %s (%zu bytes ciphertext, status=PENDING)\n",
+    QGP_LOG_INFO(LOG_TAG, "Saved ENCRYPTED message: %s → %s (%zu bytes ciphertext, status=PENDING)\n",
            sender, recipient, encrypted_len);
     return 0;
 }
@@ -391,7 +394,7 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[Backup] Failed to prepare query: %s\n", sqlite3_errmsg(ctx->db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(ctx->db));
         return -1;
     }
 
@@ -451,7 +454,7 @@ int message_backup_get_conversation(message_backup_context_t *ctx,
     *messages_out = messages;
     *count_out = count;
 
-    printf("[Backup] Retrieved %d ENCRYPTED messages for conversation with %s\n", count, contact_identity);
+    QGP_LOG_INFO(LOG_TAG, "Retrieved %d ENCRYPTED messages for conversation with %s\n", count, contact_identity);
     return 0;
 }
 
@@ -474,7 +477,7 @@ int message_backup_get_group_conversation(message_backup_context_t *ctx,
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[Backup] Failed to prepare query: %s\n", sqlite3_errmsg(ctx->db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(ctx->db));
         return -1;
     }
 
@@ -530,7 +533,7 @@ int message_backup_get_group_conversation(message_backup_context_t *ctx,
     *messages_out = messages;
     *count_out = count;
 
-    printf("[Backup] Retrieved %d ENCRYPTED group messages (group_id=%d)\n", count, group_id);
+    QGP_LOG_INFO(LOG_TAG, "Retrieved %d ENCRYPTED group messages (group_id=%d)\n", count, group_id);
     return 0;
 }
 
@@ -552,7 +555,7 @@ int message_backup_update_status(message_backup_context_t *ctx, int message_id, 
     sqlite3_finalize(stmt);
 
     if (rc == SQLITE_DONE) {
-        printf("[Backup] Updated message %d status to %d\n", message_id, status);
+        QGP_LOG_INFO(LOG_TAG, "Updated message %d status to %d\n", message_id, status);
         return 0;
     }
 
@@ -732,7 +735,7 @@ int message_backup_search_by_identity(message_backup_context_t *ctx,
  */
 int message_backup_delete(message_backup_context_t *ctx, int message_id) {
     if (!ctx || !ctx->db) {
-        fprintf(stderr, "[Backup] Invalid context\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid context\n");
         return -1;
     }
 
@@ -741,7 +744,7 @@ int message_backup_delete(message_backup_context_t *ctx, int message_id) {
 
     int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[Backup] Failed to prepare delete: %s\n", sqlite3_errmsg(ctx->db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare delete: %s\n", sqlite3_errmsg(ctx->db));
         return -1;
     }
 
@@ -751,17 +754,17 @@ int message_backup_delete(message_backup_context_t *ctx, int message_id) {
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[Backup] Failed to delete message: %s\n", sqlite3_errmsg(ctx->db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete message: %s\n", sqlite3_errmsg(ctx->db));
         return -1;
     }
 
     int changes = sqlite3_changes(ctx->db);
     if (changes == 0) {
-        fprintf(stderr, "[Backup] Message %d not found\n", message_id);
+        QGP_LOG_ERROR(LOG_TAG, "Message %d not found\n", message_id);
         return -1;
     }
 
-    printf("[Backup] Deleted message %d\n", message_id);
+    QGP_LOG_INFO(LOG_TAG, "Deleted message %d\n", message_id);
     return 0;
 }
 
@@ -797,5 +800,5 @@ void message_backup_close(message_backup_context_t *ctx) {
     }
 
     free(ctx);
-    printf("[Backup] Closed backup context\n");
+    QGP_LOG_INFO(LOG_TAG, "Closed backup context\n");
 }

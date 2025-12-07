@@ -5,6 +5,9 @@
 
 #include "transport_core.h"
 #include "transport_ice.h"  // Phase 11: ICE NAT traversal
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "P2P_DISC"
 
 /**
  * Register presence in DHT
@@ -24,16 +27,16 @@ int p2p_register_presence(p2p_transport_t *ctx) {
     // Get local IPs (LAN addresses)
     char local_ips[256];
     if (get_external_ip(local_ips, sizeof(local_ips)) != 0) {
-        printf("[P2P] Failed to get local IPs\n");
+        QGP_LOG_INFO(LOG_TAG, "Failed to get local IPs\n");
         return -1;
     }
 
     // Get public IP via STUN (NAT-mapped address)
     char public_ip[64] = {0};
     if (stun_get_public_ip(public_ip, sizeof(public_ip)) == 0) {
-        printf("[P2P] STUN discovered public IP: %s\n", public_ip);
+        QGP_LOG_INFO(LOG_TAG, "STUN discovered public IP: %s\n", public_ip);
     } else {
-        printf("[P2P] STUN query failed (will use local IPs only)\n");
+        QGP_LOG_INFO(LOG_TAG, "STUN query failed (will use local IPs only)\n");
     }
 
     // Combine local IPs + public IP (avoid duplicates)
@@ -41,18 +44,18 @@ int p2p_register_presence(p2p_transport_t *ctx) {
     if (public_ip[0] != '\0' && strstr(local_ips, public_ip) == NULL) {
         // Public IP is different from all local IPs - include both
         snprintf(my_ip, sizeof(my_ip), "%s,%s", local_ips, public_ip);
-        printf("[P2P] Using IPs: %s (local + public)\n", my_ip);
+        QGP_LOG_INFO(LOG_TAG, "Using IPs: %s (local + public)\n", my_ip);
     } else {
         // Either STUN failed or public IP matches a local IP
         snprintf(my_ip, sizeof(my_ip), "%s", local_ips);
-        printf("[P2P] Using IPs: %s (local only)\n", my_ip);
+        QGP_LOG_INFO(LOG_TAG, "Using IPs: %s (local only)\n", my_ip);
     }
 
     // Create presence JSON
     char presence_data[512];
     if (create_presence_json(my_ip, ctx->config.listen_port,
                             presence_data, sizeof(presence_data)) != 0) {
-        printf("[P2P] Failed to create presence JSON\n");
+        QGP_LOG_INFO(LOG_TAG, "Failed to create presence JSON\n");
         return -1;
     }
 
@@ -60,11 +63,11 @@ int p2p_register_presence(p2p_transport_t *ctx) {
     uint8_t dht_key[64];  // SHA3-512 = 64 bytes
     sha3_512_hash(ctx->my_public_key, 2592, dht_key);  // Dilithium5 public key size
 
-    printf("[P2P] Registering presence in DHT\n");
-    printf("[P2P] DHT key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
+    QGP_LOG_INFO(LOG_TAG, "Registering presence in DHT\n");
+    QGP_LOG_INFO(LOG_TAG, "DHT key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
            dht_key[0], dht_key[1], dht_key[2], dht_key[3],
            dht_key[4], dht_key[5], dht_key[6], dht_key[7]);
-    printf("[P2P] Presence data: %s\n", presence_data);
+    QGP_LOG_INFO(LOG_TAG, "Presence data: %s\n", presence_data);
 
     // Store in DHT (signed, 7-day TTL, value_id=1 for replacement)
     // Presence data is ephemeral and refreshed regularly
@@ -74,9 +77,9 @@ int p2p_register_presence(p2p_transport_t *ctx) {
                                 1, ttl_7days);
 
     if (result == 0) {
-        printf("[P2P] Presence registered successfully (signed)\n");
+        QGP_LOG_INFO(LOG_TAG, "Presence registered successfully (signed)\n");
     } else {
-        printf("[P2P] Failed to register presence in DHT\n");
+        QGP_LOG_INFO(LOG_TAG, "Failed to register presence in DHT\n");
         return result;
     }
 
@@ -85,9 +88,9 @@ int p2p_register_presence(p2p_transport_t *ctx) {
     // (destroying ICE context after publishing candidates).
 
     if (ctx->ice_ready) {
-        printf("[P2P] ✓ Presence and ICE candidates both registered (ICE ready for NAT traversal)\n");
+        QGP_LOG_INFO(LOG_TAG, "✓ Presence and ICE candidates both registered (ICE ready for NAT traversal)\n");
     } else {
-        printf("[P2P] ✓ Presence registered (ICE unavailable, TCP-only mode)\n");
+        QGP_LOG_INFO(LOG_TAG, "✓ Presence registered (ICE unavailable, TCP-only mode)\n");
     }
 
     return 0;
@@ -114,8 +117,8 @@ int p2p_lookup_peer(
     uint8_t dht_key[64];  // SHA3-512 = 64 bytes
     sha3_512_hash(peer_pubkey, 2592, dht_key);  // Dilithium5 public key size
 
-    printf("[P2P] Looking up peer in DHT\n");
-    printf("[P2P] DHT key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
+    QGP_LOG_INFO(LOG_TAG, "Looking up peer in DHT\n");
+    QGP_LOG_INFO(LOG_TAG, "DHT key (first 8 bytes): %02x%02x%02x%02x%02x%02x%02x%02x\n",
            dht_key[0], dht_key[1], dht_key[2], dht_key[3],
            dht_key[4], dht_key[5], dht_key[6], dht_key[7]);
 
@@ -124,15 +127,15 @@ int p2p_lookup_peer(
     size_t value_len = 0;
 
     if (dht_get(ctx->dht, dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
-        printf("[P2P] Peer not found in DHT\n");
+        QGP_LOG_INFO(LOG_TAG, "Peer not found in DHT\n");
         return -1;
     }
 
-    printf("[P2P] Found peer data: %.*s\n", (int)value_len, value);
+    QGP_LOG_INFO(LOG_TAG, "Found peer data: %.*s\n", (int)value_len, value);
 
     // Parse JSON
     if (parse_presence_json((const char*)value, peer_info) != 0) {
-        printf("[P2P] Failed to parse peer presence JSON\n");
+        QGP_LOG_INFO(LOG_TAG, "Failed to parse peer presence JSON\n");
         free(value);
         return -1;
     }
@@ -146,7 +149,7 @@ int p2p_lookup_peer(
 
     free(value);
 
-    printf("[P2P] Peer lookup successful: %s:%d (online: %s)\n",
+    QGP_LOG_INFO(LOG_TAG, "Peer lookup successful: %s:%d (online: %s)\n",
            peer_info->ip, peer_info->port,
            peer_info->is_online ? "yes" : "no");
 
@@ -177,7 +180,7 @@ int p2p_lookup_presence_by_fingerprint(
     // Validate fingerprint length (128 hex chars)
     size_t fp_len = strlen(fingerprint);
     if (fp_len != 128) {
-        printf("[P2P] Invalid fingerprint length: %zu (expected 128)\n", fp_len);
+        QGP_LOG_INFO(LOG_TAG, "Invalid fingerprint length: %zu (expected 128)\n", fp_len);
         return -1;
     }
 
@@ -186,31 +189,31 @@ int p2p_lookup_presence_by_fingerprint(
     for (int i = 0; i < 64; i++) {
         unsigned int byte;
         if (sscanf(fingerprint + (i * 2), "%02x", &byte) != 1) {
-            printf("[P2P] Invalid fingerprint hex at position %d\n", i * 2);
+            QGP_LOG_INFO(LOG_TAG, "Invalid fingerprint hex at position %d\n", i * 2);
             return -1;
         }
         dht_key[i] = (uint8_t)byte;
     }
 
-    printf("[P2P] Looking up presence for fingerprint: %.16s...\n", fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Looking up presence for fingerprint: %.16s...\n", fingerprint);
 
     // Query DHT
     uint8_t *value = NULL;
     size_t value_len = 0;
 
     if (dht_get(ctx->dht, dht_key, sizeof(dht_key), &value, &value_len) != 0 || !value) {
-        printf("[P2P] Presence not found in DHT\n");
+        QGP_LOG_INFO(LOG_TAG, "Presence not found in DHT\n");
         return -1;
     }
 
-    printf("[P2P] Found presence data: %.*s\n", (int)value_len, value);
+    QGP_LOG_INFO(LOG_TAG, "Found presence data: %.*s\n", (int)value_len, value);
 
     // Parse JSON to extract timestamp
     peer_info_t peer_info;
     memset(&peer_info, 0, sizeof(peer_info));
 
     if (parse_presence_json((const char*)value, &peer_info) != 0) {
-        printf("[P2P] Failed to parse presence JSON\n");
+        QGP_LOG_INFO(LOG_TAG, "Failed to parse presence JSON\n");
         free(value);
         return -1;
     }
@@ -218,7 +221,7 @@ int p2p_lookup_presence_by_fingerprint(
     *last_seen_out = peer_info.last_seen;
     free(value);
 
-    printf("[P2P] Presence lookup successful: last_seen=%lu\n",
+    QGP_LOG_INFO(LOG_TAG, "Presence lookup successful: last_seen=%lu\n",
            (unsigned long)*last_seen_out);
 
     return 0;
@@ -249,7 +252,7 @@ int p2p_send_message(
     size_t message_len)
 {
     if (!ctx || !peer_pubkey || !message || message_len == 0) {
-        fprintf(stderr, "[P2P] Invalid parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return -1;
     }
 
@@ -257,14 +260,14 @@ int p2p_send_message(
     // TIER 1: LAN DHT Lookup + Direct TCP Connection
     // ========================================================================
 
-    printf("[P2P] [TIER 1] Attempting direct connection via LAN DHT...\n");
+    QGP_LOG_INFO(LOG_TAG, "[TIER 1] Attempting direct connection via LAN DHT...\n");
 
     // Step 1: Look up peer in DHT
     peer_info_t peer_info;
     int tier1_lookup_success = (p2p_lookup_peer(ctx, peer_pubkey, &peer_info) == 0);
 
     if (tier1_lookup_success && peer_info.is_online) {
-        printf("[P2P] [TIER 1] Peer found with IPs: %s (port %d)\n",
+        QGP_LOG_INFO(LOG_TAG, "[TIER 1] Peer found with IPs: %s (port %d)\n",
                peer_info.ip, peer_info.port);
 
         // Step 2: Try ALL peer IPs (comma-separated) until one works
@@ -282,12 +285,12 @@ int p2p_send_message(
 
             // Skip self-connection (same IP + same port = our own listener)
             if (peer_info.port == ctx->config.listen_port && strstr(my_ips, ip_token)) {
-                printf("[P2P] [TIER 1] Skipping %s:%d (self-connection)\n", ip_token, peer_info.port);
+                QGP_LOG_INFO(LOG_TAG, "[TIER 1] Skipping %s:%d (self-connection)\n", ip_token, peer_info.port);
                 ip_token = strtok(NULL, ",");
                 continue;
             }
 
-            printf("[P2P] [TIER 1] Trying IP: %s:%d...\n", ip_token, peer_info.port);
+            QGP_LOG_INFO(LOG_TAG, "[TIER 1] Trying IP: %s:%d...\n", ip_token, peer_info.port);
 
             int sockfd = socket(AF_INET, SOCK_STREAM, 0);
             if (sockfd >= 0) {
@@ -311,7 +314,7 @@ int p2p_send_message(
 
                 if (inet_pton(AF_INET, ip_token, &peer_addr.sin_addr) > 0) {
                     if (connect(sockfd, (struct sockaddr*)&peer_addr, sizeof(peer_addr)) == 0) {
-                        printf("[P2P] [TIER 1] ✓ TCP connected to %s:%d\n", ip_token, peer_info.port);
+                        QGP_LOG_INFO(LOG_TAG, "[TIER 1] ✓ TCP connected to %s:%d\n", ip_token, peer_info.port);
 
                         // Step 3: Send message (format: [4-byte length][message data])
                         uint32_t msg_len_network = htonl((uint32_t)message_len);
@@ -332,14 +335,14 @@ int p2p_send_message(
                             }
 
                             if (!send_error) {
-                                printf("[P2P] [TIER 1] ✓ Sent %zu bytes\n", message_len);
+                                QGP_LOG_INFO(LOG_TAG, "[TIER 1] ✓ Sent %zu bytes\n", message_len);
 
                                 // Step 4: Wait for ACK
                                 uint8_t ack;
                                 ssize_t ack_received = recv(sockfd, (char*)&ack, 1, 0);
 
                                 if (ack_received == 1 && ack == 0x01) {
-                                    printf("[P2P] [TIER 1] ✓✓ SUCCESS - ACK received from %s!\n", ip_token);
+                                    QGP_LOG_INFO(LOG_TAG, "[TIER 1] ✓✓ SUCCESS - ACK received from %s!\n", ip_token);
                                     close(sockfd);
                                     return 0;  // SUCCESS - Tier 1 worked!
                                 }
@@ -348,11 +351,11 @@ int p2p_send_message(
 
                         close(sockfd);
                     } else {
-                        printf("[P2P] [TIER 1] Connection to %s:%d failed\n", ip_token, peer_info.port);
+                        QGP_LOG_INFO(LOG_TAG, "[TIER 1] Connection to %s:%d failed\n", ip_token, peer_info.port);
                         close(sockfd);
                     }
                 } else {
-                    printf("[P2P] [TIER 1] Invalid IP: %s\n", ip_token);
+                    QGP_LOG_INFO(LOG_TAG, "[TIER 1] Invalid IP: %s\n", ip_token);
                     close(sockfd);
                 }
             }
@@ -362,7 +365,7 @@ int p2p_send_message(
         }
     }
 
-    printf("[P2P] [TIER 1] Failed - peer unreachable via direct TCP\n");
+    QGP_LOG_INFO(LOG_TAG, "[TIER 1] Failed - peer unreachable via direct TCP\n");
 
     // ========================================================================
     // TIER 2: ICE NAT Traversal (PERSISTENT - Phase 11 FIX)
@@ -370,7 +373,7 @@ int p2p_send_message(
 
     // FIX: Check if ICE is available first
     if (!ctx->ice_ready) {
-        printf("[P2P] [TIER 2] ICE unavailable (initialization failed or disabled)\n");
+        QGP_LOG_INFO(LOG_TAG, "[TIER 2] ICE unavailable (initialization failed or disabled)\n");
         goto tier3_fallback;
     }
 
@@ -402,43 +405,43 @@ int p2p_send_message(
         pthread_mutex_unlock(&ctx->connections_mutex);
 
         if (!cached_conn) {
-            printf("[P2P] [TIER 2] Skipped - peer offline, no cached ICE connection\n");
+            QGP_LOG_INFO(LOG_TAG, "[TIER 2] Skipped - peer offline, no cached ICE connection\n");
             goto tier3_fallback;
         }
-        printf("[P2P] [TIER 2] Peer offline but have cached ICE connection, trying it...\n");
+        QGP_LOG_INFO(LOG_TAG, "[TIER 2] Peer offline but have cached ICE connection, trying it...\n");
     } else {
-        printf("[P2P] [TIER 2] Attempting ICE NAT traversal (persistent connections)...\n");
+        QGP_LOG_INFO(LOG_TAG, "[TIER 2] Attempting ICE NAT traversal (persistent connections)...\n");
     }
 
     // Find or create ICE connection (reuse existing, create new only if peer online)
     p2p_connection_t *ice_conn = ice_get_or_create_connection(ctx, peer_pubkey, peer_fingerprint_hex);
     if (!ice_conn) {
-        printf("[P2P] [TIER 2] Failed to establish ICE connection\n");
+        QGP_LOG_INFO(LOG_TAG, "[TIER 2] Failed to establish ICE connection\n");
         goto tier3_fallback;
     }
 
-    printf("[P2P] [TIER 2] ✓ Using ICE connection to peer %.32s...\n", peer_fingerprint_hex);
+    QGP_LOG_INFO(LOG_TAG, "[TIER 2] ✓ Using ICE connection to peer %.32s...\n", peer_fingerprint_hex);
 
     // Send via existing ICE connection and wait for ACK
     int ice_sent = ice_send(ice_conn->ice_ctx, message, message_len);
     if (ice_sent > 0) {
-        printf("[P2P] [TIER 2] ✓ Sent %d bytes via ICE, waiting for ACK...\n", ice_sent);
+        QGP_LOG_INFO(LOG_TAG, "[TIER 2] ✓ Sent %d bytes via ICE, waiting for ACK...\n", ice_sent);
 
         // Wait for ACK (2 second timeout)
         uint8_t ack_buf[1];
         int ack_result = ice_recv_timeout(ice_conn->ice_ctx, ack_buf, 1, 2000);
 
         if (ack_result == 1 && ack_buf[0] == 0x01) {
-            printf("[P2P] [TIER 2] ✓✓ SUCCESS - ACK received via ICE!\n");
+            QGP_LOG_INFO(LOG_TAG, "[TIER 2] ✓✓ SUCCESS - ACK received via ICE!\n");
             return 0;  // SUCCESS - Tier 2 worked!
         } else if (ack_result > 0) {
             // Got data but not ACK - might be a message from peer
-            printf("[P2P] [TIER 2] Received %d bytes but not ACK (0x%02x)\n", ack_result, ack_buf[0]);
+            QGP_LOG_INFO(LOG_TAG, "[TIER 2] Received %d bytes but not ACK (0x%02x)\n", ack_result, ack_buf[0]);
         } else {
-            printf("[P2P] [TIER 2] No ACK received (timeout or error)\n");
+            QGP_LOG_INFO(LOG_TAG, "[TIER 2] No ACK received (timeout or error)\n");
         }
     } else {
-        printf("[P2P] [TIER 2] Failed to send message via ICE\n");
+        QGP_LOG_INFO(LOG_TAG, "[TIER 2] Failed to send message via ICE\n");
     }
 
     // ========================================================================
@@ -447,6 +450,6 @@ int p2p_send_message(
     // ========================================================================
 
 tier3_fallback:
-    printf("[P2P] [TIER 3] Queueing to DHT offline queue for guaranteed delivery\n");
+    QGP_LOG_INFO(LOG_TAG, "[TIER 3] Queueing to DHT offline queue for guaranteed delivery\n");
     return -1;  // Caller (messenger_p2p.c) will queue to DHT offline storage
 }

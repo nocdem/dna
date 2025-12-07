@@ -23,6 +23,9 @@
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DNA_FEED"
 #endif
 
 /* Dilithium5 functions */
@@ -314,7 +317,7 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
     /* Validate text length */
     size_t text_len = strlen(text);
     if (text_len == 0 || text_len >= DNA_FEED_MAX_COMMENT_TEXT) {
-        fprintf(stderr, "[DNA_FEED] Invalid comment text length\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid comment text length\n");
         return -1;
     }
 
@@ -322,7 +325,7 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
     dna_feed_post_t *parent = NULL;
     int ret = dna_feed_post_get(dht_ctx, post_id, &parent);
     if (ret != 0) {
-        fprintf(stderr, "[DNA_FEED] Parent post not found: %s\n", post_id);
+        QGP_LOG_ERROR(LOG_TAG, "Parent post not found: %s\n", post_id);
         return -2;
     }
     char parent_channel[65];
@@ -370,7 +373,7 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
     free(sign_data);
 
     if (ret != 0) {
-        fprintf(stderr, "[DNA_FEED] Failed to sign comment\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign comment\n");
         free(comment);
         return -1;
     }
@@ -454,7 +457,7 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
         free(lens);
     }
 
-    printf("[DNA_FEED] Found %zu existing comments from this author\n", my_count);
+    QGP_LOG_INFO(LOG_TAG, "Found %zu existing comments from this author\n", my_count);
 
     /* Build array with existing + new comment */
     json_object *arr = json_object_new_array();
@@ -486,7 +489,7 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
     }
 
     const char *json_data = json_object_to_json_string(arr);
-    printf("[DNA_FEED] Publishing %zu comments to DHT (value_id=%lu)...\n", my_count + 1, my_value_id);
+    QGP_LOG_INFO(LOG_TAG, "Publishing %zu comments to DHT (value_id=%lu)...\n", my_count + 1, my_value_id);
 
     /* Publish as multi-owner signed value */
     ret = dht_put_signed(dht_ctx, (const uint8_t *)comments_key, strlen(comments_key),
@@ -495,14 +498,14 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
     json_object_put(arr);
 
     if (ret != 0) {
-        fprintf(stderr, "[DNA_FEED] Failed to publish comment\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish comment\n");
         free(comment);
         return -1;
     }
 
     /* Engagement-TTL: Republish parent post to refresh its TTL
      * This keeps active posts alive longer */
-    printf("[DNA_FEED] Refreshing parent post TTL (engagement-TTL)...\n");
+    QGP_LOG_INFO(LOG_TAG, "Refreshing parent post TTL (engagement-TTL)...\n");
 
     /* Fetch and republish the parent post */
     dna_feed_post_t *parent_post = NULL;
@@ -525,7 +528,7 @@ int dna_feed_comment_add(dht_context_t *dht_ctx,
      * to add the post to today's index here. For now, this is handled by the
      * channel index already containing the post_id */
 
-    printf("[DNA_FEED] Successfully created comment %s\n", comment->comment_id);
+    QGP_LOG_INFO(LOG_TAG, "Successfully created comment %s\n", comment->comment_id);
 
     if (comment_out) {
         *comment_out = comment;
@@ -546,7 +549,7 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
     char comments_key[512];
     snprintf(comments_key, sizeof(comments_key), "dna:feed:post:%s:comments", post_id);
 
-    printf("[DNA_FEED] Fetching comments for post %s...\n", post_id);
+    QGP_LOG_INFO(LOG_TAG, "Fetching comments for post %s...\n", post_id);
 
     /* Fetch all multi-owner values */
     uint8_t **values = NULL;
@@ -562,7 +565,7 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
         return (ret == 0) ? -2 : -1;
     }
 
-    printf("[DNA_FEED] Found %zu comment values\n", value_count);
+    QGP_LOG_INFO(LOG_TAG, "Found %zu comment values\n", value_count);
 
     /* Parse comments - values can be arrays or single objects */
     dna_feed_comment_t *comments = NULL;
@@ -631,7 +634,7 @@ int dna_feed_comments_get(dht_context_t *dht_ctx,
         return -2;
     }
 
-    printf("[DNA_FEED] Parsed %zu comments\n", parsed);
+    QGP_LOG_INFO(LOG_TAG, "Parsed %zu comments\n", parsed);
 
     *comments_out = comments;
     *count_out = parsed;

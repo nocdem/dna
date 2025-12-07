@@ -11,6 +11,9 @@
 #include <time.h>
 #include <ctype.h>
 #include <errno.h>
+#include "../../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "WALLET_TX"
 
 // Initial capacity for transaction buffer
 #define INITIAL_CAPACITY 4096
@@ -459,7 +462,7 @@ int cellframe_uint256_scan_uninteger(const char *str, uint256_t *out) {
 
     // Check length limit
     if (len > DATOSHI_POW256) {
-        fprintf(stderr, "[ERROR] Too many digits in '%s' (%d > %d)\n", str, len, DATOSHI_POW256);
+        QGP_LOG_ERROR(LOG_TAG, "Too many digits in '%s' (%d > %d)\n", str, len, DATOSHI_POW256);
         return -1;
     }
 
@@ -467,7 +470,7 @@ int cellframe_uint256_scan_uninteger(const char *str, uint256_t *out) {
     for (int i = 0; i < len; i++) {
         char c = str[len - i - 1];
         if (!isdigit(c)) {
-            fprintf(stderr, "[ERROR] Non-digit character in amount: '%c'\n", c);
+            QGP_LOG_ERROR(LOG_TAG, "Non-digit character in amount: '%c'\n", c);
             return -1;
         }
 
@@ -488,13 +491,13 @@ int cellframe_uint256_scan_uninteger(const char *str, uint256_t *out) {
         uint256_t term = uint256_0;
         uint256_t digit_256 = GET_256_FROM_64(digit);
         if (MULT_256_256(pow10_val, digit_256, &term)) {
-            fprintf(stderr, "[ERROR] Overflow multiplying by digit %d at position %d\n", digit, i);
+            QGP_LOG_ERROR(LOG_TAG, "Overflow multiplying by digit %d at position %d\n", digit, i);
             return -1;
         }
 
         // Add to result
         if (SUM_256_256(result, term, &result)) {
-            fprintf(stderr, "[ERROR] Overflow adding digit %d at position %d\n", digit, i);
+            QGP_LOG_ERROR(LOG_TAG, "Overflow adding digit %d at position %d\n", digit, i);
             return -1;
         }
     }
@@ -521,7 +524,7 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
 
     // Check max length (78 digits + 1 decimal point)
     if (len > DATOSHI_POW256 + 1) {
-        fprintf(stderr, "[ERROR] Amount string too long: '%s' (%d > %d)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Amount string too long: '%s' (%d > %d)\n",
                 value_str, len, DATOSHI_POW256 + 1);
         return -1;
     }
@@ -536,7 +539,7 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
     if (!point) {
         // SDK requires decimal point - treat integer as CELL amount
         // Append ".0" to make "3000" -> "3000.0"
-        fprintf(stderr, "[INFO] No decimal point in '%s', treating as CELL amount\n", value_str);
+        QGP_LOG_ERROR(LOG_TAG, "No decimal point in '%s', treating as CELL amount\n", value_str);
         buf[len] = '.';
         buf[len + 1] = '0';
         len += 2;
@@ -549,7 +552,7 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
 
     // Check precision
     if (frac_len > DATOSHI_DEGREE) {
-        fprintf(stderr, "[ERROR] Too much precision in '%s' (%d > %d decimals)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Too much precision in '%s' (%d > %d decimals)\n",
                 value_str, frac_len, DATOSHI_DEGREE);
         return -1;
     }

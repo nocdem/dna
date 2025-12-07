@@ -18,11 +18,9 @@
 #include <string.h>
 #include <time.h>
 
-/* Redirect printf/fprintf to Android logcat */
-#define QGP_LOG_TAG "DHT_PROFILE"
-#define QGP_LOG_REDIRECT_STDIO 1
-#include "../crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_log.h"
 
+#define LOG_TAG "DHT_PROFILE"
 // Windows byte order conversion macros (be64toh, htobe64 not available)
 #ifdef _WIN32
 #include <winsock2.h>
@@ -215,13 +213,13 @@ static int make_base_key(const char *user_fingerprint, char *key_out, size_t key
     // Fingerprint is 64-byte hex string (128 chars)
     size_t fp_len = strlen(user_fingerprint);
     if (fp_len != 128) {
-        fprintf(stderr, "[DHT_PROFILE] Invalid fingerprint length: %zu (expected 128)\n", fp_len);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint length: %zu (expected 128)\n", fp_len);
         return -1;
     }
 
     int ret = snprintf(key_out, key_out_size, "%s:profile", user_fingerprint);
     if (ret < 0 || (size_t)ret >= key_out_size) {
-        fprintf(stderr, "[DHT_PROFILE] Base key buffer too small\n");
+        QGP_LOG_ERROR(LOG_TAG, "Base key buffer too small\n");
         return -1;
     }
 
@@ -233,7 +231,7 @@ static int make_base_key(const char *user_fingerprint, char *key_out, size_t key
  */
 int dht_profile_init(void) {
     // Currently nothing to initialize
-    printf("[DHT_PROFILE] Initialized\n");
+    QGP_LOG_INFO(LOG_TAG, "Initialized\n");
     return 0;
 }
 
@@ -242,7 +240,7 @@ int dht_profile_init(void) {
  */
 void dht_profile_cleanup(void) {
     // Currently nothing to cleanup
-    printf("[DHT_PROFILE] Cleaned up\n");
+    QGP_LOG_INFO(LOG_TAG, "Cleaned up\n");
 }
 
 /**
@@ -255,33 +253,33 @@ int dht_profile_publish(
     const uint8_t *dilithium_privkey)
 {
     if (!dht_ctx || !user_fingerprint || !profile || !dilithium_privkey) {
-        fprintf(stderr, "[DHT_PROFILE] Invalid parameters for publish\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for publish\n");
         return -1;
     }
 
-    printf("[DHT_PROFILE] Publishing profile for '%s'\n", user_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Publishing profile for '%s'\n", user_fingerprint);
 
     // Validate profile
     if (!dht_profile_validate(profile)) {
-        fprintf(stderr, "[DHT_PROFILE] Invalid profile data\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid profile data\n");
         return -1;
     }
 
     // Serialize to JSON
     char *json = serialize_to_json(profile);
     if (!json) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to serialize profile\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize profile\n");
         return -1;
     }
 
     size_t json_len = strlen(json);
-    printf("[DHT_PROFILE] JSON size: %zu bytes\n", json_len);
+    QGP_LOG_INFO(LOG_TAG, "JSON size: %zu bytes\n", json_len);
 
     // Sign JSON data with Dilithium5 (DSA-87)
     uint8_t signature[QGP_DSA87_SIGNATURE_BYTES];
     size_t siglen = 0;
     if (qgp_dsa87_sign(signature, &siglen, (const uint8_t*)json, json_len, dilithium_privkey) != 0) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to sign profile\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign profile\n");
         free(json);
         return -1;
     }
@@ -290,7 +288,7 @@ int dht_profile_publish(
     size_t blob_size = 8 + json_len + 8 + siglen;
     uint8_t *blob = malloc(blob_size);
     if (!blob) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to allocate blob\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate blob\n");
         free(json);
         return -1;
     }
@@ -316,12 +314,12 @@ int dht_profile_publish(
 
     free(json);
 
-    printf("[DHT_PROFILE] Total blob size: %zu bytes\n", blob_size);
+    QGP_LOG_INFO(LOG_TAG, "Total blob size: %zu bytes\n", blob_size);
 
     // Generate base key for chunked storage
     char base_key[256];
     if (make_base_key(user_fingerprint, base_key, sizeof(base_key)) != 0) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to generate base key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate base key\n");
         free(blob);
         return -1;
     }
@@ -331,11 +329,11 @@ int dht_profile_publish(
     free(blob);
 
     if (result != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to store in DHT: %s\n", dht_chunked_strerror(result));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s\n", dht_chunked_strerror(result));
         return -1;
     }
 
-    printf("[DHT_PROFILE] Successfully published profile\n");
+    QGP_LOG_INFO(LOG_TAG, "Successfully published profile\n");
     return 0;
 }
 
@@ -348,16 +346,16 @@ int dht_profile_fetch(
     dht_profile_t *profile_out)
 {
     if (!dht_ctx || !user_fingerprint || !profile_out) {
-        fprintf(stderr, "[DHT_PROFILE] Invalid parameters for fetch\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for fetch\n");
         return -1;
     }
 
-    printf("[DHT_PROFILE] Fetching profile for '%s'\n", user_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Fetching profile for '%s'\n", user_fingerprint);
 
     // Generate base key for chunked storage
     char base_key[256];
     if (make_base_key(user_fingerprint, base_key, sizeof(base_key)) != 0) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to generate base key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate base key\n");
         return -1;
     }
 
@@ -367,15 +365,15 @@ int dht_profile_fetch(
 
     int result = dht_chunked_fetch(dht_ctx, base_key, &blob, &blob_size);
     if (result != DHT_CHUNK_OK || !blob) {
-        printf("[DHT_PROFILE] Profile not found in DHT: %s\n", dht_chunked_strerror(result));
+        QGP_LOG_INFO(LOG_TAG, "Profile not found in DHT: %s\n", dht_chunked_strerror(result));
         return -2;  // Not found
     }
 
-    printf("[DHT_PROFILE] Fetched blob: %zu bytes\n", blob_size);
+    QGP_LOG_INFO(LOG_TAG, "Fetched blob: %zu bytes\n", blob_size);
 
     // Parse blob: [json_len][json][sig_len][signature]
     if (blob_size < 16) {  // Minimum: 8 + 0 + 8 + 0
-        fprintf(stderr, "[DHT_PROFILE] Blob too small\n");
+        QGP_LOG_ERROR(LOG_TAG, "Blob too small\n");
         free(blob);
         return -1;
     }
@@ -389,7 +387,7 @@ int dht_profile_fetch(
     ptr += 8;
 
     if (json_len > blob_size - 16) {
-        fprintf(stderr, "[DHT_PROFILE] Invalid json_len: %lu\n", (unsigned long)json_len);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid json_len: %lu\n", (unsigned long)json_len);
         free(blob);
         return -1;
     }
@@ -397,7 +395,7 @@ int dht_profile_fetch(
     // Read JSON
     char *json = malloc(json_len + 1);
     if (!json) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to allocate JSON buffer\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate JSON buffer\n");
         free(blob);
         return -1;
     }
@@ -412,7 +410,7 @@ int dht_profile_fetch(
     ptr += 8;
 
     if (sig_len > QGP_DSA87_SIGNATURE_BYTES || sig_len > (size_t)(blob + blob_size - ptr)) {
-        fprintf(stderr, "[DHT_PROFILE] Invalid signature length: %lu\n", (unsigned long)sig_len);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid signature length: %lu\n", (unsigned long)sig_len);
         free(json);
         free(blob);
         return -1;
@@ -425,12 +423,12 @@ int dht_profile_fetch(
     // Signature verification should be done by caller if needed
     // For now, we trust DHT (signed puts provide some authenticity)
 
-    printf("[DHT_PROFILE] Signature present (%lu bytes), skipping verification\n",
+    QGP_LOG_INFO(LOG_TAG, "Signature present (%lu bytes), skipping verification\n",
            (unsigned long)sig_len);
 
     // Deserialize JSON
     if (deserialize_from_json(json, profile_out) != 0) {
-        fprintf(stderr, "[DHT_PROFILE] Failed to parse JSON\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse JSON\n");
         free(json);
         free(blob);
         return -1;
@@ -439,7 +437,7 @@ int dht_profile_fetch(
     free(json);
     free(blob);
 
-    printf("[DHT_PROFILE] Successfully fetched profile\n");
+    QGP_LOG_INFO(LOG_TAG, "Successfully fetched profile\n");
     return 0;
 }
 
@@ -465,7 +463,7 @@ int dht_profile_delete(
     // Note: dht_chunked_delete overwrites with empty chunks
     dht_chunked_delete(dht_ctx, base_key, 0);
 
-    printf("[DHT_PROFILE] Deleted profile for '%s' (best-effort)\n", user_fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Deleted profile for '%s' (best-effort)\n", user_fingerprint);
     return 0;
 }
 
@@ -477,7 +475,7 @@ bool dht_profile_validate(const dht_profile_t *profile) {
 
     // Display name is required
     if (strlen(profile->display_name) == 0) {
-        fprintf(stderr, "[DHT_PROFILE] Display name is required\n");
+        QGP_LOG_ERROR(LOG_TAG, "Display name is required\n");
         return false;
     }
 
@@ -487,7 +485,7 @@ bool dht_profile_validate(const dht_profile_t *profile) {
         strlen(profile->avatar_hash) >= DHT_PROFILE_MAX_AVATAR_HASH ||
         strlen(profile->location) >= DHT_PROFILE_MAX_LOCATION ||
         strlen(profile->website) >= DHT_PROFILE_MAX_WEBSITE) {
-        fprintf(stderr, "[DHT_PROFILE] Profile field exceeds maximum size\n");
+        QGP_LOG_ERROR(LOG_TAG, "Profile field exceeds maximum size\n");
         return false;
     }
 

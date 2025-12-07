@@ -38,6 +38,9 @@
 #include "../messenger_p2p.h"
 #include "../p2p/p2p_transport.h"
 #include "keys.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MSG"
 
 // ============================================================================
 // MESSAGE OPERATIONS
@@ -699,11 +702,11 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
                                  sender_sign_pubkey_keyserver) == 0) {
                 sig_verified = 1;
             } else {
-                fprintf(stderr, "[ERROR] ✗ Signature verification FAILED (fingerprint: %.16s...)\n", fingerprint_hex);
+                QGP_LOG_ERROR(LOG_TAG, "✗ Signature verification FAILED (fingerprint: %.16s...)\n", fingerprint_hex);
                 fprintf(stderr, "WARNING: Message may be forged or corrupted!\n");
             }
         } else {
-            fprintf(stderr, "[ERROR] No signature found in message\n");
+            QGP_LOG_ERROR(LOG_TAG, "No signature found in message\n");
         }
         free(sender_sign_pubkey_keyserver);
         free(sender_enc_pubkey_keyserver);

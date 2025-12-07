@@ -5,6 +5,9 @@
 
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "KEYSERVER"
 
 // Compute fingerprint from Dilithium5 public key (public wrapper)
 void dna_compute_fingerprint(
@@ -24,31 +27,31 @@ int dna_register_name(
     const uint8_t *dilithium_privkey
 ) {
     if (!dht_ctx || !fingerprint || !name || !tx_hash || !network || !dilithium_privkey) {
-        fprintf(stderr, "[DNA] Invalid arguments to dna_register_name\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_register_name\n");
         return -1;
     }
 
     // Validate name format
     if (!dna_validate_name(name)) {
-        fprintf(stderr, "[DNA] Invalid name format: %s\n", name);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid name format: %s\n", name);
         return -1;
     }
 
     // Verify blockchain transaction
-    printf("[DNA] Verifying blockchain transaction...\n");
-    printf("[DNA] TX: %s on %s\n", tx_hash, network);
+    QGP_LOG_INFO(LOG_TAG, "Verifying blockchain transaction...\n");
+    QGP_LOG_INFO(LOG_TAG, "TX: %s on %s\n", tx_hash, network);
 
     int verify_result = cellframe_verify_registration_tx(tx_hash, network, name);
     if (verify_result != 0) {
         if (verify_result == -2) {
-            fprintf(stderr, "[DNA] Transaction validation failed (invalid amount, memo, or recipient)\n");
+            QGP_LOG_ERROR(LOG_TAG, "Transaction validation failed (invalid amount, memo, or recipient)\n");
         } else {
-            fprintf(stderr, "[DNA] Transaction verification error (RPC failure or tx not found)\n");
+            QGP_LOG_ERROR(LOG_TAG, "Transaction verification error (RPC failure or tx not found)\n");
         }
         return -1;
     }
 
-    printf("[DNA] ✓ Transaction verified successfully\n");
+    QGP_LOG_INFO(LOG_TAG, "✓ Transaction verified successfully\n");
 
     // Check if name is already taken
     char *existing_fp = NULL;
@@ -56,7 +59,7 @@ int dna_register_name(
     if (ret == 0) {
         // Name exists - check if it's the same fingerprint
         if (strcmp(existing_fp, fingerprint) != 0) {
-            fprintf(stderr, "[DNA] Name '%s' already registered to different fingerprint\n", name);
+            QGP_LOG_ERROR(LOG_TAG, "Name '%s' already registered to different fingerprint\n", name);
             free(existing_fp);
             return -2;  // Name taken
         }
@@ -106,7 +109,7 @@ int dna_register_name(
     free(json);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA] Failed to store identity in DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store identity in DHT: %s\n", dht_chunked_strerror(ret));
         dna_identity_free(identity);
         return -1;
     }
@@ -129,7 +132,7 @@ int dna_register_name(
                               DHT_CHUNK_TTL_365DAY);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA] Failed to store name mapping in DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store name mapping in DHT: %s\n", dht_chunked_strerror(ret));
         dna_identity_free(identity);
         return -1;
     }
@@ -137,8 +140,8 @@ int dna_register_name(
     uint64_t expires_at = identity->name_expires_at;
     dna_identity_free(identity);
 
-    printf("[DNA] ✓ Name registered: %s → %.16s...\n", name, fingerprint);
-    printf("[DNA] Expires: %lu (365 days)\n", expires_at);
+    QGP_LOG_INFO(LOG_TAG, "✓ Name registered: %s → %.16s...\n", name, fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "Expires: %lu (365 days)\n", expires_at);
     return 0;
 }
 
@@ -150,7 +153,7 @@ int dna_renew_name(
     const uint8_t *dilithium_privkey
 ) {
     if (!dht_ctx || !fingerprint || !renewal_tx_hash || !dilithium_privkey) {
-        fprintf(stderr, "[DNA] Invalid arguments to dna_renew_name\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_renew_name\n");
         return -1;
     }
 
@@ -159,34 +162,34 @@ int dna_renew_name(
     int ret_load = dna_load_identity(dht_ctx, fingerprint, &identity);
 
     if (ret_load != 0) {
-        fprintf(stderr, "[DNA] Identity not found\n");
+        QGP_LOG_ERROR(LOG_TAG, "Identity not found\n");
         return -2;
     }
 
     if (!identity->has_registered_name) {
-        fprintf(stderr, "[DNA] No name registered for this fingerprint\n");
+        QGP_LOG_ERROR(LOG_TAG, "No name registered for this fingerprint\n");
         dna_identity_free(identity);
         return -2;
     }
 
     // Verify blockchain transaction
-    printf("[DNA] Verifying renewal transaction...\n");
-    printf("[DNA] Renewal TX: %s\n", renewal_tx_hash);
+    QGP_LOG_INFO(LOG_TAG, "Verifying renewal transaction...\n");
+    QGP_LOG_INFO(LOG_TAG, "Renewal TX: %s\n", renewal_tx_hash);
 
     int verify_result = cellframe_verify_registration_tx(renewal_tx_hash,
                                                          identity->registration_network,
                                                          identity->registered_name);
     if (verify_result != 0) {
         if (verify_result == -2) {
-            fprintf(stderr, "[DNA] Renewal transaction validation failed\n");
+            QGP_LOG_ERROR(LOG_TAG, "Renewal transaction validation failed\n");
         } else {
-            fprintf(stderr, "[DNA] Renewal transaction verification error\n");
+            QGP_LOG_ERROR(LOG_TAG, "Renewal transaction verification error\n");
         }
         dna_identity_free(identity);
         return -1;
     }
 
-    printf("[DNA] ✓ Renewal transaction verified successfully\n");
+    QGP_LOG_INFO(LOG_TAG, "✓ Renewal transaction verified successfully\n");
 
     // Update renewal info
     identity->name_expires_at += (365 * 24 * 60 * 60);  // Extend by 365 days
@@ -213,13 +216,13 @@ int dna_renew_name(
     free(json);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA] Failed to store renewed identity in DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store renewed identity in DHT: %s\n", dht_chunked_strerror(ret));
         dna_identity_free(identity);
         return -1;
     }
 
-    printf("[DNA] ✓ Name renewed: %s\n", identity->registered_name);
-    printf("[DNA] New expiration: %lu (+365 days)\n", identity->name_expires_at);
+    QGP_LOG_INFO(LOG_TAG, "✓ Name renewed: %s\n", identity->registered_name);
+    QGP_LOG_INFO(LOG_TAG, "New expiration: %lu (+365 days)\n", identity->name_expires_at);
 
     dna_identity_free(identity);
     return 0;
@@ -232,7 +235,7 @@ int dna_lookup_by_name(
     char **fingerprint_out
 ) {
     if (!dht_ctx || !name || !fingerprint_out) {
-        fprintf(stderr, "[DNA] Invalid arguments to dna_lookup_by_name\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to dna_lookup_by_name\n");
         return -1;
     }
 
@@ -248,8 +251,8 @@ int dna_lookup_by_name(
     char base_key[300];
     snprintf(base_key, sizeof(base_key), "%s:lookup", normalized_name);
 
-    printf("[DNA] Looking up name '%s'\n", normalized_name);
-    printf("[DNA] Base key: %s\n", base_key);
+    QGP_LOG_INFO(LOG_TAG, "Looking up name '%s'\n", normalized_name);
+    QGP_LOG_INFO(LOG_TAG, "Base key: %s\n", base_key);
 
     // Fetch from DHT via chunked layer
     uint8_t *value = NULL;
@@ -257,13 +260,13 @@ int dna_lookup_by_name(
 
     int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
     if (ret != DHT_CHUNK_OK || !value) {
-        fprintf(stderr, "[DNA] Name not found in DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Name not found in DHT: %s\n", dht_chunked_strerror(ret));
         return -2;  // Not found
     }
 
     // Value is just the fingerprint (128 hex chars)
     if (value_len != 128) {
-        fprintf(stderr, "[DNA] Invalid fingerprint length: %zu (expected 128)\n", value_len);
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint length: %zu (expected 128)\n", value_len);
         free(value);
         return -1;
     }
@@ -278,7 +281,7 @@ int dna_lookup_by_name(
     fingerprint[128] = '\0';
     free(value);
 
-    printf("[DNA] ✓ Name resolved: %s → %.16s...\n", normalized_name, fingerprint);
+    QGP_LOG_INFO(LOG_TAG, "✓ Name resolved: %s → %.16s...\n", normalized_name, fingerprint);
 
     *fingerprint_out = fingerprint;
     return 0;

@@ -19,6 +19,9 @@
 #include <string.h>
 #include <time.h>
 #include <sqlite3.h>
+#include "../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DHT_GROUPS"
 
 // Global database connection for group cache
 static sqlite3 *g_db = NULL;
@@ -54,7 +57,7 @@ static int generate_uuid_v4(char *uuid_out) {
     // Use qgp_randombytes for cryptographically secure random generation
     // This uses getrandom() on Linux or BCryptGenRandom() on Windows
     if (qgp_randombytes(bytes, 16) != 0) {
-        fprintf(stderr, "[ERROR] Failed to generate UUID: no secure randomness available\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate UUID: no secure randomness available\n");
         return -1;
     }
 
@@ -189,13 +192,13 @@ error:
 // Initialize DHT groups subsystem
 int dht_groups_init(const char *db_path) {
     if (g_db) {
-        fprintf(stderr, "[DHT GROUPS] Already initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Already initialized\n");
         return 0;
     }
 
     int rc = sqlite3_open(db_path, &g_db);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[DHT GROUPS] Failed to open database: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n", sqlite3_errmsg(g_db));
         sqlite3_close(g_db);
         g_db = NULL;
         return -1;
@@ -208,14 +211,14 @@ int dht_groups_init(const char *db_path) {
     char *err_msg = NULL;
     rc = sqlite3_exec(g_db, GROUP_CACHE_SCHEMA, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[DHT GROUPS] Failed to create tables: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create tables: %s\n", err_msg);
         sqlite3_free(err_msg);
         sqlite3_close(g_db);
         g_db = NULL;
         return -1;
     }
 
-    printf("[DHT GROUPS] Initialized with database: %s\n", db_path);
+    QGP_LOG_INFO(LOG_TAG, "Initialized with database: %s\n", db_path);
     return 0;
 }
 
@@ -224,7 +227,7 @@ void dht_groups_cleanup(void) {
     if (g_db) {
         sqlite3_close(g_db);
         g_db = NULL;
-        printf("[DHT GROUPS] Cleanup complete\n");
+        QGP_LOG_INFO(LOG_TAG, "Cleanup complete\n");
     }
 }
 
@@ -239,14 +242,14 @@ int dht_groups_create(
     char *group_uuid_out
 ) {
     if (!dht_ctx || !name || !creator || !group_uuid_out) {
-        fprintf(stderr, "[DHT GROUPS] Invalid arguments to create\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to create\n");
         return -1;
     }
 
     // Generate UUID
     char group_uuid[37];
     if (generate_uuid_v4(group_uuid) != 0) {
-        fprintf(stderr, "[DHT GROUPS] Failed to generate UUID for group\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate UUID for group\n");
         return -1;
     }
     strcpy(group_uuid_out, group_uuid);
@@ -267,7 +270,7 @@ int dht_groups_create(
     // Allocate members array (creator + provided members)
     meta.members = malloc(sizeof(char*) * meta.member_count);
     if (!meta.members) {
-        fprintf(stderr, "[DHT GROUPS] Failed to allocate members array\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate members array\n");
         return -1;
     }
 
@@ -282,7 +285,7 @@ int dht_groups_create(
     // Serialize to JSON
     char *json = serialize_metadata(&meta);
     if (!json) {
-        fprintf(stderr, "[DHT GROUPS] Failed to serialize metadata\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize metadata\n");
         for (uint32_t i = 0; i < meta.member_count; i++) free(meta.members[i]);
         free(meta.members);
         return -1;
@@ -295,7 +298,7 @@ int dht_groups_create(
     // Store in DHT via chunked layer (30-day TTL for group metadata)
     int ret = dht_chunked_publish(dht_ctx, base_key, (uint8_t*)json, strlen(json), DHT_CHUNK_TTL_30DAY);
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT GROUPS] Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to store in DHT: %s\n", dht_chunked_strerror(ret));
         free(json);
         for (uint32_t i = 0; i < meta.member_count; i++) free(meta.members[i]);
         free(meta.members);
@@ -333,7 +336,7 @@ int dht_groups_create(
     for (uint32_t i = 0; i < meta.member_count; i++) free(meta.members[i]);
     free(meta.members);
 
-    printf("[DHT GROUPS] Created group %s (%s)\n", name, group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Created group %s (%s)\n", name, group_uuid);
     return 0;
 }
 
@@ -344,7 +347,7 @@ int dht_groups_get(
     dht_group_metadata_t **metadata_out
 ) {
     if (!dht_ctx || !group_uuid || !metadata_out) {
-        fprintf(stderr, "[DHT GROUPS] Invalid arguments to get\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get\n");
         return -1;
     }
 
@@ -357,7 +360,7 @@ int dht_groups_get(
     size_t value_len = 0;
     int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
     if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
-        fprintf(stderr, "[DHT GROUPS] Group not found in DHT: %s (%s)\n", group_uuid, dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Group not found in DHT: %s (%s)\n", group_uuid, dht_chunked_strerror(ret));
         if (value) free(value);
         return -2;  // Not found
     }
@@ -377,11 +380,11 @@ int dht_groups_get(
     free(json);
 
     if (ret != 0) {
-        fprintf(stderr, "[DHT GROUPS] Failed to deserialize metadata\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to deserialize metadata\n");
         return -1;
     }
 
-    printf("[DHT GROUPS] Retrieved group %s from DHT\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Retrieved group %s from DHT\n", group_uuid);
     return 0;
 }
 
@@ -394,7 +397,7 @@ int dht_groups_update(
     const char *updater
 ) {
     if (!dht_ctx || !group_uuid || !updater) {
-        fprintf(stderr, "[DHT GROUPS] Invalid arguments to update\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to update\n");
         return -1;
     }
 
@@ -417,7 +420,7 @@ int dht_groups_update(
     }
 
     if (!authorized) {
-        fprintf(stderr, "[DHT GROUPS] Unauthorized update attempt by %s\n", updater);
+        QGP_LOG_ERROR(LOG_TAG, "Unauthorized update attempt by %s\n", updater);
         dht_groups_free_metadata(meta);
         return -2;  // Not authorized
     }
@@ -446,11 +449,11 @@ int dht_groups_update(
     dht_groups_free_metadata(meta);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT GROUPS] Failed to update DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    printf("[DHT GROUPS] Updated group %s\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Updated group %s\n", group_uuid);
     return 0;
 }
 
@@ -462,7 +465,7 @@ int dht_groups_add_member(
     const char *adder
 ) {
     if (!dht_ctx || !group_uuid || !new_member || !adder) {
-        fprintf(stderr, "[DHT GROUPS] Invalid arguments to add_member\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to add_member\n");
         return -1;
     }
 
@@ -485,7 +488,7 @@ int dht_groups_add_member(
     }
 
     if (!authorized) {
-        fprintf(stderr, "[DHT GROUPS] Unauthorized add_member by %s\n", adder);
+        QGP_LOG_ERROR(LOG_TAG, "Unauthorized add_member by %s\n", adder);
         dht_groups_free_metadata(meta);
         return -2;
     }
@@ -493,7 +496,7 @@ int dht_groups_add_member(
     // Check if already member
     for (uint32_t i = 0; i < meta->member_count; i++) {
         if (strcmp(meta->members[i], new_member) == 0) {
-            fprintf(stderr, "[DHT GROUPS] Already a member: %s\n", new_member);
+            QGP_LOG_ERROR(LOG_TAG, "Already a member: %s\n", new_member);
             dht_groups_free_metadata(meta);
             return -3;
         }
@@ -525,11 +528,11 @@ int dht_groups_add_member(
     dht_groups_free_metadata(meta);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT GROUPS] Failed to add member to DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add member to DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    printf("[DHT GROUPS] Added member %s to group %s\n", new_member, group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Added member %s to group %s\n", new_member, group_uuid);
     return 0;
 }
 
@@ -541,7 +544,7 @@ int dht_groups_remove_member(
     const char *remover
 ) {
     if (!dht_ctx || !group_uuid || !member || !remover) {
-        fprintf(stderr, "[DHT GROUPS] Invalid arguments to remove_member\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to remove_member\n");
         return -1;
     }
 
@@ -556,7 +559,7 @@ int dht_groups_remove_member(
     bool authorized = (strcmp(meta->creator, remover) == 0) || (strcmp(member, remover) == 0);
 
     if (!authorized) {
-        fprintf(stderr, "[DHT GROUPS] Unauthorized remove_member by %s\n", remover);
+        QGP_LOG_ERROR(LOG_TAG, "Unauthorized remove_member by %s\n", remover);
         dht_groups_free_metadata(meta);
         return -2;
     }
@@ -571,7 +574,7 @@ int dht_groups_remove_member(
     }
 
     if (found_idx == -1) {
-        fprintf(stderr, "[DHT GROUPS] Member not found: %s\n", member);
+        QGP_LOG_ERROR(LOG_TAG, "Member not found: %s\n", member);
         dht_groups_free_metadata(meta);
         return -1;
     }
@@ -599,11 +602,11 @@ int dht_groups_remove_member(
     dht_groups_free_metadata(meta);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT GROUPS] Failed to remove member from DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to remove member from DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
-    printf("[DHT GROUPS] Removed member %s from group %s\n", member, group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Removed member %s from group %s\n", member, group_uuid);
     return 0;
 }
 
@@ -614,7 +617,7 @@ int dht_groups_delete(
     const char *deleter
 ) {
     if (!dht_ctx || !group_uuid || !deleter) {
-        fprintf(stderr, "[DHT GROUPS] Invalid arguments to delete\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to delete\n");
         return -1;
     }
 
@@ -627,7 +630,7 @@ int dht_groups_delete(
 
     // Check authorization (only creator can delete)
     if (strcmp(meta->creator, deleter) != 0) {
-        fprintf(stderr, "[DHT GROUPS] Unauthorized delete attempt by %s\n", deleter);
+        QGP_LOG_ERROR(LOG_TAG, "Unauthorized delete attempt by %s\n", deleter);
         dht_groups_free_metadata(meta);
         return -2;
     }
@@ -642,7 +645,7 @@ int dht_groups_delete(
     ret = dht_chunked_delete(dht_ctx, base_key, 0);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DHT GROUPS] Failed to delete from DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete from DHT: %s\n", dht_chunked_strerror(ret));
         return -1;
     }
 
@@ -656,7 +659,7 @@ int dht_groups_delete(
         sqlite3_finalize(stmt);
     }
 
-    printf("[DHT GROUPS] Deleted group %s\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Deleted group %s\n", group_uuid);
     return 0;
 }
 
@@ -667,7 +670,7 @@ int dht_groups_list_for_user(
     int *count_out
 ) {
     if (!identity || !groups_out || !count_out || !g_db) {
-        fprintf(stderr, "[DHT GROUPS] Invalid arguments to list_for_user (identity=%p, groups_out=%p, count_out=%p, g_db=%p)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to list_for_user (identity=%p, groups_out=%p, count_out=%p, g_db=%p)\n",
                 (void*)identity, (void*)groups_out, (void*)count_out, (void*)g_db);
         return -1;
     }
@@ -686,7 +689,7 @@ int dht_groups_list_for_user(
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[DHT GROUPS] Failed to prepare query: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -731,7 +734,7 @@ int dht_groups_list_for_user(
     *groups_out = groups;
     *count_out = count;
 
-    printf("[DHT GROUPS] Listed %d groups for user %s\n", count, identity);
+    QGP_LOG_INFO(LOG_TAG, "Listed %d groups for user %s\n", count, identity);
     return 0;
 }
 
@@ -742,7 +745,7 @@ int dht_groups_get_uuid_by_local_id(
     char *uuid_out
 ) {
     if (!identity || !uuid_out || !g_db) {
-        fprintf(stderr, "[DHT GROUPS] Invalid arguments to get_uuid_by_local_id\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to get_uuid_by_local_id\n");
         return -1;
     }
 
@@ -758,7 +761,7 @@ int dht_groups_get_uuid_by_local_id(
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[DHT GROUPS] Failed to prepare query: %s\n", sqlite3_errmsg(g_db));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare query: %s\n", sqlite3_errmsg(g_db));
         return -1;
     }
 
@@ -778,9 +781,9 @@ int dht_groups_get_uuid_by_local_id(
     sqlite3_finalize(stmt);
 
     if (result == 0) {
-        printf("[DHT GROUPS] Mapped local_id %d to UUID %s for user %s\n", local_id, uuid_out, identity);
+        QGP_LOG_INFO(LOG_TAG, "Mapped local_id %d to UUID %s for user %s\n", local_id, uuid_out, identity);
     } else {
-        fprintf(stderr, "[DHT GROUPS] local_id %d not found for user %s\n", local_id, identity);
+        QGP_LOG_ERROR(LOG_TAG, "local_id %d not found for user %s\n", local_id, identity);
     }
 
     return result;
@@ -792,7 +795,7 @@ int dht_groups_sync_from_dht(
     const char *group_uuid
 ) {
     if (!dht_ctx || !group_uuid || !g_db) {
-        fprintf(stderr, "[DHT GROUPS] Invalid arguments to sync_from_dht\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to sync_from_dht\n");
         return -1;
     }
 
@@ -836,7 +839,7 @@ int dht_groups_sync_from_dht(
 
     dht_groups_free_metadata(meta);
 
-    printf("[DHT GROUPS] Synced group %s from DHT to local cache\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Synced group %s from DHT to local cache\n", group_uuid);
     return 0;
 }
 

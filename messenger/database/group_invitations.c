@@ -7,6 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sqlite3.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DB_GROUPS"
 
 // Global database connection (per-identity)
 static sqlite3 *g_invitations_db = NULL;
@@ -28,7 +31,7 @@ static const char *INVITATIONS_SCHEMA =
  */
 int group_invitations_init(const char *identity) {
     if (!identity) {
-        fprintf(stderr, "[GROUP_INVITATIONS] NULL identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "NULL identity\n");
         return -1;
     }
 
@@ -46,7 +49,7 @@ int group_invitations_init(const char *identity) {
     char db_path[512];
     const char *home = getenv("HOME");
     if (!home) {
-        fprintf(stderr, "[GROUP_INVITATIONS] HOME environment variable not set\n");
+        QGP_LOG_ERROR(LOG_TAG, "HOME environment variable not set\n");
         return -1;
     }
     snprintf(db_path, sizeof(db_path), "%s/.dna/%s_invitations.db", home, identity);
@@ -54,7 +57,7 @@ int group_invitations_init(const char *identity) {
     // Open database
     int rc = sqlite3_open(db_path, &g_invitations_db);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to open database: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s\n",
                 sqlite3_errmsg(g_invitations_db));
         sqlite3_close(g_invitations_db);
         g_invitations_db = NULL;
@@ -65,7 +68,7 @@ int group_invitations_init(const char *identity) {
     char *err_msg = NULL;
     rc = sqlite3_exec(g_invitations_db, INVITATIONS_SCHEMA, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to create table: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create table: %s\n", err_msg);
         sqlite3_free(err_msg);
         sqlite3_close(g_invitations_db);
         g_invitations_db = NULL;
@@ -73,7 +76,7 @@ int group_invitations_init(const char *identity) {
     }
 
     strncpy(g_current_identity, identity, sizeof(g_current_identity) - 1);
-    printf("[GROUP_INVITATIONS] Initialized for identity: %s\n", identity);
+    QGP_LOG_INFO(LOG_TAG, "Initialized for identity: %s\n", identity);
     return 0;
 }
 
@@ -82,12 +85,12 @@ int group_invitations_init(const char *identity) {
  */
 int group_invitations_store(const group_invitation_t *invitation) {
     if (!g_invitations_db) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!invitation) {
-        fprintf(stderr, "[GROUP_INVITATIONS] NULL invitation\n");
+        QGP_LOG_ERROR(LOG_TAG, "NULL invitation\n");
         return -1;
     }
 
@@ -97,7 +100,7 @@ int group_invitations_store(const group_invitation_t *invitation) {
 
     int rc = sqlite3_prepare_v2(g_invitations_db, check_sql, -1, &check_stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to prepare check statement: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare check statement: %s\n",
                 sqlite3_errmsg(g_invitations_db));
         return -1;
     }
@@ -119,7 +122,7 @@ int group_invitations_store(const group_invitation_t *invitation) {
 
     rc = sqlite3_prepare_v2(g_invitations_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to prepare insert statement: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare insert statement: %s\n",
                 sqlite3_errmsg(g_invitations_db));
         return -1;
     }
@@ -135,12 +138,12 @@ int group_invitations_store(const group_invitation_t *invitation) {
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to insert invitation: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to insert invitation: %s\n",
                 sqlite3_errmsg(g_invitations_db));
         return -1;
     }
 
-    printf("[GROUP_INVITATIONS] Stored invitation for group '%s' (UUID: %s)\n",
+    QGP_LOG_INFO(LOG_TAG, "Stored invitation for group '%s' (UUID: %s)\n",
            invitation->group_name, invitation->group_uuid);
     return 0;
 }
@@ -150,12 +153,12 @@ int group_invitations_store(const group_invitation_t *invitation) {
  */
 int group_invitations_get_pending(group_invitation_t **invitations_out, int *count_out) {
     if (!g_invitations_db) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!invitations_out || !count_out) {
-        fprintf(stderr, "[GROUP_INVITATIONS] NULL output parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "NULL output parameters\n");
         return -1;
     }
 
@@ -169,7 +172,7 @@ int group_invitations_get_pending(group_invitation_t **invitations_out, int *cou
 
     int rc = sqlite3_prepare_v2(g_invitations_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to prepare select statement: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare select statement: %s\n",
                 sqlite3_errmsg(g_invitations_db));
         return -1;
     }
@@ -220,7 +223,7 @@ int group_invitations_get_pending(group_invitation_t **invitations_out, int *cou
     *invitations_out = invitations;
     *count_out = i;
 
-    printf("[GROUP_INVITATIONS] Retrieved %d pending invitation(s)\n", i);
+    QGP_LOG_INFO(LOG_TAG, "Retrieved %d pending invitation(s)\n", i);
     return 0;
 }
 
@@ -229,12 +232,12 @@ int group_invitations_get_pending(group_invitation_t **invitations_out, int *cou
  */
 int group_invitations_get(const char *group_uuid, group_invitation_t **invitation_out) {
     if (!g_invitations_db) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!group_uuid || !invitation_out) {
-        fprintf(stderr, "[GROUP_INVITATIONS] NULL parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "NULL parameters\n");
         return -1;
     }
 
@@ -246,7 +249,7 @@ int group_invitations_get(const char *group_uuid, group_invitation_t **invitatio
 
     int rc = sqlite3_prepare_v2(g_invitations_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to prepare select statement: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare select statement: %s\n",
                 sqlite3_errmsg(g_invitations_db));
         return -1;
     }
@@ -291,12 +294,12 @@ int group_invitations_get(const char *group_uuid, group_invitation_t **invitatio
  */
 int group_invitations_update_status(const char *group_uuid, invitation_status_t status) {
     if (!g_invitations_db) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!group_uuid) {
-        fprintf(stderr, "[GROUP_INVITATIONS] NULL group_uuid\n");
+        QGP_LOG_ERROR(LOG_TAG, "NULL group_uuid\n");
         return -1;
     }
 
@@ -305,7 +308,7 @@ int group_invitations_update_status(const char *group_uuid, invitation_status_t 
 
     int rc = sqlite3_prepare_v2(g_invitations_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to prepare update statement: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare update statement: %s\n",
                 sqlite3_errmsg(g_invitations_db));
         return -1;
     }
@@ -317,14 +320,14 @@ int group_invitations_update_status(const char *group_uuid, invitation_status_t 
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to update invitation status: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update invitation status: %s\n",
                 sqlite3_errmsg(g_invitations_db));
         return -1;
     }
 
     const char *status_str = (status == INVITATION_STATUS_ACCEPTED) ? "accepted" :
                              (status == INVITATION_STATUS_REJECTED) ? "rejected" : "pending";
-    printf("[GROUP_INVITATIONS] Updated invitation %s to status: %s\n", group_uuid, status_str);
+    QGP_LOG_INFO(LOG_TAG, "Updated invitation %s to status: %s\n", group_uuid, status_str);
     return 0;
 }
 
@@ -333,12 +336,12 @@ int group_invitations_update_status(const char *group_uuid, invitation_status_t 
  */
 int group_invitations_delete(const char *group_uuid) {
     if (!g_invitations_db) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Database not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
     }
 
     if (!group_uuid) {
-        fprintf(stderr, "[GROUP_INVITATIONS] NULL group_uuid\n");
+        QGP_LOG_ERROR(LOG_TAG, "NULL group_uuid\n");
         return -1;
     }
 
@@ -347,7 +350,7 @@ int group_invitations_delete(const char *group_uuid) {
 
     int rc = sqlite3_prepare_v2(g_invitations_db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to prepare delete statement: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare delete statement: %s\n",
                 sqlite3_errmsg(g_invitations_db));
         return -1;
     }
@@ -358,12 +361,12 @@ int group_invitations_delete(const char *group_uuid) {
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        fprintf(stderr, "[GROUP_INVITATIONS] Failed to delete invitation: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to delete invitation: %s\n",
                 sqlite3_errmsg(g_invitations_db));
         return -1;
     }
 
-    printf("[GROUP_INVITATIONS] Deleted invitation: %s\n", group_uuid);
+    QGP_LOG_INFO(LOG_TAG, "Deleted invitation: %s\n", group_uuid);
     return 0;
 }
 
@@ -385,6 +388,6 @@ void group_invitations_cleanup(void) {
         sqlite3_close(g_invitations_db);
         g_invitations_db = NULL;
         g_current_identity[0] = '\0';
-        printf("[GROUP_INVITATIONS] Cleanup complete\n");
+        QGP_LOG_INFO(LOG_TAG, "Cleanup complete\n");
     }
 }

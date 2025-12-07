@@ -15,6 +15,9 @@
 #include <json-c/json.h>
 #include <openssl/sha.h>
 #include <openssl/evp.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DNA_CHANNELS"
 
 /* Base64 encoding/decoding (reuse from dna_message_wall.c pattern) */
 static char *base64_encode(const uint8_t *data, size_t len);
@@ -350,14 +353,14 @@ int dna_feed_registry_get(dht_context_t *dht_ctx, dna_feed_registry_t **registry
     /* Use base key string directly for chunked layer */
     const char *base_key = "dna:feed:registry";
 
-    printf("[DNA_FEED] Fetching channel registry from DHT...\n");
+    QGP_LOG_INFO(LOG_TAG, "Fetching channel registry from DHT...\n");
 
     uint8_t *value = NULL;
     size_t value_len = 0;
     int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
 
     if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
-        printf("[DNA_FEED] Registry not found in DHT\n");
+        QGP_LOG_INFO(LOG_TAG, "Registry not found in DHT\n");
         return -2;
     }
 
@@ -375,7 +378,7 @@ int dna_feed_registry_get(dht_context_t *dht_ctx, dna_feed_registry_t **registry
     free(json_str);
 
     if (ret == 0) {
-        printf("[DNA_FEED] Loaded registry with %zu channels\n", (*registry_out)->channel_count);
+        QGP_LOG_INFO(LOG_TAG, "Loaded registry with %zu channels\n", (*registry_out)->channel_count);
     }
 
     return ret;
@@ -389,14 +392,14 @@ int dna_feed_channel_get(dht_context_t *dht_ctx, const char *channel_id,
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "dna:feed:%s:meta", channel_id);
 
-    printf("[DNA_FEED] Fetching channel %s from DHT...\n", channel_id);
+    QGP_LOG_INFO(LOG_TAG, "Fetching channel %s from DHT...\n", channel_id);
 
     uint8_t *value = NULL;
     size_t value_len = 0;
     int ret = dht_chunked_fetch(dht_ctx, base_key, &value, &value_len);
 
     if (ret != DHT_CHUNK_OK || !value || value_len == 0) {
-        printf("[DNA_FEED] Channel not found\n");
+        QGP_LOG_INFO(LOG_TAG, "Channel not found\n");
         return -2;
     }
 
@@ -426,7 +429,7 @@ int dna_feed_channel_create(dht_context_t *dht_ctx,
     /* Validate name length */
     size_t name_len = strlen(name);
     if (name_len == 0 || name_len >= DNA_FEED_MAX_CHANNEL_NAME) {
-        fprintf(stderr, "[DNA_FEED] Invalid channel name length\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid channel name length\n");
         return -1;
     }
 
@@ -437,7 +440,7 @@ int dna_feed_channel_create(dht_context_t *dht_ctx,
     /* Check if channel already exists */
     dna_feed_channel_t *existing = NULL;
     if (dna_feed_channel_get(dht_ctx, channel_id, &existing) == 0) {
-        printf("[DNA_FEED] Channel '%s' already exists\n", name);
+        QGP_LOG_INFO(LOG_TAG, "Channel '%s' already exists\n", name);
         dna_feed_channel_free(existing);
         return -2;
     }
@@ -468,14 +471,14 @@ int dna_feed_channel_create(dht_context_t *dht_ctx,
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "dna:feed:%s:meta", channel_id);
 
-    printf("[DNA_FEED] Publishing channel '%s' to DHT...\n", name);
+    QGP_LOG_INFO(LOG_TAG, "Publishing channel '%s' to DHT...\n", name);
     int ret = dht_chunked_publish(dht_ctx, base_key,
                                    (const uint8_t *)json_data, strlen(json_data),
                                    DNA_FEED_TTL_SECONDS);
     free(json_data);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA_FEED] Failed to publish channel to DHT: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish channel to DHT: %s\n", dht_chunked_strerror(ret));
         free(channel);
         return -1;
     }
@@ -522,11 +525,11 @@ int dna_feed_channel_create(dht_context_t *dht_ctx,
     dna_feed_registry_free(registry);
 
     if (ret != DHT_CHUNK_OK) {
-        fprintf(stderr, "[DNA_FEED] Failed to update registry: %s\n", dht_chunked_strerror(ret));
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update registry: %s\n", dht_chunked_strerror(ret));
         /* Channel was created, just registry update failed */
     }
 
-    printf("[DNA_FEED] Successfully created channel '%s'\n", name);
+    QGP_LOG_INFO(LOG_TAG, "Successfully created channel '%s'\n", name);
 
     if (channel_out) {
         *channel_out = channel;
@@ -557,10 +560,10 @@ int dna_feed_init_default_channels(dht_context_t *dht_ctx,
         int ret = dna_feed_channel_create(dht_ctx, defaults[i].name, defaults[i].description,
                                           creator_fingerprint, private_key, NULL);
         if (ret == 0) {
-            printf("[DNA_FEED] Created default channel: #%s\n", defaults[i].name);
+            QGP_LOG_INFO(LOG_TAG, "Created default channel: #%s\n", defaults[i].name);
             created++;
         } else if (ret == -2) {
-            printf("[DNA_FEED] Default channel #%s already exists\n", defaults[i].name);
+            QGP_LOG_INFO(LOG_TAG, "Default channel #%s already exists\n", defaults[i].name);
         }
     }
 

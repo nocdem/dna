@@ -21,6 +21,9 @@
 #include "../database/keyserver_cache.h"
 #include "../database/contacts_db.h"
 #include "../p2p/p2p_transport.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MSG_KEYS"
 
 // ============================================================================
 // CURL HELPERS
@@ -199,7 +202,7 @@ int messenger_store_pubkey(
     if (ctx->p2p_transport) {
         // Use existing P2P transport's DHT (when logged in)
         dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
-        printf("[INFO] Using P2P transport DHT for key publishing\n");
+        QGP_LOG_INFO(LOG_TAG, "Using P2P transport DHT for key publishing\n");
     } else {
         // Use global DHT singleton (during identity creation, before login)
         dht_ctx = dht_singleton_get();
@@ -207,7 +210,7 @@ int messenger_store_pubkey(
             fprintf(stderr, "ERROR: Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
             return -1;
         }
-        printf("[INFO] Using global DHT singleton for key publishing\n");
+        QGP_LOG_INFO(LOG_TAG, "Using global DHT singleton for key publishing\n");
     }
 
     // Get dna_dir path
@@ -509,7 +512,7 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
     if (!migration_attempted) {
         int migrated = contacts_db_migrate_from_global(db_identity);
         if (migrated > 0) {
-            printf("[MESSENGER] Migrated %d contacts from global database\n", migrated);
+            QGP_LOG_INFO(LOG_TAG, "Migrated %d contacts from global database\n", migrated);
         }
         migration_attempted = true;
     }

@@ -34,6 +34,9 @@
 #define ntohll(x) htonll(x)
 #else
 #include <arpa/inet.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MSG_KEYGEN"
 #ifndef htonll
 #define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
 #define ntohll(x) htonll(x)
@@ -255,7 +258,7 @@ int messenger_generate_keys_from_seeds(
         }
     }
 
-    printf("[KEYGEN] Creating identity '%s' in %s\n", dir_name, identity_dir);
+    QGP_LOG_INFO(LOG_TAG, "Creating identity '%s' in %s\n", dir_name, identity_dir);
 
     printf("✓ ML-DSA-87 signing key generated from seed\n");
     printf("  Fingerprint: %s\n", fingerprint);
@@ -369,7 +372,7 @@ int messenger_generate_keys_from_seeds(
         // NOTE: DHT publishing is now done via dht_keyserver_publish() with a name
         // Name-first architecture: identities are only published when a DNA name is registered
         // Keys are saved locally here, but not published to DHT until name registration
-        printf("[DHT_KEYSERVER] Keys saved locally. DHT publish requires DNA name registration.\n");
+        QGP_LOG_INFO(LOG_TAG, "Keys saved locally. DHT publish requires DNA name registration.\n");
     }
 
     qgp_key_free(enc_key);
@@ -384,16 +387,16 @@ int messenger_generate_keys_from_seeds(
 
     // Create Cellframe wallet if wallet_seed provided
     if (wallet_seed) {
-        printf("[WALLET] Creating Cellframe wallet...\n");
+        QGP_LOG_INFO(LOG_TAG, "Creating Cellframe wallet...\n");
 
         char wallet_address[CF_WALLET_ADDRESS_MAX];
 
         // Create wallet as <dir_name>.dwallet in ~/.dna/<dir_name>/wallets/
         if (cellframe_wallet_create_from_seed(wallet_seed, dir_name, wallets_dir, wallet_address) == 0) {
-            printf("[WALLET] ✓ Cellframe wallet created: %s.dwallet\n", dir_name);
-            printf("[WALLET] ✓ Address: %s\n", wallet_address);
+            QGP_LOG_INFO(LOG_TAG, "✓ Cellframe wallet created: %s.dwallet\n", dir_name);
+            QGP_LOG_INFO(LOG_TAG, "✓ Address: %s\n", wallet_address);
         } else {
-            fprintf(stderr, "[WALLET] Warning: Failed to create Cellframe wallet (non-fatal)\n");
+            QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to create Cellframe wallet (non-fatal)\n");
         }
     }
 
@@ -587,12 +590,12 @@ int messenger_register_name(
         return -1;
     }
 
-    printf("[DNA] ✓ Identity published to DHT (fingerprint:profile + name:lookup)\n");
+    QGP_LOG_INFO(LOG_TAG, "✓ Identity published to DHT (fingerprint:profile + name:lookup)\n");
 
     // Cache public keys locally
     if (keyserver_cache_put(fingerprint, sign_key->public_key, sign_key->public_key_size,
                             enc_key->public_key, enc_key->public_key_size, 365*24*60*60) == 0) {
-        printf("[DNA] ✓ Public keys cached locally\n");
+        QGP_LOG_INFO(LOG_TAG, "✓ Public keys cached locally\n");
     }
 
     qgp_key_free(sign_key);
