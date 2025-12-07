@@ -501,26 +501,27 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
       ),
       body: Column(
         children: [
-          // Messages list (placeholder)
+          // Group message history - feature in development
           Expanded(
             child: Center(
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Icon(
-                    Icons.forum_outlined,
+                    Icons.construction_outlined,
                     size: 64,
                     color: theme.colorScheme.primary.withAlpha(128),
                   ),
                   const SizedBox(height: 16),
                   Text(
-                    'No messages yet',
+                    'Group chat in development',
                     style: theme.textTheme.titleMedium,
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Start the conversation!',
+                    'You can send messages, but message history\nis not yet available in this version.',
                     style: theme.textTheme.bodySmall,
+                    textAlign: TextAlign.center,
                   ),
                 ],
               ),

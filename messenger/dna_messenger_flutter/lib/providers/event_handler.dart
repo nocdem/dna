@@ -5,6 +5,7 @@ import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
 import 'contacts_provider.dart';
 import 'messages_provider.dart';
+import 'groups_provider.dart';
 
 /// Connection state for DHT
 enum DhtConnectionState { disconnected, connecting, connected }
@@ -12,6 +13,9 @@ enum DhtConnectionState { disconnected, connecting, connected }
 final dhtConnectionStateProvider = StateProvider<DhtConnectionState>(
   (ref) => DhtConnectionState.disconnected,
 );
+
+/// Last error message for UI display (null = no error)
+final lastErrorProvider = StateProvider<String?>((ref) => null);
 
 /// Event handler provider - starts listening when watched
 final eventHandlerProvider = Provider<EventHandler>((ref) {
@@ -82,21 +86,26 @@ class EventHandler {
         _updateMessageStatus(id, MessageStatus.read);
 
       case GroupInvitationReceivedEvent():
-        // TODO: Show notification, refresh invitations list
+        // Refresh invitations list when new invitation received
+        _ref.invalidate(invitationsProvider);
         break;
 
       case GroupMemberJoinedEvent():
       case GroupMemberLeftEvent():
-        // TODO: Refresh group members
+        // Refresh groups to update member counts
+        _ref.invalidate(groupsProvider);
         break;
 
       case IdentityLoadedEvent():
         // Identity loaded - refresh all data
         _ref.invalidate(contactsProvider);
+        _ref.invalidate(groupsProvider);
+        _ref.invalidate(invitationsProvider);
         break;
 
-      case ErrorEvent():
-        // TODO: Show error notification via snackbar service
+      case ErrorEvent(message: final errorMsg):
+        // Store error for UI to display
+        _ref.read(lastErrorProvider.notifier).state = errorMsg;
         break;
     }
   }

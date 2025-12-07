@@ -319,25 +319,6 @@ int messenger_send_message(
         return -1;
     }
 
-    // Debug: show what we received
-    printf("\n========== DEBUG: messenger_send_message() called ==========\n");
-    printf("Version: %s (commit %s, built %s)\n", PQSIGNUM_VERSION, BUILD_HASH, BUILD_TS);
-    printf("\nSender: '%s'\n", ctx->identity);
-    printf("\nRecipients (%zu):\n", recipient_count);
-    for (size_t i = 0; i < recipient_count; i++) {
-        printf("  [%zu] = '%s' (length: %zu)\n", i, recipients[i], strlen(recipients[i]));
-    }
-    printf("\nMessage body:\n");
-    printf("  Text: '%s'\n", message);
-    printf("  Length: %zu bytes\n", strlen(message));
-    printf("===========================================================\n\n");
-
-    // Display recipients
-    printf("\n[Sending message to %zu recipient(s)]\n", recipient_count);
-    for (size_t i = 0; i < recipient_count; i++) {
-        printf("  - %s\n", recipients[i]);
-    }
-
     // Build full recipient list: sender + recipients (sender as first recipient)
     // This allows sender to decrypt their own sent messages
     size_t total_recipients = recipient_count + 1;
@@ -351,8 +332,6 @@ int messenger_send_message(
     for (size_t i = 0; i < recipient_count; i++) {
         all_recipients[i + 1] = recipients[i];
     }
-
-    printf("✓ Sender '%s' added as first recipient (can decrypt own sent messages)\n", ctx->identity);
 
     // Load sender's private signing key from filesystem
     const char *home = qgp_platform_home_dir();
@@ -398,7 +377,6 @@ int messenger_send_message(
             qgp_key_free(sender_sign_key);
             return -1;
         }
-        printf("✓ Loaded public key for '%s' from keyserver\n", all_recipients[i]);
     }
 
     // Multi-recipient encryption implementation
@@ -428,8 +406,6 @@ int messenger_send_message(
         return -1;
     }
 
-    printf("✓ Message encrypted (%zu bytes) for %zu recipient(s)\n", ciphertext_len, total_recipients);
-
     // Generate unique message_group_id (use microsecond timestamp for uniqueness)
 #ifdef _WIN32
     // Windows: Use GetSystemTimeAsFileTime()
@@ -446,8 +422,7 @@ int messenger_send_message(
     clock_gettime(CLOCK_REALTIME, &ts);
     int message_group_id = (int)(ts.tv_sec * 1000000 + ts.tv_nsec / 1000);
 #endif
-
-    printf("✓ Assigned message_group_id: %d\n", message_group_id);
+    (void)message_group_id;  // Suppress unused variable warning
 
     // Store in SQLite local database - one row per actual recipient (not sender)
     // Track message IDs for status updates
@@ -480,7 +455,6 @@ int messenger_send_message(
 
         // Get the message ID we just inserted
         message_ids[i] = message_backup_get_last_id(ctx->backup_ctx);
-        printf("✓ Message stored locally for '%s' (id=%d)\n", recipients[i], message_ids[i]);
     }
 
     // Phase 9.1b: Try P2P delivery for each recipient
@@ -488,8 +462,6 @@ int messenger_send_message(
     // If P2P fails, message queued in DHT offline queue
     size_t p2p_success = 0;
     if (ctx->p2p_enabled && ctx->p2p_transport) {
-        printf("\n[P2P] Attempting direct P2P delivery to %zu recipient(s)...\n", recipient_count);
-
         for (size_t i = 0; i < recipient_count; i++) {
             if (messenger_send_p2p(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
                 p2p_success++;
@@ -504,23 +476,19 @@ int messenger_send_message(
                 }
             }
         }
-
-        printf("[P2P] Delivery summary: %zu/%zu via P2P, %zu via DHT offline queue\n\n",
-               p2p_success, recipient_count, recipient_count - p2p_success);
     } else {
-        printf("\n[P2P] P2P disabled - using DHT offline queue\n\n");
-        // Mark all as FAILED since P2P is disabled and no delivery attempted
+        // P2P disabled - mark all as FAILED since no delivery attempted
         for (size_t i = 0; i < recipient_count; i++) {
             if (message_ids[i] > 0) {
                 message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
             }
         }
     }
+    (void)p2p_success;  // Suppress unused variable warning
 
     free(message_ids);
     free(ciphertext);
 
-    printf("✓ Message sent successfully to %zu recipient(s)\n\n", recipient_count);
     return 0;
 }
 
