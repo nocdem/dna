@@ -44,11 +44,7 @@ int qgp_derive_seeds_from_mnemonic(
     uint8_t encryption_seed[32],
     uint8_t wallet_seed[32]
 ) {
-    fprintf(stderr, "[SEED_DEBUG] qgp_derive_seeds_from_mnemonic called\n");
-    fprintf(stderr, "[SEED_DEBUG] wallet_seed ptr=%p\n", (void*)wallet_seed);
-
     if (!mnemonic || !signing_seed || !encryption_seed) {
-        fprintf(stderr, "[SEED_DEBUG] Invalid args\n");
         return -1;
     }
 
