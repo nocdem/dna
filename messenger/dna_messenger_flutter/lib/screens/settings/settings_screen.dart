@@ -350,6 +350,20 @@ class _AboutSection extends StatelessWidget {
                   fontFamily: 'monospace',
                 ),
               ),
+              const SizedBox(height: 16),
+              Text(
+                '© 2025 cpunk.io',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: DnaColors.textMuted,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Open Source · GNU GPLv3',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: DnaColors.textMuted,
+                ),
+              ),
             ],
           ),
         ),
