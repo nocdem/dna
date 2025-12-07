@@ -1,0 +1,120 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<!-- Created with Inkscape (http://www.inkscape.org/) -->
+
+<svg
+   width="1024"
+   height="1024"
+   viewBox="0 0 270.93333 270.93333"
+   version="1.1"
+   id="svg1"
+   sodipodi:docname="logo.svg"
+   inkscape:version="1.4.2 (ebf0e940d0, 2025-05-08)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns:xlink="http://www.w3.org/1999/xlink"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview1"
+     pagecolor="#ffffff"
+     bordercolor="#000000"
+     borderopacity="0.25"
+     inkscape:showpageshadow="2"
+     inkscape:pageopacity="0.0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#d1d1d1"
+     inkscape:document-units="mm"
+     inkscape:zoom="0.33437869"
+     inkscape:cx="-302.05274"
+     inkscape:cy="662.4226"
+     inkscape:window-width="1920"
+     inkscape:window-height="1011"
+     inkscape:window-x="0"
+     inkscape:window-y="0"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg1" />
+  <defs
+     id="defs1">
+    <linearGradient
+       id="linearGradient6">
+      <stop
+         style="stop-color:#1a2e36;stop-opacity:1;"
+         offset="0"
+         id="stop6" />
+      <stop
+         style="stop-color:#3d6c7a;stop-opacity:1;"
+         offset="1"
+         id="stop7" />
+    </linearGradient>
+    <linearGradient
+       xlink:href="#linearGradient6"
+       id="linearGradient7"
+       x1="104.79902"
+       y1="112.85769"
+       x2="104.79902"
+       y2="171.35489"
+       gradientUnits="userSpaceOnUse"
+       gradientTransform="matrix(0.7950638,0,0,1.0027209,21.571878,-3.1283948)" />
+    <filter
+       style="color-interpolation-filters:sRGB"
+       id="filter45"
+       x="-0.061923494"
+       y="-0.14190562"
+       width="1.1281472"
+       height="1.3281567">
+      <feFlood
+         result="flood"
+         in="SourceGraphic"
+         flood-opacity="0.498039"
+         flood-color="rgb(0,0,0)"
+         id="feFlood44" />
+      <feGaussianBlur
+         result="blur"
+         in="SourceGraphic"
+         stdDeviation="1.200000"
+         id="feGaussianBlur44" />
+      <feOffset
+         result="offset"
+         in="blur"
+         dx="0.200000"
+         dy="0.900000"
+         id="feOffset44" />
+      <feComposite
+         result="comp1"
+         operator="in"
+         in="flood"
+         in2="offset"
+         id="feComposite44" />
+      <feComposite
+         result="comp2"
+         operator="over"
+         in="SourceGraphic"
+         in2="comp1"
+         id="feComposite45" />
+    </filter>
+    <clipPath
+       clipPathUnits="userSpaceOnUse"
+       id="clipPath60">
+      <rect
+         style="fill:#3663c0;fill-opacity:1;stroke-width:1.142"
+         id="rect61"
+         width="46.509197"
+         height="27.391397"
+         x="81.639282"
+         y="129.21698" />
+    </clipPath>
+  </defs>
+  <g
+     id="g62"
+     transform="matrix(4.3034316,0,0,4.7727241,-315.93698,-549.14168)">
+    <path
+       id="path2"
+       style="fill:#1c2f37;fill-opacity:1;stroke:none;stroke-width:1.17033"
+       d="m 81.639471,130.27524 v 18.06298 4.30103 1.06233 2.9068 a 1.0583333,1.0583333 45 0 0 1.058333,1.05833 h 1.030181 40.215315 3.14685 a 1.0583333,1.0583333 135 0 0 1.05833,-1.05833 v -1.84744 -1.06333 -3.2427 -20.17964 a 0.49726512,0.49726512 25.166805 0 0 -0.81468,-0.38278 l -21.62494,17.93196 a 1.2763014,1.2763014 179.99977 0 1 -1.62936,0 L 82.454154,129.89246 a 0.49727021,0.49727021 154.83297 0 0 -0.814683,0.38278 z" />
+    <path
+       id="rect4"
+       style="font-variation-settings:normal;vector-effect:none;fill:url(#linearGradient7);stroke:none;stroke-width:1.17033;stroke-linecap:butt;stroke-linejoin:miter;stroke-miterlimit:4;stroke-dasharray:none;stroke-dashoffset:0;stroke-opacity:1;-inkscape-stroke:none;filter:url(#filter45);stop-color:#000000"
+       d="m 81.639285,129.21698 v 1.01251 l 23.254705,19.28267 23.2543,-19.28267 v -1.01251 z"
+       clip-path="url(#clipPath60)" />
+  </g>
+</svg>
