@@ -5,17 +5,13 @@
 #include "dht_singleton.h"
 #include "../core/dht_context.h"
 #include "../core/dht_bootstrap_registry.h"
+#include "crypto/utils/qgp_log.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-
-/* Redirect printf/fprintf to Android logcat */
-#define QGP_LOG_TAG "DHT"
-#define QGP_LOG_REDIRECT_STDIO 1
-#include "crypto/utils/qgp_log.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -24,6 +20,8 @@
 #else
 #include <unistd.h>
 #endif
+
+#define LOG_TAG "DHT"
 
 // Global DHT context (singleton)
 static dht_context_t *g_dht_context = NULL;
@@ -40,11 +38,11 @@ static const size_t FALLBACK_COUNT = 3;
 int dht_singleton_init(void)
 {
     if (g_dht_context != NULL) {
-        fprintf(stderr, "[DHT_SINGLETON] Already initialized\n");
+        QGP_LOG_WARN(LOG_TAG, "Already initialized");
         return 0;  // Already initialized, not an error
     }
 
-    printf("[DHT_SINGLETON] Initializing global DHT context...\n");
+    QGP_LOG_INFO(LOG_TAG, "Initializing global DHT context...");
 
     // Configure DHT
     dht_config_t dht_config = {0};
@@ -53,7 +51,7 @@ int dht_singleton_init(void)
     strncpy(dht_config.identity, "dna-global", sizeof(dht_config.identity) - 1);
 
     // STEP 1: Bootstrap to seed node for cold start
-    printf("[DHT_SINGLETON] Using seed node for cold start: %s\n", SEED_NODE);
+    QGP_LOG_INFO(LOG_TAG, "Using seed node for cold start: %s", SEED_NODE);
     strncpy(dht_config.bootstrap_nodes[0], SEED_NODE,
             sizeof(dht_config.bootstrap_nodes[0]) - 1);
     dht_config.bootstrap_count = 1;
@@ -62,24 +60,24 @@ int dht_singleton_init(void)
     // Client DHT is temporary and should not republish stored values
     dht_config.persistence_path[0] = '\0';  // Empty = no persistence
 
-    printf("[DHT_SINGLETON] Client DHT mode (no persistence)\n");
+    QGP_LOG_INFO(LOG_TAG, "Client DHT mode (no persistence)");
 
     // Create DHT context
     g_dht_context = dht_context_new(&dht_config);
     if (!g_dht_context) {
-        fprintf(stderr, "[DHT_SINGLETON] ERROR: Failed to create DHT context\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create DHT context");
         return -1;
     }
 
     // Start DHT and bootstrap
     if (dht_context_start(g_dht_context) != 0) {
-        fprintf(stderr, "[DHT_SINGLETON] ERROR: Failed to start DHT context\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT context");
         dht_context_free(g_dht_context);
         g_dht_context = NULL;
         return -1;
     }
 
-    printf("[DHT_SINGLETON] DHT started, bootstrapping to network...\n");
+    QGP_LOG_INFO(LOG_TAG, "DHT started, bootstrapping to network...");
 
     // Wait for DHT to be ready with reduced polling frequency
     // Check every 250ms for up to 3 seconds maximum (reduces overhead)
@@ -96,10 +94,10 @@ int dht_singleton_init(void)
     }
 
     if (dht_context_is_ready(g_dht_context)) {
-        printf("[DHT_SINGLETON] ✓ Global DHT ready! (took %dms)\n", attempts * 250);
+        QGP_LOG_INFO(LOG_TAG, "Global DHT ready! (took %dms)", attempts * 250);
 
         // STEP 2: Query bootstrap registry for dynamic node discovery
-        printf("[DHT_SINGLETON] Querying bootstrap registry for active nodes...\n");
+        QGP_LOG_INFO(LOG_TAG, "Querying bootstrap registry for active nodes...");
         bootstrap_registry_t registry;
 
         if (dht_bootstrap_registry_fetch(g_dht_context, &registry) == 0) {
@@ -107,7 +105,7 @@ int dht_singleton_init(void)
             dht_bootstrap_registry_filter_active(&registry);
 
             if (registry.node_count > 0) {
-                printf("[DHT_SINGLETON] ✓ Discovered %zu active bootstrap nodes from registry\n",
+                QGP_LOG_INFO(LOG_TAG, "Discovered %zu active bootstrap nodes from registry",
                        registry.node_count);
 
                 // Bootstrap to discovered nodes for better connectivity
@@ -116,40 +114,40 @@ int dht_singleton_init(void)
                     snprintf(node_addr, sizeof(node_addr), "%s:%d",
                              registry.nodes[i].ip, registry.nodes[i].port);
 
-                    printf("[DHT_SINGLETON]   → %s (node_id: %.16s..., uptime: %lus)\n",
+                    QGP_LOG_DEBUG(LOG_TAG, "  -> %s (node_id: %.16s..., uptime: %lus)",
                            node_addr, registry.nodes[i].node_id,
                            (unsigned long)registry.nodes[i].uptime);
 
                     // Bootstrap to this node at runtime
                     if (dht_context_bootstrap_runtime(g_dht_context, registry.nodes[i].ip,
                                                       registry.nodes[i].port) == 0) {
-                        printf("[DHT_SINGLETON]     ✓ Bootstrapped to %s\n", node_addr);
+                        QGP_LOG_DEBUG(LOG_TAG, "    Bootstrapped to %s", node_addr);
                     } else {
-                        printf("[DHT_SINGLETON]     ✗ Failed to bootstrap to %s\n", node_addr);
+                        QGP_LOG_WARN(LOG_TAG, "    Failed to bootstrap to %s", node_addr);
                     }
                 }
 
-                printf("[DHT_SINGLETON] ✓ Using %zu dynamically discovered nodes\n",
+                QGP_LOG_INFO(LOG_TAG, "Using %zu dynamically discovered nodes",
                        registry.node_count < 10 ? registry.node_count : 10);
             } else {
-                printf("[DHT_SINGLETON] ⚠ Registry has no active nodes, using fallback nodes\n");
+                QGP_LOG_WARN(LOG_TAG, "Registry has no active nodes, using fallback nodes");
             }
         } else {
-            printf("[DHT_SINGLETON] ⚠ Failed to query registry, using fallback nodes\n");
+            QGP_LOG_WARN(LOG_TAG, "Failed to query registry, using fallback nodes");
         }
 
         // RACE CONDITION FIX: Wait for nodes to establish stable connections
         // Even though dht_context_is_ready() returns true (good_nodes > 0),
         // the DHT may not be ready to accept PUT operations yet.
         // Give it 1 second to fully stabilize all connections before allowing PUT operations.
-        printf("[DHT_SINGLETON] Waiting for DHT connections to stabilize (1000ms)...\n");
+        QGP_LOG_INFO(LOG_TAG, "Waiting for DHT connections to stabilize (1000ms)...");
         #ifdef _WIN32
         Sleep(1000);
         #else
         usleep(1000000);  // 1000ms = 1 second
         #endif
     } else {
-        printf("[DHT_SINGLETON] ⚠ DHT bootstrap timeout, continuing anyway...\n");
+        QGP_LOG_WARN(LOG_TAG, "DHT bootstrap timeout, continuing anyway...");
         // Don't return error - DHT may still work for some operations
     }
 
@@ -169,16 +167,16 @@ bool dht_singleton_is_initialized(void)
 int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 {
     if (!user_identity) {
-        fprintf(stderr, "[DHT_SINGLETON] ERROR: NULL identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "NULL identity");
         return -1;
     }
 
     if (g_dht_context != NULL) {
-        fprintf(stderr, "[DHT_SINGLETON] Already initialized\n");
+        QGP_LOG_WARN(LOG_TAG, "Already initialized");
         return 0;  // Already initialized, not an error
     }
 
-    printf("[DHT_SINGLETON] Initializing global DHT with user identity...\n");
+    QGP_LOG_INFO(LOG_TAG, "Initializing global DHT with user identity...");
 
     // Configure DHT
     dht_config_t dht_config = {0};
@@ -187,7 +185,7 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
 
     // STEP 1: Bootstrap to seed node for cold start
-    printf("[DHT_SINGLETON] Using seed node for cold start: %s\n", SEED_NODE);
+    QGP_LOG_INFO(LOG_TAG, "Using seed node for cold start: %s", SEED_NODE);
     strncpy(dht_config.bootstrap_nodes[0], SEED_NODE,
             sizeof(dht_config.bootstrap_nodes[0]) - 1);
     dht_config.bootstrap_count = 1;
@@ -195,24 +193,24 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     // NO PERSISTENCE for client DHT
     dht_config.persistence_path[0] = '\0';
 
-    printf("[DHT_SINGLETON] Client DHT mode (no persistence)\n");
+    QGP_LOG_INFO(LOG_TAG, "Client DHT mode (no persistence)");
 
     // Create DHT context
     g_dht_context = dht_context_new(&dht_config);
     if (!g_dht_context) {
-        fprintf(stderr, "[DHT_SINGLETON] ERROR: Failed to create DHT context\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create DHT context");
         return -1;
     }
 
     // Start DHT with user-provided identity
     if (dht_context_start_with_identity(g_dht_context, user_identity) != 0) {
-        fprintf(stderr, "[DHT_SINGLETON] ERROR: Failed to start DHT with identity\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT with identity");
         dht_context_free(g_dht_context);
         g_dht_context = NULL;
         return -1;
     }
 
-    printf("[DHT_SINGLETON] DHT started, bootstrapping to network...\n");
+    QGP_LOG_INFO(LOG_TAG, "DHT started, bootstrapping to network...");
 
     // Wait for DHT to be ready with reduced polling frequency
     // Check every 250ms for up to 3 seconds maximum (reduces overhead)
@@ -229,10 +227,10 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     }
 
     if (dht_context_is_ready(g_dht_context)) {
-        printf("[DHT_SINGLETON] ✓ Global DHT ready with user identity! (took %dms)\n", attempts * 250);
+        QGP_LOG_INFO(LOG_TAG, "Global DHT ready with user identity! (took %dms)", attempts * 250);
 
         // STEP 2: Query bootstrap registry for dynamic node discovery
-        printf("[DHT_SINGLETON] Querying bootstrap registry for active nodes...\n");
+        QGP_LOG_INFO(LOG_TAG, "Querying bootstrap registry for active nodes...");
         bootstrap_registry_t registry;
 
         if (dht_bootstrap_registry_fetch(g_dht_context, &registry) == 0) {
@@ -240,7 +238,7 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
             dht_bootstrap_registry_filter_active(&registry);
 
             if (registry.node_count > 0) {
-                printf("[DHT_SINGLETON] ✓ Discovered %zu active bootstrap nodes from registry\n",
+                QGP_LOG_INFO(LOG_TAG, "Discovered %zu active bootstrap nodes from registry",
                        registry.node_count);
 
                 // Bootstrap to discovered nodes for better connectivity
@@ -249,40 +247,40 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
                     snprintf(node_addr, sizeof(node_addr), "%s:%d",
                              registry.nodes[i].ip, registry.nodes[i].port);
 
-                    printf("[DHT_SINGLETON]   → %s (node_id: %.16s..., uptime: %lus)\n",
+                    QGP_LOG_DEBUG(LOG_TAG, "  -> %s (node_id: %.16s..., uptime: %lus)",
                            node_addr, registry.nodes[i].node_id,
                            (unsigned long)registry.nodes[i].uptime);
 
                     // Bootstrap to this node at runtime
                     if (dht_context_bootstrap_runtime(g_dht_context, registry.nodes[i].ip,
                                                       registry.nodes[i].port) == 0) {
-                        printf("[DHT_SINGLETON]     ✓ Bootstrapped to %s\n", node_addr);
+                        QGP_LOG_DEBUG(LOG_TAG, "    Bootstrapped to %s", node_addr);
                     } else {
-                        printf("[DHT_SINGLETON]     ✗ Failed to bootstrap to %s\n", node_addr);
+                        QGP_LOG_WARN(LOG_TAG, "    Failed to bootstrap to %s", node_addr);
                     }
                 }
 
-                printf("[DHT_SINGLETON] ✓ Using %zu dynamically discovered nodes\n",
+                QGP_LOG_INFO(LOG_TAG, "Using %zu dynamically discovered nodes",
                        registry.node_count < 10 ? registry.node_count : 10);
             } else {
-                printf("[DHT_SINGLETON] ⚠ Registry has no active nodes, using fallback nodes\n");
+                QGP_LOG_WARN(LOG_TAG, "Registry has no active nodes, using fallback nodes");
             }
         } else {
-            printf("[DHT_SINGLETON] ⚠ Failed to query registry, using fallback nodes\n");
+            QGP_LOG_WARN(LOG_TAG, "Failed to query registry, using fallback nodes");
         }
 
         // RACE CONDITION FIX: Wait for nodes to establish stable connections
         // Even though dht_context_is_ready() returns true (good_nodes > 0),
         // the DHT may not be ready to accept PUT operations yet.
         // Give it 1 second to fully stabilize all connections before allowing PUT operations.
-        printf("[DHT_SINGLETON] Waiting for DHT connections to stabilize (1000ms)...\n");
+        QGP_LOG_INFO(LOG_TAG, "Waiting for DHT connections to stabilize (1000ms)...");
         #ifdef _WIN32
         Sleep(1000);
         #else
         usleep(1000000);  // 1000ms = 1 second
         #endif
     } else {
-        printf("[DHT_SINGLETON] ⚠ DHT bootstrap timeout, continuing anyway...\n");
+        QGP_LOG_WARN(LOG_TAG, "DHT bootstrap timeout, continuing anyway...");
         // Don't return error - DHT may still work for some operations
     }
     return 0;
@@ -291,9 +289,9 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 void dht_singleton_cleanup(void)
 {
     if (g_dht_context) {
-        printf("[DHT_SINGLETON] Shutting down global DHT context...\n");
+        QGP_LOG_INFO(LOG_TAG, "Shutting down global DHT context...");
         dht_context_free(g_dht_context);
         g_dht_context = NULL;
-        printf("[DHT_SINGLETON] ✓ DHT shutdown complete\n");
+        QGP_LOG_INFO(LOG_TAG, "DHT shutdown complete");
     }
 }
