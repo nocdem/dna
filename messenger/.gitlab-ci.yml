@@ -351,6 +351,7 @@ build:native-android-arm64:
         -DANDROID_ABI=${ANDROID_ABI} \
         -DANDROID_PLATFORM=android-${ANDROID_API_LEVEL} \
         -DANDROID_STL=c++_static \
+        -DCMAKE_SHARED_LINKER_FLAGS="-static-libstdc++" \
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_GUI=OFF \
         -DBUILD_SHARED_LIB=ON \
