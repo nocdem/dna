@@ -17,7 +17,19 @@ This project is in ALPHA. We use hard cutoffs for all changes:
 - NO backward compatibility
 - NO migration scripts
 - NO legacy support
-- Breaking changes are expected and acceptable 
+- Breaking changes are expected and acceptable
+
+## MULTIPLATFORM PROJECT - ALL PLATFORMS ALWAYS
+This is a multiplatform project targeting Linux, Windows, and Android (iOS planned).
+When writing ANY code:
+- **ALWAYS** consider all target platforms
+- **NEVER** use platform-specific APIs without abstraction
+- **ALWAYS** test/verify changes work on all platforms
+- **USE** the platform abstraction layer (`crypto/utils/qgp_platform_*.c`)
+- **CHECK** CMake platform modules (`cmake/*.cmake`) for platform differences
+- Bug fixes must work on ALL platforms, not just the one where bug was found
+- New features must be designed for ALL platforms from the start
+- Use `#ifdef` guards only in platform abstraction files, not in business logic 
 
 
 ## Protocol Mode
