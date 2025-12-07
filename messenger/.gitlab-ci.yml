@@ -25,7 +25,7 @@ variables:
 # =============================================================================
 
 # Build native library for Linux x64
-build:native-linux-x64:
+.build:native-linux-x64:  # DISABLED - prefix with . to skip
   stage: build-native
   tags:
     - linux
@@ -84,7 +84,7 @@ build:native-android-arm64:
     ANDROID_API_LEVEL: "24"
     ANDROID_ABI: "arm64-v8a"
   cache:
-    key: android-deps-arm64-v12-gmp-withpic
+    key: android-deps-arm64-v13-static-stl
     paths:
       - .cache/android-ndk/
       - .cache/android-deps/
@@ -218,6 +218,7 @@ build:native-android-arm64:
           -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=${ANDROID_ABI} \
           -DANDROID_PLATFORM=android-${API} \
+          -DANDROID_STL=c++_static \
           -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/fmt-arm64" \
           -DBUILD_SHARED_LIBS=OFF \
           -DFMT_TEST=OFF
@@ -289,6 +290,7 @@ build:native-android-arm64:
           -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=${ANDROID_ABI} \
           -DANDROID_PLATFORM=android-${API} \
+          -DANDROID_STL=c++_static \
           -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/jsonc-arm64" \
           -DBUILD_SHARED_LIBS=OFF \
           -DBUILD_STATIC_LIBS=ON
@@ -329,6 +331,7 @@ build:native-android-arm64:
           -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=${ANDROID_ABI} \
           -DANDROID_PLATFORM=android-${API} \
+          -DANDROID_STL=c++_static \
           -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/zstd-arm64" \
           -DZSTD_BUILD_PROGRAMS=OFF \
           -DZSTD_BUILD_SHARED=OFF \
@@ -368,7 +371,7 @@ build:native-android-arm64:
 # =============================================================================
 
 # Flutter Linux build
-build:flutter-linux:
+.build:flutter-linux:  # DISABLED - prefix with . to skip
   stage: build-flutter
   tags:
     - linux
@@ -396,7 +399,8 @@ build:flutter-linux:
     - cp -r dna_messenger_flutter/build/linux/x64/release/bundle/* AppDir/usr/bin/
     - cp native-libs/linux-x64/libdna_lib.so AppDir/usr/lib/
     # Bundle libraries that libdna_lib.so depends on (using ldd)
-    - ldd native-libs/linux-x64/libdna_lib.so | grep "=> /" | awk '{print $3}' | xargs -I{} cp -L {} AppDir/usr/lib/ 2>/dev/null || true
+    # Exclude core system libs (libc, libm, libdl, libpthread, ld-linux) - these must come from the system
+    - ldd native-libs/linux-x64/libdna_lib.so | grep "=> /" | grep -v -E "libc\.|libm\.|libdl\.|libpthread\.|ld-linux" | awk '{print $3}' | xargs -I{} cp -L {} AppDir/usr/lib/ 2>/dev/null || true
     - ls -la AppDir/usr/lib/
     # Create desktop file
     - |
@@ -442,7 +446,7 @@ build:flutter-linux:
     expire_in: 1 day
 
 # Flutter Android build
-build:flutter-android:
+.build:flutter-android:  # DISABLED - prefix with . to skip
   stage: build-flutter
   tags:
     - linux
