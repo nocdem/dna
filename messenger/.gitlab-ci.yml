@@ -410,8 +410,8 @@ build:windows:
     MSYS2_PATH: C:\tools\msys64
   script:
     # Build native library with MSYS2/MinGW
-    - $env:Path = "$env:MSYS2_PATH\mingw64\bin;$env:MSYS2_PATH\usr\bin;$env:Path"
-    - bash -lc "cd '$env:CI_PROJECT_DIR' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF && mingw32-make -j4 dna_lib"
+    - $env:MSYSTEM = "MINGW64"
+    - C:\tools\msys64\usr\bin\bash.exe -lc "export PATH=/mingw64/bin:/usr/bin:$PATH && cd '$env:CI_PROJECT_DIR' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF && mingw32-make -j4 dna_lib"
     # Copy native library to Flutter
     - mkdir -p dna_messenger_flutter\windows\libs
     - copy build-windows\libdna_lib.dll dna_messenger_flutter\windows\libs\dna_lib.dll
