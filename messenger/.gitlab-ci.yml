@@ -390,15 +390,9 @@ build:flutter-linux:
     - mkdir -p AppDir/usr/bin AppDir/usr/lib AppDir/usr/share/applications AppDir/usr/share/icons/hicolor/256x256/apps
     - cp -r dna_messenger_flutter/build/linux/x64/release/bundle/* AppDir/usr/bin/
     - cp native-libs/linux-x64/libdna_lib.so AppDir/usr/lib/
-    # Bundle system libraries that libdna_lib.so depends on
-    - |
-      for lib in libfmt.so libgnutls.so libhogweed.so libnettle.so libgmp.so libtasn1.so libargon2.so; do
-        libpath=$(ldconfig -p | grep -m1 "$lib" | awk '{print $NF}')
-        if [ -n "$libpath" ] && [ -f "$libpath" ]; then
-          cp -L "$libpath" AppDir/usr/lib/
-          echo "Bundled: $libpath"
-        fi
-      done
+    # Bundle libraries that libdna_lib.so depends on (using ldd)
+    - ldd native-libs/linux-x64/libdna_lib.so | grep "=> /" | awk '{print $3}' | xargs -I{} cp -L {} AppDir/usr/lib/ 2>/dev/null || true
+    - ls -la AppDir/usr/lib/
     # Create desktop file
     - |
       cat > AppDir/usr/share/applications/dna-messenger.desktop << 'DESKTOP'
