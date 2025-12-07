@@ -323,7 +323,7 @@ class _AboutSection extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'DNA Messenger v1.0.0',
+                'DNA Messenger v1.0.0 alpha',
                 style: theme.textTheme.bodyMedium,
               ),
               const SizedBox(height: 4),
@@ -333,9 +333,18 @@ class _AboutSection extends StatelessWidget {
                   color: DnaColors.textMuted,
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 16),
               Text(
-                'Kyber1024 + Dilithium5 + AES-256-GCM',
+                'CRYPTO STACK',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: DnaColors.textMuted,
+                  fontWeight: FontWeight.w600,
+                  letterSpacing: 1.2,
+                ),
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'ML-DSA-87 · ML-KEM-1024 · AES-256-GCM AEAD',
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: theme.colorScheme.primary,
                   fontFamily: 'monospace',
