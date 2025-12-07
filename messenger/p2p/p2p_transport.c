@@ -195,8 +195,8 @@ void p2p_transport_stop(p2p_transport_t *ctx) {
 
             // Wait for receive thread to finish (with timeout on Linux)
             if (conn->recv_thread) {
-#ifdef __ANDROID__
-                // Android: pthread_timedjoin_np not available, use regular join
+#if defined(__ANDROID__) || defined(_WIN32)
+                // Android/Windows: pthread_timedjoin_np not available, use regular join
                 pthread_join(conn->recv_thread, NULL);
 #else
                 struct timespec timeout;
