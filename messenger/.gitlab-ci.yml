@@ -84,13 +84,19 @@ build:native-android-arm64:
     ANDROID_API_LEVEL: "24"
     ANDROID_ABI: "arm64-v8a"
   cache:
-    key: android-deps-arm64-v13-static-stl
+    key: android-deps-arm64-v14
+    policy: pull-push
     paths:
       - .cache/android-ndk/
       - .cache/android-deps/
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq build-essential cmake git pkg-config xxd wget unzip autoconf automake libtool python3 ninja-build m4 texinfo
+    # Debug: Check if cache was restored
+    - echo "Checking cache contents..."
+    - ls -la .cache/ 2>/dev/null || echo "No .cache directory"
+    - ls -la .cache/android-deps/ 2>/dev/null || echo "No android-deps cache"
+    - ls .cache/android-deps/*/lib/*.a 2>/dev/null | head -5 || echo "No cached .a files"
     # Download Android NDK
     - |
       export HOME="${CI_PROJECT_DIR}"
