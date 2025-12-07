@@ -424,11 +424,13 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
         } else {
             // User nodes: Memory-only (fast, no disk I/O)
             DHT_LOGI("Running in memory-only mode (no disk persistence)");
-            DHT_LOGI("Starting DHT on port %d...", ctx->config.port);
+            DHT_LOGI("Starting DHT (requesting port %d)...", ctx->config.port);
             ctx->runner.run(ctx->config.port, identity, true);
         }
 
-        DHT_LOGI("Node started on port %d", ctx->config.port);
+        // Get actual bound port (may differ from requested if port was 0)
+        in_port_t actual_port = ctx->runner.getBoundPort();
+        DHT_LOGI("Node started on port %d", (int)actual_port);
 
         // Initialize value storage BEFORE ValueTypes (bootstrap nodes only)
         // CRITICAL: Storage must be initialized before ValueTypes so storeCallback can use it
