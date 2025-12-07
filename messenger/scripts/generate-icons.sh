@@ -30,6 +30,28 @@ svg_to_png() {
     fi
 }
 
+# Function to create adaptive icon foreground (icon centered with padding)
+# Adaptive icons use 108dp canvas with 72dp safe zone (66%)
+# The icon should be ~66% of the foreground size
+create_adaptive_foreground() {
+    local input="$1"
+    local output="$2"
+    local canvas_size="$3"
+    local icon_size=$((canvas_size * 66 / 100))
+    local padding=$(((canvas_size - icon_size) / 2))
+
+    # Create icon at correct size, then place on transparent canvas
+    local temp_icon="/tmp/adaptive_icon_temp.png"
+    svg_to_png "$input" "$temp_icon" "$icon_size"
+
+    # Create transparent canvas and composite icon in center
+    convert -size "${canvas_size}x${canvas_size}" xc:none \
+        "$temp_icon" -gravity center -composite \
+        "$output"
+
+    rm -f "$temp_icon"
+}
+
 echo "Generating icons from $LOGO..."
 
 # Flutter asset icon (1024x1024)
@@ -37,13 +59,22 @@ mkdir -p "$FLUTTER_DIR/assets"
 svg_to_png "$LOGO" "$FLUTTER_DIR/assets/icon.png" 1024
 echo "  Created assets/icon.png (1024x1024)"
 
-# Android launcher icons
+# Android launcher icons (legacy, for older devices)
 svg_to_png "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-mdpi/ic_launcher.png" 48
 svg_to_png "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-hdpi/ic_launcher.png" 72
 svg_to_png "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png" 96
 svg_to_png "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png" 144
 svg_to_png "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" 192
 echo "  Created Android launcher icons (mdpi-xxxhdpi)"
+
+# Android adaptive icon foregrounds (API 26+)
+# Foreground sizes: mdpi=108, hdpi=162, xhdpi=216, xxhdpi=324, xxxhdpi=432
+create_adaptive_foreground "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-mdpi/ic_launcher_foreground.png" 108
+create_adaptive_foreground "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-hdpi/ic_launcher_foreground.png" 162
+create_adaptive_foreground "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-xhdpi/ic_launcher_foreground.png" 216
+create_adaptive_foreground "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-xxhdpi/ic_launcher_foreground.png" 324
+create_adaptive_foreground "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher_foreground.png" 432
+echo "  Created Android adaptive icon foregrounds (mdpi-xxxhdpi)"
 
 # Windows icon (create PNG first, then convert to ICO)
 mkdir -p "$FLUTTER_DIR/linux/icons"

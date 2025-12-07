@@ -171,11 +171,38 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 
 ## 3. Build System
 
+### CMake Module Structure
+
+The build system is modularized into platform-specific files:
+
+```
+cmake/
+├── Version.cmake         # Version extraction from git
+├── PlatformDetect.cmake  # Platform detection and routing
+├── LinuxBuild.cmake      # Linux/Unix configuration
+├── WindowsBuild.cmake    # Windows/MinGW/MSVC configuration
+├── AndroidBuild.cmake    # Android NDK configuration
+├── Dependencies.cmake    # External dependency management
+└── Libjuice.cmake        # libjuice ExternalProject setup
+```
+
+**Module Responsibilities:**
+
+| Module | Purpose |
+|--------|---------|
+| `Version.cmake` | Extracts version from git, sets DNA_VERSION, BUILD_TS, BUILD_HASH |
+| `PlatformDetect.cmake` | Detects platform and includes appropriate platform file |
+| `LinuxBuild.cmake` | Sets PLATFORM_SOURCES, PLATFORM_LIBS for Linux |
+| `WindowsBuild.cmake` | Configures MSVC/MinGW, static linking, WINDOWS_SYSTEM_LIBS |
+| `AndroidBuild.cmake` | NDK config, pre-built deps, ANDROID_GNUTLS_LIBS |
+| `Dependencies.cmake` | find_package for OpenSSL, CURL, json-c, SQLite3 |
+| `Libjuice.cmake` | ExternalProject_Add for libjuice v1.7.0 |
+
 ### CMake Targets
 
 ```cmake
 # Main library
-dna_lib (STATIC)          # Core DNA Messenger library
+dna_lib (STATIC/SHARED)   # Core DNA Messenger library (SHARED for Flutter)
 
 # Support libraries
 cellframe_minimal (STATIC) # Blockchain transaction building
@@ -183,9 +210,6 @@ kem (STATIC)              # Kyber1024 implementation
 dsa (STATIC)              # Dilithium5 implementation
 dht_lib (STATIC)          # DHT integration
 p2p_transport (STATIC)    # P2P layer
-
-# Executables
-dna-messenger             # GUI application (imgui_gui/)
 
 # Vendor
 opendht (STATIC)          # OpenDHT-PQ
@@ -195,8 +219,7 @@ libjuice (EXTERNAL)       # NAT traversal (v1.7.0)
 ### Build Options
 
 ```cmake
--DBUILD_GUI=ON            # Build ImGui GUI (default: ON)
--DBUILD_TESTS=ON          # Build unit tests (default: ON)
+-DBUILD_SHARED_LIB=OFF    # Build dna_lib as shared library for Flutter (default: OFF)
 -DBUILD_DNA_SEND=OFF      # CLI send tool (default: OFF)
 -DCMAKE_BUILD_TYPE=Release # Release/Debug
 ```
@@ -211,17 +234,40 @@ libjuice (EXTERNAL)       # NAT traversal (v1.7.0)
 | json-c | JSON parsing | System |
 | libjuice | ICE/STUN NAT traversal | Vendored |
 | OpenDHT-PQ | DHT with Dilithium5 | Vendored |
-| ImGui | GUI framework | Vendored |
-| GLFW3 | Window management | System |
-| FreeType | Font rendering | System |
 
-### Cross-Compilation (Windows)
+### Platform-Specific Notes
 
+**Linux:**
+- Uses system libraries via pkg-config
+- Links pthread and m
+
+**Windows (MinGW cross-compilation):**
+- Static linking: `-static -static-libgcc -static-libstdc++`
+- Requires GnuTLS dependencies (nettle, hogweed, gmp, etc.)
+- Uses `build-cross-compile.sh windows-x64`
+
+**Android:**
+- Uses pre-built static libraries from `~/android-deps/`
+- Must use `ANDROID_STL=c++_static` (NOT shared)
+- Do NOT explicitly link `stdc++` - causes libc++_shared.so dependency
+- Minimum API level: 24 (for getrandom())
+
+### Cross-Compilation
+
+**Windows:**
 ```bash
 ./build-cross-compile.sh windows-x64
 ```
 
-Uses MinGW with static linking for all dependencies.
+**Android:**
+```bash
+cmake -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK/build/cmake/android.toolchain.cmake \
+      -DANDROID_ABI=arm64-v8a \
+      -DANDROID_PLATFORM=android-24 \
+      -DANDROID_STL=c++_static \
+      -DBUILD_SHARED_LIB=ON \
+      ..
+```
 
 ---
 

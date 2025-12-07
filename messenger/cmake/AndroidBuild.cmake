@@ -16,6 +16,7 @@
 #
 # Minimum API Level: 24 (Android 7.0) - required for getrandom()
 #
+# Sets: PLATFORM_SOURCES, PLATFORM_LIBS, ANDROID_DEPS_DIR, ANDROID_GNUTLS_LIBS
 
 if(ANDROID)
     message(STATUS "=== Android NDK Build Configuration ===")
@@ -40,9 +41,7 @@ if(ANDROID)
     set(ANDROID_STL c++_static)
 
     # Platform-specific sources
-    set(PLATFORM_SOURCES
-        crypto/utils/qgp_platform_android.c
-    )
+    set(PLATFORM_SOURCES crypto/utils/qgp_platform_android.c)
 
     # No extra platform libs needed on Android
     # (pthread is part of bionic libc)
@@ -136,6 +135,17 @@ if(ANDROID)
         set(SQLite3_VERSION "3.46.0")
         set(SQLite3_INCLUDE_DIRS "${ANDROID_DEPS_DIR}/sqlite-arm64/include")
         set(SQLite3_LIBRARIES "${ANDROID_DEPS_DIR}/sqlite-arm64/lib/libsqlite3.a")
+
+        # GnuTLS and dependencies for dna_lib linking (used in CMakeLists.txt)
+        # Order matters: libraries must come AFTER libraries that depend on them
+        set(ANDROID_GNUTLS_LIBS
+            ${ANDROID_DEPS_DIR}/gnutls-arm64/lib/libgnutls.a
+            ${ANDROID_DEPS_DIR}/libtasn1-arm64/lib/libtasn1.a
+            ${ANDROID_DEPS_DIR}/nettle-arm64/lib/libhogweed.a
+            ${ANDROID_DEPS_DIR}/nettle-arm64/lib/libnettle.a
+            ${ANDROID_DEPS_DIR}/gmp-arm64/lib/libgmp.a
+            ${ANDROID_DEPS_DIR}/zstd-arm64/lib/libzstd.a
+        )
     else()
         message(WARNING "Android deps directory not found: ${ANDROID_DEPS_DIR}")
         message(WARNING "Build dependencies with build-android-deps.sh first")
