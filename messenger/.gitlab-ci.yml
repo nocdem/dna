@@ -91,6 +91,8 @@ build:native-android-arm64:
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq build-essential cmake git pkg-config xxd wget unzip autoconf automake libtool python3 ninja-build m4 texinfo
+    # Force rebuild all deps (remove this line after first successful build)
+    - rm -rf .cache/android-deps
     # Download Android NDK
     - |
       export HOME="${CI_PROJECT_DIR}"
