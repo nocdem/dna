@@ -1690,8 +1690,8 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         engine->wallet_list = NULL;
     }
 
-    /* Try ~/.dna/wallets/ first (our wallets), fall back to cellframe path */
-    int rc = wallet_list_from_dna_dir(&engine->wallet_list);
+    /* Load wallets only for current identity */
+    int rc = wallet_list_for_identity(engine->fingerprint, &engine->wallet_list);
     if (rc != 0 || !engine->wallet_list || engine->wallet_list->count == 0) {
         /* Fall back to /opt/cellframe-node/var/lib/wallet */
         if (engine->wallet_list) {
