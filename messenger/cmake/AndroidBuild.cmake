@@ -86,6 +86,7 @@ if(ANDROID)
             ${ANDROID_DEPS_DIR}/libtasn1-arm64/lib
             ${ANDROID_DEPS_DIR}/argon2-arm64/lib
             ${ANDROID_DEPS_DIR}/jsonc-arm64/lib
+            ${ANDROID_DEPS_DIR}/zstd-arm64/lib
             ${ANDROID_DEPS_DIR}/curl-arm64/lib
         )
 

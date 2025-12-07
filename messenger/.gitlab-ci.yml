@@ -315,6 +315,24 @@ build:native-android-arm64:
         make -j$(nproc) && make install
         cd "${CI_PROJECT_DIR}"
       fi
+    # Build zstd for Android
+    - |
+      if [ ! -f "${DEPS_DIR}/zstd-arm64/lib/libzstd.a" ]; then
+        echo "Building zstd for Android..."
+        cd /tmp && rm -rf zstd-*
+        wget -q https://github.com/facebook/zstd/releases/download/v1.5.6/zstd-1.5.6.tar.gz
+        tar xzf zstd-1.5.6.tar.gz && cd zstd-1.5.6/build/cmake
+        cmake . \
+          -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
+          -DANDROID_ABI=${ANDROID_ABI} \
+          -DANDROID_PLATFORM=android-${API} \
+          -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/zstd-arm64" \
+          -DZSTD_BUILD_PROGRAMS=OFF \
+          -DZSTD_BUILD_SHARED=OFF \
+          -DZSTD_BUILD_STATIC=ON
+        make -j$(nproc) && make install
+        cd "${CI_PROJECT_DIR}"
+      fi
   script:
     - export ANDROID_NDK_HOME="${CI_PROJECT_DIR}/.cache/android-ndk/android-ndk-r${ANDROID_NDK_VERSION}"
     - export HOME="${CI_PROJECT_DIR}/.cache"
