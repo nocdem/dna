@@ -84,7 +84,7 @@ build:native-android-arm64:
     ANDROID_API_LEVEL: "24"
     ANDROID_ABI: "arm64-v8a"
   cache:
-    key: android-deps-arm64-v8-fpic
+    key: android-deps-arm64-v9-fpic-all
     paths:
       - .cache/android-ndk/
       - .cache/android-deps/
@@ -201,7 +201,7 @@ build:native-android-arm64:
         cd /tmp && rm -rf phc-winner-argon2-*
         wget -q https://github.com/P-H-C/phc-winner-argon2/archive/refs/tags/20190702.tar.gz -O argon2.tar.gz
         tar xzf argon2.tar.gz && cd phc-winner-argon2-20190702
-        make CC="${CC}" AR="${AR}" LIBRARY_REL=lib PREFIX="${DEPS_DIR}/argon2-arm64" OPTTARGET=none libargon2.a
+        make CC="${CC}" AR="${AR}" CFLAGS="-fPIC" LIBRARY_REL=lib PREFIX="${DEPS_DIR}/argon2-arm64" OPTTARGET=none libargon2.a
         mkdir -p "${DEPS_DIR}/argon2-arm64/lib" "${DEPS_DIR}/argon2-arm64/include"
         cp libargon2.a "${DEPS_DIR}/argon2-arm64/lib/"
         cp include/argon2.h "${DEPS_DIR}/argon2-arm64/include/"
@@ -272,7 +272,8 @@ build:native-android-arm64:
         ./configure --host=aarch64-linux-android \
           --prefix="${DEPS_DIR}/sqlite-arm64" \
           --enable-static --disable-shared \
-          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}"
+          CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
+          CFLAGS="-fPIC"
         make -j$(nproc) && make install
         cd "${CI_PROJECT_DIR}"
       fi
@@ -312,7 +313,7 @@ build:native-android-arm64:
           --disable-manual --disable-docs \
           --without-libidn2 --without-librtmp --without-libpsl \
           CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
-          CFLAGS="-I${DEPS_DIR}/openssl-arm64/include" \
+          CFLAGS="-fPIC -I${DEPS_DIR}/openssl-arm64/include" \
           LDFLAGS="-L${DEPS_DIR}/openssl-arm64/lib"
         make -j$(nproc) && make install
         cd "${CI_PROJECT_DIR}"
