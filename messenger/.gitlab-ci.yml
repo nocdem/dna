@@ -92,11 +92,6 @@ build:native-android-arm64:
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq build-essential cmake git pkg-config xxd wget unzip autoconf automake libtool python3 ninja-build m4 texinfo
-    # Debug: Check if cache was restored
-    - echo "Checking cache contents..."
-    - ls -la .cache/ 2>/dev/null || echo "No .cache directory"
-    - ls -la .cache/android-deps/ 2>/dev/null || echo "No android-deps cache"
-    - ls .cache/android-deps/*/lib/*.a 2>/dev/null | head -5 || echo "No cached .a files"
     # Download Android NDK
     - |
       export HOME="${CI_PROJECT_DIR}"
