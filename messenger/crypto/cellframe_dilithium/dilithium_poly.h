@@ -5,15 +5,9 @@
 #include "dilithium_params.h"
 #include "dilithium_rounding_reduce.h"
 
-#ifdef _MSC_VER
-__declspec(align(32)) typedef struct {
-  uint32_t coeffs[NN];
-} poly;
-#else
 typedef struct {
   uint32_t coeffs[NN];
 } poly __attribute__((aligned(32)));
-#endif
 
 void poly_reduce(poly *a);
 void poly_csubq(poly *a);
