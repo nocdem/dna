@@ -423,6 +423,8 @@ build:windows:
     - mkdir -p ..\dist\flutter-windows
     - xcopy /E /I build\windows\x64\runner\Release ..\dist\flutter-windows
     - copy windows\libs\dna_lib.dll ..\dist\flutter-windows\
+    # Check artifact size
+    - powershell -Command "(Get-ChildItem -Path ..\dist\flutter-windows -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB"
   artifacts:
     name: "dna-messenger-windows-${CI_COMMIT_SHORT_SHA}"
     paths:
