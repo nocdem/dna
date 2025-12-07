@@ -1408,7 +1408,30 @@ cmake .. && make -j$(nproc)
 ./build-cross-compile.sh windows-x64
 ```
 
-### 14.2 Bootstrap Server Deployment
+### 14.2 Flutter App Distribution
+
+The Flutter app uses a native library (`libdna_lib.so` / `dna_lib.dll`) for cryptographic operations.
+
+**Platform-specific packaging:**
+
+| Platform | Native Lib | Dependencies | Distribution |
+|----------|------------|--------------|--------------|
+| **Android** | `libdna_lib.so` | Statically linked | APK (self-contained) |
+| **Linux AppImage** | `libdna_lib.so` | Bundled `.so` files | AppImage (portable) |
+| **Windows** | `dna_lib.dll` | Bundled `.dll` files | Zip folder |
+| **macOS** | `libdna_lib.dylib` | TBD | .app bundle |
+
+**Bundled dependencies (Linux/Windows):**
+- libfmt - Formatting library
+- libgnutls - TLS/crypto (used by OpenDHT)
+- libnettle, libhogweed - Crypto primitives
+- libgmp - Big integer math
+- libtasn1 - ASN.1 parsing
+- libargon2 - Password hashing
+
+**Future improvement:** Statically link all dependencies into `libdna_lib` for single-file distribution (like Android).
+
+### 14.3 Bootstrap Server Deployment
 
 **Build (no GUI):**
 ```bash
@@ -1441,14 +1464,14 @@ nohup ./vendor/opendht-pq/tools/dna-nodus \
 - SQLite database: `bootstrap.state.values.db`
 - Use `-s <path>` to override
 
-### 14.3 Configuration Files
+### 14.4 Configuration Files
 
 | File | Purpose |
 |------|---------|
 | `dna_messenger.ini` | GUI window layout, theme |
 | `~/.dna/` | All user data |
 
-### 14.4 Network Ports
+### 14.5 Network Ports
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
