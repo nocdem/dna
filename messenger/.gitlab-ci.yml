@@ -91,8 +91,6 @@ build:native-android-arm64:
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq build-essential cmake git pkg-config xxd wget unzip autoconf automake libtool python3 ninja-build m4 texinfo
-    # Force rebuild all deps (remove this line after first successful build)
-    - rm -rf .cache/android-deps
     # Download Android NDK
     - |
       export HOME="${CI_PROJECT_DIR}"
@@ -352,16 +350,9 @@ build:native-android-arm64:
         -DANDROID_PLATFORM=android-${ANDROID_API_LEVEL} \
         -DANDROID_STL=c++_static \
         -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_GUI=OFF \
-        -DBUILD_SHARED_LIB=ON \
-        -DBUILD_DNA_NODUS=OFF
-    # Debug: Show CMake cache STL settings
-    - grep -i "stl\|static.*lib\|linker" CMakeCache.txt || true
-    - cat CMakeFiles/dna_lib.dir/link.txt || true
-    - make -j$(nproc) dna_lib VERBOSE=1 2>&1 | tail -50
-    # Verify static STL linkage (should NOT contain libc++_shared.so)
-    - echo "Checking library dependencies..."
-    - ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf -d libdna_lib.so | grep NEEDED || true
+        -DBUILD_SHARED_LIB=ON
+    - make -j$(nproc) dna_lib
+    # Verify no libc++_shared.so dependency (must use static STL)
     - "! ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf -d libdna_lib.so | grep -q 'libc++_shared' || (echo 'ERROR: libc++_shared.so dependency found!' && exit 1)"
     - mkdir -p ${CI_PROJECT_DIR}/native-libs/android-arm64
     - cp libdna_lib.so ${CI_PROJECT_DIR}/native-libs/android-arm64/
@@ -369,7 +360,6 @@ build:native-android-arm64:
     paths:
       - native-libs/android-arm64/
     expire_in: 1 day
-  allow_failure: true
 
 # =============================================================================
 # STAGE 2: Build Flutter Apps
@@ -451,7 +441,7 @@ build:native-android-arm64:
     expire_in: 1 day
 
 # Flutter Android build
-.build:flutter-android:  # DISABLED - prefix with . to skip
+build:flutter-android:
   stage: build-flutter
   tags:
     - linux
@@ -474,7 +464,6 @@ build:native-android-arm64:
     paths:
       - dist/*.apk
     expire_in: 1 day
-  allow_failure: true  # Depends on Android native build
 
 # Full Windows build (native lib + Flutter) on Windows runner
 # Uses MSYS2/MinGW for native lib (GCC compatible), Flutter for app
