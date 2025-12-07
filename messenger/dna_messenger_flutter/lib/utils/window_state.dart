@@ -35,7 +35,6 @@ class WindowStateManager with WindowListener, WidgetsBindingObserver {
   Future<void> init() async {
     if (!isDesktop || _isInitialized) return;
 
-    print('[WindowState] Initializing...');
     _prefs = await SharedPreferences.getInstance();
 
     await windowManager.ensureInitialized();
@@ -83,7 +82,6 @@ class WindowStateManager with WindowListener, WidgetsBindingObserver {
     if (prefs == null) return;
 
     final wasMaximized = prefs.getBool(_keyMaximized) ?? false;
-    print('[WindowState] Restoring: maximized=$wasMaximized');
 
     if (wasMaximized) {
       await windowManager.maximize();
@@ -95,8 +93,6 @@ class WindowStateManager with WindowListener, WidgetsBindingObserver {
     final y = prefs.getDouble(_keyY);
     final width = prefs.getDouble(_keyWidth) ?? _defaultWidth;
     final height = prefs.getDouble(_keyHeight) ?? _defaultHeight;
-
-    print('[WindowState] Restoring: x=$x, y=$y, w=$width, h=$height');
 
     // Set size first
     await windowManager.setSize(Size(width, height));
@@ -119,16 +115,12 @@ class WindowStateManager with WindowListener, WidgetsBindingObserver {
     final position = await windowManager.getPosition();
     final size = await windowManager.getSize();
 
-    print('[WindowState] State: maximized=$isMaximized, fullScreen=$isFullScreen, pos=$position, size=$size');
-
     // Always save position/size (needed for restore after unmaximize)
     await prefs.setDouble(_keyX, position.dx);
     await prefs.setDouble(_keyY, position.dy);
     await prefs.setDouble(_keyWidth, size.width);
     await prefs.setDouble(_keyHeight, size.height);
     await prefs.setBool(_keyMaximized, isMaximized);
-
-    print('[WindowState] Saved: x=${position.dx}, y=${position.dy}, w=${size.width}, h=${size.height}, maximized=$isMaximized');
   }
 
   // WindowListener callbacks

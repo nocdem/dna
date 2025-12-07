@@ -39,19 +39,16 @@ int cellframe_build_dap_sign_t(const uint8_t *pub_key, size_t pub_key_size,
                                  const uint8_t *signature, size_t sig_size,
                                  uint8_t **dap_sign_out, size_t *dap_sign_size_out) {
     if (!pub_key || !signature || !dap_sign_out || !dap_sign_size_out) {
-//         fprintf(stderr, "[SIGN] Invalid parameters\n");
         return -1;
     }
 
     // Validate public key size
     if (pub_key_size != 1184 && pub_key_size != 1196) {
-//         fprintf(stderr, "[SIGN] Invalid public key size: %zu (expected 1184 or 1196)\n", pub_key_size);
         return -1;
     }
 
     // Validate signature size
     if (sig_size != 2044 && sig_size != 2076 && sig_size != 2096) {
-//         fprintf(stderr, "[SIGN] Invalid signature size: %zu (expected 2044, 2076, or 2096)\n", sig_size);
         return -1;
     }
 
@@ -155,7 +152,6 @@ int cellframe_build_dap_sign_t(const uint8_t *pub_key, size_t pub_key_size,
     *dap_sign_out = dap_sign;
     *dap_sign_size_out = total_size;
 
-//     fprintf(stderr, "[SIGN] Built dap_sign_t: %zu bytes (14 + 1196 + 2096)\n", total_size);
     return 0;
 }
 
@@ -168,45 +164,26 @@ int cellframe_sign_transaction(const uint8_t *tx_data, size_t tx_size,
                                  const uint8_t *pub_key, size_t pub_key_size,
                                  uint8_t **dap_sign_out, size_t *dap_sign_size_out) {
     if (!tx_data || !priv_key || !pub_key || !dap_sign_out || !dap_sign_size_out) {
-//         fprintf(stderr, "[SIGN] Invalid parameters\n");
         return -1;
     }
 
-//     fprintf(stderr, "[SIGN] Signing transaction: %zu bytes\n", tx_size);
-//     fprintf(stderr, "[SIGN] Private key size: %zu bytes\n", priv_key_size);
-//     fprintf(stderr, "[SIGN] Public key size: %zu bytes\n", pub_key_size);
-
-    // DEBUG: Check tx_items_size field
+#ifdef DEBUG_BLOCKCHAIN_SIGNING
+    // Debug: Check tx_items_size field and save signing data
     if (tx_size >= 12) {
         uint32_t tx_items_size;
         memcpy(&tx_items_size, tx_data + 8, 4);
-//         fprintf(stderr, "[SIGN] DEBUG: tx_items_size in signing data = %u (0x%08x)\n", tx_items_size, tx_items_size);
-        if (tx_items_size != 0) {
-//             fprintf(stderr, "[SIGN] ❌ ERROR: tx_items_size should be 0 when signing, but is %u!\n", tx_items_size);
-        } else {
-//             fprintf(stderr, "[SIGN] ✅ CORRECT: tx_items_size is 0\n");
-        }
-
-#ifdef DEBUG_BLOCKCHAIN_SIGNING
-        // Debug: Save signing data to file for analysis
         FILE *f_sign = fopen("/tmp/signing_data_our.bin", "wb");
         if (f_sign) {
             fwrite(tx_data, 1, tx_size, f_sign);
             fclose(f_sign);
             fprintf(stderr, "[SIGN] DEBUG: Saved signing data to /tmp/signing_data_our.bin\n");
         }
-#endif
     }
+#endif
 
     // Step 1: Hash transaction
     uint8_t tx_hash[32];
     cellframe_sha3_256(tx_data, tx_size, tx_hash);
-
-//     fprintf(stderr, "[SIGN] Transaction hash (SHA3-256): ");
-    for (int i = 0; i < 32; i++) {
-        fprintf(stderr, "%02x", tx_hash[i]);
-    }
-    fprintf(stderr, "\n");
 
     // Step 2: Extract raw private key (skip serialization header if present)
     const uint8_t *raw_priv_key = priv_key;
@@ -221,8 +198,6 @@ int cellframe_sign_transaction(const uint8_t *tx_data, size_t tx_size,
             // Has serialization header, skip it
             raw_priv_key = priv_key + 12;
             raw_priv_key_size = priv_key_size - 12;
-            // fprintf(stderr, "[SIGN] Detected serialization header, using raw key: %zu bytes\n",
-            //         raw_priv_key_size);
         }
     }
 
@@ -230,7 +205,6 @@ int cellframe_sign_transaction(const uint8_t *tx_data, size_t tx_size,
     size_t sig_len = 4096;  // Max size
     uint8_t *signature = malloc(sig_len);
     if (!signature) {
-//         fprintf(stderr, "[SIGN] Memory allocation failed\n");
         return -1;
     }
 
@@ -242,12 +216,9 @@ int cellframe_sign_transaction(const uint8_t *tx_data, size_t tx_size,
     );
 
     if (ret != 0) {
-//         fprintf(stderr, "[SIGN] Dilithium signing failed: %d\n", ret);
         free(signature);
         return -1;
     }
-
-//     fprintf(stderr, "[SIGN] Dilithium signature created: %zu bytes\n", sig_len);
 
     // Step 4: Extract raw public key (skip serialization header if present)
     const uint8_t *raw_pub_key = pub_key;
@@ -260,7 +231,6 @@ int cellframe_sign_transaction(const uint8_t *tx_data, size_t tx_size,
         if (serialized_len == pub_key_size) {
             raw_pub_key = pub_key + 12;
             raw_pub_key_size = pub_key_size - 12;
-//             fprintf(stderr, "[SIGN] Using raw public key: %zu bytes\n", raw_pub_key_size);
         }
     }
 
@@ -275,12 +245,8 @@ int cellframe_sign_transaction(const uint8_t *tx_data, size_t tx_size,
     free(signature);
 
     if (ret != 0) {
-//         fprintf(stderr, "[SIGN] Failed to build dap_sign_t\n");
         return -1;
     }
-
-    // fprintf(stderr, "[SIGN] Transaction signed successfully: dap_sign_t = %zu bytes\n",
-    //         *dap_sign_size_out);
 
     return 0;
 }

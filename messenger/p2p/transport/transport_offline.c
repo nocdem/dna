@@ -28,11 +28,8 @@ int p2p_queue_offline_message(
     }
 
     if (!ctx->config.enable_offline_queue) {
-        printf("[P2P] Offline queue disabled\n");
         return -1;
     }
-
-    printf("[P2P] Queueing offline message for %s (%zu bytes)\n", recipient, message_len);
 
     int result = dht_queue_message(
         ctx->dht,
@@ -44,11 +41,7 @@ int p2p_queue_offline_message(
     );
 
     if (result == 0) {
-        printf("[P2P] ✓ Message queued successfully\n");
-        // Update statistics
         ctx->offline_queued++;
-    } else {
-        fprintf(stderr, "[P2P] Failed to queue message in DHT\n");
     }
 
     return result;
@@ -70,25 +63,16 @@ int p2p_check_offline_messages(
     }
 
     if (!ctx->config.enable_offline_queue) {
-        printf("[P2P] Offline queue disabled, skipping check\n");
         if (messages_received) *messages_received = 0;
         return 0;
     }
-
-    printf("[P2P] Checking DHT for offline messages (Model E - querying contacts' outboxes)...\n");
 
     // 1. Load contacts from database
     contact_list_t *contacts = NULL;
     if (contacts_db_list(&contacts) != 0 || !contacts || contacts->count == 0) {
-        printf("[P2P] No contacts in database, skipping offline message check\n");
         if (messages_received) *messages_received = 0;
         return 0;
     }
-
-    printf("[P2P] Loaded %zu contacts, will query each sender's outbox\n", contacts->count);
-
-    // DEBUG: Log my identity
-    printf("[P2P DEBUG FETCH] my_identity (recipient)='%s'\n", ctx->config.identity);
 
     // 2. Build array of sender fingerprints
     const char **sender_fps = (const char**)malloc(contacts->count * sizeof(char*));
@@ -101,9 +85,6 @@ int p2p_check_offline_messages(
 
     for (size_t i = 0; i < contacts->count; i++) {
         sender_fps[i] = contacts->contacts[i].identity;  // Fingerprint
-        // DEBUG: Log each contact's identity
-        printf("[P2P DEBUG FETCH] contact[%zu] identity (sender)='%s'\n", i, sender_fps[i]);
-        printf("[P2P DEBUG FETCH] expected_base_key[%zu]='%s:outbox:%s'\n", i, sender_fps[i], ctx->config.identity);
     }
 
     // 3. Query all contacts' outboxes
@@ -131,20 +112,14 @@ int p2p_check_offline_messages(
     }
 
     if (count == 0) {
-        printf("[P2P] No offline messages in any contact's outbox\n");
         if (messages_received) *messages_received = 0;
         return 0;
     }
-
-    printf("[P2P] Found %zu offline messages from contacts' outboxes\n", count);
 
     // 4. Deliver each message via callback
     size_t delivered_count = 0;
     for (size_t i = 0; i < count; i++) {
         dht_offline_message_t *msg = &messages[i];
-
-        printf("[P2P] Delivering offline message %zu/%zu from %s (%zu bytes)\n",
-               i + 1, count, msg->sender, msg->ciphertext_len);
 
         // Deliver to application layer (messenger_p2p.c)
         if (ctx->message_callback) {
@@ -156,12 +131,8 @@ int p2p_check_offline_messages(
                 ctx->callback_user_data
             );
             delivered_count++;
-        } else {
-            printf("[P2P] Warning: No message callback registered, skipping message\n");
         }
     }
-
-    printf("[P2P] ✓ Delivered %zu/%zu offline messages\n", delivered_count, count);
 
     // Note (Model E): No queue clearing needed - recipients don't control sender outboxes.
     // Senders manage their own outboxes. Messages delivered to local SQLite only.
