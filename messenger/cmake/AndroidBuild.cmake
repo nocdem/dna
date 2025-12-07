@@ -52,6 +52,10 @@ if(ANDROID)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 
+    # NOTE: Static C++ runtime linkage is handled via target_link_options() on dna_lib
+    # in CMakeLists.txt. Using CMAKE_SHARED_LINKER_FLAGS doesn't work because the
+    # Android NDK toolchain overrides it. See CMakeLists.txt for the actual implementation.
+
     # Android cross-compiled dependencies paths
     # These are built by the Android NDK build process
     set(ANDROID_DEPS_DIR "$ENV{HOME}/android-deps" CACHE PATH "Android dependencies directory")

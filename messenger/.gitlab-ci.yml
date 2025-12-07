@@ -25,7 +25,7 @@ variables:
 # =============================================================================
 
 # Build native library for Linux x64
-build:native-linux-x64:
+.build:native-linux-x64:  # DISABLED - prefix with . to skip
   stage: build-native
   tags:
     - linux
@@ -84,13 +84,15 @@ build:native-android-arm64:
     ANDROID_API_LEVEL: "24"
     ANDROID_ABI: "arm64-v8a"
   cache:
-    key: android-deps-arm64-v12-gmp-withpic
+    key: android-deps-arm64-v13-static-stl
     paths:
       - .cache/android-ndk/
       - .cache/android-deps/
   before_script:
     - apt-get update -qq
     - apt-get install -y -qq build-essential cmake git pkg-config xxd wget unzip autoconf automake libtool python3 ninja-build m4 texinfo
+    # Force rebuild all deps (remove this line after first successful build)
+    - rm -rf .cache/android-deps
     # Download Android NDK
     - |
       export HOME="${CI_PROJECT_DIR}"
@@ -218,6 +220,7 @@ build:native-android-arm64:
           -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=${ANDROID_ABI} \
           -DANDROID_PLATFORM=android-${API} \
+          -DANDROID_STL=c++_static \
           -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/fmt-arm64" \
           -DBUILD_SHARED_LIBS=OFF \
           -DFMT_TEST=OFF
@@ -289,6 +292,7 @@ build:native-android-arm64:
           -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=${ANDROID_ABI} \
           -DANDROID_PLATFORM=android-${API} \
+          -DANDROID_STL=c++_static \
           -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/jsonc-arm64" \
           -DBUILD_SHARED_LIBS=OFF \
           -DBUILD_STATIC_LIBS=ON
@@ -329,6 +333,7 @@ build:native-android-arm64:
           -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake \
           -DANDROID_ABI=${ANDROID_ABI} \
           -DANDROID_PLATFORM=android-${API} \
+          -DANDROID_STL=c++_static \
           -DCMAKE_INSTALL_PREFIX="${DEPS_DIR}/zstd-arm64" \
           -DZSTD_BUILD_PROGRAMS=OFF \
           -DZSTD_BUILD_SHARED=OFF \
@@ -350,7 +355,10 @@ build:native-android-arm64:
         -DBUILD_GUI=OFF \
         -DBUILD_SHARED_LIB=ON \
         -DBUILD_DNA_NODUS=OFF
-    - make -j$(nproc) dna_lib
+    # Debug: Show CMake cache STL settings
+    - grep -i "stl\|static.*lib\|linker" CMakeCache.txt || true
+    - cat CMakeFiles/dna_lib.dir/link.txt || true
+    - make -j$(nproc) dna_lib VERBOSE=1 2>&1 | tail -50
     # Verify static STL linkage (should NOT contain libc++_shared.so)
     - echo "Checking library dependencies..."
     - ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf -d libdna_lib.so | grep NEEDED || true
@@ -368,7 +376,7 @@ build:native-android-arm64:
 # =============================================================================
 
 # Flutter Linux build
-build:flutter-linux:
+.build:flutter-linux:  # DISABLED - prefix with . to skip
   stage: build-flutter
   tags:
     - linux
@@ -396,7 +404,8 @@ build:flutter-linux:
     - cp -r dna_messenger_flutter/build/linux/x64/release/bundle/* AppDir/usr/bin/
     - cp native-libs/linux-x64/libdna_lib.so AppDir/usr/lib/
     # Bundle libraries that libdna_lib.so depends on (using ldd)
-    - ldd native-libs/linux-x64/libdna_lib.so | grep "=> /" | awk '{print $3}' | xargs -I{} cp -L {} AppDir/usr/lib/ 2>/dev/null || true
+    # Exclude core system libs (libc, libm, libdl, libpthread, ld-linux) - these must come from the system
+    - ldd native-libs/linux-x64/libdna_lib.so | grep "=> /" | grep -v -E "libc\.|libm\.|libdl\.|libpthread\.|ld-linux" | awk '{print $3}' | xargs -I{} cp -L {} AppDir/usr/lib/ 2>/dev/null || true
     - ls -la AppDir/usr/lib/
     # Create desktop file
     - |
@@ -442,7 +451,7 @@ build:flutter-linux:
     expire_in: 1 day
 
 # Flutter Android build
-build:flutter-android:
+.build:flutter-android:  # DISABLED - prefix with . to skip
   stage: build-flutter
   tags:
     - linux

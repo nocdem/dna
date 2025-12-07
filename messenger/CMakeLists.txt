@@ -410,6 +410,9 @@ elseif(ANDROID)
         ${ANDROID_DEPS_DIR}/zstd-arm64/lib/libzstd.a
         m
     )
+    # Force static C++ runtime linkage - this MUST be on the target directly
+    # Using target_link_options ensures it's actually applied to the linker command
+    target_link_options(dna_lib PRIVATE -static-libstdc++)
 endif()
 
 target_include_directories(dna_lib PUBLIC
