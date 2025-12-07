@@ -496,25 +496,7 @@ build:windows:
     - copy windows\libs\dna_lib.dll ..\dist\flutter-windows\
     # Bundle MinGW runtime DLLs that dna_lib.dll depends on
     - cd ..
-    - copy C:\tools\msys64\mingw64\bin\libfmt.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libgnutls-30.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libhogweed-6.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libnettle-8.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libgmp-10.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libtasn1-6.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libgcc_s_seh-1.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libstdc++-6.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libwinpthread-1.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\zlib1.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libbrotlidec.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libbrotlicommon.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libidn2-0.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libp11-kit-0.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libunistring-5.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libintl-8.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libiconv-2.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libffi-8.dll dist\flutter-windows\
-    - copy C:\tools\msys64\mingw64\bin\libzstd.dll dist\flutter-windows\
+    - copy C:\tools\msys64\mingw64\bin\*.dll dist\flutter-windows\
     # Check artifact size
     - powershell -Command "(Get-ChildItem -Path dist\flutter-windows -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB"
   artifacts:
