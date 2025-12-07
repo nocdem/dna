@@ -48,7 +48,7 @@ int dht_singleton_init(void)
 
     // Configure DHT
     dht_config_t dht_config = {0};
-    dht_config.port = 4000;  // DHT port (not P2P TCP port)
+    dht_config.port = 0;  // Let OS assign random port (clients don't need fixed port)
     dht_config.is_bootstrap = false;
     strncpy(dht_config.identity, "dna-global", sizeof(dht_config.identity) - 1);
 
@@ -182,7 +182,7 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 
     // Configure DHT
     dht_config_t dht_config = {0};
-    dht_config.port = 4000;  // DHT port
+    dht_config.port = 0;  // Let OS assign random port (clients don't need fixed port)
     dht_config.is_bootstrap = false;
     strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
 
