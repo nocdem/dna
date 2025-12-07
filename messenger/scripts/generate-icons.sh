@@ -1,5 +1,6 @@
 #!/bin/bash
 # Generate app icons from logo.svg for all platforms
+# Requires: inkscape (preferred) or rsvg-convert, and ImageMagick for .ico
 
 set -e
 
@@ -13,28 +14,42 @@ if [ ! -f "$LOGO" ]; then
     exit 1
 fi
 
+# Function to convert SVG to PNG using best available tool
+svg_to_png() {
+    local input="$1"
+    local output="$2"
+    local size="$3"
+
+    if command -v inkscape &> /dev/null; then
+        inkscape "$input" -w "$size" -h "$size" -o "$output" 2>/dev/null
+    elif command -v rsvg-convert &> /dev/null; then
+        rsvg-convert -w "$size" -h "$size" "$input" -o "$output"
+    else
+        # Fallback to ImageMagick
+        convert -background none -density 300 "$input" -resize "${size}x${size}" "$output"
+    fi
+}
+
 echo "Generating icons from $LOGO..."
 
 # Flutter asset icon (1024x1024)
 mkdir -p "$FLUTTER_DIR/assets"
-convert -background none "$LOGO" -resize 1024x1024 "$FLUTTER_DIR/assets/icon.png"
+svg_to_png "$LOGO" "$FLUTTER_DIR/assets/icon.png" 1024
 echo "  Created assets/icon.png (1024x1024)"
 
 # Android launcher icons
-convert -background none "$LOGO" -resize 48x48 "$FLUTTER_DIR/android/app/src/main/res/mipmap-mdpi/ic_launcher.png"
-convert -background none "$LOGO" -resize 72x72 "$FLUTTER_DIR/android/app/src/main/res/mipmap-hdpi/ic_launcher.png"
-convert -background none "$LOGO" -resize 96x96 "$FLUTTER_DIR/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png"
-convert -background none "$LOGO" -resize 144x144 "$FLUTTER_DIR/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png"
-convert -background none "$LOGO" -resize 192x192 "$FLUTTER_DIR/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png"
+svg_to_png "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-mdpi/ic_launcher.png" 48
+svg_to_png "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-hdpi/ic_launcher.png" 72
+svg_to_png "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-xhdpi/ic_launcher.png" 96
+svg_to_png "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-xxhdpi/ic_launcher.png" 144
+svg_to_png "$LOGO" "$FLUTTER_DIR/android/app/src/main/res/mipmap-xxxhdpi/ic_launcher.png" 192
 echo "  Created Android launcher icons (mdpi-xxxhdpi)"
 
-# Windows icon
-convert -background none "$LOGO" -resize 256x256 "$FLUTTER_DIR/windows/runner/resources/app_icon.ico"
-echo "  Created Windows app_icon.ico (256x256)"
-
-# Linux desktop icon (for GNOME/etc)
+# Windows icon (create PNG first, then convert to ICO)
 mkdir -p "$FLUTTER_DIR/linux/icons"
-convert -background none "$LOGO" -resize 256x256 "$FLUTTER_DIR/linux/icons/dna-messenger.png"
+svg_to_png "$LOGO" "$FLUTTER_DIR/linux/icons/dna-messenger.png" 256
+convert "$FLUTTER_DIR/linux/icons/dna-messenger.png" "$FLUTTER_DIR/windows/runner/resources/app_icon.ico"
+echo "  Created Windows app_icon.ico (256x256)"
 echo "  Created Linux icon (256x256)"
 
 echo "Done! All icons generated."
