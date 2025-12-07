@@ -686,7 +686,12 @@ class DnaEngine {
       try {
         return DynamicLibrary.open('libdna_lib.so');
       } catch (_) {
-        return DynamicLibrary.open('./libdna_lib.so');
+        try {
+          return DynamicLibrary.open('./libdna_lib.so');
+        } catch (_) {
+          // AppImage: library is in lib/ subdirectory
+          return DynamicLibrary.open('./lib/libdna_lib.so');
+        }
       }
     } else if (Platform.isWindows) {
       return DynamicLibrary.open('dna_lib.dll');
