@@ -52,9 +52,9 @@ if(ANDROID)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 
-    # Force static C++ runtime linkage (required for single shared library)
-    # See: https://developer.android.com/ndk/guides/cpp-support
-    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static-libstdc++")
+    # NOTE: Static C++ runtime linkage is handled via target_link_options() on dna_lib
+    # in CMakeLists.txt. Using CMAKE_SHARED_LINKER_FLAGS doesn't work because the
+    # Android NDK toolchain overrides it. See CMakeLists.txt for the actual implementation.
 
     # Android cross-compiled dependencies paths
     # These are built by the Android NDK build process
