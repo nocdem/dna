@@ -1113,8 +1113,8 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
 
     /* Load encryption key for kyber pubkey */
     char enc_key_path[512];
-    snprintf(enc_key_path, sizeof(enc_key_path), "%s/%s.kem",
-             engine->data_dir, engine->fingerprint);
+    snprintf(enc_key_path, sizeof(enc_key_path), "%s/%s/keys/%s.kem",
+             engine->data_dir, engine->fingerprint, engine->fingerprint);
     qgp_key_t *enc_key = NULL;
     if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
         error = DNA_ENGINE_ERROR_PERMISSION;
@@ -3610,8 +3610,8 @@ static qgp_key_t* dna_load_private_key(dna_engine_t *engine) {
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s.dsa",
-             engine->data_dir, engine->fingerprint);
+    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa",
+             engine->data_dir, engine->fingerprint, engine->fingerprint);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
