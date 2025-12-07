@@ -52,6 +52,10 @@ if(ANDROID)
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 
+    # Force static C++ runtime linkage (required for single shared library)
+    # See: https://developer.android.com/ndk/guides/cpp-support
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -static-libstdc++")
+
     # Android cross-compiled dependencies paths
     # These are built by the Android NDK build process
     set(ANDROID_DEPS_DIR "$ENV{HOME}/android-deps" CACHE PATH "Android dependencies directory")
