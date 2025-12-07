@@ -6,6 +6,45 @@
 
 #define _XOPEN_SOURCE 700  /* For strptime */
 
+#ifdef _WIN32
+#include <direct.h>
+#define platform_mkdir(path, mode) _mkdir(path)
+
+/* Windows doesn't have strndup */
+static char* win_strndup(const char* s, size_t n) {
+    size_t len = strlen(s);
+    if (len > n) len = n;
+    char* result = (char*)malloc(len + 1);
+    if (result) {
+        memcpy(result, s, len);
+        result[len] = '\0';
+    }
+    return result;
+}
+#define strndup win_strndup
+
+/* Windows doesn't have strptime - simple parser for YYYY-MM-DD HH:MM:SS */
+static char* win_strptime(const char* s, const char* format, struct tm* tm) {
+    (void)format; /* We only support one format */
+    int year, month, day, hour, min, sec;
+    if (sscanf(s, "%d-%d-%d %d:%d:%d", &year, &month, &day, &hour, &min, &sec) == 6) {
+        tm->tm_year = year - 1900;
+        tm->tm_mon = month - 1;
+        tm->tm_mday = day;
+        tm->tm_hour = hour;
+        tm->tm_min = min;
+        tm->tm_sec = sec;
+        tm->tm_isdst = -1;
+        return (char*)(s + 19); /* Return pointer past parsed string */
+    }
+    return NULL;
+}
+#define strptime win_strptime
+
+#else
+#define platform_mkdir(path, mode) mkdir(path, mode)
+#endif
+
 #include "dna_engine_internal.h"
 #include "dna_api.h"
 #include "messenger_p2p.h"
@@ -442,7 +481,7 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     }
 
     /* Ensure data directory exists */
-    mkdir(engine->data_dir, 0700);
+    platform_mkdir(engine->data_dir, 0700);
 
     /* Initialize synchronization */
     pthread_mutex_init(&engine->event_mutex, NULL);
