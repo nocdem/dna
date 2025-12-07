@@ -99,12 +99,12 @@ static int messenger_encrypt_multi_recipient(
     // Step 1: Generate random 32-byte DEK
     dek = malloc(32);
     if (!dek) {
-        fprintf(stderr, "Error: Memory allocation failed for DEK\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for DEK");
         goto cleanup;
     }
 
     if (qgp_randombytes(dek, 32) != 0) {
-        fprintf(stderr, "Error: Failed to generate random DEK\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate random DEK");
         goto cleanup;
     }
 
@@ -113,7 +113,7 @@ static int messenger_encrypt_multi_recipient(
                                                      QGP_DSA87_PUBLICKEYBYTES,
                                                      QGP_DSA87_SIGNATURE_BYTES);
     if (!signature) {
-        fprintf(stderr, "Error: Memory allocation failed for signature\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for signature");
         goto cleanup;
     }
 
@@ -124,7 +124,7 @@ static int messenger_encrypt_multi_recipient(
     if (qgp_dsa87_sign(qgp_signature_get_bytes(signature), &actual_sig_len,
                                   (const uint8_t*)plaintext, plaintext_len,
                                   sender_sign_key->private_key) != 0) {
-        fprintf(stderr, "Error: DSA-87 signature creation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "DSA-87 signature creation failed");
         qgp_signature_free(signature);
         goto cleanup;
     }
@@ -135,7 +135,7 @@ static int messenger_encrypt_multi_recipient(
     if (qgp_dsa87_verify(qgp_signature_get_bytes(signature), actual_sig_len,
                                (const uint8_t*)plaintext, plaintext_len,
                                qgp_signature_get_pubkey(signature)) != 0) {
-        fprintf(stderr, "Error: Round-trip verification FAILED\n");
+        QGP_LOG_ERROR(LOG_TAG, "Round-trip verification FAILED");
         qgp_signature_free(signature);
         goto cleanup;
     }
@@ -143,13 +143,13 @@ static int messenger_encrypt_multi_recipient(
     signature_size = qgp_signature_get_size(signature);
     signature_data = malloc(signature_size);
     if (!signature_data) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         qgp_signature_free(signature);
         goto cleanup;
     }
 
     if (qgp_signature_serialize(signature, signature_data) == 0) {
-        fprintf(stderr, "Error: Signature serialization failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Signature serialization failed");
         qgp_signature_free(signature);
         goto cleanup;
     }
@@ -158,7 +158,7 @@ static int messenger_encrypt_multi_recipient(
     // Step 3a: Compute sender fingerprint (SHA3-512 of Dilithium5 pubkey)
     uint8_t sender_fingerprint[64];
     if (qgp_sha3_512(sender_sign_key->public_key, QGP_DSA87_PUBLICKEYBYTES, sender_fingerprint) != 0) {
-        fprintf(stderr, "Error: Failed to compute fingerprint\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint");
         goto cleanup;
     }
 
@@ -166,7 +166,7 @@ static int messenger_encrypt_multi_recipient(
     size_t payload_len = 64 + 8 + plaintext_len;
     payload = malloc(payload_len);
     if (!payload) {
-        fprintf(stderr, "Error: Memory allocation failed for payload\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for payload");
         goto cleanup;
     }
 
@@ -192,7 +192,7 @@ static int messenger_encrypt_multi_recipient(
 
     encrypted_data = malloc(payload_len);
     if (!encrypted_data) {
-        fprintf(stderr, "Error: Memory allocation failed for ciphertext\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for ciphertext");
         goto cleanup;
     }
 
@@ -200,7 +200,7 @@ static int messenger_encrypt_multi_recipient(
                            (uint8_t*)&header_for_aad, sizeof(header_for_aad),
                            encrypted_data, &encrypted_size,
                            nonce, tag) != 0) {
-        fprintf(stderr, "Error: AES-256-GCM encryption failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "AES-256-GCM encryption failed");
         goto cleanup;
     }
 
@@ -211,7 +211,7 @@ static int messenger_encrypt_multi_recipient(
     // Step 4: Create recipient entries (wrap DEK for each recipient)
     recipient_entries = calloc(recipient_count, sizeof(messenger_recipient_entry_t));
     if (!recipient_entries) {
-        fprintf(stderr, "Error: Memory allocation failed for recipient entries\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for recipient entries");
         goto cleanup;
     }
 
@@ -221,7 +221,7 @@ static int messenger_encrypt_multi_recipient(
 
         // Kyber1024 encapsulation (ML-KEM-1024)
         if (qgp_kem1024_encapsulate(kyber_ciphertext, kek, recipient_enc_pubkeys[i]) != 0) {
-            fprintf(stderr, "Error: KEM-1024 encapsulation failed for recipient %zu\n", i+1);
+            QGP_LOG_ERROR(LOG_TAG, "KEM-1024 encapsulation failed for recipient %zu", i+1);
             memset(kek, 0, 32);
             goto cleanup;
         }
@@ -229,7 +229,7 @@ static int messenger_encrypt_multi_recipient(
         // Wrap DEK with KEK
         uint8_t wrapped_dek[40];
         if (aes256_wrap_key(dek, 32, kek, wrapped_dek) != 0) {
-            fprintf(stderr, "Error: Failed to wrap DEK for recipient %zu\n", i+1);
+            QGP_LOG_ERROR(LOG_TAG, "Failed to wrap DEK for recipient %zu", i+1);
             memset(kek, 0, 32);
             goto cleanup;
         }
@@ -250,7 +250,7 @@ static int messenger_encrypt_multi_recipient(
 
     output_buffer = malloc(total_size);
     if (!output_buffer) {
-        fprintf(stderr, "Error: Memory allocation failed for output\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for output");
         goto cleanup;
     }
 
@@ -318,7 +318,7 @@ int messenger_send_message(
     int message_type
 ) {
     if (!ctx || !recipients || !message || recipient_count == 0 || recipient_count > 254) {
-        fprintf(stderr, "Error: Invalid arguments (recipient_count must be 1-254)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments (recipient_count must be 1-254)");
         return -1;
     }
 
@@ -327,7 +327,7 @@ int messenger_send_message(
     size_t total_recipients = recipient_count + 1;
     const char **all_recipients = malloc(sizeof(char*) * total_recipients);
     if (!all_recipients) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         return -1;
     }
 
@@ -343,7 +343,7 @@ int messenger_send_message(
 
     qgp_key_t *sender_sign_key = NULL;
     if (qgp_key_load(dilithium_path, &sender_sign_key) != 0) {
-        fprintf(stderr, "Error: Cannot load sender's signing key from %s\n", dilithium_path);
+        QGP_LOG_ERROR(LOG_TAG, "Cannot load sender's signing key from %s", dilithium_path);
         free(all_recipients);
         return -1;
     }
@@ -353,7 +353,7 @@ int messenger_send_message(
     uint8_t **sign_pubkeys = calloc(total_recipients, sizeof(uint8_t*));
 
     if (!enc_pubkeys || !sign_pubkeys) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         free(enc_pubkeys);
         free(sign_pubkeys);
         free(all_recipients);
@@ -367,7 +367,7 @@ int messenger_send_message(
         if (messenger_load_pubkey(ctx, all_recipients[i],
                                    &sign_pubkeys[i], &sign_len,
                                    &enc_pubkeys[i], &enc_len, NULL) != 0) {
-            fprintf(stderr, "Error: Cannot load public key for '%s' from keyserver\n", all_recipients[i]);
+            QGP_LOG_ERROR(LOG_TAG, "Cannot load public key for '%s' from keyserver", all_recipients[i]);
 
             // Cleanup on error
             for (size_t j = 0; j < total_recipients; j++) {
@@ -405,7 +405,7 @@ int messenger_send_message(
     qgp_key_free(sender_sign_key);
 
     if (ret != 0) {
-        fprintf(stderr, "Error: Multi-recipient encryption failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Multi-recipient encryption failed");
         return -1;
     }
 
@@ -450,7 +450,7 @@ int messenger_send_message(
         );
 
         if (result != 0 && result != 1) {  // 1 = duplicate, not an error
-            fprintf(stderr, "Store message failed for recipient '%s' in SQLite\n", recipients[i]);
+            QGP_LOG_ERROR(LOG_TAG, "Store message failed for recipient '%s' in SQLite", recipients[i]);
             free(ciphertext);
             free(message_ids);
             return -1;
@@ -506,7 +506,7 @@ int messenger_list_messages(messenger_context_t *ctx) {
 
     int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
     if (result != 0) {
-        fprintf(stderr, "List messages failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "List messages failed from SQLite");
         return -1;
     }
 
@@ -551,7 +551,7 @@ int messenger_list_sent_messages(messenger_context_t *ctx) {
 
     int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
     if (result != 0) {
-        fprintf(stderr, "List sent messages failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "List sent messages failed from SQLite");
         return -1;
     }
 
@@ -596,7 +596,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
 
     int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
     if (result != 0) {
-        fprintf(stderr, "Fetch message failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "Fetch message failed from SQLite");
         return -1;
     }
 
@@ -610,7 +610,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     }
 
     if (!target_msg) {
-        fprintf(stderr, "Message %d not found or not for you\n", message_id);
+        QGP_LOG_ERROR(LOG_TAG, "Message %d not found or not for you", message_id);
         message_backup_free_messages(all_messages, all_count);
         return -1;
     }
@@ -630,13 +630,13 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
-        fprintf(stderr, "Error: Cannot load private key from %s\n", kyber_path);
+        QGP_LOG_ERROR(LOG_TAG, "Cannot load private key from %s", kyber_path);
         message_backup_free_messages(all_messages, all_count);
         return -1;
     }
 
     if (kyber_key->private_key_size != 3168) {  // Kyber1024 secret key size
-        fprintf(stderr, "Error: Invalid Kyber1024 private key size: %zu (expected 3168)\n",
+        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber1024 private key size: %zu (expected 3168)",
                 kyber_key->private_key_size);
         qgp_key_free(kyber_key);
         message_backup_free_messages(all_messages, all_count);
@@ -670,7 +670,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     qgp_key_free(kyber_key);
 
     if (err != DNA_OK) {
-        fprintf(stderr, "Error: Decryption failed: %s\n", dna_error_string(err));
+        QGP_LOG_ERROR(LOG_TAG, "Decryption failed: %s", dna_error_string(err));
         message_backup_free_messages(all_messages, all_count);
         return -1;
     }
@@ -692,9 +692,9 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     int sig_verified = 0;
     if (messenger_load_pubkey(ctx, sender, &sender_sign_pubkey_keyserver, &sender_sign_len_keyserver,
                                &sender_enc_pubkey_keyserver, &sender_enc_len_keyserver, NULL) != 0) {
-        fprintf(stderr, "Warning: Could not load sender '%s' pubkey from keyserver\n", sender);
-        fprintf(stderr, "Message decrypted but signature NOT verified!\n");
-        fprintf(stderr, "Fingerprint: %s\n", fingerprint_hex);
+        QGP_LOG_WARN(LOG_TAG, "Could not load sender '%s' pubkey from keyserver", sender);
+        QGP_LOG_WARN(LOG_TAG, "Message decrypted but signature NOT verified!");
+        QGP_LOG_WARN(LOG_TAG, "Fingerprint: %s", fingerprint_hex);
     } else {
         // v0.07: Verify signature using looked-up public key
         if (signature && signature_len > 0) {
@@ -703,7 +703,7 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
                 sig_verified = 1;
             } else {
                 QGP_LOG_ERROR(LOG_TAG, "✗ Signature verification FAILED (fingerprint: %.16s...)\n", fingerprint_hex);
-                fprintf(stderr, "WARNING: Message may be forged or corrupted!\n");
+                QGP_LOG_WARN(LOG_TAG, "Message may be forged or corrupted!");
             }
         } else {
             QGP_LOG_ERROR(LOG_TAG, "No signature found in message\n");
@@ -754,7 +754,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
 
     int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
     if (result != 0) {
-        fprintf(stderr, "Fetch message failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "Fetch message failed from SQLite");
         return -1;
     }
 
@@ -768,7 +768,7 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     }
 
     if (!target_msg) {
-        fprintf(stderr, "Message %d not found\n", message_id);
+        QGP_LOG_ERROR(LOG_TAG, "Message %d not found", message_id);
         message_backup_free_messages(all_messages, all_count);
         return -1;
     }
@@ -858,7 +858,7 @@ int messenger_delete_message(messenger_context_t *ctx, int message_id) {
     // Delete from SQLite local database
     int result = message_backup_delete(ctx->backup_ctx, message_id);
     if (result != 0) {
-        fprintf(stderr, "Delete message failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "Delete message failed from SQLite");
         return -1;
     }
 
@@ -881,7 +881,7 @@ int messenger_search_by_sender(messenger_context_t *ctx, const char *sender) {
 
     int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
     if (result != 0) {
-        fprintf(stderr, "Search by sender failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "Search by sender failed from SQLite");
         return -1;
     }
 
@@ -927,7 +927,7 @@ int messenger_show_conversation(messenger_context_t *ctx, const char *other_iden
 
     int result = message_backup_get_conversation(ctx->backup_ctx, other_identity, &messages, &count);
     if (result != 0) {
-        fprintf(stderr, "Show conversation failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "Show conversation failed from SQLite");
         return -1;
     }
 
@@ -976,7 +976,7 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
 
     int result = message_backup_get_conversation(ctx->backup_ctx, other_identity, &backup_messages, &backup_count);
     if (result != 0) {
-        fprintf(stderr, "Get conversation failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "Get conversation failed from SQLite");
         return -1;
     }
 
@@ -990,7 +990,7 @@ int messenger_get_conversation(messenger_context_t *ctx, const char *other_ident
     // Convert backup_message_t to message_info_t for GUI compatibility
     message_info_t *messages = (message_info_t*)calloc(backup_count, sizeof(message_info_t));
     if (!messages) {
-        fprintf(stderr, "Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         message_backup_free_messages(backup_messages, backup_count);
         return -1;
     }
@@ -1080,7 +1080,7 @@ int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
     }
 
     if (!include_sent && !include_received) {
-        fprintf(stderr, "Error: Must include either sent or received messages\n");
+        QGP_LOG_ERROR(LOG_TAG, "Must include either sent or received messages");
         return -1;
     }
 
@@ -1112,7 +1112,7 @@ int messenger_search_by_date(messenger_context_t *ctx, const char *start_date,
 
     int result = message_backup_search_by_identity(ctx->backup_ctx, ctx->identity, &all_messages, &all_count);
     if (result != 0) {
-        fprintf(stderr, "Search by date failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "Search by date failed from SQLite");
         return -1;
     }
 

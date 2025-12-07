@@ -184,7 +184,7 @@ int messenger_store_pubkey(
     size_t encryption_pubkey_len
 ) {
     if (!ctx || !fingerprint || !signing_pubkey || !encryption_pubkey) {
-        fprintf(stderr, "ERROR: Invalid arguments to messenger_store_pubkey\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to messenger_store_pubkey");
         return -1;
     }
 
@@ -207,7 +207,7 @@ int messenger_store_pubkey(
         // Use global DHT singleton (during identity creation, before login)
         dht_ctx = dht_singleton_get();
         if (!dht_ctx) {
-            fprintf(stderr, "ERROR: Global DHT not initialized! Call dht_singleton_init() at app startup.\n");
+            QGP_LOG_ERROR(LOG_TAG, "Global DHT not initialized! Call dht_singleton_init() at app startup.");
             return -1;
         }
         QGP_LOG_INFO(LOG_TAG, "Using global DHT singleton for key publishing\n");
@@ -218,7 +218,7 @@ int messenger_store_pubkey(
     if (!home) {
         home = getenv("USERPROFILE");  // Windows fallback
         if (!home) {
-            fprintf(stderr, "ERROR: HOME environment variable not set\n");
+            QGP_LOG_ERROR(LOG_TAG, "HOME environment variable not set");
             return -1;
         }
     }
@@ -229,18 +229,18 @@ int messenger_store_pubkey(
     // Find and load private key for signing (searches ~/.dna/*/keys/)
     char key_path[512];
     if (find_key_path(dna_dir, fingerprint, ".dsa", key_path) != 0) {
-        fprintf(stderr, "ERROR: Signing key not found for fingerprint: %s\n", fingerprint);
+        QGP_LOG_ERROR(LOG_TAG, "Signing key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
-        fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load signing key: %s", key_path);
         return -1;
     }
 
     if (key->type != QGP_KEY_TYPE_DSA87 || !key->private_key) {
-        fprintf(stderr, "ERROR: Not a Dilithium private key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not a Dilithium private key");
         qgp_key_free(key);
         return -1;
     }
@@ -262,7 +262,7 @@ int messenger_store_pubkey(
     // P2P transport DHT is managed by p2p_transport_free()
 
     if (ret != 0) {
-        fprintf(stderr, "ERROR: Failed to publish keys to DHT keyserver\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish keys to DHT keyserver");
         return -1;
     }
 
@@ -280,7 +280,7 @@ int messenger_load_pubkey(
     char *fingerprint_out  // NEW: Output fingerprint (129 bytes), can be NULL
 ) {
     if (!ctx || !identity) {
-        fprintf(stderr, "ERROR: Invalid arguments to messenger_load_pubkey\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to messenger_load_pubkey");
         return -1;
     }
 
@@ -319,13 +319,13 @@ int messenger_load_pubkey(
 
     // Get DHT context from P2P transport
     if (!ctx->p2p_transport) {
-        fprintf(stderr, "ERROR: P2P transport not initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "P2P transport not initialized");
         return -1;
     }
 
     dht_context_t *dht_ctx = (dht_context_t*)p2p_transport_get_dht_context(ctx->p2p_transport);
     if (!dht_ctx) {
-        fprintf(stderr, "ERROR: DHT context not available\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT context not available");
         return -1;
     }
 
@@ -335,11 +335,11 @@ int messenger_load_pubkey(
 
     if (ret != 0) {
         if (ret == -2) {
-            fprintf(stderr, "ERROR: Identity '%s' not found in DHT keyserver\n", identity);
+            QGP_LOG_ERROR(LOG_TAG, "Identity '%s' not found in DHT keyserver", identity);
         } else if (ret == -3) {
-            fprintf(stderr, "ERROR: Signature verification failed for identity '%s'\n", identity);
+            QGP_LOG_ERROR(LOG_TAG, "Signature verification failed for identity '%s'", identity);
         } else {
-            fprintf(stderr, "ERROR: Failed to lookup identity in DHT keyserver\n");
+            QGP_LOG_ERROR(LOG_TAG, "Failed to lookup identity in DHT keyserver");
         }
         return -1;
     }
@@ -349,7 +349,7 @@ int messenger_load_pubkey(
     uint8_t *kyber_decoded = malloc(DHT_KEYSERVER_KYBER_PUBKEY_SIZE);
 
     if (!dil_decoded || !kyber_decoded) {
-        fprintf(stderr, "ERROR: Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         if (dil_decoded) free(dil_decoded);
         if (kyber_decoded) free(kyber_decoded);
         dna_identity_free(dht_identity);
@@ -392,7 +392,7 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
 
     CURL *curl = curl_easy_init();
     if (!curl) {
-        fprintf(stderr, "Error: Failed to initialize curl\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize curl");
         return -1;
     }
 
@@ -413,7 +413,7 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
-        fprintf(stderr, "Error: Failed to fetch identity list from keyserver: %s\n",
+        QGP_LOG_ERROR(LOG_TAG, "Failed to fetch identity list from keyserver: %s",
                 curl_easy_strerror(res));
         if (resp_buf.data) {
             free(resp_buf.data);
@@ -422,7 +422,7 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
     }
 
     if (!resp_buf.data) {
-        fprintf(stderr, "Error: Empty response from keyserver\n");
+        QGP_LOG_ERROR(LOG_TAG, "Empty response from keyserver");
         return -1;
     }
 
@@ -442,7 +442,7 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
     // Parse JSON response
     struct json_object *root = json_tokener_parse(response);
     if (!root) {
-        fprintf(stderr, "Error: Failed to parse JSON response\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse JSON response");
         free(response);
         return -1;
     }
@@ -450,7 +450,7 @@ int messenger_list_pubkeys(messenger_context_t *ctx) {
     // Check success field
     struct json_object *success_obj = json_object_object_get(root, "success");
     if (!success_obj || !json_object_get_boolean(success_obj)) {
-        fprintf(stderr, "Error: API returned failure\n");
+        QGP_LOG_ERROR(LOG_TAG, "API returned failure");
         json_object_put(root);
         free(response);
         return -1;
@@ -503,7 +503,7 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
     // Use fingerprint (canonical) to ensure consistent database path regardless of login method
     const char *db_identity = ctx->fingerprint ? ctx->fingerprint : ctx->identity;
     if (contacts_db_init(db_identity) != 0) {
-        fprintf(stderr, "Error: Failed to initialize contacts database for '%s'\n", db_identity);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize contacts database for '%s'", db_identity);
         return -1;
     }
 
@@ -520,7 +520,7 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
     // Get contact list from database
     contact_list_t *list = NULL;
     if (contacts_db_list(&list) != 0) {
-        fprintf(stderr, "Error: Failed to get contact list\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get contact list");
         return -1;
     }
 
@@ -535,7 +535,7 @@ int messenger_get_contact_list(messenger_context_t *ctx, char ***identities_out,
     // Allocate array of string pointers
     char **identities = (char**)malloc(sizeof(char*) * list->count);
     if (!identities) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         contacts_db_free_list(list);
         return -1;
     }

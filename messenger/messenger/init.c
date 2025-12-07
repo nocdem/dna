@@ -10,6 +10,10 @@
 #include <string.h>
 #include <dirent.h>
 #include "../crypto/utils/qgp_platform.h"
+#include "../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MESSENGER"
+#define LOG_TAG_DHT "DHT_IDENTITY"
 #include "../crypto/utils/qgp_types.h"
 #include "../message_backup.h"
 #include "../database/keyserver_cache.h"
@@ -97,7 +101,7 @@ static int resolve_identity_to_fingerprint(const char *identity_input, char *fin
 
     // Compute fingerprint from key file
     if (messenger_compute_identity_fingerprint(identity_input, fingerprint_out) != 0) {
-        fprintf(stderr, "Error: Failed to compute fingerprint for '%s'\n", identity_input);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint for '%s'", identity_input);
         return -1;
     }
 
@@ -110,7 +114,7 @@ static int resolve_identity_to_fingerprint(const char *identity_input, char *fin
 
 messenger_context_t* messenger_init(const char *identity) {
     if (!identity) {
-        fprintf(stderr, "Error: Identity required\n");
+        QGP_LOG_ERROR(LOG_TAG, "Identity required");
         return NULL;
     }
 
@@ -146,7 +150,7 @@ messenger_context_t* messenger_init(const char *identity) {
     const char *db_identity = ctx->fingerprint ? ctx->fingerprint : identity;
     ctx->backup_ctx = message_backup_init(db_identity);
     if (!ctx->backup_ctx) {
-        fprintf(stderr, "Error: Failed to initialize SQLite message storage\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize SQLite message storage");
         free(ctx->fingerprint);
         free(ctx->identity);
         free(ctx);
@@ -155,7 +159,7 @@ messenger_context_t* messenger_init(const char *identity) {
 
     // Initialize GSK subsystem (Phase 13 - Group Symmetric Key)
     if (gsk_init(ctx->backup_ctx) != 0) {
-        fprintf(stderr, "Error: Failed to initialize GSK subsystem\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize GSK subsystem");
         message_backup_close(ctx->backup_ctx);
         free(ctx->identity);
         free(ctx);
@@ -165,7 +169,7 @@ messenger_context_t* messenger_init(const char *identity) {
     // Initialize Group Outbox subsystem (v0.10 - Feed pattern group messaging)
     dna_group_outbox_set_db(message_backup_get_db(ctx->backup_ctx));
     if (dna_group_outbox_db_init() != 0) {
-        fprintf(stderr, "Error: Failed to initialize group outbox subsystem\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize group outbox subsystem");
         message_backup_close(ctx->backup_ctx);
         free(ctx->identity);
         free(ctx);
@@ -175,7 +179,7 @@ messenger_context_t* messenger_init(const char *identity) {
     // Initialize DNA context
     ctx->dna_ctx = dna_context_new();
     if (!ctx->dna_ctx) {
-        fprintf(stderr, "Error: Failed to create DNA context\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create DNA context");
         message_backup_close(ctx->backup_ctx);
         free(ctx->identity);
         free(ctx);
@@ -188,7 +192,7 @@ messenger_context_t* messenger_init(const char *identity) {
 
     // Initialize keyserver cache (SQLite persistent)
     if (keyserver_cache_init(NULL) != 0) {
-        fprintf(stderr, "Warning: Failed to initialize keyserver cache\n");
+        QGP_LOG_WARN(LOG_TAG, "Failed to initialize keyserver cache");
         // Non-fatal - continue without cache
     }
 
@@ -196,12 +200,11 @@ messenger_context_t* messenger_init(const char *identity) {
     char groups_db_path[512];
     snprintf(groups_db_path, sizeof(groups_db_path), "%s/.dna/%s_groups.db", getenv("HOME"), identity);
     if (dht_groups_init(groups_db_path) != 0) {
-        fprintf(stderr, "Warning: Failed to initialize DHT groups database\n");
+        QGP_LOG_WARN(LOG_TAG, "Failed to initialize DHT groups database");
         // Non-fatal - continue without groups support
     }
 
-    printf("✓ Messenger initialized for '%s'\n", identity);
-    printf("✓ SQLite database: ~/.dna/messages.db\n");
+    QGP_LOG_INFO(LOG_TAG, "Messenger initialized for '%s'", identity);
 
     return ctx;
 }
@@ -244,16 +247,16 @@ void messenger_free(messenger_context_t *ctx) {
  */
 int messenger_load_dht_identity(const char *fingerprint) {
     if (!fingerprint || strlen(fingerprint) != 128) {
-        fprintf(stderr, "[DHT Identity] Invalid fingerprint\n");
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Invalid fingerprint");
         return -1;
     }
 
-    printf("[DHT Identity] Loading DHT identity for %s...\n", fingerprint);
+    QGP_LOG_INFO(LOG_TAG_DHT, "Loading DHT identity for %.16s...", fingerprint);
 
     // Load Kyber1024 private key (for decryption)
     const char *home = qgp_platform_home_dir();
     if (!home) {
-        fprintf(stderr, "[DHT Identity] Cannot get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Cannot get home directory");
         return -1;
     }
 
@@ -263,18 +266,18 @@ int messenger_load_dht_identity(const char *fingerprint) {
     // Find key in ~/.dna/*/keys/ structure
     char kyber_path[512];
     if (init_find_key_path(dna_dir, fingerprint, ".kem", kyber_path) != 0) {
-        fprintf(stderr, "[DHT Identity] Kyber key not found for fingerprint: %s\n", fingerprint);
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Kyber key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
-        fprintf(stderr, "[DHT Identity] Failed to load Kyber key from %s\n", kyber_path);
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to load Kyber key from %s", kyber_path);
         return -1;
     }
 
     if (kyber_key->private_key_size != 3168) {
-        fprintf(stderr, "[DHT Identity] Invalid Kyber private key size: %zu (expected 3168)\n",
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Invalid Kyber private key size: %zu (expected 3168)",
                 kyber_key->private_key_size);
         qgp_key_free(kyber_key);
         return -1;
@@ -283,47 +286,47 @@ int messenger_load_dht_identity(const char *fingerprint) {
     // Try to load from local file first
     dht_identity_t *dht_identity = NULL;
     if (dht_identity_load_from_local(fingerprint, kyber_key->private_key, &dht_identity) == 0) {
-        printf("[DHT Identity] ✓ Loaded from local file\n");
+        QGP_LOG_INFO(LOG_TAG_DHT, "Loaded from local file");
     } else {
-        printf("[DHT Identity] Local file not found, fetching from DHT...\n");
+        QGP_LOG_INFO(LOG_TAG_DHT, "Local file not found, fetching from DHT...");
 
         // Get DHT context (for fetching)
         dht_context_t *dht_ctx = dht_singleton_get();
         if (!dht_ctx) {
-            fprintf(stderr, "[DHT Identity] DHT not initialized, cannot fetch from DHT\n");
+            QGP_LOG_ERROR(LOG_TAG_DHT, "DHT not initialized, cannot fetch from DHT");
             qgp_key_free(kyber_key);
             return -1;
         }
 
         // Try to fetch from DHT
         if (dht_identity_fetch_from_dht(fingerprint, kyber_key->private_key, dht_ctx, &dht_identity) != 0) {
-            fprintf(stderr, "[DHT Identity] Failed to fetch from DHT\n");
-            fprintf(stderr, "[DHT Identity] No DHT identity found (local or DHT)\n");
-            fprintf(stderr, "[DHT Identity] Warning: DHT operations may accumulate values\n");
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to fetch from DHT");
+            QGP_LOG_ERROR(LOG_TAG_DHT, "No DHT identity found (local or DHT)");
+            QGP_LOG_WARN(LOG_TAG_DHT, "DHT operations may accumulate values");
             qgp_key_free(kyber_key);
             return -1;
         }
 
-        printf("[DHT Identity] ✓ Fetched from DHT and saved locally\n");
+        QGP_LOG_INFO(LOG_TAG_DHT, "Fetched from DHT and saved locally");
     }
 
     qgp_key_free(kyber_key);
 
     // Reinitialize DHT singleton with permanent identity
-    printf("[DHT Identity] Reinitializing DHT with permanent identity...\n");
+    QGP_LOG_INFO(LOG_TAG_DHT, "Reinitializing DHT with permanent identity...");
 
     // Cleanup old DHT (ephemeral identity)
     dht_singleton_cleanup();
 
     // Init with permanent identity
     if (dht_singleton_init_with_identity(dht_identity) != 0) {
-        fprintf(stderr, "[DHT Identity] Failed to reinitialize DHT singleton\n");
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to reinitialize DHT singleton");
         dht_identity_free(dht_identity);
         return -1;
     }
 
     // Don't free dht_identity here - it's owned by DHT singleton now
-    printf("[DHT Identity] ✓ DHT reinitialized with permanent identity\n");
+    QGP_LOG_INFO(LOG_TAG_DHT, "DHT reinitialized with permanent identity");
 
     return 0;
 }

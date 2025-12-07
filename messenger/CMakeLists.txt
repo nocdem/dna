@@ -90,6 +90,7 @@ set(COMMON_SOURCES
     crypto/utils/qgp_kyber.c
     crypto/utils/qgp_dilithium.c
     crypto/utils/qgp_sha3.c         # SHA3-512 for Category 5 security
+    crypto/utils/qgp_log.c          # Cross-platform logging with filtering
     # SDK Independence: Infrastructure modules
     crypto/utils/qgp_key.c
     crypto/utils/qgp_signature.c

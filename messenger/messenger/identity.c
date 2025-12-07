@@ -8,8 +8,11 @@
 #include <string.h>
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_types.h"
+#include "../crypto/utils/qgp_log.h"
 #include "../dht/core/dht_keyserver.h"
 #include "../p2p/p2p_transport.h"
+
+#define LOG_TAG "IDENTITY"
 
 // ============================================================================
 // FINGERPRINT UTILITIES (Phase 4: Fingerprint-First Identity)
@@ -20,7 +23,7 @@
  */
 int messenger_compute_identity_fingerprint(const char *identity, char *fingerprint_out) {
     if (!identity || !fingerprint_out) {
-        fprintf(stderr, "ERROR: Invalid arguments to messenger_compute_identity_fingerprint\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to messenger_compute_identity_fingerprint");
         return -1;
     }
 
@@ -31,12 +34,12 @@ int messenger_compute_identity_fingerprint(const char *identity, char *fingerpri
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {
-        fprintf(stderr, "ERROR: Failed to load signing key: %s\n", key_path);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load signing key: %s", key_path);
         return -1;
     }
 
     if (key->type != QGP_KEY_TYPE_DSA87 || !key->public_key) {
-        fprintf(stderr, "ERROR: Not a Dilithium5 key or missing public key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Not a Dilithium5 key or missing public key");
         qgp_key_free(key);
         return -1;
     }
@@ -73,7 +76,7 @@ bool messenger_is_fingerprint(const char *str) {
  */
 int messenger_get_display_name(messenger_context_t *ctx, const char *identifier, char *display_name_out) {
     if (!ctx || !identifier || !display_name_out) {
-        fprintf(stderr, "ERROR: Invalid arguments to messenger_get_display_name\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to messenger_get_display_name");
         return -1;
     }
 

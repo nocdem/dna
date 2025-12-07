@@ -9,6 +9,9 @@
 #include <time.h>
 #include <dirent.h>
 #include "../crypto/utils/qgp_platform.h"
+#include "../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "KEYGEN"
 #include "../crypto/utils/qgp_types.h"
 #include "../crypto/utils/qgp_dilithium.h"
 #include "../crypto/utils/qgp_kyber.h"
@@ -34,9 +37,7 @@
 #define ntohll(x) htonll(x)
 #else
 #include <arpa/inet.h>
-#include "crypto/utils/qgp_log.h"
 
-#define LOG_TAG "MSG_KEYGEN"
 #ifndef htonll
 #define htonll(x) ((1==htonl(1)) ? (x) : (((uint64_t)htonl((x) & 0xFFFFFFFF)) << 32) | htonl((x) >> 32))
 #define ntohll(x) htonll(x)
@@ -59,15 +60,14 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len, NULL) == 0) {
         free(existing_sign);
         free(existing_enc);
-        fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
-        fprintf(stderr, "Please choose a different name.\n\n");
+        QGP_LOG_ERROR(LOG_TAG, "Identity '%s' already exists in keyserver! Please choose a different name.", identity);
         return -1;
     }
 
     // Create ~/.dna directory
     const char *home = qgp_platform_home_dir();
     if (!home) {
-        fprintf(stderr, "Error: Cannot get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Cannot get home directory");
         return -1;
     }
 
@@ -77,7 +77,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     // Use the QGP function to generate keys with BIP39 seed phrase
     // This will show the user their recovery seed and generate keys deterministically
     if (cmd_gen_key_from_seed(identity, "dilithium", dna_dir) != 0) {
-        fprintf(stderr, "Error: Key generation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Key generation failed");
         return -1;
     }
 
@@ -89,7 +89,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
 
     // Export public key bundle
     if (cmd_export_pubkey(identity, dna_dir, pubkey_path) != 0) {
-        fprintf(stderr, "Error: Failed to export public key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to export public key");
         return -1;
     }
 
@@ -102,13 +102,13 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
 
     if (read_armored_file(pubkey_path, &type, &pubkey_data, &pubkey_data_size,
                           &headers, &header_count) != 0) {
-        fprintf(stderr, "Error: Failed to read ASCII-armored public key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to read ASCII-armored public key");
         return -1;
     }
 
     // Parse header (20 bytes): magic[8] + version + sign_key_type + enc_key_type + reserved + sign_size(4) + enc_size(4)
     if (pubkey_data_size < 20) {
-        fprintf(stderr, "Error: Public key data too small\n");
+        QGP_LOG_ERROR(LOG_TAG, "Public key data too small");
         free(type);
         free(pubkey_data);
         for (size_t i = 0; i < header_count; i++) free(headers[i]);
@@ -130,7 +130,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     char fingerprint[129];
     unsigned char hash[64];  // SHA3-512 = 64 bytes
     if (qgp_sha3_512(dilithium_pk, sizeof(dilithium_pk), hash) != 0) {
-        fprintf(stderr, "Error: Failed to compute fingerprint\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint");
         free(type);
         free(pubkey_data);
         for (size_t i = 0; i < header_count; i++) free(headers[i]);
@@ -153,7 +153,7 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     // Upload public keys to keyserver (FINGERPRINT-FIRST)
     if (messenger_store_pubkey(ctx, fingerprint, identity, dilithium_pk, sizeof(dilithium_pk),
                                 kyber_pk, sizeof(kyber_pk)) != 0) {
-        fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to upload public keys to keyserver");
         return -1;
     }
 
@@ -171,14 +171,14 @@ int messenger_generate_keys_from_seeds(
     char *fingerprint_out)
 {
     if (!signing_seed || !encryption_seed || !data_dir || !fingerprint_out) {
-        fprintf(stderr, "Error: Invalid arguments to messenger_generate_keys_from_seeds\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to messenger_generate_keys_from_seeds");
         return -1;
     }
 
     // Generate Dilithium5 (ML-DSA-87) signing key from seed FIRST (need fingerprint for directory)
     qgp_key_t *sign_key = qgp_key_new(QGP_KEY_TYPE_DSA87, QGP_KEY_PURPOSE_SIGNING);
     if (!sign_key) {
-        fprintf(stderr, "Error: Memory allocation failed for signing key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for signing key");
         return -1;
     }
 
@@ -186,7 +186,7 @@ int messenger_generate_keys_from_seeds(
     uint8_t *dilithium_sk = calloc(1, QGP_DSA87_SECRETKEYBYTES);
 
     if (!dilithium_pk || !dilithium_sk) {
-        fprintf(stderr, "Error: Memory allocation failed for DSA-87 buffers\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for DSA-87 buffers");
         free(dilithium_pk);
         free(dilithium_sk);
         qgp_key_free(sign_key);
@@ -194,7 +194,7 @@ int messenger_generate_keys_from_seeds(
     }
 
     if (qgp_dsa87_keypair_derand(dilithium_pk, dilithium_sk, signing_seed) != 0) {
-        fprintf(stderr, "Error: DSA-87 key generation from seed failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "DSA-87 key generation from seed failed");
         free(dilithium_pk);
         free(dilithium_sk);
         qgp_key_free(sign_key);
@@ -225,7 +225,7 @@ int messenger_generate_keys_from_seeds(
     // Create base data dir if needed
     if (!qgp_platform_is_directory(data_dir)) {
         if (qgp_platform_mkdir(data_dir) != 0) {
-            fprintf(stderr, "Error: Cannot create directory: %s\n", data_dir);
+            QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", data_dir);
             qgp_key_free(sign_key);
             return -1;
         }
@@ -234,7 +234,7 @@ int messenger_generate_keys_from_seeds(
     // Create identity directory
     if (!qgp_platform_is_directory(identity_dir)) {
         if (qgp_platform_mkdir(identity_dir) != 0) {
-            fprintf(stderr, "Error: Cannot create directory: %s\n", identity_dir);
+            QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", identity_dir);
             qgp_key_free(sign_key);
             return -1;
         }
@@ -243,7 +243,7 @@ int messenger_generate_keys_from_seeds(
     // Create keys directory
     if (!qgp_platform_is_directory(keys_dir)) {
         if (qgp_platform_mkdir(keys_dir) != 0) {
-            fprintf(stderr, "Error: Cannot create directory: %s\n", keys_dir);
+            QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", keys_dir);
             qgp_key_free(sign_key);
             return -1;
         }
@@ -252,7 +252,7 @@ int messenger_generate_keys_from_seeds(
     // Create wallets directory
     if (!qgp_platform_is_directory(wallets_dir)) {
         if (qgp_platform_mkdir(wallets_dir) != 0) {
-            fprintf(stderr, "Error: Cannot create directory: %s\n", wallets_dir);
+            QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", wallets_dir);
             qgp_key_free(sign_key);
             return -1;
         }
@@ -268,7 +268,7 @@ int messenger_generate_keys_from_seeds(
     snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", keys_dir, fingerprint);
 
     if (qgp_key_save(sign_key, dilithium_path) != 0) {
-        fprintf(stderr, "Error: Failed to save signing key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to save signing key");
         qgp_key_free(sign_key);
         return -1;
     }
@@ -277,7 +277,7 @@ int messenger_generate_keys_from_seeds(
     uint8_t *dilithium_pubkey_copy = malloc(sign_key->public_key_size);
     uint8_t *dilithium_privkey_copy = malloc(sign_key->private_key_size);
     if (!dilithium_pubkey_copy || !dilithium_privkey_copy) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         free(dilithium_pubkey_copy);
         free(dilithium_privkey_copy);
         qgp_key_free(sign_key);
@@ -293,7 +293,7 @@ int messenger_generate_keys_from_seeds(
     // Generate Kyber1024 (ML-KEM-1024) encryption key from seed
     qgp_key_t *enc_key = qgp_key_new(QGP_KEY_TYPE_KEM1024, QGP_KEY_PURPOSE_ENCRYPTION);
     if (!enc_key) {
-        fprintf(stderr, "Error: Memory allocation failed for encryption key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for encryption key");
         return -1;
     }
 
@@ -301,7 +301,7 @@ int messenger_generate_keys_from_seeds(
     uint8_t *kyber_sk = calloc(1, 3168);  // Kyber1024 secret key size
 
     if (!kyber_pk || !kyber_sk) {
-        fprintf(stderr, "Error: Memory allocation failed for KEM-1024 buffers\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed for KEM-1024 buffers");
         free(kyber_pk);
         free(kyber_sk);
         qgp_key_free(enc_key);
@@ -309,7 +309,7 @@ int messenger_generate_keys_from_seeds(
     }
 
     if (crypto_kem_keypair_derand(kyber_pk, kyber_sk, encryption_seed) != 0) {
-        fprintf(stderr, "Error: KEM-1024 key generation from seed failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "KEM-1024 key generation from seed failed");
         free(kyber_pk);
         free(kyber_sk);
         qgp_key_free(enc_key);
@@ -326,7 +326,7 @@ int messenger_generate_keys_from_seeds(
     snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", keys_dir, fingerprint);
 
     if (qgp_key_save(enc_key, kyber_path) != 0) {
-        fprintf(stderr, "Error: Failed to save encryption key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to save encryption key");
         qgp_key_free(enc_key);
         free(dilithium_pubkey_copy);
         free(dilithium_privkey_copy);
@@ -338,7 +338,7 @@ int messenger_generate_keys_from_seeds(
     // Keep copies of public keys for DHT publishing (before freeing)
     uint8_t *kyber_pubkey_copy = malloc(enc_key->public_key_size);
     if (!kyber_pubkey_copy) {
-        fprintf(stderr, "Error: Memory allocation failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         qgp_key_free(enc_key);
         free(dilithium_pubkey_copy);
         free(dilithium_privkey_copy);
@@ -353,14 +353,14 @@ int messenger_generate_keys_from_seeds(
     // Get DHT context (global singleton)
     dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        fprintf(stderr, "Warning: DHT not initialized, skipping DHT identity backup\n");
-        fprintf(stderr, "         You can retry DHT identity creation after connecting to DHT\n");
+        QGP_LOG_WARN(LOG_TAG, "DHT not initialized, skipping DHT identity backup");
+        
     } else {
         // Create random DHT identity + encrypted backup (local + DHT)
         dht_identity_t *dht_identity = NULL;
         if (dht_identity_create_and_backup(fingerprint, kyber_pk, dht_ctx, &dht_identity) != 0) {
-            fprintf(stderr, "Warning: Failed to create DHT identity backup\n");
-            fprintf(stderr, "         Your messenger will still work, but DHT operations may accumulate values\n");
+            QGP_LOG_WARN(LOG_TAG, "Failed to create DHT identity backup");
+            
         } else {
             printf("[DHT Identity] ✓ Random DHT identity created and backed up\n");
             printf("[DHT Identity] ✓ Encrypted backup saved locally and published to DHT\n");
@@ -452,20 +452,20 @@ int messenger_register_name(
     const char *desired_name)
 {
     if (!ctx || !fingerprint || !desired_name) {
-        fprintf(stderr, "Error: Invalid parameters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters");
         return -1;
     }
 
     // Validate fingerprint length
     if (strlen(fingerprint) != 128) {
-        fprintf(stderr, "Error: Invalid fingerprint length (must be 128 hex chars)\n");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint length (must be 128 hex chars)");
         return -1;
     }
 
     // Validate name format (3-20 chars, alphanumeric + underscore)
     size_t name_len = strlen(desired_name);
     if (name_len < 3 || name_len > 20) {
-        fprintf(stderr, "Error: Name must be 3-20 characters\n");
+        QGP_LOG_ERROR(LOG_TAG, "Name must be 3-20 characters");
         return -1;
     }
 
@@ -473,7 +473,7 @@ int messenger_register_name(
         char c = desired_name[i];
         if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
               (c >= '0' && c <= '9') || c == '_')) {
-            fprintf(stderr, "Error: Name can only contain letters, numbers, and underscore\n");
+            QGP_LOG_ERROR(LOG_TAG, "Name can only contain letters, numbers, and underscore");
             return -1;
         }
     }
@@ -485,15 +485,14 @@ int messenger_register_name(
     if (messenger_load_pubkey(ctx, desired_name, &existing_sign, &sign_len, &existing_enc, &enc_len, NULL) == 0) {
         free(existing_sign);
         free(existing_enc);
-        fprintf(stderr, "\nError: Name '%s' is already registered!\n", desired_name);
-        fprintf(stderr, "Please choose a different name.\n\n");
+        QGP_LOG_ERROR(LOG_TAG, "Name '%s' is already registered! Please choose a different name.", desired_name);
         return -1;
     }
 
     // Load keys from fingerprint-based files
     const char *home = qgp_platform_home_dir();
     if (!home) {
-        fprintf(stderr, "Error: Cannot get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Cannot get home directory");
         return -1;
     }
 
@@ -504,25 +503,25 @@ int messenger_register_name(
     char dilithium_path[512];
     char kyber_path[512];
     if (keygen_find_key_path(dna_dir, fingerprint, ".dsa", dilithium_path) != 0) {
-        fprintf(stderr, "Error: Signing key not found for fingerprint: %s\n", fingerprint);
+        QGP_LOG_ERROR(LOG_TAG, "Signing key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }
     if (keygen_find_key_path(dna_dir, fingerprint, ".kem", kyber_path) != 0) {
-        fprintf(stderr, "Error: Encryption key not found for fingerprint: %s\n", fingerprint);
+        QGP_LOG_ERROR(LOG_TAG, "Encryption key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }
 
     // Load Dilithium key
     qgp_key_t *sign_key = NULL;
     if (qgp_key_load(dilithium_path, &sign_key) != 0 || !sign_key) {
-        fprintf(stderr, "Error: Failed to load signing key from %s\n", dilithium_path);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load signing key from %s", dilithium_path);
         return -1;
     }
 
     // Load Kyber key
     qgp_key_t *enc_key = NULL;
     if (qgp_key_load(kyber_path, &enc_key) != 0 || !enc_key) {
-        fprintf(stderr, "Error: Failed to load encryption key from %s\n", kyber_path);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load encryption key from %s", kyber_path);
         qgp_key_free(sign_key);
         return -1;
     }
@@ -536,7 +535,7 @@ int messenger_register_name(
     }
 
     if (!dht_ctx) {
-        fprintf(stderr, "Error: DHT not available, cannot register name\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available, cannot register name");
         qgp_key_free(sign_key);
         qgp_key_free(enc_key);
         return -1;
@@ -579,12 +578,12 @@ int messenger_register_name(
     );
 
     if (publish_result == -2) {
-        fprintf(stderr, "Error: Name '%s' is already taken\n", desired_name);
+        QGP_LOG_ERROR(LOG_TAG, "Name '%s' is already taken", desired_name);
         qgp_key_free(sign_key);
         qgp_key_free(enc_key);
         return -1;
     } else if (publish_result != 0) {
-        fprintf(stderr, "Error: Failed to publish identity to DHT\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to publish identity to DHT");
         qgp_key_free(sign_key);
         qgp_key_free(enc_key);
         return -1;
@@ -618,15 +617,14 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     if (messenger_load_pubkey(ctx, identity, &existing_sign, &sign_len, &existing_enc, &enc_len, NULL) == 0) {
         free(existing_sign);
         free(existing_enc);
-        fprintf(stderr, "\nError: Identity '%s' already exists in keyserver!\n", identity);
-        fprintf(stderr, "Please choose a different name or delete the existing identity first.\n\n");
+        QGP_LOG_ERROR(LOG_TAG, "Identity '%s' already exists in keyserver! Please choose a different name.", identity);
         return -1;
     }
 
     // Create ~/.dna directory
     const char *home = qgp_platform_home_dir();
     if (!home) {
-        fprintf(stderr, "Error: Cannot get home directory\n");
+        QGP_LOG_ERROR(LOG_TAG, "Cannot get home directory");
         return -1;
     }
 
@@ -635,7 +633,7 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
 
     // Use QGP's restore function which prompts for mnemonic and passphrase
     if (cmd_restore_key_from_seed(identity, "dilithium", dna_dir) != 0) {
-        fprintf(stderr, "Error: Key restoration failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Key restoration failed");
         return -1;
     }
 
@@ -644,7 +642,7 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     snprintf(pubkey_path, sizeof(pubkey_path), "%s/%s.pub", dna_dir, identity);
 
     if (cmd_export_pubkey(identity, dna_dir, pubkey_path) != 0) {
-        fprintf(stderr, "Error: Failed to export public key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to export public key");
         return -1;
     }
 
@@ -657,13 +655,13 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
 
     if (read_armored_file(pubkey_path, &type, &pubkey_data, &pubkey_data_size,
                           &headers, &header_count) != 0) {
-        fprintf(stderr, "Error: Failed to read ASCII-armored public key\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to read ASCII-armored public key");
         return -1;
     }
 
     // Parse header (20 bytes): magic[8] + version + sign_key_type + enc_key_type + reserved + sign_size(4) + enc_size(4)
     if (pubkey_data_size < 20) {
-        fprintf(stderr, "Error: Public key data too small\n");
+        QGP_LOG_ERROR(LOG_TAG, "Public key data too small");
         free(type);
         free(pubkey_data);
         for (size_t i = 0; i < header_count; i++) free(headers[i]);
@@ -685,7 +683,7 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     char fingerprint[129];
     unsigned char hash[64];  // SHA3-512 = 64 bytes
     if (qgp_sha3_512(dilithium_pk, sizeof(dilithium_pk), hash) != 0) {
-        fprintf(stderr, "Error: Failed to compute fingerprint\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint");
         free(type);
         free(pubkey_data);
         for (size_t i = 0; i < header_count; i++) free(headers[i]);
@@ -708,7 +706,7 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
     // Upload public keys to keyserver (FINGERPRINT-FIRST)
     if (messenger_store_pubkey(ctx, fingerprint, identity, dilithium_pk, sizeof(dilithium_pk),
                                 kyber_pk, sizeof(kyber_pk)) != 0) {
-        fprintf(stderr, "Error: Failed to upload public keys to keyserver\n");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to upload public keys to keyserver");
         return -1;
     }
 

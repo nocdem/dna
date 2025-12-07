@@ -6,6 +6,9 @@
 #include <stdio.h>
 #include <string.h>
 #include "../message_backup.h"
+#include "../crypto/utils/qgp_log.h"
+
+#define LOG_TAG "MSG_STATUS"
 
 // ============================================================================
 // MESSAGE STATUS / READ RECEIPTS
@@ -19,7 +22,7 @@ int messenger_mark_delivered(messenger_context_t *ctx, int message_id) {
     // Mark message as delivered in SQLite local database
     int result = message_backup_mark_delivered(ctx->backup_ctx, message_id);
     if (result != 0) {
-        fprintf(stderr, "Mark delivered failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "Mark delivered failed from SQLite");
         return -1;
     }
 
@@ -37,7 +40,7 @@ int messenger_mark_conversation_read(messenger_context_t *ctx, const char *sende
 
     int result = message_backup_get_conversation(ctx->backup_ctx, sender_identity, &messages, &count);
     if (result != 0) {
-        fprintf(stderr, "Mark conversation read failed from SQLite\n");
+        QGP_LOG_ERROR(LOG_TAG, "Mark conversation read failed from SQLite");
         return -1;
     }
 
