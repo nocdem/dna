@@ -376,6 +376,53 @@ Signing Seed   Encryption Seed
 Dilithium5    Kyber1024
 ```
 
+### 4.6 Platform Utilities
+
+**Location:** `crypto/utils/`
+
+#### Cross-Platform Abstraction (`qgp_platform.h`)
+- `qgp_platform_linux.c` - Linux/Unix implementation
+- `qgp_platform_windows.c` - Windows implementation
+- `qgp_platform_android.c` - Android implementation
+
+Provides: secure random, directory ops, path handling, app data dirs, network state.
+
+#### Cross-Platform Logging (`qgp_log.h`)
+
+Unified logging that redirects to Android logcat on mobile:
+
+```c
+// Option 1: Direct logging API (all platforms)
+#include "crypto/utils/qgp_log.h"
+QGP_LOG_INFO("TAG", "Message: %d", value);
+QGP_LOG_ERROR("TAG", "Error: %s", msg);
+QGP_LOG_DEBUG("TAG", "Debug info");
+QGP_LOG_WARN("TAG", "Warning");
+
+// Option 2: Redirect existing printf/fprintf to logcat (Android)
+#include <stdio.h>
+#define QGP_LOG_TAG "MyModule"
+#define QGP_LOG_REDIRECT_STDIO 1
+#include "crypto/utils/qgp_log.h"
+// Now printf() -> logcat INFO, fprintf(stderr,...) -> logcat ERROR
+```
+
+**Active Log Tags:**
+| Tag | Module | Description |
+|-----|--------|-------------|
+| `DHT` | dht_singleton.c | DHT init, bootstrap, connectivity |
+| `DHT_PROFILE` | dht_profile.c | Profile DHT operations |
+| `DHT_CHUNK` | dht_chunked.c | Chunked storage layer |
+| `DHT_OFFLINE` | dht_offline_queue.c | Offline message queue |
+| `KEYSERVER` | keyserver_*.c | Identity/name lookups |
+| `DNA_ENGINE` | dna_engine.c | Main API layer |
+| `DNA-JNI` | dna_jni.c | Android JNI bridge |
+
+**Filtering in logcat:**
+```bash
+adb logcat -s DHT:* KEYSERVER:* DNA_ENGINE:* DNA-JNI:*
+```
+
 ### Key Storage
 
 **Location:** `~/.dna/`

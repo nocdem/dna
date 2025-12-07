@@ -18,6 +18,11 @@
 #include <string.h>
 #include <time.h>
 
+/* Redirect printf/fprintf to Android logcat */
+#define QGP_LOG_TAG "DHT_PROFILE"
+#define QGP_LOG_REDIRECT_STDIO 1
+#include "../crypto/utils/qgp_log.h"
+
 // Windows byte order conversion macros (be64toh, htobe64 not available)
 #ifdef _WIN32
 #include <winsock2.h>

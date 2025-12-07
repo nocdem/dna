@@ -8,6 +8,11 @@
 #include <pthread.h>
 #include <errno.h>
 
+/* Redirect printf/fprintf to Android logcat */
+#define QGP_LOG_TAG "DHT_OFFLINE"
+#define QGP_LOG_REDIRECT_STDIO 1
+#include "../crypto/utils/qgp_log.h"
+
 // Platform-specific network byte order functions
 #ifdef _WIN32
     #include <winsock2.h>  // For htonl/ntohl on Windows

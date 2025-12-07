@@ -17,6 +17,11 @@
 #include <stdatomic.h>
 #include <zlib.h>  // For crc32
 
+/* Redirect printf/fprintf to Android logcat */
+#define QGP_LOG_TAG "DHT_CHUNK"
+#define QGP_LOG_REDIRECT_STDIO 1
+#include "../../crypto/utils/qgp_log.h"
+
 #ifdef _WIN32
 #include <winsock2.h>
 #else

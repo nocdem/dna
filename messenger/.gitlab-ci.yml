@@ -4,8 +4,6 @@
 
 workflow:
   rules:
-    - if: $CI_COMMIT_BRANCH == "main"
-      when: always
     - if: $CI_PIPELINE_SOURCE == "web"
       when: always
     - when: never

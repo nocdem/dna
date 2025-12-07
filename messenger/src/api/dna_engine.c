@@ -80,6 +80,11 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include <errno.h>
 #include <unistd.h>
 
+/* Redirect printf/fprintf to Android logcat */
+#define QGP_LOG_TAG "DNA_ENGINE"
+#define QGP_LOG_REDIRECT_STDIO 1
+#include "crypto/utils/qgp_log.h"
+
 /* Use engine-specific error codes */
 #define DNA_OK 0
 
