@@ -27,7 +27,6 @@ extern "C" {
     #include "../dht/client/dht_singleton.h"
     #include "../dht/core/dht_keyserver.h"
     #include "../crypto/utils/qgp_platform.h"
-    #include "../dna_config.h"
 }
 #include "helpers/data_loader.h"
 #include "screens/wallet_screen.h"
@@ -228,12 +227,6 @@ static void glfw_error_callback(int error, const char* description) {
 }
 
 int main(int argc, char** argv) {
-    // Load config and apply log settings first (before any logging)
-    dna_config_t config;
-    memset(&config, 0, sizeof(config));
-    dna_config_load(&config);
-    dna_config_apply_log_settings(&config);
-
     // Register signal handlers for clean shutdown
     signal(SIGINT, signal_handler);   // Ctrl+C
     signal(SIGTERM, signal_handler);  // Termination request
