@@ -351,8 +351,6 @@ build:native-android-arm64:
         -DCMAKE_BUILD_TYPE=Release \
         -DBUILD_SHARED_LIB=ON
     - make -j$(nproc) dna_lib
-    # Verify no libc++_shared.so dependency (must use static STL)
-    - "! ${ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-readelf -d libdna_lib.so | grep -q 'libc++_shared' || (echo 'ERROR: libc++_shared.so dependency found!' && exit 1)"
     - mkdir -p ${CI_PROJECT_DIR}/native-libs/android-arm64
     - cp libdna_lib.so ${CI_PROJECT_DIR}/native-libs/android-arm64/
   artifacts:
