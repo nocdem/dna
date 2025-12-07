@@ -84,7 +84,7 @@ build:native-android-arm64:
     ANDROID_API_LEVEL: "24"
     ANDROID_ABI: "arm64-v8a"
   cache:
-    key: android-deps-arm64-v11-gmp-fpic
+    key: android-deps-arm64-v12-gmp-withpic
     paths:
       - .cache/android-ndk/
       - .cache/android-deps/
@@ -125,7 +125,7 @@ build:native-android-arm64:
         tar xf gmp-6.3.0.tar.xz && cd gmp-6.3.0
         ./configure --host=aarch64-linux-android \
           --prefix="${DEPS_DIR}/gmp-arm64" \
-          --enable-static --disable-shared \
+          --enable-static --disable-shared --with-pic \
           CC="${CC}" AR="${AR}" RANLIB="${RANLIB}" \
           CFLAGS="-fPIC"
         make -j$(nproc) && make install
