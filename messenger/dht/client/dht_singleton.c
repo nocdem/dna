@@ -12,6 +12,11 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 
+/* Redirect printf/fprintf to Android logcat */
+#define QGP_LOG_TAG "DHT"
+#define QGP_LOG_REDIRECT_STDIO 1
+#include "crypto/utils/qgp_log.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #include <direct.h>

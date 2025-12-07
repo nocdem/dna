@@ -15,6 +15,11 @@
 #include <time.h>
 #include <ctype.h>
 
+/* Redirect printf/fprintf to Android logcat */
+#define QGP_LOG_TAG "KEYSERVER"
+#define QGP_LOG_REDIRECT_STDIO 1
+#include "../../crypto/utils/qgp_log.h"
+
 // Platform-specific network byte order includes
 #ifdef _WIN32
     #include <winsock2.h>
