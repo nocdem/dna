@@ -526,6 +526,106 @@ int wallet_list_from_dna_dir(wallet_list_t **list_out) {
 }
 
 /**
+ * List wallets for a specific identity from ~/.dna/<fingerprint>/wallets/
+ */
+int wallet_list_for_identity(const char *fingerprint, wallet_list_t **list_out) {
+    if (!fingerprint || !list_out) {
+        return -1;
+    }
+
+    const char *home = qgp_platform_home_dir();
+    if (!home) {
+        return -1;
+    }
+
+    wallet_list_t *list = calloc(1, sizeof(wallet_list_t));
+    if (!list) {
+        return -1;
+    }
+
+    size_t capacity = 4;
+    list->wallets = calloc(capacity, sizeof(cellframe_wallet_t));
+    if (!list->wallets) {
+        free(list);
+        return -1;
+    }
+
+    // Build path: ~/.dna/<fingerprint>/wallets/
+    char wallets_dir[1024];
+    snprintf(wallets_dir, sizeof(wallets_dir), "%s/.dna/%s/wallets", home, fingerprint);
+
+#ifdef _WIN32
+    WIN32_FIND_DATA wallet_data;
+    char wallet_search[1024];
+    snprintf(wallet_search, sizeof(wallet_search), "%s\\*.dwallet", wallets_dir);
+
+    HANDLE hWallet = FindFirstFile(wallet_search, &wallet_data);
+    if (hWallet != INVALID_HANDLE_VALUE) {
+        do {
+            if (wallet_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
+
+            char full_path[1024];
+            snprintf(full_path, sizeof(full_path), "%s\\%s", wallets_dir, wallet_data.cFileName);
+
+            cellframe_wallet_t *wallet = NULL;
+            if (wallet_read_cellframe_path(full_path, &wallet) == 0 && wallet) {
+                if (list->count >= capacity) {
+                    capacity *= 2;
+                    cellframe_wallet_t *new_wallets = realloc(list->wallets,
+                                                              capacity * sizeof(cellframe_wallet_t));
+                    if (!new_wallets) {
+                        wallet_free(wallet);
+                        break;
+                    }
+                    list->wallets = new_wallets;
+                }
+                memcpy(&list->wallets[list->count], wallet, sizeof(cellframe_wallet_t));
+                list->count++;
+                free(wallet);
+            }
+        } while (FindNextFile(hWallet, &wallet_data));
+
+        FindClose(hWallet);
+    }
+#else
+    DIR *wallet_dir = opendir(wallets_dir);
+    if (wallet_dir) {
+        struct dirent *wallet_entry;
+        while ((wallet_entry = readdir(wallet_dir)) != NULL) {
+            size_t name_len = strlen(wallet_entry->d_name);
+            if (name_len < 8 || strcmp(wallet_entry->d_name + name_len - 8, ".dwallet") != 0) {
+                continue;
+            }
+
+            char full_path[1024];
+            snprintf(full_path, sizeof(full_path), "%s/%s", wallets_dir, wallet_entry->d_name);
+
+            cellframe_wallet_t *wallet = NULL;
+            if (wallet_read_cellframe_path(full_path, &wallet) == 0 && wallet) {
+                if (list->count >= capacity) {
+                    capacity *= 2;
+                    cellframe_wallet_t *new_wallets = realloc(list->wallets,
+                                                              capacity * sizeof(cellframe_wallet_t));
+                    if (!new_wallets) {
+                        wallet_free(wallet);
+                        break;
+                    }
+                    list->wallets = new_wallets;
+                }
+                memcpy(&list->wallets[list->count], wallet, sizeof(cellframe_wallet_t));
+                list->count++;
+                free(wallet);
+            }
+        }
+        closedir(wallet_dir);
+    }
+#endif
+
+    *list_out = list;
+    return 0;
+}
+
+/**
  * Get wallet address (returns the address generated from public key)
  */
 int wallet_get_address(const cellframe_wallet_t *wallet, const char *network_name, char *address_out) {

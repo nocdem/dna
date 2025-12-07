@@ -77,9 +77,14 @@ int wallet_read_cellframe(const char *filename, cellframe_wallet_t **wallet_out)
 int wallet_list_cellframe(wallet_list_t **list_out);
 
 /**
- * List wallets from ~/.dna/wallets directory
+ * List wallets from ~/.dna/wallets directory (all identities)
  */
 int wallet_list_from_dna_dir(wallet_list_t **list_out);
+
+/**
+ * List wallets for a specific identity from ~/.dna/<fingerprint>/wallets/
+ */
+int wallet_list_for_identity(const char *fingerprint, wallet_list_t **list_out);
 
 /**
  * Get wallet address (returns address from loaded wallet struct)
