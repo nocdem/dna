@@ -43,9 +43,9 @@ if(ANDROID)
     # Platform-specific sources
     set(PLATFORM_SOURCES crypto/utils/qgp_platform_android.c)
 
-    # No extra platform libs needed on Android
-    # (pthread is part of bionic libc)
-    set(PLATFORM_LIBS)
+    # Android platform libs
+    # - log: Android logging (__android_log_print for logcat)
+    set(PLATFORM_LIBS log)
 
     # Android-specific compiler flags
     set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")
