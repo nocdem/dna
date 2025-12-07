@@ -417,8 +417,9 @@ build:flutter-linux:
       #!/bin/bash
       SELF=$(readlink -f "$0")
       HERE=${SELF%/*}
-      export LD_LIBRARY_PATH="${HERE}/usr/lib:${LD_LIBRARY_PATH}"
-      exec "${HERE}/usr/bin/dna_messenger" "$@"
+      export LD_LIBRARY_PATH="${HERE}/usr/bin/lib:${HERE}/usr/lib:${LD_LIBRARY_PATH}"
+      cd "${HERE}/usr/bin"
+      exec "./dna_messenger" "$@"
       APPRUN
     - chmod +x AppDir/AppRun
     # Download appimagetool and create AppImage
