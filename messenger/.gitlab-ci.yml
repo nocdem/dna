@@ -398,8 +398,8 @@ build:flutter-android:
   allow_failure: true  # Depends on Android native build
 
 # Full Windows build (native lib + Flutter) on Windows runner
-# Builds everything natively with MSVC/CMake
-# Prerequisites on runner: vcpkg with deps installed, Flutter SDK
+# Uses MSYS2/MinGW for native lib (GCC compatible), Flutter for app
+# Prerequisites on runner: MSYS2 with mingw-w64 packages, Flutter SDK
 build:windows:
   stage: build-native
   tags:
@@ -407,17 +407,14 @@ build:windows:
   timeout: 2h
   variables:
     GIT_SUBMODULE_STRATEGY: recursive
-    VCPKG_ROOT: C:\vcpkg
+    MSYS2_PATH: C:\tools\msys64
   script:
-    # Build native library with CMake using vcpkg
-    - mkdir -p build-windows
-    - cd build-windows
-    - cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT\scripts\buildsystems\vcpkg.cmake"
-    - cmake --build . --config Release --target dna_lib
-    - cd ..
+    # Build native library with MSYS2/MinGW
+    - $env:Path = "$env:MSYS2_PATH\mingw64\bin;$env:MSYS2_PATH\usr\bin;$env:Path"
+    - bash -lc "cd '$env:CI_PROJECT_DIR' && mkdir -p build-windows && cd build-windows && cmake .. -G 'MinGW Makefiles' -DCMAKE_BUILD_TYPE=Release -DBUILD_GUI=OFF -DBUILD_SHARED_LIB=ON -DBUILD_DNA_NODUS=OFF && mingw32-make -j4 dna_lib"
     # Copy native library to Flutter
     - mkdir -p dna_messenger_flutter\windows\libs
-    - copy build-windows\Release\dna_lib.dll dna_messenger_flutter\windows\libs\ || copy build-windows\dna_lib.dll dna_messenger_flutter\windows\libs\
+    - copy build-windows\libdna_lib.dll dna_messenger_flutter\windows\libs\dna_lib.dll
     # Build Flutter Windows app
     - cd dna_messenger_flutter
     - flutter pub get
