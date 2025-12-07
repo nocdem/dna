@@ -369,7 +369,7 @@ build:flutter-linux:
     paths:
       - dist/*.tar.gz
       - dist/flutter-linux/
-    expire_in: 1 week
+    expire_in: 1 day
 
 # Flutter Android build
 build:flutter-android:
@@ -394,7 +394,7 @@ build:flutter-android:
     name: "dna-messenger-android-${CI_COMMIT_SHORT_SHA}"
     paths:
       - dist/*.apk
-    expire_in: 1 week
+    expire_in: 1 day
   allow_failure: true  # Depends on Android native build
 
 # Full Windows build (native lib + Flutter) on Windows runner
@@ -427,7 +427,7 @@ build:windows:
     name: "dna-messenger-windows-${CI_COMMIT_SHORT_SHA}"
     paths:
       - dist/flutter-windows/
-    expire_in: 1 week
+    expire_in: 1 day
   allow_failure: true
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
@@ -464,7 +464,7 @@ build:flutter-macos:
     name: "dna-messenger-macos-${CI_COMMIT_SHORT_SHA}"
     paths:
       - dist/*.zip
-    expire_in: 1 week
+    expire_in: 1 day
   allow_failure: true  # Requires macOS runner
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
