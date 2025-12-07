@@ -36,13 +36,6 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
     required String token,
     required String network,
   }) async {
-    print('[Wallet] Sending tokens:');
-    print('[Wallet]   Wallet index: $walletIndex');
-    print('[Wallet]   Recipient: $recipientAddress');
-    print('[Wallet]   Amount: $amount');
-    print('[Wallet]   Token: $token');
-    print('[Wallet]   Network: $network');
-
     final engine = await ref.read(engineProvider.future);
 
     try {
@@ -53,9 +46,7 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
         token: token,
         network: network,
       );
-      print('[Wallet] Transaction submitted successfully!');
     } catch (e) {
-      print('[Wallet] Transaction failed: $e');
       rethrow;
     }
 

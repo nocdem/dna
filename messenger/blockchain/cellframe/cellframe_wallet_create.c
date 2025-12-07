@@ -206,11 +206,8 @@ int cellframe_wallet_create_from_seed(
     const char *wallet_dir,
     char *address_out
 ) {
-    fprintf(stderr, "[WALLET_DEBUG] cellframe_wallet_create_from_seed called\n");
-    fprintf(stderr, "[WALLET_DEBUG] wallet_name=%s, wallet_dir=%s\n", wallet_name ? wallet_name : "NULL", wallet_dir ? wallet_dir : "NULL");
-
     if (!seed || !wallet_name || !wallet_dir || !address_out) {
-        fprintf(stderr, "[WALLET_DEBUG] Invalid arguments\n");
+        fprintf(stderr, "[WALLET] Invalid arguments\n");
         return -1;
     }
 
@@ -220,13 +217,11 @@ int cellframe_wallet_create_from_seed(
     uint8_t *serialized_pubkey = NULL;
     uint8_t *serialized_privkey = NULL;
 
-    fprintf(stderr, "[WALLET_DEBUG] Generating Dilithium MODE_1 keypair...\n");
     /* Generate Dilithium MODE_1 keypair from seed */
     if (dilithium_crypto_sign_keypair(&pubkey, &privkey, MODE_1, seed, 32) != 0) {
         fprintf(stderr, "[WALLET] Failed to generate Dilithium keypair\n");
         goto cleanup;
     }
-    fprintf(stderr, "[WALLET_DEBUG] Keypair generated successfully\n");
 
     /* Verify key sizes match expectations */
     if (pubkey.kind != MODE_1 || privkey.kind != MODE_1) {
@@ -278,9 +273,6 @@ int cellframe_wallet_create_from_seed(
         fprintf(stderr, "[WALLET] Failed to generate address\n");
         goto cleanup;
     }
-
-    fprintf(stderr, "[WALLET] Created wallet: %s\n", wallet_path);
-    fprintf(stderr, "[WALLET] Address: %s\n", address_out);
 
     result = 0;
 

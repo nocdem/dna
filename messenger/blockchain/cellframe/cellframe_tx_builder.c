@@ -569,16 +569,6 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
     // Now parse as uninteger
     int result = cellframe_uint256_scan_uninteger(buf, value_out);
 
-    if (result == 0) {
-        printf("[DEBUG cellframe_uint256_from_str] Input: '%s' -> datoshi string: '%s'\n",
-               value_str, buf);
-        printf("[DEBUG] uint256 = {hi.hi=%llu, hi.lo=%llu, lo.hi=%llu, lo.lo=%llu}\n",
-               (unsigned long long)value_out->hi.hi,
-               (unsigned long long)value_out->hi.lo,
-               (unsigned long long)value_out->lo.hi,
-               (unsigned long long)value_out->lo.lo);
-    }
-
     return result;
 }
 

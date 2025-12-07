@@ -698,7 +698,6 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
             if (qgp_dsa87_verify(signature, signature_len, plaintext, plaintext_len,
                                  sender_sign_pubkey_keyserver) == 0) {
                 sig_verified = 1;
-                fprintf(stderr, "[DEBUG] ✓ Signature verified successfully (fingerprint: %.16s...)\n", fingerprint_hex);
             } else {
                 fprintf(stderr, "[ERROR] ✗ Signature verification FAILED (fingerprint: %.16s...)\n", fingerprint_hex);
                 fprintf(stderr, "WARNING: Message may be forged or corrupted!\n");
