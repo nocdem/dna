@@ -398,15 +398,17 @@ if(NOT WIN32 AND NOT ANDROID)
     target_link_libraries(dna_lib m pthread)
 elseif(ANDROID)
     # Android: Link GnuTLS and its dependencies (required by OpenDHT)
+    # Must use full paths to static libraries since link_directories doesn't always work
     # Order matters: libraries must come AFTER libraries that depend on them
+    set(ANDROID_DEPS_DIR "$ENV{HOME}/android-deps")
     target_link_libraries(dna_lib
-        gnutls      # TLS library used by OpenDHT
-        tasn1       # ASN.1 library (required by GnuTLS)
-        hogweed     # Public-key crypto (required by GnuTLS)
-        nettle      # Crypto library (required by GnuTLS)
-        gmp         # Big integer library (required by GnuTLS/Nettle)
-        zstd        # Zstandard compression
-        m           # Math library (pthread is part of bionic on Android)
+        ${ANDROID_DEPS_DIR}/gnutls-arm64/lib/libgnutls.a
+        ${ANDROID_DEPS_DIR}/libtasn1-arm64/lib/libtasn1.a
+        ${ANDROID_DEPS_DIR}/nettle-arm64/lib/libhogweed.a
+        ${ANDROID_DEPS_DIR}/nettle-arm64/lib/libnettle.a
+        ${ANDROID_DEPS_DIR}/gmp-arm64/lib/libgmp.a
+        ${ANDROID_DEPS_DIR}/zstd-arm64/lib/libzstd.a
+        m
     )
 endif()
 
