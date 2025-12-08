@@ -554,7 +554,6 @@ class _ActionButtons extends ConsumerWidget {
       isScrollControlled: true,
       builder: (context) => _SendSheet(
         walletIndex: walletIndex,
-        ref: ref,
       ),
     );
   }
@@ -562,13 +561,11 @@ class _ActionButtons extends ConsumerWidget {
 
 class _SendSheet extends ConsumerStatefulWidget {
   final int walletIndex;
-  final WidgetRef ref;
   final String? preselectedToken;
   final String? preselectedNetwork;
 
   const _SendSheet({
     required this.walletIndex,
-    required this.ref,
     this.preselectedToken,
     this.preselectedNetwork,
   });
@@ -1025,7 +1022,6 @@ class _TokenDetailSheet extends ConsumerWidget {
       isScrollControlled: true,
       builder: (context) => _SendSheet(
         walletIndex: walletIndex,
-        ref: ref,
         preselectedToken: token,
         preselectedNetwork: network,
       ),

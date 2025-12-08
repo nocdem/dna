@@ -418,6 +418,12 @@ int blockchain_send_tokens(
     int gas_speed,
     char *tx_hash_out
 ) {
+    QGP_LOG_INFO(LOG_TAG, ">>> blockchain_send_tokens: type=%d path=%s to=%s amount=%s token=%s gas=%d",
+                 type, wallet_path ? wallet_path : "NULL",
+                 to_address ? to_address : "NULL",
+                 amount ? amount : "NULL",
+                 token ? token : "NULL", gas_speed);
+
     if (!wallet_path || !to_address || !amount || !tx_hash_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to blockchain_send_tokens");
         return -1;
@@ -425,12 +431,14 @@ int blockchain_send_tokens(
 
     switch (type) {
         case BLOCKCHAIN_ETHEREUM: {
+            QGP_LOG_INFO(LOG_TAG, "Loading ETH wallet from: %s", wallet_path);
             /* Load wallet to get private key */
             eth_wallet_t wallet;
             if (eth_wallet_load(wallet_path, &wallet) != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "Failed to load ETH wallet: %s", wallet_path);
                 return -1;
             }
+            QGP_LOG_INFO(LOG_TAG, "ETH wallet loaded, address: %s", wallet.address_hex);
 
             /* Send ETH with gas speed */
             int ret = eth_send_eth_with_gas(
@@ -445,6 +453,7 @@ int blockchain_send_tokens(
             /* Clear sensitive data */
             eth_wallet_clear(&wallet);
 
+            QGP_LOG_INFO(LOG_TAG, "<<< blockchain_send_tokens result: %d", ret);
             return ret;
         }
 

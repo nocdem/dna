@@ -3399,7 +3399,13 @@ dna_request_id_t dna_engine_send_tokens(
     dna_completion_cb callback,
     void *user_data
 ) {
+    QGP_LOG_INFO(LOG_TAG, "send_tokens: wallet=%d to=%s amount=%s token=%s network=%s gas=%d",
+            wallet_index, recipient_address ? recipient_address : "NULL",
+            amount ? amount : "NULL", token ? token : "NULL",
+            network ? network : "NULL", gas_speed);
+
     if (!engine || !recipient_address || !amount || !token || !network || !callback) {
+        QGP_LOG_ERROR(LOG_TAG, "send_tokens: invalid params");
         return DNA_REQUEST_ID_INVALID;
     }
     if (wallet_index < 0) return DNA_REQUEST_ID_INVALID;

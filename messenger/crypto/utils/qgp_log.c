@@ -212,6 +212,7 @@ void qgp_log_print(qgp_log_level_t level, const char *tag, const char *fmt, ...)
 
     vfprintf(out, fmt, args);
     fprintf(out, "\n");
+    fflush(out);
 
     va_end(args);
 }

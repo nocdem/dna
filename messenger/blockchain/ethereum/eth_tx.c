@@ -642,7 +642,16 @@ int eth_send_eth_with_gas(
     int gas_speed,
     char *tx_hash_out
 ) {
+    QGP_LOG_INFO(LOG_TAG, ">>> eth_send_eth_with_gas ENTRY: from=%s to=%s amount=%s speed=%d",
+                 from_address ? from_address : "NULL",
+                 to_address ? to_address : "NULL",
+                 amount_eth ? amount_eth : "NULL",
+                 gas_speed);
+
     if (!private_key || !from_address || !to_address || !amount_eth || !tx_hash_out) {
+        QGP_LOG_ERROR(LOG_TAG, "NULL parameter: key=%p from=%p to=%p amt=%p out=%p",
+                      (void*)private_key, (void*)from_address, (void*)to_address,
+                      (void*)amount_eth, (void*)tx_hash_out);
         return -1;
     }
 
@@ -652,55 +661,69 @@ int eth_send_eth_with_gas(
     }
 
     /* Get nonce */
+    QGP_LOG_INFO(LOG_TAG, "Step 1: Getting nonce for %s", from_address);
     uint64_t nonce;
     if (eth_tx_get_nonce(from_address, &nonce) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get nonce");
         return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "Step 1 OK: nonce=%llu", (unsigned long long)nonce);
 
     /* Get base gas price */
+    QGP_LOG_INFO(LOG_TAG, "Step 2: Getting gas price");
     uint64_t gas_price;
     if (eth_tx_get_gas_price(&gas_price) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get gas price");
         return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "Step 2 OK: base_gas=%llu wei", (unsigned long long)gas_price);
 
     /* Apply gas speed multiplier */
     gas_price = (gas_price * GAS_SPEED_MULTIPLIERS[gas_speed]) / 100;
-
-    QGP_LOG_INFO(LOG_TAG, "Using gas price: %llu wei (speed=%d)",
-                 (unsigned long long)gas_price, gas_speed);
+    QGP_LOG_INFO(LOG_TAG, "Step 3: Adjusted gas=%llu wei (speed=%d, mult=%d%%)",
+                 (unsigned long long)gas_price, gas_speed, GAS_SPEED_MULTIPLIERS[gas_speed]);
 
     /* Parse recipient address */
+    QGP_LOG_INFO(LOG_TAG, "Step 4: Parsing recipient address");
     uint8_t to[20];
     if (eth_parse_address(to_address, to) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid recipient address");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid recipient address: %s", to_address);
         return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "Step 4 OK: address parsed");
 
     /* Parse amount */
+    QGP_LOG_INFO(LOG_TAG, "Step 5: Parsing amount %s", amount_eth);
     uint8_t value[32];
     if (eth_parse_amount(amount_eth, value) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid amount");
+        QGP_LOG_ERROR(LOG_TAG, "Invalid amount: %s", amount_eth);
         return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "Step 5 OK: amount parsed");
 
     /* Build transaction */
+    QGP_LOG_INFO(LOG_TAG, "Step 6: Building transaction");
     eth_tx_t tx;
     eth_tx_init_transfer(&tx, nonce, gas_price, to, value, ETH_CHAIN_MAINNET);
+    QGP_LOG_INFO(LOG_TAG, "Step 6 OK: tx built");
 
     /* Sign */
+    QGP_LOG_INFO(LOG_TAG, "Step 7: Signing transaction");
     eth_signed_tx_t signed_tx;
     if (eth_tx_sign(&tx, private_key, &signed_tx) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to sign transaction");
         return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "Step 7 OK: signed, hash=%s", signed_tx.tx_hash);
 
     /* Send */
+    QGP_LOG_INFO(LOG_TAG, "Step 8: Broadcasting transaction");
     if (eth_tx_send(&signed_tx, tx_hash_out) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to send transaction");
         return -1;
     }
+    QGP_LOG_INFO(LOG_TAG, "Step 8 OK: sent, tx_hash=%s", tx_hash_out);
 
+    QGP_LOG_INFO(LOG_TAG, "<<< eth_send_eth_with_gas SUCCESS");
     return 0;
 }
