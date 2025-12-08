@@ -75,18 +75,19 @@ void qgp_log_print(qgp_log_level_t level, const char *tag, const char *fmt, ...)
 #if defined(__ANDROID__)
     #include <android/log.h>
 
+    /* All DNA logs use "DNA/" prefix for easy filtering: adb logcat -s "DNA/*:*" */
     #define QGP_LOG_DEBUG(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_DEBUG, tag)) \
-            __android_log_print(ANDROID_LOG_DEBUG, tag, fmt, ##__VA_ARGS__); } while(0)
+            __android_log_print(ANDROID_LOG_DEBUG, "DNA/" tag, fmt, ##__VA_ARGS__); } while(0)
     #define QGP_LOG_INFO(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_INFO, tag)) \
-            __android_log_print(ANDROID_LOG_INFO, tag, fmt, ##__VA_ARGS__); } while(0)
+            __android_log_print(ANDROID_LOG_INFO, "DNA/" tag, fmt, ##__VA_ARGS__); } while(0)
     #define QGP_LOG_WARN(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_WARN, tag)) \
-            __android_log_print(ANDROID_LOG_WARN, tag, fmt, ##__VA_ARGS__); } while(0)
+            __android_log_print(ANDROID_LOG_WARN, "DNA/" tag, fmt, ##__VA_ARGS__); } while(0)
     #define QGP_LOG_ERROR(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_ERROR, tag)) \
-            __android_log_print(ANDROID_LOG_ERROR, tag, fmt, ##__VA_ARGS__); } while(0)
+            __android_log_print(ANDROID_LOG_ERROR, "DNA/" tag, fmt, ##__VA_ARGS__); } while(0)
 
 #else
     /* Non-Android: use standard stdio with filtering */
