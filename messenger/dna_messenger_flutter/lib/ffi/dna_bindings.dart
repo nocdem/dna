@@ -2,6 +2,7 @@
 // Hand-written bindings for dna_engine.h
 // ignore_for_file: non_constant_identifier_names, camel_case_types, constant_identifier_names
 
+import 'dart:convert';
 import 'dart:ffi';
 import 'package:ffi/ffi.dart';
 
@@ -1802,12 +1803,16 @@ class DnaBindings {
 /// Helper to convert char array to String
 extension CharArrayToString on Array<Char> {
   String toDartString(int maxLength) {
-    final buffer = StringBuffer();
+    // Collect bytes first, then decode as UTF-8
+    final bytes = <int>[];
     for (var i = 0; i < maxLength; i++) {
       final char = this[i];
       if (char == 0) break;
-      buffer.writeCharCode(char);
+      // Handle signed char by converting to unsigned (0-255)
+      bytes.add(char & 0xFF);
     }
-    return buffer.toString();
+    if (bytes.isEmpty) return '';
+    // Decode as UTF-8, replacing invalid sequences with empty
+    return utf8.decode(bytes, allowMalformed: true);
   }
 }
