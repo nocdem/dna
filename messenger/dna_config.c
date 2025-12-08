@@ -25,17 +25,14 @@ int dna_config_load(dna_config_t *config) {
         return -1;
     }
 
+    memset(config, 0, sizeof(dna_config_t));
+
     char config_path[512];
     get_config_path(config_path, sizeof(config_path));
 
     FILE *f = fopen(config_path, "r");
     if (!f) {
         // Default config if file doesn't exist
-        strcpy(config->server_host, "ai.cpunk.io");
-        config->server_port = 5432;
-        strcpy(config->database, "dna_messenger");
-        strcpy(config->username, "dna");
-        strcpy(config->password, "dna_password");
         strcpy(config->log_level, "WARN");
         config->log_tags[0] = '\0';  // Empty = show all
 
@@ -65,24 +62,14 @@ int dna_config_load(dna_config_t *config) {
         char *key = line;
         char *value = equals + 1;
 
-        if (strcmp(key, "server_host") == 0) {
-            strncpy(config->server_host, value, sizeof(config->server_host) - 1);
-        } else if (strcmp(key, "server_port") == 0) {
-            config->server_port = atoi(value);
-        } else if (strcmp(key, "database") == 0) {
-            strncpy(config->database, value, sizeof(config->database) - 1);
-        } else if (strcmp(key, "username") == 0) {
-            strncpy(config->username, value, sizeof(config->username) - 1);
-        } else if (strcmp(key, "password") == 0) {
-            strncpy(config->password, value, sizeof(config->password) - 1);
-        } else if (strcmp(key, "log_level") == 0) {
+        if (strcmp(key, "log_level") == 0) {
             strncpy(config->log_level, value, sizeof(config->log_level) - 1);
         } else if (strcmp(key, "log_tags") == 0) {
             strncpy(config->log_tags, value, sizeof(config->log_tags) - 1);
         }
     }
 
-    // Set defaults for log settings if not in config
+    // Set defaults if not in config
     if (config->log_level[0] == '\0') {
         strcpy(config->log_level, "WARN");
     }
@@ -113,61 +100,13 @@ int dna_config_save(const dna_config_t *config) {
         return -1;
     }
 
-    fprintf(f, "# DNA Messenger Configuration\n");
-    fprintf(f, "# Auto-generated - edit with caution\n\n");
-    fprintf(f, "server_host=%s\n", config->server_host);
-    fprintf(f, "server_port=%d\n", config->server_port);
-    fprintf(f, "database=%s\n", config->database);
-    fprintf(f, "username=%s\n", config->username);
-    fprintf(f, "password=%s\n", config->password);
-    fprintf(f, "\n# Log settings\n");
-    fprintf(f, "# log_level: DEBUG, INFO, WARN, ERROR, NONE\n");
-    fprintf(f, "log_level=%s\n", config->log_level);
-    fprintf(f, "# log_tags: comma-separated list of tags to show (empty = all)\n");
+    fprintf(f, "# DNA Messenger Configuration\n\n");
+    fprintf(f, "# Log level: DEBUG, INFO, WARN, ERROR, NONE\n");
+    fprintf(f, "log_level=%s\n\n", config->log_level);
+    fprintf(f, "# Log tags: comma-separated list (empty = show all)\n");
     fprintf(f, "log_tags=%s\n", config->log_tags);
 
     fclose(f);
-    printf("✓ Configuration saved to %s\n", config_path);
-    return 0;
-}
-
-void dna_config_build_connstring(const dna_config_t *config, char *connstring, size_t size) {
-    snprintf(connstring, size,
-             "postgresql://%s:%s@%s:%d/%s",
-             config->username,
-             config->password,
-             config->server_host,
-             config->server_port,
-             config->database);
-}
-
-int dna_config_setup(dna_config_t *config) {
-    if (!config) {
-        return -1;
-    }
-
-    printf("\n=== DNA Messenger - Server Configuration ===\n\n");
-
-    // Only ask for server IP/hostname
-    printf("DNA Server (IP or hostname): ");
-    if (!fgets(config->server_host, sizeof(config->server_host), stdin)) {
-        return -1;
-    }
-    config->server_host[strcspn(config->server_host, "\n")] = 0;
-
-    if (strlen(config->server_host) == 0) {
-        fprintf(stderr, "Error: Server address required\n");
-        return -1;
-    }
-
-    // Set defaults (standard DNA Messenger values)
-    config->server_port = 5432;
-    strcpy(config->database, "dna_messenger");
-    strcpy(config->username, "dna");
-    strcpy(config->password, "dna_password");
-
-    printf("\n✓ Server configured: %s:%d\n", config->server_host, config->server_port);
-    printf("\n");
     return 0;
 }
 
