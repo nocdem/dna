@@ -132,15 +132,18 @@ class DnaTheme {
     ),
     iconTheme: const IconThemeData(color: DnaColors.primary),
     snackBarTheme: SnackBarThemeData(
-      backgroundColor: DnaColors.surface,
+      backgroundColor: DnaColors.surface.withOpacity(0.85),
       contentTextStyle: const TextStyle(color: DnaColors.text),
       actionTextColor: DnaColors.primary,
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(8),
-        side: const BorderSide(color: DnaColors.borderAccent),
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(color: DnaColors.borderAccent.withOpacity(0.5)),
       ),
-      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      // Center horizontally, position in middle of screen
+      insetPadding: const EdgeInsets.symmetric(horizontal: 48, vertical: 300),
+      elevation: 6,
+      width: 280,
     ),
     switchTheme: SwitchThemeData(
       thumbColor: WidgetStateProperty.resolveWith((states) {
