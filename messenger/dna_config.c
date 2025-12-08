@@ -12,6 +12,9 @@
 
 #define CONFIG_FILE_NAME "config"
 
+// Forward declaration
+int dna_config_save(const dna_config_t *config);
+
 static void get_config_path(char *path, size_t size) {
     const char *home = qgp_platform_home_dir();
     snprintf(path, size, "%s/.dna/%s", home, CONFIG_FILE_NAME);
@@ -35,6 +38,9 @@ int dna_config_load(dna_config_t *config) {
         strcpy(config->password, "dna_password");
         strcpy(config->log_level, "WARN");
         config->log_tags[0] = '\0';  // Empty = show all
+
+        // Create default config file
+        dna_config_save(config);
         return 0;
     }
 
