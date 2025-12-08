@@ -259,9 +259,9 @@ typedef struct {
 } eth_transaction_t;
 
 /**
- * Get ETH transaction history via Etherscan API
+ * Get ETH transaction history via Blockscout API
  *
- * Uses Etherscan's free API (rate limited to 1 req/5 sec without key).
+ * Uses Blockscout's free API (no API key required).
  * Returns up to 50 most recent transactions.
  *
  * @param address    Ethereum address (with 0x prefix)

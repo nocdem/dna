@@ -347,8 +347,8 @@ int eth_rpc_get_balance(
     return ret;
 }
 
-/* Etherscan API endpoint (no API key = rate limited to 1 req/5 sec) */
-#define ETHERSCAN_API_URL "https://api.etherscan.io/api"
+/* Blockscout API endpoint (free, no API key required) */
+#define BLOCKSCOUT_API_URL "https://eth.blockscout.com/api"
 
 int eth_rpc_get_transactions(
     const char *address,
@@ -376,13 +376,13 @@ int eth_rpc_get_transactions(
         return -1;
     }
 
-    /* Build Etherscan API URL */
+    /* Build Blockscout API URL */
     char url[512];
     snprintf(url, sizeof(url),
         "%s?module=account&action=txlist&address=%s&startblock=0&endblock=99999999&page=1&offset=50&sort=desc",
-        ETHERSCAN_API_URL, address);
+        BLOCKSCOUT_API_URL, address);
 
-    QGP_LOG_DEBUG(LOG_TAG, "Etherscan request: %s", url);
+    QGP_LOG_DEBUG(LOG_TAG, "Blockscout request: %s", url);
 
     /* Setup response buffer */
     struct response_buffer resp_buf = {0};
@@ -405,25 +405,25 @@ int eth_rpc_get_transactions(
     }
 
     if (!resp_buf.data) {
-        QGP_LOG_ERROR(LOG_TAG, "Empty response from Etherscan");
+        QGP_LOG_ERROR(LOG_TAG, "Empty response from Blockscout");
         return -1;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "Etherscan response length: %zu", resp_buf.size);
+    QGP_LOG_DEBUG(LOG_TAG, "Blockscout response length: %zu", resp_buf.size);
 
     /* Parse JSON response */
     json_object *jresp = json_tokener_parse(resp_buf.data);
     free(resp_buf.data);
 
     if (!jresp) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to parse Etherscan response");
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse Blockscout response");
         return -1;
     }
 
     /* Check status */
     json_object *jstatus = NULL;
     if (!json_object_object_get_ex(jresp, "status", &jstatus)) {
-        QGP_LOG_ERROR(LOG_TAG, "No status in Etherscan response");
+        QGP_LOG_ERROR(LOG_TAG, "No status in Blockscout response");
         json_object_put(jresp);
         return -1;
     }
@@ -439,7 +439,7 @@ int eth_rpc_get_transactions(
                 return 0;  /* Empty but success */
             }
         }
-        QGP_LOG_ERROR(LOG_TAG, "Etherscan API error");
+        QGP_LOG_ERROR(LOG_TAG, "Blockscout API error");
         json_object_put(jresp);
         return -1;
     }
@@ -448,7 +448,7 @@ int eth_rpc_get_transactions(
     json_object *jresult = NULL;
     if (!json_object_object_get_ex(jresp, "result", &jresult) ||
         !json_object_is_type(jresult, json_type_array)) {
-        QGP_LOG_ERROR(LOG_TAG, "No result array in Etherscan response");
+        QGP_LOG_ERROR(LOG_TAG, "No result array in Blockscout response");
         json_object_put(jresp);
         return -1;
     }
