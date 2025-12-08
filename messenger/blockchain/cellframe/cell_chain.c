@@ -602,7 +602,7 @@ static bool cell_chain_validate_address(const char *address) {
     if (!address) return false;
 
     size_t len = strlen(address);
-    if (len < 100 || len > 110) return false;
+    if (len != 104) return false;  /* Cellframe addresses are exactly 104 chars */
 
     return true;
 }
