@@ -125,6 +125,110 @@ int qgp_derive_seeds_from_mnemonic(
 }
 
 /**
+ * Derive QGP seeds AND master seed from BIP39 mnemonic
+ *
+ * Same as qgp_derive_seeds_from_mnemonic() but also returns the
+ * 64-byte master seed for multi-chain wallet derivation (BIP-44).
+ */
+int qgp_derive_seeds_with_master(
+    const char *mnemonic,
+    const char *passphrase,
+    uint8_t signing_seed[32],
+    uint8_t encryption_seed[32],
+    uint8_t wallet_seed[32],
+    uint8_t master_seed_out[64]
+) {
+    if (!mnemonic || !signing_seed || !encryption_seed) {
+        return -1;
+    }
+
+    // Validate mnemonic
+    if (!bip39_validate_mnemonic(mnemonic)) {
+        QGP_LOG_ERROR("SEED", "Invalid BIP39 mnemonic");
+        return -1;
+    }
+
+    // Derive 64-byte master seed from mnemonic
+    uint8_t master_seed[BIP39_SEED_SIZE];
+    if (bip39_mnemonic_to_seed(mnemonic, passphrase, master_seed) != 0) {
+        QGP_LOG_ERROR("SEED", "Failed to derive master seed from mnemonic");
+        return -1;
+    }
+
+    // Copy master seed to output if requested (for multi-chain wallets)
+    if (master_seed_out) {
+        memcpy(master_seed_out, master_seed, BIP39_SEED_SIZE);
+    }
+
+    // Derive signing seed: SHAKE256(master_seed || "qgp-signing-v1", 32)
+    {
+        const char *signing_context = "qgp-signing-v1";
+        size_t context_len = strlen(signing_context);
+        size_t input_len = BIP39_SEED_SIZE + context_len;
+
+        uint8_t *input = malloc(input_len);
+        if (!input) {
+            QGP_LOG_ERROR("SEED", "Memory allocation failed");
+            memset(master_seed, 0, BIP39_SEED_SIZE);
+            return -1;
+        }
+
+        memcpy(input, master_seed, BIP39_SEED_SIZE);
+        memcpy(input + BIP39_SEED_SIZE, signing_context, context_len);
+
+        shake256(signing_seed, 32, input, input_len);
+        free(input);
+    }
+
+    // Derive encryption seed: SHAKE256(master_seed || "qgp-encryption-v1", 32)
+    {
+        const char *encryption_context = "qgp-encryption-v1";
+        size_t context_len = strlen(encryption_context);
+        size_t input_len = BIP39_SEED_SIZE + context_len;
+
+        uint8_t *input = malloc(input_len);
+        if (!input) {
+            QGP_LOG_ERROR("SEED", "Memory allocation failed");
+            memset(master_seed, 0, BIP39_SEED_SIZE);
+            return -1;
+        }
+
+        memcpy(input, master_seed, BIP39_SEED_SIZE);
+        memcpy(input + BIP39_SEED_SIZE, encryption_context, context_len);
+
+        shake256(encryption_seed, 32, input, input_len);
+        free(input);
+    }
+
+    // Derive wallet seed (optional): SHAKE256(master_seed || "cellframe-wallet-v1", 32)
+    if (wallet_seed) {
+        const char *wallet_context = "cellframe-wallet-v1";
+        size_t context_len = strlen(wallet_context);
+        size_t input_len = BIP39_SEED_SIZE + context_len;
+
+        uint8_t *input = malloc(input_len);
+        if (!input) {
+            QGP_LOG_ERROR("SEED", "Memory allocation failed");
+            memset(master_seed, 0, BIP39_SEED_SIZE);
+            return -1;
+        }
+
+        memcpy(input, master_seed, BIP39_SEED_SIZE);
+        memcpy(input + BIP39_SEED_SIZE, wallet_context, context_len);
+
+        shake256(wallet_seed, 32, input, input_len);
+        free(input);
+    }
+
+    // Clear master seed from memory (security) - unless returned to caller
+    if (!master_seed_out) {
+        memset(master_seed, 0, BIP39_SEED_SIZE);
+    }
+
+    return 0;
+}
+
+/**
  * Display BIP39 mnemonic in a user-friendly format
  *
  * Prints mnemonic with word numbers for easy verification and backup.

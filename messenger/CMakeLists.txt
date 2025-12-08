@@ -34,6 +34,9 @@ add_subdirectory(crypto/kem)        # ML-KEM-1024 KEM (includes FIPS202/SHAKE256
 add_subdirectory(crypto/dsa)        # ML-DSA-87 signatures (NIST Category 5)
 add_subdirectory(crypto/cellframe_dilithium)  # Cellframe-compatible Dilithium (for CF20 wallet)
 
+# secp256k1 for Ethereum/Bitcoin key derivation (BIP-32/BIP-44)
+include(${CMAKE_SOURCE_DIR}/cmake/Secp256k1.cmake)
+
 # =============================================================================
 # DHT and P2P Transport Layer
 # =============================================================================
@@ -140,6 +143,11 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     blockchain/cellframe/cellframe_wallet_create.c # Cellframe wallet creation from seed
     blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
     blockchain/cellframe/cellframe_addr.c          # Blockchain address utilities
+    blockchain/blockchain_wallet.c                 # Generic multi-chain wallet interface
+    blockchain/ethereum/eth_wallet_create.c        # Ethereum wallet creation (BIP-44)
+    blockchain/ethereum/eth_rpc.c                  # Ethereum JSON-RPC client
+    crypto/bip32/bip32.c                           # BIP-32 HD key derivation
+    crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
     crypto/utils/base58.c       # Base58 encoding for addresses
     ${COMMON_SOURCES}
 )
@@ -149,6 +157,7 @@ target_link_libraries(dna_lib
     OpenSSL::Crypto
     kem
     dsa
+    secp256k1          # secp256k1 for Ethereum/Bitcoin key derivation
     cellframe_minimal  # Blockchain transaction building (uint256, signing)
     dht_lib            # DHT library (MUST come BEFORE p2p_transport for Windows stub symbols)
     p2p_transport      # P2P transport layer (links libjuice for NAT traversal)
@@ -157,6 +166,9 @@ target_link_libraries(dna_lib
     ${JSONC_LIBRARIES}
     ${PLATFORM_LIBS}
 )
+
+# secp256k1 include directory for BIP-32 derivation
+target_include_directories(dna_lib PRIVATE ${SECP256K1_INCLUDE_DIR})
 
 # C++ standard library linking
 # On Android, don't explicitly link stdc++ - let ANDROID_STL handle it

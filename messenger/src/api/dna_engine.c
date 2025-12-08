@@ -771,6 +771,7 @@ void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
         task->params.create_identity.signing_seed,
         task->params.create_identity.encryption_seed,
         task->params.create_identity.wallet_seed,  /* wallet_seed - may be NULL */
+        task->params.create_identity.master_seed,  /* master_seed - for multi-chain wallets */
         engine->data_dir,
         fingerprint_buf
     );
@@ -2794,13 +2795,14 @@ int dna_engine_create_identity_sync(
     const uint8_t signing_seed[32],
     const uint8_t encryption_seed[32],
     const uint8_t wallet_seed[32],
+    const uint8_t master_seed[64],
     char fingerprint_out[129]
 ) {
     if (!engine || !name || !signing_seed || !encryption_seed || !fingerprint_out) {
         return DNA_ERROR_INVALID_ARG;
     }
 
-    int rc = messenger_generate_keys_from_seeds(name, signing_seed, encryption_seed, wallet_seed, engine->data_dir, fingerprint_out);
+    int rc = messenger_generate_keys_from_seeds(name, signing_seed, encryption_seed, wallet_seed, master_seed, engine->data_dir, fingerprint_out);
     return (rc == 0) ? DNA_OK : DNA_ERROR_CRYPTO;
 }
 

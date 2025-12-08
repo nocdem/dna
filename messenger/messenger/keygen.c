@@ -29,6 +29,7 @@
 #include "keys.h"
 #include "../blockchain/cellframe/cellframe_wallet_create.h"
 #include "../blockchain/cellframe/cellframe_wallet.h"
+#include "../blockchain/blockchain_wallet.h"
 
 // Network byte order conversion
 #ifdef _WIN32
@@ -167,6 +168,7 @@ int messenger_generate_keys_from_seeds(
     const uint8_t *signing_seed,
     const uint8_t *encryption_seed,
     const uint8_t *wallet_seed,
+    const uint8_t *master_seed,
     const char *data_dir,
     char *fingerprint_out)
 {
@@ -385,9 +387,19 @@ int messenger_generate_keys_from_seeds(
     free(dilithium_pubkey_copy);
     free(kyber_pubkey_copy);
 
-    // Create Cellframe wallet if wallet_seed provided
-    if (wallet_seed) {
-        QGP_LOG_INFO(LOG_TAG, "Creating Cellframe wallet...\n");
+    // Create blockchain wallets
+    if (master_seed) {
+        // Use master seed to create all wallets (CF + ETH via blockchain_wallet abstraction)
+        QGP_LOG_INFO(LOG_TAG, "Creating blockchain wallets...\n");
+
+        if (blockchain_create_all_wallets(master_seed, dir_name, wallets_dir) == 0) {
+            QGP_LOG_INFO(LOG_TAG, "✓ Blockchain wallets created in %s\n", wallets_dir);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Warning: Some wallets may have failed to create (non-fatal)\n");
+        }
+    } else if (wallet_seed) {
+        // Fallback: only create Cellframe wallet if no master_seed but wallet_seed is provided
+        QGP_LOG_INFO(LOG_TAG, "Creating Cellframe wallet (legacy mode)...\n");
 
         char wallet_address[CF_WALLET_ADDRESS_MAX];
 

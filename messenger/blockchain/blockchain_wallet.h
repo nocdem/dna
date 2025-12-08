@@ -1,0 +1,206 @@
+/**
+ * @file blockchain_wallet.h
+ * @brief Generic Blockchain Wallet Interface
+ *
+ * Provides a common interface for multi-chain wallet operations.
+ * Implementations exist in chain-specific subdirectories:
+ *   - cellframe/ : Cellframe blockchain (CF20, post-quantum Dilithium)
+ *   - ethereum/  : Ethereum and EVM-compatible chains (secp256k1)
+ *   - (future)   : bitcoin/, solana/, etc.
+ *
+ * @author DNA Messenger Team
+ * @date 2025-12-08
+ */
+
+#ifndef BLOCKCHAIN_WALLET_H
+#define BLOCKCHAIN_WALLET_H
+
+#include <stdint.h>
+#include <stddef.h>
+#include <stdbool.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* ============================================================================
+ * BLOCKCHAIN TYPES
+ * ============================================================================ */
+
+/**
+ * Supported blockchain types
+ */
+typedef enum {
+    BLOCKCHAIN_CELLFRAME = 0,   /* Cellframe (CF20, Dilithium signatures) */
+    BLOCKCHAIN_ETHEREUM  = 1,   /* Ethereum mainnet */
+    BLOCKCHAIN_BITCOIN   = 2,   /* Bitcoin (future) */
+    BLOCKCHAIN_SOLANA    = 3,   /* Solana (future) */
+    BLOCKCHAIN_COUNT            /* Number of supported blockchains */
+} blockchain_type_t;
+
+/**
+ * Get blockchain name string
+ */
+const char* blockchain_type_name(blockchain_type_t type);
+
+/**
+ * Get blockchain ticker symbol
+ */
+const char* blockchain_type_ticker(blockchain_type_t type);
+
+/* ============================================================================
+ * GENERIC WALLET STRUCTURE
+ * ============================================================================ */
+
+/**
+ * Maximum sizes for wallet fields
+ */
+#define BLOCKCHAIN_WALLET_NAME_MAX      256
+#define BLOCKCHAIN_WALLET_ADDRESS_MAX   128
+#define BLOCKCHAIN_WALLET_PATH_MAX      512
+
+/**
+ * Generic wallet info structure
+ *
+ * Used to represent any blockchain wallet in a unified way.
+ */
+typedef struct {
+    blockchain_type_t type;                     /* Blockchain type */
+    char name[BLOCKCHAIN_WALLET_NAME_MAX];      /* Wallet name/label */
+    char address[BLOCKCHAIN_WALLET_ADDRESS_MAX]; /* Primary address */
+    char file_path[BLOCKCHAIN_WALLET_PATH_MAX]; /* Path to wallet file */
+    bool is_encrypted;                          /* Is wallet password-protected */
+    uint64_t created_at;                        /* Creation timestamp */
+} blockchain_wallet_info_t;
+
+/**
+ * List of wallets
+ */
+typedef struct {
+    blockchain_wallet_info_t *wallets;
+    size_t count;
+} blockchain_wallet_list_t;
+
+/* ============================================================================
+ * WALLET CREATION INTERFACE
+ * ============================================================================ */
+
+/**
+ * Create all wallets from BIP39 master seed
+ *
+ * Derives and creates wallets for all supported blockchains:
+ * - Cellframe: SHAKE256(master_seed || "cellframe-wallet-v1") → Dilithium
+ * - Ethereum:  BIP-44 (m/44'/60'/0'/0/0) → secp256k1
+ *
+ * Wallets are saved to: <wallet_dir>/<fingerprint>.<ext>
+ *
+ * @param master_seed   64-byte BIP39 master seed
+ * @param fingerprint   Identity fingerprint (used for wallet naming)
+ * @param wallet_dir    Directory to store wallet files
+ * @return              0 on success, -1 on error
+ */
+int blockchain_create_all_wallets(
+    const uint8_t master_seed[64],
+    const char *fingerprint,
+    const char *wallet_dir
+);
+
+/**
+ * Create wallet for specific blockchain
+ *
+ * @param type          Blockchain type
+ * @param master_seed   64-byte BIP39 master seed
+ * @param fingerprint   Identity fingerprint
+ * @param wallet_dir    Directory to store wallet file
+ * @param address_out   Output: wallet address (BLOCKCHAIN_WALLET_ADDRESS_MAX bytes)
+ * @return              0 on success, -1 on error
+ */
+int blockchain_create_wallet(
+    blockchain_type_t type,
+    const uint8_t master_seed[64],
+    const char *fingerprint,
+    const char *wallet_dir,
+    char *address_out
+);
+
+/* ============================================================================
+ * WALLET LISTING INTERFACE
+ * ============================================================================ */
+
+/**
+ * List all wallets for an identity
+ *
+ * @param fingerprint   Identity fingerprint
+ * @param list_out      Output: allocated wallet list (caller must free)
+ * @return              0 on success, -1 on error
+ */
+int blockchain_list_wallets(
+    const char *fingerprint,
+    blockchain_wallet_list_t **list_out
+);
+
+/**
+ * Free wallet list
+ */
+void blockchain_wallet_list_free(blockchain_wallet_list_t *list);
+
+/* ============================================================================
+ * BALANCE INTERFACE
+ * ============================================================================ */
+
+/**
+ * Token balance structure
+ */
+typedef struct {
+    char token[32];         /* Token symbol (ETH, CPUNK, etc.) */
+    char balance[64];       /* Formatted balance string */
+    char balance_raw[128];  /* Raw balance (wei, datoshi, etc.) */
+    int decimals;           /* Token decimals */
+} blockchain_balance_t;
+
+/**
+ * Get balance for wallet
+ *
+ * @param type          Blockchain type
+ * @param address       Wallet address
+ * @param balance_out   Output: balance info
+ * @return              0 on success, -1 on error
+ */
+int blockchain_get_balance(
+    blockchain_type_t type,
+    const char *address,
+    blockchain_balance_t *balance_out
+);
+
+/* ============================================================================
+ * ADDRESS UTILITIES
+ * ============================================================================ */
+
+/**
+ * Validate address format for blockchain type
+ *
+ * @param type      Blockchain type
+ * @param address   Address string to validate
+ * @return          true if valid format, false otherwise
+ */
+bool blockchain_validate_address(blockchain_type_t type, const char *address);
+
+/**
+ * Get address from wallet file
+ *
+ * @param type          Blockchain type
+ * @param wallet_path   Path to wallet file
+ * @param address_out   Output: address string
+ * @return              0 on success, -1 on error
+ */
+int blockchain_get_address_from_file(
+    blockchain_type_t type,
+    const char *wallet_path,
+    char *address_out
+);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* BLOCKCHAIN_WALLET_H */

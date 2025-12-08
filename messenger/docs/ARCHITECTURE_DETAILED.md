@@ -38,12 +38,13 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 | **Key Encapsulation** | Kyber1024 (ML-KEM-1024) |
 | **Digital Signatures** | Dilithium5 (ML-DSA-87) |
 | **Symmetric Encryption** | AES-256-GCM |
-| **Hash Function** | SHA3-512 |
+| **Hash Function** | SHA3-512, Keccak-256 (ETH) |
 | **DHT Network** | OpenDHT-PQ (post-quantum modified) |
 | **NAT Traversal** | libjuice (ICE/STUN) |
 | **Local Storage** | SQLite3 |
 | **GUI Framework** | ImGui (OpenGL3 + GLFW3) |
-| **Blockchain** | Cellframe (cpunk wallet) |
+| **Blockchain** | Cellframe (CPUNK), Ethereum (ETH) |
+| **HD Derivation** | BIP-32/BIP-44 (secp256k1) |
 
 ### Security Model
 
@@ -96,8 +97,9 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   ├── kem/                  # Kyber1024 (ML-KEM-1024)
 │   ├── dsa/                  # Dilithium5 (ML-DSA-87)
 │   ├── cellframe_dilithium/  # Cellframe-compatible DSA
-│   ├── bip39/                # BIP39 mnemonic/seed
-│   └── utils/                # AES, SHA3, random, keys
+│   ├── bip39/                # BIP39 mnemonic/seed derivation
+│   ├── bip32/                # BIP-32 HD key derivation (for ETH/BTC)
+│   └── utils/                # AES, SHA3, Keccak-256, random, keys
 │
 ├── dht/                      # Distributed Hash Table
 │   ├── core/                 # DHT context, keyserver, bootstrap
@@ -125,12 +127,17 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   ├── group_invitations.c/h # Invitation tracking
 │   └── cache_manager.c/h     # Unified cache lifecycle
 │
-├── blockchain/               # Cellframe wallet
-│   ├── wallet.c/h            # Wallet management
-│   ├── blockchain_rpc.c/h    # RPC client
-│   ├── blockchain_addr.c/h   # Address utilities
-│   ├── blockchain_tx_builder_minimal.c/h
-│   └── blockchain_sign_minimal.c/h
+├── blockchain/               # Multi-chain wallet integration
+│   ├── blockchain_wallet.c/h # Generic multi-chain interface
+│   ├── cellframe/            # Cellframe (CF20) wallet
+│   │   ├── cellframe_wallet.c/h        # Wallet read/write
+│   │   ├── cellframe_wallet_create.c   # Creation from seed
+│   │   ├── cellframe_rpc.c/h           # Node RPC client
+│   │   └── cellframe_addr.c/h          # Address utilities
+│   └── ethereum/             # Ethereum wallet (ERC20)
+│       ├── eth_wallet.h                # ETH wallet interface
+│       ├── eth_wallet_create.c         # BIP-44 derivation
+│       └── eth_rpc.c                   # JSON-RPC client
 │
 ├── imgui_gui/                # GUI application
 │   ├── main.cpp              # Entry point
@@ -142,6 +149,7 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │
 ├── vendor/                   # Third-party libraries
 │   ├── opendht-pq/           # OpenDHT with Dilithium5
+│   ├── secp256k1/            # Bitcoin's EC library (for ETH/BTC)
 │   └── nativefiledialog-extended/
 │
 ├── bootstrap/                # Bootstrap server
@@ -956,11 +964,38 @@ int contacts_db_clear_all(void);
 
 ## 9. Blockchain Integration
 
-### 9.1 Wallet Management
+### 9.1 Multi-Chain Wallet Architecture
 
-**Location:** `blockchain/wallet.h`
+**Location:** `blockchain/blockchain_wallet.h`
 
-**Wallet Directory:** `/opt/cellframe-node/var/lib/wallet/`
+DNA Messenger supports multiple blockchains through a modular wallet architecture:
+
+```c
+typedef enum {
+    BLOCKCHAIN_CELLFRAME = 0,   /* Cellframe (CF20, Dilithium signatures) */
+    BLOCKCHAIN_ETHEREUM  = 1,   /* Ethereum mainnet (secp256k1) */
+    BLOCKCHAIN_BITCOIN   = 2,   /* Bitcoin (future) */
+    BLOCKCHAIN_SOLANA    = 3,   /* Solana (future) */
+} blockchain_type_t;
+```
+
+**Key Derivation:**
+- **Cellframe**: `SHAKE256(master_seed || "cellframe-wallet-v1")` → Dilithium keypair
+- **Ethereum**: BIP-44 path `m/44'/60'/0'/0/0` → secp256k1 keypair
+
+**Wallet Storage:** `~/.dna/<fingerprint>/wallets/`
+- Cellframe: `<fingerprint>.dwallet`
+- Ethereum: `<fingerprint>.eth.json`
+
+### 9.2 Cellframe Wallet
+
+**Location:** `blockchain/cellframe/`
+
+**Files:**
+- `cellframe_wallet.c` - Wallet file read/write
+- `cellframe_wallet_create.c` - Wallet creation from seed
+- `cellframe_rpc.c` - Cellframe node RPC client
+- `cellframe_addr.c` - Address utilities
 
 **Signature Types:**
 ```c
@@ -972,26 +1007,55 @@ typedef enum {
 } sig_type_t;
 ```
 
-### 9.2 RPC Client
+### 9.3 Ethereum Wallet
 
-**Location:** `blockchain/blockchain_rpc.h`
+**Location:** `blockchain/ethereum/`
 
-Communicates with Cellframe node via JSON-RPC.
+**Files:**
+- `eth_wallet.h` - Ethereum wallet interface
+- `eth_wallet_create.c` - Wallet creation (BIP-44 derivation)
+- `eth_rpc.c` - Ethereum JSON-RPC client
 
-### 9.3 Transaction Building
+**Key Features:**
+- BIP-32/BIP-44 HD key derivation
+- secp256k1 elliptic curve (bitcoin-core/secp256k1)
+- Keccak-256 address derivation (Ethereum variant, NOT SHA3-256)
+- EIP-55 checksummed addresses
+- JSON-RPC balance queries via public endpoint
 
-**Location:** `blockchain/blockchain_tx_builder_minimal.h`
+**RPC Endpoint:** `https://eth.llamarpc.com` (configurable)
+
+### 9.4 Cryptographic Support
+
+**BIP-32 HD Derivation:** `crypto/bip32/`
+- HMAC-SHA512 master key derivation
+- Hardened and normal child key derivation
+- Path parsing (`m/44'/60'/0'/0/0`)
+
+**Keccak-256:** `crypto/utils/keccak256.c`
+- Ethereum-compatible padding (0x01, NOT SHA3's 0x06)
+- Address derivation: `Keccak256(pubkey[1:65])[-20:]`
+- EIP-55 checksum encoding
+
+**secp256k1:** `vendor/secp256k1/`
+- Bitcoin's elliptic curve library
+- ECDSA signing and verification
+- Public key generation and serialization
+
+### 9.5 Transaction Building
+
+**Location:** `blockchain/cellframe/cellframe_tx_builder.c`
 
 Minimal transaction builder for DNA name registration and token transfers.
 
-### 9.4 Supported Networks
+### 9.6 Supported Networks
 
-| Network | Token |
-|---------|-------|
-| Backbone | CPUNK, CELL |
-| KelVPN | KEL |
-| SubZero | Various |
-| Millixt | Various |
+| Blockchain | Token | Signature | Status |
+|------------|-------|-----------|--------|
+| Cellframe Backbone | CPUNK, CELL | Dilithium | ✅ Active |
+| Ethereum Mainnet | ETH, ERC-20 | secp256k1 | ✅ Active |
+| Bitcoin | BTC | secp256k1 | 📋 Planned |
+| Solana | SOL | Ed25519 | 📋 Planned |
 
 ---
 

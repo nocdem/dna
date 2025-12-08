@@ -179,6 +179,29 @@ int qgp_derive_seeds_from_mnemonic(
 );
 
 /**
+ * Derive QGP seeds AND master seed from BIP39 mnemonic
+ *
+ * Same as qgp_derive_seeds_from_mnemonic() but also returns the
+ * 64-byte master seed for multi-chain wallet derivation (BIP-44).
+ *
+ * @param mnemonic BIP39 mnemonic phrase (12, 15, 18, 21, or 24 words)
+ * @param passphrase Optional passphrase (empty string if none)
+ * @param signing_seed Output buffer for signing seed (32 bytes)
+ * @param encryption_seed Output buffer for encryption seed (32 bytes)
+ * @param wallet_seed Output buffer for Cellframe wallet seed (32 bytes), or NULL
+ * @param master_seed_out Output buffer for 64-byte master seed (for ETH/BTC), or NULL
+ * @return 0 on success, -1 on error
+ */
+int qgp_derive_seeds_with_master(
+    const char *mnemonic,
+    const char *passphrase,
+    uint8_t signing_seed[32],
+    uint8_t encryption_seed[32],
+    uint8_t wallet_seed[32],
+    uint8_t master_seed_out[64]
+);
+
+/**
  * Display BIP39 mnemonic in a user-friendly format
  *
  * @param mnemonic BIP39 mnemonic phrase

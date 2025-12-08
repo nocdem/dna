@@ -111,6 +111,7 @@ typedef union {
         uint8_t signing_seed[32];
         uint8_t encryption_seed[32];
         uint8_t *wallet_seed;  /* Optional: 32-byte Cellframe wallet seed (NULL if not provided) */
+        uint8_t *master_seed;  /* Optional: 64-byte BIP39 master seed for multi-chain wallets (ETH, BTC) */
     } create_identity;
 
     /* Load identity */
