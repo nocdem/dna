@@ -83,11 +83,8 @@ class WalletScreen extends ConsumerWidget {
               ref.read(selectedWalletIndexProvider.notifier).state = index;
             },
           ),
-          // Balances
-          _BalancesSection(walletIndex: selectedIndex),
-          const SizedBox(height: 16),
-          // Actions
-          _ActionButtons(wallet: currentWallet, walletIndex: selectedIndex),
+          // Balances (tap token to see details/send)
+          _BalancesSection(walletIndex: selectedIndex, wallet: currentWallet),
         ],
       ),
     );
@@ -346,8 +343,9 @@ class _WalletCard extends StatelessWidget {
 
 class _BalancesSection extends ConsumerWidget {
   final int walletIndex;
+  final Wallet wallet;
 
-  const _BalancesSection({required this.walletIndex});
+  const _BalancesSection({required this.walletIndex, required this.wallet});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -380,6 +378,7 @@ class _BalancesSection extends ConsumerWidget {
                   children: list.map((b) => _BalanceTile(
                     balance: b,
                     walletIndex: walletIndex,
+                    walletAddress: wallet.address,
                   )).toList(),
                 ),
           loading: () => const Padding(
@@ -402,8 +401,13 @@ class _BalancesSection extends ConsumerWidget {
 class _BalanceTile extends StatelessWidget {
   final Balance balance;
   final int walletIndex;
+  final String walletAddress;
 
-  const _BalanceTile({required this.balance, required this.walletIndex});
+  const _BalanceTile({
+    required this.balance,
+    required this.walletIndex,
+    required this.walletAddress,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -445,17 +449,20 @@ class _BalanceTile extends StatelessWidget {
           ],
         ),
       ),
-      onTap: () => _showTokenHistory(context),
+      onTap: () => _showTokenDetails(context),
     );
   }
 
-  void _showTokenHistory(BuildContext context) {
+  void _showTokenDetails(BuildContext context) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      builder: (context) => _TransactionHistorySheet(
+      builder: (context) => _TokenDetailSheet(
         walletIndex: walletIndex,
-        tokenFilter: balance.token,
+        walletAddress: walletAddress,
+        token: balance.token,
+        network: balance.network,
+        balance: balance.balance,
       ),
     );
   }
@@ -574,8 +581,15 @@ class _ActionButtons extends ConsumerWidget {
 class _SendSheet extends ConsumerStatefulWidget {
   final int walletIndex;
   final WidgetRef ref;
+  final String? preselectedToken;
+  final String? preselectedNetwork;
 
-  const _SendSheet({required this.walletIndex, required this.ref});
+  const _SendSheet({
+    required this.walletIndex,
+    required this.ref,
+    this.preselectedToken,
+    this.preselectedNetwork,
+  });
 
   @override
   ConsumerState<_SendSheet> createState() => _SendSheetState();
@@ -584,9 +598,16 @@ class _SendSheet extends ConsumerStatefulWidget {
 class _SendSheetState extends ConsumerState<_SendSheet> {
   final _recipientController = TextEditingController();
   final _amountController = TextEditingController();
-  String _selectedToken = 'CPUNK';
-  String _selectedNetwork = 'Backbone';
+  late String _selectedToken;
+  late String _selectedNetwork;
   bool _isSending = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedToken = widget.preselectedToken ?? 'CPUNK';
+    _selectedNetwork = widget.preselectedNetwork ?? 'Backbone';
+  }
 
   @override
   void dispose() {
@@ -639,10 +660,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     child: DropdownButtonFormField<String>(
                       value: _selectedToken,
                       decoration: const InputDecoration(labelText: 'Token'),
-                      items: const [
-                        DropdownMenuItem(value: 'CPUNK', child: Text('CPUNK')),
-                        DropdownMenuItem(value: 'CELL', child: Text('CELL')),
-                      ],
+                      items: _getTokenItems(),
                       onChanged: (v) => setState(() => _selectedToken = v ?? 'CPUNK'),
                     ),
                   ),
@@ -651,9 +669,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     child: DropdownButtonFormField<String>(
                       value: _selectedNetwork,
                       decoration: const InputDecoration(labelText: 'Network'),
-                      items: const [
-                        DropdownMenuItem(value: 'Backbone', child: Text('Backbone')),
-                      ],
+                      items: _getNetworkItems(),
                       onChanged: (v) => setState(() => _selectedNetwork = v ?? 'Backbone'),
                     ),
                   ),
@@ -675,6 +691,33 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         ),
       ),
     );
+  }
+
+  List<DropdownMenuItem<String>> _getTokenItems() {
+    // If ETH is preselected, show ETH option
+    if (_selectedToken.toUpperCase() == 'ETH') {
+      return const [
+        DropdownMenuItem(value: 'ETH', child: Text('ETH')),
+      ];
+    }
+    // Default: Cellframe tokens
+    return const [
+      DropdownMenuItem(value: 'CPUNK', child: Text('CPUNK')),
+      DropdownMenuItem(value: 'CELL', child: Text('CELL')),
+    ];
+  }
+
+  List<DropdownMenuItem<String>> _getNetworkItems() {
+    // If Ethereum network, show only Ethereum
+    if (_selectedNetwork == 'Ethereum') {
+      return const [
+        DropdownMenuItem(value: 'Ethereum', child: Text('Ethereum')),
+      ];
+    }
+    // Default: Backbone network
+    return const [
+      DropdownMenuItem(value: 'Backbone', child: Text('Backbone')),
+    ];
   }
 
   bool _canSend() {
@@ -711,6 +754,255 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
           ),
         );
       }
+    }
+  }
+}
+
+/// Token detail sheet - shows address, send button, and history
+class _TokenDetailSheet extends ConsumerWidget {
+  final int walletIndex;
+  final String walletAddress;
+  final String token;
+  final String network;
+  final String balance;
+
+  const _TokenDetailSheet({
+    required this.walletIndex,
+    required this.walletAddress,
+    required this.token,
+    required this.network,
+    required this.balance,
+  });
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final transactionsAsync = ref.watch(
+      transactionsProvider((walletIndex: walletIndex, network: network == 'Ethereum' ? 'Ethereum' : 'Backbone')),
+    );
+    final theme = Theme.of(context);
+
+    return DraggableScrollableSheet(
+      initialChildSize: 0.85,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (context, scrollController) {
+        return SafeArea(
+          child: Column(
+            children: [
+              // Handle bar
+              Container(
+                margin: const EdgeInsets.only(top: 8),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: theme.dividerColor,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              // Header with token info
+              Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  children: [
+                    Row(
+                      children: [
+                        CircleAvatar(
+                          backgroundColor: _getTokenColor(token).withAlpha(51),
+                          radius: 24,
+                          child: Text(
+                            token.isNotEmpty ? token[0].toUpperCase() : '?',
+                            style: TextStyle(
+                              color: _getTokenColor(token),
+                              fontWeight: FontWeight.bold,
+                              fontSize: 20,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                '$balance $token',
+                                style: theme.textTheme.headlineSmall?.copyWith(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              Text(
+                                network,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.refresh),
+                          onPressed: () {
+                            ref.invalidate(balancesProvider(walletIndex));
+                            ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network == 'Ethereum' ? 'Ethereum' : 'Backbone')));
+                          },
+                          tooltip: 'Refresh',
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+                    // Address section
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surface,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: theme.dividerColor),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Address',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: theme.colorScheme.primary,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Expanded(
+                                child: Text(
+                                  walletAddress,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    fontFamily: 'monospace',
+                                  ),
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                              IconButton(
+                                icon: const Icon(Icons.copy, size: 18),
+                                onPressed: () {
+                                  Clipboard.setData(ClipboardData(text: walletAddress));
+                                  ScaffoldMessenger.of(context).showSnackBar(
+                                    const SnackBar(
+                                      content: Text('Address copied'),
+                                      duration: Duration(seconds: 2),
+                                    ),
+                                  );
+                                },
+                                tooltip: 'Copy address',
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+                    // Send button
+                    SizedBox(
+                      width: double.infinity,
+                      child: ElevatedButton.icon(
+                        onPressed: () => _showSend(context, ref),
+                        icon: const Icon(Icons.arrow_upward),
+                        label: Text('Send $token'),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              // Transaction history header
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    Text(
+                      'Transaction History',
+                      style: theme.textTheme.titleSmall?.copyWith(
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Transaction list
+              Expanded(
+                child: transactionsAsync.when(
+                  data: (list) {
+                    final filtered = list.where((tx) => tx.token.toUpperCase() == token.toUpperCase()).toList();
+
+                    if (filtered.isEmpty) {
+                      return Center(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.receipt_long_outlined,
+                              size: 48,
+                              color: theme.colorScheme.primary.withAlpha(128),
+                            ),
+                            const SizedBox(height: 12),
+                            Text(
+                              'No $token transactions yet',
+                              style: theme.textTheme.bodyMedium,
+                            ),
+                          ],
+                        ),
+                      );
+                    }
+
+                    return ListView.separated(
+                      controller: scrollController,
+                      itemCount: filtered.length,
+                      separatorBuilder: (_, __) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final tx = filtered[index];
+                        return _TransactionTile(transaction: tx);
+                      },
+                    );
+                  },
+                  loading: () => const Center(child: CircularProgressIndicator()),
+                  error: (error, _) => Center(
+                    child: Text(
+                      'Failed to load: $error',
+                      style: TextStyle(color: DnaColors.textWarning),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showSend(BuildContext context, WidgetRef ref) {
+    Navigator.pop(context); // Close current sheet
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => _SendSheet(
+        walletIndex: walletIndex,
+        ref: ref,
+        preselectedToken: token,
+        preselectedNetwork: network,
+      ),
+    );
+  }
+
+  Color _getTokenColor(String token) {
+    switch (token.toUpperCase()) {
+      case 'CPUNK':
+        return const Color(0xFF00D4AA);
+      case 'CELL':
+        return const Color(0xFF6B4CE6);
+      case 'ETH':
+        return const Color(0xFF627EEA);
+      default:
+        return DnaColors.textInfo;
     }
   }
 }
