@@ -31,7 +31,7 @@
 #define DEFAULT_VALIDATOR_FEE_DATOSHI 10000000000000000ULL /* 0.01 CELL */
 
 /* Network fee collector address */
-#define NETWORK_FEE_COLLECTOR "6mqJtJSvdNXtM74odw7EXD6DXeL1xAjYjmJ6MRLaXzXDFpCn3UBKt2uq3aKj7F4Hd9tbaMjohVEfkUvYLFUUhsMhXYmH9ZwkQrS1"
+#define NETWORK_FEE_COLLECTOR "Rj7J7MiX2bWy8sNyX38bB86KTFUnSn7sdKDsTFa2RJyQTDWFaebrj6BucT7Wa5CSq77zwRAwevbiKy1sv1RBGTonM83D3xPDwoyGasZ7"
 
 /* UTXO structure for tracking */
 typedef struct {
