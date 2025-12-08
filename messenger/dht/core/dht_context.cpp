@@ -24,16 +24,13 @@
 #include <thread>
 #include <fstream>
 
-// Android logging support
-#if defined(__ANDROID__)
-#include <android/log.h>
+// Use unified QGP logging (respects config log level)
+extern "C" {
+#include "crypto/utils/qgp_log.h"
+}
 #define DHT_LOG_TAG "DHT_CONTEXT"
-#define DHT_LOGI(...) __android_log_print(ANDROID_LOG_INFO, DHT_LOG_TAG, __VA_ARGS__)
-#define DHT_LOGE(...) __android_log_print(ANDROID_LOG_ERROR, DHT_LOG_TAG, __VA_ARGS__)
-#else
-#define DHT_LOGI(...) do { fprintf(stdout, "[DHT_CONTEXT] "); fprintf(stdout, __VA_ARGS__); fprintf(stdout, "\n"); } while(0)
-#define DHT_LOGE(...) do { fprintf(stderr, "[DHT_CONTEXT] ERROR: "); fprintf(stderr, __VA_ARGS__); fprintf(stderr, "\n"); } while(0)
-#endif
+#define DHT_LOGI(...) QGP_LOG_INFO(DHT_LOG_TAG, __VA_ARGS__)
+#define DHT_LOGE(...) QGP_LOG_ERROR(DHT_LOG_TAG, __VA_ARGS__)
 
 // Opaque handle for DHT Identity (wraps C++ dht::crypto::Identity)
 // Must be defined before any functions that use it
@@ -279,7 +276,7 @@ namespace {
      * @param ctx DHT context
      */
     static void register_value_types(dht_context_t *ctx) {
-        std::cout << "[DHT] Registering custom ValueTypes..." << std::endl;
+        QGP_LOG_INFO("DHT", "Registering custom ValueTypes...");
 
         // Create ValueTypes with captured context (eliminates global storage)
         ctx->type_7day = create_7day_type(ctx);
@@ -291,9 +288,9 @@ namespace {
         ctx->runner.registerType(ctx->type_30day);
         ctx->runner.registerType(ctx->type_365day);
 
-        std::cout << "[DHT] Registered DNA_TYPE_7DAY (id=0x1001, TTL=7 days)" << std::endl;
-        std::cout << "[DHT] Registered DNA_TYPE_30DAY (id=0x1003, TTL=30 days)" << std::endl;
-        std::cout << "[DHT] Registered DNA_TYPE_365DAY (id=0x1002, TTL=365 days)" << std::endl;
+        QGP_LOG_INFO("DHT", "Registered DNA_TYPE_7DAY (id=0x1001, TTL=7 days)");
+        QGP_LOG_INFO("DHT", "Registered DNA_TYPE_30DAY (id=0x1003, TTL=30 days)");
+        QGP_LOG_INFO("DHT", "Registered DNA_TYPE_365DAY (id=0x1002, TTL=365 days)");
     }
 
     /**
@@ -303,11 +300,11 @@ namespace {
      */
     static void bootstrap_to_nodes(dht_context_t *ctx) {
         if (ctx->config.bootstrap_count == 0) {
-            std::cout << "[DHT] No bootstrap nodes (first node in network)" << std::endl;
+            QGP_LOG_INFO("DHT", "No bootstrap nodes (first node in network)");
             return;
         }
 
-        std::cout << "[DHT] Bootstrapping to " << ctx->config.bootstrap_count << " nodes:" << std::endl;
+        QGP_LOG_INFO("DHT", "Bootstrapping to %zu nodes:", ctx->config.bootstrap_count);
 
         for (size_t i = 0; i < ctx->config.bootstrap_count; i++) {
             std::string node_addr(ctx->config.bootstrap_nodes[i]);
@@ -315,14 +312,14 @@ namespace {
             // Parse IP:port
             size_t colon_pos = node_addr.find(':');
             if (colon_pos == std::string::npos) {
-                std::cerr << "[DHT] Invalid bootstrap node format: " << node_addr << std::endl;
+                QGP_LOG_ERROR("DHT", "Invalid bootstrap node format: %s", node_addr.c_str());
                 continue;
             }
 
             std::string ip = node_addr.substr(0, colon_pos);
             std::string port_str = node_addr.substr(colon_pos + 1);
 
-            std::cout << "[DHT]   -> " << ip << ":" << port_str << std::endl;
+            QGP_LOG_INFO("DHT", "  -> %s:%s", ip.c_str(), port_str.c_str());
 
             ctx->runner.bootstrap(ip, port_str);
         }
@@ -334,7 +331,7 @@ namespace {
  */
 extern "C" dht_context_t* dht_context_new(const dht_config_t *config) {
     if (!config) {
-        std::cerr << "[DHT] ERROR: NULL config" << std::endl;
+        QGP_LOG_ERROR("DHT", "NULL config");
         return nullptr;
     }
 
@@ -342,13 +339,13 @@ extern "C" dht_context_t* dht_context_new(const dht_config_t *config) {
         auto ctx = new dht_context();
         memcpy(&ctx->config, config, sizeof(dht_config_t));
 
-        std::cout << "[DHT] Created context for node: " << config->identity << std::endl;
-        std::cout << "[DHT] Port: " << config->port << std::endl;
-        std::cout << "[DHT] Bootstrap node: " << (config->is_bootstrap ? "yes" : "no") << std::endl;
+        QGP_LOG_INFO("DHT", "Created context for node: %s", config->identity);
+        QGP_LOG_INFO("DHT", "Port: %d", config->port);
+        QGP_LOG_INFO("DHT", "Bootstrap node: %s", config->is_bootstrap ? "yes" : "no");
 
         return ctx;
     } catch (const std::exception& e) {
-        std::cerr << "[DHT] Exception in dht_context_new: " << e.what() << std::endl;
+        QGP_LOG_ERROR("DHT", "Exception in dht_context_new: %s", e.what());
         return nullptr;
     }
 }
@@ -483,12 +480,12 @@ extern "C" int dht_context_start(dht_context_t *ctx) {
  */
 extern "C" int dht_context_start_with_identity(dht_context_t *ctx, dht_identity_t *user_identity) {
     if (!ctx || !user_identity) {
-        std::cerr << "[DHT] ERROR: NULL context or identity" << std::endl;
+        QGP_LOG_ERROR("DHT", "NULL context or identity");
         return -1;
     }
 
     if (ctx->running) {
-        std::cout << "[DHT] Already running" << std::endl;
+        QGP_LOG_INFO("DHT", "Already running");
         return 0;
     }
 
@@ -496,13 +493,13 @@ extern "C" int dht_context_start_with_identity(dht_context_t *ctx, dht_identity_
         // Use provided identity instead of generating one
         dht::crypto::Identity& identity = user_identity->identity;
 
-        std::cout << "[DHT] Using user-provided DHT identity" << std::endl;
+        QGP_LOG_INFO("DHT", "Using user-provided DHT identity");
 
         // User nodes always run memory-only (no disk persistence)
-        std::cout << "[DHT] Running in memory-only mode (no disk persistence)" << std::endl;
+        QGP_LOG_INFO("DHT", "Running in memory-only mode (no disk persistence)");
         ctx->runner.run(ctx->config.port, identity, true);
 
-        std::cout << "[DHT] Node started on port " << ctx->config.port << std::endl;
+        QGP_LOG_INFO("DHT", "Node started on port %d", ctx->config.port);
 
         // Register custom ValueTypes
         register_value_types(ctx);
@@ -513,7 +510,7 @@ extern "C" int dht_context_start_with_identity(dht_context_t *ctx, dht_identity_
         ctx->running = true;
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[DHT] Exception in dht_context_start_with_identity: " << e.what() << std::endl;
+        QGP_LOG_ERROR("DHT", "Exception in dht_context_start_with_identity: %s", e.what());
         return -1;
     }
 }
@@ -526,15 +523,15 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
 
     try {
         if (ctx->running) {
-            std::cout << "[DHT] Stopping node..." << std::endl;
-            std::cout << "[DHT] Shutting down DHT runner (this will persist state to disk)..." << std::endl;
+            QGP_LOG_INFO("DHT", "Stopping node...");
+            QGP_LOG_INFO("DHT", "Shutting down DHT runner (this will persist state to disk)...");
             ctx->runner.shutdown();
             ctx->runner.join();
-            std::cout << "[DHT] ✓ DHT shutdown complete" << std::endl;
+            QGP_LOG_INFO("DHT", "DHT shutdown complete");
 
             // Cleanup value storage
             if (ctx->storage) {
-                std::cout << "[DHT] Cleaning up value storage..." << std::endl;
+                QGP_LOG_INFO("DHT", "Cleaning up value storage...");
                 dht_value_storage_free(ctx->storage);
                 ctx->storage = nullptr;
             }
@@ -542,7 +539,7 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
             ctx->running = false;
         }
     } catch (const std::exception& e) {
-        std::cerr << "[DHT] Exception in dht_context_stop: " << e.what() << std::endl;
+        QGP_LOG_ERROR("DHT", "Exception in dht_context_stop: %s", e.what());
     }
 }
 
@@ -555,9 +552,9 @@ extern "C" void dht_context_free(dht_context_t *ctx) {
     try {
         dht_context_stop(ctx);
         delete ctx;
-        std::cout << "[DHT] Context freed" << std::endl;
+        QGP_LOG_INFO("DHT", "Context freed");
     } catch (const std::exception& e) {
-        std::cerr << "[DHT] Exception in dht_context_free: " << e.what() << std::endl;
+        QGP_LOG_ERROR("DHT", "Exception in dht_context_free: %s", e.what());
     }
 }
 
