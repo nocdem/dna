@@ -75,7 +75,7 @@ void qgp_log_print(qgp_log_level_t level, const char *tag, const char *fmt, ...)
 #if defined(__ANDROID__)
     #include <android/log.h>
 
-    /* All DNA logs use "DNA/" prefix for easy filtering: adb logcat -s "DNA/*:*" */
+    /* All DNA logs use "DNA/" prefix for easy filtering: adb logcat -s "DNA/" */
     #define QGP_LOG_DEBUG(tag, fmt, ...) \
         do { if (qgp_log_should_log(QGP_LOG_LEVEL_DEBUG, tag)) \
             __android_log_print(ANDROID_LOG_DEBUG, "DNA/" tag, fmt, ##__VA_ARGS__); } while(0)
