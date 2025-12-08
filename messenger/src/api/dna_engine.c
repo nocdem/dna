@@ -1921,9 +1921,11 @@ typedef struct {
 void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     engine_utxo_t *selected_utxos = NULL;
+    engine_utxo_t *selected_cell_utxos = NULL;
     cellframe_tx_builder_t *builder = NULL;
     cellframe_rpc_response_t *utxo_resp = NULL;
     cellframe_rpc_response_t *submit_resp = NULL;
+    cellframe_rpc_response_t *cell_utxo_resp = NULL;
     uint8_t *dap_sign = NULL;
     char *json = NULL;
     cellframe_wallet_t *wallet = NULL;
@@ -2016,8 +2018,6 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     /* For non-native tokens, we need separate CELL UTXOs for fees */
     int num_selected_cell_utxos = 0;
     uint256_t total_cell_input = uint256_0;
-    engine_utxo_t *selected_cell_utxos = NULL;
-    cellframe_rpc_response_t *cell_utxo_resp = NULL;
 
     /* Required amounts (256-bit) */
     uint256_t required_token = amount;
