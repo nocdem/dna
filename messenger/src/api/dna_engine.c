@@ -3371,6 +3371,23 @@ dna_request_id_t dna_engine_get_balances(
     return dna_submit_task(engine, TASK_GET_BALANCES, &params, cb, user_data);
 }
 
+int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out) {
+    if (!estimate_out) return -1;
+    if (gas_speed < 0 || gas_speed > 2) gas_speed = 1;
+
+    blockchain_gas_estimate_t bc_estimate;
+    if (blockchain_estimate_eth_gas(gas_speed, &bc_estimate) != 0) {
+        return -1;
+    }
+
+    /* Copy to public struct */
+    strncpy(estimate_out->fee_eth, bc_estimate.fee_eth, sizeof(estimate_out->fee_eth) - 1);
+    estimate_out->gas_price = bc_estimate.gas_price;
+    estimate_out->gas_limit = bc_estimate.gas_limit;
+
+    return 0;
+}
+
 dna_request_id_t dna_engine_send_tokens(
     dna_engine_t *engine,
     int wallet_index,

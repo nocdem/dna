@@ -209,6 +209,27 @@ class Balance {
   }
 }
 
+/// Gas estimate for ETH transactions
+class GasEstimate {
+  final String feeEth;
+  final int gasPrice;
+  final int gasLimit;
+
+  GasEstimate({
+    required this.feeEth,
+    required this.gasPrice,
+    required this.gasLimit,
+  });
+
+  factory GasEstimate.fromNative(dna_gas_estimate_t native) {
+    return GasEstimate(
+      feeEth: native.fee_eth.toDartString(32),
+      gasPrice: native.gas_price,
+      gasLimit: native.gas_limit,
+    );
+  }
+}
+
 /// Transaction record
 class Transaction {
   final String txHash;
@@ -1300,6 +1321,22 @@ class DnaEngine {
     }
 
     return completer.future;
+  }
+
+  /// Get gas estimate for ETH transaction
+  /// [gasSpeed]: 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x)
+  /// Returns null if estimate fails (e.g., network error)
+  GasEstimate? estimateEthGas(int gasSpeed) {
+    final estimatePtr = calloc<dna_gas_estimate_t>();
+    try {
+      final result = _bindings.dna_engine_estimate_eth_gas(gasSpeed, estimatePtr);
+      if (result != 0) {
+        return null;
+      }
+      return GasEstimate.fromNative(estimatePtr.ref);
+    } finally {
+      calloc.free(estimatePtr);
+    }
   }
 
   /// Send tokens

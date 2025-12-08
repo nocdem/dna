@@ -1056,6 +1056,26 @@ typedef enum {
 } dna_gas_speed_t;
 
 /**
+ * Gas estimate result
+ */
+typedef struct {
+    char fee_eth[32];       /* Fee in ETH (e.g., "0.000042") */
+    uint64_t gas_price;     /* Gas price in wei */
+    uint64_t gas_limit;     /* Gas limit (21000 for ETH transfer) */
+} dna_gas_estimate_t;
+
+/**
+ * Get gas fee estimate for ETH transaction
+ *
+ * Synchronous call - queries current network gas price.
+ *
+ * @param gas_speed     Gas speed preset (0=slow, 1=normal, 2=fast)
+ * @param estimate_out  Output: gas estimate
+ * @return              0 on success, -1 on error
+ */
+int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out);
+
+/**
  * Send tokens
  *
  * Builds transaction, signs with Dilithium, submits via RPC.

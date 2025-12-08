@@ -123,6 +123,18 @@ final class dna_balance_t extends Struct {
   external Array<Char> network;
 }
 
+/// Gas estimate for ETH transactions
+final class dna_gas_estimate_t extends Struct {
+  @Array(32)
+  external Array<Char> fee_eth;
+
+  @Uint64()
+  external int gas_price;
+
+  @Uint64()
+  external int gas_limit;
+}
+
 /// Transaction record
 final class dna_transaction_t extends Struct {
   @Array(128)
@@ -1202,6 +1214,17 @@ class DnaBindings {
     Pointer<Void> user_data,
   ) {
     return _dna_engine_get_balances(engine, wallet_index, callback, user_data);
+  }
+
+  late final _dna_engine_estimate_eth_gas = _lib.lookupFunction<
+      Int32 Function(Int32, Pointer<dna_gas_estimate_t>),
+      int Function(int, Pointer<dna_gas_estimate_t>)>('dna_engine_estimate_eth_gas');
+
+  int dna_engine_estimate_eth_gas(
+    int gas_speed,
+    Pointer<dna_gas_estimate_t> estimate_out,
+  ) {
+    return _dna_engine_estimate_eth_gas(gas_speed, estimate_out);
   }
 
   late final _dna_engine_send_tokens = _lib.lookupFunction<
