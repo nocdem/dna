@@ -1984,14 +1984,20 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     /* Check if using non-native token */
     int is_native_token = (token[0] == '\0' || strcmp(token, "CELL") == 0);
 
-    /* Get wallet */
+    /* Get wallet by matching name (wallet_index is for blockchain_wallets, not wallet_list) */
     wallet_list_t *wallets = (wallet_list_t*)engine->wallet_list;
-    if (wallet_index < 0 || wallet_index >= wallets->count) {
-        error = DNA_ERROR_INVALID_ARG;
+    cellframe_wallet_t *wallet = NULL;
+    for (int i = 0; i < wallets->count; i++) {
+        if (strcmp(wallets->wallets[i].name, bc_wallet_info->name) == 0) {
+            wallet = &wallets->wallets[i];
+            break;
+        }
+    }
+    if (!wallet) {
+        QGP_LOG_ERROR(LOG_TAG, "Cellframe wallet not found: %s", bc_wallet_info->name);
+        error = DNA_ERROR_NOT_FOUND;
         goto done;
     }
-
-    cellframe_wallet_t *wallet = &wallets->wallets[wallet_index];
 
     /* Check if address is available */
     if (wallet->address[0] == '\0') {
