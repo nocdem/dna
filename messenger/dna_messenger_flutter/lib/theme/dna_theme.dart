@@ -131,10 +131,16 @@ class DnaTheme {
       labelSmall: TextStyle(color: DnaColors.textMuted),
     ),
     iconTheme: const IconThemeData(color: DnaColors.primary),
-    snackBarTheme: const SnackBarThemeData(
+    snackBarTheme: SnackBarThemeData(
       backgroundColor: DnaColors.surface,
-      contentTextStyle: TextStyle(color: DnaColors.text),
+      contentTextStyle: const TextStyle(color: DnaColors.text),
       actionTextColor: DnaColors.primary,
+      behavior: SnackBarBehavior.floating,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: const BorderSide(color: DnaColors.borderAccent),
+      ),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
     ),
     switchTheme: SwitchThemeData(
       thumbColor: WidgetStateProperty.resolveWith((states) {

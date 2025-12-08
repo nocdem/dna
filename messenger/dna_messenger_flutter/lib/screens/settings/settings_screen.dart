@@ -280,7 +280,6 @@ class _LogSettingsSection extends ConsumerStatefulWidget {
 class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
   String _currentLevel = 'WARN';
   String _currentTags = '';
-  final _tagsController = TextEditingController();
 
   static const _logLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'NONE'];
   static const _commonTags = [
@@ -299,12 +298,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
     _loadCurrentSettings();
   }
 
-  @override
-  void dispose() {
-    _tagsController.dispose();
-    super.dispose();
-  }
-
   Future<void> _loadCurrentSettings() async {
     final engineAsync = ref.read(engineProvider);
     engineAsync.whenData((engine) {
@@ -312,7 +305,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         setState(() {
           _currentLevel = engine.getLogLevel();
           _currentTags = engine.getLogTags();
-          _tagsController.text = _currentTags;
         });
       }
     });
@@ -325,9 +317,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         setState(() {
           _currentLevel = level;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Log level set to $level')),
-        );
       }
     });
   }
@@ -339,13 +328,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         setState(() {
           _currentTags = tags;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(tags.isEmpty
-                ? 'Showing all log tags'
-                : 'Log filter applied'),
-          ),
-        );
       }
     });
   }
@@ -362,7 +344,6 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
     }
 
     final newTags = currentSet.join(',');
-    _tagsController.text = newTags;
     _setLogTags(newTags);
   }
 
@@ -404,13 +385,16 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'Log Tags Filter',
-                style: theme.textTheme.bodyMedium,
+              Row(
+                children: [
+                  Icon(Icons.label_outline, size: 20, color: DnaColors.textMuted),
+                  const SizedBox(width: 8),
+                  Text('Log Tags', style: theme.textTheme.bodyMedium),
+                ],
               ),
               const SizedBox(height: 4),
               Text(
-                'Select tags to show (empty = show all)',
+                'Filter logs by tag (none = show all)',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: DnaColors.textMuted,
                 ),
@@ -419,46 +403,80 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
               Wrap(
                 spacing: 8,
                 runSpacing: 8,
-                children: _commonTags.map((tag) {
-                  final isSelected = selectedTags.contains(tag);
-                  return FilterChip(
-                    label: Text(tag),
-                    selected: isSelected,
-                    onSelected: (_) => _toggleTag(tag),
-                    selectedColor: theme.colorScheme.primary.withAlpha(51),
-                    checkmarkColor: theme.colorScheme.primary,
-                  );
-                }).toList(),
+                children: [
+                  ..._commonTags.map((tag) {
+                    final isSelected = selectedTags.contains(tag);
+                    return _PillButton(
+                      label: tag,
+                      isSelected: isSelected,
+                      onTap: () => _toggleTag(tag),
+                    );
+                  }),
+                  if (_currentTags.isNotEmpty)
+                    _PillButton(
+                      label: 'Clear',
+                      isSelected: false,
+                      isDestructive: true,
+                      onTap: () => _setLogTags(''),
+                    ),
+                ],
               ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _tagsController,
-                decoration: InputDecoration(
-                  labelText: 'Custom tags (comma-separated)',
-                  hintText: 'DHT,ICE,MSG',
-                  border: const OutlineInputBorder(),
-                  suffixIcon: IconButton(
-                    icon: const Icon(Icons.check),
-                    onPressed: () => _setLogTags(_tagsController.text),
-                  ),
-                ),
-                onSubmitted: _setLogTags,
-              ),
-              if (_currentTags.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                TextButton.icon(
-                  onPressed: () {
-                    _tagsController.clear();
-                    _setLogTags('');
-                  },
-                  icon: const Icon(Icons.clear, size: 18),
-                  label: const Text('Clear filter (show all)'),
-                ),
-              ],
             ],
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Pill-style button widget for settings
+class _PillButton extends StatelessWidget {
+  final String label;
+  final bool isSelected;
+  final bool isDestructive;
+  final VoidCallback onTap;
+
+  const _PillButton({
+    required this.label,
+    required this.isSelected,
+    required this.onTap,
+    this.isDestructive = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final Color baseColor;
+
+    if (isDestructive) {
+      baseColor = DnaColors.textWarning;
+    } else if (isSelected) {
+      baseColor = theme.colorScheme.primary;
+    } else {
+      baseColor = DnaColors.textMuted;
+    }
+
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        decoration: BoxDecoration(
+          color: isSelected ? baseColor.withAlpha(26) : Colors.transparent,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: isSelected ? baseColor.withAlpha(128) : baseColor.withAlpha(51),
+            width: isSelected ? 1.5 : 1,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            color: isSelected ? baseColor : baseColor.withAlpha(179),
+            fontSize: 12,
+            fontWeight: isSelected ? FontWeight.w600 : FontWeight.w500,
+          ),
+        ),
+      ),
     );
   }
 }
