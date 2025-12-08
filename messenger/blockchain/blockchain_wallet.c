@@ -407,8 +407,8 @@ int blockchain_estimate_eth_gas(
     /* Apply multiplier */
     uint64_t adjusted_price = (base_gas_price * GAS_MULTIPLIERS[gas_speed]) / 100;
 
-    /* ETH transfer gas limit is fixed at 21000 */
-    uint64_t gas_limit = 21000;
+    /* ETH transfer gas limit - must match ETH_GAS_LIMIT_TRANSFER in eth_tx.h */
+    uint64_t gas_limit = 31500;
 
     /* Calculate total fee in wei */
     uint64_t total_fee_wei = adjusted_price * gas_limit;
