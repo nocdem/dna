@@ -1349,15 +1349,20 @@ class DnaEngine {
     required String network,
     int gasSpeed = 1,
   }) async {
+    print('[DART] sendTokens: wallet=$walletIndex to=$recipientAddress amount=$amount token=$token network=$network gas=$gasSpeed');
+
     final completer = Completer<void>();
     final localId = _nextLocalId++;
 
+    print('[DART] Creating native pointers...');
     final recipientPtr = recipientAddress.toNativeUtf8();
     final amountPtr = amount.toNativeUtf8();
     final tokenPtr = token.toNativeUtf8();
     final networkPtr = network.toNativeUtf8();
+    print('[DART] Pointers created');
 
     void onComplete(int requestId, int error, Pointer<Void> userData) {
+      print('[DART] onComplete callback: requestId=$requestId error=$error');
       calloc.free(recipientPtr);
       calloc.free(amountPtr);
       calloc.free(tokenPtr);
@@ -1371,8 +1376,10 @@ class DnaEngine {
       _cleanupRequest(localId);
     }
 
+    print('[DART] Creating NativeCallable...');
     final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
     _pendingRequests[localId] = _PendingRequest(callback: callback);
+    print('[DART] Calling FFI dna_engine_send_tokens...');
 
     final requestId = _bindings.dna_engine_send_tokens(
       _engine,
@@ -1385,6 +1392,7 @@ class DnaEngine {
       callback.nativeFunction.cast(),
       nullptr,
     );
+    print('[DART] FFI returned requestId=$requestId');
 
     if (requestId == 0) {
       calloc.free(recipientPtr);
