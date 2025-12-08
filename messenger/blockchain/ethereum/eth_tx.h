@@ -31,7 +31,7 @@ extern "C" {
 #define ETH_CHAIN_SEPOLIA       11155111
 
 /* Default gas limit for simple ETH transfer */
-#define ETH_GAS_LIMIT_TRANSFER  21000
+#define ETH_GAS_LIMIT_TRANSFER  31500
 
 /* Maximum raw transaction size */
 #define ETH_TX_MAX_SIZE         4096
