@@ -12,6 +12,7 @@
 #include "cellframe/cellframe_wallet_create.h"
 #include "cellframe/cellframe_wallet.h"
 #include "ethereum/eth_wallet.h"
+#include "ethereum/eth_tx.h"
 #include "../crypto/utils/qgp_log.h"
 #include "../crypto/utils/qgp_platform.h"
 #include <string.h>
@@ -352,6 +353,58 @@ int blockchain_get_address_from_file(
             return eth_wallet_get_address(wallet_path, address_out, BLOCKCHAIN_WALLET_ADDRESS_MAX);
 
         default:
+            return -1;
+    }
+}
+
+/* ============================================================================
+ * SEND INTERFACE
+ * ============================================================================ */
+
+int blockchain_send_tokens(
+    blockchain_type_t type,
+    const char *wallet_path,
+    const char *to_address,
+    const char *amount,
+    const char *token,
+    char *tx_hash_out
+) {
+    if (!wallet_path || !to_address || !amount || !tx_hash_out) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to blockchain_send_tokens");
+        return -1;
+    }
+
+    switch (type) {
+        case BLOCKCHAIN_ETHEREUM: {
+            /* Load wallet to get private key */
+            eth_wallet_t wallet;
+            if (eth_wallet_load(wallet_path, &wallet) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to load ETH wallet: %s", wallet_path);
+                return -1;
+            }
+
+            /* Send ETH */
+            int ret = eth_send_eth(
+                wallet.private_key,
+                wallet.address_hex,
+                to_address,
+                amount,
+                tx_hash_out
+            );
+
+            /* Clear sensitive data */
+            eth_wallet_clear(&wallet);
+
+            return ret;
+        }
+
+        case BLOCKCHAIN_CELLFRAME:
+            /* Cellframe send is handled separately in dna_engine.c via UTXO model */
+            QGP_LOG_ERROR(LOG_TAG, "Use dna_handle_send_tokens for Cellframe");
+            return -1;
+
+        default:
+            QGP_LOG_ERROR(LOG_TAG, "Send not implemented for %s", blockchain_type_name(type));
             return -1;
     }
 }

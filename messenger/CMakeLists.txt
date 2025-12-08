@@ -146,6 +146,8 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     blockchain/blockchain_wallet.c                 # Generic multi-chain wallet interface
     blockchain/ethereum/eth_wallet_create.c        # Ethereum wallet creation (BIP-44)
     blockchain/ethereum/eth_rpc.c                  # Ethereum JSON-RPC client
+    blockchain/ethereum/eth_rlp.c                  # Ethereum RLP encoding
+    blockchain/ethereum/eth_tx.c                   # Ethereum transaction building/signing
     crypto/bip32/bip32.c                           # BIP-32 HD key derivation
     crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
     crypto/utils/base58.c       # Base58 encoding for addresses

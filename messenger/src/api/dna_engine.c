@@ -71,6 +71,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "cellframe_json.h"
 #include "crypto/utils/base58.h"
 #include "blockchain/ethereum/eth_wallet.h"
+#include "blockchain/blockchain_wallet.h"
 #include <time.h>
 
 #include <stdlib.h>
@@ -1938,7 +1939,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     uint8_t *dap_sign = NULL;
     char *json = NULL;
 
-    if (!engine->wallets_loaded || !engine->wallet_list) {
+    if (!engine->wallets_loaded || !engine->blockchain_wallets) {
         error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
         goto done;
     }
@@ -1949,6 +1950,46 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     const char *amount_str = task->params.send_tokens.amount;
     const char *network = task->params.send_tokens.network;
     const char *token = task->params.send_tokens.token;
+
+    /* Check blockchain type from multi-chain wallet list */
+    blockchain_wallet_list_t *bc_wallets = engine->blockchain_wallets;
+    if (wallet_index < 0 || wallet_index >= (int)bc_wallets->count) {
+        error = DNA_ERROR_INVALID_ARG;
+        goto done;
+    }
+
+    blockchain_wallet_info_t *bc_wallet_info = &bc_wallets->wallets[wallet_index];
+
+    /* Handle ETH send separately */
+    if (bc_wallet_info->type == BLOCKCHAIN_ETHEREUM) {
+        char tx_hash[128] = {0};
+
+        QGP_LOG_INFO(LOG_TAG, "Sending ETH: %s to %s", amount_str, recipient);
+
+        if (blockchain_send_tokens(
+                BLOCKCHAIN_ETHEREUM,
+                bc_wallet_info->file_path,
+                recipient,
+                amount_str,
+                token,
+                tx_hash) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "ETH send failed");
+            error = DNA_ENGINE_ERROR_NETWORK;
+            goto done;
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "ETH tx sent: %s", tx_hash);
+
+        /* Success - tx_hash logged above */
+        error = DNA_OK;
+        goto done;
+    }
+
+    /* Cellframe send - requires wallet_list */
+    if (!engine->wallet_list) {
+        error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
+        goto done;
+    }
 
     /* Check if using non-native token */
     int is_native_token = (token[0] == '\0' || strcmp(token, "CELL") == 0);

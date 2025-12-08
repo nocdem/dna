@@ -199,6 +199,30 @@ int blockchain_get_address_from_file(
     char *address_out
 );
 
+/* ============================================================================
+ * SEND INTERFACE
+ * ============================================================================ */
+
+/**
+ * Send tokens on blockchain
+ *
+ * @param type          Blockchain type
+ * @param wallet_path   Path to sender wallet file
+ * @param to_address    Recipient address
+ * @param amount        Amount to send (decimal string, e.g., "0.1")
+ * @param token         Token symbol (NULL or empty for native token)
+ * @param tx_hash_out   Output: transaction hash (128 bytes min)
+ * @return              0 on success, -1 on error
+ */
+int blockchain_send_tokens(
+    blockchain_type_t type,
+    const char *wallet_path,
+    const char *to_address,
+    const char *amount,
+    const char *token,
+    char *tx_hash_out
+);
+
 #ifdef __cplusplus
 }
 #endif
