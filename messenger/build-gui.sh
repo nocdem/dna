@@ -39,6 +39,10 @@ pull_latest() {
     echo -e "${YELLOW}Pulling latest code...${NC}"
     cd "$PROJECT_ROOT"
 
+    # Reset generated/lock files that cause merge conflicts
+    git checkout -- dna_messenger_flutter/pubspec.lock 2>/dev/null || true
+    git checkout -- dna_messenger_flutter/.dart_tool/ 2>/dev/null || true
+
     # Use gitlab remote if available, otherwise origin
     if git remote | grep -q "^gitlab$"; then
         git pull --no-rebase gitlab main
