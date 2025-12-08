@@ -2121,14 +2121,14 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
                     free(all_utxos);
 
                     /* Debug: Print selected TOKEN UTXOs */
-                    QGP_LOG_ERROR(LOG_TAG, "%s UTXO Selection:\n", utxo_token);
-                    QGP_LOG_ERROR(LOG_TAG, "Amount to send: %lu datoshi\n", (unsigned long)amount.lo.lo);
-                    QGP_LOG_ERROR(LOG_TAG, "Required: %lu datoshi\n", (unsigned long)required.lo.lo);
+                    QGP_LOG_DEBUG(LOG_TAG, "%s UTXO Selection:\n", utxo_token);
+                    QGP_LOG_DEBUG(LOG_TAG, "Amount to send: %lu datoshi\n", (unsigned long)amount.lo.lo);
+                    QGP_LOG_DEBUG(LOG_TAG, "Required: %lu datoshi\n", (unsigned long)required.lo.lo);
                     if (total_input.lo.hi == 0) {
-                        QGP_LOG_ERROR(LOG_TAG, "Selected %d UTXOs, total: %lu datoshi\n",
+                        QGP_LOG_DEBUG(LOG_TAG, "Selected %d UTXOs, total: %lu datoshi\n",
                                 num_selected_utxos, (unsigned long)total_input.lo.lo);
                     } else {
-                        QGP_LOG_ERROR(LOG_TAG, "Selected %d UTXOs, total: lo.hi=%lu lo.lo=%lu datoshi\n",
+                        QGP_LOG_DEBUG(LOG_TAG, "Selected %d UTXOs, total: lo.hi=%lu lo.lo=%lu datoshi\n",
                                 num_selected_utxos, (unsigned long)total_input.lo.hi, (unsigned long)total_input.lo.lo);
                     }
 
@@ -2158,7 +2158,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
     /* STEP 1b: For non-native tokens, query CELL UTXOs for fees */
     if (!is_native_token) {
-        QGP_LOG_ERROR(LOG_TAG, "Querying CELL UTXOs for fees...\n");
+        QGP_LOG_DEBUG(LOG_TAG, "Querying CELL UTXOs for fees...\n");
 
         if (cellframe_rpc_get_utxo(network, address, "CELL", &cell_utxo_resp) != 0 || !cell_utxo_resp) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to query CELL UTXOs for fees\n");
@@ -2242,11 +2242,11 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
                         free(all_cell_utxos);
 
-                        QGP_LOG_ERROR(LOG_TAG, "CELL UTXO Selection (for fees):\n");
-                        QGP_LOG_ERROR(LOG_TAG, "Network fee: %lu datoshi\n", (unsigned long)NETWORK_FEE_DATOSHI);
-                        QGP_LOG_ERROR(LOG_TAG, "Validator fee: %lu datoshi\n", (unsigned long)fee.lo.lo);
-                        QGP_LOG_ERROR(LOG_TAG, "Required CELL: %lu datoshi\n", (unsigned long)required_cell.lo.lo);
-                        QGP_LOG_ERROR(LOG_TAG, "Selected %d CELL UTXOs, total: %lu datoshi\n",
+                        QGP_LOG_DEBUG(LOG_TAG, "CELL UTXO Selection (for fees):\n");
+                        QGP_LOG_DEBUG(LOG_TAG, "Network fee: %lu datoshi\n", (unsigned long)NETWORK_FEE_DATOSHI);
+                        QGP_LOG_DEBUG(LOG_TAG, "Validator fee: %lu datoshi\n", (unsigned long)fee.lo.lo);
+                        QGP_LOG_DEBUG(LOG_TAG, "Required CELL: %lu datoshi\n", (unsigned long)required_cell.lo.lo);
+                        QGP_LOG_DEBUG(LOG_TAG, "Selected %d CELL UTXOs, total: %lu datoshi\n",
                                 num_selected_cell_utxos, (unsigned long)total_cell_input.lo.lo);
 
                         if (compare256(total_cell_input, required_cell) < 0) {
@@ -2324,7 +2324,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         uint256_t temp = uint256_0;
         SUBTRACT_256_256(total_input, amount, &temp);  /* temp = input - amount */
         SUBTRACT_256_256(temp, fees_total, &token_change);  /* change = temp - fees */
-        QGP_LOG_ERROR(LOG_TAG, "CELL change: %lu datoshi\n", (unsigned long)token_change.lo.lo);
+        QGP_LOG_DEBUG(LOG_TAG, "CELL change: %lu datoshi\n", (unsigned long)token_change.lo.lo);
     } else {
         /* Non-native: separate token change and CELL change */
         /* Token change = total_input - amount (256-bit) */
@@ -2332,9 +2332,9 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
 
         /* Print token change with 256-bit awareness */
         if (token_change.lo.hi == 0) {
-            QGP_LOG_ERROR(LOG_TAG, "%s change: %lu datoshi\n", token, (unsigned long)token_change.lo.lo);
+            QGP_LOG_DEBUG(LOG_TAG, "%s change: %lu datoshi\n", token, (unsigned long)token_change.lo.lo);
         } else {
-            QGP_LOG_ERROR(LOG_TAG, "%s change: lo.hi=%lu lo.lo=%lu datoshi\n", token,
+            QGP_LOG_DEBUG(LOG_TAG, "%s change: lo.hi=%lu lo.lo=%lu datoshi\n", token,
                     (unsigned long)token_change.lo.hi, (unsigned long)token_change.lo.lo);
         }
 
@@ -2342,7 +2342,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         uint256_t fees_total = uint256_0;
         fees_total.lo.lo = NETWORK_FEE_DATOSHI + fee.lo.lo;
         SUBTRACT_256_256(total_cell_input, fees_total, &cell_change);
-        QGP_LOG_ERROR(LOG_TAG, "CELL change: %lu datoshi\n", (unsigned long)cell_change.lo.lo);
+        QGP_LOG_DEBUG(LOG_TAG, "CELL change: %lu datoshi\n", (unsigned long)cell_change.lo.lo);
     }
 
     /* Add all TOKEN IN items */
@@ -2432,12 +2432,12 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Debug: Print key sizes */
-    QGP_LOG_ERROR(LOG_TAG, "Signing Debug:\n");
-    QGP_LOG_ERROR(LOG_TAG, "TX data size: %zu bytes\n", tx_size);
-    QGP_LOG_ERROR(LOG_TAG, "Public key size: %zu bytes\n", wallet->public_key_size);
-    QGP_LOG_ERROR(LOG_TAG, "Private key size: %zu bytes\n", wallet->private_key_size);
-    QGP_LOG_ERROR(LOG_TAG, "Wallet name: %s\n", wallet->name);
-    QGP_LOG_ERROR(LOG_TAG, "Wallet address: %s\n", wallet->address);
+    QGP_LOG_DEBUG(LOG_TAG, "Signing Debug:\n");
+    QGP_LOG_DEBUG(LOG_TAG, "TX data size: %zu bytes\n", tx_size);
+    QGP_LOG_DEBUG(LOG_TAG, "Public key size: %zu bytes\n", wallet->public_key_size);
+    QGP_LOG_DEBUG(LOG_TAG, "Private key size: %zu bytes\n", wallet->private_key_size);
+    QGP_LOG_DEBUG(LOG_TAG, "Wallet name: %s\n", wallet->name);
+    QGP_LOG_DEBUG(LOG_TAG, "Wallet address: %s\n", wallet->address);
 
     /* Sign transaction */
     size_t dap_sign_size = 0;
@@ -2451,7 +2451,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    QGP_LOG_ERROR(LOG_TAG, "Signature size: %zu bytes\n", dap_sign_size);
+    QGP_LOG_DEBUG(LOG_TAG, "Signature size: %zu bytes\n", dap_sign_size);
 
     free((void*)tx_data);
 
