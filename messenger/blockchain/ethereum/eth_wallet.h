@@ -241,6 +241,45 @@ int eth_rpc_set_endpoint(const char *endpoint);
  */
 const char* eth_rpc_get_endpoint(void);
 
+/* ============================================================================
+ * TRANSACTION HISTORY (via Etherscan API)
+ * ============================================================================ */
+
+/**
+ * ETH transaction record
+ */
+typedef struct {
+    char tx_hash[68];      /* Transaction hash (0x + 64 hex chars) */
+    char from[44];         /* Sender address */
+    char to[44];           /* Recipient address */
+    char value[64];        /* Value in ETH (e.g., "0.123") */
+    uint64_t timestamp;    /* Unix timestamp */
+    int is_outgoing;       /* 1 if we sent, 0 if we received */
+    int is_confirmed;      /* 1 if confirmed, 0 if failed */
+} eth_transaction_t;
+
+/**
+ * Get ETH transaction history via Etherscan API
+ *
+ * Uses Etherscan's free API (rate limited to 1 req/5 sec without key).
+ * Returns up to 50 most recent transactions.
+ *
+ * @param address    Ethereum address (with 0x prefix)
+ * @param txs_out    Output: array of transactions (caller must free with eth_rpc_free_transactions)
+ * @param count_out  Output: number of transactions
+ * @return           0 on success, -1 on error
+ */
+int eth_rpc_get_transactions(
+    const char *address,
+    eth_transaction_t **txs_out,
+    int *count_out
+);
+
+/**
+ * Free transaction array
+ */
+void eth_rpc_free_transactions(eth_transaction_t *txs, int count);
+
 #ifdef __cplusplus
 }
 #endif
