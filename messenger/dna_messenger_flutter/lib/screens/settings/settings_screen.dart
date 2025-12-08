@@ -552,7 +552,7 @@ class _AboutSection extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                'Open Source · GNU GPLv3',
+                'GNU GPLv3',
                 style: theme.textTheme.labelSmall?.copyWith(
                   color: DnaColors.textMuted,
                 ),
