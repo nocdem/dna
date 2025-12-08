@@ -582,13 +582,36 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   final _amountController = TextEditingController();
   late String _selectedToken;
   late String _selectedNetwork;
+  int _selectedGasSpeed = 1; // 0=slow, 1=normal, 2=fast
   bool _isSending = false;
+
+  // Gas fee estimates for ETH
+  String? _gasFee0; // slow
+  String? _gasFee1; // normal
+  String? _gasFee2; // fast
 
   @override
   void initState() {
     super.initState();
     _selectedToken = widget.preselectedToken ?? 'CPUNK';
     _selectedNetwork = widget.preselectedNetwork ?? 'Backbone';
+    if (_selectedNetwork == 'Ethereum') {
+      _fetchGasEstimates();
+    }
+  }
+
+  Future<void> _fetchGasEstimates() async {
+    final engine = await ref.read(engineProvider.future);
+    final est0 = engine.estimateEthGas(0);
+    final est1 = engine.estimateEthGas(1);
+    final est2 = engine.estimateEthGas(2);
+    if (mounted) {
+      setState(() {
+        _gasFee0 = est0?.feeEth;
+        _gasFee1 = est1?.feeEth;
+        _gasFee2 = est2?.feeEth;
+      });
+    }
   }
 
   @override
@@ -657,6 +680,39 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   ),
                 ],
               ),
+              // Gas speed selector (only for Ethereum)
+              if (_selectedNetwork == 'Ethereum') ...[
+                const SizedBox(height: 16),
+                Text(
+                  'Transaction Speed (Gas Fee)',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    _GasSpeedChip(
+                      label: 'Slow',
+                      sublabel: _gasFee0 != null ? '${_gasFee0!} ETH' : '0.8x',
+                      selected: _selectedGasSpeed == 0,
+                      onSelected: () => setState(() => _selectedGasSpeed = 0),
+                    ),
+                    const SizedBox(width: 8),
+                    _GasSpeedChip(
+                      label: 'Normal',
+                      sublabel: _gasFee1 != null ? '${_gasFee1!} ETH' : '1.0x',
+                      selected: _selectedGasSpeed == 1,
+                      onSelected: () => setState(() => _selectedGasSpeed = 1),
+                    ),
+                    const SizedBox(width: 8),
+                    _GasSpeedChip(
+                      label: 'Fast',
+                      sublabel: _gasFee2 != null ? '${_gasFee2!} ETH' : '1.5x',
+                      selected: _selectedGasSpeed == 2,
+                      onSelected: () => setState(() => _selectedGasSpeed = 2),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 16),
               ElevatedButton(
                 onPressed: _canSend() ? _send : null,
@@ -712,12 +768,13 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     setState(() => _isSending = true);
 
     try {
-      await widget.ref.read(walletsProvider.notifier).sendTokens(
+      await ref.read(walletsProvider.notifier).sendTokens(
         walletIndex: widget.walletIndex,
         recipientAddress: _recipientController.text.trim(),
         amount: _amountController.text.trim(),
         token: _selectedToken,
         network: _selectedNetwork,
+        gasSpeed: _selectedGasSpeed,
       );
 
       if (mounted) {
@@ -1310,6 +1367,69 @@ class _StatusChip extends StatelessWidget {
           color: color,
           fontSize: 11,
           fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+/// Gas speed selection chip for Ethereum transactions
+class _GasSpeedChip extends StatelessWidget {
+  final String label;
+  final String sublabel;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  const _GasSpeedChip({
+    required this.label,
+    required this.sublabel,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Expanded(
+      child: GestureDetector(
+        onTap: onSelected,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: selected
+                ? theme.colorScheme.primary.withAlpha(26)
+                : theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: selected
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.outline.withAlpha(77),
+              width: selected ? 2 : 1,
+            ),
+          ),
+          child: Column(
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                  color: selected
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                sublabel,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: selected
+                      ? theme.colorScheme.primary.withAlpha(179)
+                      : theme.colorScheme.onSurface.withAlpha(128),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

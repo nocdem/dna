@@ -123,6 +123,18 @@ final class dna_balance_t extends Struct {
   external Array<Char> network;
 }
 
+/// Gas estimate for ETH transactions
+final class dna_gas_estimate_t extends Struct {
+  @Array(32)
+  external Array<Char> fee_eth;
+
+  @Uint64()
+  external int gas_price;
+
+  @Uint64()
+  external int gas_limit;
+}
+
 /// Transaction record
 final class dna_transaction_t extends Struct {
   @Array(128)
@@ -1204,6 +1216,17 @@ class DnaBindings {
     return _dna_engine_get_balances(engine, wallet_index, callback, user_data);
   }
 
+  late final _dna_engine_estimate_eth_gas = _lib.lookupFunction<
+      Int32 Function(Int32, Pointer<dna_gas_estimate_t>),
+      int Function(int, Pointer<dna_gas_estimate_t>)>('dna_engine_estimate_eth_gas');
+
+  int dna_engine_estimate_eth_gas(
+    int gas_speed,
+    Pointer<dna_gas_estimate_t> estimate_out,
+  ) {
+    return _dna_engine_estimate_eth_gas(gas_speed, estimate_out);
+  }
+
   late final _dna_engine_send_tokens = _lib.lookupFunction<
       Uint64 Function(
           Pointer<dna_engine_t>,
@@ -1212,6 +1235,7 @@ class DnaBindings {
           Pointer<Utf8>,
           Pointer<Utf8>,
           Pointer<Utf8>,
+          Int32,
           Pointer<DnaCompletionCb>,
           Pointer<Void>),
       int Function(
@@ -1221,6 +1245,7 @@ class DnaBindings {
           Pointer<Utf8>,
           Pointer<Utf8>,
           Pointer<Utf8>,
+          int,
           Pointer<DnaCompletionCb>,
           Pointer<Void>)>('dna_engine_send_tokens');
 
@@ -1231,11 +1256,12 @@ class DnaBindings {
     Pointer<Utf8> amount,
     Pointer<Utf8> token,
     Pointer<Utf8> network,
+    int gas_speed,
     Pointer<DnaCompletionCb> callback,
     Pointer<Void> user_data,
   ) {
     return _dna_engine_send_tokens(engine, wallet_index, recipient_address,
-        amount, token, network, callback, user_data);
+        amount, token, network, gas_speed, callback, user_data);
   }
 
   late final _dna_engine_get_transactions = _lib.lookupFunction<

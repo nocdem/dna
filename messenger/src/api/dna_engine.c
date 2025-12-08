@@ -71,6 +71,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "cellframe_json.h"
 #include "crypto/utils/base58.h"
 #include "blockchain/ethereum/eth_wallet.h"
+#include "blockchain/blockchain_wallet.h"
 #include <time.h>
 
 #include <stdlib.h>
@@ -1926,7 +1927,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     uint8_t *dap_sign = NULL;
     char *json = NULL;
 
-    if (!engine->wallets_loaded || !engine->wallet_list) {
+    if (!engine->wallets_loaded || !engine->blockchain_wallets) {
         error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
         goto done;
     }
@@ -1937,6 +1938,48 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     const char *amount_str = task->params.send_tokens.amount;
     const char *network = task->params.send_tokens.network;
     const char *token = task->params.send_tokens.token;
+    int gas_speed = task->params.send_tokens.gas_speed;
+
+    /* Check blockchain type from multi-chain wallet list */
+    blockchain_wallet_list_t *bc_wallets = engine->blockchain_wallets;
+    if (wallet_index < 0 || wallet_index >= (int)bc_wallets->count) {
+        error = DNA_ERROR_INVALID_ARG;
+        goto done;
+    }
+
+    blockchain_wallet_info_t *bc_wallet_info = &bc_wallets->wallets[wallet_index];
+
+    /* Handle ETH send separately */
+    if (bc_wallet_info->type == BLOCKCHAIN_ETHEREUM) {
+        char tx_hash[128] = {0};
+
+        QGP_LOG_INFO(LOG_TAG, "Sending ETH: %s to %s (gas_speed=%d)", amount_str, recipient, gas_speed);
+
+        if (blockchain_send_tokens(
+                BLOCKCHAIN_ETHEREUM,
+                bc_wallet_info->file_path,
+                recipient,
+                amount_str,
+                token,
+                gas_speed,
+                tx_hash) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "ETH send failed");
+            error = DNA_ENGINE_ERROR_NETWORK;
+            goto done;
+        }
+
+        QGP_LOG_INFO(LOG_TAG, "ETH tx sent: %s", tx_hash);
+
+        /* Success - tx_hash logged above */
+        error = DNA_OK;
+        goto done;
+    }
+
+    /* Cellframe send - requires wallet_list */
+    if (!engine->wallet_list) {
+        error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
+        goto done;
+    }
 
     /* Check if using non-native token */
     int is_native_token = (token[0] == '\0' || strcmp(token, "CELL") == 0);
@@ -3316,6 +3359,23 @@ dna_request_id_t dna_engine_get_balances(
     return dna_submit_task(engine, TASK_GET_BALANCES, &params, cb, user_data);
 }
 
+int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out) {
+    if (!estimate_out) return -1;
+    if (gas_speed < 0 || gas_speed > 2) gas_speed = 1;
+
+    blockchain_gas_estimate_t bc_estimate;
+    if (blockchain_estimate_eth_gas(gas_speed, &bc_estimate) != 0) {
+        return -1;
+    }
+
+    /* Copy to public struct */
+    strncpy(estimate_out->fee_eth, bc_estimate.fee_eth, sizeof(estimate_out->fee_eth) - 1);
+    estimate_out->gas_price = bc_estimate.gas_price;
+    estimate_out->gas_limit = bc_estimate.gas_limit;
+
+    return 0;
+}
+
 dna_request_id_t dna_engine_send_tokens(
     dna_engine_t *engine,
     int wallet_index,
@@ -3323,6 +3383,7 @@ dna_request_id_t dna_engine_send_tokens(
     const char *amount,
     const char *token,
     const char *network,
+    int gas_speed,
     dna_completion_cb callback,
     void *user_data
 ) {
@@ -3337,6 +3398,7 @@ dna_request_id_t dna_engine_send_tokens(
     strncpy(params.send_tokens.amount, amount, sizeof(params.send_tokens.amount) - 1);
     strncpy(params.send_tokens.token, token, sizeof(params.send_tokens.token) - 1);
     strncpy(params.send_tokens.network, network, sizeof(params.send_tokens.network) - 1);
+    params.send_tokens.gas_speed = gas_speed;
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SEND_TOKENS, &params, cb, user_data);

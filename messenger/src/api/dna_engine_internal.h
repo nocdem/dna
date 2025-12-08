@@ -191,6 +191,7 @@ typedef union {
         char amount[64];
         char token[32];
         char network[64];
+        int gas_speed;  /* 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x) */
     } send_tokens;
 
     /* Get transactions */

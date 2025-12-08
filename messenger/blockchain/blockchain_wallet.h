@@ -199,6 +199,61 @@ int blockchain_get_address_from_file(
     char *address_out
 );
 
+/* ============================================================================
+ * SEND INTERFACE
+ * ============================================================================ */
+
+/**
+ * Gas speed presets
+ */
+#define BLOCKCHAIN_GAS_SLOW     0   /* 0.8x - cheaper, slower */
+#define BLOCKCHAIN_GAS_NORMAL   1   /* 1.0x - balanced */
+#define BLOCKCHAIN_GAS_FAST     2   /* 1.5x - faster confirmation */
+
+/**
+ * Gas fee estimate
+ */
+typedef struct {
+    char fee_eth[32];       /* Fee in ETH (e.g., "0.00042") */
+    char fee_usd[32];       /* Fee in USD (e.g., "$1.23") - placeholder for now */
+    uint64_t gas_price;     /* Gas price in wei */
+    uint64_t gas_limit;     /* Gas limit */
+} blockchain_gas_estimate_t;
+
+/**
+ * Estimate gas fee for ETH transaction
+ *
+ * @param gas_speed     Gas speed preset (0=slow, 1=normal, 2=fast)
+ * @param estimate_out  Output: gas estimate
+ * @return              0 on success, -1 on error
+ */
+int blockchain_estimate_eth_gas(
+    int gas_speed,
+    blockchain_gas_estimate_t *estimate_out
+);
+
+/**
+ * Send tokens on blockchain
+ *
+ * @param type          Blockchain type
+ * @param wallet_path   Path to sender wallet file
+ * @param to_address    Recipient address
+ * @param amount        Amount to send (decimal string, e.g., "0.1")
+ * @param token         Token symbol (NULL or empty for native token)
+ * @param gas_speed     Gas speed preset (ETH only, ignored for others)
+ * @param tx_hash_out   Output: transaction hash (128 bytes min)
+ * @return              0 on success, -1 on error
+ */
+int blockchain_send_tokens(
+    blockchain_type_t type,
+    const char *wallet_path,
+    const char *to_address,
+    const char *amount,
+    const char *token,
+    int gas_speed,
+    char *tx_hash_out
+);
+
 #ifdef __cplusplus
 }
 #endif
