@@ -1926,6 +1926,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     cellframe_rpc_response_t *submit_resp = NULL;
     uint8_t *dap_sign = NULL;
     char *json = NULL;
+    cellframe_wallet_t *wallet = NULL;
 
     if (!engine->wallets_loaded || !engine->blockchain_wallets) {
         error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
@@ -1975,26 +1976,12 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Cellframe send - requires wallet_list */
-    if (!engine->wallet_list) {
-        error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
-        goto done;
-    }
-
     /* Check if using non-native token */
     int is_native_token = (token[0] == '\0' || strcmp(token, "CELL") == 0);
 
-    /* Get wallet by matching name (wallet_index is for blockchain_wallets, not wallet_list) */
-    wallet_list_t *wallets = (wallet_list_t*)engine->wallet_list;
-    cellframe_wallet_t *wallet = NULL;
-    for (int i = 0; i < wallets->count; i++) {
-        if (strcmp(wallets->wallets[i].name, bc_wallet_info->name) == 0) {
-            wallet = &wallets->wallets[i];
-            break;
-        }
-    }
-    if (!wallet) {
-        QGP_LOG_ERROR(LOG_TAG, "Cellframe wallet not found: %s", bc_wallet_info->name);
+    /* Load Cellframe wallet from file path */
+    if (wallet_read_cellframe_path(bc_wallet_info->file_path, &wallet) != 0 || !wallet) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Cellframe wallet: %s", bc_wallet_info->file_path);
         error = DNA_ERROR_NOT_FOUND;
         goto done;
     }
@@ -2551,6 +2538,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     }
 
 done:
+    if (wallet) wallet_free(wallet);
     if (selected_utxos) free(selected_utxos);
     if (selected_cell_utxos) free(selected_cell_utxos);
     if (builder) cellframe_tx_builder_free(builder);
