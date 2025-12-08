@@ -2525,7 +2525,7 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
     int count = 0;
     cellframe_rpc_response_t *resp = NULL;
 
-    if (!engine->wallets_loaded || !engine->wallet_list) {
+    if (!engine->wallets_loaded || !engine->blockchain_wallets) {
         error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
         goto done;
     }
@@ -2534,20 +2534,26 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
     int wallet_index = task->params.get_transactions.wallet_index;
     const char *network = task->params.get_transactions.network;
 
-    wallet_list_t *wallets = (wallet_list_t*)engine->wallet_list;
-    if (wallet_index < 0 || wallet_index >= wallets->count) {
+    blockchain_wallet_list_t *wallets = engine->blockchain_wallets;
+    if (wallet_index < 0 || wallet_index >= (int)wallets->count) {
         error = DNA_ERROR_INVALID_ARG;
         goto done;
     }
 
-    cellframe_wallet_t *wallet = &wallets->wallets[wallet_index];
-    if (wallet->address[0] == '\0') {
+    blockchain_wallet_info_t *wallet_info = &wallets->wallets[wallet_index];
+
+    /* ETH transactions not yet supported - return empty list */
+    if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
+        goto done;
+    }
+
+    if (wallet_info->address[0] == '\0') {
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
 
     /* Query transaction history from RPC */
-    if (cellframe_rpc_get_tx_history(network, wallet->address, &resp) != 0 || !resp) {
+    if (cellframe_rpc_get_tx_history(network, wallet_info->address, &resp) != 0 || !resp) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to query tx history from RPC\n");
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
@@ -2688,7 +2694,7 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
                 const char *from_addr = json_object_get_string(jaddr_from);
 
                 /* Check if we sent this (our address is sender) */
-                if (from_addr && strcmp(from_addr, wallet->address) == 0) {
+                if (from_addr && strcmp(from_addr, wallet_info->address) == 0) {
                     strncpy(transactions[count].direction, "sent",
                             sizeof(transactions[count].direction) - 1);
 
@@ -2741,7 +2747,7 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
 
                             if (jaddr) {
                                 const char *addr = json_object_get_string(jaddr);
-                                if (addr && strcmp(addr, wallet->address) == 0 && jval) {
+                                if (addr && strcmp(addr, wallet_info->address) == 0 && jval) {
                                     strncpy(transactions[count].amount, json_object_get_string(jval),
                                             sizeof(transactions[count].amount) - 1);
                                     break;
