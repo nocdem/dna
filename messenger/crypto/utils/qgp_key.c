@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_log.h"
 
 // ============================================================================
 // KEY MEMORY MANAGEMENT
@@ -79,18 +80,18 @@ void qgp_key_free(qgp_key_t *key) {
  */
 int qgp_key_save(const qgp_key_t *key, const char *path) {
     if (!key || !path) {
-        fprintf(stderr, "qgp_key_save: Invalid arguments\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_save: Invalid arguments");
         return -1;
     }
 
     if (!key->public_key || !key->private_key) {
-        fprintf(stderr, "qgp_key_save: Key has no public or private key data\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_save: Key has no public or private key data");
         return -1;
     }
 
     FILE *fp = fopen(path, "wb");
     if (!fp) {
-        fprintf(stderr, "qgp_key_save: Cannot open file: %s\n", path);
+        QGP_LOG_ERROR("KEY", "qgp_key_save: Cannot open file: %s", path);
         return -1;
     }
 
@@ -107,21 +108,21 @@ int qgp_key_save(const qgp_key_t *key, const char *path) {
 
     // Write header
     if (fwrite(&header, sizeof(header), 1, fp) != 1) {
-        fprintf(stderr, "qgp_key_save: Failed to write header\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_save: Failed to write header");
         fclose(fp);
         return -1;
     }
 
     // Write public key
     if (fwrite(key->public_key, 1, key->public_key_size, fp) != key->public_key_size) {
-        fprintf(stderr, "qgp_key_save: Failed to write public key\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_save: Failed to write public key");
         fclose(fp);
         return -1;
     }
 
     // Write private key
     if (fwrite(key->private_key, 1, key->private_key_size, fp) != key->private_key_size) {
-        fprintf(stderr, "qgp_key_save: Failed to write private key\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_save: Failed to write private key");
         fclose(fp);
         return -1;
     }
@@ -139,33 +140,33 @@ int qgp_key_save(const qgp_key_t *key, const char *path) {
  */
 int qgp_key_load(const char *path, qgp_key_t **key_out) {
     if (!path || !key_out) {
-        fprintf(stderr, "qgp_key_load: Invalid arguments\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_load: Invalid arguments");
         return -1;
     }
 
     FILE *fp = fopen(path, "rb");
     if (!fp) {
-        fprintf(stderr, "qgp_key_load: Cannot open file: %s\n", path);
+        QGP_LOG_ERROR("KEY", "qgp_key_load: Cannot open file: %s", path);
         return -1;
     }
 
     // Read header
     qgp_privkey_file_header_t header;
     if (fread(&header, sizeof(header), 1, fp) != 1) {
-        fprintf(stderr, "qgp_key_load: Failed to read header\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_load: Failed to read header");
         fclose(fp);
         return -1;
     }
 
     // Validate header
     if (memcmp(header.magic, QGP_PRIVKEY_MAGIC, 8) != 0) {
-        fprintf(stderr, "qgp_key_load: Invalid magic (not a QGP private key file)\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_load: Invalid magic (not a QGP private key file)");
         fclose(fp);
         return -1;
     }
 
     if (header.version != QGP_PRIVKEY_VERSION) {
-        fprintf(stderr, "qgp_key_load: Unsupported version: %d\n", header.version);
+        QGP_LOG_ERROR("KEY", "qgp_key_load: Unsupported version: %d", header.version);
         fclose(fp);
         return -1;
     }
@@ -173,7 +174,7 @@ int qgp_key_load(const char *path, qgp_key_t **key_out) {
     // Create key structure
     qgp_key_t *key = qgp_key_new((qgp_key_type_t)header.key_type, (qgp_key_purpose_t)header.purpose);
     if (!key) {
-        fprintf(stderr, "qgp_key_load: Memory allocation failed\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_load: Memory allocation failed");
         fclose(fp);
         return -1;
     }
@@ -184,14 +185,14 @@ int qgp_key_load(const char *path, qgp_key_t **key_out) {
     key->public_key_size = header.public_key_size;
     key->public_key = QGP_MALLOC(key->public_key_size);
     if (!key->public_key) {
-        fprintf(stderr, "qgp_key_load: Memory allocation failed for public key\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_load: Memory allocation failed for public key");
         qgp_key_free(key);
         fclose(fp);
         return -1;
     }
 
     if (fread(key->public_key, 1, key->public_key_size, fp) != key->public_key_size) {
-        fprintf(stderr, "qgp_key_load: Failed to read public key\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_load: Failed to read public key");
         qgp_key_free(key);
         fclose(fp);
         return -1;
@@ -201,14 +202,14 @@ int qgp_key_load(const char *path, qgp_key_t **key_out) {
     key->private_key_size = header.private_key_size;
     key->private_key = QGP_MALLOC(key->private_key_size);
     if (!key->private_key) {
-        fprintf(stderr, "qgp_key_load: Memory allocation failed for private key\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_load: Memory allocation failed for private key");
         qgp_key_free(key);
         fclose(fp);
         return -1;
     }
 
     if (fread(key->private_key, 1, key->private_key_size, fp) != key->private_key_size) {
-        fprintf(stderr, "qgp_key_load: Failed to read private key\n");
+        QGP_LOG_ERROR("KEY", "qgp_key_load: Failed to read private key");
         qgp_key_free(key);
         fclose(fp);
         return -1;
@@ -228,18 +229,18 @@ int qgp_key_load(const char *path, qgp_key_t **key_out) {
  */
 int qgp_pubkey_save(const qgp_key_t *key, const char *path) {
     if (!key || !path) {
-        fprintf(stderr, "qgp_pubkey_save: Invalid arguments\n");
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_save: Invalid arguments");
         return -1;
     }
 
     if (!key->public_key) {
-        fprintf(stderr, "qgp_pubkey_save: Key has no public key data\n");
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_save: Key has no public key data");
         return -1;
     }
 
     FILE *fp = fopen(path, "wb");
     if (!fp) {
-        fprintf(stderr, "qgp_pubkey_save: Cannot open file: %s\n", path);
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_save: Cannot open file: %s", path);
         return -1;
     }
 
@@ -255,14 +256,14 @@ int qgp_pubkey_save(const qgp_key_t *key, const char *path) {
 
     // Write header
     if (fwrite(&header, sizeof(header), 1, fp) != 1) {
-        fprintf(stderr, "qgp_pubkey_save: Failed to write header\n");
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_save: Failed to write header");
         fclose(fp);
         return -1;
     }
 
     // Write public key
     if (fwrite(key->public_key, 1, key->public_key_size, fp) != key->public_key_size) {
-        fprintf(stderr, "qgp_pubkey_save: Failed to write public key\n");
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_save: Failed to write public key");
         fclose(fp);
         return -1;
     }
@@ -280,33 +281,33 @@ int qgp_pubkey_save(const qgp_key_t *key, const char *path) {
  */
 int qgp_pubkey_load(const char *path, qgp_key_t **key_out) {
     if (!path || !key_out) {
-        fprintf(stderr, "qgp_pubkey_load: Invalid arguments\n");
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_load: Invalid arguments");
         return -1;
     }
 
     FILE *fp = fopen(path, "rb");
     if (!fp) {
-        fprintf(stderr, "qgp_pubkey_load: Cannot open file: %s\n", path);
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_load: Cannot open file: %s", path);
         return -1;
     }
 
     // Read header
     qgp_pubkey_file_header_t header;
     if (fread(&header, sizeof(header), 1, fp) != 1) {
-        fprintf(stderr, "qgp_pubkey_load: Failed to read header\n");
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_load: Failed to read header");
         fclose(fp);
         return -1;
     }
 
     // Validate header
     if (memcmp(header.magic, QGP_PUBKEY_MAGIC, 8) != 0) {
-        fprintf(stderr, "qgp_pubkey_load: Invalid magic (not a QGP public key file)\n");
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_load: Invalid magic (not a QGP public key file)");
         fclose(fp);
         return -1;
     }
 
     if (header.version != QGP_PUBKEY_VERSION) {
-        fprintf(stderr, "qgp_pubkey_load: Unsupported version: %d\n", header.version);
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_load: Unsupported version: %d", header.version);
         fclose(fp);
         return -1;
     }
@@ -314,7 +315,7 @@ int qgp_pubkey_load(const char *path, qgp_key_t **key_out) {
     // Create key structure
     qgp_key_t *key = qgp_key_new((qgp_key_type_t)header.key_type, (qgp_key_purpose_t)header.purpose);
     if (!key) {
-        fprintf(stderr, "qgp_pubkey_load: Memory allocation failed\n");
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_load: Memory allocation failed");
         fclose(fp);
         return -1;
     }
@@ -325,14 +326,14 @@ int qgp_pubkey_load(const char *path, qgp_key_t **key_out) {
     key->public_key_size = header.public_key_size;
     key->public_key = QGP_MALLOC(key->public_key_size);
     if (!key->public_key) {
-        fprintf(stderr, "qgp_pubkey_load: Memory allocation failed for public key\n");
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_load: Memory allocation failed for public key");
         qgp_key_free(key);
         fclose(fp);
         return -1;
     }
 
     if (fread(key->public_key, 1, key->public_key_size, fp) != key->public_key_size) {
-        fprintf(stderr, "qgp_pubkey_load: Failed to read public key\n");
+        QGP_LOG_ERROR("KEY", "qgp_pubkey_load: Failed to read public key");
         qgp_key_free(key);
         fclose(fp);
         return -1;

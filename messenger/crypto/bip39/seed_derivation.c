@@ -19,8 +19,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-
 #include "crypto/kem/fips202_kyber.h"
+#include "crypto/utils/qgp_log.h"
 
 /**
  * Derive QGP signing, encryption, and wallet seeds from BIP39 mnemonic
@@ -50,14 +50,14 @@ int qgp_derive_seeds_from_mnemonic(
 
     // Validate mnemonic
     if (!bip39_validate_mnemonic(mnemonic)) {
-        fprintf(stderr, "Error: Invalid BIP39 mnemonic\n");
+        QGP_LOG_ERROR("SEED", "Invalid BIP39 mnemonic");
         return -1;
     }
 
     // Derive 64-byte master seed from mnemonic
     uint8_t master_seed[BIP39_SEED_SIZE];
     if (bip39_mnemonic_to_seed(mnemonic, passphrase, master_seed) != 0) {
-        fprintf(stderr, "Error: Failed to derive master seed from mnemonic\n");
+        QGP_LOG_ERROR("SEED", "Failed to derive master seed from mnemonic");
         return -1;
     }
 
@@ -69,7 +69,7 @@ int qgp_derive_seeds_from_mnemonic(
 
         uint8_t *input = malloc(input_len);
         if (!input) {
-            fprintf(stderr, "Error: Memory allocation failed\n");
+            QGP_LOG_ERROR("SEED", "Memory allocation failed");
             return -1;
         }
 
@@ -88,7 +88,7 @@ int qgp_derive_seeds_from_mnemonic(
 
         uint8_t *input = malloc(input_len);
         if (!input) {
-            fprintf(stderr, "Error: Memory allocation failed\n");
+            QGP_LOG_ERROR("SEED", "Memory allocation failed");
             return -1;
         }
 
@@ -107,7 +107,7 @@ int qgp_derive_seeds_from_mnemonic(
 
         uint8_t *input = malloc(input_len);
         if (!input) {
-            fprintf(stderr, "Error: Memory allocation failed\n");
+            QGP_LOG_ERROR("SEED", "Memory allocation failed");
             return -1;
         }
 

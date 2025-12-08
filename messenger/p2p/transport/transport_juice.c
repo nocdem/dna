@@ -955,7 +955,7 @@ void* ice_connection_recv_thread(void *arg) {
         return NULL;
     }
 
-    printf("[ICE-RECV] Receive thread started for peer %.32s...\n", conn->peer_fingerprint);
+    QGP_LOG_DEBUG("ICE", "Receive thread started for peer %.32s...", conn->peer_fingerprint);
 
     uint8_t buffer[65536];  // 64KB buffer
 
@@ -970,16 +970,16 @@ void* ice_connection_recv_thread(void *arg) {
                 continue;
             }
 
-            printf("[ICE-RECV] ✓ Received %d bytes from peer %.32s...\n",
+            QGP_LOG_DEBUG("ICE", "Received %d bytes from peer %.32s...",
                    received, conn->peer_fingerprint);
 
             // Send ACK back to sender (single byte 0x01)
             uint8_t ack = 0x01;
             int ack_sent = ice_send(conn->ice_ctx, &ack, 1);
             if (ack_sent == 1) {
-                printf("[ICE-RECV] ✓ Sent ACK to peer\n");
+                QGP_LOG_DEBUG("ICE", "Sent ACK to peer");
             } else {
-                printf("[ICE-RECV] Failed to send ACK (peer may retry or use DHT)\n");
+                QGP_LOG_WARN("ICE", "Failed to send ACK (peer may retry or use DHT)");
             }
 
             // Invoke message callback via transport back-pointer
@@ -993,19 +993,19 @@ void* ice_connection_recv_thread(void *arg) {
                     conn->transport->callback_user_data
                 );
                 pthread_mutex_unlock(&conn->transport->callback_mutex);
-                printf("[ICE-RECV] ✓ Message delivered to callback\n");
+                QGP_LOG_DEBUG("ICE", "Message delivered to callback");
             } else {
-                printf("[ICE-RECV] Warning: No message callback registered\n");
+                QGP_LOG_WARN("ICE", "No message callback registered");
             }
         } else if (received < 0) {
-            fprintf(stderr, "[ICE-RECV] Receive error, closing connection\n");
+            QGP_LOG_ERROR("ICE", "Receive error, closing connection");
             conn->active = false;
             break;
         }
         // received == 0 means timeout, continue loop
     }
 
-    printf("[ICE-RECV] Receive thread exiting for peer %.32s...\n", conn->peer_fingerprint);
+    QGP_LOG_DEBUG("ICE", "Receive thread exiting for peer %.32s...", conn->peer_fingerprint);
     return NULL;
 }
 
@@ -1088,13 +1088,13 @@ static p2p_connection_t* ice_create_connection(
     const uint8_t *peer_pubkey,
     const char *peer_fingerprint)
 {
-    printf("[ICE-JUICE] Creating new ICE connection to peer %.32s...\n", peer_fingerprint);
+    QGP_LOG_DEBUG("ICE", "Creating new ICE connection to peer %.32s...", peer_fingerprint);
 
     // Create new ICE context for this peer
     // NOTE: Each peer gets own ICE context (separate stream/agent)
     ice_context_t *peer_ice_ctx = ice_context_new();
     if (!peer_ice_ctx) {
-        fprintf(stderr, "[ICE-JUICE] Failed to create peer ICE context\n");
+        QGP_LOG_ERROR("ICE", "Failed to create peer ICE context");
         return NULL;
     }
 
@@ -1112,33 +1112,33 @@ static p2p_connection_t* ice_create_connection(
     for (size_t i = 0; i < 3 && !gathered; i++) {
         if (ice_gather_candidates(peer_ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
             gathered = 1;
-            printf("[ICE-JUICE] ✓ Gathered candidates for peer connection via %s:%d\n",
+            QGP_LOG_DEBUG("ICE", "Gathered candidates for peer connection via %s:%d",
                    stun_servers[i], stun_ports[i]);
             break;
         }
     }
 
     if (!gathered) {
-        fprintf(stderr, "[ICE-JUICE] Failed to gather candidates for peer\n");
+        QGP_LOG_ERROR("ICE", "Failed to gather candidates for peer");
         ice_context_free(peer_ice_ctx);
         return NULL;
     }
 
     // Fetch peer's ICE candidates from DHT
     if (ice_fetch_from_dht(peer_ice_ctx, peer_fingerprint) != 0) {
-        fprintf(stderr, "[ICE-JUICE] Peer ICE candidates not found in DHT\n");
+        QGP_LOG_ERROR("ICE", "Peer ICE candidates not found in DHT");
         ice_context_free(peer_ice_ctx);
         return NULL;
     }
 
-    printf("[ICE-JUICE] ✓ Fetched peer ICE candidates from DHT\n");
+    QGP_LOG_DEBUG("ICE", "Fetched peer ICE candidates from DHT");
 
     // Perform ICE connectivity checks
     int ice_connected = (ice_connect(peer_ice_ctx) == 0);
 
     // If STUN-only ICE failed, try with TURN
     if (!ice_connected) {
-        printf("[ICE-JUICE] STUN-only ICE failed, requesting TURN credentials...\n");
+        QGP_LOG_DEBUG("ICE", "STUN-only ICE failed, requesting TURN credentials...");
 
         // Get our fingerprint from transport context (if available)
         const char *local_fingerprint = ctx ? ctx->my_fingerprint : NULL;
@@ -1171,7 +1171,7 @@ static p2p_connection_t* ice_create_connection(
                     for (size_t i = 0; i < 3 && !gathered; i++) {
                         if (ice_gather_candidates(peer_ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
                             gathered = 1;
-                            printf("[ICE-JUICE] ✓ Gathered candidates with TURN via %s:%d\n",
+                            QGP_LOG_DEBUG("ICE", "Gathered candidates with TURN via %s:%d",
                                    stun_servers[i], stun_ports[i]);
                             break;
                         }
@@ -1183,7 +1183,7 @@ static p2p_connection_t* ice_create_connection(
                             // Try ICE with TURN
                             ice_connected = (ice_connect(peer_ice_ctx) == 0);
                             if (ice_connected) {
-                                printf("[ICE-JUICE] ✓ Connected via TURN relay!\n");
+                                QGP_LOG_INFO("ICE", "Connected via TURN relay!");
                             }
                         }
                     }
@@ -1192,13 +1192,13 @@ static p2p_connection_t* ice_create_connection(
         }
 
         if (!ice_connected) {
-            fprintf(stderr, "[ICE-JUICE] ICE connectivity checks failed (including TURN)\n");
+            QGP_LOG_ERROR("ICE", "ICE connectivity checks failed (including TURN)");
             if (peer_ice_ctx) ice_context_free(peer_ice_ctx);
             return NULL;
         }
     }
 
-    printf("[ICE-JUICE] ✓ ICE connection established to peer!\n");
+    QGP_LOG_INFO("ICE", "ICE connection established to peer!");
 
     // Allocate connection structure
     p2p_connection_t *conn = calloc(1, sizeof(p2p_connection_t));
@@ -1227,13 +1227,13 @@ static p2p_connection_t* ice_create_connection(
 
             // Start receive thread
             if (pthread_create(&conn->recv_thread, NULL, ice_connection_recv_thread, conn) != 0) {
-                fprintf(stderr, "[ICE-JUICE] Failed to start ICE receive thread\n");
+                QGP_LOG_ERROR("ICE", "Failed to start ICE receive thread");
                 // Connection still usable for sending, just no receiving
             } else {
-                printf("[ICE-JUICE] ✓ Started ICE receive thread\n");
+                QGP_LOG_DEBUG("ICE", "Started ICE receive thread");
             }
 
-            printf("[ICE-JUICE] ✓✓ ICE connection cached (slot %zu, total: %zu)\n",
+            QGP_LOG_DEBUG("ICE", "ICE connection cached (slot %zu, total: %zu)",
                    i, ctx->connection_count);
             return conn;
         }
@@ -1241,7 +1241,7 @@ static p2p_connection_t* ice_create_connection(
     pthread_mutex_unlock(&ctx->connections_mutex);
 
     // No free slot
-    fprintf(stderr, "[ICE-JUICE] Connection array full (256 max)\n");
+    QGP_LOG_ERROR("ICE", "Connection array full (256 max)");
     ice_context_free(peer_ice_ctx);
     free(conn);
     return NULL;
@@ -1269,12 +1269,12 @@ p2p_connection_t* ice_get_or_create_connection(
     // Try to find existing connection (reuse)
     p2p_connection_t *conn = ice_find_connection(ctx, peer_fingerprint);
     if (conn) {
-        printf("[ICE-JUICE] ✓ Reusing existing ICE connection to peer %.32s...\n",
-               peer_fingerprint);
+        QGP_LOG_DEBUG("ICE", "Reusing existing ICE connection to peer %.32s...",
+                      peer_fingerprint);
         return conn;
     }
 
     // Create new connection if not found
-    printf("[ICE-JUICE] No existing connection, creating new ICE connection...\n");
+    QGP_LOG_DEBUG("ICE", "No existing connection, creating new ICE connection...");
     return ice_create_connection(ctx, peer_pubkey, peer_fingerprint);
 }

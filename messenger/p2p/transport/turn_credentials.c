@@ -10,6 +10,7 @@
 #include "../../crypto/utils/qgp_sha3.h"
 #include "../../crypto/utils/qgp_dilithium.h"
 #include "../../crypto/utils/qgp_random.h"
+#include "../../crypto/utils/qgp_log.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -71,7 +72,7 @@ int turn_credentials_init(void) {
 
     pthread_mutex_unlock(&cache_mutex);
 
-    printf("[TURN-CRED] Client initialized\n");
+    QGP_LOG_INFO("TURN", "Client initialized");
     return 0;
 }
 
@@ -88,7 +89,7 @@ void turn_credentials_shutdown(void) {
 
     pthread_mutex_unlock(&cache_mutex);
 
-    printf("[TURN-CRED] Client shutdown\n");
+    QGP_LOG_INFO("TURN", "Client shutdown");
 }
 
 // =============================================================================
@@ -200,13 +201,13 @@ static int parse_credential_response(
     turn_credentials_t *out)
 {
     if (len < 3) {
-        fprintf(stderr, "[TURN-CRED] Response too short\n");
+        QGP_LOG_ERROR("TURN", "Response too short");
         return -1;
     }
 
     // Check version and type
     if (data[0] != REQUEST_VERSION || data[1] != RESPONSE_TYPE_CREDENTIALS) {
-        fprintf(stderr, "[TURN-CRED] Invalid response version/type\n");
+        QGP_LOG_ERROR("TURN", "Invalid response version/type");
         return -1;
     }
 
@@ -219,7 +220,7 @@ static int parse_credential_response(
     // Check length
     size_t expected_len = 3 + server_count * RESPONSE_SERVER_ENTRY_SIZE;
     if (len < expected_len) {
-        fprintf(stderr, "[TURN-CRED] Response truncated\n");
+        QGP_LOG_ERROR("TURN", "Response truncated");
         return -1;
     }
 
@@ -277,11 +278,11 @@ int turn_credentials_request(
     // Get DHT instance
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
-        fprintf(stderr, "[TURN-CRED] DHT not initialized\n");
+        QGP_LOG_ERROR("TURN", "DHT not initialized");
         return -1;
     }
 
-    printf("[TURN-CRED] Requesting credentials for %.16s...\n", fingerprint);
+    QGP_LOG_DEBUG("TURN", "Requesting credentials for %.16s...", fingerprint);
 
     // Create signed request
     uint8_t *request_data = NULL;
@@ -289,7 +290,7 @@ int turn_credentials_request(
 
     if (create_credential_request(fingerprint, pubkey, privkey,
                                   &request_data, &request_len) != 0) {
-        fprintf(stderr, "[TURN-CRED] Failed to create request\n");
+        QGP_LOG_ERROR("TURN", "Failed to create request");
         return -1;
     }
 
@@ -310,11 +311,11 @@ int turn_credentials_request(
     free(request_data);
 
     if (ret != 0) {
-        fprintf(stderr, "[TURN-CRED] Failed to publish request to DHT\n");
+        QGP_LOG_ERROR("TURN", "Failed to publish request to DHT");
         return -1;
     }
 
-    printf("[TURN-CRED] Request published, polling for response...\n");
+    QGP_LOG_DEBUG("TURN", "Request published, polling for response...");
 
     // Create response DHT key: SHA3-512(fingerprint + ":turn_credentials")
     snprintf(key_input, sizeof(key_input), "%s:turn_credentials", fingerprint);
@@ -349,7 +350,7 @@ int turn_credentials_request(
                 }
                 pthread_mutex_unlock(&cache_mutex);
 
-                printf("[TURN-CRED] ✓ Got %zu TURN servers\n", out->server_count);
+                QGP_LOG_INFO("TURN", "Got %zu TURN servers", out->server_count);
                 return 0;
             }
             free(response_data);
@@ -367,7 +368,7 @@ int turn_credentials_request(
 #endif
     }
 
-    fprintf(stderr, "[TURN-CRED] Timeout waiting for credentials\n");
+    QGP_LOG_ERROR("TURN", "Timeout waiting for credentials");
     return -1;
 }
 
