@@ -18,6 +18,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <json-c/json.h>
 
 #define LOG_TAG "ETH_WALLET"
