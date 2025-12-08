@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
+#include <openssl/ripemd.h>
 #include <secp256k1.h>
 #include "../utils/qgp_log.h"
 
