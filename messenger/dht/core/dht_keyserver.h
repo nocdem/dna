@@ -59,7 +59,8 @@ int dht_keyserver_publish(
     const uint8_t *dilithium_pubkey,
     const uint8_t *kyber_pubkey,
     const uint8_t *dilithium_privkey,
-    const char *wallet_address
+    const char *wallet_address,
+    const char *eth_address
 );
 
 /**
