@@ -746,7 +746,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     setState(() => _isSending = true);
 
     try {
-      await widget.ref.read(walletsProvider.notifier).sendTokens(
+      await ref.read(walletsProvider.notifier).sendTokens(
         walletIndex: widget.walletIndex,
         recipientAddress: _recipientController.text.trim(),
         amount: _amountController.text.trim(),
