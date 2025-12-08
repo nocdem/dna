@@ -10,6 +10,26 @@
 
 #include "blockchain_wallet.h"
 #include "cellframe/cellframe_wallet_create.h"
+
+/* Forward declarations from blockchain.h interface to avoid type conflict */
+typedef struct blockchain_ops blockchain_ops_t;
+typedef enum {
+    BLOCKCHAIN_FEE_SLOW = 0,
+    BLOCKCHAIN_FEE_NORMAL = 1,
+    BLOCKCHAIN_FEE_FAST = 2,
+} blockchain_fee_speed_t;
+extern const blockchain_ops_t *blockchain_get(const char *name);
+extern int blockchain_ops_send_from_wallet(
+    const blockchain_ops_t *ops,
+    const char *wallet_path,
+    const char *to_address,
+    const char *amount,
+    const char *token,
+    const char *network,
+    blockchain_fee_speed_t fee_speed,
+    char *txhash_out,
+    size_t txhash_out_size
+);
 #include "cellframe/cellframe_wallet.h"
 #include "ethereum/eth_wallet.h"
 #include "ethereum/eth_tx.h"
@@ -429,41 +449,51 @@ int blockchain_send_tokens(
         return -1;
     }
 
+    /* Map blockchain_wallet type to chain name */
+    const char *chain_name = NULL;
+    const char *network = NULL;
     switch (type) {
-        case BLOCKCHAIN_ETHEREUM: {
-            QGP_LOG_INFO(LOG_TAG, "Loading ETH wallet from: %s", wallet_path);
-            /* Load wallet to get private key */
-            eth_wallet_t wallet;
-            if (eth_wallet_load(wallet_path, &wallet) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "Failed to load ETH wallet: %s", wallet_path);
-                return -1;
-            }
-            QGP_LOG_INFO(LOG_TAG, "ETH wallet loaded, address: %s", wallet.address_hex);
-
-            /* Send ETH with gas speed */
-            int ret = eth_send_eth_with_gas(
-                wallet.private_key,
-                wallet.address_hex,
-                to_address,
-                amount,
-                gas_speed,
-                tx_hash_out
-            );
-
-            /* Clear sensitive data */
-            eth_wallet_clear(&wallet);
-
-            QGP_LOG_INFO(LOG_TAG, "<<< blockchain_send_tokens result: %d", ret);
-            return ret;
-        }
-
+        case BLOCKCHAIN_ETHEREUM:
+            chain_name = "ethereum";
+            network = "mainnet";
+            break;
         case BLOCKCHAIN_CELLFRAME:
-            /* Cellframe send is handled separately in dna_engine.c via UTXO model */
-            QGP_LOG_ERROR(LOG_TAG, "Use dna_handle_send_tokens for Cellframe");
-            return -1;
-
+            chain_name = "cellframe";
+            network = "Backbone";
+            break;
         default:
             QGP_LOG_ERROR(LOG_TAG, "Send not implemented for %s", blockchain_type_name(type));
             return -1;
     }
+
+    /* Get blockchain ops via modular interface */
+    const blockchain_ops_t *ops = blockchain_get(chain_name);
+    if (!ops) {
+        QGP_LOG_ERROR(LOG_TAG, "Chain '%s' not registered", chain_name);
+        return -1;
+    }
+
+    /* Map gas_speed to blockchain_fee_speed_t */
+    blockchain_fee_speed_t fee_speed;
+    switch (gas_speed) {
+        case 0: fee_speed = BLOCKCHAIN_FEE_SLOW; break;
+        case 2: fee_speed = BLOCKCHAIN_FEE_FAST; break;
+        default: fee_speed = BLOCKCHAIN_FEE_NORMAL; break;
+    }
+
+    /* Call the modular interface via wrapper function */
+    int ret = blockchain_ops_send_from_wallet(
+        ops,
+        wallet_path,
+        to_address,
+        amount,
+        token,
+        network,
+        fee_speed,
+        tx_hash_out,
+        128  /* tx_hash buffer size */
+    );
+
+    QGP_LOG_INFO(LOG_TAG, "<<< blockchain_send_tokens result: %d (chain=%s)", ret, chain_name);
+    return ret;
 }

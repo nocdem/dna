@@ -44,6 +44,17 @@ typedef enum {
     BLOCKCHAIN_FEE_FAST = 2,
 } blockchain_fee_speed_t;
 
+/* Transaction record */
+typedef struct {
+    char tx_hash[128];
+    char amount[64];            /* Decimal string */
+    char token[32];             /* Token ticker or empty for native */
+    char other_address[128];    /* From/To address */
+    char timestamp[32];         /* Unix timestamp as string */
+    char status[32];            /* CONFIRMED, PENDING, FAILED */
+    bool is_outgoing;
+} blockchain_tx_t;
+
 /* Forward declarations */
 typedef struct blockchain_ops blockchain_ops_t;
 
@@ -76,7 +87,7 @@ struct blockchain_ops {
         uint64_t *gas_price_out       /* Optional, can be NULL */
     );
 
-    /* Send transaction */
+    /* Send transaction (with raw private key) */
     int (*send)(
         const char *from_address,
         const char *to_address,
@@ -84,6 +95,18 @@ struct blockchain_ops {
         const char *token,            /* NULL for native token */
         const uint8_t *private_key,
         size_t private_key_len,
+        blockchain_fee_speed_t fee_speed,
+        char *txhash_out,
+        size_t txhash_out_size
+    );
+
+    /* Send transaction (with wallet file path) */
+    int (*send_from_wallet)(
+        const char *wallet_path,      /* Path to wallet file */
+        const char *to_address,
+        const char *amount,           /* Decimal string */
+        const char *token,            /* NULL for native token */
+        const char *network,          /* Network name (e.g., "Backbone") */
         blockchain_fee_speed_t fee_speed,
         char *txhash_out,
         size_t txhash_out_size
@@ -97,6 +120,17 @@ struct blockchain_ops {
 
     /* Address validation */
     bool (*validate_address)(const char *address);
+
+    /* Transaction history */
+    int (*get_transactions)(
+        const char *address,
+        const char *token,            /* NULL for all tokens */
+        blockchain_tx_t **txs_out,    /* Caller must free with free_transactions */
+        int *count_out
+    );
+
+    /* Free transaction list */
+    void (*free_transactions)(blockchain_tx_t *txs, int count);
 
     /* Chain-specific data (optional) */
     void *user_data;

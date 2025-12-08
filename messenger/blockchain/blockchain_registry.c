@@ -92,3 +92,23 @@ void blockchain_cleanup_all(void) {
         }
     }
 }
+
+/* Wrapper function to call send_from_wallet via ops pointer */
+int blockchain_ops_send_from_wallet(
+    const blockchain_ops_t *ops,
+    const char *wallet_path,
+    const char *to_address,
+    const char *amount,
+    const char *token,
+    const char *network,
+    blockchain_fee_speed_t fee_speed,
+    char *txhash_out,
+    size_t txhash_out_size
+) {
+    if (!ops || !ops->send_from_wallet) {
+        QGP_LOG_ERROR(LOG_TAG, "Chain does not support send_from_wallet");
+        return -1;
+    }
+    return ops->send_from_wallet(wallet_path, to_address, amount, token,
+                                  network, fee_speed, txhash_out, txhash_out_size);
+}
