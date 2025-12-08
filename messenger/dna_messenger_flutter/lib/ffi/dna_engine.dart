@@ -822,7 +822,8 @@ class DnaEngine {
   /// Create new identity from BIP39 seeds (synchronous)
   /// name is required - used for directory structure and wallet naming
   /// walletSeed is used to create a Cellframe wallet (can be null to skip)
-  String createIdentitySync(String name, List<int> signingSeed, List<int> encryptionSeed, List<int>? walletSeed) {
+  /// masterSeed is the 64-byte BIP39 master seed for multi-chain wallet derivation (ETH, etc.)
+  String createIdentitySync(String name, List<int> signingSeed, List<int> encryptionSeed, List<int>? walletSeed, {List<int>? masterSeed}) {
     if (name.isEmpty) {
       throw ArgumentError('Name is required');
     }
@@ -832,11 +833,15 @@ class DnaEngine {
     if (walletSeed != null && walletSeed.length != 32) {
       throw ArgumentError('Wallet seed must be 32 bytes');
     }
+    if (masterSeed != null && masterSeed.length != 64) {
+      throw ArgumentError('Master seed must be 64 bytes');
+    }
 
     final namePtr = name.toNativeUtf8();
     final sigSeedPtr = calloc<Uint8>(32);
     final encSeedPtr = calloc<Uint8>(32);
     final walletSeedPtr = walletSeed != null ? calloc<Uint8>(32) : nullptr;
+    final masterSeedPtr = masterSeed != null ? calloc<Uint8>(64) : nullptr;
     final fingerprintPtr = calloc<Uint8>(129); // 128 hex chars + null
 
     try {
@@ -847,6 +852,11 @@ class DnaEngine {
           walletSeedPtr[i] = walletSeed[i];
         }
       }
+      if (masterSeed != null) {
+        for (var i = 0; i < 64; i++) {
+          masterSeedPtr[i] = masterSeed[i];
+        }
+      }
 
       final error = _bindings.dna_engine_create_identity_sync(
         _engine,
@@ -854,6 +864,7 @@ class DnaEngine {
         sigSeedPtr,
         encSeedPtr,
         walletSeedPtr,
+        masterSeedPtr,
         fingerprintPtr.cast(),
       );
 
@@ -869,6 +880,9 @@ class DnaEngine {
       if (walletSeed != null) {
         calloc.free(walletSeedPtr);
       }
+      if (masterSeed != null) {
+        calloc.free(masterSeedPtr);
+      }
       calloc.free(fingerprintPtr);
     }
   }
@@ -876,9 +890,10 @@ class DnaEngine {
   /// Create new identity from BIP39 seeds (async wrapper)
   /// name is required - used for directory structure and wallet naming
   /// walletSeed is used to create a Cellframe wallet (can be null to skip)
-  Future<String> createIdentity(String name, List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed}) async {
+  /// masterSeed is the 64-byte BIP39 master seed for multi-chain wallet derivation (ETH, etc.)
+  Future<String> createIdentity(String name, List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed, List<int>? masterSeed}) async {
     // Use sync version wrapped in compute to avoid blocking UI
-    return createIdentitySync(name, signingSeed, encryptionSeed, walletSeed);
+    return createIdentitySync(name, signingSeed, encryptionSeed, walletSeed, masterSeed: masterSeed);
   }
 
   /// Load and activate identity
@@ -1515,6 +1530,58 @@ class DnaEngine {
       calloc.free(signingSeedPtr);
       calloc.free(encryptionSeedPtr);
       calloc.free(walletSeedPtr);
+    }
+  }
+
+  /// Derive signing, encryption, wallet seeds AND 64-byte master seed from BIP39 mnemonic
+  /// Returns a record with all seeds including masterSeed for multi-chain wallet derivation
+  ({List<int> signingSeed, List<int> encryptionSeed, List<int> walletSeed, List<int> masterSeed}) deriveSeedsWithMaster(
+    String mnemonic, {
+    String passphrase = '',
+  }) {
+    final mnemonicPtr = mnemonic.toNativeUtf8();
+    final passphrasePtr = passphrase.toNativeUtf8();
+    final signingSeedPtr = calloc<Uint8>(32);
+    final encryptionSeedPtr = calloc<Uint8>(32);
+    final walletSeedPtr = calloc<Uint8>(32);
+    final masterSeedPtr = calloc<Uint8>(64);
+
+    try {
+      final result = _bindings.qgp_derive_seeds_with_master(
+        mnemonicPtr.cast(),
+        passphrasePtr.cast(),
+        signingSeedPtr,
+        encryptionSeedPtr,
+        walletSeedPtr,
+        masterSeedPtr,
+      );
+
+      if (result != 0) {
+        throw DnaEngineException(-1, 'Failed to derive seeds from mnemonic');
+      }
+
+      final signingSeed = <int>[];
+      final encryptionSeed = <int>[];
+      final walletSeed = <int>[];
+      final masterSeed = <int>[];
+
+      for (var i = 0; i < 32; i++) {
+        signingSeed.add(signingSeedPtr[i]);
+        encryptionSeed.add(encryptionSeedPtr[i]);
+        walletSeed.add(walletSeedPtr[i]);
+      }
+      for (var i = 0; i < 64; i++) {
+        masterSeed.add(masterSeedPtr[i]);
+      }
+
+      return (signingSeed: signingSeed, encryptionSeed: encryptionSeed, walletSeed: walletSeed, masterSeed: masterSeed);
+    } finally {
+      calloc.free(mnemonicPtr);
+      calloc.free(passphrasePtr);
+      calloc.free(signingSeedPtr);
+      calloc.free(encryptionSeedPtr);
+      calloc.free(walletSeedPtr);
+      calloc.free(masterSeedPtr);
     }
   }
 

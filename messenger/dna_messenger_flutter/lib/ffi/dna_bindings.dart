@@ -825,9 +825,9 @@ class DnaBindings {
 
   late final _dna_engine_create_identity_sync = _lib.lookupFunction<
       Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>,
-          Pointer<Uint8>, Pointer<Utf8>),
+          Pointer<Uint8>, Pointer<Uint8>, Pointer<Utf8>),
       int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>,
-          Pointer<Uint8>, Pointer<Utf8>)>('dna_engine_create_identity_sync');
+          Pointer<Uint8>, Pointer<Uint8>, Pointer<Utf8>)>('dna_engine_create_identity_sync');
 
   int dna_engine_create_identity_sync(
     Pointer<dna_engine_t> engine,
@@ -835,10 +835,11 @@ class DnaBindings {
     Pointer<Uint8> signing_seed,
     Pointer<Uint8> encryption_seed,
     Pointer<Uint8> wallet_seed,
+    Pointer<Uint8> master_seed,
     Pointer<Utf8> fingerprint_out,
   ) {
     return _dna_engine_create_identity_sync(
-        engine, name, signing_seed, encryption_seed, wallet_seed, fingerprint_out);
+        engine, name, signing_seed, encryption_seed, wallet_seed, master_seed, fingerprint_out);
   }
 
   late final _dna_engine_load_identity = _lib.lookupFunction<
@@ -1469,6 +1470,27 @@ class DnaBindings {
   ) {
     return _qgp_derive_seeds_from_mnemonic(
         mnemonic, passphrase, signing_seed, encryption_seed, wallet_seed);
+  }
+
+  late final _qgp_derive_seeds_with_master = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>,
+          Pointer<Uint8>, Pointer<Uint8>),
+      int Function(Pointer<Utf8>, Pointer<Utf8>, Pointer<Uint8>, Pointer<Uint8>,
+          Pointer<Uint8>, Pointer<Uint8>)>('qgp_derive_seeds_with_master');
+
+  /// Derive signing, encryption, wallet seeds AND 64-byte master seed from BIP39 mnemonic
+  /// master_seed_out receives the 64-byte BIP39 master seed for multi-chain wallet derivation
+  /// Returns 0 on success, -1 on error
+  int qgp_derive_seeds_with_master(
+    Pointer<Utf8> mnemonic,
+    Pointer<Utf8> passphrase,
+    Pointer<Uint8> signing_seed,
+    Pointer<Uint8> encryption_seed,
+    Pointer<Uint8> wallet_seed,
+    Pointer<Uint8> master_seed_out,
+  ) {
+    return _qgp_derive_seeds_with_master(
+        mnemonic, passphrase, signing_seed, encryption_seed, wallet_seed, master_seed_out);
   }
 
   // ---------------------------------------------------------------------------

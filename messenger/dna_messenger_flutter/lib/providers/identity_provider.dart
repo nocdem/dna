@@ -46,15 +46,16 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   Future<String> createIdentityFromMnemonic(String name, String mnemonic, {String passphrase = ''}) async {
     final engine = await ref.read(engineProvider.future);
 
-    // Derive seeds from mnemonic (includes walletSeed for Cellframe wallet)
-    final seeds = engine.deriveSeeds(mnemonic, passphrase: passphrase);
+    // Derive seeds from mnemonic (includes walletSeed and masterSeed for multi-chain wallets)
+    final seeds = engine.deriveSeedsWithMaster(mnemonic, passphrase: passphrase);
 
-    // Create identity with derived seeds (including wallet seed)
+    // Create identity with derived seeds (including master seed for ETH wallet)
     final fingerprint = await engine.createIdentity(
       name,
       seeds.signingSeed,
       seeds.encryptionSeed,
       walletSeed: seeds.walletSeed,
+      masterSeed: seeds.masterSeed,
     );
 
     await refresh();
@@ -65,8 +66,8 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   Future<String> restoreIdentityFromMnemonic(String mnemonic, {String passphrase = ''}) async {
     final engine = await ref.read(engineProvider.future);
 
-    // Derive seeds from mnemonic
-    final seeds = engine.deriveSeeds(mnemonic, passphrase: passphrase);
+    // Derive seeds from mnemonic (includes masterSeed for multi-chain wallets)
+    final seeds = engine.deriveSeedsWithMaster(mnemonic, passphrase: passphrase);
 
     // Create identity locally with empty name (will lookup from DHT)
     final fingerprint = await engine.createIdentity(
@@ -74,6 +75,7 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
       seeds.signingSeed,
       seeds.encryptionSeed,
       walletSeed: seeds.walletSeed,
+      masterSeed: seeds.masterSeed,
     );
 
     await refresh();
