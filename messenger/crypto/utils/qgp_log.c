@@ -17,7 +17,7 @@
 #define QGP_LOG_MAX_TAG_LEN 32
 
 /* Global log configuration */
-static qgp_log_level_t g_log_level = QGP_LOG_LEVEL_WARN;
+static qgp_log_level_t g_log_level = QGP_LOG_LEVEL_DEBUG;
 static qgp_log_filter_mode_t g_filter_mode = QGP_LOG_FILTER_BLACKLIST;
 static bool g_config_loaded = false;
 
