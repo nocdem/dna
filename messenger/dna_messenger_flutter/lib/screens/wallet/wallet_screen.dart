@@ -66,25 +66,15 @@ class WalletScreen extends ConsumerWidget {
       );
     }
 
-    final currentWallet = wallets[selectedIndex.clamp(0, wallets.length - 1)];
-
     return RefreshIndicator(
       onRefresh: () async {
         await ref.read(walletsProvider.notifier).refresh();
-        ref.invalidate(balancesProvider(selectedIndex));
+        ref.invalidate(allBalancesProvider);
       },
       child: ListView(
         children: [
-          // Wallet selector (only shows if multiple wallets)
-          _WalletSelector(
-            wallets: wallets,
-            selectedIndex: selectedIndex,
-            onSelected: (index) {
-              ref.read(selectedWalletIndexProvider.notifier).state = index;
-            },
-          ),
-          // Balances (tap token to see details/send)
-          _BalancesSection(walletIndex: selectedIndex, wallet: currentWallet),
+          // All balances from all wallets combined
+          const _AllBalancesSection(),
         ],
       ),
     );
@@ -341,22 +331,19 @@ class _WalletCard extends StatelessWidget {
   }
 }
 
-class _BalancesSection extends ConsumerWidget {
-  final int walletIndex;
-  final Wallet wallet;
-
-  const _BalancesSection({required this.walletIndex, required this.wallet});
+class _AllBalancesSection extends ConsumerWidget {
+  const _AllBalancesSection();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final balances = ref.watch(balancesProvider(walletIndex));
+    final allBalances = ref.watch(allBalancesProvider);
     final theme = Theme.of(context);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Text(
             'Balances',
             style: theme.textTheme.titleSmall?.copyWith(
@@ -364,8 +351,7 @@ class _BalancesSection extends ConsumerWidget {
             ),
           ),
         ),
-        const SizedBox(height: 8),
-        balances.when(
+        allBalances.when(
           data: (list) => list.isEmpty
               ? Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -375,10 +361,8 @@ class _BalancesSection extends ConsumerWidget {
                   ),
                 )
               : Column(
-                  children: list.map((b) => _BalanceTile(
-                    balance: b,
-                    walletIndex: walletIndex,
-                    walletAddress: wallet.address,
+                  children: list.map((wb) => _BalanceTile(
+                    walletBalance: wb,
                   )).toList(),
                 ),
           loading: () => const Padding(
@@ -399,19 +383,16 @@ class _BalancesSection extends ConsumerWidget {
 }
 
 class _BalanceTile extends StatelessWidget {
-  final Balance balance;
-  final int walletIndex;
-  final String walletAddress;
+  final WalletBalance walletBalance;
 
   const _BalanceTile({
-    required this.balance,
-    required this.walletIndex,
-    required this.walletAddress,
+    required this.walletBalance,
   });
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final balance = walletBalance.balance;
 
     return ListTile(
       leading: CircleAvatar(
@@ -454,12 +435,13 @@ class _BalanceTile extends StatelessWidget {
   }
 
   void _showTokenDetails(BuildContext context) {
+    final balance = walletBalance.balance;
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       builder: (context) => _TokenDetailSheet(
-        walletIndex: walletIndex,
-        walletAddress: walletAddress,
+        walletIndex: walletBalance.walletIndex,
+        walletAddress: walletBalance.wallet.address,
         token: balance.token,
         network: balance.network,
         balance: balance.balance,
