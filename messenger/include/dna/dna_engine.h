@@ -1047,6 +1047,15 @@ dna_request_id_t dna_engine_get_balances(
 );
 
 /**
+ * Gas speed presets for ETH transactions
+ */
+typedef enum {
+    DNA_GAS_SLOW   = 0,  /* 0.8x network price - cheaper, slower */
+    DNA_GAS_NORMAL = 1,  /* 1.0x network price - balanced */
+    DNA_GAS_FAST   = 2   /* 1.5x network price - faster confirmation */
+} dna_gas_speed_t;
+
+/**
  * Send tokens
  *
  * Builds transaction, signs with Dilithium, submits via RPC.
@@ -1055,8 +1064,9 @@ dna_request_id_t dna_engine_get_balances(
  * @param wallet_index      Source wallet index
  * @param recipient_address Destination address
  * @param amount            Amount to send (string)
- * @param token             Token ticker (CPUNK, CELL, KEL)
- * @param network           Network name (Backbone, KelVPN)
+ * @param token             Token ticker (CPUNK, CELL, KEL, ETH)
+ * @param network           Network name (Backbone, KelVPN, or empty for ETH)
+ * @param gas_speed         Gas speed preset (ETH only, ignored for Cellframe)
  * @param callback          Called on completion
  * @param user_data         User data for callback
  * @return                  Request ID (0 on immediate error)
@@ -1068,6 +1078,7 @@ dna_request_id_t dna_engine_send_tokens(
     const char *amount,
     const char *token,
     const char *network,
+    int gas_speed,
     dna_completion_cb callback,
     void *user_data
 );

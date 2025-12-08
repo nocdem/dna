@@ -887,7 +887,8 @@ JNIEXPORT jlong JNICALL
 Java_io_cpunk_dna_DNAEngine_nativeSendTokens(JNIEnv *env, jobject thiz,
                                               jint wallet_index, jstring recipient,
                                               jstring amount, jstring token,
-                                              jstring network, jobject callback) {
+                                              jstring network, jint gas_speed,
+                                              jobject callback) {
     if (!g_engine || !callback || !recipient || !amount || !token || !network) return 0;
 
     const char *r = (*env)->GetStringUTFChars(env, recipient, NULL);
@@ -897,7 +898,7 @@ Java_io_cpunk_dna_DNAEngine_nativeSendTokens(JNIEnv *env, jobject thiz,
 
     jni_callback_ctx_t *ctx = create_callback_ctx(env, callback);
     dna_request_id_t req_id = dna_engine_send_tokens(g_engine, wallet_index, r, a, t, n,
-                                                      jni_completion_callback, ctx);
+                                                      gas_speed, jni_completion_callback, ctx);
 
     (*env)->ReleaseStringUTFChars(env, recipient, r);
     (*env)->ReleaseStringUTFChars(env, amount, a);

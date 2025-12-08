@@ -151,9 +151,17 @@ int eth_tx_send(const eth_signed_tx_t *signed_tx, char *tx_hash_out);
  * ============================================================================ */
 
 /**
+ * Gas speed presets
+ */
+#define ETH_GAS_SLOW     0   /* 0.8x - cheaper, slower */
+#define ETH_GAS_NORMAL   1   /* 1.0x - balanced */
+#define ETH_GAS_FAST     2   /* 1.5x - faster confirmation */
+
+/**
  * Send ETH to address (all-in-one)
  *
  * Handles nonce, gas price, signing, and broadcasting.
+ * Uses normal (1x) gas price multiplier.
  *
  * @param private_key   32-byte sender private key
  * @param from_address  Sender address (for nonce query)
@@ -167,6 +175,26 @@ int eth_send_eth(
     const char *from_address,
     const char *to_address,
     const char *amount_eth,
+    char *tx_hash_out
+);
+
+/**
+ * Send ETH with gas speed preset
+ *
+ * @param private_key   32-byte sender private key
+ * @param from_address  Sender address (for nonce query)
+ * @param to_address    Recipient address (0x + 40 hex)
+ * @param amount_eth    Amount to send as decimal string (e.g., "0.1")
+ * @param gas_speed     Gas speed: 0=slow(0.8x), 1=normal(1x), 2=fast(1.5x)
+ * @param tx_hash_out   Output: transaction hash (67 bytes min)
+ * @return              0 on success, -1 on error
+ */
+int eth_send_eth_with_gas(
+    const uint8_t private_key[32],
+    const char *from_address,
+    const char *to_address,
+    const char *amount_eth,
+    int gas_speed,
     char *tx_hash_out
 );
 

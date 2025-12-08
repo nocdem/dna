@@ -626,3 +626,81 @@ int eth_send_eth(
 
     return 0;
 }
+
+/* Gas speed multipliers (in percent) */
+static const int GAS_SPEED_MULTIPLIERS[] = {
+    80,     /* ETH_GAS_SLOW: 0.8x */
+    100,    /* ETH_GAS_NORMAL: 1.0x */
+    150     /* ETH_GAS_FAST: 1.5x */
+};
+
+int eth_send_eth_with_gas(
+    const uint8_t private_key[32],
+    const char *from_address,
+    const char *to_address,
+    const char *amount_eth,
+    int gas_speed,
+    char *tx_hash_out
+) {
+    if (!private_key || !from_address || !to_address || !amount_eth || !tx_hash_out) {
+        return -1;
+    }
+
+    /* Validate gas speed */
+    if (gas_speed < 0 || gas_speed > 2) {
+        gas_speed = ETH_GAS_NORMAL;
+    }
+
+    /* Get nonce */
+    uint64_t nonce;
+    if (eth_tx_get_nonce(from_address, &nonce) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get nonce");
+        return -1;
+    }
+
+    /* Get base gas price */
+    uint64_t gas_price;
+    if (eth_tx_get_gas_price(&gas_price) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get gas price");
+        return -1;
+    }
+
+    /* Apply gas speed multiplier */
+    gas_price = (gas_price * GAS_SPEED_MULTIPLIERS[gas_speed]) / 100;
+
+    QGP_LOG_INFO(LOG_TAG, "Using gas price: %llu wei (speed=%d)",
+                 (unsigned long long)gas_price, gas_speed);
+
+    /* Parse recipient address */
+    uint8_t to[20];
+    if (eth_parse_address(to_address, to) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid recipient address");
+        return -1;
+    }
+
+    /* Parse amount */
+    uint8_t value[32];
+    if (eth_parse_amount(amount_eth, value) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid amount");
+        return -1;
+    }
+
+    /* Build transaction */
+    eth_tx_t tx;
+    eth_tx_init_transfer(&tx, nonce, gas_price, to, value, ETH_CHAIN_MAINNET);
+
+    /* Sign */
+    eth_signed_tx_t signed_tx;
+    if (eth_tx_sign(&tx, private_key, &signed_tx) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to sign transaction");
+        return -1;
+    }
+
+    /* Send */
+    if (eth_tx_send(&signed_tx, tx_hash_out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to send transaction");
+        return -1;
+    }
+
+    return 0;
+}

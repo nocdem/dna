@@ -1212,6 +1212,7 @@ class DnaBindings {
           Pointer<Utf8>,
           Pointer<Utf8>,
           Pointer<Utf8>,
+          Int32,
           Pointer<DnaCompletionCb>,
           Pointer<Void>),
       int Function(
@@ -1221,6 +1222,7 @@ class DnaBindings {
           Pointer<Utf8>,
           Pointer<Utf8>,
           Pointer<Utf8>,
+          int,
           Pointer<DnaCompletionCb>,
           Pointer<Void>)>('dna_engine_send_tokens');
 
@@ -1231,11 +1233,12 @@ class DnaBindings {
     Pointer<Utf8> amount,
     Pointer<Utf8> token,
     Pointer<Utf8> network,
+    int gas_speed,
     Pointer<DnaCompletionCb> callback,
     Pointer<Void> user_data,
   ) {
     return _dna_engine_send_tokens(engine, wallet_index, recipient_address,
-        amount, token, network, callback, user_data);
+        amount, token, network, gas_speed, callback, user_data);
   }
 
   late final _dna_engine_get_transactions = _lib.lookupFunction<

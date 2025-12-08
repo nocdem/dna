@@ -582,6 +582,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   final _amountController = TextEditingController();
   late String _selectedToken;
   late String _selectedNetwork;
+  int _selectedGasSpeed = 1; // 0=slow, 1=normal, 2=fast
   bool _isSending = false;
 
   @override
@@ -657,6 +658,39 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   ),
                 ],
               ),
+              // Gas speed selector (only for Ethereum)
+              if (_selectedNetwork == 'Ethereum') ...[
+                const SizedBox(height: 16),
+                Text(
+                  'Transaction Speed',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    _GasSpeedChip(
+                      label: 'Slow',
+                      sublabel: '0.8x',
+                      selected: _selectedGasSpeed == 0,
+                      onSelected: () => setState(() => _selectedGasSpeed = 0),
+                    ),
+                    const SizedBox(width: 8),
+                    _GasSpeedChip(
+                      label: 'Normal',
+                      sublabel: '1.0x',
+                      selected: _selectedGasSpeed == 1,
+                      onSelected: () => setState(() => _selectedGasSpeed = 1),
+                    ),
+                    const SizedBox(width: 8),
+                    _GasSpeedChip(
+                      label: 'Fast',
+                      sublabel: '1.5x',
+                      selected: _selectedGasSpeed == 2,
+                      onSelected: () => setState(() => _selectedGasSpeed = 2),
+                    ),
+                  ],
+                ),
+              ],
               const SizedBox(height: 16),
               ElevatedButton(
                 onPressed: _canSend() ? _send : null,
@@ -718,6 +752,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         amount: _amountController.text.trim(),
         token: _selectedToken,
         network: _selectedNetwork,
+        gasSpeed: _selectedGasSpeed,
       );
 
       if (mounted) {
@@ -1310,6 +1345,69 @@ class _StatusChip extends StatelessWidget {
           color: color,
           fontSize: 11,
           fontWeight: FontWeight.w600,
+        ),
+      ),
+    );
+  }
+}
+
+/// Gas speed selection chip for Ethereum transactions
+class _GasSpeedChip extends StatelessWidget {
+  final String label;
+  final String sublabel;
+  final bool selected;
+  final VoidCallback onSelected;
+
+  const _GasSpeedChip({
+    required this.label,
+    required this.sublabel,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Expanded(
+      child: GestureDetector(
+        onTap: onSelected,
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 12),
+          decoration: BoxDecoration(
+            color: selected
+                ? theme.colorScheme.primary.withAlpha(26)
+                : theme.colorScheme.surface,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: selected
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.outline.withAlpha(77),
+              width: selected ? 2 : 1,
+            ),
+          ),
+          child: Column(
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                  color: selected
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.onSurface,
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                sublabel,
+                style: TextStyle(
+                  fontSize: 11,
+                  color: selected
+                      ? theme.colorScheme.primary.withAlpha(179)
+                      : theme.colorScheme.onSurface.withAlpha(128),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

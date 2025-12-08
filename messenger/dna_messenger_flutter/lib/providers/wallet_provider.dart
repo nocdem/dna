@@ -29,12 +29,14 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
   }
 
   /// Send tokens from a wallet
+  /// [gasSpeed]: 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x) - only for ETH
   Future<void> sendTokens({
     required int walletIndex,
     required String recipientAddress,
     required String amount,
     required String token,
     required String network,
+    int gasSpeed = 1,
   }) async {
     final engine = await ref.read(engineProvider.future);
 
@@ -45,6 +47,7 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
         amount: amount,
         token: token,
         network: network,
+        gasSpeed: gasSpeed,
       );
     } catch (e) {
       rethrow;

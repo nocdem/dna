@@ -1303,12 +1303,14 @@ class DnaEngine {
   }
 
   /// Send tokens
+  /// [gasSpeed]: 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x)
   Future<void> sendTokens({
     required int walletIndex,
     required String recipientAddress,
     required String amount,
     required String token,
     required String network,
+    int gasSpeed = 1,
   }) async {
     final completer = Completer<void>();
     final localId = _nextLocalId++;
@@ -1342,6 +1344,7 @@ class DnaEngine {
       amountPtr.cast(),
       tokenPtr.cast(),
       networkPtr.cast(),
+      gasSpeed,
       callback.nativeFunction.cast(),
       nullptr,
     );

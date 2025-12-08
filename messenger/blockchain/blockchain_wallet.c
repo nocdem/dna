@@ -361,12 +361,61 @@ int blockchain_get_address_from_file(
  * SEND INTERFACE
  * ============================================================================ */
 
+/* Gas speed multipliers (in percent) */
+static const int GAS_MULTIPLIERS[] = {
+    80,     /* SLOW: 0.8x */
+    100,    /* NORMAL: 1.0x */
+    150     /* FAST: 1.5x */
+};
+
+int blockchain_estimate_eth_gas(
+    int gas_speed,
+    blockchain_gas_estimate_t *estimate_out
+) {
+    if (!estimate_out) return -1;
+    if (gas_speed < 0 || gas_speed > 2) gas_speed = 1;
+
+    memset(estimate_out, 0, sizeof(*estimate_out));
+
+    /* Get base gas price from network */
+    uint64_t base_gas_price;
+    if (eth_tx_get_gas_price(&base_gas_price) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get gas price");
+        return -1;
+    }
+
+    /* Apply multiplier */
+    uint64_t adjusted_price = (base_gas_price * GAS_MULTIPLIERS[gas_speed]) / 100;
+
+    /* ETH transfer gas limit is fixed at 21000 */
+    uint64_t gas_limit = 21000;
+
+    /* Calculate total fee in wei */
+    uint64_t total_fee_wei = adjusted_price * gas_limit;
+
+    /* Convert to ETH (divide by 10^18) */
+    double fee_eth = (double)total_fee_wei / 1000000000000000000.0;
+
+    estimate_out->gas_price = adjusted_price;
+    estimate_out->gas_limit = gas_limit;
+    snprintf(estimate_out->fee_eth, sizeof(estimate_out->fee_eth), "%.6f", fee_eth);
+
+    /* USD placeholder - would need price feed */
+    snprintf(estimate_out->fee_usd, sizeof(estimate_out->fee_usd), "-");
+
+    QGP_LOG_DEBUG(LOG_TAG, "Gas estimate: %s ETH (speed=%d, price=%llu wei)",
+                  estimate_out->fee_eth, gas_speed, (unsigned long long)adjusted_price);
+
+    return 0;
+}
+
 int blockchain_send_tokens(
     blockchain_type_t type,
     const char *wallet_path,
     const char *to_address,
     const char *amount,
     const char *token,
+    int gas_speed,
     char *tx_hash_out
 ) {
     if (!wallet_path || !to_address || !amount || !tx_hash_out) {
@@ -383,12 +432,13 @@ int blockchain_send_tokens(
                 return -1;
             }
 
-            /* Send ETH */
-            int ret = eth_send_eth(
+            /* Send ETH with gas speed */
+            int ret = eth_send_eth_with_gas(
                 wallet.private_key,
                 wallet.address_hex,
                 to_address,
                 amount,
+                gas_speed,
                 tx_hash_out
             );
 

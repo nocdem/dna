@@ -1950,6 +1950,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     const char *amount_str = task->params.send_tokens.amount;
     const char *network = task->params.send_tokens.network;
     const char *token = task->params.send_tokens.token;
+    int gas_speed = task->params.send_tokens.gas_speed;
 
     /* Check blockchain type from multi-chain wallet list */
     blockchain_wallet_list_t *bc_wallets = engine->blockchain_wallets;
@@ -1964,7 +1965,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     if (bc_wallet_info->type == BLOCKCHAIN_ETHEREUM) {
         char tx_hash[128] = {0};
 
-        QGP_LOG_INFO(LOG_TAG, "Sending ETH: %s to %s", amount_str, recipient);
+        QGP_LOG_INFO(LOG_TAG, "Sending ETH: %s to %s (gas_speed=%d)", amount_str, recipient, gas_speed);
 
         if (blockchain_send_tokens(
                 BLOCKCHAIN_ETHEREUM,
@@ -1972,6 +1973,7 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
                 recipient,
                 amount_str,
                 token,
+                gas_speed,
                 tx_hash) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "ETH send failed");
             error = DNA_ENGINE_ERROR_NETWORK;
@@ -3376,6 +3378,7 @@ dna_request_id_t dna_engine_send_tokens(
     const char *amount,
     const char *token,
     const char *network,
+    int gas_speed,
     dna_completion_cb callback,
     void *user_data
 ) {
@@ -3390,6 +3393,7 @@ dna_request_id_t dna_engine_send_tokens(
     strncpy(params.send_tokens.amount, amount, sizeof(params.send_tokens.amount) - 1);
     strncpy(params.send_tokens.token, token, sizeof(params.send_tokens.token) - 1);
     strncpy(params.send_tokens.network, network, sizeof(params.send_tokens.network) - 1);
+    params.send_tokens.gas_speed = gas_speed;
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_SEND_TOKENS, &params, cb, user_data);
