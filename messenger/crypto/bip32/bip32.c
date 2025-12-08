@@ -13,7 +13,7 @@
 #include <stdlib.h>
 #include <openssl/hmac.h>
 #include <openssl/sha.h>
-#include <openssl/ripemd.h>
+#include <openssl/evp.h>
 #include <secp256k1.h>
 #include "../utils/qgp_log.h"
 
@@ -77,8 +77,9 @@ static void sha256_hash(const uint8_t *data, size_t len, uint8_t output[32]) {
  */
 static void hash160(const uint8_t *data, size_t len, uint8_t output[20]) {
     uint8_t sha256_out[32];
+    unsigned int ripemd_len = 20;
     SHA256(data, len, sha256_out);
-    RIPEMD160(sha256_out, 32, output);
+    EVP_Digest(sha256_out, 32, output, &ripemd_len, EVP_ripemd160(), NULL);
 }
 
 /**

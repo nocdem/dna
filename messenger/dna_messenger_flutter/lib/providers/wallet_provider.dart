@@ -79,6 +79,47 @@ class BalancesNotifier extends FamilyAsyncNotifier<List<Balance>, int> {
 /// Selected wallet index
 final selectedWalletIndexProvider = StateProvider<int>((ref) => 0);
 
+/// Combined balance with wallet info
+class WalletBalance {
+  final int walletIndex;
+  final Wallet wallet;
+  final Balance balance;
+
+  WalletBalance({
+    required this.walletIndex,
+    required this.wallet,
+    required this.balance,
+  });
+}
+
+/// All balances from all wallets combined
+final allBalancesProvider = FutureProvider<List<WalletBalance>>((ref) async {
+  final walletsAsync = ref.watch(walletsProvider);
+  final wallets = walletsAsync.valueOrNull ?? [];
+
+  if (wallets.isEmpty) return [];
+
+  final engine = await ref.read(engineProvider.future);
+  final allBalances = <WalletBalance>[];
+
+  for (int i = 0; i < wallets.length; i++) {
+    try {
+      final balances = await engine.getBalances(i);
+      for (final balance in balances) {
+        allBalances.add(WalletBalance(
+          walletIndex: i,
+          wallet: wallets[i],
+          balance: balance,
+        ));
+      }
+    } catch (_) {
+      // Skip wallet if balance fetch fails
+    }
+  }
+
+  return allBalances;
+});
+
 /// Transactions for a wallet and network
 final transactionsProvider = AsyncNotifierProviderFamily<
     TransactionsNotifier,
