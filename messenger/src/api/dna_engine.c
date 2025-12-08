@@ -473,6 +473,13 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Set data directory */
     if (data_dir) {
         engine->data_dir = strdup(data_dir);
+
+        /* On Android (and other platforms without HOME), set HOME env var
+         * so all modules that use getenv("HOME") will work correctly.
+         * The data_dir from Flutter is the app's files directory. */
+        if (!getenv("HOME")) {
+            setenv("HOME", data_dir, 1);
+        }
     } else {
         /* Default to ~/.dna */
         const char *home = getenv("HOME");
