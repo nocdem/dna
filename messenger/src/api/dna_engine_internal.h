@@ -12,6 +12,7 @@
 #include "messenger.h"
 #include "cellframe_wallet.h"
 #include "cellframe_rpc.h"
+#include "blockchain/blockchain_wallet.h"
 #include "database/contacts_db.h"
 #include "database/group_invitations.h"
 #include "dht/shared/dht_groups.h"
@@ -357,7 +358,8 @@ struct dna_engine {
     bool identity_loaded;            /* True if identity is active */
 
     /* Wallet */
-    wallet_list_t *wallet_list;      /* Cached wallet list */
+    wallet_list_t *wallet_list;      /* Cached Cellframe wallet list (legacy) */
+    blockchain_wallet_list_t *blockchain_wallets;  /* Multi-chain wallet list */
     bool wallets_loaded;             /* True if wallets have been scanned */
 
     /* Identity name cache (fingerprint -> display name) */

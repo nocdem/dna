@@ -70,6 +70,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "cellframe_sign.h"
 #include "cellframe_json.h"
 #include "crypto/utils/base58.h"
+#include "blockchain/ethereum/eth_wallet.h"
 #include <time.h>
 
 #include <stdlib.h>
@@ -565,9 +566,12 @@ void dna_engine_destroy(dna_engine_t *engine) {
         messenger_free(engine->messenger);
     }
 
-    /* Free wallet list */
+    /* Free wallet lists */
     if (engine->wallet_list) {
         wallet_list_free(engine->wallet_list);
+    }
+    if (engine->blockchain_wallets) {
+        blockchain_wallet_list_free(engine->blockchain_wallets);
     }
 
     /* Free message queue */
@@ -1740,28 +1744,20 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
     dna_wallet_t *wallets = NULL;
     int count = 0;
 
-    /* Free existing wallet list */
-    if (engine->wallet_list) {
-        wallet_list_free(engine->wallet_list);
-        engine->wallet_list = NULL;
+    /* Free existing blockchain wallet list */
+    if (engine->blockchain_wallets) {
+        blockchain_wallet_list_free(engine->blockchain_wallets);
+        engine->blockchain_wallets = NULL;
     }
 
-    /* Load wallets only for current identity */
-    int rc = wallet_list_for_identity(engine->fingerprint, &engine->wallet_list);
-    if (rc != 0 || !engine->wallet_list || engine->wallet_list->count == 0) {
-        /* Fall back to /opt/cellframe-node/var/lib/wallet */
-        if (engine->wallet_list) {
-            wallet_list_free(engine->wallet_list);
-            engine->wallet_list = NULL;
-        }
-        rc = wallet_list_cellframe(&engine->wallet_list);
-    }
-    if (rc != 0 || !engine->wallet_list) {
+    /* Load multi-chain wallets for current identity */
+    int rc = blockchain_list_wallets(engine->fingerprint, &engine->blockchain_wallets);
+    if (rc != 0 || !engine->blockchain_wallets) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
 
-    wallet_list_t *list = engine->wallet_list;
+    blockchain_wallet_list_t *list = engine->blockchain_wallets;
     if (list->count > 0) {
         wallets = calloc(list->count, sizeof(dna_wallet_t));
         if (!wallets) {
@@ -1772,8 +1768,13 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         for (size_t i = 0; i < list->count; i++) {
             strncpy(wallets[i].name, list->wallets[i].name, sizeof(wallets[i].name) - 1);
             strncpy(wallets[i].address, list->wallets[i].address, sizeof(wallets[i].address) - 1);
-            wallets[i].sig_type = (int)list->wallets[i].sig_type;
-            wallets[i].is_protected = (list->wallets[i].status == WALLET_STATUS_PROTECTED);
+            /* Map blockchain type to sig_type for UI display */
+            if (list->wallets[i].type == BLOCKCHAIN_ETHEREUM) {
+                wallets[i].sig_type = 100;  /* Use 100 for ETH (secp256k1) */
+            } else {
+                wallets[i].sig_type = 4;    /* Dilithium for Cellframe */
+            }
+            wallets[i].is_protected = list->wallets[i].is_encrypted;
         }
         count = (int)list->count;
     }
@@ -1789,12 +1790,12 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     dna_balance_t *balances = NULL;
     int count = 0;
 
-    if (!engine->wallets_loaded || !engine->wallet_list) {
+    if (!engine->wallets_loaded || !engine->blockchain_wallets) {
         error = DNA_ENGINE_ERROR_NOT_INITIALIZED;
         goto done;
     }
 
-    wallet_list_t *list = engine->wallet_list;
+    blockchain_wallet_list_t *list = engine->blockchain_wallets;
     int idx = task->params.get_balances.wallet_index;
 
     if (idx < 0 || idx >= (int)list->count) {
@@ -1802,14 +1803,34 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    cellframe_wallet_t *wallet = &list->wallets[idx];
+    blockchain_wallet_info_t *wallet_info = &list->wallets[idx];
 
-    /* Get address for Backbone network */
-    char address[WALLET_ADDRESS_MAX] = {0};
-    if (wallet_get_address(wallet, "Backbone", address) != 0) {
-        error = DNA_ENGINE_ERROR_NETWORK;
+    /* Handle different blockchain types */
+    if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
+        /* ETH wallet - get ETH balance */
+        balances = calloc(1, sizeof(dna_balance_t));
+        if (!balances) {
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+
+        strncpy(balances[0].token, "ETH", sizeof(balances[0].token) - 1);
+        strncpy(balances[0].network, "Ethereum", sizeof(balances[0].network) - 1);
+        strcpy(balances[0].balance, "0.0");
+        count = 1;
+
+        /* Query ETH balance */
+        char balance_str[64] = {0};
+        if (eth_rpc_get_balance(wallet_info->address, balance_str, sizeof(balance_str)) == 0) {
+            strncpy(balances[0].balance, balance_str, sizeof(balances[0].balance) - 1);
+        }
+
         goto done;
     }
+
+    /* Cellframe wallet - existing logic */
+    char address[120] = {0};
+    strncpy(address, wallet_info->address, sizeof(address) - 1);
 
     /* Pre-allocate balances for CPUNK and CELL (only supported tokens) */
     balances = calloc(2, sizeof(dna_balance_t));

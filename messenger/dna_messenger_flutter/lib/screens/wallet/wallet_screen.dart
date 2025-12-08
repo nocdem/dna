@@ -226,6 +226,8 @@ class _WalletSelector extends StatelessWidget {
         return 'Bliss';
       case 3:
         return 'Tesla';
+      case 100:
+        return 'ETH';
       default:
         return 'Type $sigType';
     }
@@ -334,6 +336,8 @@ class _WalletCard extends StatelessWidget {
         return 'Bliss';
       case 3:
         return 'Tesla';
+      case 100:
+        return 'ETH (secp256k1)';
       default:
         return 'Type $sigType';
     }
@@ -462,6 +466,8 @@ class _BalanceTile extends StatelessWidget {
         return const Color(0xFF00D4AA); // Cyan/Teal for CPUNK
       case 'CELL':
         return const Color(0xFF6B4CE6); // Purple for CELL
+      case 'ETH':
+        return const Color(0xFF627EEA); // Ethereum blue
       default:
         return DnaColors.textInfo;
     }
