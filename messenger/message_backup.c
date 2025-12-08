@@ -90,10 +90,8 @@ static int get_db_path(const char *identity, char *path_out, size_t path_len) {
     struct stat st = {0};
     if (stat(dna_dir, &st) == -1) {
 #ifdef _WIN32
-        // Windows mkdir() only takes 1 argument
         if (mkdir(dna_dir) != 0) {
 #else
-        // POSIX mkdir() takes mode as second argument
         if (mkdir(dna_dir, 0700) != 0) {
 #endif
             QGP_LOG_ERROR(LOG_TAG, "Failed to create %s: %s\n", dna_dir, strerror(errno));
@@ -101,8 +99,38 @@ static int get_db_path(const char *identity, char *path_out, size_t path_len) {
         }
     }
 
-    // Database path: ~/.dna/<identity>_messages.db (per-identity)
-    snprintf(path_out, path_len, "%s/%s_messages.db", dna_dir, identity);
+    // Create ~/.dna/<identity> directory if it doesn't exist
+    char identity_dir[512];
+    snprintf(identity_dir, sizeof(identity_dir), "%s/.dna/%s", home, identity);
+
+    if (stat(identity_dir, &st) == -1) {
+#ifdef _WIN32
+        if (mkdir(identity_dir) != 0) {
+#else
+        if (mkdir(identity_dir, 0700) != 0) {
+#endif
+            QGP_LOG_ERROR(LOG_TAG, "Failed to create %s: %s\n", identity_dir, strerror(errno));
+            return -1;
+        }
+    }
+
+    // Create ~/.dna/<identity>/db directory if it doesn't exist
+    char db_dir[512];
+    snprintf(db_dir, sizeof(db_dir), "%s/.dna/%s/db", home, identity);
+
+    if (stat(db_dir, &st) == -1) {
+#ifdef _WIN32
+        if (mkdir(db_dir) != 0) {
+#else
+        if (mkdir(db_dir, 0700) != 0) {
+#endif
+            QGP_LOG_ERROR(LOG_TAG, "Failed to create %s: %s\n", db_dir, strerror(errno));
+            return -1;
+        }
+    }
+
+    // Database path: ~/.dna/<identity>/db/messages.db (per-identity)
+    snprintf(path_out, path_len, "%s/messages.db", db_dir);
     return 0;
 }
 

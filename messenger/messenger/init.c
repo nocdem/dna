@@ -198,7 +198,7 @@ messenger_context_t* messenger_init(const char *identity) {
 
     // Initialize DHT groups database (per-identity)
     char groups_db_path[512];
-    snprintf(groups_db_path, sizeof(groups_db_path), "%s/.dna/%s_groups.db", getenv("HOME"), identity);
+    snprintf(groups_db_path, sizeof(groups_db_path), "%s/.dna/%s/db/groups.db", getenv("HOME"), identity);
     if (dht_groups_init(groups_db_path) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to initialize DHT groups database");
         // Non-fatal - continue without groups support

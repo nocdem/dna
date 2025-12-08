@@ -69,7 +69,7 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
         QGP_LOG_ERROR(LOG_TAG, "Failed to get AppData path\n");
         return -1;
     }
-    snprintf(path_out, path_size, "%s\\.dna\\%s_contacts.db", appdata, owner_identity);
+    snprintf(path_out, path_size, "%s\\.dna\\%s\\db\\contacts.db", appdata, owner_identity);
 #else
     const char *home = getenv("HOME");
     if (!home) {
@@ -83,18 +83,18 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
         return -1;
     }
 
-    snprintf(path_out, path_size, "%s/.dna/%s_contacts.db", home, owner_identity);
+    snprintf(path_out, path_size, "%s/.dna/%s/db/contacts.db", home, owner_identity);
 #endif
     return 0;
 }
 
-// Ensure directory exists
+// Ensure directory exists (creates all parent directories)
 static int ensure_directory(const char *db_path) {
     char dir_path[512];
     strncpy(dir_path, db_path, sizeof(dir_path) - 1);
     dir_path[sizeof(dir_path) - 1] = '\0';
 
-    // Find last slash
+    // Find last slash to get parent directory
     char *last_slash = strrchr(dir_path, '/');
     if (!last_slash) {
         last_slash = strrchr(dir_path, '\\');
@@ -103,12 +103,36 @@ static int ensure_directory(const char *db_path) {
         *last_slash = '\0';
     }
 
-    // Check if directory exists
+    // Create directories recursively (like mkdir -p)
+    char tmp[512];
+    char *p = NULL;
+    size_t len;
+
+    snprintf(tmp, sizeof(tmp), "%s", dir_path);
+    len = strlen(tmp);
+    if (tmp[len - 1] == '/' || tmp[len - 1] == '\\') {
+        tmp[len - 1] = '\0';
+    }
+
+    for (p = tmp + 1; *p; p++) {
+        if (*p == '/' || *p == '\\') {
+            *p = '\0';
+            struct stat st;
+            if (stat(tmp, &st) != 0) {
+                if (mkdir(tmp, 0700) != 0) {
+                    QGP_LOG_ERROR(LOG_TAG, "Failed to create directory: %s\n", tmp);
+                    return -1;
+                }
+            }
+            *p = '/';
+        }
+    }
+
+    // Create final directory
     struct stat st;
-    if (stat(dir_path, &st) != 0) {
-        // Create directory
-        if (mkdir(dir_path, 0700) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to create directory: %s\n", dir_path);
+    if (stat(tmp, &st) != 0) {
+        if (mkdir(tmp, 0700) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to create directory: %s\n", tmp);
             return -1;
         }
     }

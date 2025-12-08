@@ -21,6 +21,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <errno.h>
+#ifdef _WIN32
+#include <direct.h>
+#define mkdir(path, mode) _mkdir(path)
+#endif
 #include "../crypto/utils/qgp_log.h"
 
 #define LOG_TAG "DHT_BACKUP"
@@ -66,9 +70,49 @@ int dht_identity_get_local_path(const char *user_fingerprint, char *path_out) {
     }
 
 #ifdef _WIN32
-    snprintf(path_out, 512, "%s\\.dna\\%s_dht_identity.enc", home, user_fingerprint);
+    snprintf(path_out, 512, "%s\\.dna\\%s\\dht_identity.enc", home, user_fingerprint);
 #else
-    snprintf(path_out, 512, "%s/.dna/%s_dht_identity.enc", home, user_fingerprint);
+    snprintf(path_out, 512, "%s/.dna/%s/dht_identity.enc", home, user_fingerprint);
+#endif
+
+    return 0;
+}
+
+/**
+ * Ensure identity directory exists (creates ~/.dna/<fingerprint>/ and ~/.dna/<fingerprint>/db/)
+ */
+static int ensure_identity_dir(const char *user_fingerprint) {
+    const char *home = qgp_platform_home_dir();
+    if (!home) return -1;
+
+    // Create ~/.dna directory
+    char dna_dir[512];
+#ifdef _WIN32
+    snprintf(dna_dir, sizeof(dna_dir), "%s\\.dna", home);
+    mkdir(dna_dir);
+#else
+    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+    mkdir(dna_dir, 0700);
+#endif
+
+    // Create ~/.dna/<fingerprint> directory
+    char identity_dir[512];
+#ifdef _WIN32
+    snprintf(identity_dir, sizeof(identity_dir), "%s\\.dna\\%s", home, user_fingerprint);
+    mkdir(identity_dir);
+#else
+    snprintf(identity_dir, sizeof(identity_dir), "%s/.dna/%s", home, user_fingerprint);
+    mkdir(identity_dir, 0700);
+#endif
+
+    // Create ~/.dna/<fingerprint>/db directory
+    char db_dir[512];
+#ifdef _WIN32
+    snprintf(db_dir, sizeof(db_dir), "%s\\.dna\\%s\\db", home, user_fingerprint);
+    mkdir(db_dir);
+#else
+    snprintf(db_dir, sizeof(db_dir), "%s/.dna/%s/db", home, user_fingerprint);
+    mkdir(db_dir, 0700);
 #endif
 
     return 0;
@@ -83,6 +127,12 @@ static int save_to_local_file(
     size_t encrypted_size)
 {
     if (!user_fingerprint || !encrypted_data) return -1;
+
+    // Ensure identity directory exists
+    if (ensure_identity_dir(user_fingerprint) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create identity directory\n");
+        return -1;
+    }
 
     char path[512];
     if (dht_identity_get_local_path(user_fingerprint, path) != 0) {
