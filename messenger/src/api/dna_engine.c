@@ -2549,17 +2549,61 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
 
     blockchain_wallet_info_t *wallet_info = &wallets->wallets[wallet_index];
 
-    /* ETH transactions not yet supported - return empty list */
-    if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
-        goto done;
-    }
-
     if (wallet_info->address[0] == '\0') {
         error = DNA_ERROR_INTERNAL;
         goto done;
     }
 
-    /* Query transaction history from RPC */
+    /* ETH transactions via Etherscan API */
+    if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
+        eth_transaction_t *eth_txs = NULL;
+        int eth_count = 0;
+
+        if (eth_rpc_get_transactions(wallet_info->address, &eth_txs, &eth_count) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+            goto done;
+        }
+
+        if (eth_count > 0 && eth_txs) {
+            transactions = calloc(eth_count, sizeof(dna_transaction_t));
+            if (!transactions) {
+                eth_rpc_free_transactions(eth_txs, eth_count);
+                error = DNA_ERROR_INTERNAL;
+                goto done;
+            }
+
+            for (int i = 0; i < eth_count; i++) {
+                strncpy(transactions[i].tx_hash, eth_txs[i].tx_hash,
+                        sizeof(transactions[i].tx_hash) - 1);
+                strncpy(transactions[i].token, "ETH", sizeof(transactions[i].token) - 1);
+                strncpy(transactions[i].amount, eth_txs[i].value,
+                        sizeof(transactions[i].amount) - 1);
+                snprintf(transactions[i].timestamp, sizeof(transactions[i].timestamp),
+                        "%llu", (unsigned long long)eth_txs[i].timestamp);
+
+                if (eth_txs[i].is_outgoing) {
+                    strncpy(transactions[i].direction, "sent",
+                            sizeof(transactions[i].direction) - 1);
+                    strncpy(transactions[i].other_address, eth_txs[i].to,
+                            sizeof(transactions[i].other_address) - 1);
+                } else {
+                    strncpy(transactions[i].direction, "received",
+                            sizeof(transactions[i].direction) - 1);
+                    strncpy(transactions[i].other_address, eth_txs[i].from,
+                            sizeof(transactions[i].other_address) - 1);
+                }
+
+                strncpy(transactions[i].status,
+                        eth_txs[i].is_confirmed ? "CONFIRMED" : "FAILED",
+                        sizeof(transactions[i].status) - 1);
+            }
+            count = eth_count;
+            eth_rpc_free_transactions(eth_txs, eth_count);
+        }
+        goto done;
+    }
+
+    /* Query transaction history from RPC (Cellframe) */
     if (cellframe_rpc_get_tx_history(network, wallet_info->address, &resp) != 0 || !resp) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to query tx history from RPC\n");
         error = DNA_ENGINE_ERROR_NETWORK;

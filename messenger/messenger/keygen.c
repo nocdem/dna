@@ -28,6 +28,7 @@
 #include "../dna_config.h"
 #include "keys.h"
 #include "../blockchain/cellframe/cellframe_wallet_create.h"
+#include "../blockchain/ethereum/eth_wallet.h"
 #include "../blockchain/cellframe/cellframe_wallet.h"
 #include "../blockchain/blockchain_wallet.h"
 
@@ -553,8 +554,9 @@ int messenger_register_name(
         return -1;
     }
 
-    // Find wallet address for this identity
+    // Find wallet addresses for this identity
     char wallet_address[128] = {0};
+    char eth_address[48] = {0};
     char wallets_path[512];
     snprintf(wallets_path, sizeof(wallets_path), "%s/%s/wallets", dna_dir, fingerprint);
 
@@ -562,7 +564,8 @@ int messenger_register_name(
     if (wdir) {
         struct dirent *wentry;
         while ((wentry = readdir(wdir)) != NULL) {
-            if (strstr(wentry->d_name, ".dwallet")) {
+            // Cellframe wallet
+            if (strstr(wentry->d_name, ".dwallet") && wallet_address[0] == '\0') {
                 char wpath[768];
                 snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
                 cellframe_wallet_t *wallet = NULL;
@@ -571,7 +574,15 @@ int messenger_register_name(
                         strncpy(wallet_address, wallet->address, sizeof(wallet_address) - 1);
                     }
                     wallet_free(wallet);
-                    break;
+                }
+            }
+            // ETH wallet
+            if (strstr(wentry->d_name, ".eth.json") && eth_address[0] == '\0') {
+                char wpath[768];
+                snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
+                eth_wallet_t eth_wallet;
+                if (eth_wallet_load(wpath, &eth_wallet) == 0) {
+                    strncpy(eth_address, eth_wallet.address, sizeof(eth_address) - 1);
                 }
             }
         }
@@ -586,7 +597,8 @@ int messenger_register_name(
         sign_key->public_key,
         enc_key->public_key,
         sign_key->private_key,
-        wallet_address[0] ? wallet_address : NULL
+        wallet_address[0] ? wallet_address : NULL,
+        eth_address[0] ? eth_address : NULL
     );
 
     if (publish_result == -2) {

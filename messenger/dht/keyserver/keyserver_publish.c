@@ -24,7 +24,8 @@ int dht_keyserver_publish(
     const uint8_t *dilithium_pubkey,
     const uint8_t *kyber_pubkey,
     const uint8_t *dilithium_privkey,
-    const char *wallet_address  // Optional - Cellframe wallet address
+    const char *wallet_address,  // Optional - Cellframe wallet address
+    const char *eth_address      // Optional - Ethereum wallet address
 ) {
     QGP_LOG_INFO(LOG_TAG, "Publishing identity: name=%s, fingerprint=%.16s...\n",
            name, fingerprint);
@@ -88,9 +89,12 @@ int dht_keyserver_publish(
     strncpy(identity->registration_network, "DNA_NETWORK", sizeof(identity->registration_network) - 1);
     identity->name_version = 1;
 
-    // Set wallet address if provided
+    // Set wallet addresses if provided
     if (wallet_address && wallet_address[0]) {
         strncpy(identity->wallets.backbone, wallet_address, sizeof(identity->wallets.backbone) - 1);
+    }
+    if (eth_address && eth_address[0]) {
+        strncpy(identity->wallets.eth, eth_address, sizeof(identity->wallets.eth) - 1);
     }
 
     // Set metadata
