@@ -20,6 +20,7 @@
 #include "database/profile_manager.h"
 #include "database/profile_cache.h"
 #include "dna_api.h"
+#include "dna_config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -34,13 +35,16 @@
 #include <sys/types.h>
 #endif
 
-// Bootstrap nodes (hardcoded from Phase 9.1 deployment)
-static const char *BOOTSTRAP_NODES[] = {
-    "154.38.182.161:4000",    // dna-bootstrap-us-1
-    "164.68.105.227:4000",    // dna-bootstrap-eu-1
-    "164.68.116.180:4000"     // dna-bootstrap-eu-2
-};
-#define BOOTSTRAP_COUNT 3
+// Global config for bootstrap nodes
+static dna_config_t g_p2p_config = {0};
+static bool g_p2p_config_loaded = false;
+
+static void ensure_p2p_config(void) {
+    if (!g_p2p_config_loaded) {
+        dna_config_load(&g_p2p_config);
+        g_p2p_config_loaded = true;
+    }
+}
 
 // ============================================================================
 // PUSH NOTIFICATION SUBSCRIPTION MANAGEMENT (Phase 10.1)
@@ -621,21 +625,24 @@ int messenger_p2p_init(messenger_context_t *ctx)
         return -1;
     }
 
+    // Load config for bootstrap nodes
+    ensure_p2p_config();
+
     // Configure P2P transport
     p2p_config_t config = {
         .listen_port = 4001,
         .dht_port = 4000,
         .enable_offline_queue = true,   // Phase 9.2: DHT offline message queue
         .offline_ttl_seconds = 604800,  // 7 days (Phase 9.2)
-        .bootstrap_count = BOOTSTRAP_COUNT
+        .bootstrap_count = g_p2p_config.bootstrap_count
     };
 
     snprintf(config.identity, sizeof(config.identity), "%s", ctx->identity);
 
-    // Add bootstrap nodes
-    for (size_t i = 0; i < BOOTSTRAP_COUNT; i++) {
+    // Add bootstrap nodes from config
+    for (int i = 0; i < g_p2p_config.bootstrap_count && i < 16; i++) {
         snprintf(config.bootstrap_nodes[i], sizeof(config.bootstrap_nodes[i]),
-                 "%s", BOOTSTRAP_NODES[i]);
+                 "%s", g_p2p_config.bootstrap_nodes[i]);
     }
 
     // Initialize P2P transport
@@ -690,7 +697,7 @@ int messenger_p2p_init(messenger_context_t *ctx)
     printf("[P2P] P2P transport initialized successfully\n");
     printf("[P2P] Listening on TCP port 4001\n");
     printf("[P2P] DHT port 4000\n");
-    printf("[P2P] Bootstrap nodes: %d configured\n", BOOTSTRAP_COUNT);
+    printf("[P2P] Bootstrap nodes: %d configured\n", g_p2p_config.bootstrap_count);
 
     return 0;
 }

@@ -6,6 +6,7 @@
 #include "../core/dht_context.h"
 #include "../core/dht_bootstrap_registry.h"
 #include "crypto/utils/qgp_log.h"
+#include "dna_config.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
@@ -26,14 +27,16 @@
 // Global DHT context (singleton)
 static dht_context_t *g_dht_context = NULL;
 
-// Bootstrap node addresses (SEED NODE for cold start + fallback)
-static const char *SEED_NODE = "154.38.182.161:4000";  // US-1 (always available)
-static const char *FALLBACK_NODES[] = {
-    "154.38.182.161:4000",  // dna-bootstrap-us-1
-    "164.68.105.227:4000",  // dna-bootstrap-eu-1
-    "164.68.116.180:4000"   // dna-bootstrap-eu-2
-};
-static const size_t FALLBACK_COUNT = 3;
+// Global config (loaded once)
+static dna_config_t g_config = {0};
+static bool g_config_loaded = false;
+
+static void ensure_config(void) {
+    if (!g_config_loaded) {
+        dna_config_load(&g_config);
+        g_config_loaded = true;
+    }
+}
 
 int dht_singleton_init(void)
 {
@@ -41,6 +44,9 @@ int dht_singleton_init(void)
         QGP_LOG_WARN(LOG_TAG, "Already initialized");
         return 0;  // Already initialized, not an error
     }
+
+    // Load config
+    ensure_config();
 
     QGP_LOG_INFO(LOG_TAG, "Initializing global DHT context...");
 
@@ -50,11 +56,16 @@ int dht_singleton_init(void)
     dht_config.is_bootstrap = false;
     strncpy(dht_config.identity, "dna-global", sizeof(dht_config.identity) - 1);
 
-    // STEP 1: Bootstrap to seed node for cold start
-    QGP_LOG_INFO(LOG_TAG, "Using seed node for cold start: %s", SEED_NODE);
-    strncpy(dht_config.bootstrap_nodes[0], SEED_NODE,
-            sizeof(dht_config.bootstrap_nodes[0]) - 1);
-    dht_config.bootstrap_count = 1;
+    // STEP 1: Bootstrap to first node from config for cold start
+    if (g_config.bootstrap_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Using seed node for cold start: %s", g_config.bootstrap_nodes[0]);
+        strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
+                sizeof(dht_config.bootstrap_nodes[0]) - 1);
+        dht_config.bootstrap_count = 1;
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
+        return -1;
+    }
 
     // NO PERSISTENCE for client DHT (only bootstrap nodes need persistence)
     // Client DHT is temporary and should not republish stored values
@@ -176,6 +187,9 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
         return 0;  // Already initialized, not an error
     }
 
+    // Load config
+    ensure_config();
+
     QGP_LOG_INFO(LOG_TAG, "Initializing global DHT with user identity...");
 
     // Configure DHT
@@ -184,11 +198,16 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     dht_config.is_bootstrap = false;
     strncpy(dht_config.identity, "dna-user", sizeof(dht_config.identity) - 1);
 
-    // STEP 1: Bootstrap to seed node for cold start
-    QGP_LOG_INFO(LOG_TAG, "Using seed node for cold start: %s", SEED_NODE);
-    strncpy(dht_config.bootstrap_nodes[0], SEED_NODE,
-            sizeof(dht_config.bootstrap_nodes[0]) - 1);
-    dht_config.bootstrap_count = 1;
+    // STEP 1: Bootstrap to first node from config for cold start
+    if (g_config.bootstrap_count > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Using seed node for cold start: %s", g_config.bootstrap_nodes[0]);
+        strncpy(dht_config.bootstrap_nodes[0], g_config.bootstrap_nodes[0],
+                sizeof(dht_config.bootstrap_nodes[0]) - 1);
+        dht_config.bootstrap_count = 1;
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "No bootstrap nodes configured");
+        return -1;
+    }
 
     // NO PERSISTENCE for client DHT
     dht_config.persistence_path[0] = '\0';

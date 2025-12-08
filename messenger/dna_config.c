@@ -36,6 +36,12 @@ int dna_config_load(dna_config_t *config) {
         strcpy(config->log_level, "WARN");
         config->log_tags[0] = '\0';  // Empty = show all
 
+        // Default bootstrap nodes
+        strcpy(config->bootstrap_nodes[0], "154.38.182.161:4000");
+        strcpy(config->bootstrap_nodes[1], "164.68.105.227:4000");
+        strcpy(config->bootstrap_nodes[2], "164.68.116.180:4000");
+        config->bootstrap_count = 3;
+
         // Create default config file
         dna_config_save(config);
         return 0;
@@ -66,12 +72,41 @@ int dna_config_load(dna_config_t *config) {
             strncpy(config->log_level, value, sizeof(config->log_level) - 1);
         } else if (strcmp(key, "log_tags") == 0) {
             strncpy(config->log_tags, value, sizeof(config->log_tags) - 1);
+        } else if (strcmp(key, "bootstrap_nodes") == 0) {
+            // Parse comma-separated bootstrap nodes
+            config->bootstrap_count = 0;
+            char nodes_copy[512];
+            strncpy(nodes_copy, value, sizeof(nodes_copy) - 1);
+            nodes_copy[sizeof(nodes_copy) - 1] = '\0';
+
+            char *token = strtok(nodes_copy, ",");
+            while (token != NULL && config->bootstrap_count < DNA_MAX_BOOTSTRAP_NODES) {
+                // Trim whitespace
+                while (*token == ' ') token++;
+                char *end = token + strlen(token) - 1;
+                while (end > token && *end == ' ') *end-- = '\0';
+
+                if (*token != '\0') {
+                    strncpy(config->bootstrap_nodes[config->bootstrap_count], token, 63);
+                    config->bootstrap_nodes[config->bootstrap_count][63] = '\0';
+                    config->bootstrap_count++;
+                }
+                token = strtok(NULL, ",");
+            }
         }
     }
 
     // Set defaults if not in config
     if (config->log_level[0] == '\0') {
         strcpy(config->log_level, "WARN");
+    }
+
+    // Default bootstrap nodes if none specified
+    if (config->bootstrap_count == 0) {
+        strcpy(config->bootstrap_nodes[0], "154.38.182.161:4000");
+        strcpy(config->bootstrap_nodes[1], "164.68.105.227:4000");
+        strcpy(config->bootstrap_nodes[2], "164.68.116.180:4000");
+        config->bootstrap_count = 3;
     }
 
     fclose(f);
@@ -101,10 +136,20 @@ int dna_config_save(const dna_config_t *config) {
     }
 
     fprintf(f, "# DNA Messenger Configuration\n\n");
+
     fprintf(f, "# Log level: DEBUG, INFO, WARN, ERROR, NONE\n");
     fprintf(f, "log_level=%s\n\n", config->log_level);
+
     fprintf(f, "# Log tags: comma-separated list (empty = show all)\n");
-    fprintf(f, "log_tags=%s\n", config->log_tags);
+    fprintf(f, "log_tags=%s\n\n", config->log_tags);
+
+    fprintf(f, "# Bootstrap nodes: comma-separated list (ip:port)\n");
+    fprintf(f, "bootstrap_nodes=");
+    for (int i = 0; i < config->bootstrap_count; i++) {
+        if (i > 0) fprintf(f, ",");
+        fprintf(f, "%s", config->bootstrap_nodes[i]);
+    }
+    fprintf(f, "\n");
 
     fclose(f);
     return 0;

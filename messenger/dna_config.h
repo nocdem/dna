@@ -12,11 +12,18 @@ extern "C" {
 #endif
 
 /**
- * DNA Configuration (Log settings only)
+ * DNA Configuration
  */
+#define DNA_MAX_BOOTSTRAP_NODES 8
+
 typedef struct {
+    // Log settings
     char log_level[16];        // DEBUG, INFO, WARN, ERROR, NONE
     char log_tags[512];        // Comma-separated tags to show (empty = all)
+
+    // Bootstrap nodes
+    char bootstrap_nodes[DNA_MAX_BOOTSTRAP_NODES][64];  // "ip:port" format
+    int bootstrap_count;
 } dna_config_t;
 
 /**
