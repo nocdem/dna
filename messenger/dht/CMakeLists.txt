@@ -52,6 +52,8 @@ set(DHT_COMMON_SOURCES
     ../crypto/utils/qgp_random.c
     ../crypto/utils/qgp_aes.c
     ../crypto/utils/qgp_log.c
+    # Config (needed by qgp_log.c for auto-loading log settings)
+    ../dna_config.c
 )
 
 if(WIN32)

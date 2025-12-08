@@ -492,12 +492,10 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     platform_mkdir(engine->data_dir, 0700);
 
     /* Load config and apply log settings BEFORE any logging */
-    fprintf(stderr, "[DNA_ENGINE] Loading config...\n");
     dna_config_t config;
     memset(&config, 0, sizeof(config));
     dna_config_load(&config);
     dna_config_apply_log_settings(&config);
-    fprintf(stderr, "[DNA_ENGINE] Config applied\n");
 
     /* Initialize synchronization */
     pthread_mutex_init(&engine->event_mutex, NULL);
