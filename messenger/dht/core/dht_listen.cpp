@@ -9,11 +9,16 @@
 #include <opendht/dhtrunner.h>
 #include <opendht/infohash.h>
 
-#include <iostream>
 #include <map>
 #include <mutex>
 #include <memory>
 #include <atomic>
+
+// Unified logging (respects config log level)
+extern "C" {
+#include "crypto/utils/qgp_log.h"
+}
+#define LOG_TAG "DHT_LISTEN"
 
 // Forward declarations
 struct dht_value_storage;
@@ -65,16 +70,16 @@ extern "C" size_t dht_listen(
     void *user_data)
 {
     if (!ctx || !key || key_len == 0 || !callback) {
-        std::cerr << "[DHT Listen] Invalid parameters" << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters");
         return 0;
     }
 
     try {
         // Convert C key to InfoHash
         dht::InfoHash hash = dht::InfoHash::get(key, key_len);
+        std::string hash_str = hash.toString().substr(0, 16);
 
-        std::cout << "[DHT Listen] Starting subscription for key "
-                  << hash.toString().substr(0, 16) << "..." << std::endl;
+        QGP_LOG_DEBUG(LOG_TAG, "Starting subscription for key %s...", hash_str.c_str());
 
         // Generate unique token for this subscription
         size_t token = next_listen_token.fetch_add(1);
@@ -94,15 +99,13 @@ extern "C" size_t dht_listen(
             // Check if listener is still active
             std::lock_guard<std::mutex> lock(listeners_mutex);
             if (!listener_ctx->active) {
-                std::cout << "[DHT Listen] Token " << token
-                          << " is no longer active, stopping" << std::endl;
+                QGP_LOG_DEBUG(LOG_TAG, "Token %zu is no longer active, stopping", token);
                 return false;  // Stop listening
             }
 
             // Handle expiration notification
             if (expired) {
-                std::cout << "[DHT Listen] Token " << token
-                          << " received expiration notification" << std::endl;
+                QGP_LOG_DEBUG(LOG_TAG, "Token %zu received expiration notification", token);
                 bool continue_listening = listener_ctx->callback(
                     nullptr, 0, true, listener_ctx->user_data
                 );
@@ -114,8 +117,7 @@ extern "C" size_t dht_listen(
                 return true;  // Continue listening (no values yet)
             }
 
-            std::cout << "[DHT Listen] Token " << token
-                      << " received " << values.size() << " value(s)" << std::endl;
+            QGP_LOG_DEBUG(LOG_TAG, "Token %zu received %zu value(s)", token, values.size());
 
             // Invoke C callback for each value
             bool continue_listening = true;
@@ -133,8 +135,7 @@ extern "C" size_t dht_listen(
                 );
 
                 if (!result) {
-                    std::cout << "[DHT Listen] Token " << token
-                              << " callback returned false, stopping" << std::endl;
+                    QGP_LOG_DEBUG(LOG_TAG, "Token %zu callback returned false, stopping", token);
                     continue_listening = false;
                     break;
                 }
@@ -151,12 +152,10 @@ extern "C" size_t dht_listen(
         try {
             listener_ctx->opendht_token = listener_ctx->future_token.get();
 
-            std::cout << "[DHT Listen] ✓ Subscription active for token " << token
-                      << " (OpenDHT token: " << listener_ctx->opendht_token << ")"
-                      << std::endl;
+            QGP_LOG_DEBUG(LOG_TAG, "Subscription active for token %zu (OpenDHT: %zu)",
+                          token, listener_ctx->opendht_token);
         } catch (const std::exception& e) {
-            std::cerr << "[DHT Listen] Failed to get OpenDHT token: "
-                      << e.what() << std::endl;
+            QGP_LOG_ERROR(LOG_TAG, "Failed to get OpenDHT token: %s", e.what());
             return 0;
         }
 
@@ -169,8 +168,7 @@ extern "C" size_t dht_listen(
         return token;
 
     } catch (const std::exception& e) {
-        std::cerr << "[DHT Listen] Exception while starting listener: "
-                  << e.what() << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Exception while starting listener: %s", e.what());
         return 0;
     }
 }
@@ -190,23 +188,20 @@ extern "C" void dht_cancel_listen(
 
     auto it = active_listeners.find(token);
     if (it == active_listeners.end()) {
-        std::cout << "[DHT Listen] Token " << token
-                  << " not found (already cancelled or invalid)" << std::endl;
+        QGP_LOG_DEBUG(LOG_TAG, "Token %zu not found (already cancelled or invalid)", token);
         return;
     }
 
     auto listener_ctx = it->second;
 
     if (!listener_ctx->active) {
-        std::cout << "[DHT Listen] Token " << token
-                  << " already marked as inactive" << std::endl;
+        QGP_LOG_DEBUG(LOG_TAG, "Token %zu already marked as inactive", token);
         active_listeners.erase(it);
         return;
     }
 
-    std::cout << "[DHT Listen] Cancelling subscription for token " << token
-              << " (OpenDHT token: " << listener_ctx->opendht_token << ")"
-              << std::endl;
+    QGP_LOG_DEBUG(LOG_TAG, "Cancelling subscription for token %zu (OpenDHT: %zu)",
+                  token, listener_ctx->opendht_token);
 
     // Mark as inactive (stops callback from processing new values)
     listener_ctx->active = false;
@@ -218,11 +213,9 @@ extern "C" void dht_cancel_listen(
             dht::InfoHash(),  // Hash not needed for cancellation
             listener_ctx->opendht_token
         );
-        std::cout << "[DHT Listen] ✓ Subscription cancelled for token " << token
-                  << std::endl;
+        QGP_LOG_DEBUG(LOG_TAG, "Subscription cancelled for token %zu", token);
     } catch (const std::exception& e) {
-        std::cerr << "[DHT Listen] Exception while cancelling listener: "
-                  << e.what() << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Exception while cancelling listener: %s", e.what());
     }
 
     // Remove from active listeners map

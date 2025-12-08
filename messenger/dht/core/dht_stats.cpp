@@ -2,10 +2,15 @@
 #include "../shared/dht_value_storage.h"
 
 #include <opendht/dhtrunner.h>
-#include <iostream>
 #include <cstring>
 #include <stdint.h>
 #include <stdbool.h>
+
+// Unified logging (respects config log level)
+extern "C" {
+#include "crypto/utils/qgp_log.h"
+}
+#define LOG_TAG "DHT_STATS"
 
 // Forward declare dht_config_t (avoid circular dependency)
 typedef struct {
@@ -40,12 +45,12 @@ extern "C" int dht_get_stats(dht_context_t *ctx,
                              size_t *node_count,
                              size_t *stored_values) {
     if (!ctx || !node_count || !stored_values) {
-        std::cerr << "[DHT] ERROR: NULL parameter in dht_get_stats" << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "NULL parameter in dht_get_stats");
         return -1;
     }
 
     if (!ctx->running) {
-        std::cerr << "[DHT] ERROR: Node not running" << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Node not running");
         return -1;
     }
 
@@ -60,7 +65,7 @@ extern "C" int dht_get_stats(dht_context_t *ctx,
 
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[DHT] Exception in dht_get_stats: " << e.what() << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Exception in dht_get_stats: %s", e.what());
         return -1;
     }
 }

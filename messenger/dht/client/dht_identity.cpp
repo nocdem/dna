@@ -1,8 +1,13 @@
 #include "dht_identity.h"
 #include <opendht/crypto.h>
-#include <iostream>
 #include <memory>
 #include <cstring>
+
+// Unified logging (respects config log level)
+extern "C" {
+#include "crypto/utils/qgp_log.h"
+}
+#define LOG_TAG "DHT_IDENTITY"
 
 // Platform-specific network byte order functions
 #ifdef _WIN32
@@ -26,7 +31,7 @@ struct dht_identity {
  */
 extern "C" int dht_identity_generate_dilithium5(dht_identity_t **identity_out) {
     if (!identity_out) {
-        std::cerr << "[DHT Identity] ERROR: NULL output parameter" << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "NULL output parameter");
         return -1;
     }
 
@@ -36,11 +41,11 @@ extern "C" int dht_identity_generate_dilithium5(dht_identity_t **identity_out) {
 
         *identity_out = new dht_identity(id);
 
-        std::cout << "[DHT Identity] Generated Dilithium5 (ML-DSA-87) identity" << std::endl;
-        std::cout << "[DHT Identity] FIPS 204 - NIST Category 5 (256-bit quantum)" << std::endl;
+        QGP_LOG_INFO(LOG_TAG, "Generated Dilithium5 (ML-DSA-87) identity");
+        QGP_LOG_INFO(LOG_TAG, "FIPS 204 - NIST Category 5 (256-bit quantum)");
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[DHT Identity] Exception generating identity: " << e.what() << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Exception generating identity: %s", e.what());
         return -1;
     }
 }
@@ -57,7 +62,7 @@ extern "C" int dht_identity_export_to_buffer(
     size_t *buffer_size_out)
 {
     if (!identity || !buffer_out || !buffer_size_out) {
-        std::cerr << "[DHT Identity] ERROR: NULL parameter in export" << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "NULL parameter in export");
         return -1;
     }
 
@@ -78,7 +83,7 @@ extern "C" int dht_identity_export_to_buffer(
         size_t total_size = 4 + key_data.size() + 4 + pk_data.size() + 4 + cert_data.size();
         uint8_t *buffer = (uint8_t*)malloc(total_size);
         if (!buffer) {
-            std::cerr << "[DHT Identity] Failed to allocate buffer" << std::endl;
+            QGP_LOG_ERROR(LOG_TAG, "Failed to allocate buffer");
             return -1;
         }
 
@@ -116,13 +121,13 @@ extern "C" int dht_identity_export_to_buffer(
         *buffer_out = buffer;
         *buffer_size_out = total_size;
 
-        std::cout << "[DHT Identity] Exported to buffer (" << total_size << " bytes)" << std::endl;
-        std::cout << "[DHT Identity] Dilithium5 key: " << key_data.size() << " bytes" << std::endl;
-        std::cout << "[DHT Identity] Public key: " << pk_data.size() << " bytes" << std::endl;
-        std::cout << "[DHT Identity] Certificate: " << cert_data.size() << " bytes" << std::endl;
+        QGP_LOG_INFO(LOG_TAG, "Exported to buffer (%zu bytes)", total_size);
+        QGP_LOG_DEBUG(LOG_TAG, "Dilithium5 key: %zu bytes", key_data.size());
+        QGP_LOG_DEBUG(LOG_TAG, "Public key: %zu bytes", pk_data.size());
+        QGP_LOG_DEBUG(LOG_TAG, "Certificate: %zu bytes", cert_data.size());
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[DHT Identity] Exception exporting: " << e.what() << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Exception exporting: %s", e.what());
         return -1;
     }
 }
@@ -136,7 +141,7 @@ extern "C" int dht_identity_import_from_buffer(
     dht_identity_t **identity_out)
 {
     if (!buffer || !identity_out || buffer_size < 8) {
-        std::cerr << "[DHT Identity] ERROR: Invalid parameters in import" << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters in import");
         return -1;
     }
 
@@ -150,7 +155,7 @@ extern "C" int dht_identity_import_from_buffer(
         ptr += 4;
 
         if (key_size > buffer_size - 12) {
-            std::cerr << "[DHT Identity] Invalid key size in buffer" << std::endl;
+            QGP_LOG_ERROR(LOG_TAG, "Invalid key size in buffer");
             return -1;
         }
 
@@ -165,7 +170,7 @@ extern "C" int dht_identity_import_from_buffer(
         ptr += 4;
 
         if (pk_size > buffer_size - 12 - key_size) {
-            std::cerr << "[DHT Identity] Invalid pk size in buffer" << std::endl;
+            QGP_LOG_ERROR(LOG_TAG, "Invalid pk size in buffer");
             return -1;
         }
 
@@ -180,7 +185,7 @@ extern "C" int dht_identity_import_from_buffer(
         ptr += 4;
 
         if (cert_size > buffer_size - 12 - key_size - pk_size) {
-            std::cerr << "[DHT Identity] Invalid cert size in buffer" << std::endl;
+            QGP_LOG_ERROR(LOG_TAG, "Invalid cert size in buffer");
             return -1;
         }
 
@@ -204,13 +209,13 @@ extern "C" int dht_identity_import_from_buffer(
 
         *identity_out = new dht_identity(id);
 
-        std::cout << "[DHT Identity] Imported from buffer (" << buffer_size << " bytes)" << std::endl;
-        std::cout << "[DHT Identity] Dilithium5 key: " << key_size << " bytes" << std::endl;
-        std::cout << "[DHT Identity] Public key: " << pk_size << " bytes" << std::endl;
-        std::cout << "[DHT Identity] Certificate: " << cert_size << " bytes" << std::endl;
+        QGP_LOG_INFO(LOG_TAG, "Imported from buffer (%zu bytes)", buffer_size);
+        QGP_LOG_DEBUG(LOG_TAG, "Dilithium5 key: %u bytes", key_size);
+        QGP_LOG_DEBUG(LOG_TAG, "Public key: %u bytes", pk_size);
+        QGP_LOG_DEBUG(LOG_TAG, "Certificate: %u bytes", cert_size);
         return 0;
     } catch (const std::exception& e) {
-        std::cerr << "[DHT Identity] Exception importing: " << e.what() << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Exception importing: %s", e.what());
         return -1;
     }
 }
@@ -229,7 +234,7 @@ extern "C" void dht_identity_free(dht_identity_t *identity) {
  * DEPRECATED: Use dht_identity_generate_dilithium5() instead
  */
 extern "C" int dht_identity_generate_random(dht_identity_t **identity_out) {
-    std::cout << "[DHT Identity] WARNING: dht_identity_generate_random() is deprecated" << std::endl;
-    std::cout << "[DHT Identity] Generating Dilithium5 identity instead of RSA" << std::endl;
+    QGP_LOG_WARN(LOG_TAG, "dht_identity_generate_random() is deprecated");
+    QGP_LOG_WARN(LOG_TAG, "Generating Dilithium5 identity instead of RSA");
     return dht_identity_generate_dilithium5(identity_out);
 }

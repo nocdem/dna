@@ -14,9 +14,15 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <climits>
-#include <iostream>
 #include <thread>
 #include <chrono>
+#include <exception>
+
+// Unified logging (respects config log level)
+extern "C" {
+#include "crypto/utils/qgp_log.h"
+}
+#define LOG_TAG "STORAGE"
 
 // Custom ValueType IDs (must match dht_context.cpp)
 #define DNA_TYPE_7DAY_ID    0x1001
@@ -105,7 +111,7 @@ static int init_schema(sqlite3 *db) {
     char *err_msg = NULL;
     int rc = sqlite3_exec(db, SCHEMA_SQL, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        std::cerr << "[Storage] Schema creation failed: " << err_msg << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Schema creation failed: %s", err_msg);
         sqlite3_free(err_msg);
         return -1;
     }
@@ -118,14 +124,14 @@ static int init_schema(sqlite3 *db) {
 
 dht_value_storage_t* dht_value_storage_new(const char *db_path) {
     if (!db_path) {
-        std::cerr << "[Storage] NULL database path" << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "NULL database path");
         return NULL;
     }
 
     // Allocate structure
     dht_value_storage_t *storage = (dht_value_storage_t*)calloc(1, sizeof(dht_value_storage_t));
     if (!storage) {
-        std::cerr << "[Storage] Memory allocation failed" << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
         return NULL;
     }
 
@@ -138,7 +144,7 @@ dht_value_storage_t* dht_value_storage_new(const char *db_path) {
     // Open database
     int rc = sqlite3_open(db_path, &storage->db);
     if (rc != SQLITE_OK) {
-        std::cerr << "[Storage] Failed to open database: " << sqlite3_errmsg(storage->db) << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open database: %s", sqlite3_errmsg(storage->db));
         free(storage->db_path);
         pthread_mutex_destroy(&storage->mutex);
         free(storage);
@@ -167,8 +173,8 @@ dht_value_storage_t* dht_value_storage_new(const char *db_path) {
         sqlite3_finalize(stmt);
     }
 
-    std::cout << "[Storage] Initialized: " << db_path << std::endl;
-    std::cout << "[Storage] Existing values: " << storage->total_values << std::endl;
+    QGP_LOG_INFO(LOG_TAG, "Initialized: %s", db_path);
+    QGP_LOG_DEBUG(LOG_TAG, "Existing values: %llu", (unsigned long long)storage->total_values);
 
     return storage;
 }
@@ -178,7 +184,7 @@ void dht_value_storage_free(dht_value_storage_t *storage) {
 
     // Wait for republish thread
     if (storage->republish_thread) {
-        std::cout << "[Storage] Waiting for republish thread to finish..." << std::endl;
+        QGP_LOG_DEBUG(LOG_TAG, "Waiting for republish thread to finish...");
         storage->republish_thread->join();
         delete storage->republish_thread;
     }
@@ -196,7 +202,7 @@ void dht_value_storage_free(dht_value_storage_t *storage) {
     pthread_mutex_destroy(&storage->mutex);
     free(storage);
 
-    std::cout << "[Storage] Freed" << std::endl;
+    QGP_LOG_DEBUG(LOG_TAG, "Freed");
 }
 
 bool dht_value_storage_should_persist(uint32_t value_type, uint64_t expires_at) {
@@ -251,7 +257,7 @@ int dht_value_storage_put(dht_value_storage_t *storage,
 
     int rc = sqlite3_prepare_v2(storage->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        std::cerr << "[Storage] PUT prepare failed: " << sqlite3_errmsg(storage->db) << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "PUT prepare failed: %s", sqlite3_errmsg(storage->db));
         storage->error_count++;
         pthread_mutex_unlock(&storage->mutex);
         return -1;
@@ -273,7 +279,7 @@ int dht_value_storage_put(dht_value_storage_t *storage,
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        std::cerr << "[Storage] PUT execute failed: " << sqlite3_errmsg(storage->db) << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "PUT execute failed: %s", sqlite3_errmsg(storage->db));
         storage->error_count++;
         pthread_mutex_unlock(&storage->mutex);
         return -1;
@@ -322,7 +328,7 @@ int dht_value_storage_get(dht_value_storage_t *storage,
     uint64_t now = time(NULL);
     int rc = sqlite3_prepare_v2(storage->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        std::cerr << "[Storage] GET prepare failed: " << sqlite3_errmsg(storage->db) << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "GET prepare failed: %s", sqlite3_errmsg(storage->db));
         storage->error_count++;
         pthread_mutex_unlock(&storage->mutex);
         return -1;
@@ -425,7 +431,7 @@ int dht_value_storage_cleanup(dht_value_storage_t *storage) {
 
     int rc = sqlite3_prepare_v2(storage->db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
-        std::cerr << "[Storage] Cleanup prepare failed: " << sqlite3_errmsg(storage->db) << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Cleanup prepare failed: %s", sqlite3_errmsg(storage->db));
         storage->error_count++;
         pthread_mutex_unlock(&storage->mutex);
         return -1;
@@ -438,7 +444,7 @@ int dht_value_storage_cleanup(dht_value_storage_t *storage) {
     sqlite3_finalize(stmt);
 
     if (rc != SQLITE_DONE) {
-        std::cerr << "[Storage] Cleanup execute failed: " << sqlite3_errmsg(storage->db) << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Cleanup execute failed: %s", sqlite3_errmsg(storage->db));
         storage->error_count++;
         pthread_mutex_unlock(&storage->mutex);
         return -1;
@@ -458,7 +464,7 @@ int dht_value_storage_cleanup(dht_value_storage_t *storage) {
 
     pthread_mutex_unlock(&storage->mutex);
 
-    std::cout << "[Storage] Cleanup: deleted " << deleted << " expired values" << std::endl;
+    QGP_LOG_DEBUG(LOG_TAG, "Cleanup: deleted %d expired values", deleted);
     return deleted;
 }
 
@@ -470,7 +476,7 @@ int dht_value_storage_cleanup(dht_value_storage_t *storage) {
  * The stored value_data is now a full serialized dht::Value (from getPacked()).
  */
 static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
-    std::cout << "[Storage] Republish thread started (signature-preserving mode)" << std::endl;
+    QGP_LOG_DEBUG(LOG_TAG, "Republish thread started (signature-preserving mode)");
 
     pthread_mutex_lock(&storage->mutex);
     storage->republish_in_progress = true;
@@ -494,7 +500,7 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
     pthread_mutex_unlock(&storage->mutex);
 
     if (rc != SQLITE_OK) {
-        std::cerr << "[Storage] Republish query failed" << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Republish query failed");
         pthread_mutex_lock(&storage->mutex);
         storage->republish_in_progress = false;
         storage->error_count++;
@@ -543,7 +549,7 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
         pthread_mutex_unlock(&storage->mutex);
 
         if (!packed_copy) {
-            std::cerr << "[Storage] Memory allocation failed during republish" << std::endl;
+            QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed during republish");
             continue;
         }
 
@@ -569,8 +575,8 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
         if (put_result == 0) {
             count++;
         } else {
-            std::cerr << "[Storage] Failed to republish value type=0x" << std::hex << value_type
-                      << std::dec << " (error " << put_result << ")" << std::endl;
+            QGP_LOG_ERROR(LOG_TAG, "Failed to republish value type=0x%x (error %d)",
+                          value_type, put_result);
             pthread_mutex_lock(&storage->mutex);
             storage->error_count++;
             pthread_mutex_unlock(&storage->mutex);
@@ -586,7 +592,7 @@ static void republish_worker(dht_value_storage_t *storage, dht_context_t *ctx) {
     storage->republish_in_progress = false;
     pthread_mutex_unlock(&storage->mutex);
 
-    std::cout << "[Storage] Republish complete: " << count << " values (skipped " << skipped << " expired)" << std::endl;
+    QGP_LOG_DEBUG(LOG_TAG, "Republish complete: %zu values (skipped %zu expired)", count, skipped);
 }
 
 int dht_value_storage_restore_async(dht_value_storage_t *storage, dht_context_t *ctx) {
@@ -595,12 +601,12 @@ int dht_value_storage_restore_async(dht_value_storage_t *storage, dht_context_t 
     }
 
     // Launch background thread
-    std::cout << "[Storage] Launching async republish..." << std::endl;
+    QGP_LOG_DEBUG(LOG_TAG, "Launching async republish...");
 
     try {
         storage->republish_thread = new std::thread(republish_worker, storage, ctx);
     } catch (const std::exception& e) {
-        std::cerr << "[Storage] Failed to launch republish thread: " << e.what() << std::endl;
+        QGP_LOG_ERROR(LOG_TAG, "Failed to launch republish thread: %s", e.what());
         pthread_mutex_lock(&storage->mutex);
         storage->error_count++;
         pthread_mutex_unlock(&storage->mutex);
