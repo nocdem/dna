@@ -29,8 +29,13 @@ When writing ANY code:
 - **CHECK** CMake platform modules (`cmake/*.cmake`) for platform differences
 - Bug fixes must work on ALL platforms, not just the one where bug was found
 - New features must be designed for ALL platforms from the start
-- Use `#ifdef` guards only in platform abstraction files, not in business logic 
+- Use `#ifdef` guards only in platform abstraction files, not in business logic
 
+## LOCAL TESTING POLICY
+- **BUILD ONLY**: Only verify that the build succeeds locally (`cmake .. && make`)
+- **NO GUI TESTING**: Do NOT attempt to run or test the GUI application locally - this machine has no monitor
+- **REMOTE TESTING**: All functional/GUI testing is performed on other machines by the user
+- **NEVER** launch `dna-messenger`, Flutter app, or any GUI executable locally
 
 ## Protocol Mode
 
