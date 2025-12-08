@@ -2521,6 +2521,49 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // LOG CONFIGURATION
+  // ---------------------------------------------------------------------------
+
+  /// Get current log level
+  String getLogLevel() {
+    final ptr = _bindings.dna_engine_get_log_level();
+    if (ptr == nullptr) return 'WARN';
+    return ptr.toDartString();
+  }
+
+  /// Set log level
+  /// Valid values: DEBUG, INFO, WARN, ERROR, NONE
+  bool setLogLevel(String level) {
+    final levelPtr = level.toNativeUtf8();
+    try {
+      final result = _bindings.dna_engine_set_log_level(levelPtr);
+      return result == 0;
+    } finally {
+      calloc.free(levelPtr);
+    }
+  }
+
+  /// Get current log tags filter
+  /// Returns comma-separated tags (empty = show all)
+  String getLogTags() {
+    final ptr = _bindings.dna_engine_get_log_tags();
+    if (ptr == nullptr) return '';
+    return ptr.toDartString();
+  }
+
+  /// Set log tags filter
+  /// Provide comma-separated tags to show (empty = show all)
+  bool setLogTags(String tags) {
+    final tagsPtr = tags.toNativeUtf8();
+    try {
+      final result = _bindings.dna_engine_set_log_tags(tagsPtr);
+      return result == 0;
+    } finally {
+      calloc.free(tagsPtr);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // CLEANUP
   // ---------------------------------------------------------------------------
 

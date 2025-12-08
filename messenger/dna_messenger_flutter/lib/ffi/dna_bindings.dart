@@ -1709,6 +1709,42 @@ class DnaBindings {
   void dna_free_feed_comment(Pointer<dna_comment_info_t> comment) {
     _dna_free_feed_comment(comment);
   }
+
+  // ---------------------------------------------------------------------------
+  // LOG CONFIGURATION
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_get_log_level = _lib.lookupFunction<
+      Pointer<Utf8> Function(),
+      Pointer<Utf8> Function()>('dna_engine_get_log_level');
+
+  Pointer<Utf8> dna_engine_get_log_level() {
+    return _dna_engine_get_log_level();
+  }
+
+  late final _dna_engine_set_log_level = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>),
+      int Function(Pointer<Utf8>)>('dna_engine_set_log_level');
+
+  int dna_engine_set_log_level(Pointer<Utf8> level) {
+    return _dna_engine_set_log_level(level);
+  }
+
+  late final _dna_engine_get_log_tags = _lib.lookupFunction<
+      Pointer<Utf8> Function(),
+      Pointer<Utf8> Function()>('dna_engine_get_log_tags');
+
+  Pointer<Utf8> dna_engine_get_log_tags() {
+    return _dna_engine_get_log_tags();
+  }
+
+  late final _dna_engine_set_log_tags = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>),
+      int Function(Pointer<Utf8>)>('dna_engine_set_log_tags');
+
+  int dna_engine_set_log_tags(Pointer<Utf8> tags) {
+    return _dna_engine_set_log_tags(tags);
+  }
 }
 
 // =============================================================================

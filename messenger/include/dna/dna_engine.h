@@ -1452,6 +1452,40 @@ void* dna_engine_get_messenger_context(dna_engine_t *engine);
 void* dna_engine_get_dht_context(dna_engine_t *engine);
 
 /* ============================================================================
+ * LOG CONFIGURATION
+ * ============================================================================ */
+
+/**
+ * Get current log level
+ *
+ * @return Log level string: "DEBUG", "INFO", "WARN", "ERROR", or "NONE"
+ */
+const char* dna_engine_get_log_level(void);
+
+/**
+ * Set log level
+ *
+ * @param level  Log level: "DEBUG", "INFO", "WARN", "ERROR", or "NONE"
+ * @return       0 on success, -1 on error
+ */
+int dna_engine_set_log_level(const char *level);
+
+/**
+ * Get current log tags filter
+ *
+ * @return Comma-separated tags string (empty = show all)
+ */
+const char* dna_engine_get_log_tags(void);
+
+/**
+ * Set log tags filter
+ *
+ * @param tags  Comma-separated tags to show (empty = show all)
+ * @return      0 on success, -1 on error
+ */
+int dna_engine_set_log_tags(const char *tags);
+
+/* ============================================================================
  * MEMORY MANAGEMENT
  * ============================================================================ */
 

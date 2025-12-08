@@ -31,6 +31,8 @@ class SettingsScreen extends ConsumerWidget {
           ),
           // Security
           _SecuritySection(),
+          // Log settings
+          _LogSettingsSection(),
           // Identity
           _IdentitySection(fingerprint: fingerprint),
           // About
@@ -266,6 +268,197 @@ class _SecuritySection extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _LogSettingsSection extends ConsumerStatefulWidget {
+  @override
+  ConsumerState<_LogSettingsSection> createState() => _LogSettingsSectionState();
+}
+
+class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
+  String _currentLevel = 'WARN';
+  String _currentTags = '';
+  final _tagsController = TextEditingController();
+
+  static const _logLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'NONE'];
+  static const _commonTags = [
+    'DHT',
+    'ICE',
+    'TURN',
+    'MESSENGER',
+    'WALLET',
+    'MSG',
+    'IDENTITY',
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _loadCurrentSettings();
+  }
+
+  @override
+  void dispose() {
+    _tagsController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadCurrentSettings() async {
+    final engineAsync = ref.read(engineProvider);
+    engineAsync.whenData((engine) {
+      if (mounted) {
+        setState(() {
+          _currentLevel = engine.getLogLevel();
+          _currentTags = engine.getLogTags();
+          _tagsController.text = _currentTags;
+        });
+      }
+    });
+  }
+
+  Future<void> _setLogLevel(String level) async {
+    final engineAsync = ref.read(engineProvider);
+    engineAsync.whenData((engine) {
+      if (engine.setLogLevel(level)) {
+        setState(() {
+          _currentLevel = level;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Log level set to $level')),
+        );
+      }
+    });
+  }
+
+  Future<void> _setLogTags(String tags) async {
+    final engineAsync = ref.read(engineProvider);
+    engineAsync.whenData((engine) {
+      if (engine.setLogTags(tags)) {
+        setState(() {
+          _currentTags = tags;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(tags.isEmpty
+                ? 'Showing all log tags'
+                : 'Log filter applied'),
+          ),
+        );
+      }
+    });
+  }
+
+  void _toggleTag(String tag) {
+    final currentSet = _currentTags.isEmpty
+        ? <String>{}
+        : _currentTags.split(',').map((t) => t.trim()).toSet();
+
+    if (currentSet.contains(tag)) {
+      currentSet.remove(tag);
+    } else {
+      currentSet.add(tag);
+    }
+
+    final newTags = currentSet.join(',');
+    _tagsController.text = newTags;
+    _setLogTags(newTags);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final selectedTags = _currentTags.isEmpty
+        ? <String>{}
+        : _currentTags.split(',').map((t) => t.trim()).toSet();
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader('Developer'),
+        // Log Level
+        ListTile(
+          leading: const Icon(Icons.bug_report),
+          title: const Text('Log Level'),
+          subtitle: Text('Current: $_currentLevel'),
+          trailing: DropdownButton<String>(
+            value: _currentLevel,
+            underline: const SizedBox(),
+            items: _logLevels.map((level) {
+              return DropdownMenuItem(
+                value: level,
+                child: Text(level),
+              );
+            }).toList(),
+            onChanged: (value) {
+              if (value != null) {
+                _setLogLevel(value);
+              }
+            },
+          ),
+        ),
+        // Log Tags
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Log Tags Filter',
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                'Select tags to show (empty = show all)',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: DnaColors.textMuted,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _commonTags.map((tag) {
+                  final isSelected = selectedTags.contains(tag);
+                  return FilterChip(
+                    label: Text(tag),
+                    selected: isSelected,
+                    onSelected: (_) => _toggleTag(tag),
+                    selectedColor: theme.colorScheme.primary.withAlpha(51),
+                    checkmarkColor: theme.colorScheme.primary,
+                  );
+                }).toList(),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: _tagsController,
+                decoration: InputDecoration(
+                  labelText: 'Custom tags (comma-separated)',
+                  hintText: 'DHT,ICE,MSG',
+                  border: const OutlineInputBorder(),
+                  suffixIcon: IconButton(
+                    icon: const Icon(Icons.check),
+                    onPressed: () => _setLogTags(_tagsController.text),
+                  ),
+                ),
+                onSubmitted: _setLogTags,
+              ),
+              if (_currentTags.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                TextButton.icon(
+                  onPressed: () {
+                    _tagsController.clear();
+                    _setLogTags('');
+                  },
+                  icon: const Icon(Icons.clear, size: 18),
+                  label: const Text('Clear filter (show all)'),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ],
     );
   }
 }

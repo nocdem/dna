@@ -90,6 +90,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 /* Forward declarations for static helpers */
 static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
 static qgp_key_t* dna_load_private_key(dna_engine_t *engine);
+static void init_log_config(void);
 
 /* ============================================================================
  * ERROR STRINGS
@@ -496,6 +497,7 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     memset(&config, 0, sizeof(config));
     dna_config_load(&config);
     dna_config_apply_log_settings(&config);
+    init_log_config();  /* Populate global buffers for get functions */
 
     /* Initialize synchronization */
     pthread_mutex_init(&engine->event_mutex, NULL);
@@ -3554,6 +3556,108 @@ void* dna_engine_get_messenger_context(dna_engine_t *engine) {
 void* dna_engine_get_dht_context(dna_engine_t *engine) {
     (void)engine; /* DHT is global singleton */
     return dht_singleton_get();
+}
+
+/* ============================================================================
+ * LOG CONFIGURATION
+ * ============================================================================ */
+
+/* Static buffers for current log config (loaded from ~/.dna/config) */
+static char g_log_level[16] = "WARN";
+static char g_log_tags[512] = "";
+
+const char* dna_engine_get_log_level(void) {
+    return g_log_level;
+}
+
+int dna_engine_set_log_level(const char *level) {
+    if (!level) return -1;
+
+    /* Validate level */
+    if (strcmp(level, "DEBUG") != 0 && strcmp(level, "INFO") != 0 &&
+        strcmp(level, "WARN") != 0 && strcmp(level, "ERROR") != 0 &&
+        strcmp(level, "NONE") != 0) {
+        return -1;
+    }
+
+    /* Update in-memory config */
+    strncpy(g_log_level, level, sizeof(g_log_level) - 1);
+    g_log_level[sizeof(g_log_level) - 1] = '\0';
+
+    /* Apply to log system */
+    qgp_log_level_t log_level = QGP_LOG_LEVEL_WARN;
+    if (strcmp(level, "DEBUG") == 0) log_level = QGP_LOG_LEVEL_DEBUG;
+    else if (strcmp(level, "INFO") == 0) log_level = QGP_LOG_LEVEL_INFO;
+    else if (strcmp(level, "WARN") == 0) log_level = QGP_LOG_LEVEL_WARN;
+    else if (strcmp(level, "ERROR") == 0) log_level = QGP_LOG_LEVEL_ERROR;
+    else if (strcmp(level, "NONE") == 0) log_level = QGP_LOG_LEVEL_NONE;
+    qgp_log_set_level(log_level);
+
+    /* Save to config file */
+    dna_config_t config;
+    dna_config_load(&config);
+    strncpy(config.log_level, level, sizeof(config.log_level) - 1);
+    dna_config_save(&config);
+
+    return 0;
+}
+
+const char* dna_engine_get_log_tags(void) {
+    return g_log_tags;
+}
+
+int dna_engine_set_log_tags(const char *tags) {
+    if (!tags) tags = "";
+
+    /* Update in-memory config */
+    strncpy(g_log_tags, tags, sizeof(g_log_tags) - 1);
+    g_log_tags[sizeof(g_log_tags) - 1] = '\0';
+
+    /* Apply to log system */
+    if (tags[0] == '\0') {
+        /* Empty = show all (blacklist mode) */
+        qgp_log_set_filter_mode(QGP_LOG_FILTER_BLACKLIST);
+        qgp_log_clear_filters();
+    } else {
+        /* Whitelist mode - only show specified tags */
+        qgp_log_set_filter_mode(QGP_LOG_FILTER_WHITELIST);
+        qgp_log_clear_filters();
+
+        /* Parse comma-separated tags */
+        char tags_copy[512];
+        strncpy(tags_copy, tags, sizeof(tags_copy) - 1);
+        tags_copy[sizeof(tags_copy) - 1] = '\0';
+
+        char *token = strtok(tags_copy, ",");
+        while (token != NULL) {
+            /* Trim whitespace */
+            while (*token == ' ') token++;
+            char *end = token + strlen(token) - 1;
+            while (end > token && *end == ' ') *end-- = '\0';
+
+            if (*token != '\0') {
+                qgp_log_enable_tag(token);
+            }
+            token = strtok(NULL, ",");
+        }
+    }
+
+    /* Save to config file */
+    dna_config_t config;
+    dna_config_load(&config);
+    strncpy(config.log_tags, tags, sizeof(config.log_tags) - 1);
+    dna_config_save(&config);
+
+    return 0;
+}
+
+/* Initialize log config from file (called during engine startup) */
+static void init_log_config(void) {
+    dna_config_t config;
+    if (dna_config_load(&config) == 0) {
+        strncpy(g_log_level, config.log_level, sizeof(g_log_level) - 1);
+        strncpy(g_log_tags, config.log_tags, sizeof(g_log_tags) - 1);
+    }
 }
 
 /* ============================================================================
