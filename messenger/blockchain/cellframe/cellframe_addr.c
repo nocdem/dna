@@ -7,6 +7,7 @@
 #include "cellframe_addr.h"
 #include "cellframe_minimal.h"  // For cellframe_addr_t (77 bytes)
 #include "../../crypto/utils/base58.h"
+#include "../../crypto/utils/qgp_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -103,14 +104,15 @@ int cellframe_addr_for_identity(const char *identity, uint64_t net_id, char *add
     }
 
     // Build path to public key file
-    const char *home = getenv("HOME");
-    if (!home) {
-        home = "/root";
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        fprintf(stderr, "cellframe_addr_for_identity: Cannot get data directory\n");
+        return -1;
     }
 
     char pubkey_path[512];
-    snprintf(pubkey_path, sizeof(pubkey_path), "%s/.dna/%s-dilithium3.pqkey.pub",
-             home, identity);
+    snprintf(pubkey_path, sizeof(pubkey_path), "%s/%s-dilithium3.pqkey.pub",
+             data_dir, identity);
 
     // Read public key file
     FILE *fp = fopen(pubkey_path, "rb");

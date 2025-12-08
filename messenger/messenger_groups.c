@@ -675,9 +675,17 @@ int messenger_sync_groups(messenger_context_t *ctx) {
     QGP_LOG_INFO(LOG_TAG, "Scanning %d recent contacts for group invitations...\n", contact_count);
 
     // Load recipient's private Kyber1024 key from filesystem (for decryption)
-    const char *home = qgp_platform_home_dir();
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
+        for (int i = 0; i < contact_count; i++) {
+            free(contacts[i]);
+        }
+        free(contacts);
+        return -1;
+    }
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s/keys/%s.kem", home, ctx->identity, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem", data_dir, ctx->identity, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
@@ -863,10 +871,14 @@ int messenger_send_group_message(messenger_context_t *ctx, const char *group_uui
     }
 
     // Step 2: Load Dilithium5 private key for signing
-    const char *home = qgp_platform_home_dir();
+    const char *data_dir2 = qgp_platform_app_data_dir();
+    if (!data_dir2) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
+        return -1;
+    }
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s-dilithium.pqkey",
-             home, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s-dilithium.pqkey",
+             data_dir2, ctx->identity);
 
     FILE *fp = fopen(dilithium_path, "rb");
     if (!fp) {

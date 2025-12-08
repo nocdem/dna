@@ -34,11 +34,11 @@ static bool file_exists(const char *path) {
 
 /**
  * Find the path to a key file (.dsa or .kem) for a given fingerprint
- * Searches through all ~/.dna/<name>/keys/ directories
+ * Searches through all <data_dir>/<name>/keys/ directories
  */
-static int init_find_key_path(const char *dna_dir, const char *fingerprint,
+static int init_find_key_path(const char *data_dir, const char *fingerprint,
                               const char *extension, char *path_out) {
-    DIR *base_dir = opendir(dna_dir);
+    DIR *base_dir = opendir(data_dir);
     if (!base_dir) {
         return -1;
     }
@@ -52,7 +52,7 @@ static int init_find_key_path(const char *dna_dir, const char *fingerprint,
 
         char test_path[512];
         snprintf(test_path, sizeof(test_path), "%s/%s/keys/%s%s",
-                 dna_dir, identity_entry->d_name, fingerprint, extension);
+                 data_dir, identity_entry->d_name, fingerprint, extension);
 
         if (file_exists(test_path)) {
             strncpy(path_out, test_path, 511);
@@ -90,9 +90,9 @@ static int resolve_identity_to_fingerprint(const char *identity_input, char *fin
     }
 
     // Input is a name, compute fingerprint from key file
-    const char *home = qgp_platform_home_dir();
+    const char *data_dir = qgp_platform_app_data_dir();
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa", home, identity_input, identity_input);
+    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa", data_dir, identity_input, identity_input);
 
     // Check if key file exists (no error message - expected for new identities)
     if (!file_exists(key_path)) {
@@ -198,7 +198,7 @@ messenger_context_t* messenger_init(const char *identity) {
 
     // Initialize DHT groups database (per-identity)
     char groups_db_path[512];
-    snprintf(groups_db_path, sizeof(groups_db_path), "%s/.dna/%s/db/groups.db", getenv("HOME"), identity);
+    snprintf(groups_db_path, sizeof(groups_db_path), "%s/%s/db/groups.db", qgp_platform_app_data_dir(), identity);
     if (dht_groups_init(groups_db_path) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to initialize DHT groups database");
         // Non-fatal - continue without groups support
@@ -254,18 +254,15 @@ int messenger_load_dht_identity(const char *fingerprint) {
     QGP_LOG_INFO(LOG_TAG_DHT, "Loading DHT identity for %.16s...", fingerprint);
 
     // Load Kyber1024 private key (for decryption)
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG_DHT, "Cannot get home directory");
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG_DHT, "Cannot get data directory");
         return -1;
     }
 
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
-
-    // Find key in ~/.dna/*/keys/ structure
+    // Find key in <data_dir>/*/keys/ structure
     char kyber_path[512];
-    if (init_find_key_path(dna_dir, fingerprint, ".kem", kyber_path) != 0) {
+    if (init_find_key_path(data_dir, fingerprint, ".kem", kyber_path) != 0) {
         QGP_LOG_ERROR(LOG_TAG_DHT, "Kyber key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }

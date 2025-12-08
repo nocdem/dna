@@ -411,7 +411,7 @@ QGP_LOG_ERROR("TAG", "Error: %s", msg);
 
 **Default:** WARN (shows WARN and ERROR only)
 
-**Config File Settings** (`~/.dna/config`):
+**Config File Settings** (`<data_dir>/config`):
 ```
 # Log level: DEBUG, INFO, WARN, ERROR, NONE
 log_level=WARN
@@ -464,12 +464,25 @@ qgp_log_enable_tag("P2P");
 
 ### Key Storage
 
-**Location:** `~/.dna/`
+**Location:** `<data_dir>/` (see [Data Directory](#data-directory) section)
 
 | File | Contents |
 |------|----------|
-| `<fingerprint>.dsa` | Dilithium5 private key (4896 bytes) |
-| `<fingerprint>.kem` | Kyber1024 private key (3168 bytes) |
+| `<fingerprint>/keys/<fingerprint>.dsa` | Dilithium5 private key (4896 bytes) |
+| `<fingerprint>/keys/<fingerprint>.kem` | Kyber1024 private key (3168 bytes) |
+
+#### Data Directory
+
+The data directory location is platform-specific:
+
+| Platform | Location |
+|----------|----------|
+| Linux | `~/.dna/` |
+| Windows | `%USERPROFILE%\.dna\` |
+| Android | App-specific data directory (set by Flutter) |
+| iOS | App-specific documents directory (set by Flutter) |
+
+Mobile apps must call `qgp_platform_set_app_dirs(data_dir, cache_dir)` at startup to configure the data directory before any other DNA Engine calls.
 
 ---
 
@@ -869,18 +882,25 @@ int messenger_reject_group_invitation(ctx, group_uuid);
 
 ### 8.1 Storage Architecture
 
-**Location:** `~/.dna/`
+**Location:** `<data_dir>/` (platform-specific, see [Data Directory](#data-directory))
 
 ```
-~/.dna/
-├── messages.db                        # All messages (encrypted)
-├── <fingerprint>.dsa                  # Dilithium5 private key
-├── <fingerprint>.kem                  # Kyber1024 private key
+<data_dir>/
+├── config                             # Configuration file
+├── keyserver_cache.db                 # Public key cache (7-day TTL)
+├── <fingerprint>/                     # Per-identity directory
+│   ├── keys/
+│   │   ├── <fingerprint>.dsa          # Dilithium5 private key
+│   │   └── <fingerprint>.kem          # Kyber1024 private key
+│   ├── wallets/
+│   │   └── <fingerprint>.dwallet      # Cellframe wallet
+│   ├── db/
+│   │   ├── messages.db                # Messages (encrypted at rest)
+│   │   └── invitations.db             # Pending group invitations
+│   └── dht_identity.enc               # Encrypted DHT identity backup
 ├── <fingerprint>_contacts.db          # Per-identity contacts
 ├── <fingerprint>_profiles.db          # Profile cache (7-day TTL)
-├── <fingerprint>_keyserver.db         # Public key cache (7-day TTL)
-├── <fingerprint>_groups.db            # Group GSK storage
-└── <fingerprint>_invitations.db       # Pending invitations
+└── <fingerprint>_groups.db            # Group GSK storage
 ```
 
 ### 8.2 Message Backup
@@ -983,7 +1003,7 @@ typedef enum {
 - **Cellframe**: `SHAKE256(master_seed || "cellframe-wallet-v1")` → Dilithium keypair
 - **Ethereum**: BIP-44 path `m/44'/60'/0'/0/0` → secp256k1 keypair
 
-**Wallet Storage:** `~/.dna/<fingerprint>/wallets/`
+**Wallet Storage:** `<data_dir>/<fingerprint>/wallets/`
 - Cellframe: `<fingerprint>.dwallet`
 - Ethereum: `<fingerprint>.eth.json`
 
@@ -1394,9 +1414,9 @@ state.message_send_queue.enqueue(
 │     │           │                                               │
 │     ▼           ▼                                               │
 │  ┌──────────────────────────────────┐                          │
-│  │ Save to ~/.dna/                  │                          │
-│  │ <fingerprint>.dsa (4896 bytes)   │                          │
-│  │ <fingerprint>.kem (3168 bytes)   │                          │
+│  │ Save to <data_dir>/              │                          │
+│  │ <fp>/keys/<fp>.dsa (4896 bytes)  │                          │
+│  │ <fp>/keys/<fp>.kem (3168 bytes)  │                          │
 │  └────────┬─────────────────────────┘                          │
 │           │                                                     │
 │           ▼                                                     │
@@ -1657,7 +1677,7 @@ nohup ./vendor/opendht-pq/tools/dna-nodus \
 | File | Purpose |
 |------|---------|
 | `dna_messenger.ini` | GUI window layout, theme |
-| `~/.dna/` | All user data |
+| `<data_dir>/` | All user data (see [Data Directory](#data-directory)) |
 
 ### 14.5 Network Ports
 

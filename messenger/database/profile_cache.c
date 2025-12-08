@@ -8,6 +8,8 @@
  */
 
 #include "profile_cache.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,15 +20,12 @@
 
 #ifdef _WIN32
 #include <direct.h>
-#include <shlobj.h>
 #define mkdir(path, mode) _mkdir(path)
 #else
 #include <unistd.h>
-#include <pwd.h>
-#include "crypto/utils/qgp_log.h"
+#endif
 
 #define LOG_TAG "DB_PROFILE"
-#endif
 
 static sqlite3 *g_db = NULL;
 static char g_owner_identity[256] = {0};  // Current database owner
@@ -38,29 +37,13 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
         return -1;
     }
 
-#ifdef _WIN32
-    char appdata[MAX_PATH];
-    if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get AppData path\n");
-        return -1;
-    }
-    snprintf(path_out, path_size, "%s\\.dna\\%s_profiles.db", appdata, owner_identity);
-#else
-    const char *home = getenv("HOME");
-    if (!home) {
-        struct passwd *pw = getpwuid(getuid());
-        if (pw) {
-            home = pw->pw_dir;
-        }
-    }
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
         return -1;
     }
 
-    snprintf(path_out, path_size, "%s/.dna/%s_profiles.db", home, owner_identity);
-#endif
-
+    snprintf(path_out, path_size, "%s/%s_profiles.db", data_dir, owner_identity);
     return 0;
 }
 

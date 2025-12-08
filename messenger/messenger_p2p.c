@@ -17,6 +17,7 @@
 #include "database/group_invitations.h"
 #include "crypto/utils/qgp_sha3.h"
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 #include "database/presence_cache.h"
 #include "database/profile_manager.h"
 #include "database/profile_cache.h"
@@ -90,38 +91,16 @@ static int load_my_dilithium_pubkey(
     size_t *pubkey_len_out
 )
 {
-    // Get home directory
-    const char *home = NULL;
-
-#ifdef _WIN32
-    home = getenv("USERPROFILE");
-    if (!home) {
-        static char win_home[512];
-        const char *homedrive = getenv("HOMEDRIVE");
-        const char *homepath = getenv("HOMEPATH");
-        if (homedrive && homepath) {
-            snprintf(win_home, sizeof(win_home), "%s%s", homedrive, homepath);
-            home = win_home;
-        }
-    }
-#else
-    home = getenv("HOME");
-    if (!home) {
-        struct passwd *pw = getpwuid(getuid());
-        if (pw) {
-            home = pw->pw_dir;
-        }
-    }
-#endif
-
-    if (!home) {
-        QGP_LOG_ERROR("P2P", "Cannot determine home directory");
+    // Get data directory using cross-platform API
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR("P2P", "Cannot determine data directory");
         return -1;
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa",
-             home, ctx->identity, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa",
+             data_dir, ctx->identity, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {
@@ -219,7 +198,7 @@ static int resolve_identity_to_fingerprint(
 }
 
 /**
- * Load my own Dilithium private key from ~/.dna/
+ * Load my own Dilithium private key
  *
  * @return: 0 on success, -1 on error
  */
@@ -229,40 +208,16 @@ static int load_my_privkey(
     size_t *privkey_len_out
 )
 {
-    // Get home directory (platform-specific)
-    const char *home = NULL;
-
-#ifdef _WIN32
-    // Windows: Try USERPROFILE first, then HOMEDRIVE+HOMEPATH
-    home = getenv("USERPROFILE");
-    if (!home) {
-        static char win_home[512];
-        const char *homedrive = getenv("HOMEDRIVE");
-        const char *homepath = getenv("HOMEPATH");
-        if (homedrive && homepath) {
-            snprintf(win_home, sizeof(win_home), "%s%s", homedrive, homepath);
-            home = win_home;
-        }
-    }
-#else
-    // Linux/POSIX: Try HOME first, then getpwuid() fallback
-    home = getenv("HOME");
-    if (!home) {
-        struct passwd *pw = getpwuid(getuid());
-        if (pw) {
-            home = pw->pw_dir;
-        }
-    }
-#endif
-
-    if (!home) {
-        QGP_LOG_ERROR("P2P", "Cannot determine home directory");
+    // Get data directory using cross-platform API
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR("P2P", "Cannot determine data directory");
         return -1;
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa",
-             home, ctx->identity, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa",
+             data_dir, ctx->identity, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {
@@ -293,7 +248,7 @@ static int load_my_privkey(
 }
 
 /**
- * Load my own Kyber1024 private key (ML-KEM-1024) from ~/.dna/
+ * Load my own Kyber1024 private key (ML-KEM-1024)
  *
  * @return: 0 on success, -1 on error
  */
@@ -303,40 +258,16 @@ static int load_my_kyber_key(
     size_t *kyber_key_len_out
 )
 {
-    // Get home directory (platform-specific)
-    const char *home = NULL;
-
-#ifdef _WIN32
-    // Windows: Try USERPROFILE first, then HOMEDRIVE+HOMEPATH
-    home = getenv("USERPROFILE");
-    if (!home) {
-        static char win_home[512];
-        const char *homedrive = getenv("HOMEDRIVE");
-        const char *homepath = getenv("HOMEPATH");
-        if (homedrive && homepath) {
-            snprintf(win_home, sizeof(win_home), "%s%s", homedrive, homepath);
-            home = win_home;
-        }
-    }
-#else
-    // Linux/POSIX: Try HOME first, then getpwuid() fallback
-    home = getenv("HOME");
-    if (!home) {
-        struct passwd *pw = getpwuid(getuid());
-        if (pw) {
-            home = pw->pw_dir;
-        }
-    }
-#endif
-
-    if (!home) {
-        QGP_LOG_ERROR("P2P", "Cannot determine home directory");
+    // Get data directory using cross-platform API
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR("P2P", "Cannot determine data directory");
         return -1;
     }
 
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.kem",
-             home, ctx->identity, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.kem",
+             data_dir, ctx->identity, ctx->identity);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {

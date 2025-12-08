@@ -250,8 +250,8 @@ void cache_manager_clear_all(void) {
     }
 
     // Keyserver cache - no clear_all function
-    // To fully clear keyserver cache, user must delete ~/.dna/keyserver_cache.db manually
+    // To fully clear keyserver cache, user must delete <data_dir>/keyserver_cache.db manually
 
     QGP_LOG_INFO(LOG_TAG, "Cache clear complete\n");
-    QGP_LOG_INFO(LOG_TAG, "Note: Keyserver cache not cleared (delete ~/.dna/keyserver_cache.db manually if needed)\n");
+    QGP_LOG_INFO(LOG_TAG, "Note: Keyserver cache not cleared (delete <data_dir>/keyserver_cache.db manually if needed)\n");
 }

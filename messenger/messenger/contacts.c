@@ -39,15 +39,15 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
     QGP_LOG_INFO(LOG_TAG, "Syncing contacts to DHT for '%s'\n", ctx->identity);
 
     // Load user's keys
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
         return -1;
     }
 
     // Load Kyber keypair
     char kyber_path[1024];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s/keys/%s.kem", home, ctx->identity, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem", data_dir, ctx->identity, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
@@ -57,7 +57,7 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
 
     // Load Dilithium keypair
     char dilithium_path[1024];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s/keys/%s.dsa", home, ctx->identity, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s/keys/%s.dsa", data_dir, ctx->identity, ctx->identity);
 
     qgp_key_t *dilithium_key = NULL;
     if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
@@ -143,28 +143,28 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     QGP_LOG_INFO(LOG_TAG, "Syncing contacts from DHT for '%s'\n", ctx->identity);
 
     // Load user's keys
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
+    const char *data_dir2 = qgp_platform_app_data_dir();
+    if (!data_dir2) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
         return -1;
     }
 
     // Load Kyber private key for decryption
-    char kyber_path[1024];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s/keys/%s.kem", home, ctx->identity, ctx->identity);
+    char kyber_path2[1024];
+    snprintf(kyber_path2, sizeof(kyber_path2), "%s/%s/keys/%s.kem", data_dir2, ctx->identity, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+    if (qgp_key_load(kyber_path2, &kyber_key) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key\n");
         return -1;
     }
 
     // Load Dilithium public key for signature verification
-    char dilithium_path[1024];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s/keys/%s.dsa", home, ctx->identity, ctx->identity);
+    char dilithium_path2[1024];
+    snprintf(dilithium_path2, sizeof(dilithium_path2), "%s/%s/keys/%s.dsa", data_dir2, ctx->identity, ctx->identity);
 
     qgp_key_t *dilithium_key = NULL;
-    if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+    if (qgp_key_load(dilithium_path2, &dilithium_key) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key\n");
         qgp_key_free(kyber_key);
         return -1;

@@ -50,8 +50,8 @@ static int ensure_directory(const char *path) {
 }
 
 static void get_dna_wallets_dir(char *path, size_t size) {
-    const char *home = qgp_platform_home_dir();
-    snprintf(path, size, "%s/.dna/wallets", home);
+    const char *data_dir = qgp_platform_app_data_dir();
+    snprintf(path, size, "%s/wallets", data_dir);
 }
 
 static int copy_file(const char *src, const char *dst) {
@@ -360,13 +360,10 @@ int wallet_list_from_dna_dir(wallet_list_t **list_out) {
         return -1;
     }
 
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
+    const char *dna_dir = qgp_platform_app_data_dir();
+    if (!dna_dir) {
         return -1;
     }
-
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
 
     wallet_list_t *list = calloc(1, sizeof(wallet_list_t));
     if (!list) {
@@ -381,7 +378,7 @@ int wallet_list_from_dna_dir(wallet_list_t **list_out) {
     }
 
 #ifdef _WIN32
-    // Scan each identity directory in ~/.dna/
+    // Scan each identity directory in <data_dir>/
     WIN32_FIND_DATA identity_data;
     char identity_search[1024];
     snprintf(identity_search, sizeof(identity_search), "%s\\*", dna_dir);
@@ -437,7 +434,7 @@ int wallet_list_from_dna_dir(wallet_list_t **list_out) {
 
     FindClose(hIdentity);
 #else
-    // Scan each identity directory in ~/.dna/
+    // Scan each identity directory in <data_dir>/
     DIR *base_dir = opendir(dna_dir);
     if (!base_dir) {
         *list_out = list;
@@ -494,15 +491,15 @@ int wallet_list_from_dna_dir(wallet_list_t **list_out) {
 }
 
 /**
- * List wallets for a specific identity from ~/.dna/<fingerprint>/wallets/
+ * List wallets for a specific identity from <data_dir>/<fingerprint>/wallets/
  */
 int wallet_list_for_identity(const char *fingerprint, wallet_list_t **list_out) {
     if (!fingerprint || !list_out) {
         return -1;
     }
 
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
         return -1;
     }
 
@@ -518,9 +515,9 @@ int wallet_list_for_identity(const char *fingerprint, wallet_list_t **list_out) 
         return -1;
     }
 
-    // Build path: ~/.dna/<fingerprint>/wallets/
+    // Build path: <data_dir>/<fingerprint>/wallets/
     char wallets_dir[1024];
-    snprintf(wallets_dir, sizeof(wallets_dir), "%s/.dna/%s/wallets", home, fingerprint);
+    snprintf(wallets_dir, sizeof(wallets_dir), "%s/%s/wallets", data_dir, fingerprint);
 
 #ifdef _WIN32
     WIN32_FIND_DATA wallet_data;

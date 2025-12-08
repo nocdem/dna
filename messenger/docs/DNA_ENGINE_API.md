@@ -84,7 +84,7 @@ void on_identities_listed(dna_request_id_t req_id, int error,
 
 int main() {
     // Create engine (initializes DHT, starts worker threads)
-    dna_engine_t* engine = dna_engine_create(NULL);  // NULL = default ~/.dna
+    dna_engine_t* engine = dna_engine_create(NULL);  // NULL = platform default
     if (!engine) {
         fprintf(stderr, "Failed to create engine\n");
         return 1;
@@ -180,24 +180,28 @@ dna_engine_t* dna_engine_create(const char *data_dir);
 Creates and initializes the DNA engine.
 
 **Parameters:**
-- `data_dir` - Path to data directory, or `NULL` for default `~/.dna`
+- `data_dir` - Path to data directory, or `NULL` for platform default:
+  - **Linux:** `~/.dna`
+  - **Windows:** `%USERPROFILE%\.dna`
+  - **Android/iOS:** App-specific directory (requires `qgp_platform_set_app_dirs()` first)
 
 **Returns:** Engine instance, or `NULL` on error
 
 **What it does:**
 1. Allocates engine structure
-2. Creates data directory if needed
-3. Initializes DHT singleton
-4. Spawns 4 worker threads
-5. Initializes lock-free task queue
+2. Sets data directory via `qgp_platform_set_app_dirs()` (if `data_dir` is provided)
+3. Creates data directory if needed
+4. Initializes DHT singleton
+5. Spawns 4 worker threads
+6. Initializes lock-free task queue
 
 **Example:**
 ```c
-// Use default data directory
+// Desktop: Use platform default data directory
 dna_engine_t* engine = dna_engine_create(NULL);
 
-// Use custom directory
-dna_engine_t* engine = dna_engine_create("/custom/path");
+// Mobile: Use app-specific directory
+dna_engine_t* engine = dna_engine_create("/data/user/0/io.cpunk.dna_messenger/app_flutter");
 ```
 
 ---
@@ -318,10 +322,10 @@ Creates new identity from BIP39 seeds.
 - `encryption_seed` - 32-byte seed for Kyber1024 keypair
 
 **Keys saved to:**
-- `<data_dir>/<fingerprint>.dsa` (Dilithium5 signing key)
-- `<data_dir>/<fingerprint>.kem` (Kyber1024 encryption key)
+- `<data_dir>/<fingerprint>/keys/<fingerprint>.dsa` (Dilithium5 signing key)
+- `<data_dir>/<fingerprint>/keys/<fingerprint>.kem` (Kyber1024 encryption key)
 
-Where `data_dir` is the directory passed to `dna_engine_create()` (defaults to `~/.dna` on desktop).
+Where `data_dir` is the platform-specific data directory (see `dna_engine_create()`).
 
 **Example (from BIP39 mnemonic):**
 ```c

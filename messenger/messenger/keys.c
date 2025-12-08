@@ -55,13 +55,13 @@ static size_t keys_curl_write_cb(void *contents, size_t size, size_t nmemb, void
 
 // ============================================================================
 // KEY PATH FINDER
-// Finds key files in ~/.dna/<name>/keys/ structure
+// Finds key files in <data_dir>/<name>/keys/ structure
 // ============================================================================
 
 /**
  * Find the path to a key file (.dsa or .kem) for a given fingerprint
- * Searches through all ~/.dna/<name>/keys/ directories
- * @param dna_dir Base directory (~/.dna)
+ * Searches through all <data_dir>/<name>/keys/ directories
+ * @param data_dir Base data directory (from qgp_platform_app_data_dir())
  * @param fingerprint The 128-char hex fingerprint
  * @param extension The file extension (e.g., ".dsa" or ".kem")
  * @param path_out Output buffer for found path (must be at least 512 bytes)
@@ -213,22 +213,16 @@ int messenger_store_pubkey(
         QGP_LOG_INFO(LOG_TAG, "Using global DHT singleton for key publishing\n");
     }
 
-    // Get dna_dir path
-    const char *home = getenv("HOME");
-    if (!home) {
-        home = getenv("USERPROFILE");  // Windows fallback
-        if (!home) {
-            QGP_LOG_ERROR(LOG_TAG, "HOME environment variable not set");
-            return -1;
-        }
+    // Get data directory
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory");
+        return -1;
     }
 
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
-
-    // Find and load private key for signing (searches ~/.dna/*/keys/)
+    // Find and load private key for signing (searches <data_dir>/*/keys/)
     char key_path[512];
-    if (find_key_path(dna_dir, fingerprint, ".dsa", key_path) != 0) {
+    if (find_key_path(data_dir, fingerprint, ".dsa", key_path) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Signing key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }
