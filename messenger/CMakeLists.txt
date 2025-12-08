@@ -144,6 +144,9 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     blockchain/cellframe/cellframe_rpc.c           # Blockchain RPC client
     blockchain/cellframe/cellframe_addr.c          # Blockchain address utilities
     blockchain/blockchain_wallet.c                 # Generic multi-chain wallet interface
+    blockchain/blockchain_registry.c               # Modular blockchain registry
+    blockchain/ethereum/eth_chain.c                # Ethereum blockchain_ops implementation
+    blockchain/cellframe/cell_chain.c              # Cellframe blockchain_ops implementation
     blockchain/ethereum/eth_wallet_create.c        # Ethereum wallet creation (BIP-44)
     blockchain/ethereum/eth_rpc.c                  # Ethereum JSON-RPC client
     blockchain/ethereum/eth_rlp.c                  # Ethereum RLP encoding
