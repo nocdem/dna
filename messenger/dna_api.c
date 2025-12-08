@@ -8,6 +8,7 @@
 #include "dna_api.h"
 #include "qgp.h"
 #include "crypto/utils/qgp_types.h"
+#include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/qgp_random.h"
 #include "crypto/utils/qgp_aes.h"
 #include "crypto/utils/qgp_kyber.h"
@@ -1198,14 +1199,14 @@ dna_error_t dna_sign_message(
         return DNA_ERROR_INVALID_ARG;
     }
 
-    // Build key file path: ~/.dna/<fingerprint>/keys/<fingerprint>.dsa
+    // Build key file path: <data_dir>/<fingerprint>/keys/<fingerprint>.dsa
     char key_path[512];
-    const char *home = getenv("HOME");
-    if (!home) {
-        fprintf(stderr, "[DNA API] HOME environment variable not set\n");
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        fprintf(stderr, "[DNA API] Failed to get data directory\n");
         return DNA_ERROR_INTERNAL;
     }
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa", home, signer_key_name, signer_key_name);
+    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa", data_dir, signer_key_name, signer_key_name);
 
     // Load signing key
     qgp_key_t *sign_key = NULL;

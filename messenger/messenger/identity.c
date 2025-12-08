@@ -28,9 +28,9 @@ int messenger_compute_identity_fingerprint(const char *identity, char *fingerpri
     }
 
     // Load Dilithium key file
-    const char *home = qgp_platform_home_dir();
+    const char *data_dir = qgp_platform_app_data_dir();
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/.dna/%s/keys/%s.dsa", home, identity, identity);
+    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa", data_dir, identity, identity);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {

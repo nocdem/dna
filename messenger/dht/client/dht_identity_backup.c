@@ -63,57 +63,32 @@ static int make_base_key(const char *user_fingerprint, char *key_out, size_t key
 int dht_identity_get_local_path(const char *user_fingerprint, char *path_out) {
     if (!user_fingerprint || !path_out) return -1;
 
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
         return -1;
     }
 
-#ifdef _WIN32
-    snprintf(path_out, 512, "%s\\.dna\\%s\\dht_identity.enc", home, user_fingerprint);
-#else
-    snprintf(path_out, 512, "%s/.dna/%s/dht_identity.enc", home, user_fingerprint);
-#endif
-
+    snprintf(path_out, 512, "%s/%s/dht_identity.enc", data_dir, user_fingerprint);
     return 0;
 }
 
 /**
- * Ensure identity directory exists (creates ~/.dna/<fingerprint>/ and ~/.dna/<fingerprint>/db/)
+ * Ensure identity directory exists (creates <data_dir>/<fingerprint>/ and <data_dir>/<fingerprint>/db/)
  */
 static int ensure_identity_dir(const char *user_fingerprint) {
-    const char *home = qgp_platform_home_dir();
-    if (!home) return -1;
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) return -1;
 
-    // Create ~/.dna directory
-    char dna_dir[512];
-#ifdef _WIN32
-    snprintf(dna_dir, sizeof(dna_dir), "%s\\.dna", home);
-    mkdir(dna_dir);
-#else
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
-    mkdir(dna_dir, 0700);
-#endif
-
-    // Create ~/.dna/<fingerprint> directory
+    // Create <data_dir>/<fingerprint> directory
     char identity_dir[512];
-#ifdef _WIN32
-    snprintf(identity_dir, sizeof(identity_dir), "%s\\.dna\\%s", home, user_fingerprint);
-    mkdir(identity_dir);
-#else
-    snprintf(identity_dir, sizeof(identity_dir), "%s/.dna/%s", home, user_fingerprint);
-    mkdir(identity_dir, 0700);
-#endif
+    snprintf(identity_dir, sizeof(identity_dir), "%s/%s", data_dir, user_fingerprint);
+    qgp_platform_mkdir(identity_dir);
 
-    // Create ~/.dna/<fingerprint>/db directory
+    // Create <data_dir>/<fingerprint>/db directory
     char db_dir[512];
-#ifdef _WIN32
-    snprintf(db_dir, sizeof(db_dir), "%s\\.dna\\%s\\db", home, user_fingerprint);
-    mkdir(db_dir);
-#else
-    snprintf(db_dir, sizeof(db_dir), "%s/.dna/%s/db", home, user_fingerprint);
-    mkdir(db_dir, 0700);
-#endif
+    snprintf(db_dir, sizeof(db_dir), "%s/%s/db", data_dir, user_fingerprint);
+    qgp_platform_mkdir(db_dir);
 
     return 0;
 }

@@ -14,6 +14,7 @@
 #include "../message_backup.h"
 #include "../crypto/utils/qgp_random.h"
 #include "../crypto/utils/qgp_sha3.h"
+#include "../crypto/utils/qgp_platform.h"
 #include "../dht/core/dht_context.h"
 #include "../dht/core/dht_keyserver.h"
 #include "../dht/shared/dht_groups.h"
@@ -492,9 +493,9 @@ static int gsk_rotate_and_publish(dht_context_t *dht_ctx, const char *group_uuid
 
     // Step 5: Load owner's Dilithium5 private key for signing
     // TODO: This needs to be fetched from the messenger context or identity manager
-    // For now, we'll load from ~/.dna/<owner_identity>-dilithium.pqkey
+    const char *gsk_data_dir = qgp_platform_app_data_dir();
     char privkey_path[512];
-    snprintf(privkey_path, sizeof(privkey_path), "%s/.dna/%s-dilithium.pqkey", getenv("HOME") ?: ".", owner_identity);
+    snprintf(privkey_path, sizeof(privkey_path), "%s/%s-dilithium.pqkey", gsk_data_dir ?: ".", owner_identity);
 
     FILE *fp = fopen(privkey_path, "rb");
     if (!fp) {

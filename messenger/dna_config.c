@@ -16,8 +16,8 @@
 int dna_config_save(const dna_config_t *config);
 
 static void get_config_path(char *path, size_t size) {
-    const char *home = qgp_platform_home_dir();
-    snprintf(path, size, "%s/.dna/%s", home, CONFIG_FILE_NAME);
+    const char *data_dir = qgp_platform_app_data_dir();
+    snprintf(path, size, "%s/%s", data_dir, CONFIG_FILE_NAME);
 }
 
 int dna_config_load(dna_config_t *config) {
@@ -118,12 +118,13 @@ int dna_config_save(const dna_config_t *config) {
         return -1;
     }
 
-    // Ensure ~/.dna directory exists
-    const char *home = qgp_platform_home_dir();
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+    // Ensure data directory exists
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        return -1;
+    }
 
-    if (qgp_platform_mkdir(dna_dir) != 0 && errno != EEXIST) {
+    if (qgp_platform_mkdir(data_dir) != 0 && errno != EEXIST) {
         return -1;
     }
 

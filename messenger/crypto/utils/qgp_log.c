@@ -4,7 +4,7 @@
  * Provides runtime control over log output:
  * - Set minimum log level (DEBUG, INFO, WARN, ERROR, NONE)
  * - Filter by tag (whitelist or blacklist mode)
- * - Loads settings from ~/.dna/config on first use
+ * - Loads settings from <data_dir>/config on first use
  */
 
 #include "qgp_log.h"

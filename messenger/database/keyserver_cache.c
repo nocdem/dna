@@ -4,23 +4,22 @@
  */
 
 #include "keyserver_cache.h"
+#include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "MSG_KEYS"
 
 #ifdef _WIN32
     #include <windows.h>
-    #include <shlobj.h>
-    #define MAX_PATH 260
+    #define mkdir(path, mode) _mkdir(path)
 #else
     #include <unistd.h>
-    #include <pwd.h>
 #endif
 
 // Default TTL: 7 days = 604800 seconds
@@ -52,51 +51,17 @@ static const char *CACHE_SCHEMA =
 static const char *MIGRATION_ADD_AVATAR =
     "ALTER TABLE name_cache ADD COLUMN avatar_base64 TEXT;";
 
-// Helper: Get default cache path (~/.dna/keyserver_cache.db)
-static void get_default_cache_path(char *path_out, size_t path_size) {
-#ifdef _WIN32
-    // Windows: Use SHGetFolderPathA to get AppData
-    char appdata[MAX_PATH];
-    if (SHGetFolderPathA(NULL, CSIDL_APPDATA, NULL, 0, appdata) != S_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get AppData path\n");
-        snprintf(path_out, path_size, "C:\\Temp\\.dna\\keyserver_cache.db");
-        return;
+// Helper: Get default cache path (<data_dir>/keyserver_cache.db)
+// Returns 0 on success, -1 on failure
+static int get_default_cache_path(char *path_out, size_t path_size) {
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
+        return -1;
     }
 
-    // Create .dna directory
-    char dna_dir[MAX_PATH];
-    snprintf(dna_dir, sizeof(dna_dir), "%s\\.dna", appdata);
-    struct stat st = {0};
-    if (stat(dna_dir, &st) == -1) {
-        mkdir(dna_dir);  // Windows mkdir() takes only 1 argument
-    }
-
-    snprintf(path_out, path_size, "%s\\.dna\\keyserver_cache.db", appdata);
-#else
-    // Linux/Unix: Use HOME environment variable
-    const char *home = getenv("HOME");
-    if (!home) {
-        struct passwd *pw = getpwuid(getuid());
-        if (pw) {
-            home = pw->pw_dir;
-        }
-    }
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to get home directory\n");
-        snprintf(path_out, path_size, "/tmp/.dna/keyserver_cache.db");
-        return;
-    }
-
-    // Create .dna directory
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
-    struct stat st = {0};
-    if (stat(dna_dir, &st) == -1) {
-        mkdir(dna_dir, 0700);  // Unix mkdir() takes mode
-    }
-
-    snprintf(path_out, path_size, "%s/.dna/keyserver_cache.db", home);
-#endif
+    snprintf(path_out, path_size, "%s/keyserver_cache.db", data_dir);
+    return 0;
 }
 
 // Initialize keyserver cache
@@ -108,7 +73,10 @@ int keyserver_cache_init(const char *db_path) {
 
     char default_path[512];
     if (!db_path) {
-        get_default_cache_path(default_path, sizeof(default_path));
+        if (get_default_cache_path(default_path, sizeof(default_path)) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Cannot determine cache path\n");
+            return -1;
+        }
         db_path = default_path;
     }
 

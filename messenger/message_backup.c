@@ -13,6 +13,7 @@
 #include <sys/stat.h>
 #include <errno.h>
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "MSG_BACKUP"
 
@@ -74,62 +75,36 @@ static const char *SCHEMA_SQL =
  * Get database path
  */
 static int get_db_path(const char *identity, char *path_out, size_t path_len) {
-    const char *home = getenv("HOME");
-    if (!home) {
-        home = getenv("USERPROFILE");  // Windows fallback
-        if (!home) {
-            QGP_LOG_ERROR(LOG_TAG, "HOME/USERPROFILE environment variable not set\n");
-            return -1;
-        }
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
+        return -1;
     }
 
-    // Create ~/.dna directory if it doesn't exist
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
+    // Create <data_dir>/<identity> directory if it doesn't exist
+    char identity_dir[512];
+    snprintf(identity_dir, sizeof(identity_dir), "%s/%s", data_dir, identity);
 
     struct stat st = {0};
-    if (stat(dna_dir, &st) == -1) {
-#ifdef _WIN32
-        if (mkdir(dna_dir) != 0) {
-#else
-        if (mkdir(dna_dir, 0700) != 0) {
-#endif
-            QGP_LOG_ERROR(LOG_TAG, "Failed to create %s: %s\n", dna_dir, strerror(errno));
-            return -1;
-        }
-    }
-
-    // Create ~/.dna/<identity> directory if it doesn't exist
-    char identity_dir[512];
-    snprintf(identity_dir, sizeof(identity_dir), "%s/.dna/%s", home, identity);
-
     if (stat(identity_dir, &st) == -1) {
-#ifdef _WIN32
-        if (mkdir(identity_dir) != 0) {
-#else
-        if (mkdir(identity_dir, 0700) != 0) {
-#endif
+        if (qgp_platform_mkdir(identity_dir) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to create %s: %s\n", identity_dir, strerror(errno));
             return -1;
         }
     }
 
-    // Create ~/.dna/<identity>/db directory if it doesn't exist
+    // Create <data_dir>/<identity>/db directory if it doesn't exist
     char db_dir[512];
-    snprintf(db_dir, sizeof(db_dir), "%s/.dna/%s/db", home, identity);
+    snprintf(db_dir, sizeof(db_dir), "%s/%s/db", data_dir, identity);
 
     if (stat(db_dir, &st) == -1) {
-#ifdef _WIN32
-        if (mkdir(db_dir) != 0) {
-#else
-        if (mkdir(db_dir, 0700) != 0) {
-#endif
+        if (qgp_platform_mkdir(db_dir) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to create %s: %s\n", db_dir, strerror(errno));
             return -1;
         }
     }
 
-    // Database path: ~/.dna/<identity>/db/messages.db (per-identity)
+    // Database path: <data_dir>/<identity>/db/messages.db (per-identity)
     snprintf(path_out, path_len, "%s/messages.db", db_dir);
     return 0;
 }

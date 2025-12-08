@@ -470,25 +470,16 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
         return NULL;
     }
 
-    /* Set data directory */
+    /* Set data directory using cross-platform API */
     if (data_dir) {
+        /* Mobile: use provided data_dir directly */
+        qgp_platform_set_app_dirs(data_dir, NULL);
         engine->data_dir = strdup(data_dir);
-
-        /* On Android (and other platforms without HOME), set HOME env var
-         * so all modules that use getenv("HOME") will work correctly.
-         * The data_dir from Flutter is the app's files directory. */
-        if (!getenv("HOME")) {
-            setenv("HOME", data_dir, 1);
-        }
     } else {
-        /* Default to ~/.dna */
-        const char *home = getenv("HOME");
-        if (home) {
-            size_t len = strlen(home) + 6; /* "/.dna" + null */
-            engine->data_dir = malloc(len);
-            if (engine->data_dir) {
-                snprintf(engine->data_dir, len, "%s/.dna", home);
-            }
+        /* Desktop: qgp_platform_app_data_dir() returns ~/.dna */
+        const char *app_dir = qgp_platform_app_data_dir();
+        if (app_dir) {
+            engine->data_dir = strdup(app_dir);
         }
     }
 
@@ -496,9 +487,6 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
         free(engine);
         return NULL;
     }
-
-    /* Ensure data directory exists */
-    platform_mkdir(engine->data_dir, 0700);
 
     /* Load config and apply log settings BEFORE any logging */
     dna_config_t config;
@@ -616,7 +604,7 @@ const char* dna_engine_get_fingerprint(dna_engine_t *engine) {
 
 /* ============================================================================
  * IDENTITY SCAN HELPER
- * Scans ~/.dna/<name>/keys/ directories for identity key files
+ * Scans <data_dir>/<name>/keys/ directories for identity key files
  * ============================================================================ */
 
 /* Helper to check if filename is a valid fingerprint.dsa */
@@ -652,7 +640,7 @@ int dna_scan_identities(const char *data_dir, char ***fingerprints_out, int *cou
         return -1;
     }
 
-    /* Scan each subdirectory in ~/.dna/ */
+    /* Scan each subdirectory in <data_dir>/ */
     struct dirent *identity_entry;
     while ((identity_entry = readdir(base_dir)) != NULL) {
         /* Skip . and .. */
@@ -661,7 +649,7 @@ int dna_scan_identities(const char *data_dir, char ***fingerprints_out, int *cou
             continue;
         }
 
-        /* Build path to keys directory: ~/.dna/<name>/keys/ */
+        /* Build path to keys directory: <data_dir>/<name>/keys/ */
         char keys_path[512];
         snprintf(keys_path, sizeof(keys_path), "%s/%s/keys", data_dir, identity_entry->d_name);
 
@@ -3642,7 +3630,7 @@ void* dna_engine_get_dht_context(dna_engine_t *engine) {
  * LOG CONFIGURATION
  * ============================================================================ */
 
-/* Static buffers for current log config (loaded from ~/.dna/config) */
+/* Static buffers for current log config (loaded from <data_dir>/config) */
 static char g_log_level[16] = "WARN";
 static char g_log_tags[512] = "";
 

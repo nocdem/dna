@@ -337,9 +337,9 @@ int messenger_send_message(
     }
 
     // Load sender's private signing key from filesystem
-    const char *home = qgp_platform_home_dir();
+    const char *data_dir = qgp_platform_app_data_dir();
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/.dna/%s/keys/%s.dsa", home, ctx->identity, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s/keys/%s.dsa", data_dir, ctx->identity, ctx->identity);
 
     qgp_key_t *sender_sign_key = NULL;
     if (qgp_key_load(dilithium_path, &sender_sign_key) != 0) {
@@ -624,9 +624,9 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     printf("========================================\n\n");
 
     // Load recipient's private Kyber1024 key (ML-KEM-1024) from filesystem
-    const char *home = qgp_platform_home_dir();
+    const char *home_kyber1 = qgp_platform_app_data_dir();
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s/keys/%s.kem", home, ctx->identity, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem", home_kyber1, ctx->identity, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
@@ -778,12 +778,12 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     size_t ciphertext_len = target_msg->encrypted_len;
 
     // Load recipient's private Kyber1024 key (ML-KEM-1024) from filesystem
-    const char *home = qgp_platform_home_dir();
-    char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/.dna/%s/keys/%s.kem", home, ctx->identity, ctx->identity);
+    const char *home_kyber2 = qgp_platform_app_data_dir();
+    char kyber_path2[512];
+    snprintf(kyber_path2, sizeof(kyber_path2), "%s/%s/keys/%s.kem", home_kyber2, ctx->identity, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+    if (qgp_key_load(kyber_path2, &kyber_key) != 0) {
         message_backup_free_messages(all_messages, all_count);
         return -1;
     }

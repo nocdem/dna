@@ -156,14 +156,14 @@ int blockchain_list_wallets(
     }
 
     /* Get wallet directory */
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot get home directory");
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Cannot get data directory");
         return -1;
     }
 
     char wallet_dir[512];
-    snprintf(wallet_dir, sizeof(wallet_dir), "%s/.dna/%s/wallets", home, fingerprint);
+    snprintf(wallet_dir, sizeof(wallet_dir), "%s/%s/wallets", data_dir, fingerprint);
 
     /* Check if directory exists */
     if (!qgp_platform_is_directory(wallet_dir)) {

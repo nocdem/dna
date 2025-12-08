@@ -8,6 +8,7 @@
 #include <string.h>
 #include <sqlite3.h>
 #include "crypto/utils/qgp_log.h"
+#include "crypto/utils/qgp_platform.h"
 
 #define LOG_TAG "DB_GROUPS"
 
@@ -45,14 +46,14 @@ int group_invitations_init(const char *identity) {
         group_invitations_cleanup();
     }
 
-    // Build database path: ~/.dna/<identity>/db/invitations.db
+    // Build database path: <data_dir>/<identity>/db/invitations.db
     char db_path[512];
-    const char *home = getenv("HOME");
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG, "HOME environment variable not set\n");
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
         return -1;
     }
-    snprintf(db_path, sizeof(db_path), "%s/.dna/%s/db/invitations.db", home, identity);
+    snprintf(db_path, sizeof(db_path), "%s/%s/db/invitations.db", data_dir, identity);
 
     // Open database
     int rc = sqlite3_open(db_path, &g_invitations_db);

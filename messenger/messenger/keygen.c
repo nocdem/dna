@@ -66,19 +66,16 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
         return -1;
     }
 
-    // Create ~/.dna directory
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot get home directory");
+    // Get data directory
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Cannot get data directory");
         return -1;
     }
 
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
-
     // Use the QGP function to generate keys with BIP39 seed phrase
     // This will show the user their recovery seed and generate keys deterministically
-    if (cmd_gen_key_from_seed(identity, "dilithium", dna_dir) != 0) {
+    if (cmd_gen_key_from_seed(identity, "dilithium", data_dir) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Key generation failed");
         return -1;
     }
@@ -87,10 +84,10 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity) {
     // Now we need to export the public keys and upload to keyserver
 
     char pubkey_path[512];
-    snprintf(pubkey_path, sizeof(pubkey_path), "%s/%s.pub", dna_dir, identity);
+    snprintf(pubkey_path, sizeof(pubkey_path), "%s/%s.pub", data_dir, identity);
 
     // Export public key bundle
-    if (cmd_export_pubkey(identity, dna_dir, pubkey_path) != 0) {
+    if (cmd_export_pubkey(identity, data_dir, pubkey_path) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to export public key");
         return -1;
     }
@@ -216,7 +213,7 @@ int messenger_generate_keys_from_seeds(
     // Directory is always fingerprint-based (deterministic, never changes)
     const char *dir_name = fingerprint;
 
-    // Create directory structure: ~/.dna/<fingerprint>/keys/ and ~/.dna/<fingerprint>/wallets/
+    // Create directory structure: <data_dir>/<fingerprint>/keys/ and <data_dir>/<fingerprint>/wallets/
     char identity_dir[512];
     char keys_dir[512];
     char wallets_dir[512];
@@ -404,7 +401,7 @@ int messenger_generate_keys_from_seeds(
 
         char wallet_address[CF_WALLET_ADDRESS_MAX];
 
-        // Create wallet as <dir_name>.dwallet in ~/.dna/<dir_name>/wallets/
+        // Create wallet as <dir_name>.dwallet in <data_dir>/<dir_name>/wallets/
         if (cellframe_wallet_create_from_seed(wallet_seed, dir_name, wallets_dir, wallet_address) == 0) {
             QGP_LOG_INFO(LOG_TAG, "✓ Cellframe wallet created: %s.dwallet\n", dir_name);
             QGP_LOG_INFO(LOG_TAG, "✓ Address: %s\n", wallet_address);
@@ -425,11 +422,11 @@ int messenger_generate_keys_from_seeds(
 
 /**
  * Find the path to a key file (.dsa or .kem) for a given fingerprint
- * Searches through all ~/.dna/<name>/keys/ directories
+ * Searches through all <data_dir>/<name>/keys/ directories
  */
-static int keygen_find_key_path(const char *dna_dir, const char *fingerprint,
+static int keygen_find_key_path(const char *data_dir, const char *fingerprint,
                                 const char *extension, char *path_out) {
-    DIR *base_dir = opendir(dna_dir);
+    DIR *base_dir = opendir(data_dir);
     if (!base_dir) {
         return -1;
     }
@@ -443,7 +440,7 @@ static int keygen_find_key_path(const char *dna_dir, const char *fingerprint,
 
         char test_path[512];
         snprintf(test_path, sizeof(test_path), "%s/%s/keys/%s%s",
-                 dna_dir, identity_entry->d_name, fingerprint, extension);
+                 data_dir, identity_entry->d_name, fingerprint, extension);
 
         FILE *f = fopen(test_path, "r");
         if (f) {
@@ -503,23 +500,20 @@ int messenger_register_name(
     }
 
     // Load keys from fingerprint-based files
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot get home directory");
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Cannot get data directory");
         return -1;
     }
 
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
-
-    // Find key files in ~/.dna/*/keys/ structure
+    // Find key files in <data_dir>/*/keys/ structure
     char dilithium_path[512];
     char kyber_path[512];
-    if (keygen_find_key_path(dna_dir, fingerprint, ".dsa", dilithium_path) != 0) {
+    if (keygen_find_key_path(data_dir, fingerprint, ".dsa", dilithium_path) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Signing key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }
-    if (keygen_find_key_path(dna_dir, fingerprint, ".kem", kyber_path) != 0) {
+    if (keygen_find_key_path(data_dir, fingerprint, ".kem", kyber_path) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Encryption key not found for fingerprint: %.16s...", fingerprint);
         return -1;
     }
@@ -558,7 +552,7 @@ int messenger_register_name(
     char wallet_address[128] = {0};
     char eth_address[48] = {0};
     char wallets_path[512];
-    snprintf(wallets_path, sizeof(wallets_path), "%s/%s/wallets", dna_dir, fingerprint);
+    snprintf(wallets_path, sizeof(wallets_path), "%s/%s/wallets", data_dir, fingerprint);
 
     DIR *wdir = opendir(wallets_path);
     if (wdir) {
@@ -645,27 +639,24 @@ int messenger_restore_keys(messenger_context_t *ctx, const char *identity) {
         return -1;
     }
 
-    // Create ~/.dna directory
-    const char *home = qgp_platform_home_dir();
-    if (!home) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot get home directory");
+    // Get data directory
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Cannot get data directory");
         return -1;
     }
 
-    char dna_dir[512];
-    snprintf(dna_dir, sizeof(dna_dir), "%s/.dna", home);
-
     // Use QGP's restore function which prompts for mnemonic and passphrase
-    if (cmd_restore_key_from_seed(identity, "dilithium", dna_dir) != 0) {
+    if (cmd_restore_key_from_seed(identity, "dilithium", data_dir) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Key restoration failed");
         return -1;
     }
 
     // Export public key bundle
     char pubkey_path[512];
-    snprintf(pubkey_path, sizeof(pubkey_path), "%s/%s.pub", dna_dir, identity);
+    snprintf(pubkey_path, sizeof(pubkey_path), "%s/%s.pub", data_dir, identity);
 
-    if (cmd_export_pubkey(identity, dna_dir, pubkey_path) != 0) {
+    if (cmd_export_pubkey(identity, data_dir, pubkey_path) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to export public key");
         return -1;
     }
