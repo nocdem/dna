@@ -173,7 +173,6 @@ void dna_config_apply_log_settings(const dna_config_t *config) {
     } else if (strcmp(config->log_level, "NONE") == 0) {
         level = QGP_LOG_LEVEL_NONE;
     }
-    fprintf(stderr, "[CONFIG] log_level='%s' -> level=%d\n", config->log_level, level);
     qgp_log_set_level(level);
 
     // Set tag filter if specified
