@@ -81,7 +81,6 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include <unistd.h>
 
 #include "crypto/utils/qgp_log.h"
-#include "dna_config.h"
 
 #define LOG_TAG "DNA_ENGINE"
 /* Use engine-specific error codes */
@@ -490,12 +489,6 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
 
     /* Ensure data directory exists */
     platform_mkdir(engine->data_dir, 0700);
-
-    /* Load config and apply log settings (before any logging) */
-    dna_config_t config;
-    memset(&config, 0, sizeof(config));
-    dna_config_load(&config);
-    dna_config_apply_log_settings(&config);
 
     /* Initialize synchronization */
     pthread_mutex_init(&engine->event_mutex, NULL);

@@ -4,9 +4,11 @@
  * Provides runtime control over log output:
  * - Set minimum log level (DEBUG, INFO, WARN, ERROR, NONE)
  * - Filter by tag (whitelist or blacklist mode)
+ * - Loads settings from ~/.dna/config on first use
  */
 
 #include "qgp_log.h"
+#include "dna_config.h"
 #include <string.h>
 #include <stdarg.h>
 
@@ -14,9 +16,10 @@
 #define QGP_LOG_MAX_TAGS 64
 #define QGP_LOG_MAX_TAG_LEN 32
 
-/* Global log configuration (thread-safe via simple atomics would be ideal) */
-static qgp_log_level_t g_log_level = QGP_LOG_LEVEL_WARN;  /* WARN and ERROR by default */
+/* Global log configuration */
+static qgp_log_level_t g_log_level = QGP_LOG_LEVEL_WARN;
 static qgp_log_filter_mode_t g_filter_mode = QGP_LOG_FILTER_BLACKLIST;
+static bool g_config_loaded = false;
 
 /* Tag filter lists */
 static char g_enabled_tags[QGP_LOG_MAX_TAGS][QGP_LOG_MAX_TAG_LEN];
@@ -24,6 +27,19 @@ static int g_enabled_count = 0;
 
 static char g_disabled_tags[QGP_LOG_MAX_TAGS][QGP_LOG_MAX_TAG_LEN];
 static int g_disabled_count = 0;
+
+/* Load config on first use */
+static void ensure_config_loaded(void) {
+    if (g_config_loaded) {
+        return;
+    }
+    g_config_loaded = true;
+
+    dna_config_t config;
+    memset(&config, 0, sizeof(config));
+    dna_config_load(&config);
+    dna_config_apply_log_settings(&config);
+}
 
 /* Set minimum log level */
 void qgp_log_set_level(qgp_log_level_t level) {
@@ -135,6 +151,9 @@ static bool is_tag_disabled(const char *tag) {
 
 /* Check if a tag should be logged at given level */
 bool qgp_log_should_log(qgp_log_level_t level, const char *tag) {
+    /* Load config on first call */
+    ensure_config_loaded();
+
     /* Check log level first */
     if (level < g_log_level) {
         return false;
