@@ -16,6 +16,7 @@
 #include "database/contacts_db.h"
 #include "database/group_invitations.h"
 #include "crypto/utils/qgp_sha3.h"
+#include "crypto/utils/qgp_log.h"
 #include "database/presence_cache.h"
 #include "database/profile_manager.h"
 #include "database/profile_cache.h"
@@ -114,7 +115,7 @@ static int load_my_dilithium_pubkey(
 #endif
 
     if (!home) {
-        fprintf(stderr, "[P2P] Cannot determine home directory\n");
+        QGP_LOG_ERROR("P2P", "Cannot determine home directory");
         return -1;
     }
 
@@ -124,7 +125,7 @@ static int load_my_dilithium_pubkey(
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {
-        fprintf(stderr, "[P2P] Failed to open key file: %s\n", key_path);
+        QGP_LOG_ERROR("P2P", "Failed to open key file: %s", key_path);
         return -1;
     }
 
@@ -142,7 +143,7 @@ static int load_my_dilithium_pubkey(
     fclose(f);
 
     if (read != 2592) {
-        fprintf(stderr, "[P2P] Invalid public key size: %zu (expected 2592)\n", read);
+        QGP_LOG_ERROR("P2P", "Invalid public key size: %zu (expected 2592)", read);
         free(pubkey);
         return -1;
     }
@@ -172,7 +173,7 @@ static int load_pubkey_for_identity(
     // Load public keys from keyserver (don't need fingerprint here)
     if (messenger_load_pubkey(ctx, identity, &signing_pubkey, &signing_len,
                               &encryption_pubkey, &encryption_len, NULL) != 0) {
-        fprintf(stderr, "[P2P] Failed to load public key for identity: %s\n", identity);
+        QGP_LOG_ERROR("P2P", "Failed to load public key for identity: %s", identity);
         return -1;
     }
 
@@ -206,7 +207,7 @@ static int resolve_identity_to_fingerprint(
     // Load public keys and get fingerprint
     if (messenger_load_pubkey(ctx, identity, &signing_pubkey, &signing_len,
                               &encryption_pubkey, &encryption_len, fingerprint_out) != 0) {
-        fprintf(stderr, "[P2P] Failed to resolve identity to fingerprint: %s\n", identity);
+        QGP_LOG_ERROR("P2P", "Failed to resolve identity to fingerprint: %s\n", identity);
         return -1;
     }
 
@@ -255,7 +256,7 @@ static int load_my_privkey(
 #endif
 
     if (!home) {
-        fprintf(stderr, "[P2P] Cannot determine home directory\n");
+        QGP_LOG_ERROR("P2P", "Cannot determine home directory");
         return -1;
     }
 
@@ -265,7 +266,7 @@ static int load_my_privkey(
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {
-        fprintf(stderr, "[P2P] Failed to open private key: %s\n", key_path);
+        QGP_LOG_ERROR("P2P", "Failed to open private key: %s\n", key_path);
         return -1;
     }
 
@@ -281,7 +282,7 @@ static int load_my_privkey(
     fclose(f);
 
     if (read != 4896) {
-        fprintf(stderr, "[P2P] Invalid private key size: %zu (expected 4896 for Dilithium5)\n", read);
+        QGP_LOG_ERROR("P2P", "Invalid private key size: %zu (expected 4896 for Dilithium5)\n", read);
         free(privkey);
         return -1;
     }
@@ -329,7 +330,7 @@ static int load_my_kyber_key(
 #endif
 
     if (!home) {
-        fprintf(stderr, "[P2P] Cannot determine home directory\n");
+        QGP_LOG_ERROR("P2P", "Cannot determine home directory");
         return -1;
     }
 
@@ -339,7 +340,7 @@ static int load_my_kyber_key(
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {
-        fprintf(stderr, "[P2P] Failed to open Kyber key: %s\n", key_path);
+        QGP_LOG_ERROR("P2P", "Failed to open Kyber key: %s\n", key_path);
         return -1;
     }
 
@@ -355,7 +356,7 @@ static int load_my_kyber_key(
     fclose(f);
 
     if (read != 3168) {
-        fprintf(stderr, "[P2P] Invalid Kyber key size: %zu (expected 3168 for Kyber1024)\n", read);
+        QGP_LOG_ERROR("P2P", "Invalid Kyber key size: %zu (expected 3168 for Kyber1024)\n", read);
         free(kyber);
         return -1;
     }
@@ -461,7 +462,7 @@ static char* extract_sender_from_encrypted(
     contacts_db_free_list(contacts);
 
     // Not in contacts - try DHT reverse lookup (fingerprint → identity)
-    printf("[P2P] Sender not in contacts, querying DHT reverse mapping...\n");
+    QGP_LOG_DEBUG("P2P", "Sender not in contacts, querying DHT reverse mapping...");
 
     // Compute fingerprint as hex string (SHA3-512 of pubkey)
     unsigned char hash[64];  // SHA3-512 = 64 bytes
@@ -476,7 +477,7 @@ static char* extract_sender_from_encrypted(
     // Get DHT context from P2P transport
     dht_context_t *dht_ctx = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
     if (!dht_ctx) {
-        printf("[P2P] ✗ No DHT context available for reverse lookup\n");
+        QGP_LOG_WARN("P2P", "No DHT context available for reverse lookup");
         return NULL;
     }
 
@@ -485,17 +486,17 @@ static char* extract_sender_from_encrypted(
     int result = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &identity);
 
     if (result == 0 && identity) {
-        printf("[P2P] ✓ DHT reverse lookup found: %s (fingerprint: %.16s...)\n", identity, fingerprint);
+        QGP_LOG_INFO("P2P", "DHT reverse lookup found: %s (fingerprint: %.16s...)\n", identity, fingerprint);
 
         // Cache the identity in contacts for faster lookup next time
         // (User can add them to contacts manually later if they want)
         return identity;  // Caller must free
     } else if (result == -2) {
-        printf("[P2P] ✗ Identity not found in DHT (fingerprint: %.16s...)\n", fingerprint);
+        QGP_LOG_WARN("P2P", "Identity not found in DHT (fingerprint: %.16s...)\n", fingerprint);
     } else if (result == -3) {
-        printf("[P2P] ✗ DHT reverse mapping signature verification failed (fingerprint: %.16s...)\n", fingerprint);
+        QGP_LOG_WARN("P2P", "DHT reverse mapping signature verification failed (fingerprint: %.16s...)\n", fingerprint);
     } else {
-        printf("[P2P] ✗ DHT reverse lookup error (fingerprint: %.16s...)\n", fingerprint);
+        QGP_LOG_WARN("P2P", "DHT reverse lookup error (fingerprint: %.16s...)\n", fingerprint);
     }
 
     return NULL;  // No matching identity found
@@ -590,11 +591,11 @@ static void p2p_connection_state_changed(
 int messenger_p2p_init(messenger_context_t *ctx)
 {
     if (!ctx) {
-        fprintf(stderr, "[P2P] Invalid messenger context\n");
+        QGP_LOG_ERROR("P2P", "Invalid messenger context");
         return -1;
     }
 
-    printf("[P2P] Initializing P2P transport for identity: %s\n", ctx->identity);
+    QGP_LOG_DEBUG("P2P", "Initializing P2P transport for identity: %s\n", ctx->identity);
 
     // Load my private keys
     uint8_t *dilithium_privkey = NULL;
@@ -606,20 +607,20 @@ int messenger_p2p_init(messenger_context_t *ctx)
 
     // Load Dilithium private key
     if (load_my_privkey(ctx, &dilithium_privkey, &dilithium_privkey_len) != 0) {
-        fprintf(stderr, "[P2P] Failed to load Dilithium private key\n");
+        QGP_LOG_ERROR("P2P", "Failed to load Dilithium private key");
         return -1;
     }
 
     // Load Dilithium public key (from local file, not keyserver to avoid circular dependency)
     if (load_my_dilithium_pubkey(ctx, &dilithium_pubkey, &dilithium_pubkey_len) != 0) {
-        fprintf(stderr, "[P2P] Failed to load Dilithium public key\n");
+        QGP_LOG_ERROR("P2P", "Failed to load Dilithium public key");
         free(dilithium_privkey);
         return -1;
     }
 
     // Load Kyber1024 key (ML-KEM-1024)
     if (load_my_kyber_key(ctx, &kyber_key, &kyber_key_len) != 0) {
-        fprintf(stderr, "[P2P] Failed to load KEM-1024 key\n");
+        QGP_LOG_ERROR("P2P", "Failed to load KEM-1024 key");
         free(dilithium_privkey);
         free(dilithium_pubkey);
         return -1;
@@ -662,14 +663,14 @@ int messenger_p2p_init(messenger_context_t *ctx)
     free(kyber_key);
 
     if (!ctx->p2p_transport) {
-        fprintf(stderr, "[P2P] Failed to initialize P2P transport\n");
+        QGP_LOG_ERROR("P2P", "Failed to initialize P2P transport");
         ctx->p2p_enabled = false;
         return -1;
     }
 
     // Start P2P transport
     if (p2p_transport_start(ctx->p2p_transport) != 0) {
-        fprintf(stderr, "[P2P] Failed to start P2P transport\n");
+        QGP_LOG_ERROR("P2P", "Failed to start P2P transport");
         p2p_transport_free(ctx->p2p_transport);
         ctx->p2p_transport = NULL;
         ctx->p2p_enabled = false;
@@ -678,7 +679,7 @@ int messenger_p2p_init(messenger_context_t *ctx)
 
     // Register presence in DHT
     if (p2p_register_presence(ctx->p2p_transport) != 0) {
-        fprintf(stderr, "[P2P] Failed to register presence in DHT\n");
+        QGP_LOG_ERROR("P2P", "Failed to register presence in DHT");
         p2p_transport_free(ctx->p2p_transport);
         ctx->p2p_transport = NULL;
         ctx->p2p_enabled = false;
@@ -689,15 +690,15 @@ int messenger_p2p_init(messenger_context_t *ctx)
 
     // Initialize presence cache for fast online/offline status
     if (presence_cache_init() != 0) {
-        fprintf(stderr, "[P2P] Warning: Failed to initialize presence cache\n");
+        QGP_LOG_ERROR("P2P", "Warning: Failed to initialize presence cache");
     } else {
-        printf("[P2P] Presence cache initialized\n");
+        QGP_LOG_DEBUG("P2P", "Presence cache initialized");
     }
 
-    printf("[P2P] P2P transport initialized successfully\n");
-    printf("[P2P] Listening on TCP port 4001\n");
-    printf("[P2P] DHT port 4000\n");
-    printf("[P2P] Bootstrap nodes: %d configured\n", g_p2p_config.bootstrap_count);
+    QGP_LOG_DEBUG("P2P", "P2P transport initialized successfully");
+    QGP_LOG_DEBUG("P2P", "Listening on TCP port 4001");
+    QGP_LOG_DEBUG("P2P", "DHT port 4000");
+    QGP_LOG_DEBUG("P2P", "Bootstrap nodes: %d configured\n", g_p2p_config.bootstrap_count);
 
     return 0;
 }
@@ -708,7 +709,7 @@ void messenger_p2p_shutdown(messenger_context_t *ctx)
         return;
     }
 
-    printf("[P2P] Shutting down P2P transport for identity: %s\n", ctx->identity);
+    QGP_LOG_DEBUG("P2P", "Shutting down P2P transport for identity: %s\n", ctx->identity);
 
     // Cancel all push notification subscriptions
     messenger_p2p_unsubscribe_all(ctx);
@@ -717,7 +718,7 @@ void messenger_p2p_shutdown(messenger_context_t *ctx)
     ctx->p2p_transport = NULL;
     ctx->p2p_enabled = false;
 
-    printf("[P2P] P2P transport shutdown complete\n");
+    QGP_LOG_DEBUG("P2P", "P2P transport shutdown complete");
 }
 
 // ============================================================================
@@ -731,13 +732,13 @@ int messenger_send_p2p(
     size_t encrypted_len)
 {
     if (!ctx || !recipient || !encrypted_message || encrypted_len == 0) {
-        fprintf(stderr, "[P2P] Invalid parameters\n");
+        QGP_LOG_ERROR("P2P", "Invalid parameters");
         return -1;
     }
 
     // If P2P is not enabled, fall back to PostgreSQL immediately
     if (!ctx->p2p_enabled || !ctx->p2p_transport) {
-        printf("[P2P] P2P disabled, using PostgreSQL fallback for %s\n", recipient);
+        QGP_LOG_DEBUG("P2P", "P2P disabled, using PostgreSQL fallback for %s\n", recipient);
         // Fallback to PostgreSQL will be handled by caller
         return -1;  // Signal to use PostgreSQL
     }
@@ -747,11 +748,11 @@ int messenger_send_p2p(
     size_t recipient_pubkey_len = 0;
 
     if (load_pubkey_for_identity(ctx, recipient, &recipient_pubkey, &recipient_pubkey_len) != 0) {
-        fprintf(stderr, "[P2P] Failed to load public key for %s, using PostgreSQL fallback\n", recipient);
+        QGP_LOG_ERROR("P2P", "Failed to load public key for %s, using PostgreSQL fallback\n", recipient);
         return -1;  // Fallback to PostgreSQL
     }
 
-    printf("[P2P] Attempting to send message to %s via P2P...\n", recipient);
+    QGP_LOG_DEBUG("P2P", "Attempting to send message to %s via P2P...\n", recipient);
 
     // Try to send via P2P
     int result = p2p_send_message(
@@ -764,12 +765,12 @@ int messenger_send_p2p(
     free(recipient_pubkey);
 
     if (result == 0) {
-        printf("[P2P] ✓ Message sent to %s via P2P\n", recipient);
+        QGP_LOG_INFO("P2P", "Message sent to %s via P2P\n", recipient);
         return 0;
     }
 
     // P2P send failed - try DHT offline queue (Phase 9.2)
-    printf("[P2P] P2P send failed for %s\n", recipient);
+    QGP_LOG_DEBUG("P2P", "P2P send failed for %s\n", recipient);
 
     // Try to queue in DHT
     if (ctx->p2p_transport) {
@@ -779,7 +780,7 @@ int messenger_send_p2p(
         // Both must use fingerprints, not display names!
         char recipient_fingerprint[129];
         if (resolve_identity_to_fingerprint(ctx, recipient, recipient_fingerprint) != 0) {
-            fprintf(stderr, "[P2P] Failed to resolve recipient '%s' to fingerprint for DHT queue\n", recipient);
+            QGP_LOG_ERROR("P2P", "Failed to resolve recipient '%s' to fingerprint for DHT queue\n", recipient);
             return -1;
         }
 
@@ -792,16 +793,16 @@ int messenger_send_p2p(
         );
 
         if (queue_result == 0) {
-            printf("[P2P] ✓ Message queued in DHT for %s (fingerprint: %.20s...)\n",
+            QGP_LOG_INFO("P2P", "Message queued in DHT for %s (fingerprint: %.20s...)\n",
                    recipient, recipient_fingerprint);
             return 0;  // Success via DHT queue
         } else {
-            fprintf(stderr, "[P2P] Failed to queue in DHT, using PostgreSQL fallback\n");
+            QGP_LOG_ERROR("P2P", "Failed to queue in DHT, using PostgreSQL fallback");
         }
     }
 
     // Fall back to PostgreSQL
-    printf("[P2P] Using PostgreSQL fallback for %s\n", recipient);
+    QGP_LOG_DEBUG("P2P", "Using PostgreSQL fallback for %s\n", recipient);
     return -1;  // Signal to use PostgreSQL fallback
 }
 
@@ -828,7 +829,7 @@ int messenger_broadcast_p2p(
         }
     }
 
-    printf("[P2P] Broadcast complete: %zu via P2P, %zu via PostgreSQL\n",
+    QGP_LOG_DEBUG("P2P", "Broadcast complete: %zu via P2P, %zu via PostgreSQL\n",
            p2p_sent, pg_fallback);
 
     return 0;
@@ -847,7 +848,7 @@ static void p2p_message_received_internal(
 {
     messenger_context_t *ctx = (messenger_context_t*)user_data;
     if (!ctx) {
-        fprintf(stderr, "[P2P] Invalid context in message callback\n");
+        QGP_LOG_ERROR("P2P", "Invalid context in message callback");
         return;
     }
 
@@ -860,7 +861,7 @@ static void p2p_message_received_internal(
     if (sender_fingerprint && strlen(sender_fingerprint) > 0) {
         // DHT offline message - sender_fingerprint is the fingerprint directly
         sender_identity = strdup(sender_fingerprint);
-        printf("[P2P] ✓ Identified sender from DHT queue: %.32s...\n", sender_identity);
+        QGP_LOG_INFO("P2P", "Identified sender from DHT queue: %.32s...\n", sender_identity);
     } else if (peer_pubkey) {
         // Direct P2P - lookup identity from pubkey
         sender_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 2592);
@@ -870,18 +871,18 @@ static void p2p_message_received_internal(
     if (!sender_identity && message && message_len > 0) {
         sender_identity = extract_sender_from_encrypted(ctx, message, message_len);
         if (sender_identity) {
-            printf("[P2P] ✓ Identified sender from message signature: %s\n", sender_identity);
+            QGP_LOG_INFO("P2P", "Identified sender from message signature: %s\n", sender_identity);
         }
     }
 
     if (sender_identity) {
-        printf("[P2P] ✓ Received P2P message from %s (%zu bytes)\n", sender_identity, message_len);
+        QGP_LOG_INFO("P2P", "Received P2P message from %s (%zu bytes)\n", sender_identity, message_len);
 
         // Passive presence detection: message received = sender online
         presence_cache_update(sender_identity, true, time(NULL));
     } else {
-        printf("[P2P] ✓ Received P2P message from unknown peer (%zu bytes)\n", message_len);
-        printf("[P2P] Hint: Add sender as contact to see their identity\n");
+        QGP_LOG_INFO("P2P", "Received P2P message from unknown peer (%zu bytes)\n", message_len);
+        QGP_LOG_DEBUG("P2P", "Hint: Add sender as contact to see their identity");
         sender_identity = strdup("unknown");
     }
 
@@ -926,12 +927,12 @@ static void p2p_message_received_internal(
 
                         int store_result = group_invitations_store(&invitation);
                         if (store_result == 0) {
-                            printf("[P2P] ✓ Group invitation stored: %s (from %s)\n",
+                            QGP_LOG_INFO("P2P", "Group invitation stored: %s (from %s)\n",
                                    invitation.group_name, invitation.inviter);
                         } else if (store_result == -2) {
-                            printf("[P2P] Group invitation already exists: %s\n", invitation.group_name);
+                            QGP_LOG_DEBUG("P2P", "Group invitation already exists: %s\n", invitation.group_name);
                         } else {
-                            fprintf(stderr, "[P2P] Failed to store group invitation\n");
+                            QGP_LOG_ERROR("P2P", "Failed to store group invitation");
                         }
                     }
                 }
@@ -954,23 +955,23 @@ static void p2p_message_received_internal(
     );
 
     if (result != 0) {
-        fprintf(stderr, "[P2P] Failed to store received message in SQLite\n");
+        QGP_LOG_ERROR("P2P", "Failed to store received message in SQLite");
     } else {
-        printf("[P2P] ✓ Message from %s stored in SQLite (type=%d)\n", sender_identity, message_type);
+        QGP_LOG_INFO("P2P", "Message from %s stored in SQLite (type=%d)\n", sender_identity, message_type);
     }
 
     // Fetch sender profile for caching (only if expired or missing) - Phase 5: Unified Identity
     if (profile_cache_is_expired(sender_identity)) {
-        printf("[P2P] Fetching profile for sender: %s\n", sender_identity);
+        QGP_LOG_DEBUG("P2P", "Fetching profile for sender: %s\n", sender_identity);
         dna_unified_identity_t *identity = NULL;
         int profile_result = profile_manager_get_profile(sender_identity, &identity);
         if (profile_result == 0 && identity) {
-            printf("[P2P] ✓ Identity cached: %s\n", identity->display_name[0] ? identity->display_name : sender_identity);
+            QGP_LOG_INFO("P2P", "Identity cached: %s\n", identity->display_name[0] ? identity->display_name : sender_identity);
             dna_identity_free(identity);
         } else if (profile_result == -2) {
-            printf("[P2P] Profile not found for sender: %s\n", sender_identity);
+            QGP_LOG_DEBUG("P2P", "Profile not found for sender: %s\n", sender_identity);
         } else {
-            fprintf(stderr, "[P2P] Failed to fetch profile for sender: %s\n", sender_identity);
+            QGP_LOG_ERROR("P2P", "Failed to fetch profile for sender: %s\n", sender_identity);
         }
     }
 
@@ -989,14 +990,14 @@ static void p2p_connection_state_changed(
 
     char *peer_identity = lookup_identity_for_pubkey(ctx, peer_pubkey, 2592);  // Dilithium5 public key size
     if (peer_identity) {
-        printf("[P2P] %s %s\n", peer_identity, is_connected ? "CONNECTED" : "DISCONNECTED");
+        QGP_LOG_DEBUG("P2P", "%s %s\n", peer_identity, is_connected ? "CONNECTED" : "DISCONNECTED");
 
         // Update presence cache on connection state change
         presence_cache_update(peer_identity, is_connected, time(NULL));
 
         free(peer_identity);
     } else {
-        printf("[P2P] Unknown peer %s\n", is_connected ? "CONNECTED" : "DISCONNECTED");
+        QGP_LOG_DEBUG("P2P", "Unknown peer %s\n", is_connected ? "CONNECTED" : "DISCONNECTED");
     }
 }
 
@@ -1009,7 +1010,7 @@ void messenger_p2p_message_callback(
     // This is the external wrapper for messenger_p2p.h
     // The actual callback used internally is p2p_message_received_internal
     // which uses pubkeys instead of identities
-    printf("[P2P] External message callback for %s (%zu bytes)\n", identity, len);
+    QGP_LOG_DEBUG("P2P", "External message callback for %s (%zu bytes)\n", identity, len);
 }
 
 // ============================================================================
@@ -1053,14 +1054,14 @@ int messenger_p2p_refresh_presence(messenger_context_t *ctx)
         return -1;
     }
 
-    printf("[P2P] Refreshing presence in DHT for %s\n", ctx->identity);
+    QGP_LOG_DEBUG("P2P", "Refreshing presence in DHT for %s\n", ctx->identity);
 
     if (p2p_register_presence(ctx->p2p_transport) != 0) {
-        fprintf(stderr, "[P2P] Failed to refresh presence\n");
+        QGP_LOG_ERROR("P2P", "Failed to refresh presence");
         return -1;
     }
 
-    printf("[P2P] Presence refreshed successfully\n");
+    QGP_LOG_DEBUG("P2P", "Presence refreshed successfully");
     return 0;
 }
 
@@ -1076,7 +1077,7 @@ int messenger_p2p_lookup_presence(
     *last_seen_out = 0;
 
     if (!ctx->p2p_enabled || !ctx->p2p_transport) {
-        fprintf(stderr, "[P2P] P2P not enabled or transport not initialized\n");
+        QGP_LOG_ERROR("P2P", "P2P not enabled or transport not initialized");
         return -1;
     }
 
@@ -1100,7 +1101,7 @@ static bool messenger_push_notification_callback(
     messenger_context_t *ctx = (messenger_context_t*)user_data;
 
     if (expired) {
-        printf("[P2P Push] Received expiration notification\n");
+        QGP_LOG_DEBUG("P2P", "Received expiration notification");
         return true;  // Continue listening
     }
 
@@ -1108,7 +1109,7 @@ static bool messenger_push_notification_callback(
         return true;  // Continue listening
     }
 
-    printf("[P2P Push] Received notification (%zu bytes)\n", value_len);
+    QGP_LOG_DEBUG("P2P", "Received notification (%zu bytes)\n", value_len);
 
     // Deserialize offline messages
     dht_offline_message_t *messages = NULL;
@@ -1116,18 +1117,18 @@ static bool messenger_push_notification_callback(
     int result = dht_deserialize_messages(value, value_len, &messages, &count);
 
     if (result != 0 || count == 0) {
-        fprintf(stderr, "[P2P Push] Failed to deserialize messages\n");
+        QGP_LOG_ERROR("P2P", "Failed to deserialize messages");
         return true;  // Continue listening despite error
     }
 
-    printf("[P2P Push] Deserialized %zu message(s)\n", count);
+    QGP_LOG_DEBUG("P2P", "Deserialized %zu message(s)\n", count);
 
     // Deliver each message via P2P callback (same path as polling)
     if (ctx->p2p_transport) {
         for (size_t i = 0; i < count; i++) {
             dht_offline_message_t *msg = &messages[i];
 
-            printf("[P2P Push] Delivering message %zu/%zu from %s (%zu bytes)\n",
+            QGP_LOG_DEBUG("P2P", "Delivering message %zu/%zu from %s (%zu bytes)\n",
                    i + 1, count, msg->sender, msg->ciphertext_len);
 
             p2p_transport_deliver_message(
@@ -1161,7 +1162,7 @@ int messenger_p2p_subscribe_to_contact(
     // Start listening
     dht_context_t *dht = p2p_transport_get_dht_context(ctx->p2p_transport);
     if (!dht) {
-        fprintf(stderr, "[P2P Push] Failed to get DHT context\n");
+        QGP_LOG_ERROR("P2P", "Failed to get DHT context");
         return -1;
     }
 
@@ -1174,7 +1175,7 @@ int messenger_p2p_subscribe_to_contact(
     );
 
     if (token == 0) {
-        fprintf(stderr, "[P2P Push] Failed to subscribe to %s\n", contact_fingerprint);
+        QGP_LOG_ERROR("P2P", "Failed to subscribe to %s\n", contact_fingerprint);
         return -1;
     }
 
@@ -1207,7 +1208,7 @@ int messenger_p2p_subscribe_to_contact(
 
     pthread_mutex_unlock(&g_subscription_manager.mutex);
 
-    printf("[P2P Push] ✓ Subscribed to %s (token: %zu)\n", contact_fingerprint, token);
+    QGP_LOG_INFO("P2P", "Subscribed to %s (token: %zu)\n", contact_fingerprint, token);
     return 0;
 }
 
@@ -1217,11 +1218,11 @@ int messenger_p2p_subscribe_to_contact(
 int messenger_p2p_subscribe_to_contacts(messenger_context_t *ctx)
 {
     if (!ctx || !ctx->p2p_enabled || !ctx->p2p_transport) {
-        fprintf(stderr, "[P2P Push] P2P not enabled\n");
+        QGP_LOG_ERROR("P2P", "P2P not enabled");
         return -1;
     }
 
-    printf("[P2P Push] Subscribing to all contacts' outboxes...\n");
+    QGP_LOG_DEBUG("P2P", "Subscribing to all contacts' outboxes...");
 
     // Store messenger context for callback
     pthread_mutex_lock(&g_subscription_manager.mutex);
@@ -1231,11 +1232,11 @@ int messenger_p2p_subscribe_to_contacts(messenger_context_t *ctx)
     // Load contacts from database
     contact_list_t *contacts = NULL;
     if (contacts_db_list(&contacts) != 0 || !contacts || contacts->count == 0) {
-        printf("[P2P Push] No contacts in database, nothing to subscribe to\n");
+        QGP_LOG_DEBUG("P2P", "No contacts in database, nothing to subscribe to");
         return 0;
     }
 
-    printf("[P2P Push] Found %zu contacts\n", contacts->count);
+    QGP_LOG_DEBUG("P2P", "Found %zu contacts\n", contacts->count);
 
     // Subscribe to each contact
     size_t success_count = 0;
@@ -1249,7 +1250,7 @@ int messenger_p2p_subscribe_to_contacts(messenger_context_t *ctx)
 
     contacts_db_free_list(contacts);
 
-    printf("[P2P Push] ✓ Subscribed to %zu/%zu contacts\n", success_count, contacts->count);
+    QGP_LOG_INFO("P2P", "Subscribed to %zu/%zu contacts\n", success_count, contacts->count);
     return 0;
 }
 
@@ -1277,7 +1278,7 @@ int messenger_p2p_unsubscribe_from_contact(
 
     if (found_index == (size_t)-1) {
         pthread_mutex_unlock(&g_subscription_manager.mutex);
-        printf("[P2P Push] No subscription found for %s\n", contact_fingerprint);
+        QGP_LOG_DEBUG("P2P", "No subscription found for %s\n", contact_fingerprint);
         return -1;
     }
 
@@ -1300,7 +1301,7 @@ int messenger_p2p_unsubscribe_from_contact(
 
     pthread_mutex_unlock(&g_subscription_manager.mutex);
 
-    printf("[P2P Push] ✓ Unsubscribed from %s\n", contact_fingerprint);
+    QGP_LOG_INFO("P2P", "Unsubscribed from %s\n", contact_fingerprint);
     return 0;
 }
 
@@ -1315,7 +1316,7 @@ void messenger_p2p_unsubscribe_all(messenger_context_t *ctx)
 
     pthread_mutex_lock(&g_subscription_manager.mutex);
 
-    printf("[P2P Push] Unsubscribing from %zu contacts...\n", g_subscription_manager.count);
+    QGP_LOG_DEBUG("P2P", "Unsubscribing from %zu contacts...\n", g_subscription_manager.count);
 
     if (ctx->p2p_transport) {
         dht_context_t *dht = p2p_transport_get_dht_context(ctx->p2p_transport);
@@ -1339,7 +1340,7 @@ void messenger_p2p_unsubscribe_all(messenger_context_t *ctx)
 
     pthread_mutex_unlock(&g_subscription_manager.mutex);
 
-    printf("[P2P Push] ✓ All subscriptions cancelled\n");
+    QGP_LOG_INFO("P2P", "All subscriptions cancelled");
 }
 
 // ============================================================================
@@ -1355,21 +1356,21 @@ int messenger_p2p_check_offline_messages(
         return -1;
     }
 
-    printf("[P2P] Checking for offline messages in DHT...\n");
+    QGP_LOG_DEBUG("P2P", "Checking for offline messages in DHT...");
 
     size_t count = 0;
     int result = p2p_check_offline_messages(ctx->p2p_transport, &count);
 
     if (result == 0 && count > 0) {
-        printf("[P2P] ✓ Retrieved %zu offline messages from DHT\n", count);
+        QGP_LOG_INFO("P2P", "Retrieved %zu offline messages from DHT\n", count);
         // Messages are automatically delivered via p2p_message_received_internal()
         // which stores them in SQLite for GUI retrieval
         // Note: Group sync is handled separately by messenger_sync_groups() which
         // calls this function internally to avoid circular dependencies
     } else if (result == 0 && count == 0) {
-        printf("[P2P] No offline messages in DHT\n");
+        QGP_LOG_DEBUG("P2P", "No offline messages in DHT");
     } else {
-        fprintf(stderr, "[P2P] Failed to check offline messages\n");
+        QGP_LOG_ERROR("P2P", "Failed to check offline messages");
     }
 
     if (messages_received) {
