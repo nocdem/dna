@@ -114,8 +114,8 @@ int main(int argc, char **argv) {
     printf("\n--- Wallet Addresses ---\n");
     if (identity->wallets.backbone[0]) printf("Backbone: %s\n", identity->wallets.backbone);
     if (identity->wallets.kelvpn[0]) printf("KelVPN:   %s\n", identity->wallets.kelvpn);
-    if (identity->wallets.subzero[0]) printf("Subzero:  %s\n", identity->wallets.subzero);
-    if (identity->wallets.riemann[0]) printf("Riemann:  %s\n", identity->wallets.riemann);
+    if (identity->wallets.removed_subzero[0]) printf("Subzero:  %s\n", identity->wallets.subzero);
+    if (identity->wallets.removed_riemann[0]) printf("Riemann:  %s\n", identity->wallets.riemann);
     if (identity->wallets.btc[0]) printf("Bitcoin:  %s\n", identity->wallets.btc);
     if (identity->wallets.eth[0]) printf("Ethereum: %s\n", identity->wallets.eth);
 

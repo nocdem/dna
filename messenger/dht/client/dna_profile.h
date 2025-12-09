@@ -28,24 +28,17 @@ extern "C" {
  * All fields are optional (empty string if not set).
  */
 typedef struct {
-    // Cellframe networks (7 total)
+    // Cellframe networks
     char backbone[120];         /**< Backbone network address */
     char kelvpn[120];           /**< KelVPN network address */
-    char riemann[120];          /**< Riemann network address */
-    char raiden[120];           /**< Raiden network address */
-    char mileena[120];          /**< Mileena network address */
-    char subzero[120];          /**< Subzero network address */
-    char cpunk_testnet[120];    /**< CPUNK testnet address */
+    char alvin[120];            /**< Alvin testnet address (not active) */
 
-    // External blockchains (5 total)
+    // External blockchains
     char btc[128];              /**< Bitcoin address */
     char eth[128];              /**< Ethereum address */
     char sol[128];              /**< Solana address */
     char qevm[128];             /**< QEVM address */
     char bnb[128];              /**< BNB Chain address */
-
-    // Reserved for future expansion
-    // char alvin[128];         /**< Alvin network (not implemented) */
 } dna_wallets_t;
 
 /**

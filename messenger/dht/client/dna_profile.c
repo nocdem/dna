@@ -54,16 +54,8 @@ static json_object* wallets_to_json(const dna_wallets_t *wallets) {
         json_object_new_string(wallets->backbone));
     if (wallets->kelvpn[0]) json_object_object_add(obj, "kelvpn",
         json_object_new_string(wallets->kelvpn));
-    if (wallets->riemann[0]) json_object_object_add(obj, "riemann",
-        json_object_new_string(wallets->riemann));
-    if (wallets->raiden[0]) json_object_object_add(obj, "raiden",
-        json_object_new_string(wallets->raiden));
-    if (wallets->mileena[0]) json_object_object_add(obj, "mileena",
-        json_object_new_string(wallets->mileena));
-    if (wallets->subzero[0]) json_object_object_add(obj, "subzero",
-        json_object_new_string(wallets->subzero));
-    if (wallets->cpunk_testnet[0]) json_object_object_add(obj, "cpunk_testnet",
-        json_object_new_string(wallets->cpunk_testnet));
+    if (wallets->alvin[0]) json_object_object_add(obj, "alvin",
+        json_object_new_string(wallets->alvin));
 
     // External blockchains
     if (wallets->btc[0]) json_object_object_add(obj, "btc",
@@ -92,11 +84,7 @@ static int wallets_from_json(json_object *obj, dna_wallets_t *wallets) {
 
     PARSE_WALLET(backbone, "backbone")
     PARSE_WALLET(kelvpn, "kelvpn")
-    PARSE_WALLET(riemann, "riemann")
-    PARSE_WALLET(raiden, "raiden")
-    PARSE_WALLET(mileena, "mileena")
-    PARSE_WALLET(subzero, "subzero")
-    PARSE_WALLET(cpunk_testnet, "cpunk_testnet")
+    PARSE_WALLET(alvin, "alvin")
     PARSE_WALLET(btc, "btc")
     PARSE_WALLET(eth, "eth")
     PARSE_WALLET(sol, "sol")
@@ -490,11 +478,11 @@ int dna_profile_validate(const dna_profile_data_t *profile) {
 
     VALIDATE_WALLET(backbone, "backbone")
     VALIDATE_WALLET(kelvpn, "kelvpn")
-    VALIDATE_WALLET(riemann, "riemann")
-    VALIDATE_WALLET(raiden, "raiden")
-    VALIDATE_WALLET(mileena, "mileena")
-    VALIDATE_WALLET(subzero, "subzero")
-    VALIDATE_WALLET(cpunk_testnet, "cpunk_testnet")
+    
+    
+    
+    
+    VALIDATE_WALLET(alvin, "alvin")
     VALIDATE_WALLET(btc, "btc")
     VALIDATE_WALLET(eth, "eth")
     VALIDATE_WALLET(sol, "sol")
@@ -635,11 +623,11 @@ bool dna_network_is_cellframe(const char *network) {
 
     return (strcmp(network, "backbone") == 0 ||
             strcmp(network, "kelvpn") == 0 ||
-            strcmp(network, "riemann") == 0 ||
-            strcmp(network, "raiden") == 0 ||
-            strcmp(network, "mileena") == 0 ||
-            strcmp(network, "subzero") == 0 ||
-            strcmp(network, "cpunk_testnet") == 0);
+            
+            
+            
+            
+            strcmp(network, "alvin") == 0);
 }
 
 bool dna_network_is_external(const char *network) {
@@ -677,11 +665,11 @@ const char* dna_identity_get_wallet(const dna_unified_identity_t *identity,
 
     CHECK_WALLET(backbone, "backbone")
     CHECK_WALLET(kelvpn, "kelvpn")
-    CHECK_WALLET(riemann, "riemann")
-    CHECK_WALLET(raiden, "raiden")
-    CHECK_WALLET(mileena, "mileena")
-    CHECK_WALLET(subzero, "subzero")
-    CHECK_WALLET(cpunk_testnet, "cpunk_testnet")
+    
+    
+    
+    
+    CHECK_WALLET(alvin, "alvin")
     CHECK_WALLET(btc, "btc")
     CHECK_WALLET(eth, "eth")
     CHECK_WALLET(sol, "sol")
@@ -713,11 +701,11 @@ int dna_identity_set_wallet(dna_unified_identity_t *identity,
 
     SET_WALLET(backbone, "backbone")
     SET_WALLET(kelvpn, "kelvpn")
-    SET_WALLET(riemann, "riemann")
-    SET_WALLET(raiden, "raiden")
-    SET_WALLET(mileena, "mileena")
-    SET_WALLET(subzero, "subzero")
-    SET_WALLET(cpunk_testnet, "cpunk_testnet")
+    
+    
+    
+    
+    SET_WALLET(alvin, "alvin")
     SET_WALLET(btc, "btc")
     SET_WALLET(eth, "eth")
     SET_WALLET(sol, "sol")

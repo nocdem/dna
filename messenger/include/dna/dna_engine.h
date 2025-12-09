@@ -200,8 +200,6 @@ typedef struct {
     /* Cellframe wallet addresses */
     char backbone[120];
     char kelvpn[120];
-    char subzero[120];
-    char cpunk_testnet[120];
 
     /* External wallet addresses */
     char btc[128];

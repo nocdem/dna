@@ -141,7 +141,7 @@ void test_network_checking(void) {
     // Cellframe networks
     TEST_ASSERT(dna_network_is_cellframe("backbone"), "Backbone is Cellframe");
     TEST_ASSERT(dna_network_is_cellframe("kelvpn"), "KelVPN is Cellframe");
-    TEST_ASSERT(dna_network_is_cellframe("riemann"), "Riemann is Cellframe");
+    TEST_ASSERT(dna_network_is_cellframe("removed"), "Riemann is Cellframe");
     TEST_ASSERT(!dna_network_is_cellframe("eth"), "ETH is not Cellframe");
 
     // External blockchains
