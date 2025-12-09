@@ -86,6 +86,8 @@ int dht_keyserver_publish(
     strncpy(identity->display_name, name, sizeof(identity->display_name) - 1);
     identity->name_registered_at = time(NULL);
     identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
+    strncpy(identity->registration_tx_hash, "FREE_REGISTRATION", sizeof(identity->registration_tx_hash) - 1);
+    strncpy(identity->registration_network, "DNA_NETWORK", sizeof(identity->registration_network) - 1);
     identity->name_version = 1;
 
     // Set wallet addresses if provided
@@ -112,6 +114,8 @@ int dht_keyserver_publish(
                      sizeof(bool) +
                      sizeof(identity->registered_name) +
                      sizeof(uint64_t) * 2 +
+                     sizeof(identity->registration_tx_hash) +
+                     sizeof(identity->registration_network) +
                      sizeof(uint32_t) +
                      sizeof(identity->wallets) +
                      sizeof(identity->socials) +
@@ -149,6 +153,10 @@ int dht_keyserver_publish(
     offset += sizeof(uint64_t);
     memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
     offset += sizeof(uint64_t);
+    memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+    offset += sizeof(identity->registration_tx_hash);
+    memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+    offset += sizeof(identity->registration_network);
     memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
     offset += sizeof(uint32_t);
     memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
@@ -307,6 +315,8 @@ int dht_keyserver_update(
                      sizeof(bool) +
                      sizeof(identity->registered_name) +
                      sizeof(uint64_t) * 2 +
+                     sizeof(identity->registration_tx_hash) +
+                     sizeof(identity->registration_network) +
                      sizeof(uint32_t) +
                      sizeof(identity->wallets) +
                      sizeof(identity->socials) +
@@ -343,6 +353,10 @@ int dht_keyserver_update(
     offset += sizeof(uint64_t);
     memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
     offset += sizeof(uint64_t);
+    memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+    offset += sizeof(identity->registration_tx_hash);
+    memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+    offset += sizeof(identity->registration_network);
     memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
     offset += sizeof(uint32_t);
     memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));

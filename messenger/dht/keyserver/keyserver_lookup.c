@@ -107,6 +107,8 @@ int dht_keyserver_lookup(
                      sizeof(identity->registered_name) +
                      sizeof(identity->name_registered_at) +
                      sizeof(identity->name_expires_at) +
+                     sizeof(identity->registration_tx_hash) +
+                     sizeof(identity->registration_network) +
                      sizeof(identity->name_version) +
                      sizeof(identity->wallets) +
                      sizeof(identity->socials) +
@@ -143,6 +145,10 @@ int dht_keyserver_lookup(
     offset += sizeof(uint64_t);
     memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
     offset += sizeof(uint64_t);
+    memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
+    offset += sizeof(identity->registration_tx_hash);
+    memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
+    offset += sizeof(identity->registration_network);
     memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
     offset += sizeof(uint32_t);
     memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));

@@ -271,6 +271,10 @@ char* dna_identity_to_json(const dna_unified_identity_t *identity) {
             json_object_new_int64(identity->name_registered_at));
         json_object_object_add(root, "name_expires_at",
             json_object_new_int64(identity->name_expires_at));
+        json_object_object_add(root, "registration_tx_hash",
+            json_object_new_string(identity->registration_tx_hash));
+        json_object_object_add(root, "registration_network",
+            json_object_new_string(identity->registration_network));
         json_object_object_add(root, "name_version",
             json_object_new_int(identity->name_version));
     }
@@ -369,6 +373,16 @@ int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_o
         }
         if (json_object_object_get_ex(root, "name_expires_at", &val)) {
             identity->name_expires_at = json_object_get_int64(val);
+        }
+        if (json_object_object_get_ex(root, "registration_tx_hash", &val)) {
+            const char *str = json_object_get_string(val);
+            if (str) strncpy(identity->registration_tx_hash, str,
+                           sizeof(identity->registration_tx_hash) - 1);
+        }
+        if (json_object_object_get_ex(root, "registration_network", &val)) {
+            const char *str = json_object_get_string(val);
+            if (str) strncpy(identity->registration_network, str,
+                           sizeof(identity->registration_network) - 1);
         }
         if (json_object_object_get_ex(root, "name_version", &val)) {
             identity->name_version = json_object_get_int(val);
@@ -609,8 +623,11 @@ bool dna_network_is_cellframe(const char *network) {
 
     return (strcmp(network, "backbone") == 0 ||
             strcmp(network, "kelvpn") == 0 ||
-            strcmp(network, "alvin") == 0 ||
-            strcmp(network, "qevm") == 0);
+            
+            
+            
+            
+            strcmp(network, "alvin") == 0);
 }
 
 bool dna_network_is_external(const char *network) {
@@ -619,6 +636,7 @@ bool dna_network_is_external(const char *network) {
     return (strcmp(network, "btc") == 0 ||
             strcmp(network, "eth") == 0 ||
             strcmp(network, "sol") == 0 ||
+            strcmp(network, "qevm") == 0 ||
             strcmp(network, "bnb") == 0);
 }
 
