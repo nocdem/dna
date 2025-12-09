@@ -16,7 +16,6 @@ class ContactsScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final contacts = ref.watch(contactsProvider);
-    final dhtState = ref.watch(dhtConnectionStateProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -26,13 +25,7 @@ class ContactsScreen extends ConsumerWidget {
                 onPressed: onMenuPressed,
               )
             : null,
-        title: Row(
-          children: [
-            const Text('Chats'),
-            const SizedBox(width: 8),
-            _DhtStatusIndicator(state: dhtState),
-          ],
-        ),
+        title: const Text('Chats'),
         actions: [
           IconButton(
             icon: const Icon(Icons.refresh),
@@ -599,30 +592,3 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
   }
 }
 
-/// DHT connection status indicator
-class _DhtStatusIndicator extends StatelessWidget {
-  final DhtConnectionState state;
-
-  const _DhtStatusIndicator({required this.state});
-
-  @override
-  Widget build(BuildContext context) {
-    final (color, tooltip) = switch (state) {
-      DhtConnectionState.connected => (DnaColors.textSuccess, 'DHT Connected'),
-      DhtConnectionState.connecting => (DnaColors.textInfo, 'Connecting...'),
-      DhtConnectionState.disconnected => (DnaColors.offline, 'DHT Disconnected'),
-    };
-
-    return Tooltip(
-      message: tooltip,
-      child: Container(
-        width: 8,
-        height: 8,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: color,
-        ),
-      ),
-    );
-  }
-}
