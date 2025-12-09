@@ -600,10 +600,10 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   static const double _backboneNetworkFee = 0.002;
   static const double _backboneTotalFee = 0.012; // validator + network
 
-  // ETH default gas fees (21000 gas * typical gwei prices)
-  static const double _ethDefaultGasSlow = 0.0008;   // ~20 gwei
-  static const double _ethDefaultGasNormal = 0.001;  // ~25 gwei
-  static const double _ethDefaultGasFast = 0.0015;   // ~35 gwei
+  // ETH default gas fees (31500 gas * typical gwei prices)
+  static const double _ethDefaultGasSlow = 0.0012;   // ~20 gwei
+  static const double _ethDefaultGasNormal = 0.0015; // ~25 gwei
+  static const double _ethDefaultGasFast = 0.00225;  // ~35 gwei
 
   /// Calculate max sendable amount after fees
   double? _calculateMaxAmount() {
