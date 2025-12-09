@@ -151,6 +151,10 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     blockchain/ethereum/eth_rpc.c                  # Ethereum JSON-RPC client
     blockchain/ethereum/eth_rlp.c                  # Ethereum RLP encoding
     blockchain/ethereum/eth_tx.c                   # Ethereum transaction building/signing
+    blockchain/solana/sol_chain.c                  # Solana blockchain_ops implementation
+    blockchain/solana/sol_wallet.c                 # Solana wallet (SLIP-10 Ed25519)
+    blockchain/solana/sol_rpc.c                    # Solana JSON-RPC client
+    blockchain/solana/sol_tx.c                     # Solana transaction building/signing
     crypto/bip32/bip32.c                           # BIP-32 HD key derivation
     crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
     crypto/utils/base58.c       # Base58 encoding for addresses
@@ -218,6 +222,7 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/p2p           # P2P transport headers
     ${CMAKE_SOURCE_DIR}/dht           # DHT headers
     ${CMAKE_SOURCE_DIR}/blockchain/cellframe  # Cellframe blockchain headers
+    ${CMAKE_SOURCE_DIR}/blockchain/solana     # Solana blockchain headers
     ${OPENSSL_INCLUDE_DIR}
     ${JUICE_INCLUDE_DIRS}             # libjuice headers
 )

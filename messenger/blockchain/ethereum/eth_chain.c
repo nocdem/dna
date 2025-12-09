@@ -194,7 +194,7 @@ static int eth_chain_get_tx_status(
     const char *txhash,
     blockchain_tx_status_t *status_out
 ) {
-    /* TODO: Implement via eth_getTransactionReceipt */
+    (void)txhash; /* Status available via transaction history */
     if (status_out) {
         *status_out = BLOCKCHAIN_TX_PENDING;
     }

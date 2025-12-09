@@ -33,6 +33,8 @@ extern int blockchain_ops_send_from_wallet(
 #include "cellframe/cellframe_wallet.h"
 #include "ethereum/eth_wallet.h"
 #include "ethereum/eth_tx.h"
+#include "solana/sol_wallet.h"
+#include "solana/sol_rpc.h"
 #include "../crypto/utils/qgp_log.h"
 #include "../crypto/utils/qgp_platform.h"
 #include <string.h>
@@ -118,8 +120,20 @@ int blockchain_create_wallet(
             return 0;
         }
 
+        case BLOCKCHAIN_SOLANA: {
+            /* Create Solana wallet using SLIP-10 Ed25519 derivation */
+            int result = sol_wallet_create_from_seed(master_seed, 64, fingerprint, wallet_dir, address_out);
+
+            if (result != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to create Solana wallet");
+                return -1;
+            }
+
+            QGP_LOG_INFO(LOG_TAG, "Solana wallet created: %s", address_out);
+            return 0;
+        }
+
         case BLOCKCHAIN_BITCOIN:
-        case BLOCKCHAIN_SOLANA:
             QGP_LOG_WARN(LOG_TAG, "Blockchain type %s not yet implemented", blockchain_type_name(type));
             return -1;
 
@@ -156,7 +170,12 @@ int blockchain_create_all_wallets(
         QGP_LOG_INFO(LOG_TAG, "Created Ethereum wallet: %s", address);
     }
 
-    /* Future: Add more blockchains here */
+    /* Create Solana wallet */
+    total_count++;
+    if (blockchain_create_wallet(BLOCKCHAIN_SOLANA, master_seed, fingerprint, wallet_dir, address) == 0) {
+        success_count++;
+        QGP_LOG_INFO(LOG_TAG, "Created Solana wallet: %s", address);
+    }
 
     QGP_LOG_INFO(LOG_TAG, "Created %d/%d wallets for identity", success_count, total_count);
 
@@ -205,7 +224,8 @@ int blockchain_list_wallets(
     size_t count = 0;
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
-        if (strstr(entry->d_name, ".dwallet") || strstr(entry->d_name, ".eth.json")) {
+        if (strstr(entry->d_name, ".dwallet") || strstr(entry->d_name, ".eth.json") ||
+            strstr(entry->d_name, ".sol.json")) {
             count++;
         }
     }
@@ -275,6 +295,31 @@ int blockchain_list_wallets(
 
             idx++;
         }
+        else if (strstr(entry->d_name, ".sol.json")) {
+            /* Solana wallet */
+            info->type = BLOCKCHAIN_SOLANA;
+
+            /* Extract name (remove .sol.json extension) */
+            strncpy(info->name, entry->d_name, sizeof(info->name) - 1);
+            char *ext = strstr(info->name, ".sol.json");
+            if (ext) *ext = '\0';
+
+            /* Build full path */
+            snprintf(info->file_path, sizeof(info->file_path), "%s/%s", wallet_dir, entry->d_name);
+
+            /* Get address from file */
+            sol_wallet_t sol_wallet;
+            if (sol_wallet_load(info->file_path, &sol_wallet) == 0) {
+                strncpy(info->address, sol_wallet.address, sizeof(info->address) - 1);
+                sol_wallet_clear(&sol_wallet);
+            } else {
+                info->address[0] = '\0';
+            }
+
+            info->is_encrypted = false;  /* We use unencrypted format */
+
+            idx++;
+        }
     }
 
     list->count = idx;
@@ -316,6 +361,17 @@ int blockchain_get_balance(
             QGP_LOG_WARN(LOG_TAG, "Cellframe balance check uses separate RPC");
             return -1;
 
+        case BLOCKCHAIN_SOLANA: {
+            uint64_t lamports;
+            if (sol_rpc_get_balance(address, &lamports) != 0) {
+                return -1;
+            }
+            /* Convert lamports to SOL */
+            double sol = (double)lamports / 1000000000.0;
+            snprintf(balance_out->balance, sizeof(balance_out->balance), "%.9f", sol);
+            return 0;
+        }
+
         default:
             QGP_LOG_ERROR(LOG_TAG, "Balance check not implemented for %s", blockchain_type_name(type));
             return -1;
@@ -342,6 +398,9 @@ bool blockchain_validate_address(blockchain_type_t type, const char *address) {
                 return false;
             }
             return true;
+
+        case BLOCKCHAIN_SOLANA:
+            return sol_validate_address(address);
 
         default:
             return false;
@@ -371,6 +430,17 @@ int blockchain_get_address_from_file(
 
         case BLOCKCHAIN_ETHEREUM:
             return eth_wallet_get_address(wallet_path, address_out, BLOCKCHAIN_WALLET_ADDRESS_MAX);
+
+        case BLOCKCHAIN_SOLANA: {
+            sol_wallet_t wallet;
+            if (sol_wallet_load(wallet_path, &wallet) != 0) {
+                return -1;
+            }
+            strncpy(address_out, wallet.address, BLOCKCHAIN_WALLET_ADDRESS_MAX - 1);
+            address_out[BLOCKCHAIN_WALLET_ADDRESS_MAX - 1] = '\0';
+            sol_wallet_clear(&wallet);
+            return 0;
+        }
 
         default:
             return -1;
@@ -460,6 +530,10 @@ int blockchain_send_tokens(
         case BLOCKCHAIN_CELLFRAME:
             chain_name = "cellframe";
             network = "Backbone";
+            break;
+        case BLOCKCHAIN_SOLANA:
+            chain_name = "solana";
+            network = "mainnet-beta";
             break;
         default:
             QGP_LOG_ERROR(LOG_TAG, "Send not implemented for %s", blockchain_type_name(type));
