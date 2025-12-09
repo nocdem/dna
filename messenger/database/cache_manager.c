@@ -222,9 +222,6 @@ int cache_manager_stats(cache_manager_stats_t *stats_out) {
         }
     }
 
-    // Presence cache (in-memory, no stats API currently)
-    // stats_out->presence_entries = 0;  // TODO: Add presence_cache_count() if needed
-
     return 0;
 }
 

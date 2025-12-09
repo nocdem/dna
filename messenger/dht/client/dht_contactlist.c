@@ -184,8 +184,6 @@ static int deserialize_from_json(const char *json_str, char ***contacts_out, siz
  * Initialize DHT contact list subsystem
  */
 int dht_contactlist_init(void) {
-    // Currently nothing to initialize
-    // Future: could load caching state, etc.
     QGP_LOG_INFO(LOG_TAG, "Initialized\n");
     return 0;
 }
