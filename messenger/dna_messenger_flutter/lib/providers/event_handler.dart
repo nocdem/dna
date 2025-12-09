@@ -68,10 +68,12 @@ class EventHandler {
         _ref.read(contactsProvider.notifier).updateContactStatus(fp, false);
 
       case MessageReceivedEvent(message: final msg):
-        // Add message to the conversation
-        final contactFp = msg.isOutgoing ? msg.recipient : msg.sender;
-        _ref.read(conversationProvider(contactFp).notifier).addMessage(msg);
-        // Also refresh contacts to update last message preview if needed
+        // Message is already stored in SQLite - just refresh the conversation
+        final contactFp = msg.sender;
+        if (contactFp.isNotEmpty) {
+          _ref.invalidate(conversationProvider(contactFp));
+        }
+        // Also refresh contacts to update last message preview
         _ref.invalidate(contactsProvider);
 
       case MessageSentEvent():

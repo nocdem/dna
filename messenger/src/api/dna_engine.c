@@ -98,6 +98,28 @@ static void init_log_config(void);
 static dna_engine_t *g_dht_callback_engine = NULL;
 
 /**
+ * Message received callback - dispatches DNA_EVENT_MESSAGE_RECEIVED events
+ * Called from messenger_p2p when a new message is stored in SQLite.
+ */
+static void dna_message_received_callback(const char *sender_fingerprint, void *user_data) {
+    (void)user_data;  /* Using global engine pointer instead */
+
+    dna_engine_t *engine = g_dht_callback_engine;
+    if (!engine) return;
+
+    QGP_LOG_INFO(LOG_TAG, "Message received from %.16s...", sender_fingerprint);
+
+    dna_event_t event = {0};
+    event.type = DNA_EVENT_MESSAGE_RECEIVED;
+    /* Set sender fingerprint so UI knows which conversation to refresh */
+    if (sender_fingerprint) {
+        strncpy(event.data.message_received.message.sender, sender_fingerprint, 128);
+        event.data.message_received.message.sender[128] = '\0';
+    }
+    dna_dispatch_event(engine, &event);
+}
+
+/**
  * DHT status change callback - dispatches DHT_CONNECTED/DHT_DISCONNECTED events
  * Called from OpenDHT's internal thread when connection status changes.
  */
@@ -868,6 +890,10 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     } else {
         /* P2P initialized successfully - complete P2P setup */
         /* Note: Presence already registered in messenger_p2p_init() */
+
+        /* Register message received callback for real-time UI updates */
+        messenger_set_message_received_callback(engine->messenger,
+            dna_message_received_callback, NULL);
 
         /* 1. Subscribe to contacts for push notifications */
         if (messenger_p2p_subscribe_to_contacts(engine->messenger) == 0) {

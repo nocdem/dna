@@ -790,14 +790,28 @@ class DnaEngine {
         dartEvent = DhtDisconnectedEvent();
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_RECEIVED:
-        // Parse message from union data
-        // Note: Union parsing requires careful offset calculation
-        // For now, we'll handle this in a simplified way
+        // Parse sender fingerprint from union data
+        // Union layout: dna_message_t starts at data[0]
+        // dna_message_t: id(4) + sender(129) + ...
+        // So sender starts at offset 4 in the data array
+        final dataPtr = event.data;
+        String sender = '';
+        // Read sender string starting at offset 4 (after id field)
+        final senderChars = <int>[];
+        for (int i = 4; i < 4 + 128; i++) {
+          final c = dataPtr[i];
+          if (c == 0) break;
+          senderChars.add(c);
+        }
+        if (senderChars.isNotEmpty) {
+          sender = String.fromCharCodes(senderChars);
+        }
+        // Create event with just the sender - message is already in SQLite
         dartEvent = MessageReceivedEvent(Message(
           id: 0,
-          sender: '',
+          sender: sender,
           recipient: '',
-          plaintext: 'New message received',
+          plaintext: '',
           timestamp: DateTime.now(),
           isOutgoing: false,
           status: MessageStatus.delivered,

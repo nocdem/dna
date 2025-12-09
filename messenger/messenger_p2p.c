@@ -889,6 +889,11 @@ static void p2p_message_received_internal(
         QGP_LOG_ERROR("P2P", "Failed to store received message in SQLite");
     } else {
         QGP_LOG_INFO("P2P", "Message from %s stored in SQLite (type=%d)\n", sender_identity, message_type);
+
+        // Notify UI of new message (real-time updates)
+        if (ctx->message_received_cb) {
+            ctx->message_received_cb(sender_identity, ctx->message_received_user_data);
+        }
     }
 
     // Fetch sender profile for caching (only if expired or missing) - Phase 5: Unified Identity

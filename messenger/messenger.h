@@ -41,6 +41,16 @@ typedef struct {
 #define PUBKEY_CACHE_SIZE 100
 
 /**
+ * Message received notification callback
+ * Called when a new message is received and stored in SQLite
+ * Thread-safe: may be called from DHT worker threads
+ */
+typedef void (*messenger_message_received_cb)(
+    const char *sender_fingerprint,
+    void *user_data
+);
+
+/**
  * Messenger Context
  * Manages SQLite local database and DNA API context
  */
@@ -57,6 +67,10 @@ typedef struct {
     // Public key cache (API fetch caching)
     pubkey_cache_entry_t cache[PUBKEY_CACHE_SIZE];
     int cache_count;
+
+    // Message received callback (for real-time UI updates)
+    messenger_message_received_cb message_received_cb;
+    void *message_received_user_data;
 } messenger_context_t;
 
 /**
@@ -96,6 +110,22 @@ messenger_context_t* messenger_init(const char *identity);
  * @param ctx: Messenger context to free
  */
 void messenger_free(messenger_context_t *ctx);
+
+/**
+ * Set message received callback for real-time notifications
+ *
+ * The callback is invoked when a new message is received and stored in SQLite.
+ * This enables real-time UI updates without polling.
+ *
+ * @param ctx: Messenger context
+ * @param callback: Callback function (NULL to disable)
+ * @param user_data: User data passed to callback
+ */
+void messenger_set_message_received_callback(
+    messenger_context_t *ctx,
+    messenger_message_received_cb callback,
+    void *user_data
+);
 
 /**
  * Load DHT identity and reinitialize DHT singleton with permanent identity

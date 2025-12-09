@@ -1,4 +1,6 @@
 // Chat Screen - Conversation with message bubbles
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -21,21 +23,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _scrollController = ScrollController();
   final _focusNode = FocusNode();
   bool _showEmojiPicker = false;
+  Timer? _refreshTimer;
+
+  /// Refresh interval for polling new messages
+  static const _refreshInterval = Duration(seconds: 5);
 
   @override
   void initState() {
     super.initState();
     // Listen to text changes to update send button state
     _messageController.addListener(_onTextChanged);
+    // Start periodic refresh for new messages
+    _startRefreshTimer();
   }
 
   @override
   void dispose() {
+    _refreshTimer?.cancel();
     _messageController.removeListener(_onTextChanged);
     _messageController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _startRefreshTimer() {
+    _refreshTimer = Timer.periodic(_refreshInterval, (_) {
+      _refreshConversation();
+    });
+  }
+
+  void _refreshConversation() {
+    final contact = ref.read(selectedContactProvider);
+    if (contact != null) {
+      ref.invalidate(conversationProvider(contact.fingerprint));
+    }
   }
 
   void _onTextChanged() {
