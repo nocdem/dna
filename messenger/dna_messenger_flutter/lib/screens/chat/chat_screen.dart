@@ -23,11 +23,24 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   bool _showEmojiPicker = false;
 
   @override
+  void initState() {
+    super.initState();
+    // Listen to text changes to update send button state
+    _messageController.addListener(_onTextChanged);
+  }
+
+  @override
   void dispose() {
+    _messageController.removeListener(_onTextChanged);
     _messageController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  void _onTextChanged() {
+    // Rebuild to update send button enabled state
+    setState(() {});
   }
 
   @override
