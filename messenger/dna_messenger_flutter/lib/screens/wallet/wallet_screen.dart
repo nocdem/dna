@@ -600,6 +600,11 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   static const double _backboneNetworkFee = 0.002;
   static const double _backboneTotalFee = 0.012; // validator + network
 
+  // ETH default gas fees (21000 gas * typical gwei prices)
+  static const double _ethDefaultGasSlow = 0.0008;   // ~20 gwei
+  static const double _ethDefaultGasNormal = 0.001;  // ~25 gwei
+  static const double _ethDefaultGasFast = 0.0015;   // ~35 gwei
+
   /// Calculate max sendable amount after fees
   double? _calculateMaxAmount() {
     final balanceStr = widget.availableBalance;
@@ -610,20 +615,21 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
 
     if (_selectedNetwork == 'Ethereum') {
       // ETH: subtract gas fee based on selected speed
-      String? gasFee;
+      // Use live estimate if available, otherwise use default
+      double fee;
       switch (_selectedGasSpeed) {
         case 0:
-          gasFee = _gasFee0;
+          fee = double.tryParse(_gasFee0 ?? '') ?? _ethDefaultGasSlow;
           break;
         case 1:
-          gasFee = _gasFee1;
+          fee = double.tryParse(_gasFee1 ?? '') ?? _ethDefaultGasNormal;
           break;
         case 2:
-          gasFee = _gasFee2;
+          fee = double.tryParse(_gasFee2 ?? '') ?? _ethDefaultGasFast;
           break;
+        default:
+          fee = _ethDefaultGasNormal;
       }
-      if (gasFee == null) return null;
-      final fee = double.tryParse(gasFee) ?? 0;
       final max = balance - fee;
       return max > 0 ? max : 0;
     } else {
