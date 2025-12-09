@@ -204,9 +204,9 @@ typedef struct {
 
     /* External wallet addresses */
     char btc[128];
-    char eth[128];
+    char eth[128];              /* Also works for BSC, Polygon, etc. */
     char sol[128];
-    char bnb[128];
+    char ton[128];              /* TON address (EQ.../UQ...) */
 
     /* Social links */
     char telegram[128];

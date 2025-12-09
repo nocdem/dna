@@ -444,9 +444,9 @@ class UserProfile {
 
   // External wallets
   String btc;
-  String eth;
+  String eth; // Also works for BSC, Polygon, etc.
   String sol;
-  String bnb;
+  String ton; // TON address (EQ.../UQ...)
 
   // Socials
   String telegram;
@@ -470,7 +470,7 @@ class UserProfile {
     this.btc = '',
     this.eth = '',
     this.sol = '',
-    this.bnb = '',
+    this.ton = '',
     this.telegram = '',
     this.twitter = '',
     this.github = '',
@@ -492,7 +492,7 @@ class UserProfile {
       btc: native.btc.toDartString(128),
       eth: native.eth.toDartString(128),
       sol: native.sol.toDartString(128),
-      bnb: native.bnb.toDartString(128),
+      ton: native.ton.toDartString(128),
       telegram: native.telegram.toDartString(128),
       twitter: native.twitter.toDartString(128),
       github: native.github.toDartString(128),
@@ -515,7 +515,7 @@ class UserProfile {
     _copyStringToArray(btc, native.ref.btc, 128);
     _copyStringToArray(eth, native.ref.eth, 128);
     _copyStringToArray(sol, native.ref.sol, 128);
-    _copyStringToArray(bnb, native.ref.bnb, 128);
+    _copyStringToArray(ton, native.ref.ton, 128);
     _copyStringToArray(telegram, native.ref.telegram, 128);
     _copyStringToArray(twitter, native.ref.twitter, 128);
     _copyStringToArray(github, native.ref.github, 128);
@@ -546,7 +546,7 @@ class UserProfile {
       btc.isEmpty &&
       eth.isEmpty &&
       sol.isEmpty &&
-      bnb.isEmpty &&
+      ton.isEmpty &&
       telegram.isEmpty &&
       twitter.isEmpty &&
       github.isEmpty &&
@@ -567,7 +567,7 @@ class UserProfile {
     String? btc,
     String? eth,
     String? sol,
-    String? bnb,
+    String? ton,
     String? telegram,
     String? twitter,
     String? github,
@@ -587,7 +587,7 @@ class UserProfile {
       btc: btc ?? this.btc,
       eth: eth ?? this.eth,
       sol: sol ?? this.sol,
-      bnb: bnb ?? this.bnb,
+      ton: ton ?? this.ton,
       telegram: telegram ?? this.telegram,
       twitter: twitter ?? this.twitter,
       github: github ?? this.github,

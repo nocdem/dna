@@ -62,8 +62,8 @@ static json_object* wallets_to_json(const dna_wallets_t *wallets) {
         json_object_new_string(wallets->eth));
     if (wallets->sol[0]) json_object_object_add(obj, "sol",
         json_object_new_string(wallets->sol));
-    if (wallets->bnb[0]) json_object_object_add(obj, "bnb",
-        json_object_new_string(wallets->bnb));
+    if (wallets->ton[0]) json_object_object_add(obj, "ton",
+        json_object_new_string(wallets->ton));
 
     return obj;
 }
@@ -83,7 +83,7 @@ static int wallets_from_json(json_object *obj, dna_wallets_t *wallets) {
     PARSE_WALLET(btc, "btc")
     PARSE_WALLET(eth, "eth")
     PARSE_WALLET(sol, "sol")
-    PARSE_WALLET(bnb, "bnb")
+    PARSE_WALLET(ton, "ton")
 
     #undef PARSE_WALLET
     return 0;
@@ -461,7 +461,7 @@ int dna_profile_validate(const dna_profile_data_t *profile) {
     VALIDATE_WALLET(btc, "btc")
     VALIDATE_WALLET(eth, "eth")
     VALIDATE_WALLET(sol, "sol")
-    VALIDATE_WALLET(bnb, "bnb")
+    VALIDATE_WALLET(ton, "ton")
 
     #undef VALIDATE_WALLET
 
@@ -502,13 +502,34 @@ bool dna_validate_wallet_address(const char *address, const char *network) {
         return false;
     }
 
-    // Ethereum, BNB (0x + 40 hex chars)
-    if (strcmp(network, "eth") == 0 || strcmp(network, "bnb") == 0) {
+    // Ethereum (0x + 40 hex chars) - also works for BSC, Polygon, etc.
+    if (strcmp(network, "eth") == 0) {
         if (len != 42 || strncmp(address, "0x", 2) != 0) return false;
         for (size_t i = 2; i < len; i++) {
             if (!isxdigit(address[i])) return false;
         }
         return true;
+    }
+
+    // TON (EQ.../UQ... + 46 base64 chars, or raw format)
+    if (strcmp(network, "ton") == 0) {
+        // User-friendly format: EQ.../UQ... (48 chars total)
+        if (len == 48 && (strncmp(address, "EQ", 2) == 0 || strncmp(address, "UQ", 2) == 0)) {
+            // Base64 characters (with URL-safe variants)
+            const char *base64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/-_";
+            for (size_t i = 0; i < len; i++) {
+                if (strchr(base64, address[i]) == NULL) return false;
+            }
+            return true;
+        }
+        // Raw format: 0:... (66 chars) - workchain:hex
+        if (len == 66 && (address[0] == '0' || address[0] == '-') && address[1] == ':') {
+            for (size_t i = 2; i < len; i++) {
+                if (!isxdigit(address[i])) return false;
+            }
+            return true;
+        }
+        return false;
     }
 
     // Solana (base58, 32-44 chars)
@@ -604,7 +625,7 @@ bool dna_network_is_external(const char *network) {
     return (strcmp(network, "btc") == 0 ||
             strcmp(network, "eth") == 0 ||
             strcmp(network, "sol") == 0 ||
-            strcmp(network, "bnb") == 0);
+            strcmp(network, "ton") == 0);
 }
 
 void dna_network_normalize(char *network) {
@@ -635,7 +656,7 @@ const char* dna_identity_get_wallet(const dna_unified_identity_t *identity,
     CHECK_WALLET(btc, "btc")
     CHECK_WALLET(eth, "eth")
     CHECK_WALLET(sol, "sol")
-    CHECK_WALLET(bnb, "bnb")
+    CHECK_WALLET(ton, "ton")
 
     #undef CHECK_WALLET
 
@@ -665,7 +686,7 @@ int dna_identity_set_wallet(dna_unified_identity_t *identity,
     SET_WALLET(btc, "btc")
     SET_WALLET(eth, "eth")
     SET_WALLET(sol, "sol")
-    SET_WALLET(bnb, "bnb")
+    SET_WALLET(ton, "ton")
 
     #undef SET_WALLET
 
