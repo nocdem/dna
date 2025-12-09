@@ -1068,7 +1068,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton.icon(
-                        onPressed: () => _showSend(context, ref),
+                        onPressed: () => _showSend(context, ref, balance),
                         icon: const Icon(Icons.arrow_upward),
                         label: Text('Send $token'),
                       ),
@@ -1143,7 +1143,7 @@ class _TokenDetailSheet extends ConsumerWidget {
     );
   }
 
-  void _showSend(BuildContext context, WidgetRef ref) {
+  void _showSend(BuildContext context, WidgetRef ref, String currentBalance) {
     Navigator.pop(context); // Close current sheet
     showModalBottomSheet(
       context: context,
@@ -1152,7 +1152,7 @@ class _TokenDetailSheet extends ConsumerWidget {
         walletIndex: walletIndex,
         preselectedToken: token,
         preselectedNetwork: network,
-        availableBalance: balance,
+        availableBalance: currentBalance,
       ),
     );
   }
