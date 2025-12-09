@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.2.0
-**Date:** 2025-12-03
+**Version:** 1.3.0
+**Date:** 2025-12-09
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.3.0 (2025-12-09): Made `dna_engine_create_identity_sync()` atomic - now registers name on DHT and rolls back on failure
 - v1.2.0 (2025-12-03): Added Profile API (`dna_engine_get_profile`, `dna_engine_update_profile`)
 - v1.1.0 (2025-11-27): Implemented `send_tokens` with full UTXO selection, tx building, Dilithium5 signing
 - v1.0.0 (2025-11-26): Initial documentation
@@ -340,6 +341,54 @@ dna_engine_create_identity(engine, signing_seed, encryption_seed,
             printf("Created identity: %s\n", fp);
         }
     }, NULL);
+```
+
+---
+
+### dna_engine_create_identity_sync
+
+```c
+int dna_engine_create_identity_sync(
+    dna_engine_t *engine,
+    const char *name,
+    const uint8_t signing_seed[32],
+    const uint8_t encryption_seed[32],
+    const uint8_t wallet_seed[32],
+    const uint8_t master_seed[64],
+    char fingerprint_out[129]
+);
+```
+
+**Atomic** synchronous identity creation. Creates identity keys AND registers the name on DHT in one atomic operation. If name registration fails (e.g., name already taken), the locally created keys are automatically deleted.
+
+**Parameters:**
+- `name` - Display name to register (3-20 chars, alphanumeric + underscore)
+- `signing_seed` - 32-byte seed for Dilithium5 keypair
+- `encryption_seed` - 32-byte seed for Kyber1024 keypair
+- `wallet_seed` - 32-byte seed for wallet keys (can be NULL)
+- `master_seed` - 64-byte BIP39 master seed (can be NULL)
+- `fingerprint_out` - Buffer for 128-char hex fingerprint + null terminator
+
+**Returns:**
+- `DNA_OK` (0) on success
+- `DNA_ERROR_INVALID_ARG` if required parameters are NULL
+- `DNA_ERROR_CRYPTO` if key generation fails
+- `DNA_ERROR_INTERNAL` if messenger context creation fails
+- `DNA_ENGINE_ERROR_NETWORK` if name registration fails (name may be taken)
+
+**Atomic Behavior:**
+This function is atomic - if name registration fails, the identity directory is automatically removed using `qgp_platform_rmdir_recursive()`. This prevents orphaned identities that exist locally but aren't discoverable on the DHT.
+
+**Example:**
+```c
+char fingerprint[129];
+int rc = dna_engine_create_identity_sync(engine, "alice",
+    signing_seed, encryption_seed, wallet_seed, master_seed, fingerprint);
+if (rc == DNA_OK) {
+    printf("Identity created: %s\n", fingerprint);
+} else if (rc == DNA_ENGINE_ERROR_NETWORK) {
+    printf("Name 'alice' may already be taken\n");
+}
 ```
 
 ---

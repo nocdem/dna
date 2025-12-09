@@ -71,6 +71,17 @@ int qgp_platform_file_exists(const char *path);
  */
 int qgp_platform_is_directory(const char *path);
 
+/**
+ * Recursively delete a directory and all its contents
+ *
+ * Linux: Uses opendir/readdir/unlink/rmdir (POSIX)
+ * Windows: Uses FindFirstFileA/FindNextFileA/DeleteFileA/RemoveDirectoryA
+ *
+ * @param path Directory path to delete
+ * @return 0 on success, -1 on failure
+ */
+int qgp_platform_rmdir_recursive(const char *path);
+
 /* ============================================================================
  * Path Operations
  * ============================================================================ */

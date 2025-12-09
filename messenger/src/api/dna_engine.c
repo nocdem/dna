@@ -2327,8 +2327,45 @@ int dna_engine_create_identity_sync(
         return DNA_ERROR_INVALID_ARG;
     }
 
-    int rc = messenger_generate_keys_from_seeds(name, signing_seed, encryption_seed, wallet_seed, master_seed, engine->data_dir, fingerprint_out);
-    return (rc == 0) ? DNA_OK : DNA_ERROR_CRYPTO;
+    /* Step 1: Create keys locally */
+    int rc = messenger_generate_keys_from_seeds(name, signing_seed, encryption_seed,
+                                                 wallet_seed, master_seed, engine->data_dir, fingerprint_out);
+    if (rc != 0) {
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Step 2: Create temporary messenger context for registration */
+    messenger_context_t *temp_ctx = messenger_init(fingerprint_out);
+    if (!temp_ctx) {
+        /* Cleanup: delete created identity directory */
+        char identity_dir[512];
+        snprintf(identity_dir, sizeof(identity_dir), "%s/%s", engine->data_dir, fingerprint_out);
+        qgp_platform_rmdir_recursive(identity_dir);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create messenger context for identity registration");
+        return DNA_ERROR_INTERNAL;
+    }
+
+    /* Step 3: Load DHT identity for signing */
+    messenger_load_dht_identity(fingerprint_out);
+
+    /* Step 4: Register name on DHT (atomic - if this fails, cleanup) */
+    rc = messenger_register_name(temp_ctx, fingerprint_out, name);
+    messenger_free(temp_ctx);
+
+    if (rc != 0) {
+        /* Cleanup: delete created identity directory */
+        char identity_dir[512];
+        snprintf(identity_dir, sizeof(identity_dir), "%s/%s", engine->data_dir, fingerprint_out);
+        qgp_platform_rmdir_recursive(identity_dir);
+        QGP_LOG_ERROR(LOG_TAG, "Name registration failed for '%s', identity rolled back", name);
+        return DNA_ENGINE_ERROR_NETWORK;
+    }
+
+    /* Step 5: Cache the registered name locally */
+    keyserver_cache_put_name(fingerprint_out, name, 0);
+    QGP_LOG_INFO(LOG_TAG, "Identity created and registered: %s -> %.16s...", name, fingerprint_out);
+
+    return DNA_OK;
 }
 
 dna_request_id_t dna_engine_load_identity(

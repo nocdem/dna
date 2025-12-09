@@ -90,6 +90,54 @@ int qgp_platform_is_directory(const char *path) {
     return (attrs & FILE_ATTRIBUTE_DIRECTORY) ? 1 : 0;
 }
 
+int qgp_platform_rmdir_recursive(const char *path) {
+    if (!path) {
+        return -1;
+    }
+
+    char search_path[MAX_PATH];
+    snprintf(search_path, sizeof(search_path), "%s\\*", path);
+
+    WIN32_FIND_DATAA find_data;
+    HANDLE find_handle = FindFirstFileA(search_path, &find_data);
+    if (find_handle == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+
+    char child_path[MAX_PATH];
+    int result = 0;
+
+    do {
+        /* Skip . and .. */
+        if (strcmp(find_data.cFileName, ".") == 0 || strcmp(find_data.cFileName, "..") == 0) {
+            continue;
+        }
+
+        snprintf(child_path, sizeof(child_path), "%s\\%s", path, find_data.cFileName);
+
+        if (find_data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+            /* Recurse into subdirectory */
+            if (qgp_platform_rmdir_recursive(child_path) != 0) {
+                result = -1;
+            }
+        } else {
+            /* Delete file */
+            if (!DeleteFileA(child_path)) {
+                result = -1;
+            }
+        }
+    } while (FindNextFileA(find_handle, &find_data));
+
+    FindClose(find_handle);
+
+    /* Remove the now-empty directory */
+    if (!RemoveDirectoryA(path)) {
+        result = -1;
+    }
+
+    return result;
+}
+
 /* ============================================================================
  * Path Operations (Windows Implementation)
  * ============================================================================ */

@@ -9,6 +9,7 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <pwd.h>
+#include <dirent.h>
 
 #ifdef __linux__
 #include <sys/random.h>
@@ -100,6 +101,50 @@ int qgp_platform_is_directory(const char *path) {
     }
 
     return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+int qgp_platform_rmdir_recursive(const char *path) {
+    if (!path) {
+        return -1;
+    }
+
+    DIR *dir = opendir(path);
+    if (!dir) {
+        return -1;
+    }
+
+    struct dirent *entry;
+    char child_path[4096];
+    int result = 0;
+
+    while ((entry = readdir(dir)) != NULL) {
+        /* Skip . and .. */
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) {
+            continue;
+        }
+
+        snprintf(child_path, sizeof(child_path), "%s/%s", path, entry->d_name);
+
+        if (qgp_platform_is_directory(child_path)) {
+            /* Recurse into subdirectory */
+            if (qgp_platform_rmdir_recursive(child_path) != 0) {
+                result = -1;
+            }
+        } else {
+            /* Delete file */
+            if (unlink(child_path) != 0) {
+                result = -1;
+            }
+        }
+    }
+    closedir(dir);
+
+    /* Remove the now-empty directory */
+    if (rmdir(path) != 0) {
+        result = -1;
+    }
+
+    return result;
 }
 
 /* ============================================================================
