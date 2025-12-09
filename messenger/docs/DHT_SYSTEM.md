@@ -611,8 +611,6 @@ typedef struct {
     char registered_name[64];                 // DNA name (3-20 chars)
     uint64_t name_registered_at;
     uint64_t name_expires_at;
-    char registration_tx_hash[128];           // Blockchain tx hash
-    char registration_network[32];            // e.g., "Backbone"
     uint32_t name_version;
     dna_wallet_list_t wallets;                // Linked wallet addresses
     dna_social_list_t socials;                // Social links

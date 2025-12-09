@@ -32,12 +32,12 @@ typedef struct {
     char backbone[120];         /**< Backbone network address */
     char kelvpn[120];           /**< KelVPN network address */
     char alvin[120];            /**< Alvin testnet address (not active) */
+    char qevm[128];             /**< QEVM address */
 
     // External blockchains
     char btc[128];              /**< Bitcoin address */
     char eth[128];              /**< Ethereum address */
     char sol[128];              /**< Solana address */
-    char qevm[128];             /**< QEVM address */
     char bnb[128];              /**< BNB Chain address */
 } dna_wallets_t;
 
@@ -89,8 +89,6 @@ typedef struct {
     char registered_name[256];           /**< DNA name (e.g., "nocdem") */
     uint64_t name_registered_at;         /**< Registration timestamp (Unix epoch) */
     uint64_t name_expires_at;            /**< Expiration timestamp (+365 days) */
-    char registration_tx_hash[67];       /**< Blockchain tx hash (66 hex + null) */
-    char registration_network[32];       /**< Network (e.g., "Backbone") */
     uint32_t name_version;               /**< Version (increment on renewal) */
 
     // ===== PROFILE DATA =====

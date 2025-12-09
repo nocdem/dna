@@ -44,8 +44,6 @@ int dna_update_profile(
         memset(identity->registered_name, 0, sizeof(identity->registered_name));
         identity->name_registered_at = 0;
         identity->name_expires_at = 0;
-        memset(identity->registration_tx_hash, 0, sizeof(identity->registration_tx_hash));
-        memset(identity->registration_network, 0, sizeof(identity->registration_network));
         identity->name_version = 0;
 
         QGP_LOG_INFO(LOG_TAG, "Created new identity (old profile signature verification failed)\n");
@@ -68,8 +66,6 @@ int dna_update_profile(
                    sizeof(bool) +
                    sizeof(identity->registered_name) +
                    sizeof(uint64_t) * 2 +
-                   sizeof(identity->registration_tx_hash) +
-                   sizeof(identity->registration_network) +
                    sizeof(uint32_t) +
                    sizeof(identity->wallets) +
                    sizeof(identity->socials) +
@@ -108,10 +104,6 @@ int dna_update_profile(
     offset += sizeof(uint64_t);
     memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
     offset += sizeof(uint64_t);
-    memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
-    offset += sizeof(identity->registration_tx_hash);
-    memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
-    offset += sizeof(identity->registration_network);
     memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
     offset += sizeof(uint32_t);
     memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
@@ -232,8 +224,6 @@ int dna_load_identity(
                      sizeof(identity->registered_name) +
                      sizeof(identity->name_registered_at) +
                      sizeof(identity->name_expires_at) +
-                     sizeof(identity->registration_tx_hash) +
-                     sizeof(identity->registration_network) +
                      sizeof(identity->name_version) +
                      sizeof(identity->wallets) +
                      sizeof(identity->socials) +
@@ -272,10 +262,6 @@ int dna_load_identity(
     offset += sizeof(uint64_t);
     memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
     offset += sizeof(uint64_t);
-    memcpy(msg + offset, identity->registration_tx_hash, sizeof(identity->registration_tx_hash));
-    offset += sizeof(identity->registration_tx_hash);
-    memcpy(msg + offset, identity->registration_network, sizeof(identity->registration_network));
-    offset += sizeof(identity->registration_network);
     memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
     offset += sizeof(uint32_t);
     memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
