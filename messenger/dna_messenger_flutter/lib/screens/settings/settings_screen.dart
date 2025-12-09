@@ -9,7 +9,9 @@ import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
 
 class SettingsScreen extends ConsumerWidget {
-  const SettingsScreen({super.key});
+  final VoidCallback? onMenuPressed;
+
+  const SettingsScreen({super.key, this.onMenuPressed});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -20,6 +22,12 @@ class SettingsScreen extends ConsumerWidget {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Settings'),
+        leading: onMenuPressed != null
+            ? IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: onMenuPressed,
+              )
+            : null,
       ),
       body: ListView(
         children: [

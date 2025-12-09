@@ -7,7 +7,9 @@ import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 
 class WalletScreen extends ConsumerWidget {
-  const WalletScreen({super.key});
+  final VoidCallback? onMenuPressed;
+
+  const WalletScreen({super.key, this.onMenuPressed});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -16,6 +18,12 @@ class WalletScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
+        leading: onMenuPressed != null
+            ? IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: onMenuPressed,
+              )
+            : null,
         title: const Text('Wallet'),
         actions: [
           IconButton(
@@ -900,7 +908,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to send: $e'),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
           ),
         );
       }

@@ -6,7 +6,9 @@ import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 
 class GroupsScreen extends ConsumerWidget {
-  const GroupsScreen({super.key});
+  final VoidCallback? onMenuPressed;
+
+  const GroupsScreen({super.key, this.onMenuPressed});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -15,6 +17,12 @@ class GroupsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
+        leading: onMenuPressed != null
+            ? IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: onMenuPressed,
+              )
+            : null,
         title: const Text('Groups'),
         actions: [
           IconButton(
@@ -188,7 +196,7 @@ class GroupsScreen extends ConsumerWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to accept invitation: $e'),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
           ),
         );
       }
@@ -208,7 +216,7 @@ class GroupsScreen extends ConsumerWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to decline invitation: $e'),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
           ),
         );
       }
@@ -438,7 +446,7 @@ class _CreateGroupDialogState extends ConsumerState<_CreateGroupDialog> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to create group: $e'),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
           ),
         );
       }
@@ -608,7 +616,7 @@ class _GroupChatScreenState extends ConsumerState<GroupChatScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to send message: $e'),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
           ),
         );
       }

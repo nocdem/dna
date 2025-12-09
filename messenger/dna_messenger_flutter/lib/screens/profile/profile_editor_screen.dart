@@ -122,7 +122,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(state.successMessage!),
-            backgroundColor: DnaColors.textSuccess,
+            backgroundColor: DnaColors.snackbarSuccess,
           ),
         );
       });
@@ -132,7 +132,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(state.error!),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
           ),
         );
       });

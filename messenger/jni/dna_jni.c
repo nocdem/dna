@@ -604,7 +604,10 @@ Java_io_cpunk_dna_DNAEngine_nativeCreate(JNIEnv *env, jobject thiz, jstring data
         return JNI_FALSE;
     }
 
-    LOGI("Engine created successfully");
+    /* Set DEBUG log level by default on Android for easier debugging */
+    dna_engine_set_log_level("DEBUG");
+
+    LOGI("Engine created successfully (log level: DEBUG)");
     return JNI_TRUE;
 }
 

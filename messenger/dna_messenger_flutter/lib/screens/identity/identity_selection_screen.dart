@@ -164,7 +164,7 @@ class IdentitySelectionScreen extends ConsumerWidget {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to load identity: $e'),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
           ),
         );
       }
@@ -746,7 +746,7 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to create identity: $e'),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
           ),
         );
       }
@@ -858,7 +858,7 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Failed to restore identity: $e'),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
           ),
         );
       }
