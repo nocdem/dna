@@ -11,6 +11,7 @@
 #include "../core/dht_keyserver.h"
 #include "../client/dna_profile.h"
 #include <pthread.h>
+#include <ctype.h>
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "KEYSERVER"
@@ -40,8 +41,16 @@ int dht_keyserver_lookup(
         // Name lookup: first resolve name → fingerprint via name:lookup
         QGP_LOG_INFO(LOG_TAG, "Name lookup: resolving '%s' to fingerprint\n", name_or_fingerprint);
 
+        // Normalize name to lowercase (registration stores lowercase keys)
+        char normalized_name[64];
+        strncpy(normalized_name, name_or_fingerprint, sizeof(normalized_name) - 1);
+        normalized_name[sizeof(normalized_name) - 1] = '\0';
+        for (char *p = normalized_name; *p; p++) {
+            *p = tolower(*p);
+        }
+
         char alias_base_key[256];
-        snprintf(alias_base_key, sizeof(alias_base_key), "%s:lookup", name_or_fingerprint);
+        snprintf(alias_base_key, sizeof(alias_base_key), "%s:lookup", normalized_name);
 
         uint8_t *alias_data = NULL;
         size_t alias_data_len = 0;
