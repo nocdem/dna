@@ -271,7 +271,7 @@ final class dna_profile_t extends Struct {
   external Array<Char> sol;
 
   @Array(128)
-  external Array<Char> bnb;
+  external Array<Char> ton;
 
   // Socials
   @Array(128)

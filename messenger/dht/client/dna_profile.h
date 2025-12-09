@@ -34,9 +34,9 @@ typedef struct {
 
     // External blockchains
     char btc[128];              /**< Bitcoin address */
-    char eth[128];              /**< Ethereum address */
+    char eth[128];              /**< Ethereum address (also works for BSC, Polygon, etc.) */
     char sol[128];              /**< Solana address */
-    char bnb[128];              /**< BNB Chain address */
+    char ton[128];              /**< TON address (EQ.../UQ...) */
 } dna_wallets_t;
 
 /**
@@ -206,7 +206,7 @@ int dna_profile_validate(const dna_profile_data_t *profile);
  * - Bitcoin (legacy, SegWit)
  * - Ethereum (0x + 40 hex)
  * - Solana (base58)
- * - BNB/QEVM (Ethereum format)
+ * - TON (EQ.../UQ... base64 format)
  *
  * @param address Address to validate
  * @param network Network identifier (e.g., "backbone", "eth", "btc")

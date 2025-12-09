@@ -33,7 +33,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
   late TextEditingController _btcController;
   late TextEditingController _ethController;
   late TextEditingController _solController;
-  late TextEditingController _bnbController;
+  late TextEditingController _tonController;
 
   // Socials
   late TextEditingController _telegramController;
@@ -63,7 +63,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     _btcController = TextEditingController();
     _ethController = TextEditingController();
     _solController = TextEditingController();
-    _bnbController = TextEditingController();
+    _tonController = TextEditingController();
     // Socials
     _telegramController = TextEditingController();
     _twitterController = TextEditingController();
@@ -87,7 +87,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     _btcController.dispose();
     _ethController.dispose();
     _solController.dispose();
-    _bnbController.dispose();
+    _tonController.dispose();
     // Socials
     _telegramController.dispose();
     _twitterController.dispose();
@@ -130,8 +130,8 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     if (_solController.text != profile.sol) {
       _solController.text = profile.sol;
     }
-    if (_bnbController.text != profile.bnb) {
-      _bnbController.text = profile.bnb;
+    if (_tonController.text != profile.ton) {
+      _tonController.text = profile.ton;
     }
     // Socials
     if (_telegramController.text != profile.telegram) {
@@ -289,8 +289,8 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                         controller: _solController,
                       ),
                       _buildReadOnlyField(
-                        label: 'BNB Chain',
-                        controller: _bnbController,
+                        label: 'TON',
+                        controller: _tonController,
                       ),
                     ],
                   ),
