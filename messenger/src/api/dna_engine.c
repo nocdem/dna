@@ -1767,6 +1767,8 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
             /* Map blockchain type to sig_type for UI display */
             if (list->wallets[i].type == BLOCKCHAIN_ETHEREUM) {
                 wallets[i].sig_type = 100;  /* Use 100 for ETH (secp256k1) */
+            } else if (list->wallets[i].type == BLOCKCHAIN_SOLANA) {
+                wallets[i].sig_type = 101;  /* Use 101 for SOL (Ed25519) */
             } else {
                 wallets[i].sig_type = 4;    /* Dilithium for Cellframe */
             }
@@ -1801,24 +1803,29 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
 
     blockchain_wallet_info_t *wallet_info = &list->wallets[idx];
 
-    /* Handle different blockchain types */
-    if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
-        /* ETH wallet - get ETH balance */
+    /* Handle non-Cellframe blockchains via modular interface */
+    if (wallet_info->type == BLOCKCHAIN_ETHEREUM || wallet_info->type == BLOCKCHAIN_SOLANA) {
         balances = calloc(1, sizeof(dna_balance_t));
         if (!balances) {
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
 
-        strncpy(balances[0].token, "ETH", sizeof(balances[0].token) - 1);
-        strncpy(balances[0].network, "Ethereum", sizeof(balances[0].network) - 1);
+        /* Set token and network based on type */
+        if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
+            strncpy(balances[0].token, "ETH", sizeof(balances[0].token) - 1);
+            strncpy(balances[0].network, "Ethereum", sizeof(balances[0].network) - 1);
+        } else {
+            strncpy(balances[0].token, "SOL", sizeof(balances[0].token) - 1);
+            strncpy(balances[0].network, "Solana", sizeof(balances[0].network) - 1);
+        }
         strcpy(balances[0].balance, "0.0");
         count = 1;
 
-        /* Query ETH balance */
-        char balance_str[64] = {0};
-        if (eth_rpc_get_balance(wallet_info->address, balance_str, sizeof(balance_str)) == 0) {
-            strncpy(balances[0].balance, balance_str, sizeof(balances[0].balance) - 1);
+        /* Query balance via modular blockchain interface */
+        blockchain_balance_t bc_balance;
+        if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
+            strncpy(balances[0].balance, bc_balance.balance, sizeof(balances[0].balance) - 1);
         }
 
         goto done;
