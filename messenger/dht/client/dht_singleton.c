@@ -4,23 +4,11 @@
 
 #include "dht_singleton.h"
 #include "../core/dht_context.h"
-#include "../core/dht_bootstrap_registry.h"
 #include "crypto/utils/qgp_log.h"
 #include "dna_config.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
-#include <stdlib.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-
-#ifdef _WIN32
-#include <windows.h>
-#include <direct.h>
-#define mkdir(path, mode) _mkdir(path)
-#else
-#include <unistd.h>
-#endif
 
 #define LOG_TAG "DHT"
 
@@ -88,80 +76,9 @@ int dht_singleton_init(void)
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "DHT started, bootstrapping to network...");
-
-    // Wait for DHT to be ready with reduced polling frequency
-    // Check every 250ms for up to 3 seconds maximum (reduces overhead)
-    int max_attempts = 12;  // 12 * 250ms = 3s max
-    int attempts = 0;
-
-    while (!dht_context_is_ready(g_dht_context) && attempts < max_attempts) {
-        #ifdef _WIN32
-        Sleep(250);  // Windows: 250ms
-        #else
-        usleep(250000);  // Unix: 250ms
-        #endif
-        attempts++;
-    }
-
-    if (dht_context_is_ready(g_dht_context)) {
-        QGP_LOG_INFO(LOG_TAG, "Global DHT ready! (took %dms)", attempts * 250);
-
-        // STEP 2: Query bootstrap registry for dynamic node discovery
-        QGP_LOG_INFO(LOG_TAG, "Querying bootstrap registry for active nodes...");
-        bootstrap_registry_t registry;
-
-        if (dht_bootstrap_registry_fetch(g_dht_context, &registry) == 0) {
-            // Filter stale nodes (last_seen > 15 minutes)
-            dht_bootstrap_registry_filter_active(&registry);
-
-            if (registry.node_count > 0) {
-                QGP_LOG_INFO(LOG_TAG, "Discovered %zu active bootstrap nodes from registry",
-                       registry.node_count);
-
-                // Bootstrap to discovered nodes for better connectivity
-                for (size_t i = 0; i < registry.node_count && i < 10; i++) {
-                    char node_addr[128];
-                    snprintf(node_addr, sizeof(node_addr), "%s:%d",
-                             registry.nodes[i].ip, registry.nodes[i].port);
-
-                    QGP_LOG_DEBUG(LOG_TAG, "  -> %s (node_id: %.16s..., uptime: %lus)",
-                           node_addr, registry.nodes[i].node_id,
-                           (unsigned long)registry.nodes[i].uptime);
-
-                    // Bootstrap to this node at runtime
-                    if (dht_context_bootstrap_runtime(g_dht_context, registry.nodes[i].ip,
-                                                      registry.nodes[i].port) == 0) {
-                        QGP_LOG_DEBUG(LOG_TAG, "    Bootstrapped to %s", node_addr);
-                    } else {
-                        QGP_LOG_WARN(LOG_TAG, "    Failed to bootstrap to %s", node_addr);
-                    }
-                }
-
-                QGP_LOG_INFO(LOG_TAG, "Using %zu dynamically discovered nodes",
-                       registry.node_count < 10 ? registry.node_count : 10);
-            } else {
-                QGP_LOG_WARN(LOG_TAG, "Registry has no active nodes, using fallback nodes");
-            }
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "Failed to query registry, using fallback nodes");
-        }
-
-        // RACE CONDITION FIX: Wait for nodes to establish stable connections
-        // Even though dht_context_is_ready() returns true (good_nodes > 0),
-        // the DHT may not be ready to accept PUT operations yet.
-        // Give it 1 second to fully stabilize all connections before allowing PUT operations.
-        QGP_LOG_INFO(LOG_TAG, "Waiting for DHT connections to stabilize (1000ms)...");
-        #ifdef _WIN32
-        Sleep(1000);
-        #else
-        usleep(1000000);  // 1000ms = 1 second
-        #endif
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "DHT bootstrap timeout, continuing anyway...");
-        // Don't return error - DHT may still work for some operations
-    }
-
+    // Non-blocking: DHT bootstraps in its own background threads
+    // Operations will wait/retry as needed when DHT becomes ready
+    QGP_LOG_INFO(LOG_TAG, "DHT started (bootstrapping in background)");
     return 0;
 }
 
@@ -229,79 +146,9 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "DHT started, bootstrapping to network...");
-
-    // Wait for DHT to be ready with reduced polling frequency
-    // Check every 250ms for up to 3 seconds maximum (reduces overhead)
-    int max_attempts = 12;  // 12 * 250ms = 3s max
-    int attempts = 0;
-
-    while (!dht_context_is_ready(g_dht_context) && attempts < max_attempts) {
-        #ifdef _WIN32
-        Sleep(250);  // Windows: 250ms
-        #else
-        usleep(250000);  // Unix: 250ms
-        #endif
-        attempts++;
-    }
-
-    if (dht_context_is_ready(g_dht_context)) {
-        QGP_LOG_INFO(LOG_TAG, "Global DHT ready with user identity! (took %dms)", attempts * 250);
-
-        // STEP 2: Query bootstrap registry for dynamic node discovery
-        QGP_LOG_INFO(LOG_TAG, "Querying bootstrap registry for active nodes...");
-        bootstrap_registry_t registry;
-
-        if (dht_bootstrap_registry_fetch(g_dht_context, &registry) == 0) {
-            // Filter stale nodes (last_seen > 15 minutes)
-            dht_bootstrap_registry_filter_active(&registry);
-
-            if (registry.node_count > 0) {
-                QGP_LOG_INFO(LOG_TAG, "Discovered %zu active bootstrap nodes from registry",
-                       registry.node_count);
-
-                // Bootstrap to discovered nodes for better connectivity
-                for (size_t i = 0; i < registry.node_count && i < 10; i++) {
-                    char node_addr[128];
-                    snprintf(node_addr, sizeof(node_addr), "%s:%d",
-                             registry.nodes[i].ip, registry.nodes[i].port);
-
-                    QGP_LOG_DEBUG(LOG_TAG, "  -> %s (node_id: %.16s..., uptime: %lus)",
-                           node_addr, registry.nodes[i].node_id,
-                           (unsigned long)registry.nodes[i].uptime);
-
-                    // Bootstrap to this node at runtime
-                    if (dht_context_bootstrap_runtime(g_dht_context, registry.nodes[i].ip,
-                                                      registry.nodes[i].port) == 0) {
-                        QGP_LOG_DEBUG(LOG_TAG, "    Bootstrapped to %s", node_addr);
-                    } else {
-                        QGP_LOG_WARN(LOG_TAG, "    Failed to bootstrap to %s", node_addr);
-                    }
-                }
-
-                QGP_LOG_INFO(LOG_TAG, "Using %zu dynamically discovered nodes",
-                       registry.node_count < 10 ? registry.node_count : 10);
-            } else {
-                QGP_LOG_WARN(LOG_TAG, "Registry has no active nodes, using fallback nodes");
-            }
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "Failed to query registry, using fallback nodes");
-        }
-
-        // RACE CONDITION FIX: Wait for nodes to establish stable connections
-        // Even though dht_context_is_ready() returns true (good_nodes > 0),
-        // the DHT may not be ready to accept PUT operations yet.
-        // Give it 1 second to fully stabilize all connections before allowing PUT operations.
-        QGP_LOG_INFO(LOG_TAG, "Waiting for DHT connections to stabilize (1000ms)...");
-        #ifdef _WIN32
-        Sleep(1000);
-        #else
-        usleep(1000000);  // 1000ms = 1 second
-        #endif
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "DHT bootstrap timeout, continuing anyway...");
-        // Don't return error - DHT may still work for some operations
-    }
+    // Non-blocking: DHT bootstraps in its own background threads
+    // Operations will wait/retry as needed when DHT becomes ready
+    QGP_LOG_INFO(LOG_TAG, "DHT started with identity (bootstrapping in background)");
     return 0;
 }
 
