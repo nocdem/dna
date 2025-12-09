@@ -95,6 +95,7 @@ struct dht_context {
     dht_status_callback_t status_callback;
     void *status_callback_user_data;
     std::mutex status_callback_mutex;
+    bool last_ready_state;  // Track ready state transitions
 
     dht_context() : running(false), storage(nullptr),
                     // Initialize with default values (configured properly in start())
@@ -102,7 +103,8 @@ struct dht_context {
                     type_30day(0, "", std::chrono::hours(0)),
                     type_365day(0, "", std::chrono::hours(0)),
                     status_callback(nullptr),
-                    status_callback_user_data(nullptr) {
+                    status_callback_user_data(nullptr),
+                    last_ready_state(false) {
         memset(&config, 0, sizeof(config));
     }
 };
@@ -344,7 +346,7 @@ extern "C" dht_context_t* dht_context_new(const dht_config_t *config) {
         memcpy(&ctx->config, config, sizeof(dht_config_t));
 
         QGP_LOG_INFO("DHT", "Created context for node: %s", config->identity);
-        QGP_LOG_INFO("DHT", "Port: %d", config->port);
+        QGP_LOG_INFO("DHT", "Requested port: %d%s", config->port, config->port == 0 ? " (auto-assign)" : "");
         QGP_LOG_INFO("DHT", "Bootstrap node: %s", config->is_bootstrap ? "yes" : "no");
 
         return ctx;
@@ -605,15 +607,31 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
     QGP_LOG_INFO("DHT", "Status callback registered");
 
     // Register with OpenDHT's status change notification
-    // Callback receives (old_status, new_status)
+    // Callback receives (old_status, new_status) but NodeStatus is per-address-family
+    // so we check actual readiness (good_nodes > 0) instead
     ctx->runner.setOnStatusChanged([ctx](dht::NodeStatus old_status, dht::NodeStatus new_status) {
-        // Only notify on actual state changes to/from Connected
-        bool was_connected = (old_status == dht::NodeStatus::Connected);
-        bool is_connected = (new_status == dht::NodeStatus::Connected);
+        (void)old_status;
+        (void)new_status;
 
-        if (was_connected != is_connected) {
-            QGP_LOG_INFO("DHT", "Status changed: %s -> %s",
-                dht::statusToStr(old_status), dht::statusToStr(new_status));
+        // Check actual DHT readiness (has good nodes) rather than NodeStatus
+        // NodeStatus is per-address-family and doesn't reflect overall connectivity
+        bool is_ready = false;
+        try {
+            auto stats_v4 = ctx->runner.getNodesStats(AF_INET);
+            auto stats_v6 = ctx->runner.getNodesStats(AF_INET6);
+            is_ready = (stats_v4.good_nodes + stats_v6.good_nodes) > 0;
+        } catch (...) {
+            is_ready = false;
+        }
+
+        // Track previous ready state to detect transitions
+        if (is_ready != ctx->last_ready_state) {
+            QGP_LOG_INFO("DHT", "Ready state changed: %s -> %s (good_nodes: %s)",
+                ctx->last_ready_state ? "ready" : "not ready",
+                is_ready ? "ready" : "not ready",
+                is_ready ? ">0" : "0");
+
+            ctx->last_ready_state = is_ready;
 
             // Get callback info (thread-safe)
             dht_status_callback_t cb = nullptr;
@@ -625,7 +643,7 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
             }
 
             if (cb) {
-                cb(is_connected, ud);
+                cb(is_ready, ud);
             }
         }
     });
