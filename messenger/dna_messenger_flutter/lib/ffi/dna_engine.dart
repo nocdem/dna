@@ -436,56 +436,74 @@ class FeedComment {
   }
 }
 
-/// User profile information
+/// User profile information (synced with DHT dna_unified_identity_t)
 class UserProfile {
   // Cellframe wallets
   String backbone;
-  String kelvpn;
-  String subzero;
-  String cpunkTestnet;
+  String alvin;
 
   // External wallets
   String btc;
   String eth;
   String sol;
+  String bnb;
 
   // Socials
   String telegram;
   String twitter;
   String github;
+  String facebook;
+  String instagram;
+  String linkedin;
+  String google;
 
-  // Bio and avatar
+  // Profile info
+  String displayName;
   String bio;
+  String location;
+  String website;
   String avatarBase64;
 
   UserProfile({
     this.backbone = '',
-    this.kelvpn = '',
-    this.subzero = '',
-    this.cpunkTestnet = '',
+    this.alvin = '',
     this.btc = '',
     this.eth = '',
     this.sol = '',
+    this.bnb = '',
     this.telegram = '',
     this.twitter = '',
     this.github = '',
+    this.facebook = '',
+    this.instagram = '',
+    this.linkedin = '',
+    this.google = '',
+    this.displayName = '',
     this.bio = '',
+    this.location = '',
+    this.website = '',
     this.avatarBase64 = '',
   });
 
   factory UserProfile.fromNative(dna_profile_t native) {
     return UserProfile(
       backbone: native.backbone.toDartString(120),
-      kelvpn: native.kelvpn.toDartString(120),
-      subzero: native.subzero.toDartString(120),
-      cpunkTestnet: native.cpunk_testnet.toDartString(120),
+      alvin: native.alvin.toDartString(120),
       btc: native.btc.toDartString(128),
       eth: native.eth.toDartString(128),
       sol: native.sol.toDartString(128),
+      bnb: native.bnb.toDartString(128),
       telegram: native.telegram.toDartString(128),
       twitter: native.twitter.toDartString(128),
       github: native.github.toDartString(128),
+      facebook: native.facebook.toDartString(128),
+      instagram: native.instagram.toDartString(128),
+      linkedin: native.linkedin.toDartString(128),
+      google: native.google.toDartString(128),
+      displayName: native.display_name.toDartString(128),
       bio: native.bio.toDartString(512),
+      location: native.location.toDartString(128),
+      website: native.website.toDartString(256),
       avatarBase64: native.avatar_base64.toDartString(20484),
     );
   }
@@ -493,16 +511,22 @@ class UserProfile {
   /// Copy profile data to native struct
   void toNative(Pointer<dna_profile_t> native) {
     _copyStringToArray(backbone, native.ref.backbone, 120);
-    _copyStringToArray(kelvpn, native.ref.kelvpn, 120);
-    _copyStringToArray(subzero, native.ref.subzero, 120);
-    _copyStringToArray(cpunkTestnet, native.ref.cpunk_testnet, 120);
+    _copyStringToArray(alvin, native.ref.alvin, 120);
     _copyStringToArray(btc, native.ref.btc, 128);
     _copyStringToArray(eth, native.ref.eth, 128);
     _copyStringToArray(sol, native.ref.sol, 128);
+    _copyStringToArray(bnb, native.ref.bnb, 128);
     _copyStringToArray(telegram, native.ref.telegram, 128);
     _copyStringToArray(twitter, native.ref.twitter, 128);
     _copyStringToArray(github, native.ref.github, 128);
+    _copyStringToArray(facebook, native.ref.facebook, 128);
+    _copyStringToArray(instagram, native.ref.instagram, 128);
+    _copyStringToArray(linkedin, native.ref.linkedin, 128);
+    _copyStringToArray(google, native.ref.google, 128);
+    _copyStringToArray(displayName, native.ref.display_name, 128);
     _copyStringToArray(bio, native.ref.bio, 512);
+    _copyStringToArray(location, native.ref.location, 128);
+    _copyStringToArray(website, native.ref.website, 256);
     _copyStringToArray(avatarBase64, native.ref.avatar_base64, 20484);
   }
 
@@ -518,45 +542,63 @@ class UserProfile {
   /// Check if profile is empty
   bool get isEmpty =>
       backbone.isEmpty &&
-      kelvpn.isEmpty &&
-      subzero.isEmpty &&
-      cpunkTestnet.isEmpty &&
+      alvin.isEmpty &&
       btc.isEmpty &&
       eth.isEmpty &&
       sol.isEmpty &&
+      bnb.isEmpty &&
       telegram.isEmpty &&
       twitter.isEmpty &&
       github.isEmpty &&
+      facebook.isEmpty &&
+      instagram.isEmpty &&
+      linkedin.isEmpty &&
+      google.isEmpty &&
+      displayName.isEmpty &&
       bio.isEmpty &&
+      location.isEmpty &&
+      website.isEmpty &&
       avatarBase64.isEmpty;
 
   /// Create a copy of this profile
   UserProfile copyWith({
     String? backbone,
-    String? kelvpn,
-    String? subzero,
-    String? cpunkTestnet,
+    String? alvin,
     String? btc,
     String? eth,
     String? sol,
+    String? bnb,
     String? telegram,
     String? twitter,
     String? github,
+    String? facebook,
+    String? instagram,
+    String? linkedin,
+    String? google,
+    String? displayName,
     String? bio,
+    String? location,
+    String? website,
     String? avatarBase64,
   }) {
     return UserProfile(
       backbone: backbone ?? this.backbone,
-      kelvpn: kelvpn ?? this.kelvpn,
-      subzero: subzero ?? this.subzero,
-      cpunkTestnet: cpunkTestnet ?? this.cpunkTestnet,
+      alvin: alvin ?? this.alvin,
       btc: btc ?? this.btc,
       eth: eth ?? this.eth,
       sol: sol ?? this.sol,
+      bnb: bnb ?? this.bnb,
       telegram: telegram ?? this.telegram,
       twitter: twitter ?? this.twitter,
       github: github ?? this.github,
+      facebook: facebook ?? this.facebook,
+      instagram: instagram ?? this.instagram,
+      linkedin: linkedin ?? this.linkedin,
+      google: google ?? this.google,
+      displayName: displayName ?? this.displayName,
       bio: bio ?? this.bio,
+      location: location ?? this.location,
+      website: website ?? this.website,
       avatarBase64: avatarBase64 ?? this.avatarBase64,
     );
   }

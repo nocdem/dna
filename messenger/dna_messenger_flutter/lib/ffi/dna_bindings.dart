@@ -251,20 +251,14 @@ final class dna_comment_info_t extends Struct {
   external bool verified;
 }
 
-/// User profile information
+/// User profile information (synced with DHT dna_unified_identity_t)
 final class dna_profile_t extends Struct {
   // Cellframe wallets
   @Array(120)
   external Array<Char> backbone;
 
   @Array(120)
-  external Array<Char> kelvpn;
-
-  @Array(120)
-  external Array<Char> subzero;
-
-  @Array(120)
-  external Array<Char> cpunk_testnet;
+  external Array<Char> alvin;
 
   // External wallets
   @Array(128)
@@ -276,6 +270,9 @@ final class dna_profile_t extends Struct {
   @Array(128)
   external Array<Char> sol;
 
+  @Array(128)
+  external Array<Char> bnb;
+
   // Socials
   @Array(128)
   external Array<Char> telegram;
@@ -286,9 +283,30 @@ final class dna_profile_t extends Struct {
   @Array(128)
   external Array<Char> github;
 
-  // Bio and avatar
+  @Array(128)
+  external Array<Char> facebook;
+
+  @Array(128)
+  external Array<Char> instagram;
+
+  @Array(128)
+  external Array<Char> linkedin;
+
+  @Array(128)
+  external Array<Char> google;
+
+  // Profile info
+  @Array(128)
+  external Array<Char> display_name;
+
   @Array(512)
   external Array<Char> bio;
+
+  @Array(128)
+  external Array<Char> location;
+
+  @Array(256)
+  external Array<Char> website;
 
   @Array(20484)
   external Array<Char> avatar_base64;
