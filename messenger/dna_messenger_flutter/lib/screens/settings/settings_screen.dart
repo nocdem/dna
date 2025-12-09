@@ -515,28 +515,65 @@ class _PillButton extends StatelessWidget {
   }
 }
 
-class _IdentitySection extends ConsumerStatefulWidget {
+class _IdentitySection extends ConsumerWidget {
   final String? fingerprint;
 
   const _IdentitySection({required this.fingerprint});
 
   @override
-  ConsumerState<_IdentitySection> createState() => _IdentitySectionState();
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader('Identity'),
+        if (fingerprint != null)
+          ListTile(
+            leading: const Icon(Icons.fingerprint),
+            title: const Text('Fingerprint'),
+            subtitle: Text(
+              fingerprint!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+              ),
+            ),
+            trailing: const Icon(Icons.content_copy),
+            onTap: () {
+              Clipboard.setData(ClipboardData(text: fingerprint!));
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Fingerprint copied')),
+              );
+            },
+          ),
+      ],
+    );
+  }
 }
 
-class _IdentitySectionState extends ConsumerState<_IdentitySection> {
+class _AboutSection extends ConsumerStatefulWidget {
+  @override
+  ConsumerState<_AboutSection> createState() => _AboutSectionState();
+}
+
+class _AboutSectionState extends ConsumerState<_AboutSection> {
   int _tapCount = 0;
   DateTime? _lastTapTime;
   static const _requiredTaps = 5;
   static const _tapTimeout = Duration(seconds: 2);
 
-  void _handleFingerprintTap(BuildContext context) {
+  void _handleVersionTap() {
     final now = DateTime.now();
     final developerMode = ref.read(developerModeProvider);
 
-    // If already in developer mode, just copy fingerprint
+    // If already enabled, disable on tap
     if (developerMode) {
-      _copyFingerprint(context);
+      ref.read(developerModeProvider.notifier).setEnabled(false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Developer mode disabled')),
+      );
       return;
     }
 
@@ -549,7 +586,6 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
     _tapCount++;
 
     if (_tapCount >= _requiredTaps) {
-      // Enable developer mode
       ref.read(developerModeProvider.notifier).setEnabled(true);
       _tapCount = 0;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -558,40 +594,6 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
           backgroundColor: DnaColors.snackbarSuccess,
         ),
       );
-    } else {
-      final remaining = _requiredTaps - _tapCount;
-      if (_tapCount >= 2) {
-        ScaffoldMessenger.of(context).clearSnackBars();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('$remaining ${remaining == 1 ? 'tap' : 'taps'} to enable developer mode'),
-            duration: const Duration(milliseconds: 800),
-          ),
-        );
-      }
-    }
-  }
-
-  void _copyFingerprint(BuildContext context) {
-    if (widget.fingerprint != null) {
-      Clipboard.setData(ClipboardData(text: widget.fingerprint!));
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Fingerprint copied')),
-      );
-    }
-  }
-
-  void _handleLongPress(BuildContext context) {
-    final developerMode = ref.read(developerModeProvider);
-    if (developerMode) {
-      // Long press to disable developer mode
-      ref.read(developerModeProvider.notifier).setEnabled(false);
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Developer mode disabled')),
-      );
-    } else {
-      // Long press to copy when not in developer mode
-      _copyFingerprint(context);
     }
   }
 
@@ -603,50 +605,20 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader('Identity'),
-        if (widget.fingerprint != null)
-          ListTile(
-            leading: Icon(
-              Icons.fingerprint,
-              color: developerMode ? DnaColors.textSuccess : null,
-            ),
-            title: const Text('Fingerprint'),
-            subtitle: Text(
-              widget.fingerprint!,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: theme.textTheme.bodySmall?.copyWith(
-                fontFamily: 'monospace',
-              ),
-            ),
-            trailing: developerMode
-                ? const Icon(Icons.developer_mode, color: DnaColors.textSuccess)
-                : const Icon(Icons.content_copy),
-            onTap: () => _handleFingerprintTap(context),
-            onLongPress: () => _handleLongPress(context),
-          ),
-      ],
-    );
-  }
-}
-
-class _AboutSection extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
         const _SectionHeader('About'),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'DNA Messenger v1.0.0 alpha',
-                style: theme.textTheme.bodyMedium,
+              GestureDetector(
+                onTap: _handleVersionTap,
+                child: Text(
+                  'DNA Messenger v1.0.0 alpha',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: developerMode ? DnaColors.textSuccess : null,
+                  ),
+                ),
               ),
               const SizedBox(height: 4),
               Text(
