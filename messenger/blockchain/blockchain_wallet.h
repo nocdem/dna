@@ -6,7 +6,7 @@
  * Implementations exist in chain-specific subdirectories:
  *   - cellframe/ : Cellframe blockchain (CF20, post-quantum Dilithium)
  *   - ethereum/  : Ethereum and EVM-compatible chains (secp256k1)
- *   - (future)   : bitcoin/, solana/, etc.
+ *   - solana/    : Solana blockchain (Ed25519)
  *
  * @author DNA Messenger Team
  * @date 2025-12-08
@@ -34,7 +34,7 @@ typedef enum {
     BLOCKCHAIN_CELLFRAME = 0,   /* Cellframe (CF20, Dilithium signatures) */
     BLOCKCHAIN_ETHEREUM  = 1,   /* Ethereum mainnet */
     BLOCKCHAIN_BITCOIN   = 2,   /* Bitcoin (future) */
-    BLOCKCHAIN_SOLANA    = 3,   /* Solana (future) */
+    BLOCKCHAIN_SOLANA    = 3,   /* Solana (Ed25519) */
     BLOCKCHAIN_COUNT            /* Number of supported blockchains */
 } blockchain_type_t;
 
