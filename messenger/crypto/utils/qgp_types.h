@@ -117,8 +117,8 @@ typedef struct {
  * v0.08+: Replaces the reserved field in message header.
  */
 typedef enum {
-    MSG_TYPE_DIRECT_PQC = 0x00,  // Per-recipient Kyber1024 (current system)
-    MSG_TYPE_GROUP_GSK  = 0x01   // Group symmetric key (future)
+    MSG_TYPE_DIRECT_PQC = 0x00,  // Per-recipient Kyber1024
+    MSG_TYPE_GROUP_GSK  = 0x01   // Group symmetric key (AES-256-GCM)
 } message_type_t;
 
 // ============================================================================
