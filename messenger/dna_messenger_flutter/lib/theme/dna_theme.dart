@@ -21,11 +21,16 @@ class DnaColors {
   static const text = Color(0xFFF5F7FF);
   static const textMuted = Color(0xFF9AA4D4);
 
-  // Status colors
+  // Status colors (for text/icons)
   static const textSuccess = Color(0xFF40FF86);
   static const textWarning = Color(0xFFFF8080);
   static const textInfo = Color(0xFFFFCC66);
   static const offline = Color(0xFF6B7280); // Gray for offline status
+
+  // Snackbar backgrounds (dark, muted variants)
+  static const snackbarSuccess = Color(0xFF0D3320); // Dark forest green
+  static const snackbarError = Color(0xFF3D1A1A);   // Dark maroon
+  static const snackbarInfo = Color(0xFF2D2815);    // Dark amber
 
   // Borders
   static const border = Color(0x0FFFFFFF); // 6% white

@@ -39,32 +39,25 @@ class _MainNavigation extends ConsumerStatefulWidget {
 }
 
 class _MainNavigationState extends ConsumerState<_MainNavigation> {
-  static const _titles = ['Chats', 'Groups', 'Wallet', 'Settings'];
-  static const _screens = [
-    ContactsScreen(),
-    GroupsScreen(),
-    WalletScreen(),
-    SettingsScreen(),
-  ];
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  void _openDrawer() => _scaffoldKey.currentState?.openDrawer();
 
   @override
   Widget build(BuildContext context) {
     final currentTab = ref.watch(currentTabProvider);
 
     return Scaffold(
-      appBar: AppBar(
-        title: Text(_titles[currentTab]),
-        leading: Builder(
-          builder: (context) => IconButton(
-            icon: const Icon(Icons.menu),
-            onPressed: () => Scaffold.of(context).openDrawer(),
-          ),
-        ),
-      ),
+      key: _scaffoldKey,
       drawer: const _NavigationDrawer(),
       body: IndexedStack(
         index: currentTab,
-        children: _screens,
+        children: [
+          ContactsScreen(onMenuPressed: _openDrawer),
+          GroupsScreen(onMenuPressed: _openDrawer),
+          WalletScreen(onMenuPressed: _openDrawer),
+          SettingsScreen(onMenuPressed: _openDrawer),
+        ],
       ),
     );
   }

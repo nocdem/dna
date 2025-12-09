@@ -9,7 +9,9 @@ import '../../theme/dna_theme.dart';
 import '../chat/chat_screen.dart';
 
 class ContactsScreen extends ConsumerWidget {
-  const ContactsScreen({super.key});
+  final VoidCallback? onMenuPressed;
+
+  const ContactsScreen({super.key, this.onMenuPressed});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -18,9 +20,15 @@ class ContactsScreen extends ConsumerWidget {
 
     return Scaffold(
       appBar: AppBar(
+        leading: onMenuPressed != null
+            ? IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: onMenuPressed,
+              )
+            : null,
         title: Row(
           children: [
-            const Text('Contacts'),
+            const Text('Chats'),
             const SizedBox(width: 8),
             _DhtStatusIndicator(state: dhtState),
           ],
@@ -418,7 +426,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Contact ${_foundName ?? 'added'} added'),
-            backgroundColor: DnaColors.textSuccess,
+            backgroundColor: DnaColors.snackbarSuccess,
           ),
         );
       }

@@ -3,23 +3,57 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
 
+/// Developer mode state provider - persisted to SharedPreferences
+final developerModeProvider = StateNotifierProvider<DeveloperModeNotifier, bool>((ref) {
+  return DeveloperModeNotifier();
+});
+
+class DeveloperModeNotifier extends StateNotifier<bool> {
+  static const _key = 'developer_mode_enabled';
+
+  DeveloperModeNotifier() : super(false) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getBool(_key) ?? false;
+  }
+
+  Future<void> setEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, enabled);
+    state = enabled;
+  }
+}
+
 class SettingsScreen extends ConsumerWidget {
-  const SettingsScreen({super.key});
+  final VoidCallback? onMenuPressed;
+
+  const SettingsScreen({super.key, this.onMenuPressed});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final fingerprint = ref.watch(currentFingerprintProvider);
     final simpleProfile = ref.watch(userProfileProvider);
     final fullProfile = ref.watch(fullProfileProvider);
+    final developerMode = ref.watch(developerModeProvider);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Settings'),
+        leading: onMenuPressed != null
+            ? IconButton(
+                icon: const Icon(Icons.menu),
+                onPressed: onMenuPressed,
+              )
+            : null,
       ),
       body: ListView(
         children: [
@@ -31,9 +65,9 @@ class SettingsScreen extends ConsumerWidget {
           ),
           // Security
           _SecuritySection(),
-          // Log settings
-          _LogSettingsSection(),
-          // Identity
+          // Developer settings (hidden by default)
+          if (developerMode) _LogSettingsSection(),
+          // Identity (tap fingerprint 5x to enable developer mode)
           _IdentitySection(fingerprint: fingerprint),
           // About
           _AboutSection(),
@@ -519,10 +553,54 @@ class _IdentitySection extends ConsumerWidget {
   }
 }
 
-class _AboutSection extends StatelessWidget {
+class _AboutSection extends ConsumerStatefulWidget {
+  @override
+  ConsumerState<_AboutSection> createState() => _AboutSectionState();
+}
+
+class _AboutSectionState extends ConsumerState<_AboutSection> {
+  int _tapCount = 0;
+  DateTime? _lastTapTime;
+  static const _requiredTaps = 5;
+  static const _tapTimeout = Duration(seconds: 2);
+
+  void _handleVersionTap() {
+    final now = DateTime.now();
+    final developerMode = ref.read(developerModeProvider);
+
+    // If already enabled, disable on tap
+    if (developerMode) {
+      ref.read(developerModeProvider.notifier).setEnabled(false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Developer mode disabled')),
+      );
+      return;
+    }
+
+    // Reset tap count if too much time has passed
+    if (_lastTapTime != null && now.difference(_lastTapTime!) > _tapTimeout) {
+      _tapCount = 0;
+    }
+
+    _lastTapTime = now;
+    _tapCount++;
+
+    if (_tapCount >= _requiredTaps) {
+      ref.read(developerModeProvider.notifier).setEnabled(true);
+      _tapCount = 0;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Developer mode enabled'),
+          backgroundColor: DnaColors.snackbarSuccess,
+        ),
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final developerMode = ref.watch(developerModeProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -533,9 +611,14 @@ class _AboutSection extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                'DNA Messenger v1.0.0 alpha',
-                style: theme.textTheme.bodyMedium,
+              GestureDetector(
+                onTap: _handleVersionTap,
+                child: Text(
+                  'DNA Messenger v1.0.0 alpha',
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: developerMode ? DnaColors.textSuccess : null,
+                  ),
+                ),
               ),
               const SizedBox(height: 4),
               Text(

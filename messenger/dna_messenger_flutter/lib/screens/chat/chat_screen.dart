@@ -382,7 +382,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Text('Message queue full. Please wait and try again.'),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
             action: SnackBarAction(
               label: 'OK',
               textColor: Colors.white,
@@ -398,7 +398,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: const Text('Failed to send message. Please try again.'),
-            backgroundColor: DnaColors.textWarning,
+            backgroundColor: DnaColors.snackbarError,
           ),
         );
         _messageController.text = text;
