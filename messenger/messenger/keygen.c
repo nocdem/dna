@@ -556,44 +556,71 @@ int messenger_register_name(
     char wallets_path[512];
     snprintf(wallets_path, sizeof(wallets_path), "%s/%s/wallets", data_dir, fingerprint);
 
+    QGP_LOG_DEBUG(LOG_TAG, "Scanning wallets directory: %s", wallets_path);
+
     DIR *wdir = opendir(wallets_path);
     if (wdir) {
+        QGP_LOG_DEBUG(LOG_TAG, "Wallets directory opened successfully");
         struct dirent *wentry;
         while ((wentry = readdir(wdir)) != NULL) {
+            QGP_LOG_DEBUG(LOG_TAG, "Found file: %s", wentry->d_name);
+
             // Cellframe wallet
             if (strstr(wentry->d_name, ".dwallet") && wallet_address[0] == '\0') {
                 char wpath[768];
                 snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
+                QGP_LOG_DEBUG(LOG_TAG, "Loading Cellframe wallet: %s", wpath);
                 cellframe_wallet_t *wallet = NULL;
                 if (wallet_read_cellframe_path(wpath, &wallet) == 0 && wallet) {
                     if (wallet->address[0]) {
                         strncpy(wallet_address, wallet->address, sizeof(wallet_address) - 1);
+                        QGP_LOG_DEBUG(LOG_TAG, "Cellframe wallet loaded: %s", wallet_address);
+                    } else {
+                        QGP_LOG_WARN(LOG_TAG, "Cellframe wallet has empty address");
                     }
                     wallet_free(wallet);
+                } else {
+                    QGP_LOG_ERROR(LOG_TAG, "Failed to load Cellframe wallet: %s", wpath);
                 }
             }
             // ETH wallet
             if (strstr(wentry->d_name, ".eth.json") && eth_address[0] == '\0') {
                 char wpath[768];
                 snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
+                QGP_LOG_DEBUG(LOG_TAG, "Loading ETH wallet: %s", wpath);
                 eth_wallet_t eth_wallet;
                 if (eth_wallet_load(wpath, &eth_wallet) == 0) {
                     strncpy(eth_address, eth_wallet.address_hex, sizeof(eth_address) - 1);
+                    QGP_LOG_DEBUG(LOG_TAG, "ETH wallet loaded: %s", eth_address);
+                } else {
+                    QGP_LOG_ERROR(LOG_TAG, "Failed to load ETH wallet: %s", wpath);
                 }
             }
             // SOL wallet
             if (strstr(wentry->d_name, ".sol.json") && sol_address[0] == '\0') {
                 char wpath[768];
                 snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
+                QGP_LOG_DEBUG(LOG_TAG, "Loading SOL wallet: %s", wpath);
                 sol_wallet_t sol_wallet;
                 if (sol_wallet_load(wpath, &sol_wallet) == 0) {
                     strncpy(sol_address, sol_wallet.address, sizeof(sol_address) - 1);
+                    QGP_LOG_DEBUG(LOG_TAG, "SOL wallet loaded: %s", sol_address);
                     sol_wallet_clear(&sol_wallet);
+                } else {
+                    QGP_LOG_ERROR(LOG_TAG, "Failed to load SOL wallet: %s", wpath);
                 }
             }
         }
         closedir(wdir);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open wallets directory: %s", wallets_path);
     }
+
+    // Log final wallet addresses before publishing
+    QGP_LOG_INFO(LOG_TAG, "Wallet addresses for profile publish:");
+    QGP_LOG_INFO(LOG_TAG, "  Cellframe: %s", wallet_address[0] ? wallet_address : "(none)");
+    QGP_LOG_INFO(LOG_TAG, "  ETH: %s", eth_address[0] ? eth_address : "(none)");
+    QGP_LOG_INFO(LOG_TAG, "  SOL: %s", sol_address[0] ? sol_address : "(none)");
 
     // Publish identity to DHT (unified: creates fingerprint:profile and name:lookup)
     int publish_result = dht_keyserver_publish(
