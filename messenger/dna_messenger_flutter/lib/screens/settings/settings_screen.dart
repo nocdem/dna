@@ -3,10 +3,35 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
+
+/// Developer mode state provider - persisted to SharedPreferences
+final developerModeProvider = StateNotifierProvider<DeveloperModeNotifier, bool>((ref) {
+  return DeveloperModeNotifier();
+});
+
+class DeveloperModeNotifier extends StateNotifier<bool> {
+  static const _key = 'developer_mode_enabled';
+
+  DeveloperModeNotifier() : super(false) {
+    _load();
+  }
+
+  Future<void> _load() async {
+    final prefs = await SharedPreferences.getInstance();
+    state = prefs.getBool(_key) ?? false;
+  }
+
+  Future<void> setEnabled(bool enabled) async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_key, enabled);
+    state = enabled;
+  }
+}
 
 class SettingsScreen extends ConsumerWidget {
   final VoidCallback? onMenuPressed;
@@ -18,6 +43,7 @@ class SettingsScreen extends ConsumerWidget {
     final fingerprint = ref.watch(currentFingerprintProvider);
     final simpleProfile = ref.watch(userProfileProvider);
     final fullProfile = ref.watch(fullProfileProvider);
+    final developerMode = ref.watch(developerModeProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -39,9 +65,9 @@ class SettingsScreen extends ConsumerWidget {
           ),
           // Security
           _SecuritySection(),
-          // Log settings
-          _LogSettingsSection(),
-          // Identity
+          // Developer settings (hidden by default)
+          if (developerMode) _LogSettingsSection(),
+          // Identity (tap fingerprint 5x to enable developer mode)
           _IdentitySection(fingerprint: fingerprint),
           // About
           _AboutSection(),
@@ -489,38 +515,115 @@ class _PillButton extends StatelessWidget {
   }
 }
 
-class _IdentitySection extends ConsumerWidget {
+class _IdentitySection extends ConsumerStatefulWidget {
   final String? fingerprint;
 
   const _IdentitySection({required this.fingerprint});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_IdentitySection> createState() => _IdentitySectionState();
+}
+
+class _IdentitySectionState extends ConsumerState<_IdentitySection> {
+  int _tapCount = 0;
+  DateTime? _lastTapTime;
+  static const _requiredTaps = 5;
+  static const _tapTimeout = Duration(seconds: 2);
+
+  void _handleFingerprintTap(BuildContext context) {
+    final now = DateTime.now();
+    final developerMode = ref.read(developerModeProvider);
+
+    // If already in developer mode, just copy fingerprint
+    if (developerMode) {
+      _copyFingerprint(context);
+      return;
+    }
+
+    // Reset tap count if too much time has passed
+    if (_lastTapTime != null && now.difference(_lastTapTime!) > _tapTimeout) {
+      _tapCount = 0;
+    }
+
+    _lastTapTime = now;
+    _tapCount++;
+
+    if (_tapCount >= _requiredTaps) {
+      // Enable developer mode
+      ref.read(developerModeProvider.notifier).setEnabled(true);
+      _tapCount = 0;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Developer mode enabled'),
+          backgroundColor: DnaColors.snackbarSuccess,
+        ),
+      );
+    } else {
+      final remaining = _requiredTaps - _tapCount;
+      if (_tapCount >= 2) {
+        ScaffoldMessenger.of(context).clearSnackBars();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('$remaining ${remaining == 1 ? 'tap' : 'taps'} to enable developer mode'),
+            duration: const Duration(milliseconds: 800),
+          ),
+        );
+      }
+    }
+  }
+
+  void _copyFingerprint(BuildContext context) {
+    if (widget.fingerprint != null) {
+      Clipboard.setData(ClipboardData(text: widget.fingerprint!));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Fingerprint copied')),
+      );
+    }
+  }
+
+  void _handleLongPress(BuildContext context) {
+    final developerMode = ref.read(developerModeProvider);
+    if (developerMode) {
+      // Long press to disable developer mode
+      ref.read(developerModeProvider.notifier).setEnabled(false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Developer mode disabled')),
+      );
+    } else {
+      // Long press to copy when not in developer mode
+      _copyFingerprint(context);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final developerMode = ref.watch(developerModeProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader('Identity'),
-        if (fingerprint != null)
+        if (widget.fingerprint != null)
           ListTile(
-            leading: const Icon(Icons.fingerprint),
+            leading: Icon(
+              Icons.fingerprint,
+              color: developerMode ? DnaColors.textSuccess : null,
+            ),
             title: const Text('Fingerprint'),
             subtitle: Text(
-              fingerprint!,
+              widget.fingerprint!,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodySmall?.copyWith(
                 fontFamily: 'monospace',
               ),
             ),
-            trailing: const Icon(Icons.content_copy),
-            onTap: () {
-              Clipboard.setData(ClipboardData(text: fingerprint!));
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Fingerprint copied')),
-              );
-            },
+            trailing: developerMode
+                ? const Icon(Icons.developer_mode, color: DnaColors.textSuccess)
+                : const Icon(Icons.content_copy),
+            onTap: () => _handleFingerprintTap(context),
+            onLongPress: () => _handleLongPress(context),
           ),
       ],
     );
