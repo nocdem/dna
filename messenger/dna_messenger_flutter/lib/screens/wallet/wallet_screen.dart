@@ -215,6 +215,8 @@ class _WalletSelector extends StatelessWidget {
         return 'Tesla';
       case 100:
         return 'ETH';
+      case 101:
+        return 'SOL';
       default:
         return 'Type $sigType';
     }
@@ -325,6 +327,8 @@ class _WalletCard extends StatelessWidget {
         return 'Tesla';
       case 100:
         return 'ETH (secp256k1)';
+      case 101:
+        return 'SOL (Ed25519)';
       default:
         return 'Type $sigType';
     }
@@ -457,6 +461,8 @@ class _BalanceTile extends StatelessWidget {
         return const Color(0xFF6B4CE6); // Purple for CELL
       case 'ETH':
         return const Color(0xFF627EEA); // Ethereum blue
+      case 'SOL':
+        return const Color(0xFF9945FF); // Solana purple
       default:
         return DnaColors.textInfo;
     }
@@ -735,6 +741,12 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         DropdownMenuItem(value: 'ETH', child: Text('ETH')),
       ];
     }
+    // If SOL is preselected, show SOL option
+    if (_selectedToken.toUpperCase() == 'SOL') {
+      return const [
+        DropdownMenuItem(value: 'SOL', child: Text('SOL')),
+      ];
+    }
     // Default: Cellframe tokens
     return const [
       DropdownMenuItem(value: 'CPUNK', child: Text('CPUNK')),
@@ -747,6 +759,12 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     if (_selectedNetwork == 'Ethereum') {
       return const [
         DropdownMenuItem(value: 'Ethereum', child: Text('Ethereum')),
+      ];
+    }
+    // If Solana network, show only Solana
+    if (_selectedNetwork == 'Solana') {
+      return const [
+        DropdownMenuItem(value: 'Solana', child: Text('Solana')),
       ];
     }
     // Default: Backbone network
@@ -1036,6 +1054,8 @@ class _TokenDetailSheet extends ConsumerWidget {
         return const Color(0xFF6B4CE6);
       case 'ETH':
         return const Color(0xFF627EEA);
+      case 'SOL':
+        return const Color(0xFF9945FF);
       default:
         return DnaColors.textInfo;
     }
