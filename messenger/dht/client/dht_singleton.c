@@ -19,6 +19,10 @@ static dht_context_t *g_dht_context = NULL;
 static dna_config_t g_config = {0};
 static bool g_config_loaded = false;
 
+// Stored callback for re-registration after reinit
+static dht_status_callback_t g_status_callback = NULL;
+static void *g_status_callback_user_data = NULL;
+
 static void ensure_config(void) {
     if (!g_config_loaded) {
         dna_config_load(&g_config);
@@ -149,6 +153,13 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     // Non-blocking: DHT bootstraps in its own background threads
     // Operations will wait/retry as needed when DHT becomes ready
     QGP_LOG_INFO(LOG_TAG, "DHT started with identity (bootstrapping in background)");
+
+    // Re-register stored status callback on new context
+    if (g_status_callback) {
+        dht_context_set_status_callback(g_dht_context, g_status_callback, g_status_callback_user_data);
+        QGP_LOG_INFO(LOG_TAG, "Re-registered status callback on new context");
+    }
+
     return 0;
 }
 
@@ -164,9 +175,14 @@ void dht_singleton_cleanup(void)
 
 void dht_singleton_set_status_callback(dht_status_callback_t callback, void *user_data)
 {
-    if (!g_dht_context) {
-        QGP_LOG_WARN(LOG_TAG, "DHT not initialized, cannot set status callback");
-        return;
+    // Store callback for re-registration after reinit
+    g_status_callback = callback;
+    g_status_callback_user_data = user_data;
+
+    // Register on current context if available
+    if (g_dht_context) {
+        dht_context_set_status_callback(g_dht_context, callback, user_data);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Status callback stored (will register when DHT starts)");
     }
-    dht_context_set_status_callback(g_dht_context, callback, user_data);
 }
