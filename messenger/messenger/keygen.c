@@ -29,6 +29,7 @@
 #include "keys.h"
 #include "../blockchain/cellframe/cellframe_wallet_create.h"
 #include "../blockchain/ethereum/eth_wallet.h"
+#include "../blockchain/solana/sol_wallet.h"
 #include "../blockchain/cellframe/cellframe_wallet.h"
 #include "../blockchain/blockchain_wallet.h"
 
@@ -551,6 +552,7 @@ int messenger_register_name(
     // Find wallet addresses for this identity
     char wallet_address[128] = {0};
     char eth_address[48] = {0};
+    char sol_address[48] = {0};
     char wallets_path[512];
     snprintf(wallets_path, sizeof(wallets_path), "%s/%s/wallets", data_dir, fingerprint);
 
@@ -576,7 +578,17 @@ int messenger_register_name(
                 snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
                 eth_wallet_t eth_wallet;
                 if (eth_wallet_load(wpath, &eth_wallet) == 0) {
-                    strncpy(eth_address, eth_wallet.address, sizeof(eth_address) - 1);
+                    strncpy(eth_address, eth_wallet.address_hex, sizeof(eth_address) - 1);
+                }
+            }
+            // SOL wallet
+            if (strstr(wentry->d_name, ".sol.json") && sol_address[0] == '\0') {
+                char wpath[768];
+                snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
+                sol_wallet_t sol_wallet;
+                if (sol_wallet_load(wpath, &sol_wallet) == 0) {
+                    strncpy(sol_address, sol_wallet.address, sizeof(sol_address) - 1);
+                    sol_wallet_clear(&sol_wallet);
                 }
             }
         }
@@ -592,7 +604,8 @@ int messenger_register_name(
         enc_key->public_key,
         sign_key->private_key,
         wallet_address[0] ? wallet_address : NULL,
-        eth_address[0] ? eth_address : NULL
+        eth_address[0] ? eth_address : NULL,
+        sol_address[0] ? sol_address : NULL
     );
 
     if (publish_result == -2) {

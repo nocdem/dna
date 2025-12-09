@@ -19,6 +19,12 @@ This project is in ALPHA. We use hard cutoffs for all changes:
 - NO legacy support
 - Breaking changes are expected and acceptable
 
+## IMGUI IS DEPRECATED
+The ImGui GUI (`imgui_gui/`) is **NO LONGER USED**. Do not modify or reference it.
+- **Current UI**: Flutter (`user_interface/`)
+- **Ignore**: `imgui_gui/` directory entirely
+- All UI work should be done in Flutter only
+
 ## MULTIPLATFORM PROJECT - ALL PLATFORMS ALWAYS
 This is a multiplatform project targeting Linux, Windows, and Android (iOS planned).
 When writing ANY code:

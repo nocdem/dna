@@ -25,7 +25,8 @@ int dht_keyserver_publish(
     const uint8_t *kyber_pubkey,
     const uint8_t *dilithium_privkey,
     const char *wallet_address,  // Optional - Cellframe wallet address
-    const char *eth_address      // Optional - Ethereum wallet address
+    const char *eth_address,     // Optional - Ethereum wallet address
+    const char *sol_address      // Optional - Solana wallet address
 ) {
     QGP_LOG_INFO(LOG_TAG, "Publishing identity: name=%s, fingerprint=%.16s...\n",
            name, fingerprint);
@@ -95,6 +96,9 @@ int dht_keyserver_publish(
     }
     if (eth_address && eth_address[0]) {
         strncpy(identity->wallets.eth, eth_address, sizeof(identity->wallets.eth) - 1);
+    }
+    if (sol_address && sol_address[0]) {
+        strncpy(identity->wallets.sol, sol_address, sizeof(identity->wallets.sol) - 1);
     }
 
     // Set metadata

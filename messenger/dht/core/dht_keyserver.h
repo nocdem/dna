@@ -50,6 +50,8 @@ typedef struct dht_context dht_context_t;
  * @param kyber_pubkey: Kyber1024 public key (1568 bytes)
  * @param dilithium_privkey: Dilithium5 private key for signing (4896 bytes)
  * @param wallet_address: Cellframe wallet address (optional, can be NULL)
+ * @param eth_address: Ethereum wallet address (optional, can be NULL)
+ * @param sol_address: Solana wallet address (optional, can be NULL)
  * @return: 0 on success, -1 on error, -2 if name already taken
  */
 int dht_keyserver_publish(
@@ -60,7 +62,8 @@ int dht_keyserver_publish(
     const uint8_t *kyber_pubkey,
     const uint8_t *dilithium_privkey,
     const char *wallet_address,
-    const char *eth_address
+    const char *eth_address,
+    const char *sol_address
 );
 
 /**
