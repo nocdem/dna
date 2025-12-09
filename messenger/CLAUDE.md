@@ -8,9 +8,23 @@
 NO STUBS
 NO ASSUMPTIONS
 NO DUMMY DATA
-Souce of truth is the soucecode and documentation
+Source of truth is the sourcecode and documentation
 Always ask user what to do if unsure
-Anything aginst protcol mode breaks the blockchain / encryption .
+Anything against protocol mode breaks the blockchain / encryption.
+
+## LOGGING STANDARD
+When adding debug/logging to C code, ALWAYS use QGP_LOG macros:
+```c
+#include "crypto/utils/qgp_log.h"
+
+QGP_LOG_DEBUG(LOG_TAG, "Debug message: %s", variable);
+QGP_LOG_INFO(LOG_TAG, "Info message: %d", number);
+QGP_LOG_WARN(LOG_TAG, "Warning message");
+QGP_LOG_ERROR(LOG_TAG, "Error message: %s", error_str);
+```
+- **NEVER** use `printf()`, `fprintf()`, or raw `stdout`/`stderr` for logging
+- **ALWAYS** define `LOG_TAG` at top of file: `#define LOG_TAG "MODULE_NAME"`
+- Log levels: DEBUG < INFO < WARN < ERROR
 
 ## ALPHA PROJECT - HARD CUTOFFS ONLY
 This project is in ALPHA. We use hard cutoffs for all changes:

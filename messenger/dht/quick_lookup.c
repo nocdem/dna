@@ -82,7 +82,6 @@ int main(int argc, char **argv) {
 
             printf("\n--- Wallet Addresses ---\n");
             if (id->wallets.backbone[0]) printf("Backbone: %s\n", id->wallets.backbone);
-            if (id->wallets.kelvpn[0]) printf("KelVPN: %s\n", id->wallets.kelvpn);
             if (id->wallets.btc[0]) printf("Bitcoin: %s\n", id->wallets.btc);
             if (id->wallets.eth[0]) printf("Ethereum: %s\n", id->wallets.eth);
             if (id->wallets.sol[0]) printf("Solana: %s\n", id->wallets.sol);

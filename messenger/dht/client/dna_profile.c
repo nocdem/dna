@@ -52,8 +52,6 @@ static json_object* wallets_to_json(const dna_wallets_t *wallets) {
     // Cellframe networks
     if (wallets->backbone[0]) json_object_object_add(obj, "backbone",
         json_object_new_string(wallets->backbone));
-    if (wallets->kelvpn[0]) json_object_object_add(obj, "kelvpn",
-        json_object_new_string(wallets->kelvpn));
     if (wallets->alvin[0]) json_object_object_add(obj, "alvin",
         json_object_new_string(wallets->alvin));
 
@@ -64,8 +62,6 @@ static json_object* wallets_to_json(const dna_wallets_t *wallets) {
         json_object_new_string(wallets->eth));
     if (wallets->sol[0]) json_object_object_add(obj, "sol",
         json_object_new_string(wallets->sol));
-    if (wallets->qevm[0]) json_object_object_add(obj, "qevm",
-        json_object_new_string(wallets->qevm));
     if (wallets->bnb[0]) json_object_object_add(obj, "bnb",
         json_object_new_string(wallets->bnb));
 
@@ -83,12 +79,10 @@ static int wallets_from_json(json_object *obj, dna_wallets_t *wallets) {
         }
 
     PARSE_WALLET(backbone, "backbone")
-    PARSE_WALLET(kelvpn, "kelvpn")
     PARSE_WALLET(alvin, "alvin")
     PARSE_WALLET(btc, "btc")
     PARSE_WALLET(eth, "eth")
     PARSE_WALLET(sol, "sol")
-    PARSE_WALLET(qevm, "qevm")
     PARSE_WALLET(bnb, "bnb")
 
     #undef PARSE_WALLET
@@ -271,10 +265,6 @@ char* dna_identity_to_json(const dna_unified_identity_t *identity) {
             json_object_new_int64(identity->name_registered_at));
         json_object_object_add(root, "name_expires_at",
             json_object_new_int64(identity->name_expires_at));
-        json_object_object_add(root, "registration_tx_hash",
-            json_object_new_string(identity->registration_tx_hash));
-        json_object_object_add(root, "registration_network",
-            json_object_new_string(identity->registration_network));
         json_object_object_add(root, "name_version",
             json_object_new_int(identity->name_version));
     }
@@ -374,16 +364,6 @@ int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_o
         if (json_object_object_get_ex(root, "name_expires_at", &val)) {
             identity->name_expires_at = json_object_get_int64(val);
         }
-        if (json_object_object_get_ex(root, "registration_tx_hash", &val)) {
-            const char *str = json_object_get_string(val);
-            if (str) strncpy(identity->registration_tx_hash, str,
-                           sizeof(identity->registration_tx_hash) - 1);
-        }
-        if (json_object_object_get_ex(root, "registration_network", &val)) {
-            const char *str = json_object_get_string(val);
-            if (str) strncpy(identity->registration_network, str,
-                           sizeof(identity->registration_network) - 1);
-        }
         if (json_object_object_get_ex(root, "name_version", &val)) {
             identity->name_version = json_object_get_int(val);
         }
@@ -477,16 +457,10 @@ int dna_profile_validate(const dna_profile_data_t *profile) {
         }
 
     VALIDATE_WALLET(backbone, "backbone")
-    VALIDATE_WALLET(kelvpn, "kelvpn")
-    
-    
-    
-    
     VALIDATE_WALLET(alvin, "alvin")
     VALIDATE_WALLET(btc, "btc")
     VALIDATE_WALLET(eth, "eth")
     VALIDATE_WALLET(sol, "sol")
-    VALIDATE_WALLET(qevm, "qevm")
     VALIDATE_WALLET(bnb, "bnb")
 
     #undef VALIDATE_WALLET
@@ -528,9 +502,8 @@ bool dna_validate_wallet_address(const char *address, const char *network) {
         return false;
     }
 
-    // Ethereum, QEVM, BNB (0x + 40 hex chars)
-    if (strcmp(network, "eth") == 0 || strcmp(network, "qevm") == 0 ||
-        strcmp(network, "bnb") == 0) {
+    // Ethereum, BNB (0x + 40 hex chars)
+    if (strcmp(network, "eth") == 0 || strcmp(network, "bnb") == 0) {
         if (len != 42 || strncmp(address, "0x", 2) != 0) return false;
         for (size_t i = 2; i < len; i++) {
             if (!isxdigit(address[i])) return false;
@@ -622,11 +595,6 @@ bool dna_network_is_cellframe(const char *network) {
     if (!network) return false;
 
     return (strcmp(network, "backbone") == 0 ||
-            strcmp(network, "kelvpn") == 0 ||
-            
-            
-            
-            
             strcmp(network, "alvin") == 0);
 }
 
@@ -636,7 +604,6 @@ bool dna_network_is_external(const char *network) {
     return (strcmp(network, "btc") == 0 ||
             strcmp(network, "eth") == 0 ||
             strcmp(network, "sol") == 0 ||
-            strcmp(network, "qevm") == 0 ||
             strcmp(network, "bnb") == 0);
 }
 
@@ -664,16 +631,10 @@ const char* dna_identity_get_wallet(const dna_unified_identity_t *identity,
         }
 
     CHECK_WALLET(backbone, "backbone")
-    CHECK_WALLET(kelvpn, "kelvpn")
-    
-    
-    
-    
     CHECK_WALLET(alvin, "alvin")
     CHECK_WALLET(btc, "btc")
     CHECK_WALLET(eth, "eth")
     CHECK_WALLET(sol, "sol")
-    CHECK_WALLET(qevm, "qevm")
     CHECK_WALLET(bnb, "bnb")
 
     #undef CHECK_WALLET
@@ -700,16 +661,10 @@ int dna_identity_set_wallet(dna_unified_identity_t *identity,
         }
 
     SET_WALLET(backbone, "backbone")
-    SET_WALLET(kelvpn, "kelvpn")
-    
-    
-    
-    
     SET_WALLET(alvin, "alvin")
     SET_WALLET(btc, "btc")
     SET_WALLET(eth, "eth")
     SET_WALLET(sol, "sol")
-    SET_WALLET(qevm, "qevm")
     SET_WALLET(bnb, "bnb")
 
     #undef SET_WALLET

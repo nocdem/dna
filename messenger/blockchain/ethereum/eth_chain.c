@@ -38,7 +38,7 @@ static int eth_chain_get_balance(
     }
 
     /* Only native ETH supported for now */
-    if (token != NULL && strlen(token) > 0) {
+    if (token != NULL && strlen(token) > 0 && strcasecmp(token, "ETH") != 0) {
         QGP_LOG_ERROR(LOG_TAG, "ERC-20 tokens not yet supported");
         return -1;
     }
@@ -143,7 +143,7 @@ static int eth_chain_send_from_wallet(
     }
 
     /* Only native ETH supported for now */
-    if (token != NULL && strlen(token) > 0) {
+    if (token != NULL && strlen(token) > 0 && strcasecmp(token, "ETH") != 0) {
         QGP_LOG_ERROR(LOG_TAG, "ERC-20 tokens not yet supported");
         return -1;
     }
