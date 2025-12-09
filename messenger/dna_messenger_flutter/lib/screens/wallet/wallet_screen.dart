@@ -447,7 +447,7 @@ class _BalanceTile extends StatelessWidget {
         walletAddress: walletBalance.wallet.address,
         token: balance.token,
         network: balance.network,
-        balance: balance.balance,
+        initialBalance: balance.balance,
       ),
     );
   }
@@ -914,14 +914,14 @@ class _TokenDetailSheet extends ConsumerWidget {
   final String walletAddress;
   final String token;
   final String network;
-  final String balance;
+  final String initialBalance;
 
   const _TokenDetailSheet({
     required this.walletIndex,
     required this.walletAddress,
     required this.token,
     required this.network,
-    required this.balance,
+    required this.initialBalance,
   });
 
   @override
@@ -929,6 +929,14 @@ class _TokenDetailSheet extends ConsumerWidget {
     final transactionsAsync = ref.watch(
       transactionsProvider((walletIndex: walletIndex, network: network == 'Ethereum' ? 'Ethereum' : 'Backbone')),
     );
+    // Watch balances to get updated value after refresh
+    final balancesAsync = ref.watch(balancesProvider(walletIndex));
+    final balance = balancesAsync.whenOrNull(
+      data: (balances) => balances
+          .where((b) => b.token == token && b.network == network)
+          .map((b) => b.balance)
+          .firstOrNull,
+    ) ?? initialBalance;
     final theme = Theme.of(context);
 
     return DraggableScrollableSheet(
