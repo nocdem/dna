@@ -385,7 +385,7 @@ class _AllBalancesSection extends ConsumerWidget {
   }
 }
 
-class _BalanceTile extends StatelessWidget {
+class _BalanceTile extends ConsumerWidget {
   final WalletBalance walletBalance;
 
   const _BalanceTile({
@@ -393,7 +393,7 @@ class _BalanceTile extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final balance = walletBalance.balance;
 
@@ -433,12 +433,18 @@ class _BalanceTile extends StatelessWidget {
           ],
         ),
       ),
-      onTap: () => _showTokenDetails(context),
+      onTap: () => _showTokenDetails(context, ref),
     );
   }
 
-  void _showTokenDetails(BuildContext context) {
+  void _showTokenDetails(BuildContext context, WidgetRef ref) {
     final balance = walletBalance.balance;
+    final network = balance.network == 'Ethereum' ? 'Ethereum' : 'Backbone';
+
+    // Invalidate to fetch fresh data when opening
+    ref.invalidate(transactionsProvider((walletIndex: walletBalance.walletIndex, network: network)));
+    ref.invalidate(balancesProvider(walletBalance.walletIndex));
+
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
