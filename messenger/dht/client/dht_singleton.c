@@ -161,3 +161,12 @@ void dht_singleton_cleanup(void)
         QGP_LOG_INFO(LOG_TAG, "DHT shutdown complete");
     }
 }
+
+void dht_singleton_set_status_callback(dht_status_callback_t callback, void *user_data)
+{
+    if (!g_dht_context) {
+        QGP_LOG_WARN(LOG_TAG, "DHT not initialized, cannot set status callback");
+        return;
+    }
+    dht_context_set_status_callback(g_dht_context, callback, user_data);
+}

@@ -94,6 +94,30 @@ static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
 static qgp_key_t* dna_load_private_key(dna_engine_t *engine);
 static void init_log_config(void);
 
+/* Global engine pointer for DHT status callback (set during create, cleared during destroy) */
+static dna_engine_t *g_dht_callback_engine = NULL;
+
+/**
+ * DHT status change callback - dispatches DHT_CONNECTED/DHT_DISCONNECTED events
+ * Called from OpenDHT's internal thread when connection status changes.
+ */
+static void dna_dht_status_callback(bool is_connected, void *user_data) {
+    (void)user_data;  /* Using global engine pointer instead */
+
+    dna_engine_t *engine = g_dht_callback_engine;
+    if (!engine) return;
+
+    dna_event_t event = {0};
+    if (is_connected) {
+        QGP_LOG_INFO(LOG_TAG, "DHT connected");
+        event.type = DNA_EVENT_DHT_CONNECTED;
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "DHT disconnected");
+        event.type = DNA_EVENT_DHT_DISCONNECTED;
+    }
+    dna_dispatch_event(engine, &event);
+}
+
 /* ============================================================================
  * ERROR STRINGS
  * ============================================================================ */
@@ -522,11 +546,17 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize DHT singleton */
     dht_singleton_init();
 
+    /* Register DHT status callback to emit events on connection changes */
+    g_dht_callback_engine = engine;
+    dht_singleton_set_status_callback(dna_dht_status_callback, NULL);
+
     /* Initialize global keyserver cache (for display names before login) */
     keyserver_cache_init(NULL);
 
     /* Start worker threads */
     if (dna_start_workers(engine) != 0) {
+        g_dht_callback_engine = NULL;
+        dht_singleton_set_status_callback(NULL, NULL);
         pthread_mutex_destroy(&engine->event_mutex);
         pthread_mutex_destroy(&engine->task_mutex);
         pthread_cond_destroy(&engine->task_cond);
@@ -553,6 +583,12 @@ void dna_engine_set_event_callback(
 
 void dna_engine_destroy(dna_engine_t *engine) {
     if (!engine) return;
+
+    /* Clear DHT status callback before stopping anything */
+    if (g_dht_callback_engine == engine) {
+        dht_singleton_set_status_callback(NULL, NULL);
+        g_dht_callback_engine = NULL;
+    }
 
     /* Stop worker threads */
     dna_stop_workers(engine);

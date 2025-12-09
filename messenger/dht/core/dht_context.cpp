@@ -91,11 +91,18 @@ struct dht_context {
     dht::ValueType type_30day;
     dht::ValueType type_365day;
 
+    // Status change callback (called from OpenDHT thread)
+    dht_status_callback_t status_callback;
+    void *status_callback_user_data;
+    std::mutex status_callback_mutex;
+
     dht_context() : running(false), storage(nullptr),
                     // Initialize with default values (configured properly in start())
                     type_7day(0, "", std::chrono::hours(0)),
                     type_30day(0, "", std::chrono::hours(0)),
-                    type_365day(0, "", std::chrono::hours(0)) {
+                    type_365day(0, "", std::chrono::hours(0)),
+                    status_callback(nullptr),
+                    status_callback_user_data(nullptr) {
         memset(&config, 0, sizeof(config));
     }
 };
@@ -575,6 +582,53 @@ extern "C" bool dht_context_is_ready(dht_context_t *ctx) {
         QGP_LOG_ERROR("DHT", "Exception in dht_context_is_ready: %s", e.what());
         return false;
     }
+}
+
+/**
+ * Set callback for DHT connection status changes
+ */
+extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_callback_t callback, void *user_data) {
+    if (!ctx) return;
+
+    // Store callback info (thread-safe)
+    {
+        std::lock_guard<std::mutex> lock(ctx->status_callback_mutex);
+        ctx->status_callback = callback;
+        ctx->status_callback_user_data = user_data;
+    }
+
+    if (!callback) {
+        QGP_LOG_INFO("DHT", "Status callback cleared");
+        return;
+    }
+
+    QGP_LOG_INFO("DHT", "Status callback registered");
+
+    // Register with OpenDHT's status change notification
+    // Callback receives (old_status, new_status)
+    ctx->runner.setOnStatusChanged([ctx](dht::NodeStatus old_status, dht::NodeStatus new_status) {
+        // Only notify on actual state changes to/from Connected
+        bool was_connected = (old_status == dht::NodeStatus::Connected);
+        bool is_connected = (new_status == dht::NodeStatus::Connected);
+
+        if (was_connected != is_connected) {
+            QGP_LOG_INFO("DHT", "Status changed: %s -> %s",
+                dht::statusToStr(old_status), dht::statusToStr(new_status));
+
+            // Get callback info (thread-safe)
+            dht_status_callback_t cb = nullptr;
+            void *ud = nullptr;
+            {
+                std::lock_guard<std::mutex> lock(ctx->status_callback_mutex);
+                cb = ctx->status_callback;
+                ud = ctx->status_callback_user_data;
+            }
+
+            if (cb) {
+                cb(is_connected, ud);
+            }
+        }
+    });
 }
 
 /**

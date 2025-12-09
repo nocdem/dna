@@ -98,6 +98,26 @@ void dht_context_free(dht_context_t *ctx);
 bool dht_context_is_ready(dht_context_t *ctx);
 
 /**
+ * Status change callback type
+ *
+ * @param is_connected true if DHT is now connected, false if disconnected
+ * @param user_data User-provided context pointer
+ */
+typedef void (*dht_status_callback_t)(bool is_connected, void *user_data);
+
+/**
+ * Set callback for DHT connection status changes
+ *
+ * The callback will be invoked from OpenDHT's internal thread when the
+ * connection status changes between connected and disconnected states.
+ *
+ * @param ctx DHT context
+ * @param callback Function to call on status change (NULL to clear)
+ * @param user_data User context passed to callback
+ */
+void dht_context_set_status_callback(dht_context_t *ctx, dht_status_callback_t callback, void *user_data);
+
+/**
  * Put value in DHT with custom TTL
  *
  * @param ctx DHT context

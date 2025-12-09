@@ -93,6 +93,18 @@ bool dht_singleton_is_initialized(void);
  */
 void dht_singleton_cleanup(void);
 
+/**
+ * Set callback for DHT connection status changes
+ *
+ * The callback will be invoked from OpenDHT's internal thread when the
+ * connection status changes between connected and disconnected states.
+ * Call this after dht_singleton_init() to receive status updates.
+ *
+ * @param callback Function to call on status change (NULL to clear)
+ * @param user_data User context passed to callback
+ */
+void dht_singleton_set_status_callback(dht_status_callback_t callback, void *user_data);
+
 #ifdef __cplusplus
 }
 #endif
