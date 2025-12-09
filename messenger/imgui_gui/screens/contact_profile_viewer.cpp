@@ -51,9 +51,6 @@ static void loadContactProfile(AppState& state) {
 
         // Load wallet addresses
         if (profile->wallets.backbone[0] != '\0') strncpy(state.viewed_profile_backbone, profile->wallets.backbone, sizeof(state.viewed_profile_backbone) - 1);
-        if (profile->wallets.kelvpn[0] != '\0') strncpy(state.viewed_profile_kelvpn, profile->wallets.kelvpn, sizeof(state.viewed_profile_kelvpn) - 1);
-        if (profile->wallets.subzero[0] != '\0') strncpy(state.viewed_profile_subzero, profile->wallets.subzero, sizeof(state.viewed_profile_subzero) - 1);
-        if (profile->wallets.cpunk_testnet[0] != '\0') strncpy(state.viewed_profile_testnet, profile->wallets.cpunk_testnet, sizeof(state.viewed_profile_testnet) - 1);
         if (profile->wallets.btc[0] != '\0') strncpy(state.viewed_profile_btc, profile->wallets.btc, sizeof(state.viewed_profile_btc) - 1);
         if (profile->wallets.eth[0] != '\0') strncpy(state.viewed_profile_eth, profile->wallets.eth, sizeof(state.viewed_profile_eth) - 1);
         if (profile->wallets.sol[0] != '\0') strncpy(state.viewed_profile_sol, profile->wallets.sol, sizeof(state.viewed_profile_sol) - 1);

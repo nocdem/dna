@@ -86,8 +86,6 @@ int dna_register_name(
     strncpy(identity->registered_name, name, sizeof(identity->registered_name) - 1);
     identity->name_registered_at = time(NULL);
     identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
-    strncpy(identity->registration_tx_hash, tx_hash, sizeof(identity->registration_tx_hash) - 1);
-    strncpy(identity->registration_network, network, sizeof(identity->registration_network) - 1);
     identity->name_version = 1;
     identity->timestamp = time(NULL);
     identity->version++;
@@ -176,8 +174,9 @@ int dna_renew_name(
     QGP_LOG_INFO(LOG_TAG, "Verifying renewal transaction...\n");
     QGP_LOG_INFO(LOG_TAG, "Renewal TX: %s\n", renewal_tx_hash);
 
+    // TODO: Name renewal system needs redesign without blockchain anchoring
     int verify_result = cellframe_verify_registration_tx(renewal_tx_hash,
-                                                         identity->registration_network,
+                                                         "backbone",
                                                          identity->registered_name);
     if (verify_result != 0) {
         if (verify_result == -2) {
@@ -193,8 +192,6 @@ int dna_renew_name(
 
     // Update renewal info
     identity->name_expires_at += (365 * 24 * 60 * 60);  // Extend by 365 days
-    strncpy(identity->registration_tx_hash, renewal_tx_hash,
-            sizeof(identity->registration_tx_hash) - 1);
     identity->name_version++;
     identity->timestamp = time(NULL);
     identity->version++;

@@ -1124,7 +1124,6 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
 
     /* Wallets */
     strncpy(profile->backbone, identity->wallets.backbone, sizeof(profile->backbone) - 1);
-    strncpy(profile->kelvpn, identity->wallets.kelvpn, sizeof(profile->kelvpn) - 1);
     strncpy(profile->btc, identity->wallets.btc, sizeof(profile->btc) - 1);
     strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
     strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
@@ -1182,7 +1181,6 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
 
     /* Wallets */
     strncpy(profile_data.wallets.backbone, p->backbone, sizeof(profile_data.wallets.backbone) - 1);
-    strncpy(profile_data.wallets.kelvpn, p->kelvpn, sizeof(profile_data.wallets.kelvpn) - 1);
     strncpy(profile_data.wallets.btc, p->btc, sizeof(profile_data.wallets.btc) - 1);
     strncpy(profile_data.wallets.eth, p->eth, sizeof(profile_data.wallets.eth) - 1);
     strncpy(profile_data.wallets.sol, p->sol, sizeof(profile_data.wallets.sol) - 1);
