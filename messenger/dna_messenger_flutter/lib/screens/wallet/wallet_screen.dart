@@ -569,11 +569,13 @@ class _SendSheet extends ConsumerStatefulWidget {
   final int walletIndex;
   final String? preselectedToken;
   final String? preselectedNetwork;
+  final String? availableBalance;
 
   const _SendSheet({
     required this.walletIndex,
     this.preselectedToken,
     this.preselectedNetwork,
+    this.availableBalance,
   });
 
   @override
@@ -592,6 +594,58 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   String? _gasFee0; // slow
   String? _gasFee1; // normal
   String? _gasFee2; // fast
+
+  // Backbone network fees (fixed)
+  static const double _backboneValidatorFee = 0.01;
+  static const double _backboneNetworkFee = 0.002;
+  static const double _backboneTotalFee = 0.012; // validator + network
+
+  /// Calculate max sendable amount after fees
+  double? _calculateMaxAmount() {
+    final balanceStr = widget.availableBalance;
+    if (balanceStr == null || balanceStr.isEmpty) return null;
+
+    final balance = double.tryParse(balanceStr);
+    if (balance == null || balance <= 0) return null;
+
+    if (_selectedNetwork == 'Ethereum') {
+      // ETH: subtract gas fee based on selected speed
+      String? gasFee;
+      switch (_selectedGasSpeed) {
+        case 0:
+          gasFee = _gasFee0;
+          break;
+        case 1:
+          gasFee = _gasFee1;
+          break;
+        case 2:
+          gasFee = _gasFee2;
+          break;
+      }
+      if (gasFee == null) return null;
+      final fee = double.tryParse(gasFee) ?? 0;
+      final max = balance - fee;
+      return max > 0 ? max : 0;
+    } else {
+      // Backbone (Cellframe): subtract validator fee + network fee
+      final max = balance - _backboneTotalFee;
+      return max > 0 ? max : 0;
+    }
+  }
+
+  /// Format max amount for display
+  String _formatMaxAmount(double? max) {
+    if (max == null) return '-';
+    if (max <= 0) return '0';
+    // Use 8 decimals for small amounts, 4 for medium, 2 for large
+    if (max < 0.01) {
+      return max.toStringAsFixed(8);
+    } else if (max < 1.0) {
+      return max.toStringAsFixed(4);
+    } else {
+      return max.toStringAsFixed(2);
+    }
+  }
 
   @override
   void initState() {
@@ -651,15 +705,51 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                 onChanged: (_) => setState(() {}),
               ),
               const SizedBox(height: 12),
-              TextField(
-                controller: _amountController,
-                decoration: InputDecoration(
-                  labelText: 'Amount',
-                  hintText: '0.00',
-                  suffixText: _selectedToken,
-                ),
-                keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                onChanged: (_) => setState(() {}),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _amountController,
+                      decoration: InputDecoration(
+                        labelText: 'Amount',
+                        hintText: '0.00',
+                        suffixText: _selectedToken,
+                      ),
+                      keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                      onChanged: (_) => setState(() {}),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Column(
+                    children: [
+                      const SizedBox(height: 8), // Align with TextField
+                      OutlinedButton(
+                        onPressed: widget.availableBalance != null ? () {
+                          final max = _calculateMaxAmount();
+                          if (max != null && max > 0) {
+                            _amountController.text = _formatMaxAmount(max);
+                            setState(() {});
+                          }
+                        } : null,
+                        style: OutlinedButton.styleFrom(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                          minimumSize: const Size(50, 36),
+                        ),
+                        child: const Text('Max'),
+                      ),
+                      const SizedBox(height: 4),
+                      // Show max amount below button
+                      if (widget.availableBalance != null)
+                        Text(
+                          'Max: ${_formatMaxAmount(_calculateMaxAmount())} $_selectedToken',
+                          style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                            color: Theme.of(context).colorScheme.primary.withAlpha(179),
+                          ),
+                        ),
+                    ],
+                  ),
+                ],
               ),
               const SizedBox(height: 12),
               Row(
@@ -1042,6 +1132,7 @@ class _TokenDetailSheet extends ConsumerWidget {
         walletIndex: walletIndex,
         preselectedToken: token,
         preselectedNetwork: network,
+        availableBalance: balance,
       ),
     );
   }
