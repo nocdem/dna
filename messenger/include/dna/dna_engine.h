@@ -195,24 +195,33 @@ typedef struct {
 
 /**
  * User profile information (wallet addresses, socials, bio, avatar)
+ * Synced with DHT dna_unified_identity_t structure
  */
 typedef struct {
     /* Cellframe wallet addresses */
     char backbone[120];
-    char kelvpn[120];
+    char alvin[120];            /* Alvin (cpunk mainnet) */
 
     /* External wallet addresses */
     char btc[128];
     char eth[128];
     char sol[128];
+    char bnb[128];
 
     /* Social links */
     char telegram[128];
     char twitter[128];          /* X (Twitter) handle */
     char github[128];
+    char facebook[128];
+    char instagram[128];
+    char linkedin[128];
+    char google[128];
 
-    /* Bio and avatar */
+    /* Profile info */
+    char display_name[128];
     char bio[512];
+    char location[128];
+    char website[256];
     char avatar_base64[20484];  /* Base64-encoded 64x64 PNG/JPEG (~20KB max) */
 } dna_profile_t;
 

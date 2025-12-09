@@ -119,17 +119,12 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
     UserProfile newProfile;
 
     switch (field) {
+      // Wallets
       case 'backbone':
         newProfile = p.copyWith(backbone: value);
         break;
-      case 'kelvpn':
-        newProfile = p.copyWith(kelvpn: value);
-        break;
-      case 'subzero':
-        newProfile = p.copyWith(subzero: value);
-        break;
-      case 'cpunkTestnet':
-        newProfile = p.copyWith(cpunkTestnet: value);
+      case 'alvin':
+        newProfile = p.copyWith(alvin: value);
         break;
       case 'btc':
         newProfile = p.copyWith(btc: value);
@@ -140,6 +135,10 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       case 'sol':
         newProfile = p.copyWith(sol: value);
         break;
+      case 'bnb':
+        newProfile = p.copyWith(bnb: value);
+        break;
+      // Socials
       case 'telegram':
         newProfile = p.copyWith(telegram: value);
         break;
@@ -149,8 +148,30 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       case 'github':
         newProfile = p.copyWith(github: value);
         break;
+      case 'facebook':
+        newProfile = p.copyWith(facebook: value);
+        break;
+      case 'instagram':
+        newProfile = p.copyWith(instagram: value);
+        break;
+      case 'linkedin':
+        newProfile = p.copyWith(linkedin: value);
+        break;
+      case 'google':
+        newProfile = p.copyWith(google: value);
+        break;
+      // Profile info
+      case 'displayName':
+        newProfile = p.copyWith(displayName: value);
+        break;
       case 'bio':
         newProfile = p.copyWith(bio: value);
+        break;
+      case 'location':
+        newProfile = p.copyWith(location: value);
+        break;
+      case 'website':
+        newProfile = p.copyWith(website: value);
         break;
       case 'avatarBase64':
         newProfile = p.copyWith(avatarBase64: value);
