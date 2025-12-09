@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -258,7 +259,7 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                   ),
                   const SizedBox(height: 16),
 
-                  // Wallet Addresses
+                  // Wallet Addresses (read-only, derived from identity keys)
                   _buildExpansionSection(
                     title: 'Wallet Addresses',
                     icon: Icons.account_balance_wallet,
@@ -267,41 +268,29 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                       setState(() => _walletsExpanded = expanded);
                     },
                     children: [
-                      _buildTextField(
+                      _buildReadOnlyField(
                         label: 'Backbone (Cellframe)',
                         controller: _backboneController,
-                        hint: 'Backbone wallet address',
-                        onChanged: (v) => notifier.updateField('backbone', v),
                       ),
-                      _buildTextField(
+                      _buildReadOnlyField(
                         label: 'Alvin (CPUNK Mainnet)',
                         controller: _alvinController,
-                        hint: 'Alvin wallet address',
-                        onChanged: (v) => notifier.updateField('alvin', v),
                       ),
-                      _buildTextField(
+                      _buildReadOnlyField(
                         label: 'Bitcoin (BTC)',
                         controller: _btcController,
-                        hint: 'Bitcoin wallet address',
-                        onChanged: (v) => notifier.updateField('btc', v),
                       ),
-                      _buildTextField(
+                      _buildReadOnlyField(
                         label: 'Ethereum (ETH)',
                         controller: _ethController,
-                        hint: 'Ethereum wallet address',
-                        onChanged: (v) => notifier.updateField('eth', v),
                       ),
-                      _buildTextField(
+                      _buildReadOnlyField(
                         label: 'Solana (SOL)',
                         controller: _solController,
-                        hint: 'Solana wallet address',
-                        onChanged: (v) => notifier.updateField('sol', v),
                       ),
-                      _buildTextField(
+                      _buildReadOnlyField(
                         label: 'BNB Chain',
                         controller: _bnbController,
-                        hint: 'BNB wallet address',
-                        onChanged: (v) => notifier.updateField('bnb', v),
                       ),
                     ],
                   ),
@@ -465,6 +454,45 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
           ),
         ),
         onChanged: onChanged,
+      ),
+    );
+  }
+
+  Widget _buildReadOnlyField({
+    required String label,
+    required TextEditingController controller,
+  }) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: TextFormField(
+        controller: controller,
+        readOnly: true,
+        style: TextStyle(color: theme.colorScheme.onSurface.withAlpha(180)),
+        decoration: InputDecoration(
+          labelText: label,
+          filled: true,
+          fillColor: theme.colorScheme.surfaceContainerHighest.withAlpha(100),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+          ),
+          suffixIcon: controller.text.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(Icons.copy, size: 20),
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: controller.text));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(
+                        content: Text('$label copied'),
+                        duration: const Duration(seconds: 1),
+                      ),
+                    );
+                  },
+                  tooltip: 'Copy',
+                )
+              : null,
+        ),
       ),
     );
   }
