@@ -538,8 +538,9 @@ class _ActionButtons extends ConsumerWidget {
               ElevatedButton.icon(
                 onPressed: () {
                   Clipboard.setData(ClipboardData(text: wallet.address));
+                  final messenger = ScaffoldMessenger.of(context);
                   Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
+                  messenger.showSnackBar(
                     const SnackBar(content: Text('Address copied')),
                   );
                 },
