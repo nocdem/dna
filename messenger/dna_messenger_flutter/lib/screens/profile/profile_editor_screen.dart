@@ -29,7 +29,6 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
 
   // Wallets
   late TextEditingController _backboneController;
-  late TextEditingController _alvinController;
   late TextEditingController _btcController;
   late TextEditingController _ethController;
   late TextEditingController _solController;
@@ -59,7 +58,6 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     _websiteController = TextEditingController();
     // Wallets
     _backboneController = TextEditingController();
-    _alvinController = TextEditingController();
     _btcController = TextEditingController();
     _ethController = TextEditingController();
     _solController = TextEditingController();
@@ -83,7 +81,6 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     _websiteController.dispose();
     // Wallets
     _backboneController.dispose();
-    _alvinController.dispose();
     _btcController.dispose();
     _ethController.dispose();
     _solController.dispose();
@@ -117,9 +114,6 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     // Wallets
     if (_backboneController.text != profile.backbone) {
       _backboneController.text = profile.backbone;
-    }
-    if (_alvinController.text != profile.alvin) {
-      _alvinController.text = profile.alvin;
     }
     if (_btcController.text != profile.btc) {
       _btcController.text = profile.btc;
@@ -271,10 +265,6 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                       _buildReadOnlyField(
                         label: 'Backbone (Cellframe)',
                         controller: _backboneController,
-                      ),
-                      _buildReadOnlyField(
-                        label: 'Alvin (CPUNK Mainnet)',
-                        controller: _alvinController,
                       ),
                       _buildReadOnlyField(
                         label: 'Bitcoin (BTC)',
