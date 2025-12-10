@@ -228,7 +228,7 @@ typedef struct {
     char btc[128];
     char eth[128];              /* Also works for BSC, Polygon, etc. */
     char sol[128];
-    char ton[128];              /* TON address (EQ.../UQ...) */
+    char trx[128];              /* TRON address (T...) */
 
     /* Social links */
     char telegram[128];

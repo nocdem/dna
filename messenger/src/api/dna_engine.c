@@ -2245,6 +2245,8 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
                 wallets[i].sig_type = 100;  /* Use 100 for ETH (secp256k1) */
             } else if (list->wallets[i].type == BLOCKCHAIN_SOLANA) {
                 wallets[i].sig_type = 101;  /* Use 101 for SOL (Ed25519) */
+            } else if (list->wallets[i].type == BLOCKCHAIN_TRON) {
+                wallets[i].sig_type = 102;  /* Use 102 for TRX (secp256k1) */
             } else {
                 wallets[i].sig_type = 4;    /* Dilithium for Cellframe */
             }
@@ -2280,7 +2282,8 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     blockchain_wallet_info_t *wallet_info = &list->wallets[idx];
 
     /* Handle non-Cellframe blockchains via modular interface */
-    if (wallet_info->type == BLOCKCHAIN_ETHEREUM || wallet_info->type == BLOCKCHAIN_SOLANA) {
+    if (wallet_info->type == BLOCKCHAIN_ETHEREUM || wallet_info->type == BLOCKCHAIN_SOLANA ||
+        wallet_info->type == BLOCKCHAIN_TRON) {
         balances = calloc(1, sizeof(dna_balance_t));
         if (!balances) {
             error = DNA_ERROR_INTERNAL;
@@ -2291,9 +2294,12 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
             strncpy(balances[0].token, "ETH", sizeof(balances[0].token) - 1);
             strncpy(balances[0].network, "Ethereum", sizeof(balances[0].network) - 1);
-        } else {
+        } else if (wallet_info->type == BLOCKCHAIN_SOLANA) {
             strncpy(balances[0].token, "SOL", sizeof(balances[0].token) - 1);
             strncpy(balances[0].network, "Solana", sizeof(balances[0].network) - 1);
+        } else {
+            strncpy(balances[0].token, "TRX", sizeof(balances[0].token) - 1);
+            strncpy(balances[0].network, "TRON", sizeof(balances[0].network) - 1);
         }
         strcpy(balances[0].balance, "0.0");
         count = 1;

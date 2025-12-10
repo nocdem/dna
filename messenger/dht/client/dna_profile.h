@@ -36,7 +36,7 @@ typedef struct {
     char btc[128];              /**< Bitcoin address */
     char eth[128];              /**< Ethereum address (also works for BSC, Polygon, etc.) */
     char sol[128];              /**< Solana address */
-    char ton[128];              /**< TON address (EQ.../UQ...) */
+    char trx[128];              /**< TRON address (T...) */
 } dna_wallets_t;
 
 /**

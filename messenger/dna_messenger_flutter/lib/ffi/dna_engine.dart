@@ -501,7 +501,7 @@ class UserProfile {
   String btc;
   String eth; // Also works for BSC, Polygon, etc.
   String sol;
-  String ton; // TON address (EQ.../UQ...)
+  String trx; // TRON address (T...)
 
   // Socials
   String telegram;
@@ -525,7 +525,7 @@ class UserProfile {
     this.btc = '',
     this.eth = '',
     this.sol = '',
-    this.ton = '',
+    this.trx = '',
     this.telegram = '',
     this.twitter = '',
     this.github = '',
@@ -547,7 +547,7 @@ class UserProfile {
       btc: native.btc.toDartString(128),
       eth: native.eth.toDartString(128),
       sol: native.sol.toDartString(128),
-      ton: native.ton.toDartString(128),
+      trx: native.trx.toDartString(128),
       telegram: native.telegram.toDartString(128),
       twitter: native.twitter.toDartString(128),
       github: native.github.toDartString(128),
@@ -570,7 +570,7 @@ class UserProfile {
     _copyStringToArray(btc, native.ref.btc, 128);
     _copyStringToArray(eth, native.ref.eth, 128);
     _copyStringToArray(sol, native.ref.sol, 128);
-    _copyStringToArray(ton, native.ref.ton, 128);
+    _copyStringToArray(trx, native.ref.trx, 128);
     _copyStringToArray(telegram, native.ref.telegram, 128);
     _copyStringToArray(twitter, native.ref.twitter, 128);
     _copyStringToArray(github, native.ref.github, 128);
@@ -601,7 +601,7 @@ class UserProfile {
       btc.isEmpty &&
       eth.isEmpty &&
       sol.isEmpty &&
-      ton.isEmpty &&
+      trx.isEmpty &&
       telegram.isEmpty &&
       twitter.isEmpty &&
       github.isEmpty &&
@@ -622,7 +622,7 @@ class UserProfile {
     String? btc,
     String? eth,
     String? sol,
-    String? ton,
+    String? trx,
     String? telegram,
     String? twitter,
     String? github,
@@ -642,7 +642,7 @@ class UserProfile {
       btc: btc ?? this.btc,
       eth: eth ?? this.eth,
       sol: sol ?? this.sol,
-      ton: ton ?? this.ton,
+      trx: trx ?? this.trx,
       telegram: telegram ?? this.telegram,
       twitter: twitter ?? this.twitter,
       github: github ?? this.github,

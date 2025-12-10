@@ -135,8 +135,8 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       case 'sol':
         newProfile = p.copyWith(sol: value);
         break;
-      case 'ton':
-        newProfile = p.copyWith(ton: value);
+      case 'trx':
+        newProfile = p.copyWith(trx: value);
         break;
       // Socials
       case 'telegram':
