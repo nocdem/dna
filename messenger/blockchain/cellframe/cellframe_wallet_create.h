@@ -26,40 +26,32 @@ extern "C" {
 #define CF_DILITHIUM_SECRETKEYBYTES  2800
 #define CF_DILITHIUM_KIND_MODE_1     1
 
+/* BIP39 master seed size */
+#define BIP39_SEED_SIZE         64
+
 /* Address buffer size */
 #define CF_WALLET_ADDRESS_MAX   128
 
 /**
- * Create a Cellframe wallet from a 32-byte seed
+ * Create a Cellframe wallet from a 64-byte BIP39 master seed
  *
  * Generates a Dilithium MODE_1 keypair deterministically from the seed,
  * writes a .dwallet file, and returns the wallet address.
  *
- * @param seed          32-byte seed for deterministic key generation
+ * The 64-byte seed is passed directly to Dilithium, matching the
+ * official Cellframe wallet app derivation.
+ *
+ * @param seed          64-byte BIP39 master seed
  * @param wallet_name   Name for the wallet (used in filename, max 64 chars)
  * @param wallet_dir    Directory to save wallet file (e.g., ~/.dna/wallets/)
  * @param address_out   Buffer for generated address (CF_WALLET_ADDRESS_MAX bytes)
  * @return 0 on success, -1 on error
  */
 int cellframe_wallet_create_from_seed(
-    const uint8_t seed[32],
+    const uint8_t seed[BIP39_SEED_SIZE],
     const char *wallet_name,
     const char *wallet_dir,
     char *address_out
-);
-
-/**
- * Derive Cellframe wallet seed from BIP39 master seed
- *
- * Uses SHAKE256(master_seed || "cellframe-wallet-v1", 32)
- *
- * @param master_seed       64-byte BIP39 master seed
- * @param wallet_seed_out   32-byte output buffer for wallet seed
- * @return 0 on success, -1 on error
- */
-int cellframe_derive_wallet_seed(
-    const uint8_t master_seed[64],
-    uint8_t wallet_seed_out[32]
 );
 
 #ifdef __cplusplus

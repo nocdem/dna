@@ -8,7 +8,6 @@
 #include "cellframe_addr.h"
 #include "cellframe_minimal.h"
 #include "../../crypto/cellframe_dilithium/dilithium_params.h"
-#include "../../crypto/kem/fips202_kyber.h"  /* For shake256 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -173,38 +172,8 @@ static int write_dwallet_file(
  * PUBLIC API
  * ============================================================================ */
 
-int cellframe_derive_wallet_seed(
-    const uint8_t master_seed[64],
-    uint8_t wallet_seed_out[32]
-) {
-    if (!master_seed || !wallet_seed_out) {
-        return -1;
-    }
-
-    /* Derive wallet seed: SHAKE256(master_seed || "cellframe-wallet-v1", 32) */
-    const char *context = "cellframe-wallet-v1";
-    size_t context_len = strlen(context);
-    size_t input_len = BIP39_SEED_SIZE + context_len;
-
-    uint8_t *input = malloc(input_len);
-    if (!input) {
-        return -1;
-    }
-
-    memcpy(input, master_seed, BIP39_SEED_SIZE);
-    memcpy(input + BIP39_SEED_SIZE, context, context_len);
-
-    shake256(wallet_seed_out, 32, input, input_len);
-
-    /* Clear input from memory */
-    memset(input, 0, input_len);
-    free(input);
-
-    return 0;
-}
-
 int cellframe_wallet_create_from_seed(
-    const uint8_t seed[32],
+    const uint8_t seed[BIP39_SEED_SIZE],
     const char *wallet_name,
     const char *wallet_dir,
     char *address_out
@@ -220,8 +189,12 @@ int cellframe_wallet_create_from_seed(
     uint8_t *serialized_pubkey = NULL;
     uint8_t *serialized_privkey = NULL;
 
-    /* Generate Dilithium MODE_1 keypair from seed */
-    if (dilithium_crypto_sign_keypair(&pubkey, &privkey, MODE_1, seed, 32) != 0) {
+    /* Generate Dilithium MODE_1 keypair from 64-byte BIP39 seed
+     * This matches the official Cellframe wallet app derivation:
+     * - Pass 64-byte seed directly to Dilithium
+     * - Dilithium internally hashes with SHA3-256
+     */
+    if (dilithium_crypto_sign_keypair(&pubkey, &privkey, MODE_1, seed, BIP39_SEED_SIZE) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to generate Dilithium keypair\n");
         goto cleanup;
     }

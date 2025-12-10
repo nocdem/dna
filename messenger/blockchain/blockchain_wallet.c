@@ -85,18 +85,10 @@ int blockchain_create_wallet(
 
     switch (type) {
         case BLOCKCHAIN_CELLFRAME: {
-            /* Derive Cellframe wallet seed */
-            uint8_t cf_seed[32];
-            if (cellframe_derive_wallet_seed(master_seed, cf_seed) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "Failed to derive Cellframe wallet seed");
-                return -1;
-            }
-
-            /* Create Cellframe wallet */
-            int result = cellframe_wallet_create_from_seed(cf_seed, fingerprint, wallet_dir, address_out);
-
-            /* Clear sensitive data */
-            memset(cf_seed, 0, sizeof(cf_seed));
+            /* Create Cellframe wallet directly from 64-byte BIP39 master seed
+             * This matches the official Cellframe wallet app derivation
+             */
+            int result = cellframe_wallet_create_from_seed(master_seed, fingerprint, wallet_dir, address_out);
 
             if (result != 0) {
                 QGP_LOG_ERROR(LOG_TAG, "Failed to create Cellframe wallet");

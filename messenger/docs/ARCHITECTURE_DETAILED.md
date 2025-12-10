@@ -1013,17 +1013,22 @@ typedef enum {
 
 **Files:**
 - `cellframe_wallet.c` - Wallet file read/write
-- `cellframe_wallet_create.c` - Wallet creation from seed
+- `cellframe_wallet_create.c` - Wallet creation from 64-byte BIP39 seed
 - `cellframe_rpc.c` - Cellframe node RPC client
 - `cellframe_addr.c` - Address utilities
+
+**Key Derivation:**
+- 64-byte BIP39 master seed passed directly to Dilithium
+- Matches official Cellframe wallet app derivation
+- Same seed produces same address in both DNA Messenger and Cellframe app
 
 **Signature Types:**
 ```c
 typedef enum {
-    SIG_TYPE_DILITHIUM = 0,
-    SIG_TYPE_PICNIC = 1,
-    SIG_TYPE_BLISS = 2,
-    SIG_TYPE_TESLA = 3
+    SIG_TYPE_DILITHIUM = 0,   // Default, post-quantum
+    SIG_TYPE_PICNIC = 1,      // Deprecated
+    SIG_TYPE_BLISS = 2,       // Legacy
+    SIG_TYPE_TESLA = 3        // Legacy
 } sig_type_t;
 ```
 

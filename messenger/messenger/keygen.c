@@ -386,9 +386,8 @@ int messenger_generate_keys_from_seeds(
     free(dilithium_pubkey_copy);
     free(kyber_pubkey_copy);
 
-    // Create blockchain wallets
+    // Create blockchain wallets from 64-byte BIP39 master seed
     if (master_seed) {
-        // Use master seed to create all wallets (CF + ETH via blockchain_wallet abstraction)
         QGP_LOG_INFO(LOG_TAG, "Creating blockchain wallets...\n");
 
         if (blockchain_create_all_wallets(master_seed, dir_name, wallets_dir) == 0) {
@@ -396,19 +395,8 @@ int messenger_generate_keys_from_seeds(
         } else {
             QGP_LOG_WARN(LOG_TAG, "Warning: Some wallets may have failed to create (non-fatal)\n");
         }
-    } else if (wallet_seed) {
-        // Fallback: only create Cellframe wallet if no master_seed but wallet_seed is provided
-        QGP_LOG_INFO(LOG_TAG, "Creating Cellframe wallet (legacy mode)...\n");
-
-        char wallet_address[CF_WALLET_ADDRESS_MAX];
-
-        // Create wallet as <dir_name>.dwallet in <data_dir>/<dir_name>/wallets/
-        if (cellframe_wallet_create_from_seed(wallet_seed, dir_name, wallets_dir, wallet_address) == 0) {
-            QGP_LOG_INFO(LOG_TAG, "✓ Cellframe wallet created: %s.dwallet\n", dir_name);
-            QGP_LOG_INFO(LOG_TAG, "✓ Address: %s\n", wallet_address);
-        } else {
-            QGP_LOG_ERROR(LOG_TAG, "Warning: Failed to create Cellframe wallet (non-fatal)\n");
-        }
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "No master_seed provided - skipping wallet creation\n");
     }
 
     // Copy fingerprint to output parameter
