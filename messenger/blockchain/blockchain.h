@@ -25,7 +25,7 @@ typedef enum {
     BLOCKCHAIN_TYPE_UNKNOWN = 0,
     BLOCKCHAIN_TYPE_ETHEREUM,
     BLOCKCHAIN_TYPE_CELLFRAME,
-    BLOCKCHAIN_TYPE_BITCOIN,      /* Future */
+    BLOCKCHAIN_TYPE_TRON,         /* TRC-20, secp256k1 */
     BLOCKCHAIN_TYPE_SOLANA,       /* Ed25519 */
 } blockchain_type_t;
 

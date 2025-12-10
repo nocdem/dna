@@ -34,6 +34,7 @@ extern "C" {
 /* BIP-44 coin types (SLIP-44) */
 #define BIP44_COIN_BITCOIN      0       /* Bitcoin */
 #define BIP44_COIN_ETHEREUM     60      /* Ethereum */
+#define BIP44_COIN_TRON         195     /* TRON */
 #define BIP44_COIN_SOLANA       501     /* Solana */
 
 /**

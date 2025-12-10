@@ -918,6 +918,28 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
 
     engine->identity_loaded = true;
 
+    /* Silent background: Create any missing blockchain wallets
+     * This uses the encrypted seed stored during identity creation.
+     * Non-fatal if seed doesn't exist or wallet creation fails. */
+    {
+        char kyber_path[512];
+        snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem",
+                 engine->data_dir, fingerprint, fingerprint);
+
+        qgp_key_t *kem_key = NULL;
+        if (qgp_key_load(kyber_path, &kem_key) == 0 && kem_key &&
+            kem_key->private_key && kem_key->private_key_size == 3168) {
+
+            int wallets_created = 0;
+            if (blockchain_create_missing_wallets(fingerprint, kem_key->private_key, &wallets_created) == 0) {
+                if (wallets_created > 0) {
+                    QGP_LOG_INFO(LOG_TAG, "Auto-created %d missing blockchain wallets", wallets_created);
+                }
+            }
+            qgp_key_free(kem_key);
+        }
+    }
+
     /* Dispatch identity loaded event */
     dna_event_t event = {0};
     event.type = DNA_EVENT_IDENTITY_LOADED;

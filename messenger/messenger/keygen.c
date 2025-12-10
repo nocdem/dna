@@ -32,6 +32,7 @@
 #include "../blockchain/solana/sol_wallet.h"
 #include "../blockchain/cellframe/cellframe_wallet.h"
 #include "../blockchain/blockchain_wallet.h"
+#include "../crypto/utils/seed_storage.h"
 
 // Network byte order conversion
 #ifdef _WIN32
@@ -377,16 +378,6 @@ int messenger_generate_keys_from_seeds(
         QGP_LOG_INFO(LOG_TAG, "Keys saved locally. DHT publish requires DNA name registration.\n");
     }
 
-    qgp_key_free(enc_key);
-
-    // Securely wipe and free key copies
-    if (dilithium_privkey_copy) {
-        memset(dilithium_privkey_copy, 0, dilithium_privkey_size);
-        free(dilithium_privkey_copy);
-    }
-    free(dilithium_pubkey_copy);
-    free(kyber_pubkey_copy);
-
     // Create blockchain wallets from master_seed and mnemonic
     // - Cellframe uses SHA3-256(mnemonic) to match Cellframe wallet app
     // - ETH/SOL use BIP-44/SLIP-10 from 64-byte master_seed
@@ -398,9 +389,27 @@ int messenger_generate_keys_from_seeds(
         } else {
             QGP_LOG_WARN(LOG_TAG, "Warning: Some wallets may have failed to create (non-fatal)\n");
         }
+
+        // Save encrypted master seed for future chain wallet creation
+        // Uses Kyber1024 KEM + AES-256-GCM encryption
+        if (seed_storage_save(master_seed, kyber_pk, identity_dir) == 0) {
+            QGP_LOG_INFO(LOG_TAG, "✓ Encrypted master seed saved for future wallet creation\n");
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to save encrypted seed (non-fatal)\n");
+        }
     } else {
         QGP_LOG_WARN(LOG_TAG, "No master_seed provided - skipping wallet creation\n");
     }
+
+    qgp_key_free(enc_key);
+
+    // Securely wipe and free key copies
+    if (dilithium_privkey_copy) {
+        memset(dilithium_privkey_copy, 0, dilithium_privkey_size);
+        free(dilithium_privkey_copy);
+    }
+    free(dilithium_pubkey_copy);
+    free(kyber_pubkey_copy);
 
     // Copy fingerprint to output parameter
     strncpy(fingerprint_out, fingerprint, 128);

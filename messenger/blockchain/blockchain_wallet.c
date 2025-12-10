@@ -35,8 +35,11 @@ extern int blockchain_ops_send_from_wallet(
 #include "ethereum/eth_tx.h"
 #include "solana/sol_wallet.h"
 #include "solana/sol_rpc.h"
+#include "tron/trx_wallet.h"
+#include "tron/trx_rpc.h"
 #include "../crypto/utils/qgp_log.h"
 #include "../crypto/utils/qgp_platform.h"
+#include "../crypto/utils/seed_storage.h"
 #include <string.h>
 #include <stdlib.h>
 #include <dirent.h>
@@ -51,7 +54,7 @@ const char* blockchain_type_name(blockchain_type_t type) {
     switch (type) {
         case BLOCKCHAIN_CELLFRAME: return "Cellframe";
         case BLOCKCHAIN_ETHEREUM:  return "Ethereum";
-        case BLOCKCHAIN_BITCOIN:   return "Bitcoin";
+        case BLOCKCHAIN_TRON:      return "TRON";
         case BLOCKCHAIN_SOLANA:    return "Solana";
         default:                   return "Unknown";
     }
@@ -61,7 +64,7 @@ const char* blockchain_type_ticker(blockchain_type_t type) {
     switch (type) {
         case BLOCKCHAIN_CELLFRAME: return "CPUNK";
         case BLOCKCHAIN_ETHEREUM:  return "ETH";
-        case BLOCKCHAIN_BITCOIN:   return "BTC";
+        case BLOCKCHAIN_TRON:      return "TRX";
         case BLOCKCHAIN_SOLANA:    return "SOL";
         default:                   return "???";
     }
@@ -125,9 +128,18 @@ int blockchain_create_wallet(
             return 0;
         }
 
-        case BLOCKCHAIN_BITCOIN:
-            QGP_LOG_WARN(LOG_TAG, "Blockchain type %s not yet implemented", blockchain_type_name(type));
-            return -1;
+        case BLOCKCHAIN_TRON: {
+            /* Create TRON wallet using BIP-44 derivation (m/44'/195'/0'/0/0) */
+            int result = trx_wallet_create_from_seed(master_seed, 64, fingerprint, wallet_dir, address_out);
+
+            if (result != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to create TRON wallet");
+                return -1;
+            }
+
+            QGP_LOG_INFO(LOG_TAG, "TRON wallet created: %s", address_out);
+            return 0;
+        }
 
         default:
             QGP_LOG_ERROR(LOG_TAG, "Unknown blockchain type: %d", type);
@@ -183,10 +195,159 @@ int blockchain_create_all_wallets(
         QGP_LOG_INFO(LOG_TAG, "Created Solana wallet: %s", address);
     }
 
+    /* Create TRON wallet using BIP-44 derivation */
+    total_count++;
+    if (blockchain_create_wallet(BLOCKCHAIN_TRON, master_seed, fingerprint, wallet_dir, address) == 0) {
+        success_count++;
+        QGP_LOG_INFO(LOG_TAG, "Created TRON wallet: %s", address);
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Created %d/%d wallets for identity", success_count, total_count);
 
     /* Return success if at least one wallet was created */
     return (success_count > 0) ? 0 : -1;
+}
+
+/* ============================================================================
+ * MISSING WALLET CREATION
+ * ============================================================================ */
+
+/**
+ * Securely wipe memory
+ */
+static void blockchain_secure_memzero(void *ptr, size_t len) {
+    volatile uint8_t *p = (volatile uint8_t *)ptr;
+    while (len--) {
+        *p++ = 0;
+    }
+}
+
+/**
+ * Check if wallet file exists for a blockchain type
+ */
+static bool wallet_file_exists(const char *wallet_dir, const char *fingerprint, blockchain_type_t type) {
+    char path[BLOCKCHAIN_WALLET_PATH_MAX];
+
+    switch (type) {
+        case BLOCKCHAIN_CELLFRAME:
+            snprintf(path, sizeof(path), "%s/%s.dwallet", wallet_dir, fingerprint);
+            break;
+        case BLOCKCHAIN_ETHEREUM:
+            snprintf(path, sizeof(path), "%s/%s.eth.json", wallet_dir, fingerprint);
+            break;
+        case BLOCKCHAIN_SOLANA:
+            snprintf(path, sizeof(path), "%s/%s.sol.json", wallet_dir, fingerprint);
+            break;
+        case BLOCKCHAIN_TRON:
+            snprintf(path, sizeof(path), "%s/%s.trx.json", wallet_dir, fingerprint);
+            break;
+        default:
+            return false;
+    }
+
+    FILE *fp = fopen(path, "rb");
+    if (fp) {
+        fclose(fp);
+        return true;
+    }
+    return false;
+}
+
+int blockchain_create_missing_wallets(
+    const char *fingerprint,
+    const uint8_t kem_privkey[3168],
+    int *wallets_created
+) {
+    if (!fingerprint || !kem_privkey) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to blockchain_create_missing_wallets");
+        return -1;
+    }
+
+    if (wallets_created) {
+        *wallets_created = 0;
+    }
+
+    /* Get data directory */
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Cannot get data directory");
+        return -1;
+    }
+
+    /* Build paths */
+    char identity_dir[512];
+    char wallet_dir[512];
+    snprintf(identity_dir, sizeof(identity_dir), "%s/%s", data_dir, fingerprint);
+    snprintf(wallet_dir, sizeof(wallet_dir), "%s/%s/wallets", data_dir, fingerprint);
+
+    /* Check if encrypted seed exists */
+    if (!seed_storage_exists(identity_dir)) {
+        QGP_LOG_DEBUG(LOG_TAG, "No encrypted seed file - cannot create missing wallets");
+        return 0;  /* Not an error, just no seed available */
+    }
+
+    /* Check which wallets are missing (skip Cellframe - needs mnemonic) */
+    bool need_eth = !wallet_file_exists(wallet_dir, fingerprint, BLOCKCHAIN_ETHEREUM);
+    bool need_sol = !wallet_file_exists(wallet_dir, fingerprint, BLOCKCHAIN_SOLANA);
+    bool need_trx = !wallet_file_exists(wallet_dir, fingerprint, BLOCKCHAIN_TRON);
+
+    if (!need_eth && !need_sol && !need_trx) {
+        QGP_LOG_DEBUG(LOG_TAG, "All wallets already exist");
+        return 0;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Missing wallets detected: ETH=%d SOL=%d TRX=%d",
+                 need_eth, need_sol, need_trx);
+
+    /* Load encrypted seed */
+    uint8_t master_seed[64];
+    if (seed_storage_load(master_seed, kem_privkey, identity_dir) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted seed");
+        return -1;
+    }
+
+    int created = 0;
+    char address[BLOCKCHAIN_WALLET_ADDRESS_MAX];
+
+    /* Create missing Ethereum wallet */
+    if (need_eth) {
+        if (blockchain_create_wallet(BLOCKCHAIN_ETHEREUM, master_seed, fingerprint, wallet_dir, address) == 0) {
+            created++;
+            QGP_LOG_INFO(LOG_TAG, "Created missing Ethereum wallet: %s", address);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Failed to create Ethereum wallet");
+        }
+    }
+
+    /* Create missing Solana wallet */
+    if (need_sol) {
+        if (blockchain_create_wallet(BLOCKCHAIN_SOLANA, master_seed, fingerprint, wallet_dir, address) == 0) {
+            created++;
+            QGP_LOG_INFO(LOG_TAG, "Created missing Solana wallet: %s", address);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Failed to create Solana wallet");
+        }
+    }
+
+    /* Create missing TRON wallet */
+    if (need_trx) {
+        if (blockchain_create_wallet(BLOCKCHAIN_TRON, master_seed, fingerprint, wallet_dir, address) == 0) {
+            created++;
+            QGP_LOG_INFO(LOG_TAG, "Created missing TRON wallet: %s", address);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Failed to create TRON wallet");
+        }
+    }
+
+    /* Securely wipe master seed from memory */
+    blockchain_secure_memzero(master_seed, sizeof(master_seed));
+
+    if (wallets_created) {
+        *wallets_created = created;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Created %d missing wallets for identity", created);
+    return 0;
 }
 
 /* ============================================================================
@@ -231,7 +392,7 @@ int blockchain_list_wallets(
     struct dirent *entry;
     while ((entry = readdir(dir)) != NULL) {
         if (strstr(entry->d_name, ".dwallet") || strstr(entry->d_name, ".eth.json") ||
-            strstr(entry->d_name, ".sol.json")) {
+            strstr(entry->d_name, ".sol.json") || strstr(entry->d_name, ".trx.json")) {
             count++;
         }
     }
@@ -326,6 +487,27 @@ int blockchain_list_wallets(
 
             idx++;
         }
+        else if (strstr(entry->d_name, ".trx.json")) {
+            /* TRON wallet */
+            info->type = BLOCKCHAIN_TRON;
+
+            /* Extract name (remove .trx.json extension) */
+            strncpy(info->name, entry->d_name, sizeof(info->name) - 1);
+            char *ext = strstr(info->name, ".trx.json");
+            if (ext) *ext = '\0';
+
+            /* Build full path */
+            snprintf(info->file_path, sizeof(info->file_path), "%s/%s", wallet_dir, entry->d_name);
+
+            /* Get address from file */
+            if (trx_wallet_get_address(info->file_path, info->address, sizeof(info->address)) != 0) {
+                info->address[0] = '\0';
+            }
+
+            info->is_encrypted = false;  /* We use unencrypted format */
+
+            idx++;
+        }
     }
 
     list->count = idx;
@@ -378,6 +560,9 @@ int blockchain_get_balance(
             return 0;
         }
 
+        case BLOCKCHAIN_TRON:
+            return trx_rpc_get_balance(address, balance_out->balance, sizeof(balance_out->balance));
+
         default:
             QGP_LOG_ERROR(LOG_TAG, "Balance check not implemented for %s", blockchain_type_name(type));
             return -1;
@@ -407,6 +592,9 @@ bool blockchain_validate_address(blockchain_type_t type, const char *address) {
 
         case BLOCKCHAIN_SOLANA:
             return sol_validate_address(address);
+
+        case BLOCKCHAIN_TRON:
+            return trx_validate_address(address);
 
         default:
             return false;
@@ -447,6 +635,9 @@ int blockchain_get_address_from_file(
             sol_wallet_clear(&wallet);
             return 0;
         }
+
+        case BLOCKCHAIN_TRON:
+            return trx_wallet_get_address(wallet_path, address_out, BLOCKCHAIN_WALLET_ADDRESS_MAX);
 
         default:
             return -1;
@@ -540,6 +731,10 @@ int blockchain_send_tokens(
         case BLOCKCHAIN_SOLANA:
             chain_name = "solana";
             network = "mainnet-beta";
+            break;
+        case BLOCKCHAIN_TRON:
+            chain_name = "tron";
+            network = "mainnet";
             break;
         default:
             QGP_LOG_ERROR(LOG_TAG, "Send not implemented for %s", blockchain_type_name(type));

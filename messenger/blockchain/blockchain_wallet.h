@@ -33,7 +33,7 @@ extern "C" {
 typedef enum {
     BLOCKCHAIN_CELLFRAME = 0,   /* Cellframe (CF20, Dilithium signatures) */
     BLOCKCHAIN_ETHEREUM  = 1,   /* Ethereum mainnet */
-    BLOCKCHAIN_BITCOIN   = 2,   /* Bitcoin (future) */
+    BLOCKCHAIN_TRON      = 2,   /* TRON mainnet (TRC-20, secp256k1) */
     BLOCKCHAIN_SOLANA    = 3,   /* Solana (Ed25519) */
     BLOCKCHAIN_COUNT            /* Number of supported blockchains */
 } blockchain_type_t;
@@ -106,6 +106,26 @@ int blockchain_create_all_wallets(
     const char *mnemonic,
     const char *fingerprint,
     const char *wallet_dir
+);
+
+/**
+ * Create missing wallets from encrypted seed storage
+ *
+ * Checks which blockchain wallets exist and creates any that are missing.
+ * Uses the encrypted master_seed.enc file stored in the identity directory.
+ * This allows automatic wallet creation when new blockchain support is added.
+ *
+ * Called silently on identity load - no user notification.
+ *
+ * @param fingerprint       Identity fingerprint
+ * @param kem_privkey       3168-byte Kyber1024 private key (for seed decryption)
+ * @param wallets_created   Output: number of new wallets created (can be NULL)
+ * @return                  0 on success, -1 on error
+ */
+int blockchain_create_missing_wallets(
+    const char *fingerprint,
+    const uint8_t kem_privkey[3168],
+    int *wallets_created
 );
 
 /**

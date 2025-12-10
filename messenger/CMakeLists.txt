@@ -92,6 +92,7 @@ set(COMMON_SOURCES
     crypto/utils/qgp_aes.c
     crypto/utils/qgp_kyber.c
     crypto/utils/qgp_dilithium.c
+    crypto/utils/seed_storage.c
     crypto/utils/qgp_sha3.c         # SHA3-512 for Category 5 security
     # NOTE: qgp_log.c is ONLY in dht_lib to ensure single copy of static vars
     # SDK Independence: Infrastructure modules
@@ -155,6 +156,9 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     blockchain/solana/sol_wallet.c                 # Solana wallet (SLIP-10 Ed25519)
     blockchain/solana/sol_rpc.c                    # Solana JSON-RPC client
     blockchain/solana/sol_tx.c                     # Solana transaction building/signing
+    blockchain/tron/trx_base58.c                   # TRON Base58Check encoding
+    blockchain/tron/trx_wallet_create.c            # TRON wallet creation (BIP-44)
+    blockchain/tron/trx_rpc.c                      # TRON JSON-RPC client (TronGrid)
     crypto/bip32/bip32.c                           # BIP-32 HD key derivation
     crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
     crypto/utils/base58.c       # Base58 encoding for addresses
@@ -223,6 +227,7 @@ target_include_directories(dna_lib PUBLIC
     ${CMAKE_SOURCE_DIR}/dht           # DHT headers
     ${CMAKE_SOURCE_DIR}/blockchain/cellframe  # Cellframe blockchain headers
     ${CMAKE_SOURCE_DIR}/blockchain/solana     # Solana blockchain headers
+    ${CMAKE_SOURCE_DIR}/blockchain/tron       # TRON blockchain headers
     ${OPENSSL_INCLUDE_DIR}
     ${JUICE_INCLUDE_DIRS}             # libjuice headers
 )

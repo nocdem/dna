@@ -43,8 +43,8 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 | **NAT Traversal** | libjuice (ICE/STUN) |
 | **Local Storage** | SQLite3 |
 | **GUI Framework** | ImGui (OpenGL3 + GLFW3) |
-| **Blockchain** | Cellframe (CPUNK), Ethereum (ETH) |
-| **HD Derivation** | BIP-32/BIP-44 (secp256k1) |
+| **Blockchain** | Cellframe (CPUNK), Ethereum (ETH), TRON (TRX), Solana (SOL) |
+| **HD Derivation** | BIP-32/BIP-44 (secp256k1), SLIP-10 (Ed25519) |
 
 ### Security Model
 
@@ -134,10 +134,19 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │   │   ├── cellframe_wallet_create.c   # Creation from seed
 │   │   ├── cellframe_rpc.c/h           # Node RPC client
 │   │   └── cellframe_addr.c/h          # Address utilities
-│   └── ethereum/             # Ethereum wallet (ERC20)
-│       ├── eth_wallet.h                # ETH wallet interface
-│       ├── eth_wallet_create.c         # BIP-44 derivation
-│       └── eth_rpc.c                   # JSON-RPC client
+│   ├── ethereum/             # Ethereum wallet (ERC-20)
+│   │   ├── eth_wallet.h                # ETH wallet interface
+│   │   ├── eth_wallet_create.c         # BIP-44 derivation
+│   │   └── eth_rpc.c                   # JSON-RPC client
+│   ├── tron/                 # TRON wallet (TRC-20)
+│   │   ├── trx_wallet.h                # TRX wallet interface
+│   │   ├── trx_wallet_create.c         # BIP-44 derivation
+│   │   ├── trx_base58.c                # Base58Check encoding
+│   │   └── trx_rpc.c                   # TronGrid API client
+│   └── solana/               # Solana wallet
+│       ├── sol_wallet.h                # SOL wallet interface
+│       ├── sol_wallet.c                # SLIP-10 Ed25519 derivation
+│       └── sol_rpc.c                   # Solana JSON-RPC client
 │
 ├── imgui_gui/                # GUI application
 │   ├── main.cpp              # Entry point
@@ -994,18 +1003,29 @@ DNA Messenger supports multiple blockchains through a modular wallet architectur
 typedef enum {
     BLOCKCHAIN_CELLFRAME = 0,   /* Cellframe (CF20, Dilithium signatures) */
     BLOCKCHAIN_ETHEREUM  = 1,   /* Ethereum mainnet (secp256k1) */
-    BLOCKCHAIN_BITCOIN   = 2,   /* Bitcoin (future) */
-    BLOCKCHAIN_SOLANA    = 3,   /* Solana (future) */
+    BLOCKCHAIN_TRON      = 2,   /* TRON mainnet (TRC-20, secp256k1) */
+    BLOCKCHAIN_SOLANA    = 3,   /* Solana (Ed25519) */
 } blockchain_type_t;
 ```
 
 **Key Derivation:**
 - **Cellframe**: `SHAKE256(master_seed || "cellframe-wallet-v1")` → Dilithium keypair
 - **Ethereum**: BIP-44 path `m/44'/60'/0'/0/0` → secp256k1 keypair
+- **TRON**: BIP-44 path `m/44'/195'/0'/0/0` → secp256k1 keypair
+- **Solana**: SLIP-10 Ed25519 path `m/44'/501'/0'/0'`
 
 **Wallet Storage:** `<data_dir>/<fingerprint>/wallets/`
 - Cellframe: `<fingerprint>.dwallet`
 - Ethereum: `<fingerprint>.eth.json`
+- TRON: `<fingerprint>.trx.json`
+- Solana: `<fingerprint>.sol.json`
+
+**Encrypted Seed Storage:** `<data_dir>/<fingerprint>/master_seed.enc`
+- Created during identity generation (after wallet creation)
+- Encryption: Kyber1024 KEM encapsulation + AES-256-GCM
+- Format: KEM_ciphertext (1568B) || nonce (12B) || tag (16B) || encrypted_seed (64B) = 1660 bytes
+- Purpose: Auto-create wallets for new blockchain networks on identity load
+- Decryption: Only possible with identity's Kyber private key (.kem file)
 
 ### 9.2 Cellframe Wallet
 
@@ -1050,7 +1070,54 @@ typedef enum {
 
 **RPC Endpoint:** `https://eth.llamarpc.com` (configurable)
 
-### 9.4 Cryptographic Support
+### 9.4 TRON Wallet
+
+**Location:** `blockchain/tron/`
+
+**Files:**
+- `trx_wallet.h` - TRON wallet interface
+- `trx_wallet_create.c` - Wallet creation (BIP-44 derivation)
+- `trx_base58.c` - Base58Check encoding for addresses
+- `trx_rpc.c` - TronGrid JSON-RPC client
+
+**Key Features:**
+- BIP-44 derivation path `m/44'/195'/0'/0/0` (SLIP-44 coin type 195)
+- secp256k1 elliptic curve (same as Ethereum)
+- Keccak-256 for address hash (same as Ethereum)
+- Address prefix: `0x41` + hash[-20:]
+- Base58Check encoding for addresses (start with 'T')
+- 34-character address format
+
+**Address Derivation:**
+```
+secp256k1 pubkey (65 bytes)
+    ↓
+Keccak256(pubkey[1:65])[-20:]
+    ↓
+0x41 || 20-byte hash (21 bytes raw)
+    ↓
+Base58Check → "T..." (34 characters)
+```
+
+**RPC Endpoint:** `https://api.trongrid.io` (configurable)
+
+### 9.5 Solana Wallet
+
+**Location:** `blockchain/solana/`
+
+**Files:**
+- `sol_wallet.h` - Solana wallet interface
+- `sol_wallet.c` - Wallet creation (SLIP-10 Ed25519)
+- `sol_rpc.c` - Solana JSON-RPC client
+
+**Key Features:**
+- SLIP-10 Ed25519 derivation path `m/44'/501'/0'/0'`
+- Ed25519 elliptic curve (different from secp256k1)
+- Base58 encoding for addresses (32 bytes → ~44 chars)
+
+**RPC Endpoint:** `https://api.mainnet-beta.solana.com` (configurable)
+
+### 9.6 Cryptographic Support
 
 **BIP-32 HD Derivation:** `crypto/bip32/`
 - HMAC-SHA512 master key derivation
@@ -1067,20 +1134,20 @@ typedef enum {
 - ECDSA signing and verification
 - Public key generation and serialization
 
-### 9.5 Transaction Building
+### 9.7 Transaction Building
 
 **Location:** `blockchain/cellframe/cellframe_tx_builder.c`
 
 Minimal transaction builder for DNA name registration and token transfers.
 
-### 9.6 Supported Networks
+### 9.8 Supported Networks
 
 | Blockchain | Token | Signature | Status |
 |------------|-------|-----------|--------|
 | Cellframe Backbone | CPUNK, CELL | Dilithium | ✅ Active |
 | Ethereum Mainnet | ETH, ERC-20 | secp256k1 | ✅ Active |
-| Bitcoin | BTC | secp256k1 | 📋 Planned |
-| Solana | SOL | Ed25519 | 📋 Planned |
+| TRON Mainnet | TRX, TRC-20 | secp256k1 | ✅ Active |
+| Solana Mainnet | SOL | Ed25519 | ✅ Active |
 
 ---
 
