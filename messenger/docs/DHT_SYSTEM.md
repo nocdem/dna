@@ -779,6 +779,7 @@ Stats printed every 60 seconds:
 | **Presence** | 7 days | `SHA3-512(public_key)` = fingerprint | No | IP:port:timestamp |
 | Offline Messages | 7 days | `SHA3-512(sender:outbox:recipient)` | No | Model E outbox |
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
+| **Contact Requests** | 7 days | `SHA3-512(fingerprint:requests)` | No | ICQ-style contact request inbox |
 | **Identity** | 365 days | `SHA3-512(fingerprint:profile)` | Yes | Unified: keys + name + profile |
 | **Name Lookup** | 365 days | `SHA3-512(name:lookup)` | Yes | Name → fingerprint |
 | Group Metadata | 30 days | `SHA3-512(group_uuid)` | Yes | |
@@ -826,6 +827,70 @@ final lastSeen = await engine.lookupPresence(contact.fingerprint);
 // Returns DateTime when peer last registered presence
 ```
 
+### 8.2 Contact Requests
+
+ICQ-style mutual contact request system. Requests are stored in recipient's DHT inbox.
+
+**DHT Key:** `SHA3-512(recipient_fingerprint + ":requests")` (binary, 64 bytes)
+
+**Request Structure:**
+```c
+typedef struct {
+    uint32_t magic;                      // 0x444E4152 ("DNAR")
+    uint8_t version;                     // 1
+    uint64_t timestamp;                  // Unix timestamp
+    uint64_t expiry;                     // timestamp + 7 days
+    char sender_fingerprint[129];        // Sender's fingerprint
+    char sender_name[64];                // Sender's display name
+    uint8_t sender_dilithium_pubkey[2592]; // Sender's Dilithium5 public key
+    char message[256];                   // Optional "Hey, add me!"
+    uint8_t signature[4627];             // Dilithium5 signature
+    size_t signature_len;
+} dht_contact_request_t;
+```
+
+**C API:**
+```c
+// Send a contact request
+int dht_send_contact_request(dht_context_t *ctx,
+    const char *sender_fingerprint, const char *sender_name,
+    const uint8_t *sender_dilithium_pubkey, const uint8_t *sender_dilithium_privkey,
+    const char *recipient_fingerprint, const char *optional_message);
+
+// Fetch all requests from my inbox
+int dht_fetch_contact_requests(dht_context_t *ctx,
+    const char *my_fingerprint,
+    dht_contact_request_t **requests_out, size_t *count_out);
+
+// Verify request signature
+int dht_verify_contact_request(const dht_contact_request_t *request);
+```
+
+**Flutter Usage:**
+```dart
+// Send request
+await engine.sendContactRequest(recipientFingerprint, "Hey, let's connect!");
+
+// Get pending requests
+final requests = await engine.getContactRequests();
+
+// Approve (creates mutual contact)
+await engine.approveContactRequest(fingerprint);
+
+// Deny (can retry later)
+await engine.denyContactRequest(fingerprint);
+
+// Block permanently
+await engine.blockUser(fingerprint, "spam");
+```
+
+**Flow:**
+1. Alice sends request → DHT puts to Bob's inbox key
+2. Bob polls inbox → fetches Alice's signed request
+3. Bob verifies signature, checks not blocked
+4. Bob approves → Alice added as mutual contact
+5. Bob sends reciprocal request so Alice knows
+
 ---
 
 ## 9. Cryptography
@@ -863,6 +928,7 @@ final lastSeen = await engine.lookupPresence(contact.fingerprint);
 | `dht/shared/` | `dht_offline_queue.c`, `dht_offline_queue.h` | Offline messaging |
 | `dht/shared/` | `dht_groups.c`, `dht_groups.h` | Group metadata |
 | `dht/shared/` | `dht_profile.c`, `dht_profile.h` | User profiles |
+| `dht/shared/` | `dht_contact_request.c`, `dht_contact_request.h` | Contact request DHT operations |
 | `dht/keyserver/` | `keyserver_*.c`, `keyserver_*.h` | Name/key resolution |
 | `vendor/opendht-pq/tools/` | `dna-nodus.cpp` | Bootstrap server |
 

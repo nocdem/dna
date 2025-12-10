@@ -6,8 +6,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../providers/providers.dart';
+import '../../providers/contact_requests_provider.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
+import 'blocked_users_screen.dart';
 
 /// Developer mode state provider - persisted to SharedPreferences
 final developerModeProvider = StateNotifierProvider<DeveloperModeNotifier, bool>((ref) {
@@ -236,9 +238,16 @@ class _ProfileSection extends StatelessWidget {
   }
 }
 
-class _SecuritySection extends StatelessWidget {
+class _SecuritySection extends ConsumerWidget {
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
+    final blockedUsers = ref.watch(blockedUsersProvider);
+    final blockedCount = blockedUsers.when(
+      data: (list) => list.length,
+      loading: () => 0,
+      error: (_, __) => 0,
+    );
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -258,6 +267,20 @@ class _SecuritySection extends StatelessWidget {
           onTap: () {
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(content: Text('Coming soon')),
+            );
+          },
+        ),
+        ListTile(
+          leading: const Icon(Icons.block),
+          title: const Text('Blocked Users'),
+          subtitle: Text(blockedCount > 0 ? '$blockedCount blocked' : 'No blocked users'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const BlockedUsersScreen(),
+              ),
             );
           },
         ),

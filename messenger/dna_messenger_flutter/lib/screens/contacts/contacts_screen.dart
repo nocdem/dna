@@ -5,8 +5,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
+import '../../providers/contact_requests_provider.dart';
 import '../../theme/dna_theme.dart';
 import '../chat/chat_screen.dart';
+import 'contact_requests_screen.dart';
 
 class ContactsScreen extends ConsumerWidget {
   final VoidCallback? onMenuPressed;
@@ -27,6 +29,13 @@ class ContactsScreen extends ConsumerWidget {
             : null,
         title: const Text('Chats'),
         actions: [
+          _ContactRequestsBadge(
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (context) => const ContactRequestsScreen(),
+              ),
+            ),
+          ),
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () => ref.invalidate(contactsProvider),
@@ -587,6 +596,52 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
                 )
               : const Text('Add Contact'),
         ),
+      ],
+    );
+  }
+}
+
+class _ContactRequestsBadge extends ConsumerWidget {
+  final VoidCallback onTap;
+
+  const _ContactRequestsBadge({required this.onTap});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final pendingCount = ref.watch(pendingRequestCountProvider);
+
+    return Stack(
+      children: [
+        IconButton(
+          icon: const Icon(Icons.person_add_alt_1),
+          onPressed: onTap,
+          tooltip: 'Contact Requests',
+        ),
+        if (pendingCount > 0)
+          Positioned(
+            right: 4,
+            top: 4,
+            child: Container(
+              padding: const EdgeInsets.all(4),
+              decoration: BoxDecoration(
+                color: DnaColors.textWarning,
+                shape: BoxShape.circle,
+              ),
+              constraints: const BoxConstraints(
+                minWidth: 18,
+                minHeight: 18,
+              ),
+              child: Text(
+                pendingCount > 99 ? '99+' : pendingCount.toString(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 10,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
       ],
     );
   }

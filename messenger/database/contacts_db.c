@@ -182,22 +182,64 @@ int contacts_db_init(const char *owner_identity) {
         // Continue anyway - not fatal
     }
 
-    // Create table if not exists
-    const char *sql =
+    // Create contacts table if not exists
+    const char *sql_contacts =
         "CREATE TABLE IF NOT EXISTS contacts ("
         "    identity TEXT PRIMARY KEY,"
         "    added_timestamp INTEGER NOT NULL,"
-        "    notes TEXT"
+        "    notes TEXT,"
+        "    status INTEGER DEFAULT 0"  /* 0=mutual, 1=pending_outgoing */
         ");";
 
-    rc = sqlite3_exec(g_db, sql, NULL, NULL, &err_msg);
+    rc = sqlite3_exec(g_db, sql_contacts, NULL, NULL, &err_msg);
     if (rc != SQLITE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to create table: %s\n", err_msg);
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create contacts table: %s\n", err_msg);
         sqlite3_free(err_msg);
         sqlite3_close(g_db);
         g_db = NULL;
         g_owner_identity[0] = '\0';
         return -1;
+    }
+
+    // Create contact_requests table for incoming requests
+    const char *sql_requests =
+        "CREATE TABLE IF NOT EXISTS contact_requests ("
+        "    fingerprint TEXT PRIMARY KEY,"
+        "    display_name TEXT,"
+        "    message TEXT,"
+        "    requested_at INTEGER NOT NULL,"
+        "    status INTEGER DEFAULT 0"  /* 0=pending, 1=approved, 2=denied */
+        ");";
+
+    rc = sqlite3_exec(g_db, sql_requests, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create contact_requests table: %s\n", err_msg);
+        sqlite3_free(err_msg);
+        /* Continue - not fatal, table may already exist without this column */
+    }
+
+    // Create blocked_users table
+    const char *sql_blocked =
+        "CREATE TABLE IF NOT EXISTS blocked_users ("
+        "    fingerprint TEXT PRIMARY KEY,"
+        "    blocked_at INTEGER NOT NULL,"
+        "    reason TEXT"
+        ");";
+
+    rc = sqlite3_exec(g_db, sql_blocked, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create blocked_users table: %s\n", err_msg);
+        sqlite3_free(err_msg);
+        /* Continue - not fatal */
+    }
+
+    // Add status column to contacts table if it doesn't exist (migration)
+    const char *sql_add_status =
+        "ALTER TABLE contacts ADD COLUMN status INTEGER DEFAULT 0;";
+    rc = sqlite3_exec(g_db, sql_add_status, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        /* Ignore error - column may already exist */
+        sqlite3_free(err_msg);
     }
 
     QGP_LOG_INFO(LOG_TAG, "Initialized for identity '%s': %s\n", owner_identity, db_path);
@@ -641,4 +683,544 @@ int contacts_db_migrate_from_global(const char *owner_identity) {
     }
 
     return (int)migrated;
+}
+
+/* ============================================================================
+ * CONTACT REQUEST FUNCTIONS (ICQ-style approval system)
+ * ============================================================================ */
+
+// Add incoming contact request
+int contacts_db_add_incoming_request(
+    const char *fingerprint,
+    const char *display_name,
+    const char *message,
+    uint64_t timestamp)
+{
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint || strlen(fingerprint) == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint\n");
+        return -1;
+    }
+
+    // Check if already exists
+    if (contacts_db_request_exists(fingerprint)) {
+        QGP_LOG_INFO(LOG_TAG, "Request from %s already exists\n", fingerprint);
+        return -2;
+    }
+
+    // Check if blocked
+    if (contacts_db_is_blocked(fingerprint)) {
+        QGP_LOG_INFO(LOG_TAG, "Request from %s is blocked\n", fingerprint);
+        return -1;
+    }
+
+    const char *sql = "INSERT INTO contact_requests (fingerprint, display_name, message, requested_at, status) "
+                      "VALUES (?, ?, ?, ?, 0);";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, display_name ? display_name : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, message ? message : "", -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 4, (int64_t)timestamp);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to insert request: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Added contact request from: %.20s...\n", fingerprint);
+    return 0;
+}
+
+// Get all pending incoming requests
+int contacts_db_get_incoming_requests(incoming_request_t **requests_out, int *count_out) {
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!requests_out || !count_out) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid output parameters\n");
+        return -1;
+    }
+
+    // Count pending requests
+    int count = contacts_db_pending_request_count();
+    if (count < 0) {
+        return -1;
+    }
+
+    if (count == 0) {
+        *requests_out = NULL;
+        *count_out = 0;
+        return 0;
+    }
+
+    // Allocate array
+    incoming_request_t *requests = (incoming_request_t*)calloc(count, sizeof(incoming_request_t));
+    if (!requests) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate requests array\n");
+        return -1;
+    }
+
+    // Query pending requests (status = 0)
+    const char *sql = "SELECT fingerprint, display_name, message, requested_at, status "
+                      "FROM contact_requests WHERE status = 0 ORDER BY requested_at DESC;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        free(requests);
+        return -1;
+    }
+
+    int i = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && i < count) {
+        const char *fingerprint = (const char*)sqlite3_column_text(stmt, 0);
+        const char *display_name = (const char*)sqlite3_column_text(stmt, 1);
+        const char *message = (const char*)sqlite3_column_text(stmt, 2);
+        uint64_t requested_at = sqlite3_column_int64(stmt, 3);
+        int status = sqlite3_column_int(stmt, 4);
+
+        strncpy(requests[i].fingerprint, fingerprint ? fingerprint : "", 128);
+        requests[i].fingerprint[128] = '\0';
+
+        strncpy(requests[i].display_name, display_name ? display_name : "", 63);
+        requests[i].display_name[63] = '\0';
+
+        strncpy(requests[i].message, message ? message : "", 255);
+        requests[i].message[255] = '\0';
+
+        requests[i].requested_at = requested_at;
+        requests[i].status = status;
+
+        i++;
+    }
+
+    sqlite3_finalize(stmt);
+
+    *requests_out = requests;
+    *count_out = i;
+
+    QGP_LOG_INFO(LOG_TAG, "Retrieved %d pending contact requests\n", i);
+    return 0;
+}
+
+// Get count of pending incoming requests
+int contacts_db_pending_request_count(void) {
+    if (!g_db) {
+        return -1;
+    }
+
+    const char *sql = "SELECT COUNT(*) FROM contact_requests WHERE status = 0;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        return -1;
+    }
+
+    int count = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        count = sqlite3_column_int(stmt, 0);
+    }
+
+    sqlite3_finalize(stmt);
+    return count;
+}
+
+// Approve a contact request
+int contacts_db_approve_request(const char *fingerprint) {
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint\n");
+        return -1;
+    }
+
+    // Get request details first
+    const char *sql_get = "SELECT display_name FROM contact_requests WHERE fingerprint = ?;";
+    sqlite3_stmt *stmt = NULL;
+    char display_name[64] = {0};
+
+    int rc = sqlite3_prepare_v2(g_db, sql_get, -1, &stmt, NULL);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char *name = (const char*)sqlite3_column_text(stmt, 0);
+            if (name) {
+                strncpy(display_name, name, 63);
+            }
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    // Update request status to approved
+    const char *sql_update = "UPDATE contact_requests SET status = 1 WHERE fingerprint = ?;";
+    rc = sqlite3_prepare_v2(g_db, sql_update, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update request status: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    // Add to contacts as mutual
+    const char *sql_insert = "INSERT OR REPLACE INTO contacts (identity, added_timestamp, notes, status) "
+                             "VALUES (?, ?, ?, 0);";
+    rc = sqlite3_prepare_v2(g_db, sql_insert, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare insert statement: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, time(NULL));
+    sqlite3_bind_text(stmt, 3, display_name[0] ? display_name : NULL, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to add contact: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Approved contact request from: %.20s...\n", fingerprint);
+    return 0;
+}
+
+// Deny a contact request
+int contacts_db_deny_request(const char *fingerprint) {
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint\n");
+        return -1;
+    }
+
+    const char *sql = "UPDATE contact_requests SET status = 2 WHERE fingerprint = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to deny request: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Denied contact request from: %.20s...\n", fingerprint);
+    return 0;
+}
+
+// Remove a contact request
+int contacts_db_remove_request(const char *fingerprint) {
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint\n");
+        return -1;
+    }
+
+    const char *sql = "DELETE FROM contact_requests WHERE fingerprint = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to remove request: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Removed contact request from: %.20s...\n", fingerprint);
+    return 0;
+}
+
+// Check if a request exists
+bool contacts_db_request_exists(const char *fingerprint) {
+    if (!g_db || !fingerprint) {
+        return false;
+    }
+
+    const char *sql = "SELECT COUNT(*) FROM contact_requests WHERE fingerprint = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+
+    bool exists = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        int count = sqlite3_column_int(stmt, 0);
+        exists = (count > 0);
+    }
+
+    sqlite3_finalize(stmt);
+    return exists;
+}
+
+// Free incoming requests array
+void contacts_db_free_requests(incoming_request_t *requests, int count) {
+    if (requests) {
+        free(requests);
+    }
+}
+
+/* ============================================================================
+ * BLOCKED USER FUNCTIONS
+ * ============================================================================ */
+
+// Block a user permanently
+int contacts_db_block_user(const char *fingerprint, const char *reason) {
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint\n");
+        return -1;
+    }
+
+    // Check if already blocked
+    if (contacts_db_is_blocked(fingerprint)) {
+        return -2;
+    }
+
+    const char *sql = "INSERT INTO blocked_users (fingerprint, blocked_at, reason) VALUES (?, ?, ?);";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, time(NULL));
+    if (reason) {
+        sqlite3_bind_text(stmt, 3, reason, -1, SQLITE_TRANSIENT);
+    } else {
+        sqlite3_bind_null(stmt, 3);
+    }
+
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to block user: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    // Also remove any pending request from this user
+    contacts_db_remove_request(fingerprint);
+
+    QGP_LOG_INFO(LOG_TAG, "Blocked user: %.20s...\n", fingerprint);
+    return 0;
+}
+
+// Unblock a user
+int contacts_db_unblock_user(const char *fingerprint) {
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint\n");
+        return -1;
+    }
+
+    const char *sql = "DELETE FROM blocked_users WHERE fingerprint = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+    rc = sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to unblock user: %s\n", sqlite3_errmsg(g_db));
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Unblocked user: %.20s...\n", fingerprint);
+    return 0;
+}
+
+// Check if a user is blocked
+bool contacts_db_is_blocked(const char *fingerprint) {
+    if (!g_db || !fingerprint) {
+        return false;
+    }
+
+    const char *sql = "SELECT COUNT(*) FROM blocked_users WHERE fingerprint = ?;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        return false;
+    }
+
+    sqlite3_bind_text(stmt, 1, fingerprint, -1, SQLITE_TRANSIENT);
+
+    bool blocked = false;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        int count = sqlite3_column_int(stmt, 0);
+        blocked = (count > 0);
+    }
+
+    sqlite3_finalize(stmt);
+    return blocked;
+}
+
+// Get all blocked users
+int contacts_db_get_blocked_users(blocked_user_t **blocked_out, int *count_out) {
+    if (!g_db) {
+        QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
+        return -1;
+    }
+
+    if (!blocked_out || !count_out) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid output parameters\n");
+        return -1;
+    }
+
+    // Count blocked users
+    int count = contacts_db_blocked_count();
+    if (count < 0) {
+        return -1;
+    }
+
+    if (count == 0) {
+        *blocked_out = NULL;
+        *count_out = 0;
+        return 0;
+    }
+
+    // Allocate array
+    blocked_user_t *blocked = (blocked_user_t*)calloc(count, sizeof(blocked_user_t));
+    if (!blocked) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate blocked array\n");
+        return -1;
+    }
+
+    const char *sql = "SELECT fingerprint, blocked_at, reason FROM blocked_users ORDER BY blocked_at DESC;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare statement: %s\n", sqlite3_errmsg(g_db));
+        free(blocked);
+        return -1;
+    }
+
+    int i = 0;
+    while (sqlite3_step(stmt) == SQLITE_ROW && i < count) {
+        const char *fingerprint = (const char*)sqlite3_column_text(stmt, 0);
+        uint64_t blocked_at = sqlite3_column_int64(stmt, 1);
+        const char *reason = (const char*)sqlite3_column_text(stmt, 2);
+
+        strncpy(blocked[i].fingerprint, fingerprint ? fingerprint : "", 128);
+        blocked[i].fingerprint[128] = '\0';
+
+        blocked[i].blocked_at = blocked_at;
+
+        strncpy(blocked[i].reason, reason ? reason : "", 255);
+        blocked[i].reason[255] = '\0';
+
+        i++;
+    }
+
+    sqlite3_finalize(stmt);
+
+    *blocked_out = blocked;
+    *count_out = i;
+
+    QGP_LOG_INFO(LOG_TAG, "Retrieved %d blocked users\n", i);
+    return 0;
+}
+
+// Get count of blocked users
+int contacts_db_blocked_count(void) {
+    if (!g_db) {
+        return -1;
+    }
+
+    const char *sql = "SELECT COUNT(*) FROM blocked_users;";
+    sqlite3_stmt *stmt = NULL;
+
+    int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        return -1;
+    }
+
+    int count = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        count = sqlite3_column_int(stmt, 0);
+    }
+
+    sqlite3_finalize(stmt);
+    return count;
+}
+
+// Free blocked users array
+void contacts_db_free_blocked(blocked_user_t *blocked, int count) {
+    if (blocked) {
+        free(blocked);
+    }
 }
