@@ -846,6 +846,29 @@ dna_request_id_t dna_engine_update_profile(
     void *user_data
 );
 
+/**
+ * Get encrypted mnemonic (recovery phrase)
+ *
+ * Loads and decrypts the stored BIP39 mnemonic phrase using the
+ * identity's Kyber1024 private key. This allows users to view
+ * their recovery phrase in settings.
+ *
+ * The mnemonic is stored encrypted in ~/.dna/<fingerprint>/mnemonic.enc
+ * and can only be decrypted with the identity's private key.
+ *
+ * @param engine        Engine instance
+ * @param mnemonic_out  Output buffer (at least 256 bytes)
+ * @param mnemonic_size Size of output buffer
+ * @return              0 on success, negative error code on failure
+ *                      Returns DNA_ENGINE_ERROR_NOT_FOUND if mnemonic not stored
+ *                      (identities created before this feature won't have it)
+ */
+int dna_engine_get_mnemonic(
+    dna_engine_t *engine,
+    char *mnemonic_out,
+    size_t mnemonic_size
+);
+
 /* ============================================================================
  * 3. CONTACTS (3 async functions)
  * ============================================================================ */

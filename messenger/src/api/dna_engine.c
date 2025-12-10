@@ -72,6 +72,8 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "crypto/utils/base58.h"
 #include "blockchain/ethereum/eth_wallet.h"
 #include "blockchain/blockchain_wallet.h"
+#include "crypto/utils/seed_storage.h"
+#include "crypto/utils/qgp_key.h"
 #include <time.h>
 
 #include <stdlib.h>

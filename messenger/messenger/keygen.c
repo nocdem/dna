@@ -397,6 +397,15 @@ int messenger_generate_keys_from_seeds(
         } else {
             QGP_LOG_WARN(LOG_TAG, "Warning: Failed to save encrypted seed (non-fatal)\n");
         }
+
+        // Save encrypted mnemonic so user can view seed phrase in settings
+        if (mnemonic && strlen(mnemonic) > 0) {
+            if (mnemonic_storage_save(mnemonic, kyber_pk, identity_dir) == 0) {
+                QGP_LOG_INFO(LOG_TAG, "✓ Encrypted mnemonic saved for seed phrase export\n");
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to save encrypted mnemonic (non-fatal)\n");
+            }
+        }
     } else {
         QGP_LOG_WARN(LOG_TAG, "No master_seed provided - skipping wallet creation\n");
     }

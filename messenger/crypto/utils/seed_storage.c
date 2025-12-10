@@ -333,3 +333,267 @@ int seed_storage_delete(const char *identity_dir) {
     QGP_LOG_INFO(LOG_TAG, "Seed file deleted: %s", seed_path);
     return 0;
 }
+
+/* ============================================================================
+ * MNEMONIC STORAGE IMPLEMENTATION
+ * ============================================================================ */
+
+/**
+ * Build full path to mnemonic file
+ */
+static int build_mnemonic_path(const char *identity_dir, char *path_out, size_t path_size) {
+    if (!identity_dir || !path_out || path_size < 32) {
+        return -1;
+    }
+
+    int written = snprintf(path_out, path_size, "%s/%s", identity_dir, MNEMONIC_STORAGE_FILE);
+    if (written < 0 || (size_t)written >= path_size) {
+        return -1;
+    }
+
+    return 0;
+}
+
+int mnemonic_storage_save(
+    const char *mnemonic,
+    const uint8_t kem_pubkey[1568],
+    const char *identity_dir
+) {
+    if (!mnemonic || !kem_pubkey || !identity_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to mnemonic_storage_save");
+        return -1;
+    }
+
+    size_t mnemonic_len = strlen(mnemonic);
+    if (mnemonic_len == 0 || mnemonic_len >= MNEMONIC_STORAGE_DATA_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid mnemonic length: %zu", mnemonic_len);
+        return -1;
+    }
+
+    int result = -1;
+    FILE *fp = NULL;
+    uint8_t *file_buffer = NULL;
+
+    /* Buffers for KEM and AES */
+    uint8_t kem_ciphertext[SEED_STORAGE_KEM_CT_SIZE];
+    uint8_t shared_secret[32];
+    uint8_t nonce[SEED_STORAGE_NONCE_SIZE];
+    uint8_t tag[SEED_STORAGE_TAG_SIZE];
+    uint8_t plaintext[MNEMONIC_STORAGE_DATA_SIZE];
+    uint8_t encrypted_data[MNEMONIC_STORAGE_DATA_SIZE];
+    size_t encrypted_len = 0;
+
+    /* Zero-pad the plaintext buffer and copy mnemonic */
+    memset(plaintext, 0, MNEMONIC_STORAGE_DATA_SIZE);
+    memcpy(plaintext, mnemonic, mnemonic_len);
+
+    /* Build file path */
+    char mnemonic_path[512];
+    if (build_mnemonic_path(identity_dir, mnemonic_path, sizeof(mnemonic_path)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build mnemonic path");
+        goto cleanup;
+    }
+
+    /* Step 1: Kyber1024 encapsulation */
+    QGP_LOG_DEBUG(LOG_TAG, "Performing KEM encapsulation for mnemonic...");
+    if (qgp_kem1024_encapsulate(kem_ciphertext, shared_secret, kem_pubkey) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "KEM encapsulation failed");
+        goto cleanup;
+    }
+
+    /* Step 2: AES-256-GCM encryption */
+    QGP_LOG_DEBUG(LOG_TAG, "Encrypting mnemonic with AES-256-GCM...");
+    if (qgp_aes256_encrypt(
+            shared_secret,
+            plaintext, MNEMONIC_STORAGE_DATA_SIZE,
+            NULL, 0,
+            encrypted_data, &encrypted_len,
+            nonce, tag) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "AES-256-GCM encryption failed");
+        goto cleanup;
+    }
+
+    if (encrypted_len != MNEMONIC_STORAGE_DATA_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Unexpected encrypted length: %zu", encrypted_len);
+        goto cleanup;
+    }
+
+    /* Step 3: Write to file */
+    file_buffer = malloc(MNEMONIC_STORAGE_TOTAL_SIZE);
+    if (!file_buffer) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+        goto cleanup;
+    }
+
+    size_t offset = 0;
+    memcpy(file_buffer + offset, kem_ciphertext, SEED_STORAGE_KEM_CT_SIZE);
+    offset += SEED_STORAGE_KEM_CT_SIZE;
+    memcpy(file_buffer + offset, nonce, SEED_STORAGE_NONCE_SIZE);
+    offset += SEED_STORAGE_NONCE_SIZE;
+    memcpy(file_buffer + offset, tag, SEED_STORAGE_TAG_SIZE);
+    offset += SEED_STORAGE_TAG_SIZE;
+    memcpy(file_buffer + offset, encrypted_data, MNEMONIC_STORAGE_DATA_SIZE);
+
+    fp = fopen(mnemonic_path, "wb");
+    if (!fp) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open file for writing: %s (%s)",
+                      mnemonic_path, strerror(errno));
+        goto cleanup;
+    }
+
+    if (fwrite(file_buffer, 1, MNEMONIC_STORAGE_TOTAL_SIZE, fp) != MNEMONIC_STORAGE_TOTAL_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to write mnemonic file");
+        goto cleanup;
+    }
+
+    fclose(fp);
+    fp = NULL;
+
+    set_file_permissions(mnemonic_path);
+
+    QGP_LOG_INFO(LOG_TAG, "Mnemonic saved securely to %s", mnemonic_path);
+    result = 0;
+
+cleanup:
+    secure_memzero(shared_secret, sizeof(shared_secret));
+    secure_memzero(plaintext, sizeof(plaintext));
+    secure_memzero(encrypted_data, sizeof(encrypted_data));
+    if (file_buffer) {
+        secure_memzero(file_buffer, MNEMONIC_STORAGE_TOTAL_SIZE);
+        free(file_buffer);
+    }
+    if (fp) {
+        fclose(fp);
+    }
+
+    return result;
+}
+
+int mnemonic_storage_load(
+    char *mnemonic_out,
+    size_t mnemonic_size,
+    const uint8_t kem_privkey[3168],
+    const char *identity_dir
+) {
+    if (!mnemonic_out || mnemonic_size < MNEMONIC_STORAGE_DATA_SIZE || !kem_privkey || !identity_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to mnemonic_storage_load");
+        return -1;
+    }
+
+    int result = -1;
+    FILE *fp = NULL;
+    uint8_t *file_buffer = NULL;
+
+    uint8_t shared_secret[32];
+    uint8_t decrypted_data[MNEMONIC_STORAGE_DATA_SIZE];
+    size_t decrypted_len = 0;
+
+    /* Build file path */
+    char mnemonic_path[512];
+    if (build_mnemonic_path(identity_dir, mnemonic_path, sizeof(mnemonic_path)) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to build mnemonic path");
+        goto cleanup;
+    }
+
+    /* Check if file exists */
+    if (!mnemonic_storage_exists(identity_dir)) {
+        QGP_LOG_DEBUG(LOG_TAG, "Mnemonic file does not exist: %s", mnemonic_path);
+        goto cleanup;
+    }
+
+    /* Read file */
+    fp = fopen(mnemonic_path, "rb");
+    if (!fp) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open mnemonic file: %s (%s)",
+                      mnemonic_path, strerror(errno));
+        goto cleanup;
+    }
+
+    file_buffer = malloc(MNEMONIC_STORAGE_TOTAL_SIZE);
+    if (!file_buffer) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed");
+        goto cleanup;
+    }
+
+    if (fread(file_buffer, 1, MNEMONIC_STORAGE_TOTAL_SIZE, fp) != MNEMONIC_STORAGE_TOTAL_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to read mnemonic file (truncated?)");
+        goto cleanup;
+    }
+
+    fclose(fp);
+    fp = NULL;
+
+    /* Parse file buffer */
+    size_t offset = 0;
+    const uint8_t *kem_ciphertext = file_buffer + offset;
+    offset += SEED_STORAGE_KEM_CT_SIZE;
+    const uint8_t *nonce = file_buffer + offset;
+    offset += SEED_STORAGE_NONCE_SIZE;
+    const uint8_t *tag = file_buffer + offset;
+    offset += SEED_STORAGE_TAG_SIZE;
+    const uint8_t *encrypted_data = file_buffer + offset;
+
+    /* Step 1: Kyber1024 decapsulation */
+    QGP_LOG_DEBUG(LOG_TAG, "Performing KEM decapsulation for mnemonic...");
+    if (qgp_kem1024_decapsulate(shared_secret, kem_ciphertext, kem_privkey) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "KEM decapsulation failed");
+        goto cleanup;
+    }
+
+    /* Step 2: AES-256-GCM decryption */
+    QGP_LOG_DEBUG(LOG_TAG, "Decrypting mnemonic with AES-256-GCM...");
+    if (qgp_aes256_decrypt(
+            shared_secret,
+            encrypted_data, MNEMONIC_STORAGE_DATA_SIZE,
+            NULL, 0,
+            nonce, tag,
+            decrypted_data, &decrypted_len) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "AES-256-GCM decryption failed");
+        secure_memzero(mnemonic_out, mnemonic_size);
+        goto cleanup;
+    }
+
+    if (decrypted_len != MNEMONIC_STORAGE_DATA_SIZE) {
+        QGP_LOG_ERROR(LOG_TAG, "Unexpected decrypted length: %zu", decrypted_len);
+        secure_memzero(mnemonic_out, mnemonic_size);
+        goto cleanup;
+    }
+
+    /* Copy to output (null-terminated string in decrypted_data) */
+    memcpy(mnemonic_out, decrypted_data, MNEMONIC_STORAGE_DATA_SIZE);
+    mnemonic_out[MNEMONIC_STORAGE_DATA_SIZE - 1] = '\0';  /* Ensure null termination */
+
+    QGP_LOG_INFO(LOG_TAG, "Mnemonic loaded successfully");
+    result = 0;
+
+cleanup:
+    secure_memzero(shared_secret, sizeof(shared_secret));
+    secure_memzero(decrypted_data, sizeof(decrypted_data));
+    if (file_buffer) {
+        secure_memzero(file_buffer, MNEMONIC_STORAGE_TOTAL_SIZE);
+        free(file_buffer);
+    }
+    if (fp) {
+        fclose(fp);
+    }
+
+    return result;
+}
+
+bool mnemonic_storage_exists(const char *identity_dir) {
+    if (!identity_dir) {
+        return false;
+    }
+
+    char mnemonic_path[512];
+    if (build_mnemonic_path(identity_dir, mnemonic_path, sizeof(mnemonic_path)) != 0) {
+        return false;
+    }
+
+    FILE *fp = fopen(mnemonic_path, "rb");
+    if (fp) {
+        fclose(fp);
+        return true;
+    }
+    return false;
+}

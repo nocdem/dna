@@ -390,11 +390,11 @@ int dht_verify_contact_request(const dht_contact_request_t *request) {
     ptr += 256;
 
     /* Verify Dilithium5 signature */
-    int verify_result = qgp_dsa87_open(
-        signed_data,
-        signed_data_len,
+    int verify_result = qgp_dsa87_verify(
         request->signature,
         request->signature_len,
+        signed_data,
+        signed_data_len,
         request->sender_dilithium_pubkey
     );
 
@@ -516,10 +516,10 @@ int dht_send_contact_request(
     /* Sign with Dilithium5 */
     size_t sig_len = DHT_DILITHIUM5_SIG_MAX_SIZE;
     int sign_result = qgp_dsa87_sign(
-        signed_data,
-        signed_data_len,
         request.signature,
         &sig_len,
+        signed_data,
+        signed_data_len,
         sender_dilithium_privkey
     );
 

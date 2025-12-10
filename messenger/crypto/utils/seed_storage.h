@@ -118,6 +118,64 @@ bool seed_storage_exists(const char *identity_dir);
  */
 int seed_storage_delete(const char *identity_dir);
 
+/* ============================================================================
+ * MNEMONIC STORAGE
+ * ============================================================================
+ * Stores the human-readable BIP39 mnemonic phrase (24 words) so users can
+ * view their recovery phrase in settings.
+ *
+ * File Format (1852 bytes total):
+ *   - KEM ciphertext: 1568 bytes (Kyber1024)
+ *   - AES nonce:      12 bytes
+ *   - AES tag:        16 bytes
+ *   - Encrypted data: 256 bytes (mnemonic + null padding)
+ * ============================================================================ */
+
+#define MNEMONIC_STORAGE_FILE           "mnemonic.enc"
+#define MNEMONIC_STORAGE_DATA_SIZE      256     /* BIP39_MAX_MNEMONIC_LENGTH */
+#define MNEMONIC_STORAGE_TOTAL_SIZE     (SEED_STORAGE_KEM_CT_SIZE + \
+                                         SEED_STORAGE_NONCE_SIZE + \
+                                         SEED_STORAGE_TAG_SIZE + \
+                                         MNEMONIC_STORAGE_DATA_SIZE)  /* 1852 bytes */
+
+/**
+ * Save mnemonic encrypted with Kyber1024 KEM
+ *
+ * @param mnemonic      Null-terminated mnemonic string (max 255 chars)
+ * @param kem_pubkey    1568-byte Kyber1024 public key
+ * @param identity_dir  Directory path (e.g., ~/.dna/<fingerprint>)
+ * @return              0 on success, -1 on error
+ */
+int mnemonic_storage_save(
+    const char *mnemonic,
+    const uint8_t kem_pubkey[1568],
+    const char *identity_dir
+);
+
+/**
+ * Load mnemonic decrypted with Kyber1024 KEM
+ *
+ * @param mnemonic_out      Output buffer (at least 256 bytes)
+ * @param mnemonic_size     Size of output buffer
+ * @param kem_privkey       3168-byte Kyber1024 private key
+ * @param identity_dir      Directory path (e.g., ~/.dna/<fingerprint>)
+ * @return                  0 on success, -1 on error
+ */
+int mnemonic_storage_load(
+    char *mnemonic_out,
+    size_t mnemonic_size,
+    const uint8_t kem_privkey[3168],
+    const char *identity_dir
+);
+
+/**
+ * Check if encrypted mnemonic file exists
+ *
+ * @param identity_dir  Directory path (e.g., ~/.dna/<fingerprint>)
+ * @return              true if mnemonic.enc exists, false otherwise
+ */
+bool mnemonic_storage_exists(const char *identity_dir);
+
 #ifdef __cplusplus
 }
 #endif
