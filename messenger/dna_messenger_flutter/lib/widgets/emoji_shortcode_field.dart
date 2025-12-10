@@ -18,6 +18,7 @@ class EmojiShortcodeField extends StatefulWidget {
   final VoidCallback? onSubmitted;
   final VoidCallback? onEnterPressed;
   final VoidCallback? onTap;
+  final ValueChanged<String>? onChanged;
   final InputDecoration? decoration;
   final TextInputAction? textInputAction;
   final FocusNode? focusNode;
@@ -32,6 +33,7 @@ class EmojiShortcodeField extends StatefulWidget {
     this.onSubmitted,
     this.onEnterPressed,
     this.onTap,
+    this.onChanged,
     this.decoration,
     this.textInputAction,
     this.focusNode,
@@ -258,6 +260,7 @@ class _EmojiShortcodeFieldState extends State<EmojiShortcodeField> {
         maxLines: widget.maxLines,
         textInputAction: widget.textInputAction,
         textCapitalization: TextCapitalization.sentences,
+        onChanged: widget.onChanged,
         onSubmitted: widget.onSubmitted != null ? (_) => widget.onSubmitted!() : null,
         onTap: () {
           widget.onTap?.call();

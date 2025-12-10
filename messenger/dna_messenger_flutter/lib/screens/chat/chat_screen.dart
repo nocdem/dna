@@ -342,6 +342,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     _sendMessage(contact);
                   }
                 },
+                onChanged: (_) {
+                  // Rebuild to update send button enabled state
+                  setState(() {});
+                },
                 decoration: InputDecoration(
                   hintText: 'Type a message...',
                   border: OutlineInputBorder(

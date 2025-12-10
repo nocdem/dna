@@ -44,9 +44,14 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
     );
 
     // Add to UI immediately with pending status
-    state.whenData((messages) {
-      state = AsyncValue.data([...messages, pendingMessage]);
-    });
+    // Handle all state cases - not just when data is available
+    final currentState = state;
+    if (currentState is AsyncData<List<Message>>) {
+      state = AsyncValue.data([...currentState.value, pendingMessage]);
+    } else {
+      // If loading or error, start fresh with just this message
+      state = AsyncValue.data([pendingMessage]);
+    }
 
     // Queue message for async sending (returns immediately)
     final result = engine.queueMessage(arg, text);
