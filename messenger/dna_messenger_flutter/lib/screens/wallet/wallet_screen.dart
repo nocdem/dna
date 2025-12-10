@@ -2,8 +2,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../ffi/dna_engine.dart';
-import '../../providers/providers.dart';
+import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Wallet;
+import '../../providers/providers.dart' hide UserProfile;
 import '../../theme/dna_theme.dart';
 
 class WalletScreen extends ConsumerWidget {
@@ -702,8 +702,44 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     return RegExp(r'^[0-9a-fA-F]{128}$').hasMatch(input);
   }
 
-  /// Resolve fingerprint to wallet address
-  Future<void> _resolveFingerprint(String fingerprint) async {
+  /// Check if input looks like a DNA identity name (3-20 alphanumeric chars)
+  bool _isDnaName(String input) {
+    if (input.length < 3 || input.length > 20) return false;
+    return RegExp(r'^[a-zA-Z0-9_]+$').hasMatch(input);
+  }
+
+  /// Get the appropriate wallet address from profile based on selected network
+  String? _getWalletAddressForNetwork(UserProfile profile) {
+    switch (_selectedNetwork) {
+      case 'Ethereum':
+        return profile.eth.isNotEmpty ? profile.eth : null;
+      case 'Bitcoin':
+        return profile.btc.isNotEmpty ? profile.btc : null;
+      case 'Solana':
+        return profile.sol.isNotEmpty ? profile.sol : null;
+      case 'Backbone':
+      default:
+        return profile.backbone.isNotEmpty ? profile.backbone : null;
+    }
+  }
+
+  /// Get network-friendly name for error messages
+  String _getNetworkWalletName() {
+    switch (_selectedNetwork) {
+      case 'Ethereum':
+        return 'ETH';
+      case 'Bitcoin':
+        return 'BTC';
+      case 'Solana':
+        return 'SOL';
+      case 'Backbone':
+      default:
+        return 'Backbone';
+    }
+  }
+
+  /// Resolve DNA identity (name or fingerprint) to wallet address
+  Future<void> _resolveDnaIdentity(String input) async {
     setState(() {
       _isResolving = true;
       _resolveError = null;
@@ -713,6 +749,26 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
 
     try {
       final engine = await ref.read(engineProvider.future);
+      String fingerprint = input;
+      String? displayName;
+
+      // If it's a name, first resolve to fingerprint
+      if (_isDnaName(input) && !_isFingerprint(input)) {
+        final fp = await engine.lookupName(input);
+        if (!mounted) return;
+
+        if (fp.isEmpty) {
+          setState(() {
+            _isResolving = false;
+            _resolveError = 'Identity "$input" not found';
+          });
+          return;
+        }
+        fingerprint = fp;
+        displayName = input;
+      }
+
+      // Now lookup the profile to get wallet address
       final profile = await engine.lookupProfile(fingerprint);
 
       if (!mounted) return;
@@ -720,25 +776,29 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       if (profile == null) {
         setState(() {
           _isResolving = false;
-          _resolveError = 'Contact not found in DHT';
+          _resolveError = 'Profile not found in DHT';
         });
         return;
       }
 
-      if (profile.backbone.isEmpty) {
+      // Get the appropriate wallet address for the selected network
+      final walletAddress = _getWalletAddressForNetwork(profile);
+
+      if (walletAddress == null) {
         setState(() {
           _isResolving = false;
-          _resolveError = 'Contact has no wallet address';
+          _resolveError = 'Contact has no ${_getNetworkWalletName()} wallet address';
         });
         return;
       }
 
       setState(() {
         _isResolving = false;
-        _resolvedAddress = profile.backbone;
-        _resolvedContactName = profile.displayName.isNotEmpty
-            ? profile.displayName
-            : '${fingerprint.substring(0, 8)}...';
+        _resolvedAddress = walletAddress;
+        _resolvedContactName = displayName ??
+            (profile.displayName.isNotEmpty
+                ? profile.displayName
+                : '${fingerprint.substring(0, 8)}...');
       });
     } catch (e) {
       if (!mounted) return;
@@ -760,9 +820,9 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       _resolveError = null;
     });
 
-    // Check if it's a fingerprint
-    if (_isFingerprint(trimmed)) {
-      _resolveFingerprint(trimmed);
+    // Check if it's a fingerprint or DNA name that needs resolution
+    if (_isFingerprint(trimmed) || _isDnaName(trimmed)) {
+      _resolveDnaIdentity(trimmed);
     }
   }
 
@@ -838,7 +898,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     if (result != null && mounted) {
       // Set the fingerprint and resolve it
       _recipientController.text = result.fingerprint;
-      _resolveFingerprint(result.fingerprint);
+      _resolveDnaIdentity(result.fingerprint);
     }
   }
 
@@ -1000,7 +1060,14 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                       value: _selectedNetwork,
                       decoration: const InputDecoration(labelText: 'Network'),
                       items: _getNetworkItems(),
-                      onChanged: (v) => setState(() => _selectedNetwork = v ?? 'Backbone'),
+                      onChanged: (v) {
+                        setState(() => _selectedNetwork = v ?? 'Backbone');
+                        // Re-resolve if there's a DNA identity in the input
+                        final input = _recipientController.text.trim();
+                        if (_isFingerprint(input) || _isDnaName(input)) {
+                          _resolveDnaIdentity(input);
+                        }
+                      },
                     ),
                   ),
                 ],
@@ -1102,8 +1169,8 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     final input = _recipientController.text.trim();
     if (input.isEmpty) return false;
 
-    // If it's a fingerprint, must be resolved successfully
-    if (_isFingerprint(input)) {
+    // If it's a fingerprint or DNA name, must be resolved successfully
+    if (_isFingerprint(input) || _isDnaName(input)) {
       return _resolvedAddress != null && _resolveError == null;
     }
 
