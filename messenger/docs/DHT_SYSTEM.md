@@ -1,6 +1,6 @@
 # DHT System Documentation
 
-**Last Updated:** 2025-12-07
+**Last Updated:** 2025-12-10
 
 Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system, covering both client operations and the dna-nodus bootstrap server.
 
@@ -293,10 +293,16 @@ size_t dht_get_active_listen_count(dht_context_t *ctx);
 
 Example usage for offline message notifications:
 ```c
-uint8_t outbox_key[64];
-dht_generate_outbox_key(contact_fp, my_fp, outbox_key);
+// Generate the same key that dht_chunked_publish uses for chunk0
+// Format: SHA3-512(base_key + ":chunk:0")[0:32]
+char outbox_base_key[512];
+snprintf(outbox_base_key, sizeof(outbox_base_key), "%s:outbox:%s",
+         contact_fp, my_fp);
 
-size_t token = dht_listen(ctx, outbox_key, 64, my_callback, my_context);
+uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];  // 32 bytes
+dht_chunked_make_key(outbox_base_key, 0, chunk0_key);
+
+size_t token = dht_listen(ctx, chunk0_key, DHT_CHUNK_KEY_SIZE, my_callback, my_context);
 if (token == 0) {
     fprintf(stderr, "Failed to start listening\n");
 }
@@ -304,6 +310,10 @@ if (token == 0) {
 // Later, stop listening:
 dht_cancel_listen(ctx, token);
 ```
+
+**Important:** The listen key must match what `dht_chunked_publish()` uses. The chunked
+layer publishes to `SHA3-512(base_key + ":chunk:0")` truncated to 32 bytes, NOT the
+raw SHA3-512 hash of the base key.
 
 ---
 
