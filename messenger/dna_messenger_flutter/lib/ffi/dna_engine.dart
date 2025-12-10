@@ -884,9 +884,10 @@ class DnaEngine {
 
   /// Create new identity from BIP39 seeds (synchronous)
   /// name is required - used for directory structure and wallet naming
-  /// walletSeed is used to create a Cellframe wallet (can be null to skip)
-  /// masterSeed is the 64-byte BIP39 master seed for multi-chain wallet derivation (ETH, etc.)
-  String createIdentitySync(String name, List<int> signingSeed, List<int> encryptionSeed, List<int>? walletSeed, {List<int>? masterSeed}) {
+  /// walletSeed is DEPRECATED - use mnemonic for Cellframe wallet instead
+  /// masterSeed is the 64-byte BIP39 master seed for multi-chain wallet derivation (ETH, SOL)
+  /// mnemonic is the space-separated BIP39 mnemonic for Cellframe wallet (SHA3-256 derivation)
+  String createIdentitySync(String name, List<int> signingSeed, List<int> encryptionSeed, List<int>? walletSeed, {List<int>? masterSeed, String? mnemonic}) {
     if (name.isEmpty) {
       throw ArgumentError('Name is required');
     }
@@ -905,6 +906,7 @@ class DnaEngine {
     final encSeedPtr = calloc<Uint8>(32);
     final walletSeedPtr = walletSeed != null ? calloc<Uint8>(32) : nullptr;
     final masterSeedPtr = masterSeed != null ? calloc<Uint8>(64) : nullptr;
+    final mnemonicPtr = mnemonic != null ? mnemonic.toNativeUtf8() : nullptr;
     final fingerprintPtr = calloc<Uint8>(129); // 128 hex chars + null
 
     try {
@@ -928,6 +930,7 @@ class DnaEngine {
         encSeedPtr,
         walletSeedPtr,
         masterSeedPtr,
+        mnemonicPtr?.cast() ?? nullptr,
         fingerprintPtr.cast(),
       );
 
@@ -946,23 +949,28 @@ class DnaEngine {
       if (masterSeed != null) {
         calloc.free(masterSeedPtr);
       }
+      if (mnemonicPtr != null) {
+        calloc.free(mnemonicPtr);
+      }
       calloc.free(fingerprintPtr);
     }
   }
 
   /// Create new identity from BIP39 seeds (async wrapper)
   /// name is required - used for directory structure and wallet naming
-  /// walletSeed is used to create a Cellframe wallet (can be null to skip)
-  /// masterSeed is the 64-byte BIP39 master seed for multi-chain wallet derivation (ETH, etc.)
-  Future<String> createIdentity(String name, List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed, List<int>? masterSeed}) async {
+  /// walletSeed is DEPRECATED - use mnemonic for Cellframe wallet instead
+  /// masterSeed is the 64-byte BIP39 master seed for multi-chain wallet derivation (ETH, SOL)
+  /// mnemonic is the space-separated BIP39 mnemonic for Cellframe wallet (SHA3-256 derivation)
+  Future<String> createIdentity(String name, List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed, List<int>? masterSeed, String? mnemonic}) async {
     // Use sync version wrapped in compute to avoid blocking UI
-    return createIdentitySync(name, signingSeed, encryptionSeed, walletSeed, masterSeed: masterSeed);
+    return createIdentitySync(name, signingSeed, encryptionSeed, walletSeed, masterSeed: masterSeed, mnemonic: mnemonic);
   }
 
   /// Restore identity from BIP39 seeds (synchronous)
   /// Creates keys and wallets locally without DHT name registration.
   /// Use this when restoring an existing identity from seed phrase.
-  String restoreIdentitySync(List<int> signingSeed, List<int> encryptionSeed, List<int>? walletSeed, {List<int>? masterSeed}) {
+  /// mnemonic is the space-separated BIP39 mnemonic for Cellframe wallet (SHA3-256 derivation)
+  String restoreIdentitySync(List<int> signingSeed, List<int> encryptionSeed, List<int>? walletSeed, {List<int>? masterSeed, String? mnemonic}) {
     if (signingSeed.length != 32 || encryptionSeed.length != 32) {
       throw ArgumentError('Seeds must be 32 bytes each');
     }
@@ -977,6 +985,7 @@ class DnaEngine {
     final encSeedPtr = calloc<Uint8>(32);
     final walletSeedPtr = walletSeed != null ? calloc<Uint8>(32) : nullptr;
     final masterSeedPtr = masterSeed != null ? calloc<Uint8>(64) : nullptr;
+    final mnemonicPtr = mnemonic != null ? mnemonic.toNativeUtf8() : nullptr;
     final fingerprintPtr = calloc<Uint8>(129); // 128 hex chars + null
 
     try {
@@ -999,6 +1008,7 @@ class DnaEngine {
         encSeedPtr,
         walletSeedPtr,
         masterSeedPtr,
+        mnemonicPtr?.cast() ?? nullptr,
         fingerprintPtr.cast(),
       );
 
@@ -1016,14 +1026,18 @@ class DnaEngine {
       if (masterSeed != null) {
         calloc.free(masterSeedPtr);
       }
+      if (mnemonicPtr != null) {
+        calloc.free(mnemonicPtr);
+      }
       calloc.free(fingerprintPtr);
     }
   }
 
   /// Restore identity from BIP39 seeds (async wrapper)
   /// Creates keys and wallets locally without DHT name registration.
-  Future<String> restoreIdentity(List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed, List<int>? masterSeed}) async {
-    return restoreIdentitySync(signingSeed, encryptionSeed, walletSeed, masterSeed: masterSeed);
+  /// mnemonic is the space-separated BIP39 mnemonic for Cellframe wallet (SHA3-256 derivation)
+  Future<String> restoreIdentity(List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed, List<int>? masterSeed, String? mnemonic}) async {
+    return restoreIdentitySync(signingSeed, encryptionSeed, walletSeed, masterSeed: masterSeed, mnemonic: mnemonic);
   }
 
   /// Load and activate identity

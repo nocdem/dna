@@ -632,10 +632,11 @@ void createIdentityWithSeed(AppState& state, const char* mnemonic) {
     mkdir(dna_dir.c_str(), 0700);
 #endif
 
-    // Generate keys from seeds (returns fingerprint) - also creates blockchain wallets (CF + ETH)
+    // Generate keys from seeds (returns fingerprint) - also creates blockchain wallets (CF + ETH + SOL)
     // Pass NULL for name to use fingerprint as directory name (ImGui doesn't require name-first flow)
+    // Cellframe wallet uses SHA3-256(mnemonic) to match official Cellframe wallet app
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, wallet_seed, master_seed, dna_dir.c_str(), fingerprint);
+    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, wallet_seed, master_seed, mnemonic, dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));
@@ -879,10 +880,11 @@ void restoreIdentityWithSeed(AppState& state, const char* mnemonic) {
     std::string dna_dir = std::string(home) + "/.dna";
 #endif
 
-    // Generate keys from seeds (fingerprint-first, no name required) - also creates blockchain wallets (CF + ETH)
+    // Generate keys from seeds (fingerprint-first, no name required) - also creates blockchain wallets (CF + ETH + SOL)
     // Pass NULL for name to use fingerprint as directory name
+    // Cellframe wallet uses SHA3-256(mnemonic) to match official Cellframe wallet app
     char fingerprint[129];
-    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, wallet_seed, master_seed, dna_dir.c_str(), fingerprint);
+    int result = messenger_generate_keys_from_seeds(nullptr, signing_seed, encryption_seed, wallet_seed, master_seed, normalized.c_str(), dna_dir.c_str(), fingerprint);
 
     // Securely wipe seeds from memory
     memset(signing_seed, 0, sizeof(signing_seed));

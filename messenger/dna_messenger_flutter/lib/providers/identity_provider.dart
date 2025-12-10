@@ -49,13 +49,16 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     // Derive seeds from mnemonic (includes walletSeed and masterSeed for multi-chain wallets)
     final seeds = engine.deriveSeedsWithMaster(mnemonic, passphrase: passphrase);
 
-    // Create identity with derived seeds (including master seed for ETH wallet)
+    // Create identity with derived seeds
+    // - ETH/SOL use masterSeed via BIP-44/SLIP-10
+    // - Cellframe uses SHA3-256(mnemonic) to match official Cellframe wallet app
     final fingerprint = await engine.createIdentity(
       name,
       seeds.signingSeed,
       seeds.encryptionSeed,
       walletSeed: seeds.walletSeed,
       masterSeed: seeds.masterSeed,
+      mnemonic: mnemonic, // Pass mnemonic for Cellframe wallet
     );
 
     await refresh();
@@ -71,11 +74,14 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     final seeds = engine.deriveSeedsWithMaster(mnemonic, passphrase: passphrase);
 
     // Restore identity locally (no DHT registration - identity already exists)
+    // - ETH/SOL use masterSeed via BIP-44/SLIP-10
+    // - Cellframe uses SHA3-256(mnemonic) to match official Cellframe wallet app
     final fingerprint = await engine.restoreIdentity(
       seeds.signingSeed,
       seeds.encryptionSeed,
       walletSeed: seeds.walletSeed,
       masterSeed: seeds.masterSeed,
+      mnemonic: mnemonic, // Pass mnemonic for Cellframe wallet
     );
 
     await refresh();

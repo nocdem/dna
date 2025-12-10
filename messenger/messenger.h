@@ -138,8 +138,9 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
  * @param name: Identity name (required, used for directory structure)
  * @param signing_seed: 32-byte seed for Dilithium5 key generation
  * @param encryption_seed: 32-byte seed for Kyber1024 key generation
- * @param wallet_seed: 32-byte seed for Cellframe wallet (optional, can be NULL)
+ * @param wallet_seed: 32-byte seed for Cellframe wallet (DEPRECATED, use mnemonic)
  * @param master_seed: 64-byte BIP39 master seed for multi-chain wallets (optional, can be NULL)
+ * @param mnemonic: Space-separated BIP39 mnemonic (for Cellframe wallet, optional)
  * @param data_dir: Base directory (e.g., ~/.dna)
  * @param fingerprint_out: Output buffer for 128-char fingerprint (must be 129 bytes for null terminator)
  * @return: 0 on success, -1 on error
@@ -150,6 +151,7 @@ int messenger_generate_keys_from_seeds(
     const uint8_t *encryption_seed,
     const uint8_t *wallet_seed,
     const uint8_t *master_seed,
+    const char *mnemonic,
     const char *data_dir,
     char *fingerprint_out
 );

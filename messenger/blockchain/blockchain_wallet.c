@@ -137,6 +137,7 @@ int blockchain_create_wallet(
 
 int blockchain_create_all_wallets(
     const uint8_t master_seed[64],
+    const char *mnemonic,
     const char *fingerprint,
     const char *wallet_dir
 ) {
@@ -148,21 +149,34 @@ int blockchain_create_all_wallets(
     int total_count = 0;
     char address[BLOCKCHAIN_WALLET_ADDRESS_MAX];
 
-    /* Create Cellframe wallet */
+    /* Create Cellframe wallet using mnemonic-derived seed
+     * Cellframe wallet app uses SHA3-256(mnemonic) NOT BIP39!
+     */
     total_count++;
-    if (blockchain_create_wallet(BLOCKCHAIN_CELLFRAME, master_seed, fingerprint, wallet_dir, address) == 0) {
-        success_count++;
-        QGP_LOG_INFO(LOG_TAG, "Created Cellframe wallet: %s", address);
+    if (mnemonic && mnemonic[0] != '\0') {
+        uint8_t cf_seed[CF_WALLET_SEED_SIZE];
+        if (cellframe_derive_seed_from_mnemonic(mnemonic, cf_seed) == 0) {
+            if (cellframe_wallet_create_from_seed(cf_seed, fingerprint, wallet_dir, address) == 0) {
+                success_count++;
+                QGP_LOG_INFO(LOG_TAG, "Created Cellframe wallet: %s", address);
+            }
+            /* Securely clear seed */
+            memset(cf_seed, 0, sizeof(cf_seed));
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to derive Cellframe seed from mnemonic");
+        }
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "No mnemonic provided - skipping Cellframe wallet");
     }
 
-    /* Create Ethereum wallet */
+    /* Create Ethereum wallet using BIP-44 derivation */
     total_count++;
     if (blockchain_create_wallet(BLOCKCHAIN_ETHEREUM, master_seed, fingerprint, wallet_dir, address) == 0) {
         success_count++;
         QGP_LOG_INFO(LOG_TAG, "Created Ethereum wallet: %s", address);
     }
 
-    /* Create Solana wallet */
+    /* Create Solana wallet using SLIP-10 derivation */
     total_count++;
     if (blockchain_create_wallet(BLOCKCHAIN_SOLANA, master_seed, fingerprint, wallet_dir, address) == 0) {
         success_count++;

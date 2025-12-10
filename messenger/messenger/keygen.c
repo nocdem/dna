@@ -168,6 +168,7 @@ int messenger_generate_keys_from_seeds(
     const uint8_t *encryption_seed,
     const uint8_t *wallet_seed,
     const uint8_t *master_seed,
+    const char *mnemonic,
     const char *data_dir,
     char *fingerprint_out)
 {
@@ -386,11 +387,13 @@ int messenger_generate_keys_from_seeds(
     free(dilithium_pubkey_copy);
     free(kyber_pubkey_copy);
 
-    // Create blockchain wallets from 64-byte BIP39 master seed
+    // Create blockchain wallets from master_seed and mnemonic
+    // - Cellframe uses SHA3-256(mnemonic) to match Cellframe wallet app
+    // - ETH/SOL use BIP-44/SLIP-10 from 64-byte master_seed
     if (master_seed) {
         QGP_LOG_INFO(LOG_TAG, "Creating blockchain wallets...\n");
 
-        if (blockchain_create_all_wallets(master_seed, dir_name, wallets_dir) == 0) {
+        if (blockchain_create_all_wallets(master_seed, mnemonic, dir_name, wallets_dir) == 0) {
             QGP_LOG_INFO(LOG_TAG, "✓ Blockchain wallets created in %s\n", wallets_dir);
         } else {
             QGP_LOG_WARN(LOG_TAG, "Warning: Some wallets may have failed to create (non-fatal)\n");

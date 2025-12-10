@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <openssl/evp.h>
 #include "../../crypto/utils/qgp_log.h"
 
 #define LOG_TAG "WALLET"
@@ -22,9 +23,6 @@
 #else
 #define mkdir_portable(path) mkdir(path, 0700)
 #endif
-
-/* BIP39 master seed size */
-#define BIP39_SEED_SIZE 64
 
 /* Cert header for unprotected wallets */
 static const uint8_t CERT_HEADER[8] = {
@@ -172,8 +170,55 @@ static int write_dwallet_file(
  * PUBLIC API
  * ============================================================================ */
 
+int cellframe_derive_seed_from_mnemonic(
+    const char *mnemonic,
+    uint8_t seed_out[CF_WALLET_SEED_SIZE]
+) {
+    if (!mnemonic || !seed_out) {
+        return -1;
+    }
+
+    /*
+     * Cellframe wallet app derivation (NOT BIP39!):
+     * 1. Take mnemonic words as space-separated string
+     * 2. Apply SHA3-256 (Keccak-256) to the string
+     * 3. Use resulting 32 bytes as seed
+     *
+     * Source: cellframe-wallet/cpp-cellframe/SDKInterface/DapCommonInterface.cpp
+     * Uses dap_hash_fast() which is SHA3-256/Keccak-256
+     */
+    EVP_MD_CTX *mdctx = EVP_MD_CTX_new();
+    if (!mdctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create SHA3-256 context\n");
+        return -1;
+    }
+
+    int ret = -1;
+    if (EVP_DigestInit_ex(mdctx, EVP_sha3_256(), NULL) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to init SHA3-256\n");
+        goto cleanup;
+    }
+
+    if (EVP_DigestUpdate(mdctx, mnemonic, strlen(mnemonic)) != 1) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to update SHA3-256\n");
+        goto cleanup;
+    }
+
+    unsigned int hash_len = 0;
+    if (EVP_DigestFinal_ex(mdctx, seed_out, &hash_len) != 1 || hash_len != 32) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to finalize SHA3-256\n");
+        goto cleanup;
+    }
+
+    ret = 0;
+
+cleanup:
+    EVP_MD_CTX_free(mdctx);
+    return ret;
+}
+
 int cellframe_wallet_create_from_seed(
-    const uint8_t seed[BIP39_SEED_SIZE],
+    const uint8_t seed[CF_WALLET_SEED_SIZE],
     const char *wallet_name,
     const char *wallet_dir,
     char *address_out
@@ -189,12 +234,12 @@ int cellframe_wallet_create_from_seed(
     uint8_t *serialized_pubkey = NULL;
     uint8_t *serialized_privkey = NULL;
 
-    /* Generate Dilithium MODE_1 keypair from 64-byte BIP39 seed
+    /* Generate Dilithium MODE_1 keypair from 32-byte seed
      * This matches the official Cellframe wallet app derivation:
-     * - Pass 64-byte seed directly to Dilithium
-     * - Dilithium internally hashes with SHA3-256
+     * - Seed is SHA3-256 hash of mnemonic string
+     * - Dilithium internally hashes with SHA3-256 again
      */
-    if (dilithium_crypto_sign_keypair(&pubkey, &privkey, MODE_1, seed, BIP39_SEED_SIZE) != 0) {
+    if (dilithium_crypto_sign_keypair(&pubkey, &privkey, MODE_1, seed, CF_WALLET_SEED_SIZE) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to generate Dilithium keypair\n");
         goto cleanup;
     }

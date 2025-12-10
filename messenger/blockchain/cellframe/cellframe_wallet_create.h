@@ -26,29 +26,45 @@ extern "C" {
 #define CF_DILITHIUM_SECRETKEYBYTES  2800
 #define CF_DILITHIUM_KIND_MODE_1     1
 
-/* BIP39 master seed size */
-#define BIP39_SEED_SIZE         64
+/* Cellframe wallet seed size (SHA3-256 output) */
+#define CF_WALLET_SEED_SIZE     32
 
 /* Address buffer size */
 #define CF_WALLET_ADDRESS_MAX   128
 
 /**
- * Create a Cellframe wallet from a 64-byte BIP39 master seed
+ * Derive Cellframe wallet seed from mnemonic words
+ *
+ * Matches official Cellframe wallet app derivation:
+ * SHA3-256(words joined with spaces) → 32 bytes
+ *
+ * NOTE: This is NOT BIP39! Cellframe uses direct SHA3-256 hash of mnemonic string.
+ *
+ * @param mnemonic      Space-separated mnemonic words (e.g., "word1 word2 ... word24")
+ * @param seed_out      Output buffer for 32-byte seed
+ * @return 0 on success, -1 on error
+ */
+int cellframe_derive_seed_from_mnemonic(
+    const char *mnemonic,
+    uint8_t seed_out[CF_WALLET_SEED_SIZE]
+);
+
+/**
+ * Create a Cellframe wallet from a 32-byte seed
  *
  * Generates a Dilithium MODE_1 keypair deterministically from the seed,
  * writes a .dwallet file, and returns the wallet address.
  *
- * The 64-byte seed is passed directly to Dilithium, matching the
- * official Cellframe wallet app derivation.
+ * Use cellframe_derive_seed_from_mnemonic() to get the seed from mnemonic.
  *
- * @param seed          64-byte BIP39 master seed
+ * @param seed          32-byte seed (from SHA3-256 of mnemonic)
  * @param wallet_name   Name for the wallet (used in filename, max 64 chars)
  * @param wallet_dir    Directory to save wallet file (e.g., ~/.dna/wallets/)
  * @param address_out   Buffer for generated address (CF_WALLET_ADDRESS_MAX bytes)
  * @return 0 on success, -1 on error
  */
 int cellframe_wallet_create_from_seed(
-    const uint8_t seed[BIP39_SEED_SIZE],
+    const uint8_t seed[CF_WALLET_SEED_SIZE],
     const char *wallet_name,
     const char *wallet_dir,
     char *address_out

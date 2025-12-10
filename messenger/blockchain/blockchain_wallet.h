@@ -86,21 +86,24 @@ typedef struct {
  * ============================================================================ */
 
 /**
- * Create all wallets from BIP39 master seed
+ * Create all wallets from BIP39 master seed and mnemonic
  *
  * Derives and creates wallets for all supported blockchains:
- * - Cellframe: SHAKE256(master_seed || "cellframe-wallet-v1") → Dilithium
+ * - Cellframe: SHA3-256(mnemonic) → Dilithium (matches Cellframe wallet app)
  * - Ethereum:  BIP-44 (m/44'/60'/0'/0/0) → secp256k1
+ * - Solana:    SLIP-10 Ed25519
  *
  * Wallets are saved to: <wallet_dir>/<fingerprint>.<ext>
  *
- * @param master_seed   64-byte BIP39 master seed
+ * @param master_seed   64-byte BIP39 master seed (for ETH/SOL)
+ * @param mnemonic      Space-separated mnemonic words (for Cellframe)
  * @param fingerprint   Identity fingerprint (used for wallet naming)
  * @param wallet_dir    Directory to store wallet files
  * @return              0 on success, -1 on error
  */
 int blockchain_create_all_wallets(
     const uint8_t master_seed[64],
+    const char *mnemonic,
     const char *fingerprint,
     const char *wallet_dir
 );
