@@ -617,37 +617,68 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   static const double _ethDefaultGasNormal = 0.0015; // ~25 gwei
   static const double _ethDefaultGasFast = 0.00225;  // ~35 gwei
 
+  /// Get current balance for selected token/network from provider
+  String? _getCurrentBalance() {
+    // First try the preselected balance if token/network match
+    if (widget.availableBalance != null &&
+        widget.preselectedToken == _selectedToken &&
+        widget.preselectedNetwork == _selectedNetwork) {
+      return widget.availableBalance;
+    }
+
+    // Otherwise fetch from balances provider
+    final balancesAsync = ref.watch(balancesProvider(widget.walletIndex));
+    return balancesAsync.whenOrNull(
+      data: (balances) {
+        for (final b in balances) {
+          if (b.token == _selectedToken && b.network == _selectedNetwork) {
+            return b.balance;
+          }
+        }
+        return null;
+      },
+    );
+  }
+
   /// Calculate max sendable amount after fees
   double? _calculateMaxAmount() {
-    final balanceStr = widget.availableBalance;
+    final balanceStr = _getCurrentBalance();
     if (balanceStr == null || balanceStr.isEmpty) return null;
 
     final balance = double.tryParse(balanceStr);
     if (balance == null || balance <= 0) return null;
 
     if (_selectedNetwork == 'Ethereum') {
-      // ETH: subtract gas fee based on selected speed
-      // Use live estimate if available, otherwise use default
-      double fee;
-      switch (_selectedGasSpeed) {
-        case 0:
-          fee = double.tryParse(_gasFee0 ?? '') ?? _ethDefaultGasSlow;
-          break;
-        case 1:
-          fee = double.tryParse(_gasFee1 ?? '') ?? _ethDefaultGasNormal;
-          break;
-        case 2:
-          fee = double.tryParse(_gasFee2 ?? '') ?? _ethDefaultGasFast;
-          break;
-        default:
-          fee = _ethDefaultGasNormal;
+      // ETH: only subtract gas fee when sending ETH (native token)
+      if (_selectedToken == 'ETH') {
+        double fee;
+        switch (_selectedGasSpeed) {
+          case 0:
+            fee = double.tryParse(_gasFee0 ?? '') ?? _ethDefaultGasSlow;
+            break;
+          case 1:
+            fee = double.tryParse(_gasFee1 ?? '') ?? _ethDefaultGasNormal;
+            break;
+          case 2:
+            fee = double.tryParse(_gasFee2 ?? '') ?? _ethDefaultGasFast;
+            break;
+          default:
+            fee = _ethDefaultGasNormal;
+        }
+        final max = balance - fee;
+        return max > 0 ? max : 0;
       }
-      final max = balance - fee;
-      return max > 0 ? max : 0;
+      // For ERC-20 tokens, no fee subtraction (gas paid in ETH)
+      return balance;
     } else {
-      // Backbone (Cellframe): subtract validator fee + network fee
-      final max = balance - _backboneTotalFee;
-      return max > 0 ? max : 0;
+      // Backbone (Cellframe): only subtract fee when sending CELL (native token)
+      // CPUNK and other tokens: fees are paid in CELL, not the token itself
+      if (_selectedToken == 'CELL') {
+        final max = balance - _backboneTotalFee;
+        return max > 0 ? max : 0;
+      }
+      // For other tokens like CPUNK, full balance is sendable
+      return balance;
     }
   }
 
@@ -1017,7 +1048,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     children: [
                       const SizedBox(height: 8), // Align with TextField
                       OutlinedButton(
-                        onPressed: widget.availableBalance != null ? () {
+                        onPressed: _getCurrentBalance() != null ? () {
                           final max = _calculateMaxAmount();
                           if (max != null && max > 0) {
                             _amountController.text = _formatMaxAmount(max);
@@ -1032,7 +1063,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                       ),
                       const SizedBox(height: 4),
                       // Show max amount below button
-                      if (widget.availableBalance != null)
+                      if (_getCurrentBalance() != null)
                         Text(
                           'Max: ${_formatMaxAmount(_calculateMaxAmount())} $_selectedToken',
                           style: Theme.of(context).textTheme.labelSmall?.copyWith(
