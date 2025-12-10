@@ -959,6 +959,73 @@ class DnaEngine {
     return createIdentitySync(name, signingSeed, encryptionSeed, walletSeed, masterSeed: masterSeed);
   }
 
+  /// Restore identity from BIP39 seeds (synchronous)
+  /// Creates keys and wallets locally without DHT name registration.
+  /// Use this when restoring an existing identity from seed phrase.
+  String restoreIdentitySync(List<int> signingSeed, List<int> encryptionSeed, List<int>? walletSeed, {List<int>? masterSeed}) {
+    if (signingSeed.length != 32 || encryptionSeed.length != 32) {
+      throw ArgumentError('Seeds must be 32 bytes each');
+    }
+    if (walletSeed != null && walletSeed.length != 32) {
+      throw ArgumentError('Wallet seed must be 32 bytes');
+    }
+    if (masterSeed != null && masterSeed.length != 64) {
+      throw ArgumentError('Master seed must be 64 bytes');
+    }
+
+    final sigSeedPtr = calloc<Uint8>(32);
+    final encSeedPtr = calloc<Uint8>(32);
+    final walletSeedPtr = walletSeed != null ? calloc<Uint8>(32) : nullptr;
+    final masterSeedPtr = masterSeed != null ? calloc<Uint8>(64) : nullptr;
+    final fingerprintPtr = calloc<Uint8>(129); // 128 hex chars + null
+
+    try {
+      for (var i = 0; i < 32; i++) {
+        sigSeedPtr[i] = signingSeed[i];
+        encSeedPtr[i] = encryptionSeed[i];
+        if (walletSeed != null) {
+          walletSeedPtr[i] = walletSeed[i];
+        }
+      }
+      if (masterSeed != null) {
+        for (var i = 0; i < 64; i++) {
+          masterSeedPtr[i] = masterSeed[i];
+        }
+      }
+
+      final error = _bindings.dna_engine_restore_identity_sync(
+        _engine,
+        sigSeedPtr,
+        encSeedPtr,
+        walletSeedPtr,
+        masterSeedPtr,
+        fingerprintPtr.cast(),
+      );
+
+      if (error != 0) {
+        throw DnaEngineException.fromCode(error, _bindings);
+      }
+
+      return fingerprintPtr.cast<Utf8>().toDartString();
+    } finally {
+      calloc.free(sigSeedPtr);
+      calloc.free(encSeedPtr);
+      if (walletSeed != null) {
+        calloc.free(walletSeedPtr);
+      }
+      if (masterSeed != null) {
+        calloc.free(masterSeedPtr);
+      }
+      calloc.free(fingerprintPtr);
+    }
+  }
+
+  /// Restore identity from BIP39 seeds (async wrapper)
+  /// Creates keys and wallets locally without DHT name registration.
+  Future<String> restoreIdentity(List<int> signingSeed, List<int> encryptionSeed, {List<int>? walletSeed, List<int>? masterSeed}) async {
+    return restoreIdentitySync(signingSeed, encryptionSeed, walletSeed, masterSeed: masterSeed);
+  }
+
   /// Load and activate identity
   Future<void> loadIdentity(String fingerprint) async {
     final completer = Completer<void>();

@@ -62,16 +62,16 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     return fingerprint;
   }
 
-  /// Restore identity from mnemonic (looks up existing name from DHT)
+  /// Restore identity from mnemonic (creates keys/wallets without DHT registration)
+  /// Returns fingerprint. Profile can be looked up from DHT after this.
   Future<String> restoreIdentityFromMnemonic(String mnemonic, {String passphrase = ''}) async {
     final engine = await ref.read(engineProvider.future);
 
     // Derive seeds from mnemonic (includes masterSeed for multi-chain wallets)
     final seeds = engine.deriveSeedsWithMaster(mnemonic, passphrase: passphrase);
 
-    // Create identity locally with empty name (will lookup from DHT)
-    final fingerprint = await engine.createIdentity(
-      '', // Empty name - will be looked up from DHT
+    // Restore identity locally (no DHT registration - identity already exists)
+    final fingerprint = await engine.restoreIdentity(
       seeds.signingSeed,
       seeds.encryptionSeed,
       walletSeed: seeds.walletSeed,

@@ -205,7 +205,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 ```
 
 **Screens Implemented:**
-- `IdentitySelectionScreen`: List identities, create with 3-step wizard, restore from seed
+- `IdentitySelectionScreen`: List identities, create with 3-step wizard, restore from seed (3-step: enter 24 words, confirm profile from DHT, proceed)
 - `ContactsScreen`: List with last seen timestamps, pull-to-refresh, add contact dialog, DHT status indicator
 - `ChatScreen`: Message bubbles, timestamps, status icons, input with send button
 - `HomeScreen`: Routes between identity selection and contacts based on state

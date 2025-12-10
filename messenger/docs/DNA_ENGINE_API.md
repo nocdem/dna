@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.3.0
-**Date:** 2025-12-09
+**Version:** 1.4.0
+**Date:** 2025-12-10
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.4.0 (2025-12-10): Added `dna_engine_restore_identity_sync()` for restoring identity from seed without DHT registration
 - v1.3.0 (2025-12-09): Made `dna_engine_create_identity_sync()` atomic - now registers name on DHT and rolls back on failure
 - v1.2.0 (2025-12-03): Added Profile API (`dna_engine_get_profile`, `dna_engine_update_profile`)
 - v1.1.0 (2025-11-27): Implemented `send_tokens` with full UTXO selection, tx building, Dilithium5 signing
@@ -388,6 +389,46 @@ if (rc == DNA_OK) {
     printf("Identity created: %s\n", fingerprint);
 } else if (rc == DNA_ENGINE_ERROR_NETWORK) {
     printf("Name 'alice' may already be taken\n");
+}
+```
+
+---
+
+### dna_engine_restore_identity_sync
+
+```c
+int dna_engine_restore_identity_sync(
+    dna_engine_t *engine,
+    const uint8_t signing_seed[32],
+    const uint8_t encryption_seed[32],
+    const uint8_t wallet_seed[32],
+    const uint8_t master_seed[64],
+    char fingerprint_out[129]
+);
+```
+
+Synchronous identity restoration from BIP39 seeds. Creates keys and wallets locally **without DHT name registration**. Use this when restoring an existing identity from seed phrase - the identity's name/profile can be looked up from DHT after restore.
+
+**Parameters:**
+- `signing_seed` - 32-byte seed for Dilithium5 keypair
+- `encryption_seed` - 32-byte seed for Kyber1024 keypair
+- `wallet_seed` - 32-byte seed for wallet keys (can be NULL)
+- `master_seed` - 64-byte BIP39 master seed (can be NULL)
+- `fingerprint_out` - Buffer for 128-char hex fingerprint + null terminator
+
+**Returns:**
+- `DNA_OK` (0) on success
+- `DNA_ERROR_INVALID_ARG` if required parameters are NULL
+- `DNA_ERROR_CRYPTO` if key generation fails
+
+**Example (restore flow):**
+```c
+char fingerprint[129];
+int rc = dna_engine_restore_identity_sync(engine,
+    signing_seed, encryption_seed, wallet_seed, master_seed, fingerprint);
+if (rc == DNA_OK) {
+    printf("Identity restored: %s\n", fingerprint);
+    // Now lookup name/profile from DHT using fingerprint
 }
 ```
 

@@ -754,7 +754,7 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
   }
 }
 
-/// Restore Identity Screen
+/// Restore Identity Screen - 3 steps: enter seed, confirm profile, done
 class RestoreIdentityScreen extends ConsumerStatefulWidget {
   const RestoreIdentityScreen({super.key});
 
@@ -762,11 +762,18 @@ class RestoreIdentityScreen extends ConsumerStatefulWidget {
   ConsumerState<RestoreIdentityScreen> createState() => _RestoreIdentityScreenState();
 }
 
+enum _RestoreStep { enterSeed, restoring, confirmProfile }
+
 class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
   static const int _wordCount = 24;
   final List<TextEditingController> _wordControllers = [];
   final List<FocusNode> _focusNodes = [];
-  bool _isRestoring = false;
+  _RestoreStep _step = _RestoreStep.enterSeed;
+
+  // Restored identity data
+  String? _restoredFingerprint;
+  String? _restoredName;
+  String? _restoredAvatar;
 
   @override
   void initState() {
@@ -845,40 +852,176 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Restore Identity'),
+        title: Text(_step == _RestoreStep.confirmProfile
+            ? 'Confirm Identity'
+            : 'Restore Identity'),
       ),
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(24.0),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                'Enter your recovery phrase',
-                style: theme.textTheme.titleLarge,
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Enter the 24-word seed phrase you saved when creating your identity. You can paste all words at once.',
-                style: theme.textTheme.bodySmall,
-              ),
-              const SizedBox(height: 24),
-              Expanded(
-                child: SingleChildScrollView(
-                  child: _buildWordGrid(theme),
-                ),
-              ),
-              const SizedBox(height: 24),
-              if (_isRestoring)
-                const Center(child: CircularProgressIndicator())
-              else
-                ElevatedButton(
-                  onPressed: _allWordsFilled() ? _restoreIdentity : null,
-                  child: const Text('Restore Identity'),
-                ),
-            ],
+          child: switch (_step) {
+            _RestoreStep.enterSeed => _buildEnterSeedStep(theme),
+            _RestoreStep.restoring => _buildRestoringStep(theme),
+            _RestoreStep.confirmProfile => _buildConfirmProfileStep(theme),
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _buildEnterSeedStep(ThemeData theme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Enter your recovery phrase',
+          style: theme.textTheme.titleLarge,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Enter the 24-word seed phrase you saved when creating your identity. You can paste all words at once.',
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 24),
+        Expanded(
+          child: SingleChildScrollView(
+            child: _buildWordGrid(theme),
           ),
         ),
+        const SizedBox(height: 24),
+        ElevatedButton(
+          onPressed: _allWordsFilled() ? _restoreIdentity : null,
+          child: const Text('Restore Identity'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildRestoringStep(ThemeData theme) {
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const CircularProgressIndicator(),
+          const SizedBox(height: 24),
+          Text(
+            'Restoring identity...',
+            style: theme.textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Looking up your profile from the network',
+            style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConfirmProfileStep(ThemeData theme) {
+    final shortFp = _restoredFingerprint != null && _restoredFingerprint!.length > 16
+        ? '${_restoredFingerprint!.substring(0, 8)}...${_restoredFingerprint!.substring(_restoredFingerprint!.length - 8)}'
+        : _restoredFingerprint ?? '';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Text(
+          'Identity Found',
+          style: theme.textTheme.titleLarge,
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'We found your identity on the network. Please confirm this is you.',
+          style: theme.textTheme.bodySmall,
+        ),
+        const SizedBox(height: 32),
+        Expanded(
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Avatar
+                _buildAvatar(theme, _restoredAvatar),
+                const SizedBox(height: 16),
+                // Name
+                Text(
+                  _restoredName ?? shortFp,
+                  style: theme.textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                // Fingerprint
+                if (_restoredName != null)
+                  Text(
+                    shortFp,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontFamily: 'monospace',
+                      color: DnaColors.textMuted,
+                    ),
+                  ),
+                const SizedBox(height: 24),
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: DnaColors.textSuccess.withAlpha(26),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.check_circle,
+                        color: DnaColors.textSuccess,
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        'Identity verified on DHT network',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: DnaColors.textSuccess,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 24),
+        ElevatedButton(
+          onPressed: _confirmAndLoad,
+          child: const Text('Continue'),
+        ),
+        const SizedBox(height: 8),
+        TextButton(
+          onPressed: () => setState(() => _step = _RestoreStep.enterSeed),
+          child: const Text('Back'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildAvatar(ThemeData theme, String? avatarBase64) {
+    if (avatarBase64 != null && avatarBase64.isNotEmpty) {
+      try {
+        final bytes = base64Decode(avatarBase64);
+        return CircleAvatar(
+          radius: 48,
+          backgroundImage: MemoryImage(bytes),
+        );
+      } catch (e) {
+        // Invalid base64, fall through to default
+      }
+    }
+    return CircleAvatar(
+      radius: 48,
+      backgroundColor: theme.colorScheme.primary.withAlpha(51),
+      child: Icon(
+        Icons.person,
+        size: 48,
+        color: theme.colorScheme.primary,
       ),
     );
   }
@@ -984,7 +1127,7 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
   }
 
   Future<void> _restoreIdentity() async {
-    setState(() => _isRestoring = true);
+    setState(() => _step = _RestoreStep.restoring);
 
     try {
       final mnemonic = _getMnemonic();
@@ -999,21 +1142,70 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
         throw Exception('Invalid seed phrase. Please check your words.');
       }
 
-      // Restore identity from mnemonic (looks up name from DHT)
+      // Restore identity from mnemonic (creates keys/wallets locally)
       final fingerprint = await ref.read(identitiesProvider.notifier)
           .restoreIdentityFromMnemonic(mnemonic);
 
-      await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
+      _restoredFingerprint = fingerprint;
+
+      // Lookup profile from DHT - this verifies the identity exists on the network
+      final engine = ref.read(engineProvider).valueOrNull;
+      if (engine == null) {
+        throw Exception('Engine not ready');
+      }
+
+      // Get display name from DHT
+      final displayName = await engine.getDisplayName(fingerprint);
+      if (displayName.isEmpty) {
+        throw Exception('Identity not found on the network. This seed phrase may not have been registered.');
+      }
+      _restoredName = displayName;
+
+      // Try to get avatar (optional)
+      try {
+        _restoredAvatar = await engine.getAvatar(fingerprint);
+      } catch (_) {
+        // Avatar is optional, ignore errors
+      }
+
+      if (mounted) {
+        setState(() => _step = _RestoreStep.confirmProfile);
+      }
+    } catch (e) {
+      setState(() {
+        _step = _RestoreStep.enterSeed;
+        _restoredFingerprint = null;
+        _restoredName = null;
+        _restoredAvatar = null;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to restore identity: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _confirmAndLoad() async {
+    if (_restoredFingerprint == null) return;
+
+    setState(() => _step = _RestoreStep.restoring);
+
+    try {
+      await ref.read(identitiesProvider.notifier).loadIdentity(_restoredFingerprint!);
 
       if (mounted) {
         Navigator.of(context).popUntil((route) => route.isFirst);
       }
     } catch (e) {
-      setState(() => _isRestoring = false);
+      setState(() => _step = _RestoreStep.confirmProfile);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to restore identity: $e'),
+            content: Text('Failed to load identity: $e'),
             backgroundColor: DnaColors.snackbarError,
           ),
         );

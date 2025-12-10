@@ -2402,6 +2402,33 @@ int dna_engine_create_identity_sync(
     return DNA_OK;
 }
 
+int dna_engine_restore_identity_sync(
+    dna_engine_t *engine,
+    const uint8_t signing_seed[32],
+    const uint8_t encryption_seed[32],
+    const uint8_t wallet_seed[32],
+    const uint8_t master_seed[64],
+    char fingerprint_out[129]
+) {
+    if (!engine || !signing_seed || !encryption_seed || !fingerprint_out) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Step 1: Create keys and wallets locally (uses fingerprint as directory name) */
+    int rc = messenger_generate_keys_from_seeds(NULL, signing_seed, encryption_seed,
+                                                 wallet_seed, master_seed, engine->data_dir, fingerprint_out);
+    if (rc != 0) {
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Step 2: Load DHT identity for later operations */
+    messenger_load_dht_identity(fingerprint_out);
+
+    QGP_LOG_INFO(LOG_TAG, "Identity restored from seed: %.16s...", fingerprint_out);
+
+    return DNA_OK;
+}
+
 dna_request_id_t dna_engine_load_identity(
     dna_engine_t *engine,
     const char *fingerprint,
