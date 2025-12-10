@@ -607,10 +607,11 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   String? _gasFee1; // normal
   String? _gasFee2; // fast
 
-  // Backbone network fees (fixed)
-  static const double _backboneValidatorFee = 0.01;
+  // Backbone network fees (validator fee varies by speed, network fee is fixed)
   static const double _backboneNetworkFee = 0.002;
-  static const double _backboneTotalFee = 0.012; // validator + network
+  static const double _backboneValidatorSlow = 0.0001;   // slow
+  static const double _backboneValidatorNormal = 0.01;   // normal
+  static const double _backboneValidatorFast = 0.05;     // fast
 
   // ETH default gas fees (31500 gas * typical gwei prices)
   static const double _ethDefaultGasSlow = 0.0012;   // ~20 gwei
@@ -674,7 +675,22 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       // Backbone (Cellframe): only subtract fee when sending CELL (native token)
       // CPUNK and other tokens: fees are paid in CELL, not the token itself
       if (_selectedToken == 'CELL') {
-        final max = balance - _backboneTotalFee;
+        double validatorFee;
+        switch (_selectedGasSpeed) {
+          case 0:
+            validatorFee = _backboneValidatorSlow;
+            break;
+          case 1:
+            validatorFee = _backboneValidatorNormal;
+            break;
+          case 2:
+            validatorFee = _backboneValidatorFast;
+            break;
+          default:
+            validatorFee = _backboneValidatorNormal;
+        }
+        final totalFee = validatorFee + _backboneNetworkFee;
+        final max = balance - totalFee;
         return max > 0 ? max : 0;
       }
       // For other tokens like CPUNK, full balance is sendable
@@ -1103,7 +1119,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                   ),
                 ],
               ),
-              // Gas speed selector (only for Ethereum)
+              // Gas speed selector for Ethereum
               if (_selectedNetwork == 'Ethereum') ...[
                 const SizedBox(height: 16),
                 Text(
@@ -1130,6 +1146,39 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                     _GasSpeedChip(
                       label: 'Fast',
                       sublabel: _gasFee2 != null ? '${_gasFee2!} ETH' : '1.5x',
+                      selected: _selectedGasSpeed == 2,
+                      onSelected: () => setState(() => _selectedGasSpeed = 2),
+                    ),
+                  ],
+                ),
+              ],
+              // Transaction speed selector for Backbone (Cellframe)
+              if (_selectedNetwork == 'Backbone') ...[
+                const SizedBox(height: 16),
+                Text(
+                  'Transaction Speed (Validator Fee)',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    _GasSpeedChip(
+                      label: 'Slow',
+                      sublabel: '${(_backboneValidatorSlow + _backboneNetworkFee).toStringAsFixed(4)} CELL',
+                      selected: _selectedGasSpeed == 0,
+                      onSelected: () => setState(() => _selectedGasSpeed = 0),
+                    ),
+                    const SizedBox(width: 8),
+                    _GasSpeedChip(
+                      label: 'Normal',
+                      sublabel: '${(_backboneValidatorNormal + _backboneNetworkFee).toStringAsFixed(3)} CELL',
+                      selected: _selectedGasSpeed == 1,
+                      onSelected: () => setState(() => _selectedGasSpeed = 1),
+                    ),
+                    const SizedBox(width: 8),
+                    _GasSpeedChip(
+                      label: 'Fast',
+                      sublabel: '${(_backboneValidatorFast + _backboneNetworkFee).toStringAsFixed(3)} CELL',
                       selected: _selectedGasSpeed == 2,
                       onSelected: () => setState(() => _selectedGasSpeed = 2),
                     ),
