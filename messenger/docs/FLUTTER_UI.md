@@ -296,14 +296,22 @@ rejectInvitation(uuid)       // Decline invite
 // Wallet
 sendTokens(...)              // Send tokens
 getTransactions(index, net)  // Transaction history
+lookupProfile(fingerprint)   // Lookup any user's profile by fingerprint (for wallet address resolution)
 ```
 
 **Screens Updated:**
 - `identity_selection_screen.dart`: Real BIP39 mnemonic generation/validation
 - `groups_screen.dart`: Create, accept, reject, open group chat
 - `GroupChatScreen`: New screen for group messaging
-- `wallet_screen.dart`: Send dialog (CPUNK/CELL on Backbone) + Transaction History UI
+- `wallet_screen.dart`: Send dialog with DNA fingerprint resolution + contact picker
 - `settings_screen.dart`: Nickname registration works
+
+**Send to DNA Identity Feature:**
+- Contact picker button in send dialog to select from contacts
+- Auto-detect DNA fingerprints (128-char hex) in recipient field
+- Lookup fingerprint via DHT to resolve wallet address
+- Visual indicator showing resolved contact name and address
+- Validation prevents sending until fingerprint is successfully resolved
 
 ---
 

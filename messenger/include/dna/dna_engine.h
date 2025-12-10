@@ -59,6 +59,8 @@ typedef uint64_t dna_request_id_t;
 #define DNA_ENGINE_ERROR_NO_IDENTITY    (-106)
 #define DNA_ENGINE_ERROR_ALREADY_EXISTS (-107)
 #define DNA_ENGINE_ERROR_PERMISSION     (-108)
+#define DNA_ENGINE_ERROR_INVALID_PARAM  (-109)
+#define DNA_ENGINE_ERROR_NOT_FOUND      (-110)
 
 /**
  * Get human-readable error message for engine errors
@@ -78,6 +80,26 @@ typedef struct {
     bool is_online;             /* Current online status */
     uint64_t last_seen;         /* Unix timestamp of last activity */
 } dna_contact_t;
+
+/**
+ * Contact request information (ICQ-style request)
+ */
+typedef struct {
+    char fingerprint[129];      /* Requester's fingerprint (128 hex + null) */
+    char display_name[64];      /* Requester's display name */
+    char message[256];          /* Optional request message */
+    uint64_t requested_at;      /* Unix timestamp when request was sent */
+    int status;                 /* 0=pending, 1=approved, 2=denied */
+} dna_contact_request_t;
+
+/**
+ * Blocked user information
+ */
+typedef struct {
+    char fingerprint[129];      /* Blocked user's fingerprint */
+    uint64_t blocked_at;        /* Unix timestamp when blocked */
+    char reason[256];           /* Optional reason for blocking */
+} dna_blocked_user_t;
 
 /**
  * Message information
@@ -325,6 +347,28 @@ typedef void (*dna_invitations_cb)(
 );
 
 /**
+ * Contact requests callback (ICQ-style incoming requests)
+ */
+typedef void (*dna_contact_requests_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_contact_request_t *requests,
+    int count,
+    void *user_data
+);
+
+/**
+ * Blocked users callback
+ */
+typedef void (*dna_blocked_users_cb)(
+    dna_request_id_t request_id,
+    int error,
+    dna_blocked_user_t *blocked,
+    int count,
+    void *user_data
+);
+
+/**
  * Wallets callback
  */
 typedef void (*dna_wallets_cb)(
@@ -458,6 +502,7 @@ typedef enum {
     DNA_EVENT_GROUP_MEMBER_JOINED,
     DNA_EVENT_GROUP_MEMBER_LEFT,
     DNA_EVENT_IDENTITY_LOADED,
+    DNA_EVENT_CONTACT_REQUEST_RECEIVED,  /* New contact request from DHT */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -487,6 +532,9 @@ typedef struct {
         struct {
             char fingerprint[129];
         } identity_loaded;
+        struct {
+            dna_contact_request_t request;
+        } contact_request_received;
         struct {
             int code;
             char message[256];
@@ -761,6 +809,25 @@ dna_request_id_t dna_engine_get_profile(
 );
 
 /**
+ * Lookup any user's profile by fingerprint
+ *
+ * Fetches profile from cache (if fresh) or DHT.
+ * Use this to resolve a fingerprint to wallet address for sending tokens.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint User's fingerprint (128 hex chars)
+ * @param callback    Called with profile data (NULL if not found)
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_lookup_profile(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_profile_cb callback,
+    void *user_data
+);
+
+/**
  * Update current identity's profile in DHT
  *
  * Saves wallet addresses, social links, bio, and avatar.
@@ -832,6 +899,162 @@ dna_request_id_t dna_engine_remove_contact(
     dna_completion_cb callback,
     void *user_data
 );
+
+/* ============================================================================
+ * 3.5 CONTACT REQUESTS (ICQ-style mutual approval)
+ * ============================================================================ */
+
+/**
+ * Send contact request to another user
+ *
+ * Creates a signed contact request and publishes it to the recipient's
+ * DHT inbox at SHA3-512(recipient_fingerprint + ":requests").
+ * The recipient will see this as a pending request.
+ *
+ * @param engine               Engine instance
+ * @param recipient_fingerprint Recipient's fingerprint (128 hex chars)
+ * @param message              Optional message (can be NULL, max 255 chars)
+ * @param callback             Called on completion
+ * @param user_data            User data for callback
+ * @return                     Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_send_contact_request(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *message,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get pending incoming contact requests
+ *
+ * Fetches both locally stored requests and new requests from DHT inbox.
+ * Filters out blocked users and already-processed requests.
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with array of pending requests
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_contact_requests(
+    dna_engine_t *engine,
+    dna_contact_requests_cb callback,
+    void *user_data
+);
+
+/**
+ * Get count of pending incoming contact requests
+ *
+ * Synchronous function for badge display.
+ *
+ * @param engine Engine instance
+ * @return       Number of pending requests, or -1 on error
+ */
+int dna_engine_get_contact_request_count(dna_engine_t *engine);
+
+/**
+ * Approve a contact request (makes mutual contact)
+ *
+ * Moves the request to approved status and adds the requester
+ * to contacts list. Also sends a reciprocal request so the
+ * requester knows their request was accepted.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Requester's fingerprint
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_approve_contact_request(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Deny a contact request (ignorable, can retry later)
+ *
+ * Marks request as denied. The requester is not blocked and
+ * can send another request in the future.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Requester's fingerprint
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_deny_contact_request(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Block a user permanently
+ *
+ * Adds user to blocklist. They cannot send messages or requests.
+ * Any pending requests from this user are automatically removed.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint User's fingerprint to block
+ * @param reason      Optional reason (can be NULL)
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_block_user(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *reason,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Unblock a user
+ *
+ * Removes user from blocklist. They can send requests again.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint User's fingerprint to unblock
+ * @param callback    Called on completion
+ * @param user_data   User data for callback
+ * @return            Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_unblock_user(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
+/**
+ * Get list of blocked users
+ *
+ * @param engine    Engine instance
+ * @param callback  Called with array of blocked users
+ * @param user_data User data for callback
+ * @return          Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_get_blocked_users(
+    dna_engine_t *engine,
+    dna_blocked_users_cb callback,
+    void *user_data
+);
+
+/**
+ * Check if a user is blocked
+ *
+ * Synchronous function for quick checks.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Fingerprint to check
+ * @return            true if blocked, false otherwise
+ */
+bool dna_engine_is_user_blocked(dna_engine_t *engine, const char *fingerprint);
 
 /* ============================================================================
  * 4. MESSAGING (3 async functions)

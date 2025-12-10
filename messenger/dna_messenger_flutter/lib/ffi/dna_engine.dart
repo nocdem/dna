@@ -37,6 +37,61 @@ class Contact {
   }
 }
 
+/// Contact request information (ICQ-style request)
+class ContactRequest {
+  final String fingerprint;
+  final String displayName;
+  final String message;
+  final DateTime requestedAt;
+  final ContactRequestStatus status;
+
+  ContactRequest({
+    required this.fingerprint,
+    required this.displayName,
+    required this.message,
+    required this.requestedAt,
+    required this.status,
+  });
+
+  factory ContactRequest.fromNative(dna_contact_request_t native) {
+    return ContactRequest(
+      fingerprint: native.fingerprint.toDartString(129),
+      displayName: native.display_name.toDartString(64),
+      message: native.message.toDartString(256),
+      requestedAt: DateTime.fromMillisecondsSinceEpoch(native.requested_at * 1000),
+      status: ContactRequestStatus.values[native.status.clamp(0, 2)],
+    );
+  }
+}
+
+/// Contact request status
+enum ContactRequestStatus {
+  pending,   // 0
+  approved,  // 1
+  denied,    // 2
+}
+
+/// Blocked user information
+class BlockedUser {
+  final String fingerprint;
+  final DateTime blockedAt;
+  final String reason;
+
+  BlockedUser({
+    required this.fingerprint,
+    required this.blockedAt,
+    required this.reason,
+  });
+
+  factory BlockedUser.fromNative(dna_blocked_user_t native) {
+    return BlockedUser(
+      fingerprint: native.fingerprint.toDartString(129),
+      blockedAt: DateTime.fromMillisecondsSinceEpoch(native.blocked_at * 1000),
+      reason: native.reason.toDartString(256),
+    );
+  }
+}
+
 /// Message information
 class Message {
   final int id;
@@ -1158,6 +1213,298 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // CONTACT REQUESTS (ICQ-style)
+  // ---------------------------------------------------------------------------
+
+  /// Send contact request to another user
+  Future<void> sendContactRequest(String recipientFingerprint, String? message) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final recipientPtr = recipientFingerprint.toNativeUtf8();
+    final messagePtr = message?.toNativeUtf8() ?? nullptr;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(recipientPtr);
+      if (messagePtr != nullptr) {
+        calloc.free(messagePtr);
+      }
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_send_contact_request(
+      _engine,
+      recipientPtr.cast(),
+      messagePtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(recipientPtr);
+      if (messagePtr != nullptr) {
+        calloc.free(messagePtr);
+      }
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get pending incoming contact requests
+  Future<List<ContactRequest>> getContactRequests() async {
+    final completer = Completer<List<ContactRequest>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<dna_contact_request_t> requests,
+        int count, Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <ContactRequest>[];
+        for (var i = 0; i < count; i++) {
+          result.add(ContactRequest.fromNative(requests[i]));
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaContactRequestsCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_contact_requests(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get count of pending contact requests (synchronous)
+  int getContactRequestCount() {
+    return _bindings.dna_engine_get_contact_request_count(_engine);
+  }
+
+  /// Approve a contact request (makes mutual contact)
+  Future<void> approveContactRequest(String fingerprint) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(fpPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_approve_contact_request(
+      _engine,
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Deny a contact request (can retry later)
+  Future<void> denyContactRequest(String fingerprint) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(fpPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_deny_contact_request(
+      _engine,
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Block a user permanently
+  Future<void> blockUser(String fingerprint, String? reason) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final fpPtr = fingerprint.toNativeUtf8();
+    final reasonPtr = reason?.toNativeUtf8() ?? nullptr;
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(fpPtr);
+      if (reasonPtr != nullptr) {
+        calloc.free(reasonPtr);
+      }
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_block_user(
+      _engine,
+      fpPtr.cast(),
+      reasonPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      if (reasonPtr != nullptr) {
+        calloc.free(reasonPtr);
+      }
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Unblock a user
+  Future<void> unblockUser(String fingerprint) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(fpPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_unblock_user(
+      _engine,
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Get list of blocked users
+  Future<List<BlockedUser>> getBlockedUsers() async {
+    final completer = Completer<List<BlockedUser>>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, Pointer<dna_blocked_user_t> blocked,
+        int count, Pointer<Void> userData) {
+      if (error == 0) {
+        final result = <BlockedUser>[];
+        for (var i = 0; i < count; i++) {
+          result.add(BlockedUser.fromNative(blocked[i]));
+        }
+        completer.complete(result);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaBlockedUsersCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_get_blocked_users(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Check if a user is blocked (synchronous)
+  bool isUserBlocked(String fingerprint) {
+    final fpPtr = fingerprint.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_is_user_blocked(_engine, fpPtr.cast());
+    } finally {
+      calloc.free(fpPtr);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // MESSAGING OPERATIONS
   // ---------------------------------------------------------------------------
 
@@ -2019,6 +2366,54 @@ class DnaEngine {
     );
 
     if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  /// Lookup any user's profile by fingerprint from DHT
+  /// Use this to resolve a DNA fingerprint to their wallet address
+  Future<UserProfile?> lookupProfile(String fingerprint) async {
+    final completer = Completer<UserProfile?>();
+    final localId = _nextLocalId++;
+
+    final fingerprintPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<dna_profile_t> profile,
+                    Pointer<Void> userData) {
+      calloc.free(fingerprintPtr);
+      if (error == 0) {
+        if (profile != nullptr) {
+          final result = UserProfile.fromNative(profile.ref);
+          _bindings.dna_free_profile(profile);
+          completer.complete(result);
+        } else {
+          // No profile found
+          completer.complete(null);
+        }
+      } else if (error == 5) {
+        // DNA_ENGINE_ERROR_NOT_FOUND - return null instead of error
+        completer.complete(null);
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaProfileCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_lookup_profile(
+      _engine,
+      fingerprintPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fingerprintPtr);
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit request');
     }

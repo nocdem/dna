@@ -35,6 +35,36 @@ final class dna_contact_t extends Struct {
   external int last_seen;
 }
 
+/// Contact request information (ICQ-style request)
+final class dna_contact_request_t extends Struct {
+  @Array(129)
+  external Array<Char> fingerprint;
+
+  @Array(64)
+  external Array<Char> display_name;
+
+  @Array(256)
+  external Array<Char> message;
+
+  @Uint64()
+  external int requested_at;
+
+  @Int32()
+  external int status; // 0=pending, 1=approved, 2=denied
+}
+
+/// Blocked user information
+final class dna_blocked_user_t extends Struct {
+  @Array(129)
+  external Array<Char> fingerprint;
+
+  @Uint64()
+  external int blocked_at;
+
+  @Array(256)
+  external Array<Char> reason;
+}
+
 /// Message information
 final class dna_message_t extends Struct {
   @Int32()
@@ -441,6 +471,26 @@ typedef DnaContactsCbNative = Void Function(
   Pointer<Void> user_data,
 );
 typedef DnaContactsCb = NativeFunction<DnaContactsCbNative>;
+
+/// Contact requests callback - Native (ICQ-style)
+typedef DnaContactRequestsCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_contact_request_t> requests,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaContactRequestsCb = NativeFunction<DnaContactRequestsCbNative>;
+
+/// Blocked users callback - Native
+typedef DnaBlockedUsersCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<dna_blocked_user_t> blocked,
+  Int32 count,
+  Pointer<Void> user_data,
+);
+typedef DnaBlockedUsersCb = NativeFunction<DnaBlockedUsersCbNative>;
 
 /// Messages callback - Native
 typedef DnaMessagesCbNative = Void Function(
@@ -986,6 +1036,21 @@ class DnaBindings {
     return _dna_engine_get_profile(engine, callback, user_data);
   }
 
+  late final _dna_engine_lookup_profile = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaProfileCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaProfileCb>, Pointer<Void>)>('dna_engine_lookup_profile');
+
+  int dna_engine_lookup_profile(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaProfileCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_lookup_profile(engine, fingerprint, callback, user_data);
+  }
+
   late final _dna_engine_update_profile = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<dna_profile_t>,
           Pointer<DnaCompletionCb>, Pointer<Void>),
@@ -1047,6 +1112,135 @@ class DnaBindings {
     Pointer<Void> user_data,
   ) {
     return _dna_engine_remove_contact(engine, fingerprint, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // CONTACT REQUESTS (ICQ-style)
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_send_contact_request = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_send_contact_request');
+
+  int dna_engine_send_contact_request(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> recipient_fingerprint,
+    Pointer<Utf8> message,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_send_contact_request(
+        engine, recipient_fingerprint, message, callback, user_data);
+  }
+
+  late final _dna_engine_get_contact_requests = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaContactRequestsCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaContactRequestsCb>,
+          Pointer<Void>)>('dna_engine_get_contact_requests');
+
+  int dna_engine_get_contact_requests(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaContactRequestsCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_contact_requests(engine, callback, user_data);
+  }
+
+  late final _dna_engine_get_contact_request_count = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_get_contact_request_count');
+
+  int dna_engine_get_contact_request_count(Pointer<dna_engine_t> engine) {
+    return _dna_engine_get_contact_request_count(engine);
+  }
+
+  late final _dna_engine_approve_contact_request = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_approve_contact_request');
+
+  int dna_engine_approve_contact_request(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_approve_contact_request(engine, fingerprint, callback, user_data);
+  }
+
+  late final _dna_engine_deny_contact_request = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_deny_contact_request');
+
+  int dna_engine_deny_contact_request(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_deny_contact_request(engine, fingerprint, callback, user_data);
+  }
+
+  late final _dna_engine_block_user = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_block_user');
+
+  int dna_engine_block_user(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<Utf8> reason,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_block_user(engine, fingerprint, reason, callback, user_data);
+  }
+
+  late final _dna_engine_unblock_user = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_unblock_user');
+
+  int dna_engine_unblock_user(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_unblock_user(engine, fingerprint, callback, user_data);
+  }
+
+  late final _dna_engine_get_blocked_users = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<DnaBlockedUsersCb>,
+          Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<DnaBlockedUsersCb>,
+          Pointer<Void>)>('dna_engine_get_blocked_users');
+
+  int dna_engine_get_blocked_users(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaBlockedUsersCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_get_blocked_users(engine, callback, user_data);
+  }
+
+  late final _dna_engine_is_user_blocked = _lib.lookupFunction<
+      Bool Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      bool Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_is_user_blocked');
+
+  bool dna_engine_is_user_blocked(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+  ) {
+    return _dna_engine_is_user_blocked(engine, fingerprint);
   }
 
   // ---------------------------------------------------------------------------

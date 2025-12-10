@@ -365,6 +365,9 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_GET_PROFILE:
             dna_handle_get_profile(engine, task);
             break;
+        case TASK_LOOKUP_PROFILE:
+            dna_handle_lookup_profile(engine, task);
+            break;
         case TASK_UPDATE_PROFILE:
             dna_handle_update_profile(engine, task);
             break;
@@ -378,6 +381,29 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
             break;
         case TASK_REMOVE_CONTACT:
             dna_handle_remove_contact(engine, task);
+            break;
+
+        /* Contact Requests (ICQ-style) */
+        case TASK_SEND_CONTACT_REQUEST:
+            dna_handle_send_contact_request(engine, task);
+            break;
+        case TASK_GET_CONTACT_REQUESTS:
+            dna_handle_get_contact_requests(engine, task);
+            break;
+        case TASK_APPROVE_CONTACT_REQUEST:
+            dna_handle_approve_contact_request(engine, task);
+            break;
+        case TASK_DENY_CONTACT_REQUEST:
+            dna_handle_deny_contact_request(engine, task);
+            break;
+        case TASK_BLOCK_USER:
+            dna_handle_block_user(engine, task);
+            break;
+        case TASK_UNBLOCK_USER:
+            dna_handle_unblock_user(engine, task);
+            break;
+        case TASK_GET_BLOCKED_USERS:
+            dna_handle_get_blocked_users(engine, task);
             break;
 
         /* Messaging */
@@ -1180,6 +1206,73 @@ done:
     task->callback.profile(task->request_id, error, profile, task->user_data);
 }
 
+void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_profile_t *profile = NULL;
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    dht_context_t *dht = dna_get_dht_ctx(engine);
+    if (!dht) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    const char *fingerprint = task->params.lookup_profile.fingerprint;
+    if (!fingerprint || strlen(fingerprint) != 128) {
+        error = DNA_ENGINE_ERROR_INVALID_PARAM;
+        goto done;
+    }
+
+    /* Load identity from DHT */
+    dna_unified_identity_t *identity = NULL;
+    int rc = dna_load_identity(dht, fingerprint, &identity);
+
+    if (rc != 0 || !identity) {
+        if (rc == -2) {
+            /* Profile not found */
+            error = DNA_ENGINE_ERROR_NOT_FOUND;
+        } else {
+            error = DNA_ENGINE_ERROR_NETWORK;
+        }
+        goto done;
+    }
+
+    /* Copy identity data to profile struct */
+    profile = (dna_profile_t*)calloc(1, sizeof(dna_profile_t));
+    if (!profile) {
+        error = DNA_ERROR_INTERNAL;
+        dna_identity_free(identity);
+        goto done;
+    }
+
+    /* Wallets */
+    strncpy(profile->backbone, identity->wallets.backbone, sizeof(profile->backbone) - 1);
+    strncpy(profile->btc, identity->wallets.btc, sizeof(profile->btc) - 1);
+    strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
+    strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
+
+    /* Socials */
+    strncpy(profile->telegram, identity->socials.telegram, sizeof(profile->telegram) - 1);
+    strncpy(profile->twitter, identity->socials.x, sizeof(profile->twitter) - 1);
+    strncpy(profile->github, identity->socials.github, sizeof(profile->github) - 1);
+
+    /* Bio and avatar */
+    strncpy(profile->bio, identity->bio, sizeof(profile->bio) - 1);
+    strncpy(profile->avatar_base64, identity->avatar_base64, sizeof(profile->avatar_base64) - 1);
+
+    /* Display name */
+    strncpy(profile->display_name, identity->display_name, sizeof(profile->display_name) - 1);
+
+    dna_identity_free(identity);
+
+done:
+    task->callback.profile(task->request_id, error, profile, task->user_data);
+}
+
 void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
 
@@ -1408,6 +1501,335 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     task->callback.completion(task->request_id, error, task->user_data);
+}
+
+/* ============================================================================
+ * CONTACT REQUEST TASK HANDLERS (ICQ-style)
+ * ============================================================================ */
+
+void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    /* Get DHT context */
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+        goto done;
+    }
+
+    /* Get sender keys */
+    qgp_key_t *privkey = dna_load_private_key(engine);
+    if (!privkey) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    /* Get our display name from cache (optional) */
+    char *display_name = NULL;
+    pthread_mutex_lock(&engine->name_cache_mutex);
+    for (int i = 0; i < engine->name_cache_count; i++) {
+        if (strcmp(engine->name_cache[i].fingerprint, engine->fingerprint) == 0) {
+            display_name = engine->name_cache[i].display_name;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&engine->name_cache_mutex);
+
+    /* Send the contact request via DHT */
+    int rc = dht_send_contact_request(
+        dht_ctx,
+        engine->fingerprint,
+        display_name,
+        privkey->public_key,
+        privkey->private_key,
+        task->params.send_contact_request.recipient,
+        task->params.send_contact_request.message[0] ? task->params.send_contact_request.message : NULL
+    );
+
+    if (rc != 0) {
+        error = DNA_ENGINE_ERROR_NETWORK;
+    } else {
+        /* Initialize contacts database and add as pending outgoing */
+        if (contacts_db_init(engine->fingerprint) == 0) {
+            contacts_db_add(task->params.send_contact_request.recipient, "Pending contact request");
+        }
+    }
+
+done:
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_contact_request_t *requests = NULL;
+    int count = 0;
+
+    if (!engine->identity_loaded) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    /* Initialize contacts database */
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    /* First, fetch new requests from DHT and store them */
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (dht_ctx) {
+        dht_contact_request_t *dht_requests = NULL;
+        size_t dht_count = 0;
+
+        if (dht_fetch_contact_requests(dht_ctx, engine->fingerprint, &dht_requests, &dht_count) == 0) {
+            /* Store new requests in local database */
+            for (size_t i = 0; i < dht_count; i++) {
+                /* Skip if blocked */
+                if (!contacts_db_is_blocked(dht_requests[i].sender_fingerprint)) {
+                    contacts_db_add_incoming_request(
+                        dht_requests[i].sender_fingerprint,
+                        dht_requests[i].sender_name,
+                        dht_requests[i].message,
+                        dht_requests[i].timestamp
+                    );
+                }
+            }
+            dht_contact_requests_free(dht_requests, dht_count);
+        }
+    }
+
+    /* Get all pending requests from database */
+    incoming_request_t *db_requests = NULL;
+    int db_count = 0;
+    if (contacts_db_get_incoming_requests(&db_requests, &db_count) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    /* Convert to dna_contact_request_t */
+    if (db_count > 0) {
+        requests = (dna_contact_request_t*)calloc(db_count, sizeof(dna_contact_request_t));
+        if (!requests) {
+            contacts_db_free_requests(db_requests, db_count);
+            error = DNA_ENGINE_ERROR_DATABASE;
+            goto done;
+        }
+
+        for (int i = 0; i < db_count; i++) {
+            strncpy(requests[i].fingerprint, db_requests[i].fingerprint, 128);
+            requests[i].fingerprint[128] = '\0';
+            strncpy(requests[i].display_name, db_requests[i].display_name, 63);
+            requests[i].display_name[63] = '\0';
+            strncpy(requests[i].message, db_requests[i].message, 255);
+            requests[i].message[255] = '\0';
+            requests[i].requested_at = db_requests[i].requested_at;
+            requests[i].status = db_requests[i].status;
+        }
+        count = db_count;
+    }
+
+    contacts_db_free_requests(db_requests, db_count);
+
+done:
+    if (task->callback.contact_requests) {
+        task->callback.contact_requests(task->request_id, error, requests, count, task->user_data);
+    }
+    if (requests) {
+        free(requests);
+    }
+}
+
+void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    /* Approve the request in database */
+    if (contacts_db_approve_request(task->params.contact_request.fingerprint) != 0) {
+        error = DNA_ERROR_NOT_FOUND;
+        goto done;
+    }
+
+    /* Send a reciprocal request so they know we approved */
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (dht_ctx) {
+        qgp_key_t *privkey = dna_load_private_key(engine);
+        if (privkey) {
+            /* Get our display name from cache (optional) */
+            char *display_name = NULL;
+            pthread_mutex_lock(&engine->name_cache_mutex);
+            for (int i = 0; i < engine->name_cache_count; i++) {
+                if (strcmp(engine->name_cache[i].fingerprint, engine->fingerprint) == 0) {
+                    display_name = engine->name_cache[i].display_name;
+                    break;
+                }
+            }
+            pthread_mutex_unlock(&engine->name_cache_mutex);
+
+            dht_send_contact_request(
+                dht_ctx,
+                engine->fingerprint,
+                display_name,
+                privkey->public_key,
+                privkey->private_key,
+                task->params.contact_request.fingerprint,
+                "Contact request accepted"
+            );
+        }
+    }
+
+    /* Sync contacts to DHT */
+    if (engine->messenger) {
+        messenger_sync_contacts_to_dht(engine->messenger);
+    }
+
+done:
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_deny_contact_request(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    if (contacts_db_deny_request(task->params.contact_request.fingerprint) != 0) {
+        error = DNA_ERROR_NOT_FOUND;
+    }
+
+done:
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_block_user(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    int rc = contacts_db_block_user(
+        task->params.block_user.fingerprint,
+        task->params.block_user.reason[0] ? task->params.block_user.reason : NULL
+    );
+
+    if (rc == -2) {
+        error = DNA_ENGINE_ERROR_ALREADY_EXISTS;
+    } else if (rc != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+    }
+
+done:
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_unblock_user(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+
+    if (!engine->identity_loaded) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    if (contacts_db_unblock_user(task->params.unblock_user.fingerprint) != 0) {
+        error = DNA_ERROR_NOT_FOUND;
+    }
+
+done:
+    if (task->callback.completion) {
+        task->callback.completion(task->request_id, error, task->user_data);
+    }
+}
+
+void dna_handle_get_blocked_users(dna_engine_t *engine, dna_task_t *task) {
+    int error = DNA_OK;
+    dna_blocked_user_t *blocked = NULL;
+    int count = 0;
+
+    if (!engine->identity_loaded) {
+        error = DNA_ENGINE_ERROR_NO_IDENTITY;
+        goto done;
+    }
+
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    blocked_user_t *db_blocked = NULL;
+    int db_count = 0;
+    if (contacts_db_get_blocked_users(&db_blocked, &db_count) != 0) {
+        error = DNA_ENGINE_ERROR_DATABASE;
+        goto done;
+    }
+
+    /* Convert to dna_blocked_user_t */
+    if (db_count > 0) {
+        blocked = (dna_blocked_user_t*)calloc(db_count, sizeof(dna_blocked_user_t));
+        if (!blocked) {
+            contacts_db_free_blocked(db_blocked, db_count);
+            error = DNA_ENGINE_ERROR_DATABASE;
+            goto done;
+        }
+
+        for (int i = 0; i < db_count; i++) {
+            strncpy(blocked[i].fingerprint, db_blocked[i].fingerprint, 128);
+            blocked[i].fingerprint[128] = '\0';
+            blocked[i].blocked_at = db_blocked[i].blocked_at;
+            strncpy(blocked[i].reason, db_blocked[i].reason, 255);
+            blocked[i].reason[255] = '\0';
+        }
+        count = db_count;
+    }
+
+    contacts_db_free_blocked(db_blocked, db_count);
+
+done:
+    if (task->callback.blocked_users) {
+        task->callback.blocked_users(task->request_id, error, blocked, count, task->user_data);
+    }
+    if (blocked) {
+        free(blocked);
+    }
 }
 
 /* ============================================================================
@@ -2521,6 +2943,23 @@ dna_request_id_t dna_engine_get_profile(
     return dna_submit_task(engine, TASK_GET_PROFILE, NULL, cb, user_data);
 }
 
+dna_request_id_t dna_engine_lookup_profile(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_profile_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+    if (!engine->identity_loaded) return DNA_REQUEST_ID_INVALID;
+    if (strlen(fingerprint) != 128) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.lookup_profile.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .profile = callback };
+    return dna_submit_task(engine, TASK_LOOKUP_PROFILE, &params, cb, user_data);
+}
+
 dna_request_id_t dna_engine_update_profile(
     dna_engine_t *engine,
     const dna_profile_t *profile,
@@ -2577,6 +3016,132 @@ dna_request_id_t dna_engine_remove_contact(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_REMOVE_CONTACT, &params, cb, user_data);
+}
+
+/* Contact Requests (ICQ-style) */
+dna_request_id_t dna_engine_send_contact_request(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint,
+    const char *message,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !recipient_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.send_contact_request.recipient, recipient_fingerprint, 128);
+    if (message) {
+        strncpy(params.send_contact_request.message, message, 255);
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_SEND_CONTACT_REQUEST, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_contact_requests(
+    dna_engine_t *engine,
+    dna_contact_requests_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .contact_requests = callback };
+    return dna_submit_task(engine, TASK_GET_CONTACT_REQUESTS, NULL, cb, user_data);
+}
+
+int dna_engine_get_contact_request_count(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) return -1;
+
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        return -1;
+    }
+
+    return contacts_db_pending_request_count();
+}
+
+dna_request_id_t dna_engine_approve_contact_request(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.contact_request.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_APPROVE_CONTACT_REQUEST, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_deny_contact_request(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.contact_request.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_DENY_CONTACT_REQUEST, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_block_user(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    const char *reason,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.block_user.fingerprint, fingerprint, 128);
+    if (reason) {
+        strncpy(params.block_user.reason, reason, 255);
+    }
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_BLOCK_USER, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_unblock_user(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_params_t params = {0};
+    strncpy(params.unblock_user.fingerprint, fingerprint, 128);
+
+    dna_task_callback_t cb = { .completion = callback };
+    return dna_submit_task(engine, TASK_UNBLOCK_USER, &params, cb, user_data);
+}
+
+dna_request_id_t dna_engine_get_blocked_users(
+    dna_engine_t *engine,
+    dna_blocked_users_cb callback,
+    void *user_data
+) {
+    if (!engine || !callback) return DNA_REQUEST_ID_INVALID;
+
+    dna_task_callback_t cb = { .blocked_users = callback };
+    return dna_submit_task(engine, TASK_GET_BLOCKED_USERS, NULL, cb, user_data);
+}
+
+bool dna_engine_is_user_blocked(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine || !fingerprint || !engine->identity_loaded) return false;
+
+    if (contacts_db_init(engine->fingerprint) != 0) {
+        return false;
+    }
+
+    return contacts_db_is_blocked(fingerprint);
 }
 
 /* Messaging */

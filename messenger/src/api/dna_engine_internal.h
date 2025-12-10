@@ -17,6 +17,7 @@
 #include "database/group_invitations.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/shared/dht_offline_queue.h"
+#include "dht/shared/dht_contact_request.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -49,12 +50,22 @@ typedef enum {
     TASK_GET_AVATAR,
     TASK_LOOKUP_NAME,
     TASK_GET_PROFILE,
+    TASK_LOOKUP_PROFILE,
     TASK_UPDATE_PROFILE,
 
     /* Contacts */
     TASK_GET_CONTACTS,
     TASK_ADD_CONTACT,
     TASK_REMOVE_CONTACT,
+
+    /* Contact Requests (ICQ-style) */
+    TASK_SEND_CONTACT_REQUEST,
+    TASK_GET_CONTACT_REQUESTS,
+    TASK_APPROVE_CONTACT_REQUEST,
+    TASK_DENY_CONTACT_REQUEST,
+    TASK_BLOCK_USER,
+    TASK_UNBLOCK_USER,
+    TASK_GET_BLOCKED_USERS,
 
     /* Messaging */
     TASK_SEND_MESSAGE,
@@ -141,6 +152,11 @@ typedef union {
         char name[256];
     } lookup_name;
 
+    /* Lookup profile */
+    struct {
+        char fingerprint[129];
+    } lookup_profile;
+
     /* Add contact */
     struct {
         char identifier[256];
@@ -150,6 +166,28 @@ typedef union {
     struct {
         char fingerprint[129];
     } remove_contact;
+
+    /* Send contact request */
+    struct {
+        char recipient[129];
+        char message[256];
+    } send_contact_request;
+
+    /* Approve/deny contact request */
+    struct {
+        char fingerprint[129];
+    } contact_request;
+
+    /* Block user */
+    struct {
+        char fingerprint[129];
+        char reason[256];
+    } block_user;
+
+    /* Unblock user */
+    struct {
+        char fingerprint[129];
+    } unblock_user;
 
     /* Send message */
     struct {
@@ -273,6 +311,8 @@ typedef union {
     dna_identity_created_cb identity_created;
     dna_display_name_cb display_name;
     dna_contacts_cb contacts;
+    dna_contact_requests_cb contact_requests;
+    dna_blocked_users_cb blocked_users;
     dna_messages_cb messages;
     dna_groups_cb groups;
     dna_group_created_cb group_created;
@@ -480,12 +520,22 @@ void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_avatar(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_lookup_name(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task);
 
 /* Contacts */
 void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_add_contact(dna_engine_t *engine, dna_task_t *task);
 void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task);
+
+/* Contact Requests (ICQ-style) */
+void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_deny_contact_request(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_block_user(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_unblock_user(dna_engine_t *engine, dna_task_t *task);
+void dna_handle_get_blocked_users(dna_engine_t *engine, dna_task_t *task);
 
 /* Messaging */
 void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task);

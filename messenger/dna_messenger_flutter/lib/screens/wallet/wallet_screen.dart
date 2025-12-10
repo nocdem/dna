@@ -596,6 +596,12 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   int _selectedGasSpeed = 1; // 0=slow, 1=normal, 2=fast
   bool _isSending = false;
 
+  // DNA fingerprint resolution
+  String? _resolvedAddress;      // Resolved wallet address from fingerprint
+  String? _resolvedContactName;  // Display name if resolved from fingerprint
+  bool _isResolving = false;     // Loading state during DHT lookup
+  String? _resolveError;         // Error message if resolution failed
+
   // Gas fee estimates for ETH
   String? _gasFee0; // slow
   String? _gasFee1; // normal
@@ -690,6 +696,157 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     super.dispose();
   }
 
+  /// Check if input looks like a DNA fingerprint (128 hex chars)
+  bool _isFingerprint(String input) {
+    if (input.length != 128) return false;
+    return RegExp(r'^[0-9a-fA-F]{128}$').hasMatch(input);
+  }
+
+  /// Resolve fingerprint to wallet address
+  Future<void> _resolveFingerprint(String fingerprint) async {
+    setState(() {
+      _isResolving = true;
+      _resolveError = null;
+      _resolvedAddress = null;
+      _resolvedContactName = null;
+    });
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final profile = await engine.lookupProfile(fingerprint);
+
+      if (!mounted) return;
+
+      if (profile == null) {
+        setState(() {
+          _isResolving = false;
+          _resolveError = 'Contact not found in DHT';
+        });
+        return;
+      }
+
+      if (profile.backbone.isEmpty) {
+        setState(() {
+          _isResolving = false;
+          _resolveError = 'Contact has no wallet address';
+        });
+        return;
+      }
+
+      setState(() {
+        _isResolving = false;
+        _resolvedAddress = profile.backbone;
+        _resolvedContactName = profile.displayName.isNotEmpty
+            ? profile.displayName
+            : '${fingerprint.substring(0, 8)}...';
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isResolving = false;
+        _resolveError = 'Could not resolve address';
+      });
+    }
+  }
+
+  /// Handle recipient input changes
+  void _onRecipientChanged(String value) {
+    final trimmed = value.trim();
+
+    // Clear previous resolution state
+    setState(() {
+      _resolvedAddress = null;
+      _resolvedContactName = null;
+      _resolveError = null;
+    });
+
+    // Check if it's a fingerprint
+    if (_isFingerprint(trimmed)) {
+      _resolveFingerprint(trimmed);
+    }
+  }
+
+  /// Show contact picker dialog
+  Future<void> _showContactPicker() async {
+    final contacts = await ref.read(contactsProvider.future);
+
+    if (!mounted) return;
+
+    // Filter contacts that have wallet addresses (we'll resolve them)
+    final result = await showModalBottomSheet<Contact>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        initialChildSize: 0.6,
+        minChildSize: 0.3,
+        maxChildSize: 0.9,
+        expand: false,
+        builder: (context, scrollController) => Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16),
+              child: Row(
+                children: [
+                  Text(
+                    'Select Contact',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+            Expanded(
+              child: contacts.isEmpty
+                  ? const Center(child: Text('No contacts'))
+                  : ListView.builder(
+                      controller: scrollController,
+                      itemCount: contacts.length,
+                      itemBuilder: (context, index) {
+                        final contact = contacts[index];
+                        return ListTile(
+                          leading: CircleAvatar(
+                            backgroundColor: DnaColors.primary.withAlpha(50),
+                            child: Text(
+                              contact.displayName.isNotEmpty
+                                  ? contact.displayName[0].toUpperCase()
+                                  : '?',
+                              style: const TextStyle(color: DnaColors.primary),
+                            ),
+                          ),
+                          title: Text(contact.displayName.isNotEmpty
+                              ? contact.displayName
+                              : '${contact.fingerprint.substring(0, 16)}...'),
+                          subtitle: Text(
+                            '${contact.fingerprint.substring(0, 16)}...',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                          onTap: () => Navigator.pop(context, contact),
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result != null && mounted) {
+      // Set the fingerprint and resolve it
+      _recipientController.text = result.fingerprint;
+      _resolveFingerprint(result.fingerprint);
+    }
+  }
+
+  /// Get the actual address to send to
+  String get _effectiveRecipient {
+    return _resolvedAddress ?? _recipientController.text.trim();
+  }
+
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -708,14 +865,77 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                 style: Theme.of(context).textTheme.titleLarge,
               ),
               const SizedBox(height: 16),
-              TextField(
-                controller: _recipientController,
-                decoration: const InputDecoration(
-                  labelText: 'Recipient Address',
-                  hintText: 'Enter address',
-                ),
-                onChanged: (_) => setState(() {}),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _recipientController,
+                      decoration: InputDecoration(
+                        labelText: 'Recipient',
+                        hintText: 'Address or DNA fingerprint',
+                        suffixIcon: _isResolving
+                            ? const Padding(
+                                padding: EdgeInsets.all(12),
+                                child: SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(strokeWidth: 2),
+                                ),
+                              )
+                            : null,
+                      ),
+                      onChanged: _onRecipientChanged,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: IconButton(
+                      icon: const Icon(Icons.contacts),
+                      tooltip: 'Select contact',
+                      onPressed: _showContactPicker,
+                    ),
+                  ),
+                ],
               ),
+              // Resolution status indicator
+              if (_resolvedAddress != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(
+                    children: [
+                      Icon(Icons.check_circle, size: 16, color: DnaColors.textSuccess),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          'Resolved: $_resolvedContactName (${_resolvedAddress!.substring(0, 12)}...)',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: DnaColors.textSuccess,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              if (_resolveError != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Row(
+                    children: [
+                      Icon(Icons.error_outline, size: 16, color: DnaColors.textWarning),
+                      const SizedBox(width: 4),
+                      Text(
+                        _resolveError!,
+                        style: TextStyle(
+                          fontSize: 12,
+                          color: DnaColors.textWarning,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
               const SizedBox(height: 12),
               Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -876,9 +1096,19 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   }
 
   bool _canSend() {
-    return !_isSending &&
-        _recipientController.text.trim().isNotEmpty &&
-        _amountController.text.trim().isNotEmpty;
+    if (_isSending || _isResolving) return false;
+    if (_amountController.text.trim().isEmpty) return false;
+
+    final input = _recipientController.text.trim();
+    if (input.isEmpty) return false;
+
+    // If it's a fingerprint, must be resolved successfully
+    if (_isFingerprint(input)) {
+      return _resolvedAddress != null && _resolveError == null;
+    }
+
+    // Otherwise, assume it's a direct address
+    return true;
   }
 
   Future<void> _send() async {
@@ -887,7 +1117,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     try {
       await ref.read(walletsProvider.notifier).sendTokens(
         walletIndex: widget.walletIndex,
-        recipientAddress: _recipientController.text.trim(),
+        recipientAddress: _effectiveRecipient,
         amount: _amountController.text.trim(),
         token: _selectedToken,
         network: _selectedNetwork,

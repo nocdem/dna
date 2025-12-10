@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.4.0
+**Version:** 1.5.0
 **Date:** 2025-12-10
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.5.0 (2025-12-10): Added `dna_engine_lookup_profile()` to lookup any user's profile by fingerprint (for wallet address resolution)
 - v1.4.0 (2025-12-10): Added `dna_engine_restore_identity_sync()` for restoring identity from seed without DHT registration
 - v1.3.0 (2025-12-09): Made `dna_engine_create_identity_sync()` atomic - now registers name on DHT and rolls back on failure
 - v1.2.0 (2025-12-03): Added Profile API (`dna_engine_get_profile`, `dna_engine_update_profile`)
@@ -561,6 +562,34 @@ typedef struct {
     char avatar_base64[20484];  /* Base64-encoded 64x64 PNG/JPEG */
 } dna_profile_t;
 ```
+
+**Memory:** Free with `dna_free_profile(profile)`
+
+---
+
+### dna_engine_lookup_profile
+
+```c
+dna_request_id_t dna_engine_lookup_profile(
+    dna_engine_t *engine,
+    const char *fingerprint,
+    dna_profile_cb callback,
+    void *user_data
+);
+```
+
+Looks up any user's profile by fingerprint from DHT. Use this to resolve a DNA fingerprint to their wallet address for sending tokens.
+
+**Parameters:**
+- `engine` - Engine instance
+- `fingerprint` - User's fingerprint (128 hex chars)
+- `callback` - Called with profile data (NULL if not found)
+- `user_data` - User data for callback
+
+**Errors:**
+- `DNA_ENGINE_ERROR_NOT_FOUND` - Profile not found in DHT
+- `DNA_ENGINE_ERROR_NETWORK` - DHT lookup failed
+- `DNA_ENGINE_ERROR_INVALID_PARAM` - Invalid fingerprint format
 
 **Memory:** Free with `dna_free_profile(profile)`
 
