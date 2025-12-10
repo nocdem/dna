@@ -1154,9 +1154,17 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
         throw Exception('Engine not ready');
       }
 
-      // Get display name from DHT
-      final displayName = await engine.getDisplayName(fingerprint);
+      // Get display name from DHT - differentiate network error vs not found
+      String displayName;
+      try {
+        displayName = await engine.getDisplayName(fingerprint);
+      } catch (e) {
+        // Network error - DHT unreachable
+        throw Exception('Network error. Please check your connection and try again.');
+      }
+
       if (displayName.isEmpty) {
+        // Identity not found on DHT
         throw Exception('Identity not found on the network. This seed phrase may not have been registered.');
       }
       _restoredName = displayName;
@@ -1181,7 +1189,7 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to restore identity: $e'),
+            content: Text('$e'),
             backgroundColor: DnaColors.snackbarError,
           ),
         );
