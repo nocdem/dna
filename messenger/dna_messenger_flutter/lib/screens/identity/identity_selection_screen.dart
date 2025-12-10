@@ -763,13 +763,80 @@ class RestoreIdentityScreen extends ConsumerStatefulWidget {
 }
 
 class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
-  final _seedController = TextEditingController();
+  static const int _wordCount = 24;
+  final List<TextEditingController> _wordControllers = [];
+  final List<FocusNode> _focusNodes = [];
   bool _isRestoring = false;
 
   @override
+  void initState() {
+    super.initState();
+    for (int i = 0; i < _wordCount; i++) {
+      _wordControllers.add(TextEditingController());
+      _focusNodes.add(FocusNode());
+    }
+  }
+
+  @override
   void dispose() {
-    _seedController.dispose();
+    for (final controller in _wordControllers) {
+      controller.dispose();
+    }
+    for (final node in _focusNodes) {
+      node.dispose();
+    }
     super.dispose();
+  }
+
+  /// Get combined mnemonic from all word fields
+  String _getMnemonic() {
+    return _wordControllers
+        .map((c) => c.text.trim().toLowerCase())
+        .join(' ')
+        .trim();
+  }
+
+  /// Check if all 24 words are filled
+  bool _allWordsFilled() {
+    return _wordControllers.every((c) => c.text.trim().isNotEmpty);
+  }
+
+  /// Handle paste - detect multi-word paste and distribute to fields
+  void _onWordChanged(int index, String value) {
+    final words = value.trim().split(RegExp(r'\s+'));
+
+    if (words.length > 1) {
+      // Multi-word paste detected - distribute words
+      _distributeWords(index, words);
+    } else if (value.endsWith(' ') && value.trim().isNotEmpty) {
+      // Single word with space - move to next field
+      _wordControllers[index].text = value.trim();
+      if (index < _wordCount - 1) {
+        _focusNodes[index + 1].requestFocus();
+      }
+    }
+    setState(() {});
+  }
+
+  /// Distribute pasted words across fields starting from index
+  void _distributeWords(int startIndex, List<String> words) {
+    for (int i = 0; i < words.length && (startIndex + i) < _wordCount; i++) {
+      _wordControllers[startIndex + i].text = words[i].toLowerCase();
+    }
+    // Focus the next empty field or last filled field
+    final nextIndex = (startIndex + words.length).clamp(0, _wordCount - 1);
+    _focusNodes[nextIndex].requestFocus();
+    setState(() {});
+  }
+
+  /// Handle backspace on empty field - go to previous field
+  void _onKeyEvent(int index, KeyEvent event) {
+    if (event is KeyDownEvent &&
+        event.logicalKey == LogicalKeyboardKey.backspace &&
+        _wordControllers[index].text.isEmpty &&
+        index > 0) {
+      _focusNodes[index - 1].requestFocus();
+    }
   }
 
   @override
@@ -792,21 +859,13 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Enter the 24-word seed phrase you saved when creating your identity.',
+                'Enter the 24-word seed phrase you saved when creating your identity. You can paste all words at once.',
                 style: theme.textTheme.bodySmall,
               ),
               const SizedBox(height: 24),
               Expanded(
-                child: TextField(
-                  controller: _seedController,
-                  decoration: const InputDecoration(
-                    labelText: 'Seed Phrase',
-                    hintText: 'word1 word2 word3 ...',
-                    alignLabelWithHint: true,
-                  ),
-                  maxLines: 4,
-                  textInputAction: TextInputAction.done,
-                  onChanged: (_) => setState(() {}),
+                child: SingleChildScrollView(
+                  child: _buildWordGrid(theme),
                 ),
               ),
               const SizedBox(height: 24),
@@ -814,9 +873,7 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
                 const Center(child: CircularProgressIndicator())
               else
                 ElevatedButton(
-                  onPressed: _seedController.text.trim().split(' ').length >= 24
-                      ? _restoreIdentity
-                      : null,
+                  onPressed: _allWordsFilled() ? _restoreIdentity : null,
                   child: const Text('Restore Identity'),
                 ),
             ],
@@ -826,15 +883,114 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
     );
   }
 
+  Widget _buildWordGrid(ThemeData theme) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 2 columns on mobile (<400), 3 on tablet (<600), 4 on desktop
+        final columns = constraints.maxWidth < 400 ? 2 : (constraints.maxWidth < 600 ? 3 : 4);
+        final rows = (_wordCount / columns).ceil();
+
+        return Column(
+          children: List.generate(rows, (rowIndex) {
+            return Padding(
+              padding: EdgeInsets.only(bottom: rowIndex < rows - 1 ? 8 : 0),
+              child: Row(
+                children: List.generate(columns, (colIndex) {
+                  final wordIndex = rowIndex * columns + colIndex;
+                  if (wordIndex >= _wordCount) {
+                    return const Expanded(child: SizedBox());
+                  }
+                  return Expanded(
+                    child: Padding(
+                      padding: EdgeInsets.only(right: colIndex < columns - 1 ? 8 : 0),
+                      child: _buildWordField(theme, wordIndex),
+                    ),
+                  );
+                }),
+              ),
+            );
+          }),
+        );
+      },
+    );
+  }
+
+  Widget _buildWordField(ThemeData theme, int index) {
+    final displayIndex = index + 1;
+
+    return KeyboardListener(
+      focusNode: FocusNode(),
+      onKeyEvent: (event) => _onKeyEvent(index, event),
+      child: Container(
+        decoration: BoxDecoration(
+          color: theme.scaffoldBackgroundColor,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: _wordControllers[index].text.isNotEmpty
+                ? theme.colorScheme.primary.withAlpha(128)
+                : theme.colorScheme.primary.withAlpha(51),
+          ),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 32,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary.withAlpha(26),
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(7),
+                  bottomLeft: Radius.circular(7),
+                ),
+              ),
+              child: Text(
+                '$displayIndex',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.primary,
+                  fontWeight: FontWeight.bold,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+            Expanded(
+              child: TextField(
+                controller: _wordControllers[index],
+                focusNode: _focusNodes[index],
+                decoration: const InputDecoration(
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+                  isDense: true,
+                ),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontFamily: 'monospace',
+                ),
+                textInputAction: index < _wordCount - 1
+                    ? TextInputAction.next
+                    : TextInputAction.done,
+                onChanged: (value) => _onWordChanged(index, value),
+                onSubmitted: (_) {
+                  if (index < _wordCount - 1) {
+                    _focusNodes[index + 1].requestFocus();
+                  } else if (_allWordsFilled()) {
+                    _restoreIdentity();
+                  }
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Future<void> _restoreIdentity() async {
     setState(() => _isRestoring = true);
 
     try {
-      final mnemonic = _seedController.text.trim();
-      final words = mnemonic.split(' ');
+      final mnemonic = _getMnemonic();
 
-      if (words.length < 12) {
-        throw Exception('Seed phrase must have at least 12 words');
+      if (!_allWordsFilled()) {
+        throw Exception('Please fill in all 24 words');
       }
 
       // Validate mnemonic
