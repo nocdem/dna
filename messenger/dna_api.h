@@ -197,7 +197,6 @@ dna_error_t dna_encrypt_message_raw(
  * @param plaintext_len_out: Output plaintext length
  * @param sender_pubkey_out: Sender's public key (for verification, caller must free)
  * @param sender_pubkey_len_out: Sender's public key length
- * @param timestamp_out: v0.08: Message timestamp (can be NULL if not needed)
  * @return: DNA_OK on success, error code otherwise
  */
 dna_error_t dna_decrypt_message(
@@ -208,8 +207,7 @@ dna_error_t dna_decrypt_message(
     uint8_t **plaintext_out,
     size_t *plaintext_len_out,
     uint8_t **sender_pubkey_out,
-    size_t *sender_pubkey_len_out,
-    uint64_t *timestamp_out
+    size_t *sender_pubkey_len_out
 );
 
 /**

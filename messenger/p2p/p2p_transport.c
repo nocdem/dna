@@ -287,16 +287,6 @@ int p2p_transport_deliver_message(
     return -1;  // No callback registered
 }
 
-p2p_message_callback_t p2p_transport_get_message_callback(p2p_transport_t *ctx) {
-    if (!ctx) return NULL;
-    return ctx->message_callback;
-}
-
-void* p2p_transport_get_callback_user_data(p2p_transport_t *ctx) {
-    if (!ctx) return NULL;
-    return ctx->callback_user_data;
-}
-
 // ============================================================================
 // Connection Management
 // ============================================================================

@@ -8,7 +8,6 @@
 #include "messenger.h"
 #include "p2p/p2p_transport.h"
 #include "dht/shared/dht_offline_queue.h"
-#include "dht/shared/dht_chunked.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/core/dht_context.h"
@@ -53,18 +52,10 @@ static void ensure_p2p_config(void) {
 // PUSH NOTIFICATION SUBSCRIPTION MANAGEMENT (Phase 10.1)
 // ============================================================================
 
-// Per-subscription callback context (passed to DHT listen callback)
-typedef struct {
-    messenger_context_t *messenger_ctx;  // Main messenger context
-    char *contact_fingerprint;           // Contact whose outbox we're watching
-    char *outbox_base_key;               // Base key for chunked fetch (e.g., "sender:outbox:recipient")
-} subscription_callback_ctx_t;
-
 // Subscription entry for tracking DHT listen() tokens
 typedef struct {
-    char *contact_fingerprint;           // Contact whose outbox we're watching
-    size_t listen_token;                 // DHT listen() token
-    subscription_callback_ctx_t *cb_ctx; // Callback context (for cleanup)
+    char *contact_fingerprint;  // Contact whose outbox we're watching
+    size_t listen_token;         // DHT listen() token
 } subscription_entry_t;
 
 // Global subscription manager
@@ -828,26 +819,16 @@ static void p2p_message_received_internal(
 
     // Store in SQLite local database so messenger_list_messages() can retrieve it
     // The message is already encrypted at this point
-    time_t message_timestamp = time(NULL);  // Fallback to current time if decryption fails
+    time_t now = time(NULL);
 
     // Phase 6.2: Detect group invitations by decrypting and checking JSON
     int message_type = MESSAGE_TYPE_CHAT;  // default
 
-    // Try to decrypt message to check if it's an invitation and extract timestamp
+    // Try to decrypt message to check if it's an invitation
     uint8_t *plaintext = NULL;
     size_t plaintext_len = 0;
-    uint8_t *sender_fp = NULL;
-    size_t sender_fp_len = 0;
-    uint64_t extracted_timestamp = 0;
     if (dna_decrypt_message(ctx->dna_ctx, message, message_len, ctx->identity,
-                            &plaintext, &plaintext_len, &sender_fp, &sender_fp_len,
-                            &extracted_timestamp) == DNA_OK && plaintext) {
-        // Use the timestamp from the encrypted message (when it was sent)
-        if (extracted_timestamp > 0) {
-            message_timestamp = (time_t)extracted_timestamp;
-        }
-        // Free sender fingerprint (we already have sender_identity)
-        if (sender_fp) free(sender_fp);
+                            &plaintext, &plaintext_len, NULL, NULL) == DNA_OK && plaintext) {
         // Check if it's JSON with "type": "group_invite"
         json_object *j_msg = json_tokener_parse((const char*)plaintext);
         if (j_msg) {
@@ -871,7 +852,7 @@ static void p2p_message_received_internal(
                         strncpy(invitation.group_uuid, json_object_get_string(j_uuid), sizeof(invitation.group_uuid) - 1);
                         strncpy(invitation.group_name, json_object_get_string(j_name), sizeof(invitation.group_name) - 1);
                         strncpy(invitation.inviter, json_object_get_string(j_inviter), sizeof(invitation.inviter) - 1);
-                        invitation.invited_at = message_timestamp;
+                        invitation.invited_at = now;
                         invitation.status = INVITATION_STATUS_PENDING;
                         invitation.member_count = j_count ? json_object_get_int(j_count) : 0;
 
@@ -898,7 +879,7 @@ static void p2p_message_received_internal(
         ctx->identity,      // recipient (us)
         message,            // encrypted message
         message_len,        // encrypted length
-        message_timestamp,  // timestamp (from encrypted message, or current time as fallback)
+        now,                // timestamp
         false,              // is_outgoing = false (we're receiving)
         0,                  // group_id = 0 (direct messages for invitations)
         message_type        // message_type (chat or invitation)
@@ -908,11 +889,6 @@ static void p2p_message_received_internal(
         QGP_LOG_ERROR("P2P", "Failed to store received message in SQLite");
     } else {
         QGP_LOG_INFO("P2P", "Message from %s stored in SQLite (type=%d)\n", sender_identity, message_type);
-
-        // Notify UI of new message (real-time updates)
-        if (ctx->message_received_cb) {
-            ctx->message_received_cb(sender_identity, ctx->message_received_user_data);
-        }
     }
 
     // Fetch sender profile for caching (only if expired or missing) - Phase 5: Unified Identity
@@ -1046,9 +1022,6 @@ int messenger_p2p_lookup_presence(
 /**
  * Push notification callback - invoked when DHT listen() receives values
  * Runs on DHT worker thread, must be thread-safe
- *
- * The callback receives chunk0 data when a new message is published.
- * We need to fetch the complete chunked data and deserialize.
  */
 static bool messenger_push_notification_callback(
     const uint8_t *value,
@@ -1056,15 +1029,10 @@ static bool messenger_push_notification_callback(
     bool expired,
     void *user_data)
 {
-    subscription_callback_ctx_t *cb_ctx = (subscription_callback_ctx_t*)user_data;
-    if (!cb_ctx || !cb_ctx->messenger_ctx) {
-        return false;  // Stop listening - invalid context
-    }
-
-    messenger_context_t *ctx = cb_ctx->messenger_ctx;
+    messenger_context_t *ctx = (messenger_context_t*)user_data;
 
     if (expired) {
-        QGP_LOG_DEBUG("P2P", "Received expiration notification for %s", cb_ctx->contact_fingerprint);
+        QGP_LOG_DEBUG("P2P", "Received expiration notification");
         return true;  // Continue listening
     }
 
@@ -1072,63 +1040,34 @@ static bool messenger_push_notification_callback(
         return true;  // Continue listening
     }
 
-    QGP_LOG_INFO("P2P", "Push notification from %s (%zu bytes)", cb_ctx->contact_fingerprint, value_len);
-
-    // The value is chunk0 data - we need to fetch the complete chunked data
-    // using the outbox base key stored in our callback context
-    dht_context_t *dht = p2p_transport_get_dht_context(ctx->p2p_transport);
-    if (!dht) {
-        QGP_LOG_ERROR("P2P", "Failed to get DHT context for chunked fetch");
-        return true;  // Continue listening
-    }
-
-    // Fetch complete data via chunked layer
-    uint8_t *full_data = NULL;
-    size_t full_len = 0;
-    int fetch_result = dht_chunked_fetch(dht, cb_ctx->outbox_base_key, &full_data, &full_len);
-
-    if (fetch_result != DHT_CHUNK_OK || !full_data || full_len == 0) {
-        QGP_LOG_ERROR("P2P", "Failed to fetch chunked data: %s", dht_chunked_strerror(fetch_result));
-        return true;  // Continue listening despite error
-    }
-
-    QGP_LOG_DEBUG("P2P", "Fetched %zu bytes from chunked layer", full_len);
+    QGP_LOG_DEBUG("P2P", "Received notification (%zu bytes)\n", value_len);
 
     // Deserialize offline messages
     dht_offline_message_t *messages = NULL;
     size_t count = 0;
-    int result = dht_deserialize_messages(full_data, full_len, &messages, &count);
-    free(full_data);
+    int result = dht_deserialize_messages(value, value_len, &messages, &count);
 
     if (result != 0 || count == 0) {
         QGP_LOG_ERROR("P2P", "Failed to deserialize messages");
         return true;  // Continue listening despite error
     }
 
-    QGP_LOG_INFO("P2P", "Received %zu message(s) via push notification", count);
+    QGP_LOG_DEBUG("P2P", "Deserialized %zu message(s)\n", count);
 
-    // Deliver each message via P2P callback directly with sender info
-    // (same pattern as transport_offline.c:128-137)
-    p2p_transport_t *transport = ctx->p2p_transport;
-    if (transport) {
-        p2p_message_callback_t callback = p2p_transport_get_message_callback(transport);
-        void *cb_user_data = p2p_transport_get_callback_user_data(transport);
+    // Deliver each message via P2P callback (same path as polling)
+    if (ctx->p2p_transport) {
+        for (size_t i = 0; i < count; i++) {
+            dht_offline_message_t *msg = &messages[i];
 
-        if (callback) {
-            for (size_t i = 0; i < count; i++) {
-                dht_offline_message_t *msg = &messages[i];
+            QGP_LOG_DEBUG("P2P", "Delivering message %zu/%zu from %s (%zu bytes)\n",
+                   i + 1, count, msg->sender, msg->ciphertext_len);
 
-                QGP_LOG_DEBUG("P2P", "Delivering message %zu/%zu from %s (%zu bytes)",
-                       i + 1, count, msg->sender, msg->ciphertext_len);
-
-                callback(
-                    NULL,              // peer_pubkey (unknown for offline messages)
-                    msg->sender,       // sender_fingerprint
-                    msg->ciphertext,
-                    msg->ciphertext_len,
-                    cb_user_data
-                );
-            }
+            p2p_transport_deliver_message(
+                ctx->p2p_transport,
+                NULL,  // peer_pubkey (unknown for offline messages)
+                msg->ciphertext,
+                msg->ciphertext_len
+            );
         }
     }
 
@@ -1147,65 +1086,27 @@ int messenger_p2p_subscribe_to_contact(
         return -1;
     }
 
-    if (!ctx->fingerprint) {
-        QGP_LOG_ERROR("P2P", "Cannot subscribe: context fingerprint is NULL");
-        return -1;
-    }
-
-    // Generate outbox base key (same format as dht_queue_message uses)
-    // Format: "sender_fp:outbox:recipient_fp"
-    char outbox_base_key[512];
-    snprintf(outbox_base_key, sizeof(outbox_base_key), "%s:outbox:%s",
-             contact_fingerprint, ctx->fingerprint);
-
-    // Generate the chunk0 key (must match what dht_chunked_publish uses)
-    // The chunked layer publishes to SHA3-512(base_key + ":chunk:0")[0:32]
-    uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];
-    if (dht_chunked_make_key(outbox_base_key, 0, chunk0_key) != 0) {
-        QGP_LOG_ERROR("P2P", "Failed to generate chunk0 key for subscription");
-        return -1;
-    }
-
-    // Create callback context with outbox info for chunked fetch
-    subscription_callback_ctx_t *cb_ctx = (subscription_callback_ctx_t*)malloc(sizeof(subscription_callback_ctx_t));
-    if (!cb_ctx) {
-        QGP_LOG_ERROR("P2P", "Failed to allocate callback context");
-        return -1;
-    }
-    cb_ctx->messenger_ctx = ctx;
-    cb_ctx->contact_fingerprint = strdup(contact_fingerprint);
-    cb_ctx->outbox_base_key = strdup(outbox_base_key);
-
-    if (!cb_ctx->contact_fingerprint || !cb_ctx->outbox_base_key) {
-        if (cb_ctx->contact_fingerprint) free(cb_ctx->contact_fingerprint);
-        if (cb_ctx->outbox_base_key) free(cb_ctx->outbox_base_key);
-        free(cb_ctx);
-        return -1;
-    }
+    // Generate outbox key
+    uint8_t outbox_key[64];
+    dht_generate_outbox_key(contact_fingerprint, ctx->fingerprint, outbox_key);
 
     // Start listening
     dht_context_t *dht = p2p_transport_get_dht_context(ctx->p2p_transport);
     if (!dht) {
         QGP_LOG_ERROR("P2P", "Failed to get DHT context");
-        free(cb_ctx->contact_fingerprint);
-        free(cb_ctx->outbox_base_key);
-        free(cb_ctx);
         return -1;
     }
 
     size_t token = dht_listen(
         dht,
-        chunk0_key,
-        DHT_CHUNK_KEY_SIZE,
+        outbox_key,
+        64,
         messenger_push_notification_callback,
-        cb_ctx  // Pass the callback context, not the messenger context
+        ctx
     );
 
     if (token == 0) {
         QGP_LOG_ERROR("P2P", "Failed to subscribe to %s\n", contact_fingerprint);
-        free(cb_ctx->contact_fingerprint);
-        free(cb_ctx->outbox_base_key);
-        free(cb_ctx);
         return -1;
     }
 
@@ -1223,9 +1124,6 @@ int messenger_p2p_subscribe_to_contact(
         if (!new_subs) {
             pthread_mutex_unlock(&g_subscription_manager.mutex);
             dht_cancel_listen(dht, token);
-            free(cb_ctx->contact_fingerprint);
-            free(cb_ctx->outbox_base_key);
-            free(cb_ctx);
             return -1;
         }
 
@@ -1237,7 +1135,6 @@ int messenger_p2p_subscribe_to_contact(
     subscription_entry_t *entry = &g_subscription_manager.subscriptions[g_subscription_manager.count];
     entry->contact_fingerprint = strdup(contact_fingerprint);
     entry->listen_token = token;
-    entry->cb_ctx = cb_ctx;  // Store for cleanup
     g_subscription_manager.count++;
 
     pthread_mutex_unlock(&g_subscription_manager.mutex);

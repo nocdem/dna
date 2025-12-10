@@ -1043,7 +1043,7 @@ Use `dna_engine_error_string(error)` for human-readable messages.
 |-------|------|-------------|
 | `DNA_EVENT_DHT_CONNECTED` | - | DHT network connected |
 | `DNA_EVENT_DHT_DISCONNECTED` | - | DHT network disconnected |
-| `DNA_EVENT_MESSAGE_RECEIVED` | `message_received.message.sender` | New message received (sender fingerprint only, message in SQLite) |
+| `DNA_EVENT_MESSAGE_RECEIVED` | `message_received.message` | New message received |
 | `DNA_EVENT_MESSAGE_SENT` | `message_status.*` | Message sent |
 | `DNA_EVENT_MESSAGE_DELIVERED` | `message_status.*` | Message delivered |
 | `DNA_EVENT_MESSAGE_READ` | `message_status.*` | Message read |

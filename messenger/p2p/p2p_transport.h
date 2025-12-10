@@ -147,22 +147,6 @@ void p2p_transport_free(p2p_transport_t *ctx);
 struct dht_context* p2p_transport_get_dht_context(p2p_transport_t *ctx);
 
 /**
- * Get message callback from P2P transport
- *
- * @param ctx P2P transport context
- * @return Message callback function pointer, or NULL
- */
-p2p_message_callback_t p2p_transport_get_message_callback(p2p_transport_t *ctx);
-
-/**
- * Get callback user data from P2P transport
- *
- * @param ctx P2P transport context
- * @return User data pointer for callbacks, or NULL
- */
-void* p2p_transport_get_callback_user_data(p2p_transport_t *ctx);
-
-/**
  * Deliver message via P2P transport callback
  * Thread-safe helper function for invoking the message callback
  *

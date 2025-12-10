@@ -242,18 +242,6 @@ void messenger_free(messenger_context_t *ctx) {
     free(ctx);
 }
 
-void messenger_set_message_received_callback(
-    messenger_context_t *ctx,
-    messenger_message_received_cb callback,
-    void *user_data)
-{
-    if (!ctx) {
-        return;
-    }
-    ctx->message_received_cb = callback;
-    ctx->message_received_user_data = user_data;
-}
-
 /**
  * Load DHT identity and reinitialize DHT singleton with permanent identity
  */
