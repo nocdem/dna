@@ -1059,20 +1059,28 @@ static bool messenger_push_notification_callback(
 
     QGP_LOG_DEBUG("P2P", "Deserialized %zu message(s)\n", count);
 
-    // Deliver each message via P2P callback (same path as polling)
-    if (ctx->p2p_transport) {
-        for (size_t i = 0; i < count; i++) {
-            dht_offline_message_t *msg = &messages[i];
+    // Deliver each message via P2P callback directly with sender info
+    // (same pattern as transport_offline.c:128-137)
+    p2p_transport_t *transport = ctx->p2p_transport;
+    if (transport) {
+        p2p_message_callback_t callback = p2p_transport_get_message_callback(transport);
+        void *user_data = p2p_transport_get_callback_user_data(transport);
 
-            QGP_LOG_DEBUG("P2P", "Delivering message %zu/%zu from %s (%zu bytes)\n",
-                   i + 1, count, msg->sender, msg->ciphertext_len);
+        if (callback) {
+            for (size_t i = 0; i < count; i++) {
+                dht_offline_message_t *msg = &messages[i];
 
-            p2p_transport_deliver_message(
-                ctx->p2p_transport,
-                NULL,  // peer_pubkey (unknown for offline messages)
-                msg->ciphertext,
-                msg->ciphertext_len
-            );
+                QGP_LOG_DEBUG("P2P", "Delivering message %zu/%zu from %s (%zu bytes)",
+                       i + 1, count, msg->sender, msg->ciphertext_len);
+
+                callback(
+                    NULL,              // peer_pubkey (unknown for offline messages)
+                    msg->sender,       // sender_fingerprint - THE FIX!
+                    msg->ciphertext,
+                    msg->ciphertext_len,
+                    user_data
+                );
+            }
         }
     }
 
@@ -1088,6 +1096,11 @@ int messenger_p2p_subscribe_to_contact(
     const char *contact_fingerprint)
 {
     if (!ctx || !contact_fingerprint) {
+        return -1;
+    }
+
+    if (!ctx->fingerprint) {
+        QGP_LOG_ERROR("P2P", "Cannot subscribe: context fingerprint is NULL");
         return -1;
     }
 

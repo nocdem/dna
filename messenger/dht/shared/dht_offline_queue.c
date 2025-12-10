@@ -34,6 +34,12 @@ static void make_outbox_base_key(const char *sender, const char *recipient, char
  * @deprecated Use make_outbox_base_key instead
  */
 void dht_generate_outbox_key(const char *sender, const char *recipient, uint8_t *key_out) {
+    if (!sender || !recipient || !key_out) {
+        QGP_LOG_ERROR(LOG_TAG, "dht_generate_outbox_key: NULL parameter (sender=%p, recipient=%p, key_out=%p)",
+                      (void*)sender, (void*)recipient, (void*)key_out);
+        if (key_out) memset(key_out, 0, 64);  // Return zeroed key on error
+        return;
+    }
     // For backward compatibility, fill with SHA3-512 hash of base key
     char base_key[512];
     make_outbox_base_key(sender, recipient, base_key, sizeof(base_key));
