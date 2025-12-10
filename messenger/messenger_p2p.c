@@ -819,16 +819,26 @@ static void p2p_message_received_internal(
 
     // Store in SQLite local database so messenger_list_messages() can retrieve it
     // The message is already encrypted at this point
-    time_t now = time(NULL);
+    time_t message_timestamp = time(NULL);  // Fallback to current time if decryption fails
 
     // Phase 6.2: Detect group invitations by decrypting and checking JSON
     int message_type = MESSAGE_TYPE_CHAT;  // default
 
-    // Try to decrypt message to check if it's an invitation
+    // Try to decrypt message to check if it's an invitation and extract timestamp
     uint8_t *plaintext = NULL;
     size_t plaintext_len = 0;
+    uint8_t *sender_fp = NULL;
+    size_t sender_fp_len = 0;
+    uint64_t extracted_timestamp = 0;
     if (dna_decrypt_message(ctx->dna_ctx, message, message_len, ctx->identity,
-                            &plaintext, &plaintext_len, NULL, NULL) == DNA_OK && plaintext) {
+                            &plaintext, &plaintext_len, &sender_fp, &sender_fp_len,
+                            &extracted_timestamp) == DNA_OK && plaintext) {
+        // Use the timestamp from the encrypted message (when it was sent)
+        if (extracted_timestamp > 0) {
+            message_timestamp = (time_t)extracted_timestamp;
+        }
+        // Free sender fingerprint (we already have sender_identity)
+        if (sender_fp) free(sender_fp);
         // Check if it's JSON with "type": "group_invite"
         json_object *j_msg = json_tokener_parse((const char*)plaintext);
         if (j_msg) {
@@ -852,7 +862,7 @@ static void p2p_message_received_internal(
                         strncpy(invitation.group_uuid, json_object_get_string(j_uuid), sizeof(invitation.group_uuid) - 1);
                         strncpy(invitation.group_name, json_object_get_string(j_name), sizeof(invitation.group_name) - 1);
                         strncpy(invitation.inviter, json_object_get_string(j_inviter), sizeof(invitation.inviter) - 1);
-                        invitation.invited_at = now;
+                        invitation.invited_at = message_timestamp;
                         invitation.status = INVITATION_STATUS_PENDING;
                         invitation.member_count = j_count ? json_object_get_int(j_count) : 0;
 
@@ -879,7 +889,7 @@ static void p2p_message_received_internal(
         ctx->identity,      // recipient (us)
         message,            // encrypted message
         message_len,        // encrypted length
-        now,                // timestamp
+        message_timestamp,  // timestamp (from encrypted message, or current time as fallback)
         false,              // is_outgoing = false (we're receiving)
         0,                  // group_id = 0 (direct messages for invitations)
         message_type        // message_type (chat or invitation)
