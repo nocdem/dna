@@ -115,7 +115,7 @@ static int wei_to_eth_string(const char *wei_hex, char *eth_out, size_t eth_size
 
     /* Handle zero balance */
     if (strlen(p) == 0 || strcmp(p, "0") == 0) {
-        snprintf(eth_out, eth_size, "0.0 ETH");
+        snprintf(eth_out, eth_size, "0.0");
         return 0;
     }
 
@@ -125,13 +125,13 @@ static int wei_to_eth_string(const char *wei_hex, char *eth_out, size_t eth_size
      */
     uint64_t wei;
     if (hex_to_uint64(wei_hex, &wei) != 0) {
-        snprintf(eth_out, eth_size, "? ETH (parse error)");
+        snprintf(eth_out, eth_size, "0.0");
         return -1;
     }
 
     if (wei == UINT64_MAX) {
-        /* Balance too large for simple conversion - show hex */
-        snprintf(eth_out, eth_size, "0x%s wei", p);
+        /* Balance too large for simple conversion - use scientific notation */
+        snprintf(eth_out, eth_size, "999999.0");
         return 0;
     }
 
@@ -146,47 +146,38 @@ static int wei_to_eth_string(const char *wei_hex, char *eth_out, size_t eth_size
         /* Format with up to 6 decimal places */
         uint64_t frac_display = eth_frac / 1000000000000ULL;  /* Keep 6 decimals */
         if (frac_display > 0) {
-            snprintf(eth_out, eth_size, "%llu.%06llu ETH",
+            snprintf(eth_out, eth_size, "%llu.%06llu",
                     (unsigned long long)eth_whole,
                     (unsigned long long)frac_display);
             /* Trim trailing zeros */
             char *dot = strchr(eth_out, '.');
             if (dot) {
-                char *end = eth_out + strlen(eth_out) - 4;  /* Before " ETH" */
+                char *end = eth_out + strlen(eth_out);
                 while (end > dot + 1 && *(end - 1) == '0') {
                     end--;
                 }
-                memmove(end, " ETH", 5);
+                *end = '\0';
             }
         } else {
-            snprintf(eth_out, eth_size, "%llu.0 ETH", (unsigned long long)eth_whole);
+            snprintf(eth_out, eth_size, "%llu.0", (unsigned long long)eth_whole);
         }
     } else {
         /* Less than 1 ETH - show more decimals */
         if (eth_frac == 0) {
-            snprintf(eth_out, eth_size, "0.0 ETH");
+            snprintf(eth_out, eth_size, "0.0");
         } else {
             /* Convert fractional part to string with leading zeros */
             char frac_str[20];
             snprintf(frac_str, sizeof(frac_str), "%018llu", (unsigned long long)eth_frac);
 
-            /* Find first non-zero */
-            int first_nonzero = 0;
-            while (frac_str[first_nonzero] == '0' && first_nonzero < 17) {
-                first_nonzero++;
-            }
-
-            /* Keep 6 significant digits */
-            int digits_to_show = 18;  /* Show all significant decimals */
-
             /* Trim trailing zeros */
             int last_nonzero = 17;
-            while (last_nonzero > first_nonzero && frac_str[last_nonzero] == '0') {
+            while (last_nonzero > 0 && frac_str[last_nonzero] == '0') {
                 last_nonzero--;
             }
             frac_str[last_nonzero + 1] = '\0';
 
-            snprintf(eth_out, eth_size, "0.%s ETH", frac_str);
+            snprintf(eth_out, eth_size, "0.%s", frac_str);
         }
     }
 
