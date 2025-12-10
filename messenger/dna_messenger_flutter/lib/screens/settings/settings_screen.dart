@@ -238,9 +238,14 @@ class _ProfileSection extends StatelessWidget {
   }
 }
 
-class _SecuritySection extends ConsumerWidget {
+class _SecuritySection extends ConsumerStatefulWidget {
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_SecuritySection> createState() => _SecuritySectionState();
+}
+
+class _SecuritySectionState extends ConsumerState<_SecuritySection> {
+  @override
+  Widget build(BuildContext context) {
     final blockedUsers = ref.watch(blockedUsersProvider);
     final blockedCount = blockedUsers.when(
       data: (list) => list.length,
@@ -316,15 +321,133 @@ class _SecuritySection extends ConsumerWidget {
           ElevatedButton(
             onPressed: () {
               Navigator.pop(context);
-              // TODO: Show seed phrase with confirmation
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Feature coming soon')),
-              );
+              _showSeedPhrase(context);
             },
             child: const Text('Show Seed'),
           ),
         ],
       ),
+    );
+  }
+
+  void _showSeedPhrase(BuildContext context) {
+    final engineAsync = ref.read(engineProvider);
+
+    engineAsync.when(
+      data: (engine) {
+        try {
+          final mnemonic = engine.getMnemonic();
+          final words = mnemonic.split(' ');
+
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (context) => AlertDialog(
+              title: Row(
+                children: [
+                  Icon(Icons.key, color: DnaColors.textWarning),
+                  const SizedBox(width: 8),
+                  const Text('Your Seed Phrase'),
+                ],
+              ),
+              content: SizedBox(
+                width: double.maxFinite,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.surface,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: DnaColors.textMuted.withAlpha(51)),
+                      ),
+                      child: Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: words.asMap().entries.map((entry) {
+                          return Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: Theme.of(context).colorScheme.primary.withAlpha(26),
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            child: Text(
+                              '${entry.key + 1}. ${entry.value}',
+                              style: TextStyle(
+                                fontFamily: 'monospace',
+                                fontSize: 13,
+                                fontWeight: FontWeight.w500,
+                                color: Theme.of(context).colorScheme.primary,
+                              ),
+                            ),
+                          );
+                        }).toList(),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    Row(
+                      children: [
+                        Icon(Icons.warning_amber, size: 16, color: DnaColors.textWarning),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Write these words down in order and store them safely. Anyone with this phrase can access your identity.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: DnaColors.textMuted,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () {
+                    Clipboard.setData(ClipboardData(text: mnemonic));
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      const SnackBar(content: Text('Seed phrase copied to clipboard')),
+                    );
+                  },
+                  child: const Text('Copy'),
+                ),
+                ElevatedButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Done'),
+                ),
+              ],
+            ),
+          );
+        } catch (e) {
+          String errorMessage = 'Unable to retrieve seed phrase';
+          if (e.toString().contains('not stored')) {
+            errorMessage = 'Seed phrase not available for this identity. It was created before this feature was added.';
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(errorMessage),
+              backgroundColor: DnaColors.snackbarError,
+            ),
+          );
+        }
+      },
+      loading: () {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Please wait...')),
+        );
+      },
+      error: (e, st) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Engine error: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      },
     );
   }
 }

@@ -73,7 +73,6 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "blockchain/ethereum/eth_wallet.h"
 #include "blockchain/blockchain_wallet.h"
 #include "crypto/utils/seed_storage.h"
-#include "crypto/utils/qgp_key.h"
 #include <time.h>
 
 #include <stdlib.h>
@@ -2998,6 +2997,61 @@ dna_request_id_t dna_engine_update_profile(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_UPDATE_PROFILE, &params, cb, user_data);
+}
+
+int dna_engine_get_mnemonic(
+    dna_engine_t *engine,
+    char *mnemonic_out,
+    size_t mnemonic_size
+) {
+    if (!engine || !mnemonic_out || mnemonic_size < 256) {
+        return DNA_ENGINE_ERROR_INVALID_PARAM;
+    }
+    if (!engine->identity_loaded) {
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Build paths to identity directory and Kyber private key */
+    char identity_dir[512];
+    char kyber_path[512];
+    snprintf(identity_dir, sizeof(identity_dir), "%s/%s",
+             engine->data_dir, engine->fingerprint);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/%s.kem",
+             identity_dir, engine->fingerprint);
+
+    /* Check if mnemonic file exists */
+    if (!mnemonic_storage_exists(identity_dir)) {
+        QGP_LOG_DEBUG(LOG_TAG, "Mnemonic file not found for identity %s",
+                      engine->fingerprint);
+        return DNA_ENGINE_ERROR_NOT_FOUND;
+    }
+
+    /* Load Kyber private key */
+    qgp_key_t *kem_key = NULL;
+    if (qgp_key_load(kyber_path, &kem_key) != 0 || !kem_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber private key");
+        return DNA_ERROR_CRYPTO;
+    }
+
+    if (!kem_key->private_key || kem_key->private_key_size != 3168) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid Kyber private key size");
+        qgp_key_free(kem_key);
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Decrypt and load mnemonic */
+    int result = mnemonic_storage_load(mnemonic_out, mnemonic_size,
+                                       kem_key->private_key, identity_dir);
+
+    qgp_key_free(kem_key);
+
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to decrypt mnemonic");
+        return DNA_ERROR_CRYPTO;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Mnemonic retrieved successfully");
+    return DNA_OK;
 }
 
 /* Contacts */

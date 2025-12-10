@@ -1020,12 +1020,15 @@ typedef enum {
 - TRON: `<fingerprint>.trx.json`
 - Solana: `<fingerprint>.sol.json`
 
-**Encrypted Seed Storage:** `<data_dir>/<fingerprint>/master_seed.enc`
+**Encrypted Seed Storage:** `<data_dir>/<fingerprint>/`
+- `master_seed.enc` - 64-byte BIP39 master seed (1660 bytes)
+- `mnemonic.enc` - 24-word BIP39 mnemonic phrase (1852 bytes)
 - Created during identity generation (after wallet creation)
 - Encryption: Kyber1024 KEM encapsulation + AES-256-GCM
-- Format: KEM_ciphertext (1568B) || nonce (12B) || tag (16B) || encrypted_seed (64B) = 1660 bytes
-- Purpose: Auto-create wallets for new blockchain networks on identity load
+- Format: KEM_ciphertext (1568B) || nonce (12B) || tag (16B) || encrypted_data
+- Purpose: Auto-create wallets for new blockchains + seed phrase export in settings
 - Decryption: Only possible with identity's Kyber private key (.kem file)
+- API: `dna_engine_get_mnemonic()` retrieves decrypted mnemonic for display
 
 ### 9.2 Cellframe Wallet
 

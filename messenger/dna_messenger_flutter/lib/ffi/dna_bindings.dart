@@ -958,6 +958,20 @@ class DnaBindings {
     return _dna_engine_load_identity(engine, fingerprint, callback, user_data);
   }
 
+  late final _dna_engine_get_mnemonic = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Size),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, int)>('dna_engine_get_mnemonic');
+
+  /// Get the encrypted mnemonic (recovery phrase) for the current identity
+  /// Returns 0 on success, negative error code on failure
+  int dna_engine_get_mnemonic(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> mnemonic_out,
+    int mnemonic_size,
+  ) {
+    return _dna_engine_get_mnemonic(engine, mnemonic_out, mnemonic_size);
+  }
+
   late final _dna_engine_register_name = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
           Pointer<DnaCompletionCb>, Pointer<Void>),

@@ -1132,6 +1132,30 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Get the encrypted mnemonic (recovery phrase) for the current identity
+  ///
+  /// Returns the 24-word BIP39 mnemonic if stored, throws if not available.
+  /// Note: Identities created before this feature won't have a stored mnemonic.
+  String getMnemonic() {
+    final mnemonicPtr = calloc<Uint8>(256);
+    try {
+      final result = _bindings.dna_engine_get_mnemonic(
+        _engine,
+        mnemonicPtr.cast(),
+        256,
+      );
+      if (result != 0) {
+        if (result == -110) {  // DNA_ENGINE_ERROR_NOT_FOUND
+          throw DnaEngineException(result, 'Seed phrase not stored for this identity');
+        }
+        throw DnaEngineException.fromCode(result, _bindings);
+      }
+      return mnemonicPtr.cast<Utf8>().toDartString();
+    } finally {
+      calloc.free(mnemonicPtr);
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // CONTACTS OPERATIONS
   // ---------------------------------------------------------------------------
