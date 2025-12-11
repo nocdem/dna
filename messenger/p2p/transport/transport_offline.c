@@ -25,14 +25,20 @@ int p2p_queue_offline_message(
     const uint8_t *message,
     size_t message_len)
 {
+    QGP_LOG_WARN(LOG_TAG, ">>> p2p_queue_offline_message called (msg_len=%zu)\n", message_len);
+
     if (!ctx || !sender || !recipient || !message || message_len == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for queuing offline message\n");
         return -1;
     }
 
     if (!ctx->config.enable_offline_queue) {
+        QGP_LOG_WARN(LOG_TAG, ">>> Offline queue DISABLED in config!\n");
         return -1;
     }
+
+    QGP_LOG_WARN(LOG_TAG, ">>> Calling dht_queue_message (dht=%p, ttl=%u)\n",
+                 (void*)ctx->dht, ctx->config.offline_ttl_seconds);
 
     int result = dht_queue_message(
         ctx->dht,
@@ -43,8 +49,11 @@ int p2p_queue_offline_message(
         ctx->config.offline_ttl_seconds
     );
 
+    QGP_LOG_WARN(LOG_TAG, ">>> dht_queue_message returned %d\n", result);
+
     if (result == 0) {
         ctx->offline_queued++;
+        QGP_LOG_WARN(LOG_TAG, ">>> Message queued successfully (total queued: %zu)\n", ctx->offline_queued);
     }
 
     return result;

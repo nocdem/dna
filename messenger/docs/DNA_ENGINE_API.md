@@ -61,6 +61,27 @@ The DNA Engine provides a unified async C API for DNA Messenger core functionali
 
 ## Quick Start
 
+### CLI Tool
+
+For interactive testing without a GUI, use the `dna-messenger-cli` tool:
+
+```bash
+# Build
+cd build && cmake .. && make dna-messenger-cli
+
+# Run
+./cli/dna-messenger-cli
+
+# Commands:
+> help           # Show commands
+> create alice   # Create identity with BIP39 mnemonic
+> list           # List identities
+> load <fp>      # Load identity by fingerprint
+> send <fp> msg  # Send message
+> whoami         # Show current identity
+> quit           # Exit
+```
+
 ### C Usage
 
 ```c

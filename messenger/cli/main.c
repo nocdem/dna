@@ -1,0 +1,487 @@
+/*
+ * DNA Messenger CLI - Main Entry Point
+ *
+ * Single-command CLI for testing DNA Messenger without GUI.
+ * Designed for automated testing by Claude AI.
+ *
+ * Usage:
+ *   dna-messenger-cli [OPTIONS] <command> [args...]
+ */
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+#include <getopt.h>
+#include <time.h>
+
+#include <dna/dna_engine.h>
+#include "cli_commands.h"
+#include "crypto/utils/qgp_log.h"
+#include "dht/core/dht_context.h"
+#include "dht/client/dht_singleton.h"
+
+#define LOG_TAG "CLI_MAIN"
+#define CLI_VERSION "2.1.0"
+
+/* Global engine pointer for signal handler */
+static dna_engine_t *g_engine = NULL;
+
+/* Forward declaration for auto-load */
+static int auto_load_identity(dna_engine_t *engine, const char *identity_hint, int quiet);
+
+/* ============================================================================
+ * SIGNAL HANDLER
+ * ============================================================================ */
+
+static void signal_handler(int signum) {
+    (void)signum;
+    fprintf(stderr, "\nInterrupted.\n");
+    if (g_engine) {
+        dna_engine_destroy(g_engine);
+        g_engine = NULL;
+    }
+    exit(130);
+}
+
+/* ============================================================================
+ * COMMAND LINE OPTIONS
+ * ============================================================================ */
+
+static struct option long_options[] = {
+    {"data-dir",  required_argument, 0, 'd'},
+    {"identity",  required_argument, 0, 'i'},
+    {"help",      no_argument,       0, 'h'},
+    {"version",   no_argument,       0, 'v'},
+    {"quiet",     no_argument,       0, 'q'},
+    {0, 0, 0, 0}
+};
+
+static void print_usage(const char *prog_name) {
+    printf("DNA Messenger CLI v%s\n\n", CLI_VERSION);
+    printf("Usage: %s [OPTIONS] <command> [args...]\n\n", prog_name);
+    printf("Options:\n");
+    printf("  -d, --data-dir <path>   Data directory (default: ~/.dna)\n");
+    printf("  -i, --identity <fp>     Use specific identity (fingerprint prefix)\n");
+    printf("  -q, --quiet             Suppress banner/status messages\n");
+    printf("  -h, --help              Show this help\n");
+    printf("  -v, --version           Show version\n");
+    printf("\n");
+    printf("IDENTITY COMMANDS:\n");
+    printf("  create <name>               Create new identity\n");
+    printf("  restore <mnemonic...>       Restore identity from 24-word mnemonic\n");
+    printf("  list                        List all identities\n");
+    printf("  load <fingerprint>          Load an identity\n");
+    printf("  whoami                      Show current identity\n");
+    printf("  register <name>             Register a name on DHT\n");
+    printf("  name                        Show registered name\n");
+    printf("  lookup <name>               Check if name is available\n");
+    printf("  profile [field=value]       Show or update profile\n");
+    printf("\n");
+    printf("CONTACT COMMANDS:\n");
+    printf("  contacts                    List all contacts\n");
+    printf("  add-contact <name|fp>       Add contact\n");
+    printf("  remove-contact <fp>         Remove contact\n");
+    printf("  request <fp> [msg]          Send contact request\n");
+    printf("  requests                    List pending requests\n");
+    printf("  approve <fp>                Approve contact request\n");
+    printf("\n");
+    printf("MESSAGING COMMANDS:\n");
+    printf("  send <fp> <message>         Send message\n");
+    printf("  messages <fp>               Show conversation\n");
+    printf("  check-offline               Check for offline messages\n");
+    printf("\n");
+    printf("WALLET COMMANDS:\n");
+    printf("  wallets                     List wallets\n");
+    printf("  balance <index>             Show wallet balances\n");
+    printf("\n");
+    printf("NETWORK COMMANDS:\n");
+    printf("  online <fp>                 Check if peer is online\n");
+    printf("\n");
+    printf("Examples:\n");
+    printf("  %s create alice\n", prog_name);
+    printf("  %s restore abandon ability able about ...\n", prog_name);
+    printf("  %s list\n", prog_name);
+    printf("  %s load db73e609\n", prog_name);
+    printf("  %s contacts\n", prog_name);
+    printf("  %s send 5e6d7c8b \"Hello!\"\n", prog_name);
+    printf("  %s messages 5e6d7c8b\n", prog_name);
+    printf("  %s -q list\n", prog_name);
+}
+
+/* Helper to join remaining args into a single string */
+static char* join_args(int argc, char *argv[], int start) {
+    size_t total_len = 0;
+    for (int i = start; i < argc; i++) {
+        total_len += strlen(argv[i]) + 1;
+    }
+    if (total_len == 0) return NULL;
+
+    char *result = malloc(total_len);
+    if (!result) return NULL;
+
+    result[0] = '\0';
+    for (int i = start; i < argc; i++) {
+        if (i > start) strcat(result, " ");
+        strcat(result, argv[i]);
+    }
+    return result;
+}
+
+/* ============================================================================
+ * WAIT FOR DHT
+ * ============================================================================ */
+
+/**
+ * Wait for DHT to become ready (connected to network)
+ * @param quiet Suppress status messages
+ * @param timeout_sec Maximum time to wait
+ * @return 0 if connected, -1 if timeout
+ */
+static int wait_for_dht(int quiet, int timeout_sec) {
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        if (!quiet) {
+            fprintf(stderr, "Warning: DHT not initialized\n");
+        }
+        return -1;
+    }
+
+    if (!quiet) {
+        fprintf(stderr, "Waiting for DHT connection...");
+    }
+
+    for (int i = 0; i < timeout_sec * 10; i++) {
+        if (dht_context_is_ready(dht)) {
+            if (!quiet) {
+                fprintf(stderr, " connected!\n");
+            }
+            return 0;
+        }
+        struct timespec ts = {0, 100000000};  /* 100ms */
+        nanosleep(&ts, NULL);
+    }
+
+    if (!quiet) {
+        fprintf(stderr, " timeout!\n");
+    }
+    return -1;
+}
+
+/* ============================================================================
+ * AUTO-LOAD IDENTITY
+ * ============================================================================ */
+
+/**
+ * Auto-load an identity. If identity_hint is provided, load that one.
+ * Otherwise, if there's exactly one identity, load it automatically.
+ */
+static int auto_load_identity(dna_engine_t *engine, const char *identity_hint, int quiet) {
+    /* If explicit identity provided, load it */
+    if (identity_hint) {
+        if (!quiet) {
+            fprintf(stderr, "Loading identity %s...\n", identity_hint);
+        }
+        return cmd_load(engine, identity_hint);
+    }
+
+    /* List identities to see what's available */
+    char **fingerprints = NULL;
+    int count = 0;
+
+    int rc = cli_list_identities(engine, &fingerprints, &count);
+    if (rc != 0 || count == 0) {
+        fprintf(stderr, "Error: No identities found. Create one first with 'create <name>'\n");
+        return -1;
+    }
+
+    if (count == 1) {
+        /* Auto-load the only identity */
+        if (!quiet) {
+            fprintf(stderr, "Auto-loading identity %.16s...\n", fingerprints[0]);
+        }
+        rc = cmd_load(engine, fingerprints[0]);
+
+        /* Free fingerprints */
+        for (int i = 0; i < count; i++) {
+            free(fingerprints[i]);
+        }
+        free(fingerprints);
+        return rc;
+    }
+
+    /* Multiple identities - require explicit selection */
+    fprintf(stderr, "Error: Multiple identities found. Use -i <fingerprint> to select one:\n");
+    for (int i = 0; i < count; i++) {
+        fprintf(stderr, "  %d. %.16s...\n", i + 1, fingerprints[i]);
+        free(fingerprints[i]);
+    }
+    free(fingerprints);
+    return -1;
+}
+
+/* ============================================================================
+ * MAIN
+ * ============================================================================ */
+
+int main(int argc, char *argv[]) {
+    const char *data_dir = NULL;
+    const char *identity = NULL;
+    int quiet = 0;
+    int opt;
+
+    /* Parse command line options */
+    while ((opt = getopt_long(argc, argv, "d:i:hqv", long_options, NULL)) != -1) {
+        switch (opt) {
+            case 'd':
+                data_dir = optarg;
+                break;
+            case 'i':
+                identity = optarg;
+                break;
+            case 'q':
+                quiet = 1;
+                break;
+            case 'h':
+                print_usage(argv[0]);
+                return 0;
+            case 'v':
+                printf("dna-messenger-cli v%s\n", CLI_VERSION);
+                return 0;
+            default:
+                print_usage(argv[0]);
+                return 1;
+        }
+    }
+
+    /* Check for command */
+    if (optind >= argc) {
+        fprintf(stderr, "Error: No command specified\n\n");
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    const char *command = argv[optind];
+
+    /* Handle help command without engine init */
+    if (strcmp(command, "help") == 0) {
+        print_usage(argv[0]);
+        return 0;
+    }
+
+    /* Install signal handlers */
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    /* Initialize engine */
+    if (!quiet) {
+        fprintf(stderr, "Initializing DNA engine...\n");
+    }
+
+    g_engine = dna_engine_create(data_dir);
+    if (!g_engine) {
+        fprintf(stderr, "Error: Failed to initialize DNA engine\n");
+        return 1;
+    }
+
+    if (!quiet) {
+        fprintf(stderr, "Engine initialized.\n");
+    }
+
+    /* Auto-load identity for commands that need it */
+    /* Skip auto-load for: create, restore, list, help */
+    int needs_identity = !(strcmp(command, "create") == 0 ||
+                           strcmp(command, "restore") == 0 ||
+                           strcmp(command, "list") == 0 ||
+                           strcmp(command, "ls") == 0 ||
+                           strcmp(command, "help") == 0);
+
+    if (needs_identity) {
+        if (auto_load_identity(g_engine, identity, quiet) != 0) {
+            dna_engine_destroy(g_engine);
+            return 1;
+        }
+
+        /* Wait for DHT to connect (needed for network operations) */
+        wait_for_dht(quiet, 10);  /* 10 second timeout */
+    }
+
+    /* Execute command */
+    int result = 0;
+
+    /* ====== IDENTITY COMMANDS ====== */
+    if (strcmp(command, "create") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'create' requires <name> argument\n");
+            result = 1;
+        } else {
+            result = cmd_create(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "restore") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'restore' requires mnemonic words\n");
+            result = 1;
+        } else {
+            char *mnemonic = join_args(argc, argv, optind + 1);
+            if (mnemonic) {
+                result = cmd_restore(g_engine, mnemonic);
+                free(mnemonic);
+            } else {
+                result = 1;
+            }
+        }
+    }
+    else if (strcmp(command, "list") == 0 || strcmp(command, "ls") == 0) {
+        result = cmd_list(g_engine);
+    }
+    else if (strcmp(command, "load") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'load' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_load(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "whoami") == 0) {
+        cmd_whoami(g_engine);
+        result = 0;
+    }
+    else if (strcmp(command, "register") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'register' requires <name> argument\n");
+            result = 1;
+        } else {
+            result = cmd_register(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "name") == 0) {
+        result = cmd_name(g_engine);
+    }
+    else if (strcmp(command, "lookup") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'lookup' requires <name> argument\n");
+            result = 1;
+        } else {
+            result = cmd_lookup(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "profile") == 0) {
+        if (optind + 1 >= argc) {
+            result = cmd_profile(g_engine, NULL, NULL);
+        } else {
+            /* Parse field=value */
+            char *arg = argv[optind + 1];
+            char *eq = strchr(arg, '=');
+            if (!eq) {
+                fprintf(stderr, "Error: profile requires field=value format\n");
+                result = 1;
+            } else {
+                *eq = '\0';
+                result = cmd_profile(g_engine, arg, eq + 1);
+            }
+        }
+    }
+
+    /* ====== CONTACT COMMANDS ====== */
+    else if (strcmp(command, "contacts") == 0) {
+        result = cmd_contacts(g_engine);
+    }
+    else if (strcmp(command, "add-contact") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'add-contact' requires <name|fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_add_contact(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "remove-contact") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'remove-contact' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_remove_contact(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "request") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'request' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            const char *fp = argv[optind + 1];
+            const char *msg = (optind + 2 < argc) ? argv[optind + 2] : NULL;
+            result = cmd_request(g_engine, fp, msg);
+        }
+    }
+    else if (strcmp(command, "requests") == 0) {
+        result = cmd_requests(g_engine);
+    }
+    else if (strcmp(command, "approve") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'approve' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_approve(g_engine, argv[optind + 1]);
+        }
+    }
+
+    /* ====== MESSAGING COMMANDS ====== */
+    else if (strcmp(command, "send") == 0) {
+        if (optind + 2 >= argc) {
+            fprintf(stderr, "Error: 'send' requires <fingerprint> and <message> arguments\n");
+            result = 1;
+        } else {
+            result = cmd_send(g_engine, argv[optind + 1], argv[optind + 2]);
+        }
+    }
+    else if (strcmp(command, "messages") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'messages' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_messages(g_engine, argv[optind + 1]);
+        }
+    }
+    else if (strcmp(command, "check-offline") == 0) {
+        result = cmd_check_offline(g_engine);
+    }
+
+    /* ====== WALLET COMMANDS ====== */
+    else if (strcmp(command, "wallets") == 0) {
+        result = cmd_wallets(g_engine);
+    }
+    else if (strcmp(command, "balance") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'balance' requires <wallet_index> argument\n");
+            result = 1;
+        } else {
+            result = cmd_balance(g_engine, atoi(argv[optind + 1]));
+        }
+    }
+
+    /* ====== NETWORK COMMANDS ====== */
+    else if (strcmp(command, "online") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'online' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_online(g_engine, argv[optind + 1]);
+        }
+    }
+
+    /* ====== UNKNOWN COMMAND ====== */
+    else {
+        fprintf(stderr, "Error: Unknown command '%s'\n", command);
+        fprintf(stderr, "Run '%s --help' for usage.\n", argv[0]);
+        result = 1;
+    }
+
+    /* Cleanup */
+    if (!quiet) {
+        fprintf(stderr, "Shutting down...\n");
+    }
+    dna_engine_destroy(g_engine);
+    g_engine = NULL;
+
+    return result < 0 ? 1 : result;
+}

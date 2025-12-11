@@ -148,7 +148,12 @@ DNA Messenger is a post-quantum end-to-end encrypted messenger with integrated c
 │       ├── sol_wallet.c                # SLIP-10 Ed25519 derivation
 │       └── sol_rpc.c                   # Solana JSON-RPC client
 │
-├── imgui_gui/                # GUI application
+├── cli/                      # CLI testing tool
+│   ├── main.c                # Entry point + REPL loop
+│   ├── cli_commands.c/h      # Command implementations
+│   └── CMakeLists.txt        # Build configuration
+│
+├── imgui_gui/                # GUI application (DEPRECATED)
 │   ├── main.cpp              # Entry point
 │   ├── app.cpp/h             # Application logic
 │   ├── core/                 # AppState, engine wrapper

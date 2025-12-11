@@ -6,7 +6,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../providers/providers.dart';
-import '../../providers/contact_requests_provider.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
 import 'blocked_users_screen.dart';
@@ -225,7 +224,7 @@ class _ProfileSection extends StatelessWidget {
           child: CircularProgressIndicator(strokeWidth: 2),
         ),
       ),
-      error: (_, __) => CircleAvatar(
+      error: (e, st) => CircleAvatar(
         radius: 32,
         backgroundColor: theme.colorScheme.primary.withAlpha(51),
         child: Icon(
@@ -244,13 +243,55 @@ class _SecuritySection extends ConsumerStatefulWidget {
 }
 
 class _SecuritySectionState extends ConsumerState<_SecuritySection> {
+  bool _isCheckingOffline = false;
+
+  Future<void> _checkOfflineMessages() async {
+    setState(() => _isCheckingOffline = true);
+
+    try {
+      final engineAsync = ref.read(engineProvider);
+      await engineAsync.when(
+        data: (engine) async {
+          await engine.checkOfflineMessages();
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('Offline message check complete'),
+                backgroundColor: DnaColors.snackbarSuccess,
+              ),
+            );
+          }
+        },
+        loading: () {
+          throw Exception('Engine not ready');
+        },
+        error: (e, st) {
+          throw Exception('Engine error: $e');
+        },
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Error: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isCheckingOffline = false);
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final blockedUsers = ref.watch(blockedUsersProvider);
     final blockedCount = blockedUsers.when(
       data: (list) => list.length,
       loading: () => 0,
-      error: (_, __) => 0,
+      error: (e, st) => 0,
     );
 
     return Column(
@@ -288,6 +329,20 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
               ),
             );
           },
+        ),
+        const _SectionHeader('Network'),
+        ListTile(
+          leading: _isCheckingOffline
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.cloud_download),
+          title: const Text('Check Offline Messages'),
+          subtitle: const Text('Fetch messages from DHT queue'),
+          trailing: const Icon(Icons.refresh),
+          onTap: _isCheckingOffline ? null : _checkOfflineMessages,
         ),
       ],
     );

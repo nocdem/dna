@@ -233,6 +233,8 @@ int p2p_send_message(
     const uint8_t *message,
     size_t message_len)
 {
+    QGP_LOG_WARN(LOG_TAG, ">>> ENTERED p2p_send_message (ctx=%p, msg_len=%zu)\n", (void*)ctx, message_len);
+
     if (!ctx || !peer_pubkey || !message || message_len == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return -1;
@@ -242,7 +244,7 @@ int p2p_send_message(
     // TIER 1: LAN DHT Lookup + Direct TCP Connection
     // ========================================================================
 
-    QGP_LOG_INFO(LOG_TAG, "[TIER 1] Attempting direct connection via LAN DHT...\n");
+    QGP_LOG_WARN(LOG_TAG, "[TIER 1] Attempting direct connection via LAN DHT...\n");
 
     // Step 1: Look up peer in DHT
     peer_info_t peer_info;
@@ -347,7 +349,7 @@ int p2p_send_message(
         }
     }
 
-    QGP_LOG_INFO(LOG_TAG, "[TIER 1] Failed - peer unreachable via direct TCP\n");
+    QGP_LOG_WARN(LOG_TAG, "[TIER 1] Failed - peer unreachable via direct TCP\n");
 
     // ========================================================================
     // TIER 2: ICE NAT Traversal (PERSISTENT - Phase 11 FIX)
@@ -355,7 +357,7 @@ int p2p_send_message(
 
     // FIX: Check if ICE is available first
     if (!ctx->ice_ready) {
-        QGP_LOG_INFO(LOG_TAG, "[TIER 2] ICE unavailable (initialization failed or disabled)\n");
+        QGP_LOG_WARN(LOG_TAG, "[TIER 2] ICE unavailable (initialization failed or disabled)\n");
         goto tier3_fallback;
     }
 
@@ -432,6 +434,6 @@ int p2p_send_message(
     // ========================================================================
 
 tier3_fallback:
-    QGP_LOG_INFO(LOG_TAG, "[TIER 3] Queueing to DHT offline queue for guaranteed delivery\n");
+    QGP_LOG_WARN(LOG_TAG, "[TIER 3] Queueing to DHT offline queue for guaranteed delivery\n");
     return -1;  // Caller (messenger_p2p.c) will queue to DHT offline storage
 }

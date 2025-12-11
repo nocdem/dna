@@ -654,7 +654,7 @@ void messenger_p2p_shutdown(messenger_context_t *ctx)
 }
 
 // ============================================================================
-// HYBRID MESSAGING (P2P + PostgreSQL Fallback)
+// P2P MESSAGING (P2P + DHT Offline Queue)
 // ============================================================================
 
 int messenger_send_p2p(
@@ -663,28 +663,35 @@ int messenger_send_p2p(
     const uint8_t *encrypted_message,
     size_t encrypted_len)
 {
+    QGP_LOG_WARN("P2P", ">>> messenger_send_p2p called for %s (len=%zu)\n",
+                 recipient ? recipient : "NULL", encrypted_len);
+
     if (!ctx || !recipient || !encrypted_message || encrypted_len == 0) {
         QGP_LOG_ERROR("P2P", "Invalid parameters");
         return -1;
     }
 
-    // If P2P is not enabled, fall back to PostgreSQL immediately
+    QGP_LOG_WARN("P2P", ">>> p2p_enabled=%d, p2p_transport=%p\n",
+                 ctx->p2p_enabled, (void*)ctx->p2p_transport);
+
+    // If P2P is not enabled, cannot send message
     if (!ctx->p2p_enabled || !ctx->p2p_transport) {
-        QGP_LOG_DEBUG("P2P", "P2P disabled, using PostgreSQL fallback for %s\n", recipient);
-        // Fallback to PostgreSQL will be handled by caller
-        return -1;  // Signal to use PostgreSQL
+        QGP_LOG_WARN("P2P", "P2P disabled (enabled=%d, transport=%p), cannot send to %s\n",
+                     ctx->p2p_enabled, (void*)ctx->p2p_transport, recipient);
+        return -1;  // Cannot send - no transport available
     }
 
     // Load recipient's public key
     uint8_t *recipient_pubkey = NULL;
     size_t recipient_pubkey_len = 0;
 
+    QGP_LOG_WARN("P2P", ">>> Loading pubkey for %s...\n", recipient);
     if (load_pubkey_for_identity(ctx, recipient, &recipient_pubkey, &recipient_pubkey_len) != 0) {
-        QGP_LOG_ERROR("P2P", "Failed to load public key for %s, using PostgreSQL fallback\n", recipient);
-        return -1;  // Fallback to PostgreSQL
+        QGP_LOG_ERROR("P2P", "Failed to load public key for %s\n", recipient);
+        return -1;  // Cannot send without recipient's public key
     }
 
-    QGP_LOG_DEBUG("P2P", "Attempting to send message to %s via P2P...\n", recipient);
+    QGP_LOG_WARN("P2P", ">>> Calling p2p_send_message (pubkey_len=%zu)...\n", recipient_pubkey_len);
 
     // Try to send via P2P
     int result = p2p_send_message(
@@ -702,7 +709,7 @@ int messenger_send_p2p(
     }
 
     // P2P send failed - try DHT offline queue (Phase 9.2)
-    QGP_LOG_DEBUG("P2P", "P2P send failed for %s\n", recipient);
+    QGP_LOG_WARN("P2P", ">>> P2P send failed (result=%d), trying DHT queue for %s\n", result, recipient);
 
     // Try to queue in DHT
     if (ctx->p2p_transport) {
@@ -724,18 +731,20 @@ int messenger_send_p2p(
             encrypted_len
         );
 
+        QGP_LOG_WARN("P2P", ">>> p2p_queue_offline_message returned %d\n", queue_result);
         if (queue_result == 0) {
-            QGP_LOG_INFO("P2P", "Message queued in DHT for %s (fingerprint: %.20s...)\n",
+            QGP_LOG_WARN("P2P", ">>> Message queued in DHT for %s (fingerprint: %.20s...)\n",
                    recipient, recipient_fingerprint);
             return 0;  // Success via DHT queue
         } else {
-            QGP_LOG_ERROR("P2P", "Failed to queue in DHT, using PostgreSQL fallback");
+            QGP_LOG_ERROR("P2P", "Failed to queue message in DHT (result=%d)\n", queue_result);
+            return -1;  // DHT queue failed - message not delivered
         }
     }
 
-    // Fall back to PostgreSQL
-    QGP_LOG_DEBUG("P2P", "Using PostgreSQL fallback for %s\n", recipient);
-    return -1;  // Signal to use PostgreSQL fallback
+    // No P2P transport available
+    QGP_LOG_ERROR("P2P", "No P2P transport available for %s\n", recipient);
+    return -1;  // Message not delivered
 }
 
 int messenger_broadcast_p2p(
@@ -749,20 +758,18 @@ int messenger_broadcast_p2p(
         return -1;
     }
 
-    size_t p2p_sent = 0;
-    size_t pg_fallback = 0;
+    size_t sent = 0;
+    size_t failed = 0;
 
     for (size_t i = 0; i < recipient_count; i++) {
         if (messenger_send_p2p(ctx, recipients[i], encrypted_message, encrypted_len) == 0) {
-            p2p_sent++;
+            sent++;
         } else {
-            pg_fallback++;
-            // Caller should handle PostgreSQL insertion for failed sends
+            failed++;
         }
     }
 
-    QGP_LOG_DEBUG("P2P", "Broadcast complete: %zu via P2P, %zu via PostgreSQL\n",
-           p2p_sent, pg_fallback);
+    QGP_LOG_DEBUG("P2P", "Broadcast complete: %zu sent, %zu failed\n", sent, failed);
 
     return 0;
 }
