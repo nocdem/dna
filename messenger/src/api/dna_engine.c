@@ -1213,6 +1213,7 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile->btc, identity->wallets.btc, sizeof(profile->btc) - 1);
     strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
     strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
+    strncpy(profile->trx, identity->wallets.trx, sizeof(profile->trx) - 1);
 
     /* Socials */
     strncpy(profile->telegram, identity->socials.telegram, sizeof(profile->telegram) - 1);
@@ -1277,6 +1278,7 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile->btc, identity->wallets.btc, sizeof(profile->btc) - 1);
     strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
     strncpy(profile->sol, identity->wallets.sol, sizeof(profile->sol) - 1);
+    strncpy(profile->trx, identity->wallets.trx, sizeof(profile->trx) - 1);
 
     /* Socials */
     strncpy(profile->telegram, identity->socials.telegram, sizeof(profile->telegram) - 1);
@@ -1337,6 +1339,7 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile_data.wallets.btc, p->btc, sizeof(profile_data.wallets.btc) - 1);
     strncpy(profile_data.wallets.eth, p->eth, sizeof(profile_data.wallets.eth) - 1);
     strncpy(profile_data.wallets.sol, p->sol, sizeof(profile_data.wallets.sol) - 1);
+    strncpy(profile_data.wallets.trx, p->trx, sizeof(profile_data.wallets.trx) - 1);
 
     /* Socials */
     strncpy(profile_data.socials.telegram, p->telegram, sizeof(profile_data.socials.telegram) - 1);
