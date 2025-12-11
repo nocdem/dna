@@ -2998,11 +2998,20 @@ int dna_engine_delete_identity_sync(
         }
     }
 
-    /* Cannot delete currently loaded identity */
+    /* If deleting the currently loaded identity, unload it first */
     if (engine->identity_loaded && engine->fingerprint[0] != '\0' &&
         strcmp(engine->fingerprint, fingerprint) == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot delete currently loaded identity");
-        return DNA_ENGINE_ERROR_BUSY;
+        QGP_LOG_INFO(LOG_TAG, "Unloading current identity before deletion");
+
+        /* Free messenger context */
+        if (engine->messenger) {
+            messenger_free(engine->messenger);
+            engine->messenger = NULL;
+        }
+
+        /* Clear identity state */
+        engine->identity_loaded = false;
+        memset(engine->fingerprint, 0, sizeof(engine->fingerprint));
     }
 
     const char *data_dir = engine->data_dir;
