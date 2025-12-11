@@ -8,6 +8,7 @@
 #include "messenger.h"
 #include "p2p/p2p_transport.h"
 #include "dht/shared/dht_offline_queue.h"
+#include "dht/shared/dht_chunked.h"
 #include "dht/shared/dht_groups.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/core/dht_context.h"
@@ -1086,11 +1087,19 @@ int messenger_p2p_subscribe_to_contact(
         return -1;
     }
 
-    // Generate outbox key
-    uint8_t outbox_key[64];
-    dht_generate_outbox_key(contact_fingerprint, ctx->fingerprint, outbox_key);
+    // Generate chunk0 key (must match what dht_chunked_publish uses)
+    // Base key format: "sender:outbox:recipient"
+    char base_key[512];
+    snprintf(base_key, sizeof(base_key), "%s:outbox:%s", contact_fingerprint, ctx->fingerprint);
 
-    // Start listening
+    // Chunked layer publishes to SHA3-512(base_key + ":chunk:0")[0:32]
+    uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];
+    if (dht_chunked_make_key(base_key, 0, chunk0_key) != 0) {
+        QGP_LOG_ERROR("P2P", "Failed to generate chunk0 key for subscription");
+        return -1;
+    }
+
+    // Start listening on chunk0 key
     dht_context_t *dht = p2p_transport_get_dht_context(ctx->p2p_transport);
     if (!dht) {
         QGP_LOG_ERROR("P2P", "Failed to get DHT context");
@@ -1099,8 +1108,8 @@ int messenger_p2p_subscribe_to_contact(
 
     size_t token = dht_listen(
         dht,
-        outbox_key,
-        64,
+        chunk0_key,
+        DHT_CHUNK_KEY_SIZE,
         messenger_push_notification_callback,
         ctx
     );
