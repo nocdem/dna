@@ -108,67 +108,19 @@ int dht_keyserver_lookup(
     }
     free(json_str);
 
-    // Verify signature
-    size_t msg_len = sizeof(identity->fingerprint) +
-                     sizeof(identity->dilithium_pubkey) +
-                     sizeof(identity->kyber_pubkey) +
-                     sizeof(bool) +
-                     sizeof(identity->registered_name) +
-                     sizeof(identity->name_registered_at) +
-                     sizeof(identity->name_expires_at) +
-                     sizeof(identity->name_version) +
-                     sizeof(identity->wallets) +
-                     sizeof(identity->socials) +
-                     sizeof(identity->bio) +
-                     sizeof(identity->profile_picture_ipfs) +
-                     sizeof(identity->timestamp) +
-                     sizeof(identity->version);
-
-    uint8_t *msg = malloc(msg_len);
-    if (!msg) {
+    // Verify signature against JSON representation (for forward compatibility)
+    // This matches the signing method in keyserver_profiles.c
+    char *json_unsigned = dna_identity_to_json_unsigned(identity);
+    if (!json_unsigned) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize identity for verification\n");
         dna_identity_free(identity);
         return -1;
     }
 
-    size_t offset = 0;
-    memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
-    offset += sizeof(identity->fingerprint);
-    memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
-    offset += sizeof(identity->dilithium_pubkey);
-    memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
-    offset += sizeof(identity->kyber_pubkey);
-    memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
-    offset += sizeof(bool);
-    memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
-    offset += sizeof(identity->registered_name);
-
-    uint64_t registered_at_net = htonll(identity->name_registered_at);
-    uint64_t expires_at_net = htonll(identity->name_expires_at);
-    uint32_t name_version_net = htonl(identity->name_version);
-    uint64_t timestamp_net = htonll(identity->timestamp);
-    uint32_t version_net = htonl(identity->version);
-
-    memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
-    offset += sizeof(uint64_t);
-    memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
-    offset += sizeof(uint64_t);
-    memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
-    offset += sizeof(uint32_t);
-    memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
-    offset += sizeof(identity->wallets);
-    memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
-    offset += sizeof(identity->socials);
-    memcpy(msg + offset, identity->bio, sizeof(identity->bio));
-    offset += sizeof(identity->bio);
-    memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
-    offset += sizeof(identity->profile_picture_ipfs);
-    memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
-    offset += sizeof(uint64_t);
-    memcpy(msg + offset, &version_net, sizeof(uint32_t));
-
     int sig_result = qgp_dsa87_verify(identity->signature, sizeof(identity->signature),
-                                       msg, msg_len, identity->dilithium_pubkey);
-    free(msg);
+                                       (uint8_t*)json_unsigned, strlen(json_unsigned),
+                                       identity->dilithium_pubkey);
+    free(json_unsigned);
 
     if (sig_result != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Signature verification failed\n");
