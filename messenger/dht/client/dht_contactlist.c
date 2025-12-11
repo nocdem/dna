@@ -90,6 +90,9 @@ static char* serialize_to_json(const char *identity, const char **contacts, size
     }
 
     for (size_t i = 0; i < contact_count; i++) {
+        QGP_LOG_DEBUG(LOG_TAG, "Serializing contact[%zu]: '%s' (len=%zu)\n",
+                      i, contacts[i] ? contacts[i] : "(null)",
+                      contacts[i] ? strlen(contacts[i]) : 0);
         json_object_array_add(contacts_array, json_object_new_string(contacts[i]));
     }
 
@@ -97,6 +100,7 @@ static char* serialize_to_json(const char *identity, const char **contacts, size
 
     // Convert to string
     const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PLAIN);
+    QGP_LOG_DEBUG(LOG_TAG, "Serialized JSON (first 200 chars): %.200s\n", json_str);
     char *result = strdup(json_str);
 
     json_object_put(root);  // This frees the entire object tree
@@ -112,6 +116,8 @@ static int deserialize_from_json(const char *json_str, char ***contacts_out, siz
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for JSON deserialization\n");
         return -1;
     }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Deserializing JSON (first 200 chars): %.200s\n", json_str);
 
     // Parse JSON
     json_object *root = json_tokener_parse(json_str);
@@ -159,6 +165,9 @@ static int deserialize_from_json(const char *json_str, char ***contacts_out, siz
     for (size_t i = 0; i < count; i++) {
         json_object *contact_obj = json_object_array_get_idx(contacts_array, i);
         const char *contact_str = json_object_get_string(contact_obj);
+        QGP_LOG_DEBUG(LOG_TAG, "JSON contact[%zu]: '%s' (len=%zu)\n",
+                      i, contact_str ? contact_str : "(null)",
+                      contact_str ? strlen(contact_str) : 0);
         contacts[i] = strdup(contact_str);
         if (!contacts[i]) {
             // Cleanup on failure
@@ -561,6 +570,25 @@ int dht_contactlist_fetch(
     free(json_str);
 
     QGP_LOG_INFO(LOG_TAG, "Successfully fetched %zu contacts\n", *count_out);
+
+    // Debug: Log each contact fingerprint
+    if (*contacts_out && *count_out > 0) {
+        for (size_t i = 0; i < *count_out; i++) {
+            const char *fp = (*contacts_out)[i];
+            size_t len = fp ? strlen(fp) : 0;
+            if (len == 128) {
+                QGP_LOG_DEBUG(LOG_TAG, "  Contact[%zu]: %.20s... (len=%zu)\n", i, fp, len);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "  Contact[%zu]: INVALID (len=%zu, first bytes: %02x %02x %02x %02x)\n",
+                             i, len,
+                             fp && len > 0 ? (unsigned char)fp[0] : 0,
+                             fp && len > 1 ? (unsigned char)fp[1] : 0,
+                             fp && len > 2 ? (unsigned char)fp[2] : 0,
+                             fp && len > 3 ? (unsigned char)fp[3] : 0);
+            }
+        }
+    }
+
     return 0;
 }
 
