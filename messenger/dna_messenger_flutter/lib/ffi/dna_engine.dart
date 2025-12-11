@@ -1324,7 +1324,10 @@ class DnaEngine {
       if (error == 0) {
         final result = <ContactRequest>[];
         for (var i = 0; i < count; i++) {
-          result.add(ContactRequest.fromNative(requests[i]));
+          result.add(ContactRequest.fromNative((requests + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_contact_requests(requests, count);
         }
         completer.complete(result);
       } else {
@@ -1521,7 +1524,10 @@ class DnaEngine {
       if (error == 0) {
         final result = <BlockedUser>[];
         for (var i = 0; i < count; i++) {
-          result.add(BlockedUser.fromNative(blocked[i]));
+          result.add(BlockedUser.fromNative((blocked + i).ref));
+        }
+        if (count > 0) {
+          _bindings.dna_free_blocked_users(blocked, count);
         }
         completer.complete(result);
       } else {

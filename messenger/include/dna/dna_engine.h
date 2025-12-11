@@ -1856,6 +1856,16 @@ void dna_free_groups(dna_group_t *groups, int count);
 void dna_free_invitations(dna_invitation_t *invitations, int count);
 
 /**
+ * Free contact requests array returned by callbacks
+ */
+void dna_free_contact_requests(dna_contact_request_t *requests, int count);
+
+/**
+ * Free blocked users array returned by callbacks
+ */
+void dna_free_blocked_users(dna_blocked_user_t *blocked, int count);
+
+/**
  * Free wallets array returned by callbacks
  */
 void dna_free_wallets(dna_wallet_t *wallets, int count);

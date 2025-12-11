@@ -1629,6 +1629,22 @@ class DnaBindings {
     _dna_free_invitations(invitations, count);
   }
 
+  late final _dna_free_contact_requests = _lib.lookupFunction<
+      Void Function(Pointer<dna_contact_request_t>, Int32),
+      void Function(Pointer<dna_contact_request_t>, int)>('dna_free_contact_requests');
+
+  void dna_free_contact_requests(Pointer<dna_contact_request_t> requests, int count) {
+    _dna_free_contact_requests(requests, count);
+  }
+
+  late final _dna_free_blocked_users = _lib.lookupFunction<
+      Void Function(Pointer<dna_blocked_user_t>, Int32),
+      void Function(Pointer<dna_blocked_user_t>, int)>('dna_free_blocked_users');
+
+  void dna_free_blocked_users(Pointer<dna_blocked_user_t> blocked, int count) {
+    _dna_free_blocked_users(blocked, count);
+  }
+
   late final _dna_free_wallets = _lib.lookupFunction<
       Void Function(Pointer<dna_wallet_t>, Int32),
       void Function(Pointer<dna_wallet_t>, int)>('dna_free_wallets');

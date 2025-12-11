@@ -1763,9 +1763,7 @@ done:
         }
         task->callback.contact_requests(task->request_id, error, requests, count, task->user_data);
     }
-    if (requests) {
-        free(requests);
-    }
+    /* NOTE: Memory is freed by caller (Dart FFI) via dna_free_contact_requests() */
 }
 
 void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) {
@@ -1955,9 +1953,7 @@ done:
     if (task->callback.blocked_users) {
         task->callback.blocked_users(task->request_id, error, blocked, count, task->user_data);
     }
-    if (blocked) {
-        free(blocked);
-    }
+    /* NOTE: Memory is freed by caller (Dart FFI) via dna_free_blocked_users() */
 }
 
 /* ============================================================================
@@ -4219,6 +4215,16 @@ void dna_free_groups(dna_group_t *groups, int count) {
 void dna_free_invitations(dna_invitation_t *invitations, int count) {
     (void)count;
     free(invitations);
+}
+
+void dna_free_contact_requests(dna_contact_request_t *requests, int count) {
+    (void)count;
+    free(requests);
+}
+
+void dna_free_blocked_users(dna_blocked_user_t *blocked, int count) {
+    (void)count;
+    free(blocked);
 }
 
 void dna_free_wallets(dna_wallet_t *wallets, int count) {
