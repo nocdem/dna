@@ -107,9 +107,17 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
             return -1;
         }
 
+        size_t valid_count = 0;
         for (size_t i = 0; i < list->count; i++) {
-            contacts[i] = list->contacts[i].identity;
+            if (is_valid_fingerprint(list->contacts[i].identity)) {
+                contacts[valid_count++] = list->contacts[i].identity;
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "Skipping invalid fingerprint in local DB (len=%zu)\n",
+                             strlen(list->contacts[i].identity));
+            }
         }
+        // Update count to only valid entries
+        list->count = valid_count;
     }
 
     // Publish to DHT
