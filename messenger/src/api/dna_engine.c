@@ -1622,7 +1622,11 @@ done:
 void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
 
+    QGP_LOG_INFO("DNA_ENGINE", "dna_handle_send_contact_request called for recipient: %.20s...",
+                 task->params.send_contact_request.recipient);
+
     if (!engine->identity_loaded) {
+        QGP_LOG_ERROR("DNA_ENGINE", "No identity loaded");
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
     }
@@ -3303,7 +3307,14 @@ dna_request_id_t dna_engine_send_contact_request(
     dna_completion_cb callback,
     void *user_data
 ) {
-    if (!engine || !recipient_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+    QGP_LOG_INFO("DNA_ENGINE", "dna_engine_send_contact_request called: recipient=%.20s...",
+                 recipient_fingerprint ? recipient_fingerprint : "(null)");
+
+    if (!engine || !recipient_fingerprint || !callback) {
+        QGP_LOG_ERROR("DNA_ENGINE", "Invalid params: engine=%p, recipient=%p, callback=%p",
+                      (void*)engine, (void*)recipient_fingerprint, (void*)callback);
+        return DNA_REQUEST_ID_INVALID;
+    }
 
     dna_task_params_t params = {0};
     strncpy(params.send_contact_request.recipient, recipient_fingerprint, 128);
