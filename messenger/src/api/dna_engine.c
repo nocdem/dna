@@ -2119,10 +2119,11 @@ void dna_handle_check_offline_messages(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Use messenger's contacts_auto_sync which handles offline queue internally */
-    int rc = messenger_contacts_auto_sync(engine->messenger);
-    if (rc != 0) {
-        /* Non-fatal - just no new messages */
+    /* Check DHT offline queue for messages from contacts */
+    size_t offline_count = 0;
+    int rc = messenger_p2p_check_offline_messages(engine->messenger, &offline_count);
+    if (rc == 0 && offline_count > 0) {
+        QGP_LOG_INFO("DNA_ENGINE", "Retrieved %zu offline messages from DHT\n", offline_count);
     }
 
 done:
