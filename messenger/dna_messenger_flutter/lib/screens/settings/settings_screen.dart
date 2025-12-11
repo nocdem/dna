@@ -829,12 +829,9 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
               ),
             );
 
-            // Navigate to identity selection screen
-            // Clear the current identity state and go back to selection
-            ref.invalidate(engineProvider);
-
-            // Pop all routes and go to identity selection
-            Navigator.of(context).popUntil((route) => route.isFirst);
+            // Clear current fingerprint - this triggers identityLoadedProvider to return false
+            // which causes HomeScreen to show IdentitySelectionScreen
+            ref.read(currentFingerprintProvider.notifier).state = null;
           }
         },
         loading: () {
