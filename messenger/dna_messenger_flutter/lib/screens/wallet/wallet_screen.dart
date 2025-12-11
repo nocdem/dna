@@ -1216,6 +1216,12 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
         DropdownMenuItem(value: 'SOL', child: Text('SOL')),
       ];
     }
+    // If TRX is preselected, show TRX option
+    if (_selectedToken.toUpperCase() == 'TRX') {
+      return const [
+        DropdownMenuItem(value: 'TRX', child: Text('TRX')),
+      ];
+    }
     // Default: Cellframe tokens
     return const [
       DropdownMenuItem(value: 'CPUNK', child: Text('CPUNK')),
@@ -1234,6 +1240,12 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     if (_selectedNetwork == 'Solana') {
       return const [
         DropdownMenuItem(value: 'Solana', child: Text('Solana')),
+      ];
+    }
+    // If Tron network, show only Tron
+    if (_selectedNetwork == 'Tron') {
+      return const [
+        DropdownMenuItem(value: 'Tron', child: Text('Tron')),
       ];
     }
     // Default: Backbone network
