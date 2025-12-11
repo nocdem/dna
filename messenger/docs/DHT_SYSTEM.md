@@ -274,9 +274,14 @@ Real-time notifications when DHT values change.
 typedef bool (*dht_listen_callback_t)(
     const uint8_t *value,      // NULL if expired
     size_t value_len,
-    bool expired,              // true = value expired, false = new value
+    bool expired,              // true = value expired, false = new/updated value
     void *user_data
 );
+
+// Callback is triggered when:
+// - New value published (expired=false)
+// - Existing value updated (content changed + seq incremented, expired=false)
+// - Value expired/removed (expired=true, value=NULL)
 
 // Start listening (returns token > 0 on success)
 size_t dht_listen(dht_context_t *ctx,
@@ -293,6 +298,8 @@ size_t dht_get_active_listen_count(dht_context_t *ctx);
 
 Example usage for offline message notifications:
 ```c
+// Listen for messages from a contact's outbox
+// Callback fires when contact sends NEW message (updates their outbox)
 uint8_t outbox_key[64];
 dht_generate_outbox_key(contact_fp, my_fp, outbox_key);
 
@@ -304,6 +311,10 @@ if (token == 0) {
 // Later, stop listening:
 dht_cancel_listen(ctx, token);
 ```
+
+**Note:** The callback is triggered for both new values AND updates to existing values
+(when content changes and sequence number increases). This enables real-time notifications
+for offline messaging where contacts update the same outbox key with new messages.
 
 ---
 
