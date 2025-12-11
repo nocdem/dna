@@ -232,7 +232,8 @@ int dna_profile_from_json(const char *json, dna_profile_data_t **profile_out) {
 
 // ===== Identity Serialization =====
 
-char* dna_identity_to_json(const dna_unified_identity_t *identity) {
+// Internal helper: serialize identity to JSON, optionally including signature
+static char* identity_to_json_internal(const dna_unified_identity_t *identity, bool include_signature) {
     if (!identity) return NULL;
 
     json_object *root = json_object_new_object();
@@ -301,9 +302,11 @@ char* dna_identity_to_json(const dna_unified_identity_t *identity) {
     json_object_object_add(root, "version",
         json_object_new_int(identity->version));
 
-    // Signature
-    bytes_to_hex(identity->signature, sizeof(identity->signature), hex);
-    json_object_object_add(root, "signature", json_object_new_string(hex));
+    // Signature (only if requested)
+    if (include_signature) {
+        bytes_to_hex(identity->signature, sizeof(identity->signature), hex);
+        json_object_object_add(root, "signature", json_object_new_string(hex));
+    }
 
     free(hex);  // Done with hex buffer
 
@@ -312,6 +315,14 @@ char* dna_identity_to_json(const dna_unified_identity_t *identity) {
     json_object_put(root);
 
     return result;
+}
+
+char* dna_identity_to_json(const dna_unified_identity_t *identity) {
+    return identity_to_json_internal(identity, true);
+}
+
+char* dna_identity_to_json_unsigned(const dna_unified_identity_t *identity) {
+    return identity_to_json_internal(identity, false);
 }
 
 int dna_identity_from_json(const char *json, dna_unified_identity_t **identity_out) {

@@ -642,9 +642,25 @@ typedef struct {
     char profile_picture_ipfs[128];
     uint64_t timestamp;
     uint32_t version;
-    uint8_t signature[4627];                  // Dilithium5 signature
+    uint8_t signature[4627];                  // Dilithium5 signature over JSON
 } dna_unified_identity_t;
 ```
+
+### Signature Method (JSON-based)
+
+The signature is computed over the **JSON representation** of the identity (without the signature field), NOT the raw struct bytes. This ensures forward compatibility when struct fields change.
+
+```
+Sign:   struct → JSON(no sig) → Dilithium5_sign → store sig in struct → JSON(with sig) → DHT
+Verify: DHT → JSON → parse → struct → JSON(no sig) → Dilithium5_verify
+```
+
+**Benefits:**
+- Adding new wallet networks doesn't break old profiles
+- Adding new social platforms doesn't break old profiles
+- Field order changes are handled by JSON serialization
+
+**Source:** `keyserver_profiles.c` (dna_update_profile, dna_load_identity)
 
 ### Operations
 

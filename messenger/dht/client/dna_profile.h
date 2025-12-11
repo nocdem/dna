@@ -177,6 +177,18 @@ int dna_profile_from_json(const char *json, dna_profile_data_t **profile_out);
 char* dna_identity_to_json(const dna_unified_identity_t *identity);
 
 /**
+ * @brief Serialize unified identity to JSON string WITHOUT signature
+ *
+ * Used for signing/verification. The signature is computed over this JSON string.
+ * This ensures forward compatibility when struct fields change.
+ * Caller must free returned string.
+ *
+ * @param identity Identity to serialize
+ * @return JSON string (without signature field), or NULL on error
+ */
+char* dna_identity_to_json_unsigned(const dna_unified_identity_t *identity);
+
+/**
  * @brief Parse unified identity from JSON string
  *
  * @param json JSON string to parse
