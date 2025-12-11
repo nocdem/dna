@@ -39,11 +39,8 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
 
   /// Send a contact request to another user
   Future<void> sendRequest(String fingerprint, String? message) async {
-    print('[ContactRequests] sendRequest called: fingerprint=$fingerprint');
     final engine = await ref.read(engineProvider.future);
-    print('[ContactRequests] Got engine, calling sendContactRequest...');
     await engine.sendContactRequest(fingerprint, message);
-    print('[ContactRequests] sendContactRequest completed');
   }
 
   /// Approve a contact request (makes mutual contact)
