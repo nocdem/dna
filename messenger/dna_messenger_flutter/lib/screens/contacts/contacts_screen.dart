@@ -420,14 +420,16 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
     setState(() => _isAdding = true);
 
     try {
-      await widget.ref.read(contactsProvider.notifier).addContact(
+      // Send contact request instead of direct add
+      await widget.ref.read(contactRequestsProvider.notifier).sendRequest(
             _foundFingerprint!,
+            null, // No message for now
           );
       if (mounted) {
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Contact ${_foundName ?? 'added'} added'),
+            content: Text('Contact request sent to ${_foundName ?? 'user'}'),
             backgroundColor: DnaColors.snackbarSuccess,
           ),
         );
@@ -436,7 +438,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
       setState(() => _isAdding = false);
       if (mounted) {
         setState(() {
-          _errorMessage = 'Failed to add contact: $e';
+          _errorMessage = 'Failed to send request: $e';
         });
       }
     }
@@ -594,7 +596,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
                   height: 16,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
-              : const Text('Add Contact'),
+              : const Text('Send Request'),
         ),
       ],
     );
