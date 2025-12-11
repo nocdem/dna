@@ -196,6 +196,24 @@ Current DNA Nodus servers:
 - **EU-1:** 164.68.105.227:4000 (DHT) / :3478 (TURN)
 - **EU-2:** 164.68.116.180:4000 (DHT) / :3478 (TURN)
 
+### Update All Servers
+
+To update all production servers at once:
+
+```bash
+./update-nodus-servers.sh
+```
+
+This script runs `nodus_build.sh` on each server sequentially (US-1, EU-1, EU-2).
+
+To update a single server manually:
+
+```bash
+ssh root@154.38.182.161 "cd /opt/dna-messenger && bash nodus_build.sh"  # US-1
+ssh root@164.68.105.227 "cd /opt/dna-messenger && bash nodus_build.sh"  # EU-1
+ssh root@164.68.116.180 "cd /opt/dna-messenger && bash nodus_build.sh"  # EU-2
+```
+
 ## Monitoring
 
 ### Status Output
