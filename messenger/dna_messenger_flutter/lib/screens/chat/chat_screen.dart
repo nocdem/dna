@@ -8,6 +8,7 @@ import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 import '../../widgets/emoji_shortcode_field.dart';
 import '../../widgets/formatted_text.dart';
+import 'contact_profile_dialog.dart';
 
 class ChatScreen extends ConsumerStatefulWidget {
   const ChatScreen({super.key});
@@ -455,7 +456,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               title: const Text('View Profile'),
               onTap: () {
                 Navigator.pop(context);
-                // TODO: Show profile
+                final contact = ref.read(selectedContactProvider);
+                if (contact != null) {
+                  showContactProfileDialog(
+                    context,
+                    ref,
+                    contact.fingerprint,
+                    contact.displayName,
+                  );
+                }
               },
             ),
             ListTile(

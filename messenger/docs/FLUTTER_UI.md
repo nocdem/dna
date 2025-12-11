@@ -100,7 +100,8 @@ dna_messenger_flutter/
 │   ├── screens/                # ✅ UI screens
 │   │   ├── identity/identity_selection_screen.dart  # ✅ BIP39 integrated
 │   │   ├── contacts/contacts_screen.dart
-│   │   ├── chat/chat_screen.dart   # ✅ Selectable text, status icons
+│   │   ├── chat/chat_screen.dart   # ✅ Selectable text, status icons, view profile
+│   │   ├── chat/contact_profile_dialog.dart  # ✅ View contact's DHT profile
 │   │   ├── groups/groups_screen.dart   # ✅ + GroupChatScreen
 │   │   ├── wallet/wallet_screen.dart   # ✅ Send dialog
 │   │   ├── settings/settings_screen.dart  # ✅ Name registration
@@ -207,7 +208,7 @@ final conversationProvider = AsyncNotifierProviderFamily<ConversationNotifier, L
 **Screens Implemented:**
 - `IdentitySelectionScreen`: List identities, create with 3-step wizard, restore from seed (3-step: enter 24 words, confirm profile from DHT, proceed)
 - `ContactsScreen`: List with last seen timestamps, pull-to-refresh, add contact dialog, DHT status indicator
-- `ChatScreen`: Message bubbles, timestamps, status icons, input with send button
+- `ChatScreen`: Message bubbles, timestamps, status icons, input with send button, view contact profile
 - `HomeScreen`: Routes between identity selection and contacts based on state
 
 **Event Handling:**
