@@ -388,6 +388,17 @@ typedef struct {
 } dna_message_queue_t;
 
 /**
+ * Outbox listener entry (for real-time offline message notifications)
+ */
+#define DNA_MAX_OUTBOX_LISTENERS 128
+
+typedef struct {
+    char contact_fingerprint[129];  /* Contact we're listening to */
+    size_t dht_token;               /* Token from dht_listen() */
+    bool active;                    /* True if listener is active */
+} dna_outbox_listener_t;
+
+/**
  * DNA Engine internal state
  */
 struct dna_engine {
@@ -411,6 +422,11 @@ struct dna_engine {
 
     /* Message send queue (for async fire-and-forget messaging) */
     dna_message_queue_t message_queue;
+
+    /* Outbox listeners (for real-time offline message notifications) */
+    dna_outbox_listener_t outbox_listeners[DNA_MAX_OUTBOX_LISTENERS];
+    int outbox_listener_count;
+    pthread_mutex_t outbox_listeners_mutex;
 
     /* Event callback */
     dna_event_cb event_callback;
