@@ -1765,6 +1765,10 @@ done:
 void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
 
+    QGP_LOG_INFO("DNA_ENGINE", "handle_approve called: task fp='%.40s...' len=%zu",
+                 task->params.contact_request.fingerprint,
+                 strlen(task->params.contact_request.fingerprint));
+
     if (!engine->identity_loaded) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
@@ -1776,6 +1780,8 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
     }
 
     /* Approve the request in database */
+    QGP_LOG_INFO("DNA_ENGINE", "Calling contacts_db_approve_request with fp='%.40s...'",
+                 task->params.contact_request.fingerprint);
     if (contacts_db_approve_request(task->params.contact_request.fingerprint) != 0) {
         error = DNA_ERROR_NOT_FOUND;
         goto done;
@@ -3353,10 +3359,16 @@ dna_request_id_t dna_engine_approve_contact_request(
     dna_completion_cb callback,
     void *user_data
 ) {
+    QGP_LOG_INFO("DNA_ENGINE", "approve_contact_request API called: fp='%.40s...' len=%zu",
+                 fingerprint ? fingerprint : "(null)",
+                 fingerprint ? strlen(fingerprint) : 0);
+
     if (!engine || !fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
 
     dna_task_params_t params = {0};
     strncpy(params.contact_request.fingerprint, fingerprint, 128);
+    QGP_LOG_INFO("DNA_ENGINE", "approve params.fingerprint='%.40s...'",
+                 params.contact_request.fingerprint);
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_APPROVE_CONTACT_REQUEST, &params, cb, user_data);

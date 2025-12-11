@@ -846,6 +846,10 @@ int contacts_db_pending_request_count(void) {
 
 // Approve a contact request
 int contacts_db_approve_request(const char *fingerprint) {
+    QGP_LOG_INFO(LOG_TAG, "contacts_db_approve_request called: fp='%.40s...' len=%zu\n",
+                 fingerprint ? fingerprint : "(null)",
+                 fingerprint ? strlen(fingerprint) : 0);
+
     if (!g_db) {
         QGP_LOG_ERROR(LOG_TAG, "Database not initialized\n");
         return -1;
