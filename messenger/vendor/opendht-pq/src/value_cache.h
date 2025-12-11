@@ -177,7 +177,13 @@ private:
                 nvals.emplace_back(value);
                 values.emplace(value->id, CacheValueStorage(value, now, now + types.getType(value->type).expiration));
             } else {
-                // refreshed value
+                // existing value - check for updates
+                if (*v->second.data != *value && value->seq > v->second.data->seq) {
+                    // content changed with higher seq - this is an update
+                    v->second.data = value;
+                    nvals.emplace_back(value);
+                }
+                // always refresh timestamps
                 v->second.created = now;
                 v->second.expiration = now + types.getType(v->second.data->type).expiration;
             }
