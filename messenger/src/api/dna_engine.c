@@ -1747,6 +1747,8 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
             requests[i].message[255] = '\0';
             requests[i].requested_at = db_requests[i].requested_at;
             requests[i].status = db_requests[i].status;
+            QGP_LOG_INFO("DNA_ENGINE", "get_requests[%d]: fp='%.40s...' len=%zu name='%s'",
+                         i, requests[i].fingerprint, strlen(requests[i].fingerprint), requests[i].display_name);
         }
         count = db_count;
     }
@@ -1755,6 +1757,10 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
 
 done:
     if (task->callback.contact_requests) {
+        if (requests && count > 0) {
+            QGP_LOG_INFO("DNA_ENGINE", "callback: ptr=%p, count=%d, first_fp='%.40s...'",
+                         (void*)requests, count, requests[0].fingerprint);
+        }
         task->callback.contact_requests(task->request_id, error, requests, count, task->user_data);
     }
     if (requests) {
