@@ -1233,36 +1233,83 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
 
 populate_wallets:
     /* Auto-populate empty wallet fields from actual wallet files */
-    blockchain_wallet_list_t *bc_wallets = NULL;
-    if (blockchain_list_wallets(engine->fingerprint, &bc_wallets) == 0 && bc_wallets) {
-        for (size_t i = 0; i < bc_wallets->count; i++) {
-            blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
-            switch (w->type) {
-                case BLOCKCHAIN_CELLFRAME:
-                    if (profile->backbone[0] == '\0' && w->address[0]) {
-                        strncpy(profile->backbone, w->address, sizeof(profile->backbone) - 1);
+    {
+        bool wallets_changed = false;
+        blockchain_wallet_list_t *bc_wallets = NULL;
+        if (blockchain_list_wallets(engine->fingerprint, &bc_wallets) == 0 && bc_wallets) {
+            for (size_t i = 0; i < bc_wallets->count; i++) {
+                blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
+                switch (w->type) {
+                    case BLOCKCHAIN_CELLFRAME:
+                        if (profile->backbone[0] == '\0' && w->address[0]) {
+                            strncpy(profile->backbone, w->address, sizeof(profile->backbone) - 1);
+                            wallets_changed = true;
+                        }
+                        break;
+                    case BLOCKCHAIN_ETHEREUM:
+                        if (profile->eth[0] == '\0' && w->address[0]) {
+                            strncpy(profile->eth, w->address, sizeof(profile->eth) - 1);
+                            wallets_changed = true;
+                        }
+                        break;
+                    case BLOCKCHAIN_SOLANA:
+                        if (profile->sol[0] == '\0' && w->address[0]) {
+                            strncpy(profile->sol, w->address, sizeof(profile->sol) - 1);
+                            wallets_changed = true;
+                        }
+                        break;
+                    case BLOCKCHAIN_TRON:
+                        if (profile->trx[0] == '\0' && w->address[0]) {
+                            strncpy(profile->trx, w->address, sizeof(profile->trx) - 1);
+                            wallets_changed = true;
+                        }
+                        break;
+                    default:
+                        break;
+                }
+            }
+            blockchain_wallet_list_free(bc_wallets);
+        }
+
+        /* Auto-publish profile if wallets were populated */
+        if (wallets_changed) {
+            QGP_LOG_INFO(LOG_TAG, "Auto-publishing profile with populated wallet addresses");
+
+            /* Load keys for signing */
+            qgp_key_t *sign_key = dna_load_private_key(engine);
+            if (sign_key) {
+                char enc_key_path[512];
+                snprintf(enc_key_path, sizeof(enc_key_path), "%s/%s/keys/%s.kem",
+                         engine->data_dir, engine->fingerprint, engine->fingerprint);
+                qgp_key_t *enc_key = NULL;
+                if (qgp_key_load(enc_key_path, &enc_key) == 0 && enc_key) {
+                    /* Build profile data */
+                    dna_profile_data_t profile_data = {0};
+                    strncpy(profile_data.wallets.backbone, profile->backbone, sizeof(profile_data.wallets.backbone) - 1);
+                    strncpy(profile_data.wallets.btc, profile->btc, sizeof(profile_data.wallets.btc) - 1);
+                    strncpy(profile_data.wallets.eth, profile->eth, sizeof(profile_data.wallets.eth) - 1);
+                    strncpy(profile_data.wallets.sol, profile->sol, sizeof(profile_data.wallets.sol) - 1);
+                    strncpy(profile_data.wallets.trx, profile->trx, sizeof(profile_data.wallets.trx) - 1);
+                    strncpy(profile_data.socials.telegram, profile->telegram, sizeof(profile_data.socials.telegram) - 1);
+                    strncpy(profile_data.socials.x, profile->twitter, sizeof(profile_data.socials.x) - 1);
+                    strncpy(profile_data.socials.github, profile->github, sizeof(profile_data.socials.github) - 1);
+                    strncpy(profile_data.bio, profile->bio, sizeof(profile_data.bio) - 1);
+                    strncpy(profile_data.avatar_base64, profile->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
+
+                    /* Update profile in DHT */
+                    int update_rc = dna_update_profile(dht, engine->fingerprint, &profile_data,
+                                                       sign_key->private_key, sign_key->public_key,
+                                                       enc_key->public_key);
+                    if (update_rc == 0) {
+                        QGP_LOG_INFO(LOG_TAG, "Profile auto-published with wallet addresses");
+                    } else {
+                        QGP_LOG_WARN(LOG_TAG, "Failed to auto-publish profile: %d", update_rc);
                     }
-                    break;
-                case BLOCKCHAIN_ETHEREUM:
-                    if (profile->eth[0] == '\0' && w->address[0]) {
-                        strncpy(profile->eth, w->address, sizeof(profile->eth) - 1);
-                    }
-                    break;
-                case BLOCKCHAIN_SOLANA:
-                    if (profile->sol[0] == '\0' && w->address[0]) {
-                        strncpy(profile->sol, w->address, sizeof(profile->sol) - 1);
-                    }
-                    break;
-                case BLOCKCHAIN_TRON:
-                    if (profile->trx[0] == '\0' && w->address[0]) {
-                        strncpy(profile->trx, w->address, sizeof(profile->trx) - 1);
-                    }
-                    break;
-                default:
-                    break;
+                    qgp_key_free(enc_key);
+                }
+                qgp_key_free(sign_key);
             }
         }
-        blockchain_wallet_list_free(bc_wallets);
     }
 
 done:
