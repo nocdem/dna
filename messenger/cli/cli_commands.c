@@ -524,6 +524,12 @@ int cmd_send(dna_engine_t *engine, const char *recipient, const char *message) {
     }
 
     printf("Message sent successfully!\n");
+
+    // Wait for DHT PUT to complete (offline queue uses async DHT operations)
+    printf("Waiting for DHT propagation...\n");
+    struct timespec ts = {.tv_sec = 3, .tv_nsec = 0};
+    nanosleep(&ts, NULL);
+
     return 0;
 }
 

@@ -62,6 +62,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "p2p/p2p_transport.h"
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
+#include "database/profile_cache.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 
@@ -898,6 +899,12 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     if (contacts_db_init(fingerprint) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize contacts database\n");
         /* Non-fatal - continue, contacts will be initialized on first access */
+    }
+
+    /* Initialize profile cache for storing/fetching contact profiles */
+    if (profile_cache_init(fingerprint) != 0) {
+        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize profile cache\n");
+        /* Non-fatal - continue, profiles will still work via DHT */
     }
 
     /* Initialize P2P transport for DHT and messaging */
