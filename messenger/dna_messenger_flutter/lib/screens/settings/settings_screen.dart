@@ -243,48 +243,6 @@ class _SecuritySection extends ConsumerStatefulWidget {
 }
 
 class _SecuritySectionState extends ConsumerState<_SecuritySection> {
-  bool _isCheckingOffline = false;
-
-  Future<void> _checkOfflineMessages() async {
-    setState(() => _isCheckingOffline = true);
-
-    try {
-      final engineAsync = ref.read(engineProvider);
-      await engineAsync.when(
-        data: (engine) async {
-          await engine.checkOfflineMessages();
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(
-                content: const Text('Offline message check complete'),
-                backgroundColor: DnaColors.snackbarSuccess,
-              ),
-            );
-          }
-        },
-        loading: () {
-          throw Exception('Engine not ready');
-        },
-        error: (e, st) {
-          throw Exception('Engine error: $e');
-        },
-      );
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Error: $e'),
-            backgroundColor: DnaColors.snackbarError,
-          ),
-        );
-      }
-    } finally {
-      if (mounted) {
-        setState(() => _isCheckingOffline = false);
-      }
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final blockedUsers = ref.watch(blockedUsersProvider);
@@ -329,20 +287,6 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
               ),
             );
           },
-        ),
-        const _SectionHeader('Network'),
-        ListTile(
-          leading: _isCheckingOffline
-              ? const SizedBox(
-                  width: 24,
-                  height: 24,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Icon(Icons.cloud_download),
-          title: const Text('Check Offline Messages'),
-          subtitle: const Text('Fetch messages from DHT queue'),
-          trailing: const Icon(Icons.refresh),
-          onTap: _isCheckingOffline ? null : _checkOfflineMessages,
         ),
       ],
     );

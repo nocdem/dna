@@ -22,6 +22,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _scrollController = ScrollController();
   final _focusNode = FocusNode();
   bool _showEmojiPicker = false;
+  bool _isCheckingOffline = false;
 
   @override
   void initState() {
@@ -42,6 +43,72 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   void _onTextChanged() {
     // Rebuild to update send button enabled state
     setState(() {});
+  }
+
+  Future<void> _checkOfflineMessages() async {
+    if (_isCheckingOffline) return;
+
+    setState(() => _isCheckingOffline = true);
+    debugPrint('[OFFLINE_CHECK] Starting offline message check...');
+
+    try {
+      final engineAsync = ref.read(engineProvider);
+      await engineAsync.when(
+        data: (engine) async {
+          debugPrint('[OFFLINE_CHECK] Engine ready, calling checkOfflineMessages()');
+          final startTime = DateTime.now();
+          await engine.checkOfflineMessages();
+          final elapsed = DateTime.now().difference(startTime);
+          debugPrint('[OFFLINE_CHECK] Check completed in ${elapsed.inMilliseconds}ms');
+
+          // Refresh conversation to show any new messages
+          final contact = ref.read(selectedContactProvider);
+          if (contact != null) {
+            debugPrint('[OFFLINE_CHECK] Refreshing conversation for ${contact.fingerprint.substring(0, 16)}...');
+            ref.invalidate(conversationProvider(contact.fingerprint));
+          }
+
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Offline check complete (${elapsed.inMilliseconds}ms)'),
+                backgroundColor: DnaColors.snackbarSuccess,
+                duration: const Duration(seconds: 2),
+              ),
+            );
+          }
+        },
+        loading: () {
+          debugPrint('[OFFLINE_CHECK] Engine still loading...');
+        },
+        error: (e, st) {
+          debugPrint('[OFFLINE_CHECK] Engine error: $e');
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: Text('Engine error: $e'),
+                backgroundColor: DnaColors.snackbarError,
+              ),
+            );
+          }
+        },
+      );
+    } catch (e, st) {
+      debugPrint('[OFFLINE_CHECK] Exception: $e\n$st');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Check failed: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isCheckingOffline = false);
+        debugPrint('[OFFLINE_CHECK] Check finished');
+      }
+    }
   }
 
   @override
@@ -90,6 +157,18 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ],
         ),
         actions: [
+          // Check offline messages button
+          IconButton(
+            icon: _isCheckingOffline
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.cloud_download),
+            tooltip: 'Check offline messages',
+            onPressed: _isCheckingOffline ? null : _checkOfflineMessages,
+          ),
           IconButton(
             icon: const Icon(Icons.more_vert),
             onPressed: () => _showContactOptions(context),
@@ -465,6 +544,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                     contact.displayName,
                   );
                 }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.cloud_download),
+              title: const Text('Check Offline Messages'),
+              subtitle: const Text('Fetch from DHT queue'),
+              onTap: () {
+                Navigator.pop(context);
+                _checkOfflineMessages();
               },
             ),
             ListTile(
