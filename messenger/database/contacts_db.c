@@ -701,8 +701,9 @@ int contacts_db_add_incoming_request(
         return -1;
     }
 
-    if (!fingerprint || strlen(fingerprint) == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint\n");
+    if (!fingerprint || strlen(fingerprint) != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint length: %zu (expected 128)\n",
+                      fingerprint ? strlen(fingerprint) : 0);
         return -1;
     }
 
