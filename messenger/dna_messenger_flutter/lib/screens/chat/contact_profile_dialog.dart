@@ -179,17 +179,6 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
           const SizedBox(height: 16),
         ],
 
-        // Wallets
-        if (profile != null && _hasWallets(profile)) ...[
-          _buildSection(
-            theme,
-            'Wallets',
-            Icons.account_balance_wallet_outlined,
-            _buildWalletItems(profile),
-          ),
-          const SizedBox(height: 16),
-        ],
-
         // Socials
         if (profile != null && _hasSocials(profile)) ...[
           _buildSection(
@@ -383,75 +372,6 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
     );
   }
 
-  Widget _buildCopyableRow(String label, String value, {IconData? icon}) {
-    return InkWell(
-      onTap: () {
-        Clipboard.setData(ClipboardData(text: value));
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('$label copied')),
-        );
-      },
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-        child: Row(
-          children: [
-            if (icon != null) ...[
-              Icon(icon, size: 18, color: DnaColors.textMuted),
-              const SizedBox(width: 12),
-            ],
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    label,
-                    style: TextStyle(
-                      fontSize: 11,
-                      color: DnaColors.textMuted,
-                    ),
-                  ),
-                  Text(
-                    _truncateAddress(value),
-                    style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-            Icon(Icons.copy, size: 16, color: DnaColors.textMuted),
-          ],
-        ),
-      ),
-    );
-  }
-
-  bool _hasWallets(UserProfile profile) {
-    return profile.backbone.isNotEmpty ||
-        profile.btc.isNotEmpty ||
-        profile.eth.isNotEmpty ||
-        profile.sol.isNotEmpty ||
-        profile.trx.isNotEmpty;
-  }
-
-  List<Widget> _buildWalletItems(UserProfile profile) {
-    final items = <Widget>[];
-    if (profile.backbone.isNotEmpty) {
-      items.add(_buildCopyableRow('Backbone (CPUNK)', profile.backbone));
-    }
-    if (profile.btc.isNotEmpty) {
-      items.add(_buildCopyableRow('Bitcoin', profile.btc));
-    }
-    if (profile.eth.isNotEmpty) {
-      items.add(_buildCopyableRow('Ethereum', profile.eth));
-    }
-    if (profile.sol.isNotEmpty) {
-      items.add(_buildCopyableRow('Solana', profile.sol));
-    }
-    if (profile.trx.isNotEmpty) {
-      items.add(_buildCopyableRow('TRON', profile.trx));
-    }
-    return items;
-  }
-
   bool _hasSocials(UserProfile profile) {
     return profile.telegram.isNotEmpty ||
         profile.twitter.isNotEmpty ||
@@ -535,10 +455,5 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
   String _shortenFingerprint(String fingerprint) {
     if (fingerprint.length <= 20) return fingerprint;
     return '${fingerprint.substring(0, 8)}...${fingerprint.substring(fingerprint.length - 8)}';
-  }
-
-  String _truncateAddress(String address) {
-    if (address.length <= 24) return address;
-    return '${address.substring(0, 12)}...${address.substring(address.length - 12)}';
   }
 }
