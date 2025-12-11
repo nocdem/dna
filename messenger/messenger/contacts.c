@@ -17,6 +17,26 @@
 #define LOG_TAG "MSG_CONTACTS"
 
 // ============================================================================
+// VALIDATION HELPERS
+// ============================================================================
+
+/**
+ * Validate a fingerprint string (must be 128 hex characters)
+ */
+static bool is_valid_fingerprint(const char *fp) {
+    if (!fp) return false;
+    size_t len = strlen(fp);
+    if (len != 128) return false;
+    for (size_t i = 0; i < 128; i++) {
+        char c = fp[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
+// ============================================================================
 // DHT CONTACT SYNCHRONIZATION
 // ============================================================================
 
@@ -227,6 +247,11 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         // MERGE mode: only ADD contacts from DHT that don't exist locally
         size_t added = 0;
         for (size_t i = 0; i < count; i++) {
+            if (!is_valid_fingerprint(contacts[i])) {
+                QGP_LOG_WARN(LOG_TAG, "MERGE: Skipping invalid fingerprint from DHT (len=%zu)\n",
+                             contacts[i] ? strlen(contacts[i]) : 0);
+                continue;
+            }
             if (!contacts_db_exists(contacts[i])) {
                 if (contacts_db_add(contacts[i], NULL) == 0) {
                     added++;
@@ -251,6 +276,11 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     // Add contacts from DHT
     size_t added = 0;
     for (size_t i = 0; i < count; i++) {
+        if (!is_valid_fingerprint(contacts[i])) {
+            QGP_LOG_WARN(LOG_TAG, "REPLACE: Skipping invalid fingerprint from DHT (len=%zu)\n",
+                         contacts[i] ? strlen(contacts[i]) : 0);
+            continue;
+        }
         if (contacts_db_add(contacts[i], NULL) == 0) {
             added++;
         } else {
