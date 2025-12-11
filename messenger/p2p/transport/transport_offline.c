@@ -70,21 +70,30 @@ int p2p_check_offline_messages(
     p2p_transport_t *ctx,
     size_t *messages_received)
 {
+    QGP_LOG_WARN(LOG_TAG, ">>> p2p_check_offline_messages called\n");
+
     if (!ctx) {
+        QGP_LOG_ERROR(LOG_TAG, ">>> ctx is NULL!\n");
         return -1;
     }
 
     if (!ctx->config.enable_offline_queue) {
+        QGP_LOG_WARN(LOG_TAG, ">>> Offline queue DISABLED in config\n");
         if (messages_received) *messages_received = 0;
         return 0;
     }
 
+    QGP_LOG_WARN(LOG_TAG, ">>> My identity: %.16s...\n", ctx->config.identity ? ctx->config.identity : "NULL");
+
     // 1. Load contacts from database
     contact_list_t *contacts = NULL;
     if (contacts_db_list(&contacts) != 0 || !contacts || contacts->count == 0) {
+        QGP_LOG_WARN(LOG_TAG, ">>> No contacts found in database\n");
         if (messages_received) *messages_received = 0;
         return 0;
     }
+
+    QGP_LOG_WARN(LOG_TAG, ">>> Found %zu contacts to check outboxes for\n", contacts->count);
 
     // 2. Build array of sender fingerprints
     const char **sender_fps = (const char**)malloc(contacts->count * sizeof(char*));
@@ -97,12 +106,16 @@ int p2p_check_offline_messages(
 
     for (size_t i = 0; i < contacts->count; i++) {
         sender_fps[i] = contacts->contacts[i].identity;  // Fingerprint
+        QGP_LOG_WARN(LOG_TAG, ">>> Contact %zu: %.16s... (checking their outbox for msgs to me)\n",
+                     i, sender_fps[i]);
     }
 
     // 3. Query all contacts' outboxes
     // For each contact: Key = SHA3-512(contact_fp + ":outbox:" + my_fp)
     dht_offline_message_t *messages = NULL;
     size_t count = 0;
+
+    QGP_LOG_WARN(LOG_TAG, ">>> Calling dht_retrieve_queued_messages_from_contacts_parallel...\n");
 
     // Use parallel version for 10-100× speedup
     int result = dht_retrieve_queued_messages_from_contacts_parallel(
@@ -114,6 +127,8 @@ int p2p_check_offline_messages(
         &count
     );
 
+    QGP_LOG_WARN(LOG_TAG, ">>> DHT retrieve returned %d, count=%zu\n", result, count);
+
     free(sender_fps);
     contacts_db_free_list(contacts);
 
@@ -124,6 +139,7 @@ int p2p_check_offline_messages(
     }
 
     if (count == 0) {
+        QGP_LOG_WARN(LOG_TAG, ">>> No offline messages found in any contact's outbox\n");
         if (messages_received) *messages_received = 0;
         return 0;
     }
