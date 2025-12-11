@@ -300,10 +300,19 @@ Example usage for offline message notifications:
 ```c
 // Listen for messages from a contact's outbox
 // Callback fires when contact sends NEW message (updates their outbox)
-uint8_t outbox_key[64];
-dht_generate_outbox_key(contact_fp, my_fp, outbox_key);
+//
+// IMPORTANT: Outbox uses chunked storage, so listen to chunk[0] key:
+// - Base key: "contact_fp:outbox:my_fp"
+// - Chunk[0] key: SHA3-512(base_key + ":chunk:0")[0:32]
+#include "dht/shared/dht_chunked.h"
 
-size_t token = dht_listen(ctx, outbox_key, 64, my_callback, my_context);
+char base_key[512];
+snprintf(base_key, sizeof(base_key), "%s:outbox:%s", contact_fp, my_fp);
+
+uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];  // 32 bytes
+dht_chunked_make_key(base_key, 0, chunk0_key);
+
+size_t token = dht_listen(ctx, chunk0_key, DHT_CHUNK_KEY_SIZE, my_callback, my_context);
 if (token == 0) {
     fprintf(stderr, "Failed to start listening\n");
 }
@@ -551,7 +560,9 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
     size_t *count_out
 );
 
-// Generate outbox key
+// Generate outbox base key hash (legacy - for backward compatibility)
+// NOTE: For listening to outbox updates, use dht_chunked_make_key() instead
+// because chunked storage writes to chunk[0] key, not this raw hash.
 void dht_generate_outbox_key(
     const char *sender,
     const char *recipient,
