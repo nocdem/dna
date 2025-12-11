@@ -14,6 +14,7 @@
 #include <ctype.h>
 #include <pthread.h>
 #include <time.h>
+#include <signal.h>
 
 #define LOG_TAG "CLI"
 
@@ -306,6 +307,7 @@ void cmd_help(void) {
     printf("  send <fp> <message>        - Send message to recipient\n");
     printf("  messages <fp>              - Show conversation with contact\n");
     printf("  check-offline              - Check for offline messages\n");
+    printf("  listen                     - Subscribe to contacts' outboxes (stay running)\n");
     printf("\n");
 
     printf("WALLET:\n");
@@ -1124,6 +1126,57 @@ int cmd_check_offline(dna_engine_t *engine) {
     return 0;
 }
 
+/* Keep CLI alive while listening */
+static volatile bool g_listening = true;
+
+static void listen_signal_handler(int sig) {
+    (void)sig;
+    g_listening = false;
+    printf("\nStopping listener...\n");
+}
+
+int cmd_listen(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    const char *fp = dna_engine_get_fingerprint(engine);
+    if (!fp) {
+        printf("Error: No identity loaded\n");
+        return -1;
+    }
+
+    printf("Subscribing to contacts' outboxes for push notifications...\n");
+
+    /* Start listeners for all contacts */
+    int count = dna_engine_listen_all_contacts(engine);
+    if (count < 0) {
+        printf("Error: Failed to start listeners\n");
+        return -1;
+    }
+
+    printf("Listening to %d contact(s). Press Ctrl+C to stop.\n", count);
+    printf("Incoming messages will be displayed in real-time.\n\n");
+
+    /* Set up signal handler */
+    g_listening = true;
+    signal(SIGINT, listen_signal_handler);
+    signal(SIGTERM, listen_signal_handler);
+
+    /* Keep running until interrupted */
+    while (g_listening) {
+        struct timespec ts = {.tv_sec = 1, .tv_nsec = 0};
+        nanosleep(&ts, NULL);
+    }
+
+    /* Cancel all listeners */
+    dna_engine_cancel_all_outbox_listeners(engine);
+    printf("Listeners cancelled.\n");
+
+    return 0;
+}
+
 /* ============================================================================
  * WALLET COMMANDS
  * ============================================================================ */
@@ -1394,6 +1447,9 @@ bool execute_command(dna_engine_t *engine, const char *line) {
     }
     else if (strcmp(cmd, "check-offline") == 0) {
         cmd_check_offline(engine);
+    }
+    else if (strcmp(cmd, "listen") == 0) {
+        cmd_listen(engine);
     }
     else if (strcmp(cmd, "wallets") == 0) {
         cmd_wallets(engine);

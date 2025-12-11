@@ -201,6 +201,14 @@ int cmd_messages(dna_engine_t *engine, const char *fingerprint);
  */
 int cmd_check_offline(dna_engine_t *engine);
 
+/**
+ * Subscribe to contacts' outboxes and listen for push notifications
+ * Stays running until Ctrl+C
+ * @param engine DNA engine instance
+ * @return 0 on success, negative on error
+ */
+int cmd_listen(dna_engine_t *engine);
+
 /* ============================================================================
  * WALLET COMMANDS (new)
  * ============================================================================ */

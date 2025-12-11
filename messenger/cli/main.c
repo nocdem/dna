@@ -90,6 +90,7 @@ static void print_usage(const char *prog_name) {
     printf("  send <fp> <message>         Send message\n");
     printf("  messages <fp>               Show conversation\n");
     printf("  check-offline               Check for offline messages\n");
+    printf("  listen                      Subscribe to contacts and listen (stays running)\n");
     printf("\n");
     printf("WALLET COMMANDS:\n");
     printf("  wallets                     List wallets\n");
@@ -444,6 +445,9 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "check-offline") == 0) {
         result = cmd_check_offline(g_engine);
+    }
+    else if (strcmp(command, "listen") == 0) {
+        result = cmd_listen(g_engine);
     }
 
     /* ====== WALLET COMMANDS ====== */
