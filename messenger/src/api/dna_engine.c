@@ -58,6 +58,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/client/dht_contactlist.h"
 #include "dht/client/dna_feed.h"
 #include "dht/client/dna_profile.h"
+#include "dht/shared/dht_chunked.h"
 #include "p2p/p2p_transport.h"
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
@@ -4025,9 +4026,21 @@ size_t dna_engine_listen_outbox(
         return 0;
     }
 
-    /* Generate outbox key: SHA3-512(contact_fp + ":outbox:" + my_fp) */
-    uint8_t outbox_key[64];
-    dht_generate_outbox_key(contact_fingerprint, engine->fingerprint, outbox_key);
+    /* Generate chunk[0] key for contact's outbox to me.
+     * Chunked storage uses: SHA3-512(base_key + ":chunk:0")[0:32]
+     * Base key format: contact_fp + ":outbox:" + my_fp */
+    char base_key[512];
+    snprintf(base_key, sizeof(base_key), "%s:outbox:%s",
+             contact_fingerprint, engine->fingerprint);
+
+    uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];  /* 32 bytes */
+    if (dht_chunked_make_key(base_key, 0, chunk0_key) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate chunk key for outbox listener");
+        pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+        return 0;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Listening to chunk[0] key for base_key=%s", base_key);
 
     /* Create callback context (will be freed when listener is cancelled) */
     outbox_listener_ctx_t *ctx = malloc(sizeof(outbox_listener_ctx_t));
@@ -4040,8 +4053,8 @@ size_t dna_engine_listen_outbox(
     strncpy(ctx->contact_fingerprint, contact_fingerprint, sizeof(ctx->contact_fingerprint) - 1);
     ctx->contact_fingerprint[sizeof(ctx->contact_fingerprint) - 1] = '\0';
 
-    /* Start DHT listen */
-    size_t token = dht_listen(dht_ctx, outbox_key, 64, outbox_listen_callback, ctx);
+    /* Start DHT listen on chunk[0] key */
+    size_t token = dht_listen(dht_ctx, chunk0_key, DHT_CHUNK_KEY_SIZE, outbox_listen_callback, ctx);
     if (token == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT listener for %s...", contact_fingerprint);
         free(ctx);
