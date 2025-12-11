@@ -360,7 +360,9 @@ abstract class DnaEventType {
   static const int DNA_EVENT_GROUP_MEMBER_JOINED = 9;
   static const int DNA_EVENT_GROUP_MEMBER_LEFT = 10;
   static const int DNA_EVENT_IDENTITY_LOADED = 11;
-  static const int DNA_EVENT_ERROR = 12;
+  static const int DNA_EVENT_CONTACT_REQUEST_RECEIVED = 12;
+  static const int DNA_EVENT_OUTBOX_UPDATED = 13;  // Contact's outbox has new messages
+  static const int DNA_EVENT_ERROR = 14;
 }
 
 /// Event data union - message received
@@ -401,6 +403,12 @@ final class dna_event_group_member extends Struct {
 final class dna_event_identity_loaded extends Struct {
   @Array(129)
   external Array<Char> fingerprint;
+}
+
+/// Event data union - outbox updated
+final class dna_event_outbox_updated extends Struct {
+  @Array(129)
+  external Array<Char> contact_fingerprint;
 }
 
 /// Event data union - error
@@ -1583,6 +1591,54 @@ class DnaBindings {
     Pointer<Void> user_data,
   ) {
     return _dna_engine_lookup_presence(engine, fingerprint, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
+  // OUTBOX LISTENERS (Real-time offline message notifications)
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_listen_outbox = _lib.lookupFunction<
+      Size Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_listen_outbox');
+
+  /// Start listening for updates to a contact's outbox
+  /// Returns listener token (> 0 on success, 0 on failure)
+  int dna_engine_listen_outbox(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> contact_fingerprint,
+  ) {
+    return _dna_engine_listen_outbox(engine, contact_fingerprint);
+  }
+
+  late final _dna_engine_cancel_outbox_listener = _lib.lookupFunction<
+      Void Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      void Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_cancel_outbox_listener');
+
+  /// Cancel an active outbox listener
+  void dna_engine_cancel_outbox_listener(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> contact_fingerprint,
+  ) {
+    _dna_engine_cancel_outbox_listener(engine, contact_fingerprint);
+  }
+
+  late final _dna_engine_listen_all_contacts = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_listen_all_contacts');
+
+  /// Start listeners for all contacts' outboxes
+  /// Returns number of listeners started
+  int dna_engine_listen_all_contacts(Pointer<dna_engine_t> engine) {
+    return _dna_engine_listen_all_contacts(engine);
+  }
+
+  late final _dna_engine_cancel_all_outbox_listeners = _lib.lookupFunction<
+      Void Function(Pointer<dna_engine_t>),
+      void Function(Pointer<dna_engine_t>)>('dna_engine_cancel_all_outbox_listeners');
+
+  /// Cancel all active outbox listeners
+  void dna_engine_cancel_all_outbox_listeners(Pointer<dna_engine_t> engine) {
+    _dna_engine_cancel_all_outbox_listeners(engine);
   }
 
   // ---------------------------------------------------------------------------

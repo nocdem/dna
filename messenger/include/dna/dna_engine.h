@@ -503,6 +503,7 @@ typedef enum {
     DNA_EVENT_GROUP_MEMBER_LEFT,
     DNA_EVENT_IDENTITY_LOADED,
     DNA_EVENT_CONTACT_REQUEST_RECEIVED,  /* New contact request from DHT */
+    DNA_EVENT_OUTBOX_UPDATED,            /* Contact's outbox has new messages */
     DNA_EVENT_ERROR
 } dna_event_type_t;
 
@@ -535,6 +536,9 @@ typedef struct {
         struct {
             dna_contact_request_t request;
         } contact_request_received;
+        struct {
+            char contact_fingerprint[129];  /* Contact whose outbox was updated */
+        } outbox_updated;
         struct {
             int code;
             char message[256];
@@ -1549,6 +1553,63 @@ dna_request_id_t dna_engine_get_registered_name(
     dna_engine_t *engine,
     dna_display_name_cb callback,
     void *user_data
+);
+
+/* ============================================================================
+ * 7.5 OUTBOX LISTENERS (Real-time offline message notifications)
+ * ============================================================================ */
+
+/**
+ * Start listening for updates to a contact's outbox
+ *
+ * Subscribes to DHT notifications when the contact publishes new offline
+ * messages to their outbox (addressed to us). When updates are detected,
+ * fires DNA_EVENT_OUTBOX_UPDATED event.
+ *
+ * The outbox key is computed as: SHA3-512(contact_fp + ":outbox:" + my_fp)
+ *
+ * @param engine              Engine instance
+ * @param contact_fingerprint Contact's fingerprint (128 hex chars)
+ * @return                    Listener token (> 0 on success, 0 on failure)
+ */
+size_t dna_engine_listen_outbox(
+    dna_engine_t *engine,
+    const char *contact_fingerprint
+);
+
+/**
+ * Cancel an active outbox listener
+ *
+ * Stops receiving notifications for the specified contact's outbox.
+ *
+ * @param engine              Engine instance
+ * @param contact_fingerprint Contact's fingerprint
+ */
+void dna_engine_cancel_outbox_listener(
+    dna_engine_t *engine,
+    const char *contact_fingerprint
+);
+
+/**
+ * Start listeners for all contacts' outboxes
+ *
+ * Convenience function that starts outbox listeners for all contacts
+ * in the local database. Call after loading identity.
+ *
+ * @param engine    Engine instance
+ * @return          Number of listeners started
+ */
+int dna_engine_listen_all_contacts(
+    dna_engine_t *engine
+);
+
+/**
+ * Cancel all active outbox listeners
+ *
+ * @param engine    Engine instance
+ */
+void dna_engine_cancel_all_outbox_listeners(
+    dna_engine_t *engine
 );
 
 /* ============================================================================

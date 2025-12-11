@@ -728,6 +728,12 @@ class ErrorEvent extends DnaEvent {
   ErrorEvent(this.code, this.message);
 }
 
+/// Outbox updated event - contact has new offline messages for us
+class OutboxUpdatedEvent extends DnaEvent {
+  final String contactFingerprint;
+  OutboxUpdatedEvent(this.contactFingerprint);
+}
+
 // =============================================================================
 // EXCEPTIONS
 // =============================================================================
@@ -868,6 +874,20 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_IDENTITY_LOADED:
         dartEvent = IdentityLoadedEvent('');
+        break;
+      case DnaEventType.DNA_EVENT_CONTACT_REQUEST_RECEIVED:
+        // TODO: Parse contact request from union data
+        break;
+      case DnaEventType.DNA_EVENT_OUTBOX_UPDATED:
+        // Parse contact fingerprint from union data (at offset 0, 129 bytes)
+        final fpBytes = <int>[];
+        for (var i = 0; i < 128; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          fpBytes.add(byte);
+        }
+        final contactFp = String.fromCharCodes(fpBytes);
+        dartEvent = OutboxUpdatedEvent(contactFp);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
         dartEvent = ErrorEvent(0, 'Error occurred');
@@ -2027,6 +2047,47 @@ class DnaEngine {
     }
 
     return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
+  // OUTBOX LISTENERS (Real-time offline message notifications)
+  // ---------------------------------------------------------------------------
+
+  /// Start listening for updates to a contact's outbox
+  ///
+  /// Returns listener token (> 0 on success, 0 on failure).
+  /// When the contact's outbox updates, DNA_EVENT_OUTBOX_UPDATED is fired.
+  int listenOutbox(String contactFingerprint) {
+    final fpPtr = contactFingerprint.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_listen_outbox(_engine, fpPtr.cast());
+    } finally {
+      calloc.free(fpPtr);
+    }
+  }
+
+  /// Cancel an active outbox listener
+  void cancelOutboxListener(String contactFingerprint) {
+    final fpPtr = contactFingerprint.toNativeUtf8();
+    try {
+      _bindings.dna_engine_cancel_outbox_listener(_engine, fpPtr.cast());
+    } finally {
+      calloc.free(fpPtr);
+    }
+  }
+
+  /// Start listeners for all contacts' outboxes
+  ///
+  /// Convenience function that starts outbox listeners for all contacts
+  /// in the local database. Call after loading identity.
+  /// Returns number of listeners started.
+  int listenAllContacts() {
+    return _bindings.dna_engine_listen_all_contacts(_engine);
+  }
+
+  /// Cancel all active outbox listeners
+  void cancelAllOutboxListeners() {
+    _bindings.dna_engine_cancel_all_outbox_listeners(_engine);
   }
 
   // ---------------------------------------------------------------------------
