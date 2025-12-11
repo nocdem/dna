@@ -9,6 +9,7 @@ import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
 import 'blocked_users_screen.dart';
+import 'contacts_management_screen.dart';
 
 /// Developer mode state provider - persisted to SharedPreferences
 final developerModeProvider = StateNotifierProvider<DeveloperModeNotifier, bool>((ref) {
@@ -64,6 +65,8 @@ class SettingsScreen extends ConsumerWidget {
             simpleProfile: simpleProfile,
             fullProfile: fullProfile,
           ),
+          // Contacts
+          _ContactsSection(),
           // Security
           _SecuritySection(),
           // Developer settings (hidden by default)
@@ -233,6 +236,39 @@ class _ProfileSection extends StatelessWidget {
           color: theme.colorScheme.primary,
         ),
       ),
+    );
+  }
+}
+
+class _ContactsSection extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final contacts = ref.watch(contactsProvider);
+    final contactCount = contacts.when(
+      data: (list) => list.length,
+      loading: () => 0,
+      error: (_, __) => 0,
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader('Contacts'),
+        ListTile(
+          leading: const Icon(Icons.people),
+          title: const Text('Manage Contacts'),
+          subtitle: Text(contactCount > 0 ? '$contactCount contacts' : 'No contacts'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            Navigator.push(
+              context,
+              MaterialPageRoute(
+                builder: (context) => const ContactsManagementScreen(),
+              ),
+            );
+          },
+        ),
+      ],
     );
   }
 }

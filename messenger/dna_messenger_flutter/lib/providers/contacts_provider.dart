@@ -99,6 +99,12 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     await refresh();
   }
 
+  Future<void> removeContact(String fingerprint) async {
+    final engine = await ref.read(engineProvider.future);
+    await engine.removeContact(fingerprint);
+    await refresh();
+  }
+
   void updateContactStatus(String fingerprint, bool isOnline) {
     state.whenData((contacts) {
       final index = contacts.indexWhere((c) => c.fingerprint == fingerprint);

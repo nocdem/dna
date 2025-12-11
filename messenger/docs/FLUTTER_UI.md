@@ -275,6 +275,7 @@ Future<List<Contact>> _updateContactsPresence(DnaEngine engine, List<Contact> co
    - Nickname registration works
    - Export seed phrase (placeholder)
    - Switch identity
+   - Manage Contacts (view/remove contacts)
 
 **FFI Functions Added (11 new):**
 ```dart
@@ -298,6 +299,9 @@ rejectInvitation(uuid)       // Decline invite
 sendTokens(...)              // Send tokens
 getTransactions(index, net)  // Transaction history
 lookupProfile(fingerprint)   // Lookup any user's profile by fingerprint (for wallet address resolution)
+
+// Contacts
+removeContact(fingerprint)   // Remove contact from list
 ```
 
 **Screens Updated:**
@@ -305,7 +309,8 @@ lookupProfile(fingerprint)   // Lookup any user's profile by fingerprint (for wa
 - `groups_screen.dart`: Create, accept, reject, open group chat
 - `GroupChatScreen`: New screen for group messaging
 - `wallet_screen.dart`: Send dialog with DNA fingerprint resolution + contact picker
-- `settings_screen.dart`: Nickname registration works
+- `settings_screen.dart`: Nickname registration, contacts management
+- `contacts_management_screen.dart`: View/remove contacts from Settings
 
 **Send to DNA Identity Feature:**
 - Contact picker button in send dialog to select from contacts

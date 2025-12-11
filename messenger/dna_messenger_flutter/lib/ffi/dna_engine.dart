@@ -1285,6 +1285,43 @@ class DnaEngine {
     return completer.future;
   }
 
+  /// Remove contact by fingerprint
+  Future<void> removeContact(String fingerprint) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final fpPtr = fingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(fpPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_remove_contact(
+      _engine,
+      fpPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(fpPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
   // ---------------------------------------------------------------------------
   // CONTACT REQUESTS (ICQ-style)
   // ---------------------------------------------------------------------------
