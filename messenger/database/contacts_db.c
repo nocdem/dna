@@ -23,6 +23,20 @@
 
 #define LOG_TAG "MSG_CONTACTS"
 
+// Validate fingerprint: must be exactly 128 hex characters
+static bool is_valid_fingerprint(const char *fp) {
+    if (!fp) return false;
+    size_t len = strlen(fp);
+    if (len != 128) return false;
+    for (size_t i = 0; i < 128; i++) {
+        char c = fp[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static sqlite3 *g_db = NULL;
 static char g_owner_identity[256] = {0};  // Current database owner
 
@@ -449,6 +463,13 @@ int contacts_db_list(contact_list_t **list_out) {
         uint64_t timestamp = sqlite3_column_int64(stmt, 1);
         const char *notes = (const char*)sqlite3_column_text(stmt, 2);
 
+        // Skip invalid fingerprints (corrupted data protection)
+        if (!is_valid_fingerprint(identity)) {
+            QGP_LOG_WARN(LOG_TAG, "Skipping invalid fingerprint in contacts_db_list (len=%zu)",
+                         identity ? strlen(identity) : 0);
+            continue;
+        }
+
         strncpy(list->contacts[i].identity, identity, sizeof(list->contacts[i].identity) - 1);
         list->contacts[i].added_timestamp = timestamp;
 
@@ -461,19 +482,22 @@ int contacts_db_list(contact_list_t **list_out) {
         i++;
     }
 
+    // Update actual count (may be less if we skipped invalid entries)
+    list->count = i;
+
     sqlite3_finalize(stmt);
 
     *list_out = list;
     return 0;
 }
 
-// Get contact count
+// Get contact count (only counts valid 128-char fingerprints)
 int contacts_db_count(void) {
     if (!g_db) {
         return -1;
     }
 
-    const char *sql = "SELECT COUNT(*) FROM contacts;";
+    const char *sql = "SELECT COUNT(*) FROM contacts WHERE length(identity) = 128;";
     sqlite3_stmt *stmt = NULL;
 
     int rc = sqlite3_prepare_v2(g_db, sql, -1, &stmt, NULL);
