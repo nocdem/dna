@@ -549,6 +549,14 @@ int dht_send_contact_request(
     uint8_t inbox_key[64];
     dht_generate_requests_inbox_key(recipient_fingerprint, inbox_key);
 
+    /* Log key for debugging */
+    char key_hex[33];
+    for (int i = 0; i < 16; i++) {
+        sprintf(&key_hex[i*2], "%02x", inbox_key[i]);
+    }
+    key_hex[32] = '\0';
+    QGP_LOG_INFO(LOG_TAG, "Recipient inbox key (first 16 bytes): %s\n", key_hex);
+
     /* Generate value_id from sender's fingerprint (ensures unique per-sender) */
     uint64_t value_id = dht_fingerprint_to_value_id(sender_fingerprint);
 
@@ -595,6 +603,14 @@ int dht_fetch_contact_requests(
     /* Generate my inbox key */
     uint8_t inbox_key[64];
     dht_generate_requests_inbox_key(my_fingerprint, inbox_key);
+
+    /* Log key for debugging */
+    char key_hex[33];
+    for (int i = 0; i < 16; i++) {
+        sprintf(&key_hex[i*2], "%02x", inbox_key[i]);
+    }
+    key_hex[32] = '\0';
+    QGP_LOG_DEBUG(LOG_TAG, "Inbox key (first 16 bytes): %s\n", key_hex);
 
     /* Get all values at this key (from multiple requesters) */
     uint8_t **values = NULL;
