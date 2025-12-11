@@ -105,67 +105,20 @@ int dht_keyserver_publish(
     identity->timestamp = identity->created_at;
     identity->version = 1;
 
-    // Sign the identity
-    size_t msg_len = sizeof(identity->fingerprint) +
-                     sizeof(identity->dilithium_pubkey) +
-                     sizeof(identity->kyber_pubkey) +
-                     sizeof(bool) +
-                     sizeof(identity->registered_name) +
-                     sizeof(uint64_t) * 2 +
-                     sizeof(uint32_t) +
-                     sizeof(identity->wallets) +
-                     sizeof(identity->socials) +
-                     sizeof(identity->bio) +
-                     sizeof(identity->profile_picture_ipfs) +
-                     sizeof(uint64_t) +
-                     sizeof(uint32_t);
-
-    uint8_t *msg = malloc(msg_len);
-    if (!msg) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate message buffer\n");
+    // Sign the JSON representation (not struct bytes) for forward compatibility
+    // This matches the verification method in keyserver_profiles.c and keyserver_lookup.c
+    char *json_unsigned = dna_identity_to_json_unsigned(identity);
+    if (!json_unsigned) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize identity for signing\n");
         dna_identity_free(identity);
         return -1;
     }
 
-    size_t offset = 0;
-    memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
-    offset += sizeof(identity->fingerprint);
-    memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
-    offset += sizeof(identity->dilithium_pubkey);
-    memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
-    offset += sizeof(identity->kyber_pubkey);
-    memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
-    offset += sizeof(bool);
-    memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
-    offset += sizeof(identity->registered_name);
-
-    uint64_t registered_at_net = htonll(identity->name_registered_at);
-    uint64_t expires_at_net = htonll(identity->name_expires_at);
-    uint32_t name_version_net = htonl(identity->name_version);
-    uint64_t timestamp_net = htonll(identity->timestamp);
-    uint32_t version_net = htonl(identity->version);
-
-    memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
-    offset += sizeof(uint64_t);
-    memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
-    offset += sizeof(uint64_t);
-    memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
-    offset += sizeof(uint32_t);
-    memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
-    offset += sizeof(identity->wallets);
-    memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
-    offset += sizeof(identity->socials);
-    memcpy(msg + offset, identity->bio, sizeof(identity->bio));
-    offset += sizeof(identity->bio);
-    memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
-    offset += sizeof(identity->profile_picture_ipfs);
-    memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
-    offset += sizeof(uint64_t);
-    memcpy(msg + offset, &version_net, sizeof(uint32_t));
-
     size_t siglen = sizeof(identity->signature);
-    int sign_result = qgp_dsa87_sign(identity->signature, &siglen, msg, msg_len, dilithium_privkey);
-    free(msg);
+    int sign_result = qgp_dsa87_sign(identity->signature, &siglen,
+                                      (uint8_t*)json_unsigned, strlen(json_unsigned),
+                                      dilithium_privkey);
+    free(json_unsigned);
 
     if (sign_result != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to sign identity\n");
@@ -300,66 +253,19 @@ int dht_keyserver_update(
 
     QGP_LOG_INFO(LOG_TAG, "Updating identity keys, new version: %u\n", identity->version);
 
-    // Re-sign the identity with new private key
-    size_t msg_len = sizeof(identity->fingerprint) +
-                     sizeof(identity->dilithium_pubkey) +
-                     sizeof(identity->kyber_pubkey) +
-                     sizeof(bool) +
-                     sizeof(identity->registered_name) +
-                     sizeof(uint64_t) * 2 +
-                     sizeof(uint32_t) +
-                     sizeof(identity->wallets) +
-                     sizeof(identity->socials) +
-                     sizeof(identity->bio) +
-                     sizeof(identity->profile_picture_ipfs) +
-                     sizeof(uint64_t) +
-                     sizeof(uint32_t);
-
-    uint8_t *msg = malloc(msg_len);
-    if (!msg) {
+    // Re-sign the JSON representation with new private key (for forward compatibility)
+    char *json_unsigned = dna_identity_to_json_unsigned(identity);
+    if (!json_unsigned) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to serialize identity for signing\n");
         dna_identity_free(identity);
         return -1;
     }
 
-    size_t offset = 0;
-    memcpy(msg + offset, identity->fingerprint, sizeof(identity->fingerprint));
-    offset += sizeof(identity->fingerprint);
-    memcpy(msg + offset, identity->dilithium_pubkey, sizeof(identity->dilithium_pubkey));
-    offset += sizeof(identity->dilithium_pubkey);
-    memcpy(msg + offset, identity->kyber_pubkey, sizeof(identity->kyber_pubkey));
-    offset += sizeof(identity->kyber_pubkey);
-    memcpy(msg + offset, &identity->has_registered_name, sizeof(bool));
-    offset += sizeof(bool);
-    memcpy(msg + offset, identity->registered_name, sizeof(identity->registered_name));
-    offset += sizeof(identity->registered_name);
-
-    uint64_t registered_at_net = htonll(identity->name_registered_at);
-    uint64_t expires_at_net = htonll(identity->name_expires_at);
-    uint32_t name_version_net = htonl(identity->name_version);
-    uint64_t timestamp_net = htonll(identity->timestamp);
-    uint32_t version_net = htonl(identity->version);
-
-    memcpy(msg + offset, &registered_at_net, sizeof(uint64_t));
-    offset += sizeof(uint64_t);
-    memcpy(msg + offset, &expires_at_net, sizeof(uint64_t));
-    offset += sizeof(uint64_t);
-    memcpy(msg + offset, &name_version_net, sizeof(uint32_t));
-    offset += sizeof(uint32_t);
-    memcpy(msg + offset, &identity->wallets, sizeof(identity->wallets));
-    offset += sizeof(identity->wallets);
-    memcpy(msg + offset, &identity->socials, sizeof(identity->socials));
-    offset += sizeof(identity->socials);
-    memcpy(msg + offset, identity->bio, sizeof(identity->bio));
-    offset += sizeof(identity->bio);
-    memcpy(msg + offset, identity->profile_picture_ipfs, sizeof(identity->profile_picture_ipfs));
-    offset += sizeof(identity->profile_picture_ipfs);
-    memcpy(msg + offset, &timestamp_net, sizeof(uint64_t));
-    offset += sizeof(uint64_t);
-    memcpy(msg + offset, &version_net, sizeof(uint32_t));
-
     size_t siglen = sizeof(identity->signature);
-    int sign_result = qgp_dsa87_sign(identity->signature, &siglen, msg, msg_len, new_dilithium_privkey);
-    free(msg);
+    int sign_result = qgp_dsa87_sign(identity->signature, &siglen,
+                                      (uint8_t*)json_unsigned, strlen(json_unsigned),
+                                      new_dilithium_privkey);
+    free(json_unsigned);
 
     if (sign_result != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to sign updated identity\n");
