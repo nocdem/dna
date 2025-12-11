@@ -2974,6 +2974,101 @@ int dna_engine_restore_identity_sync(
     return DNA_OK;
 }
 
+int dna_engine_delete_identity_sync(
+    dna_engine_t *engine,
+    const char *fingerprint
+) {
+    if (!engine || !fingerprint) {
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Validate fingerprint format (128 hex chars) */
+    size_t fp_len = strlen(fingerprint);
+    if (fp_len != 128) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid fingerprint length: %zu (expected 128)", fp_len);
+        return DNA_ERROR_INVALID_ARG;
+    }
+
+    /* Check that fingerprint contains only hex characters */
+    for (size_t i = 0; i < fp_len; i++) {
+        char c = fingerprint[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'))) {
+            QGP_LOG_ERROR(LOG_TAG, "Invalid character in fingerprint at position %zu", i);
+            return DNA_ERROR_INVALID_ARG;
+        }
+    }
+
+    /* Cannot delete currently loaded identity */
+    if (engine->identity_loaded && engine->fingerprint[0] != '\0' &&
+        strcmp(engine->fingerprint, fingerprint) == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Cannot delete currently loaded identity");
+        return DNA_ENGINE_ERROR_BUSY;
+    }
+
+    const char *data_dir = engine->data_dir;
+    int errors = 0;
+
+    QGP_LOG_INFO(LOG_TAG, "Deleting identity: %.16s...", fingerprint);
+
+    /* 1. Delete identity directory: <data_dir>/<fingerprint>/ */
+    char *identity_dir = qgp_platform_join_path(data_dir, fingerprint);
+    if (identity_dir) {
+        if (qgp_platform_file_exists(identity_dir)) {
+            if (qgp_platform_rmdir_recursive(identity_dir) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to delete identity directory: %s", identity_dir);
+                errors++;
+            } else {
+                QGP_LOG_DEBUG(LOG_TAG, "Deleted identity directory: %s", identity_dir);
+            }
+        }
+        free(identity_dir);
+    }
+
+    /* 2. Delete contacts database: <data_dir>/<fingerprint>_contacts.db */
+    char contacts_db[512];
+    snprintf(contacts_db, sizeof(contacts_db), "%s/%s_contacts.db", data_dir, fingerprint);
+    if (qgp_platform_file_exists(contacts_db)) {
+        if (remove(contacts_db) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete contacts database: %s", contacts_db);
+            errors++;
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted contacts database: %s", contacts_db);
+        }
+    }
+
+    /* 3. Delete profiles cache: <data_dir>/<fingerprint>_profiles.db */
+    char profiles_db[512];
+    snprintf(profiles_db, sizeof(profiles_db), "%s/%s_profiles.db", data_dir, fingerprint);
+    if (qgp_platform_file_exists(profiles_db)) {
+        if (remove(profiles_db) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete profiles cache: %s", profiles_db);
+            errors++;
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted profiles cache: %s", profiles_db);
+        }
+    }
+
+    /* 4. Delete groups database: <data_dir>/<fingerprint>_groups.db */
+    char groups_db[512];
+    snprintf(groups_db, sizeof(groups_db), "%s/%s_groups.db", data_dir, fingerprint);
+    if (qgp_platform_file_exists(groups_db)) {
+        if (remove(groups_db) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete groups database: %s", groups_db);
+            errors++;
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted groups database: %s", groups_db);
+        }
+    }
+
+    if (errors > 0) {
+        QGP_LOG_WARN(LOG_TAG, "Identity deletion completed with %d errors", errors);
+        return DNA_ERROR_INTERNAL;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Identity deleted successfully: %.16s...", fingerprint);
+    return DNA_OK;
+}
+
 dna_request_id_t dna_engine_load_identity(
     dna_engine_t *engine,
     const char *fingerprint,

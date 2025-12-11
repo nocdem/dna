@@ -661,14 +661,22 @@ class _PillButton extends StatelessWidget {
   }
 }
 
-class _IdentitySection extends ConsumerWidget {
+class _IdentitySection extends ConsumerStatefulWidget {
   final String? fingerprint;
 
   const _IdentitySection({required this.fingerprint});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<_IdentitySection> createState() => _IdentitySectionState();
+}
+
+class _IdentitySectionState extends ConsumerState<_IdentitySection> {
+  bool _isDeleting = false;
+
+  @override
+  Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final fingerprint = widget.fingerprint;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -679,7 +687,7 @@ class _IdentitySection extends ConsumerWidget {
             leading: const Icon(Icons.fingerprint),
             title: const Text('Fingerprint'),
             subtitle: Text(
-              fingerprint!,
+              fingerprint,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodySmall?.copyWith(
@@ -688,14 +696,168 @@ class _IdentitySection extends ConsumerWidget {
             ),
             trailing: const Icon(Icons.content_copy),
             onTap: () {
-              Clipboard.setData(ClipboardData(text: fingerprint!));
+              Clipboard.setData(ClipboardData(text: fingerprint));
               ScaffoldMessenger.of(context).showSnackBar(
                 const SnackBar(content: Text('Fingerprint copied')),
               );
             },
           ),
+        // Delete Identity option
+        ListTile(
+          leading: Icon(Icons.delete_forever, color: DnaColors.textWarning),
+          title: Text(
+            'Delete Identity',
+            style: TextStyle(color: DnaColors.textWarning),
+          ),
+          subtitle: const Text('Permanently delete this identity from device'),
+          trailing: _isDeleting
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : Icon(Icons.chevron_right, color: DnaColors.textMuted),
+          onTap: _isDeleting ? null : () => _showDeleteConfirmation(context),
+        ),
       ],
     );
+  }
+
+  void _showDeleteConfirmation(BuildContext context) {
+    final fingerprint = widget.fingerprint;
+    if (fingerprint == null) return;
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.warning_amber, color: DnaColors.textWarning),
+            const SizedBox(width: 8),
+            const Text('Delete Identity?'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This will permanently delete all local data for this identity:',
+            ),
+            const SizedBox(height: 12),
+            _buildBulletPoint('Private keys'),
+            _buildBulletPoint('Wallets'),
+            _buildBulletPoint('Messages'),
+            _buildBulletPoint('Contacts'),
+            _buildBulletPoint('Groups'),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: DnaColors.textWarning.withAlpha(26),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: DnaColors.textWarning.withAlpha(51)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 20, color: DnaColors.textWarning),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Make sure you have backed up your seed phrase before deleting!',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: DnaColors.textWarning,
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: DnaColors.textWarning,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () {
+              Navigator.pop(context);
+              _deleteIdentity(fingerprint);
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBulletPoint(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(left: 8, top: 4),
+      child: Row(
+        children: [
+          Icon(Icons.circle, size: 6, color: DnaColors.textMuted),
+          const SizedBox(width: 8),
+          Text(text, style: TextStyle(color: DnaColors.textMuted)),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _deleteIdentity(String fingerprint) async {
+    setState(() => _isDeleting = true);
+
+    try {
+      final engineAsync = ref.read(engineProvider);
+      await engineAsync.when(
+        data: (engine) async {
+          engine.deleteIdentity(fingerprint);
+
+          // Show success message
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('Identity deleted successfully'),
+                backgroundColor: DnaColors.snackbarSuccess,
+              ),
+            );
+
+            // Navigate to identity selection screen
+            // Clear the current identity state and go back to selection
+            ref.invalidate(engineProvider);
+
+            // Pop all routes and go to identity selection
+            Navigator.of(context).popUntil((route) => route.isFirst);
+          }
+        },
+        loading: () {
+          throw Exception('Engine not ready');
+        },
+        error: (e, st) {
+          throw Exception('Engine error: $e');
+        },
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to delete identity: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isDeleting = false);
+      }
+    }
   }
 }
 

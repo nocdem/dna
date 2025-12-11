@@ -698,6 +698,33 @@ int dna_engine_restore_identity_sync(
 );
 
 /**
+ * Delete identity and all associated local data (synchronous)
+ *
+ * Deletes all local files for the specified identity:
+ * - Keys directory: <data_dir>/<fingerprint>/keys/
+ * - Wallets directory: <data_dir>/<fingerprint>/wallets/
+ * - Database directory: <data_dir>/<fingerprint>/db/
+ * - Identity directory: <data_dir>/<fingerprint>/
+ * - Contacts database: <data_dir>/<fingerprint>_contacts.db
+ * - Profiles cache: <data_dir>/<fingerprint>_profiles.db
+ * - Groups database: <data_dir>/<fingerprint>_groups.db
+ *
+ * WARNING: This operation is irreversible! The identity cannot be
+ * recovered unless the user has backed up their seed phrase.
+ *
+ * Note: This does NOT delete data from the DHT network (name registration,
+ * profile, etc.). The identity can be restored from seed phrase.
+ *
+ * @param engine      Engine instance
+ * @param fingerprint Identity fingerprint to delete (128 hex chars)
+ * @return            0 on success, error code on failure
+ */
+int dna_engine_delete_identity_sync(
+    dna_engine_t *engine,
+    const char *fingerprint
+);
+
+/**
  * Load and activate identity
  *
  * Loads keypairs, bootstraps DHT, registers presence,

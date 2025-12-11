@@ -943,6 +943,19 @@ class DnaBindings {
         engine, signing_seed, encryption_seed, wallet_seed, master_seed, mnemonic, fingerprint_out);
   }
 
+  late final _dna_engine_delete_identity_sync = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_delete_identity_sync');
+
+  /// Delete identity and all associated local data
+  /// Returns 0 on success, negative error code on failure
+  int dna_engine_delete_identity_sync(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> fingerprint,
+  ) {
+    return _dna_engine_delete_identity_sync(engine, fingerprint);
+  }
+
   late final _dna_engine_load_identity = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
           Pointer<DnaCompletionCb>, Pointer<Void>),

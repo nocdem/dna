@@ -1095,6 +1095,35 @@ class DnaEngine {
     return restoreIdentitySync(signingSeed, encryptionSeed, walletSeed, masterSeed: masterSeed, mnemonic: mnemonic);
   }
 
+  /// Delete identity and all associated local data
+  ///
+  /// Deletes all local files for the specified identity:
+  /// - Keys directory
+  /// - Wallets directory
+  /// - Database directory
+  /// - Contacts database
+  /// - Profiles cache
+  /// - Groups database
+  ///
+  /// WARNING: This operation is irreversible! The identity cannot be
+  /// recovered unless the user has backed up their seed phrase.
+  ///
+  /// Note: This does NOT delete data from the DHT network (name registration,
+  /// profile, etc.). The identity can be restored from seed phrase.
+  ///
+  /// Throws [DnaEngineException] on error.
+  void deleteIdentity(String fingerprint) {
+    final fpPtr = fingerprint.toNativeUtf8();
+    try {
+      final error = _bindings.dna_engine_delete_identity_sync(_engine, fpPtr.cast());
+      if (error != 0) {
+        throw DnaEngineException.fromCode(error, _bindings);
+      }
+    } finally {
+      calloc.free(fpPtr);
+    }
+  }
+
   /// Load and activate identity
   Future<void> loadIdentity(String fingerprint) async {
     final completer = Completer<void>();
