@@ -1192,12 +1192,17 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
 
     if (rc != 0 || !identity) {
         if (rc == -2) {
-            /* No profile yet - return empty profile */
+            /* No profile yet - create empty profile, will auto-populate wallets below */
             profile = (dna_profile_t*)calloc(1, sizeof(dna_profile_t));
+            if (!profile) {
+                error = DNA_ERROR_INTERNAL;
+                goto done;
+            }
+            goto populate_wallets;
         } else {
             error = DNA_ENGINE_ERROR_NETWORK;
+            goto done;
         }
-        goto done;
     }
 
     /* Copy identity data to profile struct */
@@ -1208,7 +1213,7 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Wallets */
+    /* Wallets - copy from DHT identity */
     strncpy(profile->backbone, identity->wallets.backbone, sizeof(profile->backbone) - 1);
     strncpy(profile->btc, identity->wallets.btc, sizeof(profile->btc) - 1);
     strncpy(profile->eth, identity->wallets.eth, sizeof(profile->eth) - 1);
@@ -1225,6 +1230,40 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile->avatar_base64, identity->avatar_base64, sizeof(profile->avatar_base64) - 1);
 
     dna_identity_free(identity);
+
+populate_wallets:
+    /* Auto-populate empty wallet fields from actual wallet files */
+    blockchain_wallet_list_t *bc_wallets = NULL;
+    if (blockchain_list_wallets(engine->fingerprint, &bc_wallets) == 0 && bc_wallets) {
+        for (size_t i = 0; i < bc_wallets->count; i++) {
+            blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
+            switch (w->type) {
+                case BLOCKCHAIN_CELLFRAME:
+                    if (profile->backbone[0] == '\0' && w->address[0]) {
+                        strncpy(profile->backbone, w->address, sizeof(profile->backbone) - 1);
+                    }
+                    break;
+                case BLOCKCHAIN_ETHEREUM:
+                    if (profile->eth[0] == '\0' && w->address[0]) {
+                        strncpy(profile->eth, w->address, sizeof(profile->eth) - 1);
+                    }
+                    break;
+                case BLOCKCHAIN_SOLANA:
+                    if (profile->sol[0] == '\0' && w->address[0]) {
+                        strncpy(profile->sol, w->address, sizeof(profile->sol) - 1);
+                    }
+                    break;
+                case BLOCKCHAIN_TRON:
+                    if (profile->trx[0] == '\0' && w->address[0]) {
+                        strncpy(profile->trx, w->address, sizeof(profile->trx) - 1);
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
+        blockchain_wallet_list_free(bc_wallets);
+    }
 
 done:
     task->callback.profile(task->request_id, error, profile, task->user_data);
