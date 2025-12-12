@@ -253,22 +253,28 @@ int dht_deserialize_messages(
         }
         ptr += sizeof(uint32_t);
 
-        // Version
+        // Version (support v1 and v2)
         if (ptr + 1 > end) goto truncated;
         uint8_t version = *ptr++;
-        if (version != DHT_OFFLINE_QUEUE_VERSION) {
-            QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %u (expected %u)\n", version, DHT_OFFLINE_QUEUE_VERSION);
+        if (version != 1 && version != 2) {
+            QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %u (expected 1 or 2)\n", version);
             goto error;
         }
 
-        // Seq_num (8 bytes from 2x4 bytes) - v2
-        if (ptr + 2 * sizeof(uint32_t) > end) goto truncated;
-        uint32_t seq_high, seq_low;
-        memcpy(&seq_high, ptr, sizeof(uint32_t));
-        ptr += sizeof(uint32_t);
-        memcpy(&seq_low, ptr, sizeof(uint32_t));
-        ptr += sizeof(uint32_t);
-        msg->seq_num = ((uint64_t)ntohl(seq_high) << 32) | ntohl(seq_low);
+        // Seq_num (8 bytes) - v2 only, v1 gets seq_num=0
+        if (version >= 2) {
+            if (ptr + 2 * sizeof(uint32_t) > end) goto truncated;
+            uint32_t seq_high, seq_low;
+            memcpy(&seq_high, ptr, sizeof(uint32_t));
+            ptr += sizeof(uint32_t);
+            memcpy(&seq_low, ptr, sizeof(uint32_t));
+            ptr += sizeof(uint32_t);
+            msg->seq_num = ((uint64_t)ntohl(seq_high) << 32) | ntohl(seq_low);
+        } else {
+            // v1: no seq_num field, treat as oldest (will be pruned first)
+            msg->seq_num = 0;
+            QGP_LOG_INFO(LOG_TAG, "Reading v1 message (seq_num=0, legacy compat)\n");
+        }
 
         // Timestamp (8 bytes from 2x4 bytes)
         if (ptr + 2 * sizeof(uint32_t) > end) goto truncated;

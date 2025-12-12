@@ -1036,7 +1036,7 @@ int cmd_remove_contact(dna_engine_t *engine, const char *fingerprint) {
     return 0;
 }
 
-int cmd_request(dna_engine_t *engine, const char *fingerprint, const char *message) {
+int cmd_request(dna_engine_t *engine, const char *identifier, const char *message) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
         return -1;
@@ -1048,17 +1048,45 @@ int cmd_request(dna_engine_t *engine, const char *fingerprint, const char *messa
         return -1;
     }
 
-    if (!fingerprint || strlen(fingerprint) == 0) {
-        printf("Error: Fingerprint required\n");
+    if (!identifier || strlen(identifier) == 0) {
+        printf("Error: Name or fingerprint required\n");
         return -1;
     }
 
-    printf("Sending contact request to %.16s...\n", fingerprint);
+    /* Resolve name to fingerprint if needed */
+    char resolved_fp[129] = {0};
+    size_t id_len = strlen(identifier);
+
+    if (id_len == 128) {
+        /* Already a fingerprint */
+        strncpy(resolved_fp, identifier, 128);
+    } else {
+        /* Assume it's a name - resolve via DHT lookup */
+        printf("Resolving name '%s'...\n", identifier);
+
+        cli_wait_t lookup_wait;
+        cli_wait_init(&lookup_wait);
+
+        dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+        int lookup_result = cli_wait_for(&lookup_wait);
+
+        if (lookup_result != 0 || strlen(lookup_wait.display_name) == 0) {
+            printf("Error: Name '%s' not found in DHT\n", identifier);
+            cli_wait_destroy(&lookup_wait);
+            return -1;
+        }
+
+        strncpy(resolved_fp, lookup_wait.display_name, 128);
+        cli_wait_destroy(&lookup_wait);
+        printf("Resolved to: %.16s...\n", resolved_fp);
+    }
+
+    printf("Sending contact request to %.16s...\n", resolved_fp);
 
     cli_wait_t wait;
     cli_wait_init(&wait);
 
-    dna_engine_send_contact_request(engine, fingerprint, message, on_completion, &wait);
+    dna_engine_send_contact_request(engine, resolved_fp, message, on_completion, &wait);
     int result = cli_wait_for(&wait);
     cli_wait_destroy(&wait);
 
