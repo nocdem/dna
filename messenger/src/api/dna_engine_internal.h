@@ -307,6 +307,7 @@ typedef union {
  */
 typedef union {
     dna_completion_cb completion;
+    dna_send_tokens_cb send_tokens;
     dna_identities_cb identities;
     dna_identity_created_cb identity_created;
     dna_display_name_cb display_name;

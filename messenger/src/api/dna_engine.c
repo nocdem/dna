@@ -2608,7 +2608,9 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     error = DNA_OK;
 
 done:
-    task->callback.completion(task->request_id, error, task->user_data);
+    task->callback.send_tokens(task->request_id, error,
+                               error == DNA_OK ? tx_hash : NULL,
+                               task->user_data);
 }
 
 /* Network fee collector address for filtering transactions */
@@ -3853,7 +3855,7 @@ dna_request_id_t dna_engine_send_tokens(
     const char *token,
     const char *network,
     int gas_speed,
-    dna_completion_cb callback,
+    dna_send_tokens_cb callback,
     void *user_data
 ) {
     QGP_LOG_INFO(LOG_TAG, "send_tokens: wallet=%d to=%s amount=%s token=%s network=%s gas=%d",
@@ -3875,7 +3877,7 @@ dna_request_id_t dna_engine_send_tokens(
     strncpy(params.send_tokens.network, network, sizeof(params.send_tokens.network) - 1);
     params.send_tokens.gas_speed = gas_speed;
 
-    dna_task_callback_t cb = { .completion = callback };
+    dna_task_callback_t cb = { .send_tokens = callback };
     return dna_submit_task(engine, TASK_SEND_TOKENS, &params, cb, user_data);
 }
 

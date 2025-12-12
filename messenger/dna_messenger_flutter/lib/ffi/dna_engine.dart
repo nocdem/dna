@@ -2009,7 +2009,8 @@ class DnaEngine {
 
   /// Send tokens
   /// [gasSpeed]: 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x)
-  Future<void> sendTokens({
+  /// Returns the transaction hash on success
+  Future<String> sendTokens({
     required int walletIndex,
     required String recipientAddress,
     required String amount,
@@ -2019,7 +2020,7 @@ class DnaEngine {
   }) async {
     print('[DART] sendTokens: wallet=$walletIndex to=$recipientAddress amount=$amount token=$token network=$network gas=$gasSpeed');
 
-    final completer = Completer<void>();
+    final completer = Completer<String>();
     final localId = _nextLocalId++;
 
     print('[DART] Creating native pointers...');
@@ -2029,7 +2030,7 @@ class DnaEngine {
     final networkPtr = network.toNativeUtf8();
     print('[DART] Pointers created');
 
-    void onComplete(int requestId, int error, Pointer<Void> userData) {
+    void onComplete(int requestId, int error, Pointer<Utf8> txHashPtr, Pointer<Void> userData) {
       print('[DART] onComplete callback: requestId=$requestId error=$error');
       calloc.free(recipientPtr);
       calloc.free(amountPtr);
@@ -2037,7 +2038,9 @@ class DnaEngine {
       calloc.free(networkPtr);
 
       if (error == 0) {
-        completer.complete();
+        final txHash = txHashPtr != nullptr ? txHashPtr.toDartString() : '';
+        print('[DART] Transaction hash: $txHash');
+        completer.complete(txHash);
       } else {
         completer.completeError(DnaEngineException.fromCode(error, _bindings));
       }
@@ -2045,7 +2048,7 @@ class DnaEngine {
     }
 
     print('[DART] Creating NativeCallable...');
-    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    final callback = NativeCallable<DnaSendTokensCbNative>.listener(onComplete);
     _pendingRequests[localId] = _PendingRequest(callback: callback);
     print('[DART] Calling FFI dna_engine_send_tokens...');
 

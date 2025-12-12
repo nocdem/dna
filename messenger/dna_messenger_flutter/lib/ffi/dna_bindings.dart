@@ -442,6 +442,15 @@ typedef DnaCompletionCbNative = Void Function(
 );
 typedef DnaCompletionCb = NativeFunction<DnaCompletionCbNative>;
 
+/// Send tokens callback - Native (returns tx_hash on success)
+typedef DnaSendTokensCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Pointer<Utf8> tx_hash,
+  Pointer<Void> user_data,
+);
+typedef DnaSendTokensCb = NativeFunction<DnaSendTokensCbNative>;
+
 /// Identities list callback - Native
 typedef DnaIdentitiesCbNative = Void Function(
   Uint64 request_id,
@@ -658,6 +667,13 @@ typedef DnaEventCb = NativeFunction<DnaEventCbNative>;
 typedef DnaCompletionCbDart = void Function(
   int requestId,
   int error,
+  Pointer<Void> userData,
+);
+
+typedef DnaSendTokensCbDart = void Function(
+  int requestId,
+  int error,
+  Pointer<Utf8> txHash,
   Pointer<Void> userData,
 );
 
@@ -1537,7 +1553,7 @@ class DnaBindings {
           Pointer<Utf8>,
           Pointer<Utf8>,
           Int32,
-          Pointer<DnaCompletionCb>,
+          Pointer<DnaSendTokensCb>,
           Pointer<Void>),
       int Function(
           Pointer<dna_engine_t>,
@@ -1547,7 +1563,7 @@ class DnaBindings {
           Pointer<Utf8>,
           Pointer<Utf8>,
           int,
-          Pointer<DnaCompletionCb>,
+          Pointer<DnaSendTokensCb>,
           Pointer<Void>)>('dna_engine_send_tokens');
 
   int dna_engine_send_tokens(
@@ -1558,7 +1574,7 @@ class DnaBindings {
     Pointer<Utf8> token,
     Pointer<Utf8> network,
     int gas_speed,
-    Pointer<DnaCompletionCb> callback,
+    Pointer<DnaSendTokensCb> callback,
     Pointer<Void> user_data,
   ) {
     return _dna_engine_send_tokens(engine, wallet_index, recipient_address,

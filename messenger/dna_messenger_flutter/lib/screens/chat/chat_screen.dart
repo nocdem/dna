@@ -864,7 +864,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
     setState(() => _isSending = true);
 
     try {
-      await ref.read(walletsProvider.notifier).sendTokens(
+      final txHash = await ref.read(walletsProvider.notifier).sendTokens(
         walletIndex: 0, // Current identity's wallet
         recipientAddress: _resolvedAddress!,
         amount: _amountController.text.trim(),
@@ -876,12 +876,13 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
       if (mounted) {
         Navigator.pop(context);
 
-        // Create transfer message in chat
+        // Create transfer message in chat with tx hash
         final transferData = jsonEncode({
           'type': 'cpunk_transfer',
           'amount': _amountController.text.trim(),
           'token': 'CPUNK',
           'network': 'Backbone',
+          'txHash': txHash,
           'recipientAddress': _resolvedAddress,
           'recipientName': widget.contact.displayName,
         });
@@ -1147,6 +1148,15 @@ class _TransferBubble extends StatelessWidget {
 
     final amount = transferData?['amount'] ?? '?';
     final token = transferData?['token'] ?? 'CPUNK';
+    final txHash = transferData?['txHash'] as String?;
+
+    // Shorten tx hash for display (e.g., 0xABC...XYZ)
+    String? shortTxHash;
+    if (txHash != null && txHash.length > 16) {
+      shortTxHash = '${txHash.substring(0, 10)}...${txHash.substring(txHash.length - 6)}';
+    } else {
+      shortTxHash = txHash;
+    }
 
     return Align(
       alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
@@ -1214,6 +1224,21 @@ class _TransferBubble extends StatelessWidget {
                     : DnaColors.primary,
               ),
             ),
+
+            // Transaction hash
+            if (shortTxHash != null) ...[
+              const SizedBox(height: 2),
+              Text(
+                shortTxHash,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontSize: 9,
+                  fontFamily: 'NotoSansMono',
+                  color: isOutgoing
+                      ? theme.colorScheme.onPrimary.withAlpha(150)
+                      : DnaColors.textMuted,
+                ),
+              ),
+            ],
             const SizedBox(height: 4),
 
             // Timestamp and status

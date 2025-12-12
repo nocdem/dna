@@ -262,6 +262,18 @@ typedef void (*dna_completion_cb)(
 );
 
 /**
+ * Send tokens callback (returns tx hash on success)
+ * Error is 0 (DNA_OK) on success, negative on error
+ * tx_hash is NULL on error, valid string on success
+ */
+typedef void (*dna_send_tokens_cb)(
+    dna_request_id_t request_id,
+    int error,
+    const char *tx_hash,
+    void *user_data
+);
+
+/**
  * Identity list callback
  */
 typedef void (*dna_identities_cb)(
@@ -1431,7 +1443,7 @@ int dna_engine_estimate_eth_gas(int gas_speed, dna_gas_estimate_t *estimate_out)
  * @param token             Token ticker (CPUNK, CELL, KEL, ETH)
  * @param network           Network name (Backbone, KelVPN, or empty for ETH)
  * @param gas_speed         Gas speed preset (ETH only, ignored for Cellframe)
- * @param callback          Called on completion
+ * @param callback          Called on completion with tx_hash
  * @param user_data         User data for callback
  * @return                  Request ID (0 on immediate error)
  */
@@ -1443,7 +1455,7 @@ dna_request_id_t dna_engine_send_tokens(
     const char *token,
     const char *network,
     int gas_speed,
-    dna_completion_cb callback,
+    dna_send_tokens_cb callback,
     void *user_data
 );
 

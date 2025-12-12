@@ -30,7 +30,8 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
 
   /// Send tokens from a wallet
   /// [gasSpeed]: 0=slow (0.8x), 1=normal (1x), 2=fast (1.5x) - only for ETH
-  Future<void> sendTokens({
+  /// Returns the transaction hash on success
+  Future<String> sendTokens({
     required int walletIndex,
     required String recipientAddress,
     required String amount,
@@ -40,8 +41,9 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
   }) async {
     final engine = await ref.read(engineProvider.future);
 
+    String txHash;
     try {
-      await engine.sendTokens(
+      txHash = await engine.sendTokens(
         walletIndex: walletIndex,
         recipientAddress: recipientAddress,
         amount: amount,
@@ -55,6 +57,8 @@ class WalletsNotifier extends AsyncNotifier<List<Wallet>> {
 
     // Refresh balances after send
     ref.invalidate(balancesProvider(walletIndex));
+
+    return txHash;
   }
 }
 
