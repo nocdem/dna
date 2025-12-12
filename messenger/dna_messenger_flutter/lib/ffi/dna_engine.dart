@@ -852,10 +852,13 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_RECEIVED:
         // Parse message from union data
-        // dna_message_t layout: id(4) + sender[129] + recipient[129] + ...
-        // Sender starts at offset 4, recipient at offset 133
+        // NOTE: C union is 8-byte aligned, but Dart data array starts at offset 4
+        // So we add 4 to all offsets to account for padding in C struct
+        // dna_message_t layout: id(4) + sender[129] + recipient[129] + ptr(8) + timestamp(8) + bool(1+3pad) + status(4) + type(4)
+        // Sender at C offset 4, but in Dart data array at offset 8 (4 + 4 padding)
+        const baseOffset = 4; // Padding between type and union in C
         final senderBytes = <int>[];
-        for (var i = 4; i < 4 + 128; i++) {
+        for (var i = baseOffset + 4; i < baseOffset + 4 + 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           senderBytes.add(byte);
@@ -863,19 +866,18 @@ class DnaEngine {
         final sender = String.fromCharCodes(senderBytes);
 
         final recipientBytes = <int>[];
-        for (var i = 133; i < 133 + 128; i++) {
+        for (var i = baseOffset + 133; i < baseOffset + 133 + 128; i++) {
           final byte = event.data[i];
           if (byte == 0) break;
           recipientBytes.add(byte);
         }
         final recipient = String.fromCharCodes(recipientBytes);
 
-        // is_outgoing is at offset 278 (after plaintext ptr + timestamp)
-        // For incoming messages from push notifications, is_outgoing = false
-        final isOutgoing = event.data[278] != 0;
+        // is_outgoing is at C offset 280 (after plaintext ptr + timestamp)
+        final isOutgoing = event.data[baseOffset + 280] != 0;
 
-        // message_type is at offset 284 (0=chat, 1=group invitation)
-        final msgTypeInt = event.data[284];
+        // message_type is at C offset 288 (0=chat, 1=group invitation)
+        final msgTypeInt = event.data[baseOffset + 288];
         final msgType = msgTypeInt == 1 ? MessageType.groupInvitation : MessageType.chat;
 
         dartEvent = MessageReceivedEvent(Message(
