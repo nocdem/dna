@@ -63,6 +63,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
 #include "database/profile_cache.h"
+#include "database/profile_manager.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 
@@ -905,6 +906,12 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     if (profile_cache_init(fingerprint) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize profile cache\n");
         /* Non-fatal - continue, profiles will still work via DHT */
+    }
+
+    /* Initialize profile manager (smart fetch layer: cache + DHT) */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx && profile_manager_init(dht_ctx, fingerprint) != 0) {
+        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize profile manager\n");
     }
 
     /* Initialize P2P transport for DHT and messaging */
