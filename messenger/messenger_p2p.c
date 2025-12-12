@@ -1069,6 +1069,8 @@ static bool messenger_push_notification_callback(
     pthread_mutex_unlock(&g_poll_timestamp_mutex);
 
     if (should_poll && ctx) {
+        QGP_LOG_INFO("P2P", "Push notification: waiting 5s before poll...\n");
+        sleep(5);  // Wait for DHT propagation
         QGP_LOG_INFO("P2P", "Push notification: triggering offline message poll\n");
         size_t msg_count = 0;
         messenger_p2p_check_offline_messages(ctx, &msg_count);
