@@ -852,17 +852,41 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_MESSAGE_RECEIVED:
         // Parse message from union data
-        // Note: Union parsing requires careful offset calculation
-        // For now, we'll handle this in a simplified way
+        // dna_message_t layout: id(4) + sender[129] + recipient[129] + ...
+        // Sender starts at offset 4, recipient at offset 133
+        final senderBytes = <int>[];
+        for (var i = 4; i < 4 + 128; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          senderBytes.add(byte);
+        }
+        final sender = String.fromCharCodes(senderBytes);
+
+        final recipientBytes = <int>[];
+        for (var i = 133; i < 133 + 128; i++) {
+          final byte = event.data[i];
+          if (byte == 0) break;
+          recipientBytes.add(byte);
+        }
+        final recipient = String.fromCharCodes(recipientBytes);
+
+        // is_outgoing is at offset 278 (after plaintext ptr + timestamp)
+        // For incoming messages from push notifications, is_outgoing = false
+        final isOutgoing = event.data[278] != 0;
+
+        // message_type is at offset 284
+        final msgTypeInt = event.data[284];
+        final msgType = msgTypeInt == 1 ? MessageType.contactRequest : MessageType.chat;
+
         dartEvent = MessageReceivedEvent(Message(
           id: 0,
-          sender: '',
-          recipient: '',
-          plaintext: 'New message received',
+          sender: sender,
+          recipient: recipient,
+          plaintext: '',  // Not available in event, fetched from DB
           timestamp: DateTime.now(),
-          isOutgoing: false,
+          isOutgoing: isOutgoing,
           status: MessageStatus.delivered,
-          type: MessageType.chat,
+          type: msgType,
         ));
         break;
       case DnaEventType.DNA_EVENT_CONTACT_ONLINE:
