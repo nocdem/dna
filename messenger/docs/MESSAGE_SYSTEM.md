@@ -183,8 +183,8 @@ TRANSPORT                         STORAGE                        DECRYPTION     
          │                           │                               │                             │
          ▼                           │                               │                             │
 ┌───────────────────┐                │                               │                             │
-│ DHT Poll          │                │                               │                             │
-│ (every 2 minutes) │                │                               │                             │
+│ DHT Listen        │                │                               │                             │
+│ (push notify)     │                │                               │                             │
 │ Query contacts'   │                │                               │                             │
 │ outboxes          │                │                               │                             │
 └────────┬──────────┘                │                               │                             │
@@ -634,7 +634,7 @@ Example for 1 recipient, 100-byte plaintext:
 │  │   deliver_to_callback(messages)                    │                    │
 │  └────────────────────────────────────────────────────┘                    │
 │                                                                             │
-│  Polling Interval: Every 2 minutes (or instant via DHT listen)             │
+│  Delivery: Real-time via DHT listen (push notifications)                   │
 │                                                                             │
 │  BENEFITS:                                                                  │
 │  ─────────                                                                  │

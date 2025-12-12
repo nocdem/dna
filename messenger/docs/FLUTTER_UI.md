@@ -386,7 +386,8 @@ dna_messenger_flutter/
 - Emoji picker with shortcode support (:smile: etc.)
 
 **Background Tasks:**
-- Periodic DHT offline message polling (2 minute interval)
+- Initial DHT offline message poll on login (15 second delay)
+- DHT listen (push notifications) for real-time message delivery
 - Auto-refresh contacts and conversations on new messages
 
 **Linux Desktop:**

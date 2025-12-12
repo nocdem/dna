@@ -1,4 +1,4 @@
-// Background Tasks Provider - Periodic DHT polling for offline messages
+// Background Tasks Provider - DHT listeners and initial offline message check
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
@@ -6,9 +6,6 @@ import 'engine_provider.dart';
 import 'identity_provider.dart';
 import 'contacts_provider.dart';
 import 'messages_provider.dart';
-
-/// Poll interval for DHT offline messages (2 minutes)
-const _pollInterval = Duration(minutes: 2);
 
 /// Initial delay before first poll after identity load (15 seconds)
 const _initialDelay = Duration(seconds: 15);
@@ -45,57 +42,39 @@ class BackgroundTasksState {
   }
 }
 
-/// Background tasks manager - handles periodic DHT polling
+/// Background tasks manager - handles DHT listeners and initial offline check
 final backgroundTasksProvider = StateNotifierProvider<BackgroundTasksNotifier, BackgroundTasksState>(
   (ref) => BackgroundTasksNotifier(ref),
 );
 
 class BackgroundTasksNotifier extends StateNotifier<BackgroundTasksState> {
   final Ref _ref;
-  Timer? _pollTimer;
   bool _disposed = false;
   bool _listenersStarted = false;
 
   BackgroundTasksNotifier(this._ref) : super(const BackgroundTasksState()) {
-    // Start polling when identity is loaded
+    // Start background tasks when identity is loaded
     _ref.listen(currentFingerprintProvider, (previous, next) {
       if (next != null && previous == null) {
-        // Identity just loaded - start polling after initial delay
-        _startPolling();
-        // Also start outbox listeners
+        // Identity just loaded - do initial poll and start outbox listeners
+        _initialPoll();
         _startOutboxListeners();
       } else if (next == null && previous != null) {
-        // Identity unloaded - stop polling and cancel listeners
-        _stopPolling();
+        // Identity unloaded - cancel listeners
         _cancelOutboxListeners();
       }
     }, fireImmediately: true);
   }
 
-  void _startPolling() {
+  /// Initial poll after identity load (one-time, not periodic)
+  void _initialPoll() {
     if (_disposed) return;
 
-    // Cancel existing timer if any
-    _pollTimer?.cancel();
-
-    // Initial poll after delay
     Future.delayed(_initialDelay, () {
       if (!_disposed) {
         _pollOfflineMessages();
       }
     });
-
-    // Set up periodic timer
-    _pollTimer = Timer.periodic(_pollInterval, (_) {
-      if (!_disposed) {
-        _pollOfflineMessages();
-      }
-    });
-  }
-
-  void _stopPolling() {
-    _pollTimer?.cancel();
-    _pollTimer = null;
   }
 
   /// Start outbox listeners for all contacts
@@ -195,14 +174,13 @@ class BackgroundTasksNotifier extends StateNotifier<BackgroundTasksState> {
   @override
   void dispose() {
     _disposed = true;
-    _stopPolling();
     _cancelOutboxListeners();
     super.dispose();
   }
 }
 
 /// Provider to ensure background tasks are active
-/// Add this to your main widget tree to start background polling
+/// Add this to your main widget tree to start DHT listeners
 final backgroundTasksActiveProvider = Provider<bool>((ref) {
   // Just watching the provider ensures it's created and running
   ref.watch(backgroundTasksProvider);

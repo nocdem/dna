@@ -517,7 +517,7 @@ Sender-based outbox for offline message delivery (Model E).
 - **Spam prevention**: Recipients only query known contacts' outboxes
 - **Sender control**: Senders can edit/unsend within 7-day TTL
 - **Automatic retrieval**: `dna_engine_load_identity()` checks all contacts' outboxes on login
-- **Periodic polling**: Background task polls DHT queue every 2 minutes (catches messages when P2P fails)
+- **DHT listen (push)**: Real-time notifications via `dht_listen()` on contacts' outbox keys
 
 #### Message Format
 
