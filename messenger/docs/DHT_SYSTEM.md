@@ -502,7 +502,7 @@ void dht_value_storage_free(dht_value_storage_t *storage);
 
 ### 5.2 dht_offline_queue.h/c
 
-Sender-based outbox for offline message delivery (Model E) with watermark pruning.
+Sender-based outbox for offline message delivery (Spillway Protocol) with watermark pruning.
 
 #### Architecture
 
@@ -846,7 +846,7 @@ Stats printed every 60 seconds:
 | Data Type | TTL | DHT Key Format | Persisted | Notes |
 |-----------|-----|----------------|-----------|-------|
 | **Presence** | 7 days | `SHA3-512(public_key)` = fingerprint | No | IP:port:timestamp |
-| Offline Messages | 7 days | `SHA3-512(sender:outbox:recipient)` | No | Model E outbox |
+| Offline Messages | 7 days | `SHA3-512(sender:outbox:recipient)` | No | Spillway outbox |
 | **Watermarks** | 30 days | `SHA3-512(recipient:watermark:sender)` | No | Delivery ack (8-byte seq_num) |
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
 | **Contact Requests** | 7 days | `SHA3-512(fingerprint:requests)` | No | ICQ-style contact request inbox |

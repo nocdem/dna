@@ -101,7 +101,7 @@ public:
     bool add_contact_profile_loading;  // Track if profile is being loaded
     dna_unified_identity_t *add_contact_profile;  // Store the loaded profile (pointer)
 
-    // Message and sync state (Model E: no continuous polling, check once on login)
+    // Message and sync state (Spillway: no continuous polling, check once on login)
     bool new_messages_received;  // Flag to reload current conversation
     bool contacts_synced_from_dht;  // Flag to indicate DHT sync completed
     bool should_scroll_to_bottom;  // Flag to force scroll after sending message

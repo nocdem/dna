@@ -19,7 +19,7 @@ int main(int argc, char *argv[]) {
     const char *sender = argv[1];
     const char *recipient = argv[2];
 
-    printf("Querying sender's outbox (Model E):\n");
+    printf("Querying sender's outbox (Spillway):\n");
     printf("  Sender: %s\n", sender);
     printf("  Recipient: %s\n", recipient);
     printf("\n");

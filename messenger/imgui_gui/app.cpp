@@ -181,7 +181,7 @@ void DNAMessengerApp::render() {
 
 
 void DNAMessengerApp::handlePostLoginEvents() {
-    // Model E: No continuous polling - offline messages checked once on login
+    // Spillway: No continuous polling - offline messages checked once on login
     if (state.identity_loaded) {
         // Reload current conversation if new messages arrived
         if (state.new_messages_received && state.selected_contact >= 0) {

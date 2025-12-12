@@ -11,12 +11,12 @@ extern "C" {
 #endif
 
 /**
- * DHT Offline Message Queue for DNA Messenger (Phase 9.2 + Model E)
+ * DHT Offline Message Queue for DNA Messenger (Phase 9.2 + Spillway Protocol)
  *
  * Stores encrypted messages in DHT when recipients are offline.
  * Messages are retrieved when recipient comes online.
  *
- * Architecture (Model E - Sender-Based Outbox):
+ * Architecture (Spillway Protocol - Sender-Based Outbox):
  * - Storage Key: SHA3-512(sender_identity + ":outbox:" + recipient_identity) - 64 bytes
  * - Value: Serialized array of messages (binary format)
  * - TTL: 7 days default (604,800 seconds)
@@ -62,7 +62,7 @@ typedef struct {
 /**
  * Store encrypted message in sender's outbox to recipient
  *
- * Workflow (Model E - Sender Outbox with Watermark Pruning):
+ * Workflow (Spillway - Sender Outbox with Watermark Pruning):
  * 1. Generate sender's outbox key: SHA3-512(sender + ":outbox:" + recipient)
  * 2. Fetch recipient's watermark (highest seq_num they've received)
  * 3. Query existing outbox (sender's messages to this recipient)
@@ -99,7 +99,7 @@ int dht_queue_message(
 /**
  * Retrieve all queued messages for recipient from all contacts' outboxes
  *
- * Workflow (Model E - Multi-Outbox Retrieval):
+ * Workflow (Spillway - Multi-Outbox Retrieval):
  * 1. For each sender in sender_list (contacts):
  *    a. Generate outbox key: SHA3-512(sender + ":outbox:" + recipient)
  *    b. Query DHT for this sender's outbox
@@ -156,7 +156,7 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
 );
 
 /**
- * REMOVED: dht_clear_queue() - No longer needed in Model E
+ * REMOVED: dht_clear_queue() - No longer needed in Spillway Protocol
  *
  * In sender-based outbox model, recipients don't control sender outboxes.
  * Senders manage their own outboxes and can clear/edit at will.
@@ -221,7 +221,7 @@ int dht_deserialize_messages(
 /**
  * Generate DHT storage key for sender's outbox to recipient
  *
- * Key format (Model E): SHA3-512(sender + ":outbox:" + recipient)
+ * Key format (Spillway): SHA3-512(sender + ":outbox:" + recipient)
  *
  * Example:
  *   sender = "a3f9e2d1c5b8a7f6..."  (128-char fingerprint)

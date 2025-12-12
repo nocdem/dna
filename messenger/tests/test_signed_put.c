@@ -185,14 +185,14 @@ int main() {
             printf("Only 1 value found (the latest one)\n");
             printf("Old value was REPLACED by new value\n");
             printf("\n");
-            printf("This means Model E (sender outbox) is VIABLE!\n");
+            printf("This means Spillway Protocol (sender outbox) is VIABLE!\n");
             printf("Signed puts with same value_id will prevent accumulation.\n");
         } else if (count2 == 2) {
             printf("✗✗✗ ACCUMULATION STILL HAPPENS ✗✗✗\n");
             printf("Found 2 values (both versions kept)\n");
             printf("Old value was NOT replaced\n");
             printf("\n");
-            printf("This means Model E will NOT solve accumulation problem.\n");
+            printf("This means Spillway Protocol will NOT solve accumulation problem.\n");
             printf("Need to find alternative approach.\n");
         } else {
             printf("⚠⚠⚠ UNEXPECTED RESULT ⚠⚠⚠\n");
@@ -255,10 +255,10 @@ int main() {
 
         if (count3 == 1) {
             printf("✓ Pattern confirmed: Only 1 value (replacement works)\n");
-            printf("Model E (sender outbox) is HIGHLY RECOMMENDED\n");
+            printf("Spillway Protocol (sender outbox) is HIGHLY RECOMMENDED\n");
         } else if (count3 == 3) {
             printf("✗ Pattern confirmed: 3 values (accumulation happens)\n");
-            printf("Model E will NOT solve the problem\n");
+            printf("Spillway Protocol will NOT solve the problem\n");
         } else {
             printf("Count: %zu values\n", count3);
             printf("Need further investigation\n");

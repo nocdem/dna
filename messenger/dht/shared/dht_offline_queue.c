@@ -19,7 +19,7 @@
 #endif
 
 /**
- * Generate base key for sender's outbox to recipient (Model E)
+ * Generate base key for sender's outbox to recipient (Spillway)
  * Chunked layer handles hashing internally
  *
  * Key format: sender + ":outbox:" + recipient
@@ -368,7 +368,7 @@ int dht_queue_message(
     QGP_LOG_INFO(LOG_TAG, "Queueing message from %s to %s (%zu bytes, seq=%lu, TTL=%u)\n",
            sender, recipient, ciphertext_len, (unsigned long)seq_num, ttl_seconds);
 
-    // Generate sender's outbox base key (Model E)
+    // Generate sender's outbox base key (Spillway)
     char base_key[512];
     make_outbox_base_key(sender, recipient, base_key, sizeof(base_key));
 
@@ -543,7 +543,7 @@ int dht_queue_message(
 }
 
 /**
- * Retrieve all queued messages for recipient from all contacts' outboxes (Model E)
+ * Retrieve all queued messages for recipient from all contacts' outboxes (Spillway)
  *
  * Queries each sender's outbox (SHA3-512(sender + ":outbox:" + recipient))
  * and accumulates all messages from all senders.
@@ -674,7 +674,7 @@ int dht_retrieve_queued_messages_from_contacts(
 }
 
 /**
- * REMOVED: dht_clear_queue() - No longer needed in Model E
+ * REMOVED: dht_clear_queue() - No longer needed in Spillway Protocol
  *
  * In sender-based outbox model:
  * - Recipients don't control sender outboxes (can't clear them)

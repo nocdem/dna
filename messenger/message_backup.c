@@ -315,7 +315,7 @@ int message_backup_save(message_backup_context_t *ctx,
     if (!ctx || !ctx->db) return -1;
     if (!sender || !recipient || !encrypted_message) return -1;
 
-    // Check for duplicate (Model E: same message may be in multiple contacts' outboxes)
+    // Check for duplicate (Spillway: same message may be in multiple contacts' outboxes)
     if (message_backup_exists_ciphertext(ctx, encrypted_message, encrypted_len)) {
         QGP_LOG_INFO(LOG_TAG, "Skipping duplicate message: %s → %s (%zu bytes, already exists)\n",
                sender, recipient, encrypted_len);

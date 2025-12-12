@@ -64,7 +64,7 @@ This document describes how the DNA Messenger message system works, with all fac
 │  │                                                                  │   │
 │  │   ┌────────────────┐           ┌────────────────────────┐       │   │
 │  │   │   P2P Direct   │           │    DHT Offline Queue   │       │   │
-│  │   │  (TCP:4001)    │           │   (7-day TTL, Model E) │       │   │
+│  │   │  (TCP:4001)    │           │   (7-day TTL, Spillway)│       │   │
 │  │   │   If Online    │           │     If Offline         │       │   │
 │  │   └───────┬────────┘           └───────────┬────────────┘       │   │
 │  │           │                                │                     │   │
@@ -577,7 +577,7 @@ Example for 1 recipient, 100-byte plaintext:
 │  ┌─────────────────┐  ┌─────────────────────────┐                          │
 │  │ TCP Connection  │  │ p2p_queue_offline_msg() │                          │
 │  │ to peer IP:port │  │ Store in DHT with 7-day │                          │
-│  │ Direct delivery │  │ TTL (Model E outbox)    │                          │
+│  │ Direct delivery │  │ TTL (Spillway outbox)   │                          │
 │  └─────────────────┘  └─────────────────────────┘                          │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -594,15 +594,15 @@ Example for 1 recipient, 100-byte plaintext:
 
 **Source:** `p2p/p2p_transport.h:20-25`
 
-### 6.3 DHT Offline Queue (Model E)
+### 6.3 DHT Offline Queue (Spillway Protocol)
 
-**Model E** = Sender-Based Outbox Architecture
+**Spillway Protocol** = Sender-Based Outbox Architecture with Watermark Pruning
 
 **Source:** `dht/shared/dht_offline_queue.h:14-37`
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                     MODEL E: SENDER-BASED OUTBOX                             │
+│                 SPILLWAY PROTOCOL: SENDER-BASED OUTBOX                       │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │  STORAGE KEY GENERATION:                                                    │
@@ -636,25 +636,48 @@ Example for 1 recipient, 100-byte plaintext:
 │                                                                             │
 │  Delivery: Real-time via DHT listen (push notifications)                   │
 │                                                                             │
+│  WATERMARK PRUNING:                                                         │
+│  ──────────────────                                                         │
+│  ┌────────────────────────────────────────────────────────────────────┐    │
+│  │ 1. Alice sends msgs to Bob with seq_num (1, 2, 3...)               │    │
+│  │ 2. Bob receives, publishes watermark: seq=3                        │    │
+│  │ 3. Alice sends new msg (seq=4), fetches Bob's watermark            │    │
+│  │ 4. Alice prunes outbox: removes msgs where seq <= 3                │    │
+│  │ 5. Result: Bounded outbox, only undelivered messages remain        │    │
+│  └────────────────────────────────────────────────────────────────────┘    │
+│                                                                             │
+│  Watermark Key: SHA3-512(recipient + ":watermark:" + sender)                │
+│  Watermark TTL: 30 days                                                     │
+│  Watermark Value: 8-byte big-endian seq_num                                 │
+│                                                                             │
 │  BENEFITS:                                                                  │
 │  ─────────                                                                  │
-│  ✓ No accumulation (signed puts replace old values)                        │
+│  ✓ Bounded storage (watermark pruning prevents unbounded growth)           │
+│  ✓ Clock-skew immune (uses monotonic seq_num, not timestamps)              │
 │  ✓ Spam prevention (recipients only query known contacts)                  │
 │  ✓ Sender control (can edit/delete within TTL)                             │
 │  ✓ Parallel retrieval (10-100× speedup)                                    │
+│  ✓ Async watermarks (fire-and-forget, self-healing on retry)               │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 6.4 Offline Message Format
+### 6.4 Offline Message Format (v2)
 
 ```c
 // Source: dht/shared/dht_offline_queue.h:32-34
 
-Message Format:
-[4-byte magic "DNA "][1-byte version][8-byte timestamp][8-byte expiry]
+Message Format v2 (Spillway Protocol):
+[4-byte magic "DNA "][1-byte version=2][8-byte seq_num][8-byte timestamp][8-byte expiry]
 [2-byte sender_len][2-byte recipient_len][4-byte ciphertext_len]
 [sender string][recipient string][ciphertext bytes]
+
+Header size: 37 bytes (was 29 bytes in v1)
+
+Fields:
+- seq_num:   Monotonic per sender-recipient pair (for watermark pruning)
+- timestamp: Unix timestamp when queued (for display only)
+- expiry:    Unix timestamp when message expires
 ```
 
 ---

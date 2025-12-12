@@ -940,7 +940,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             QGP_LOG_INFO(LOG_TAG, "Warning: Failed to subscribe to contacts\n");
         }
 
-        /* 2. Check for offline messages (Model E: query contacts' outboxes) */
+        /* 2. Check for offline messages (Spillway: query contacts' outboxes) */
         size_t offline_count = 0;
         if (messenger_p2p_check_offline_messages(engine->messenger, &offline_count) == 0) {
             if (offline_count > 0) {

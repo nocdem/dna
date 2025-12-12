@@ -295,7 +295,7 @@ void loadIdentity(AppState& state, const std::string& identity, std::function<vo
     printf("[Identity] Fetching registered DNA name...\n");
     fetchRegisteredName(state);
 
-    // Model E: Check for offline messages ONCE on login
+    // Spillway: Check for offline messages ONCE on login
     printf("[Identity] Checking for offline messages (one-time on login)...\n");
     size_t messages_received = 0;
     int offline_check_result = messenger_p2p_check_offline_messages(ctx, &messages_received);

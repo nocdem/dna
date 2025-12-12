@@ -10,7 +10,7 @@
  * - transport/transport_helpers.c   Helper functions (IP detection, JSON, SHA3)
  * - transport/transport_tcp.c       TCP listener and connections
  * - transport/transport_discovery.c DHT peer discovery and direct messaging
- * - transport/transport_offline.c   Model E offline queue (sender outboxes)
+ * - transport/transport_offline.c   Spillway offline queue (sender outboxes)
  *
  * This file provides high-level initialization, lifecycle management, and statistics.
  * All implementation details delegated to focused modules.

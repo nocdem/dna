@@ -1,6 +1,6 @@
 /**
  * P2P Transport Offline Queue Module
- * Model E: Sender outbox architecture for offline message delivery
+ * Spillway Protocol: Sender outbox architecture for offline message delivery
  */
 
 #include "transport_core.h"
@@ -9,7 +9,7 @@
 #define LOG_TAG "P2P_OFFLINE"
 
 /**
- * Queue offline message in sender's DHT outbox (Model E)
+ * Queue offline message in sender's DHT outbox (Spillway)
  * Stores encrypted message in sender's outbox for recipient to retrieve
  * @param ctx: P2P transport context
  * @param sender: Sender fingerprint (owner of outbox)
@@ -64,7 +64,7 @@ int p2p_queue_offline_message(
 }
 
 /**
- * Check offline messages from contacts' outboxes (Model E)
+ * Check offline messages from contacts' outboxes (Spillway)
  * Queries each contact's outbox for messages addressed to this user
  * @param ctx: P2P transport context
  * @param messages_received: Output number of messages delivered (optional)
@@ -225,7 +225,7 @@ int p2p_check_offline_messages(
         free(watermarks);
     }
 
-    // Note (Model E): No queue clearing needed - recipients don't control sender outboxes.
+    // Note (Spillway): No queue clearing needed - recipients don't control sender outboxes.
     // Senders manage their own outboxes. Watermarks tell senders to prune delivered messages.
 
     if (messages_received) {

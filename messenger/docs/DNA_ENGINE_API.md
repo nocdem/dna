@@ -1041,7 +1041,7 @@ dna_request_id_t dna_engine_check_offline_messages(
 );
 ```
 
-Force check for offline messages in DHT queue (Model E: queries contacts' outboxes).
+Force check for offline messages in DHT queue (Spillway Protocol: queries contacts' outboxes).
 
 **Note:** Called automatically by `dna_engine_load_identity()` on startup.
 Use this only for manual refresh (e.g., pull-to-refresh in UI).
