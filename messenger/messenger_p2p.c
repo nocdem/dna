@@ -24,6 +24,7 @@
 #include "database/profile_cache.h"
 #include "dna_api.h"
 #include "dna_config.h"
+#include "dna/dna_engine.h"  // For event dispatch to Flutter
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -903,6 +904,26 @@ static void p2p_message_received_internal(
         QGP_LOG_ERROR("P2P", "Failed to store received message in SQLite");
     } else if (result == 0) {
         QGP_LOG_INFO("P2P", "Message from %s stored in SQLite (type=%d)\n", sender_identity, message_type);
+
+        // Emit DNA_EVENT_MESSAGE_RECEIVED to notify Flutter UI
+        dna_engine_t *engine = dna_engine_get_global();
+        if (engine) {
+            dna_event_t event = {0};
+            event.type = DNA_EVENT_MESSAGE_RECEIVED;
+            // Populate message struct with available info
+            strncpy(event.data.message_received.message.sender,
+                    sender_identity,
+                    sizeof(event.data.message_received.message.sender) - 1);
+            strncpy(event.data.message_received.message.recipient,
+                    ctx->identity,
+                    sizeof(event.data.message_received.message.recipient) - 1);
+            event.data.message_received.message.timestamp = (uint64_t)now;
+            event.data.message_received.message.is_outgoing = false;
+            event.data.message_received.message.message_type = message_type;
+            // plaintext is NULL (stored encrypted, decrypted on demand)
+            dna_dispatch_event(engine, &event);
+            QGP_LOG_DEBUG("P2P", "Dispatched MESSAGE_RECEIVED event for %s\n", sender_identity);
+        }
     }
     // result == 1 means duplicate (already exists), not an error
 

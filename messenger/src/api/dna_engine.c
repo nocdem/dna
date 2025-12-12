@@ -100,8 +100,18 @@ static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
 static qgp_key_t* dna_load_private_key(dna_engine_t *engine);
 static void init_log_config(void);
 
-/* Global engine pointer for DHT status callback (set during create, cleared during destroy) */
+/* Global engine pointer for DHT status callback and event dispatch from lower layers
+ * Set during create, cleared during destroy. Used by messenger_p2p.c to emit events. */
 static dna_engine_t *g_dht_callback_engine = NULL;
+
+/* Global engine accessors (for messenger layer event dispatch) */
+void dna_engine_set_global(dna_engine_t *engine) {
+    g_dht_callback_engine = engine;
+}
+
+dna_engine_t* dna_engine_get_global(void) {
+    return g_dht_callback_engine;
+}
 
 /**
  * DHT status change callback - dispatches DHT_CONNECTED/DHT_DISCONNECTED events

@@ -2003,6 +2003,40 @@ void dna_free_feed_comment(dna_comment_info_t *comment);
  */
 void dna_free_profile(dna_profile_t *profile);
 
+/* ============================================================================
+ * GLOBAL ENGINE ACCESS (for event dispatch from messenger layer)
+ * ============================================================================ */
+
+/**
+ * Set the global engine instance
+ *
+ * Called by dna_engine_create() to make the engine accessible
+ * from lower layers (e.g., messenger_p2p.c) for event dispatch.
+ *
+ * @param engine    Engine instance (or NULL to clear)
+ */
+void dna_engine_set_global(dna_engine_t *engine);
+
+/**
+ * Get the global engine instance
+ *
+ * Returns the currently active engine for event dispatch.
+ *
+ * @return          Engine instance, or NULL if not set
+ */
+dna_engine_t* dna_engine_get_global(void);
+
+/**
+ * Dispatch an event to Flutter/GUI layer
+ *
+ * Wrapper for internal dna_dispatch_event() that can be called
+ * from messenger layer when new messages are received.
+ *
+ * @param engine    Engine instance
+ * @param event     Event to dispatch
+ */
+void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event);
+
 #ifdef __cplusplus
 }
 #endif
