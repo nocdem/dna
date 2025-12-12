@@ -50,7 +50,7 @@
 typedef struct {
     char magic[8];              // "PQSIGENC"
     uint8_t version;            // 0x08 (Category 5 + encrypted timestamp)
-    uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512
+    uint8_t enc_key_type;       // QGP_KEY_TYPE_KEM1024
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t message_type;       // MSG_TYPE_DIRECT_PQC or MSG_TYPE_GROUP_GSK
     uint32_t encrypted_size;    // Size of encrypted data
@@ -185,7 +185,7 @@ static int messenger_encrypt_multi_recipient(
     memset(&header_for_aad, 0, sizeof(header_for_aad));
     memcpy(header_for_aad.magic, "PQSIGENC", 8);
     header_for_aad.version = 0x08;  // v0.08: encrypted timestamp
-    header_for_aad.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
+    header_for_aad.enc_key_type = (uint8_t)QGP_KEY_TYPE_KEM1024;
     header_for_aad.recipient_count = (uint8_t)recipient_count;
     header_for_aad.encrypted_size = (uint32_t)payload_len;  // fingerprint + timestamp + plaintext
     header_for_aad.signature_size = (uint32_t)signature_size;
@@ -261,7 +261,7 @@ static int messenger_encrypt_multi_recipient(
     memset(&header, 0, sizeof(header));
     memcpy(header.magic, "PQSIGENC", 8);
     header.version = 0x08;  // v0.08: fingerprint + timestamp + plaintext
-    header.enc_key_type = (uint8_t)DAP_ENC_KEY_TYPE_KEM_KYBER512;
+    header.enc_key_type = (uint8_t)QGP_KEY_TYPE_KEM1024;
     header.recipient_count = (uint8_t)recipient_count;
     header.message_type = MSG_TYPE_DIRECT_PQC;  // Per-recipient Kyber1024
     header.encrypted_size = (uint32_t)encrypted_size;

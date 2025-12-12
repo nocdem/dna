@@ -50,7 +50,6 @@ struct dna_context {
 // File format constants (same as QGP)
 #define DNA_ENC_MAGIC "PQSIGENC"
 #define DNA_ENC_VERSION 0x08  // Version 8: Encrypted timestamp (fingerprint + timestamp + plaintext)
-#define DAP_ENC_KEY_TYPE_KEM_KYBER512 23
 
 // Header structure (same as encrypt.c/decrypt.c)
 #ifdef _MSC_VER
@@ -436,7 +435,7 @@ dna_error_t dna_encrypt_message(
     memset(&header_for_aad, 0, sizeof(header_for_aad));
     memcpy(header_for_aad.magic, DNA_ENC_MAGIC, 8);
     header_for_aad.version = DNA_ENC_VERSION;
-    header_for_aad.enc_key_type = DAP_ENC_KEY_TYPE_KEM_KYBER512;
+    header_for_aad.enc_key_type = QGP_KEY_TYPE_KEM1024;
     header_for_aad.recipient_count = (uint8_t)recipient_count;
     header_for_aad.message_type = MSG_TYPE_DIRECT_PQC;
     header_for_aad.encrypted_size = (uint32_t)plaintext_len;
@@ -646,7 +645,7 @@ dna_error_t dna_encrypt_message_raw(
     memset(&header_for_aad, 0, sizeof(header_for_aad));
     memcpy(header_for_aad.magic, DNA_ENC_MAGIC, 8);
     header_for_aad.version = DNA_ENC_VERSION;
-    header_for_aad.enc_key_type = DAP_ENC_KEY_TYPE_KEM_KYBER512;
+    header_for_aad.enc_key_type = QGP_KEY_TYPE_KEM1024;
     header_for_aad.recipient_count = 1;
     header_for_aad.message_type = MSG_TYPE_DIRECT_PQC;
     header_for_aad.encrypted_size = (uint32_t)payload_len;  // v0.08: encrypt fingerprint + timestamp + plaintext

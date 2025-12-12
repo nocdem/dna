@@ -249,7 +249,7 @@ TRANSPORT                         STORAGE                        DECRYPTION     
 │  ├──────┬─────────┬────────────────────────────────────────────────────┤    │
 │  │  0   │    8    │ magic[8] = "PQSIGENC"                              │    │
 │  │  8   │    1    │ version = 0x08                                     │    │
-│  │  9   │    1    │ enc_key_type = 23 (DAP_ENC_KEY_TYPE_KEM_KYBER512)  │    │
+│  │  9   │    1    │ enc_key_type = 2 (QGP_KEY_TYPE_KEM1024)            │    │
 │  │  10  │    1    │ recipient_count (1-255)                            │    │
 │  │  11  │    1    │ message_type (0=direct, 1=group)                   │    │
 │  │  12  │    4    │ encrypted_size (uint32_t, little-endian)           │    │
@@ -302,7 +302,7 @@ TRANSPORT                         STORAGE                        DECRYPTION     
 typedef struct {
     char magic[8];              // "PQSIGENC"
     uint8_t version;            // 0x08 (Category 5 + encrypted timestamp)
-    uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512 (23)
+    uint8_t enc_key_type;       // QGP_KEY_TYPE_KEM1024 (2)
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t message_type;       // MSG_TYPE_DIRECT_PQC or MSG_TYPE_GROUP_GSK
     uint32_t encrypted_size;    // Size of encrypted data

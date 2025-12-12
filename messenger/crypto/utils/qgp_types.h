@@ -149,11 +149,6 @@ typedef struct {
 // FILE FORMAT STRUCTURES
 // ============================================================================
 
-/*
- * KEM-1024 key type identifier (value: 23) for backward compatibility
- */
-#define DAP_ENC_KEY_TYPE_KEM_KYBER512 23
-
 /**
  * PQSigNum Private Key File Header
  * File format: [header | public_key | private_key]

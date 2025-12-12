@@ -31,7 +31,7 @@ PACK_STRUCT_BEGIN
 typedef struct {
     char magic[8];              // "PQSIGENC"
     uint8_t version;            // 0x06 (Category 5)
-    uint8_t enc_key_type;       // DAP_ENC_KEY_TYPE_KEM_KYBER512
+    uint8_t enc_key_type;       // QGP_KEY_TYPE_KEM1024
     uint8_t recipient_count;    // Number of recipients (1-255)
     uint8_t reserved;
     uint32_t encrypted_size;    // Size of encrypted data (GCM ciphertext, exact plaintext size)
@@ -152,7 +152,7 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
         goto cleanup;
     }
 
-    if (header.enc_key_type != DAP_ENC_KEY_TYPE_KEM_KYBER512) {
+    if (header.enc_key_type != QGP_KEY_TYPE_KEM1024) {
         fprintf(stderr, "Error: File not encrypted with ML-KEM-1024\n");
         fclose(in_fp);
         ret = EXIT_ERROR;
@@ -316,7 +316,7 @@ int cmd_decrypt_file(const char *input_file, const char *output_file, const char
     memset(&header_for_aad, 0, sizeof(header_for_aad));
     memcpy(header_for_aad.magic, PQSIGNUM_ENC_MAGIC, 8);
     header_for_aad.version = PQSIGNUM_ENC_VERSION;
-    header_for_aad.enc_key_type = DAP_ENC_KEY_TYPE_KEM_KYBER512;
+    header_for_aad.enc_key_type = QGP_KEY_TYPE_KEM1024;
     header_for_aad.recipient_count = recipient_count;
     header_for_aad.reserved = 0;
     header_for_aad.encrypted_size = encrypted_size;
