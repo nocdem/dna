@@ -126,7 +126,19 @@ run_flutter() {
     flutter pub get
 
     # Run the app
-    flutter run -d linux "${FLUTTER_ARGS[@]}"
+    if [ "$DEBUG_MODE" = true ]; then
+        # Find ASAN library path for LD_PRELOAD
+        ASAN_LIB=$(gcc -print-file-name=libasan.so)
+        if [ -f "$ASAN_LIB" ]; then
+            echo -e "${YELLOW}Preloading ASAN runtime: $ASAN_LIB${NC}"
+            LD_PRELOAD="$ASAN_LIB" flutter run -d linux "${FLUTTER_ARGS[@]}"
+        else
+            echo -e "${RED}Warning: ASAN library not found, running without preload${NC}"
+            flutter run -d linux "${FLUTTER_ARGS[@]}"
+        fi
+    else
+        flutter run -d linux "${FLUTTER_ARGS[@]}"
+    fi
 }
 
 # Main
