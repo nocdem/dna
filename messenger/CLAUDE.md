@@ -75,22 +75,28 @@ CLI=/opt/dna-messenger/build/cli/dna-messenger-cli
 $CLI lookup-profile <name|fp>    # View any user's full DHT profile
 $CLI lookup <name>               # Check if name is registered
 
-# Messaging debugging
+# Messaging (USE NAME or FULL 128-char fingerprint - partial fp does NOT work)
+$CLI send <name> "message"       # Send message to contact by name
+$CLI send <full-fp> "message"    # Send message using FULL 128-char fingerprint
+$CLI messages <fp>               # Show conversation history
 $CLI check-offline               # Poll DHT for offline messages
 $CLI listen                      # Subscribe to push notifications
 
 # Identity debugging
 $CLI whoami                      # Show current identity
 $CLI profile                     # Show own profile
-$CLI contacts                    # List contacts with status
+$CLI contacts                    # List contacts with status (shows names + fingerprints)
 ```
 
 **When to use CLI:**
+- **Send test messages** to contacts (use registered name like `nox` or FULL fingerprint)
 - Debug DHT profile registration issues
 - Test offline message delivery
 - Verify contact request flow
 - Check name registration status
 - Compare profile data between users
+
+**IMPORTANT:** For `send` command, use the contact's **registered name** (e.g., `nox`) or the **full 128-character fingerprint**. Partial fingerprints will fail with "Network error".
 
 ## Protocol Mode
 

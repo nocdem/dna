@@ -57,7 +57,7 @@ $CLI requests                         # List pending requests
 $CLI approve <fp>                     # Approve request
 
 # Messaging
-$CLI send <fp> "message"              # Send message
+$CLI send <name|fp> "message"         # Send message (use name or FULL fingerprint)
 $CLI messages <fp>                    # Show conversation
 $CLI check-offline                    # Check offline messages
 
@@ -342,14 +342,18 @@ dna-messenger-cli approve 7f8e9d0c
 
 ## Messaging Commands
 
-### `send <fingerprint> <message>` - Send Message
+### `send <name|fingerprint> <message>` - Send Message
 
 ```bash
-dna-messenger-cli send 5a8f2c3d "Hello from CLI!"
+dna-messenger-cli send nox "Hello from CLI!"
+dna-messenger-cli send 5a8f2c3d4e6b7a9c1b2a34567890abcd... "Hello from CLI!"
 ```
+
+**IMPORTANT:** Use registered name OR full 128-char fingerprint. Partial fingerprints do NOT work for send.
 
 **Requirements:**
 - Identity must be loaded
+- Recipient must be a registered name OR full 128-character fingerprint
 - Message is E2E encrypted with Kyber1024 + AES-256-GCM
 
 ---
