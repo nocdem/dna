@@ -115,11 +115,12 @@ class EventHandler {
 
       case OutboxUpdatedEvent(contactFingerprint: final contactFp):
         // Contact's outbox has new messages - fetch them
-        // Invalidate the conversation to trigger message refresh
-        _ref.invalidate(conversationProvider(contactFp));
-        // Also trigger offline message check for this contact
+        // Trigger offline message check, then refresh UI AFTER messages are in DB
         _ref.read(engineProvider).whenData((engine) async {
           await engine.checkOfflineMessages();
+          // Now invalidate to refresh UI with new messages
+          _ref.invalidate(conversationProvider(contactFp));
+          _ref.invalidate(contactsProvider);
         });
         break;
 
