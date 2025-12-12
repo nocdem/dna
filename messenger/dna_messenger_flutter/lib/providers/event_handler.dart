@@ -70,26 +70,21 @@ class EventHandler {
       case MessageReceivedEvent(message: final msg):
         // New message received - refresh conversation from DB (decrypts messages)
         final contactFp = msg.isOutgoing ? msg.recipient : msg.sender;
-        // Check if the chat with this contact is currently open
         final selectedContact = _ref.read(selectedContactProvider);
         final isChatOpen = selectedContact != null &&
             selectedContact.fingerprint == contactFp;
 
-        // Debug logging
-        print('[EVENT] MessageReceivedEvent: contactFp=${contactFp.substring(0, 16)}...');
-        print('[EVENT] selectedContact: ${selectedContact?.fingerprint.substring(0, 16) ?? "null"}...');
-        print('[EVENT] isChatOpen: $isChatOpen, isOutgoing: ${msg.isOutgoing}');
+        // Always invalidate the conversation provider first
+        _ref.invalidate(conversationProvider(contactFp));
 
+        // If chat is open, also force immediate rebuild via notifier
         if (isChatOpen) {
-          // Chat is open - directly refresh to update messages immediately
-          // Don't invalidate (causes race condition), just refresh the notifier
-          print('[EVENT] Calling refresh() on conversation notifier');
-          _ref.read(conversationProvider(contactFp).notifier).refresh();
+          // Use microtask to ensure invalidation is processed first
+          Future.microtask(() {
+            _ref.read(conversationProvider(contactFp).notifier).refresh();
+          });
         } else {
-          // Chat not open - invalidate so it reloads when opened
-          print('[EVENT] Chat not open - invalidating provider');
-          _ref.invalidate(conversationProvider(contactFp));
-          // Increment unread count for incoming messages
+          // Increment unread count for incoming messages when chat not open
           if (!msg.isOutgoing) {
             _ref.read(unreadCountsProvider.notifier).incrementCount(contactFp);
           }
