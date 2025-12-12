@@ -8,7 +8,31 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLUTTER_DIR="$PROJECT_ROOT/dna_messenger_flutter"
 BUILD_DIR="$PROJECT_ROOT/build"
 FLUTTER_LIBS_DIR="$FLUTTER_DIR/linux/libs"
-FLUTTER_BUNDLE_LIB="$FLUTTER_DIR/build/linux/x64/debug/bundle/lib"
+
+# Default to Release build
+BUILD_TYPE="Release"
+DEBUG_MODE=false
+
+# Parse arguments
+FLUTTER_ARGS=()
+for arg in "$@"; do
+    case $arg in
+        --debug)
+            BUILD_TYPE="Debug"
+            DEBUG_MODE=true
+            ;;
+        *)
+            FLUTTER_ARGS+=("$arg")
+            ;;
+    esac
+done
+
+# Set Flutter bundle lib path based on build type
+if [ "$DEBUG_MODE" = true ]; then
+    FLUTTER_BUNDLE_LIB="$FLUTTER_DIR/build/linux/x64/debug/bundle/lib"
+else
+    FLUTTER_BUNDLE_LIB="$FLUTTER_DIR/build/linux/x64/release/bundle/lib"
+fi
 
 # Colors for output
 RED='\033[0;31m'
@@ -16,7 +40,7 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
-echo -e "${GREEN}=== DNA Messenger Flutter GUI - Full Build ===${NC}"
+echo -e "${GREEN}=== DNA Messenger Flutter GUI - Full Build ($BUILD_TYPE) ===${NC}"
 
 # Check for required tools
 check_dependencies() {
@@ -61,7 +85,11 @@ build_native_lib() {
     cd "$BUILD_DIR"
 
     # Configure with shared library option
-    cmake "$PROJECT_ROOT" -DBUILD_SHARED_LIB=ON -DCMAKE_BUILD_TYPE=Release
+    cmake "$PROJECT_ROOT" -DBUILD_SHARED_LIB=ON -DCMAKE_BUILD_TYPE="$BUILD_TYPE"
+
+    if [ "$DEBUG_MODE" = true ]; then
+        echo -e "${YELLOW}Building with AddressSanitizer (ASAN) enabled${NC}"
+    fi
 
     # Build just the dna_lib target
     make -j$(nproc) dna_lib
@@ -98,7 +126,7 @@ run_flutter() {
     flutter pub get
 
     # Run the app
-    flutter run -d linux "$@"
+    flutter run -d linux "${FLUTTER_ARGS[@]}"
 }
 
 # Main
@@ -107,7 +135,7 @@ main() {
     pull_latest
     build_native_lib
     copy_library
-    run_flutter "$@"
+    run_flutter
 }
 
 # Show help
@@ -118,12 +146,14 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Use dna_messenger_flutter/run_linux.sh for faster iterations without git pull."
     echo ""
     echo "Options:"
+    echo "  --debug          Build with Debug mode (enables AddressSanitizer)"
     echo "  -h, --help       Show this help message"
     echo ""
     echo "Examples:"
-    echo "  $0                    # Pull, build, and run"
-    echo "  $0 --release          # Pull, build, and run in release mode"
+    echo "  $0                    # Pull, build, and run (Release)"
+    echo "  $0 --debug            # Pull, build with ASAN, and run"
+    echo "  $0 --release          # Pull, build, and run Flutter in release mode"
     exit 0
 fi
 
-main "$@"
+main

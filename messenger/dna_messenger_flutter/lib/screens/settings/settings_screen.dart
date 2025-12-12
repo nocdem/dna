@@ -382,7 +382,7 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                 children: [
                   Icon(Icons.key, color: DnaColors.textWarning),
                   const SizedBox(width: 8),
-                  const Text('Your Seed Phrase'),
+                  const Expanded(child: Text('Your Seed Phrase')),
                 ],
               ),
               content: SizedBox(
@@ -398,27 +398,51 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(color: DnaColors.textMuted.withAlpha(51)),
                       ),
-                      child: Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: words.asMap().entries.map((entry) {
-                          return Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: Theme.of(context).colorScheme.primary.withAlpha(26),
-                              borderRadius: BorderRadius.circular(4),
-                            ),
-                            child: Text(
-                              '${entry.key + 1}. ${entry.value}',
-                              style: TextStyle(
-                                fontFamily: 'monospace',
-                                fontSize: 13,
-                                fontWeight: FontWeight.w500,
-                                color: Theme.of(context).colorScheme.primary,
-                              ),
-                            ),
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final columns = constraints.maxWidth < 200 ? 2 : (constraints.maxWidth < 300 ? 3 : 4);
+                          final rows = (words.length / columns).ceil();
+                          final theme = Theme.of(context);
+
+                          return Column(
+                            children: List.generate(rows, (rowIndex) {
+                              return Padding(
+                                padding: EdgeInsets.only(bottom: rowIndex < rows - 1 ? 8 : 0),
+                                child: Row(
+                                  children: List.generate(columns, (colIndex) {
+                                    final wordIndex = rowIndex * columns + colIndex;
+                                    if (wordIndex >= words.length) {
+                                      return const Expanded(child: SizedBox());
+                                    }
+                                    final word = words[wordIndex];
+                                    final displayIndex = wordIndex + 1;
+
+                                    return Expanded(
+                                      child: Padding(
+                                        padding: EdgeInsets.only(right: colIndex < columns - 1 ? 8 : 0),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                                          decoration: BoxDecoration(
+                                            color: theme.scaffoldBackgroundColor,
+                                            borderRadius: BorderRadius.circular(8),
+                                            border: Border.all(color: theme.colorScheme.primary.withAlpha(51)),
+                                          ),
+                                          child: Text(
+                                            '$displayIndex. $word',
+                                            style: theme.textTheme.bodyMedium?.copyWith(
+                                              fontFamily: 'monospace',
+                                            ),
+                                            textAlign: TextAlign.center,
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  }),
+                                ),
+                              );
+                            }),
                           );
-                        }).toList(),
+                        },
                       ),
                     ),
                     const SizedBox(height: 16),
