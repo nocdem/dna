@@ -874,9 +874,9 @@ class DnaEngine {
         // For incoming messages from push notifications, is_outgoing = false
         final isOutgoing = event.data[278] != 0;
 
-        // message_type is at offset 284
+        // message_type is at offset 284 (0=chat, 1=group invitation)
         final msgTypeInt = event.data[284];
-        final msgType = msgTypeInt == 1 ? MessageType.contactRequest : MessageType.chat;
+        final msgType = msgTypeInt == 1 ? MessageType.groupInvitation : MessageType.chat;
 
         dartEvent = MessageReceivedEvent(Message(
           id: 0,
