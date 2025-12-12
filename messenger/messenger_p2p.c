@@ -1064,16 +1064,70 @@ static bool messenger_push_notification_callback(
         return true;  // Continue listening
     }
 
-    QGP_LOG_INFO("P2P", "Push notification received, triggering offline message check...\n");
+    QGP_LOG_INFO("P2P", "Push notification received for: %s\n", cb_ctx->base_key);
 
-    // Simply trigger polling - it works reliably
-    size_t msg_count = 0;
-    messenger_p2p_check_offline_messages(ctx, &msg_count);
-
-    if (msg_count > 0) {
-        QGP_LOG_INFO("P2P", "Push notification: retrieved %zu message(s)\n", msg_count);
+    // Get DHT context from P2P transport
+    dht_context_t *dht = ctx->p2p_transport ? p2p_transport_get_dht_context(ctx->p2p_transport) : NULL;
+    if (!dht) {
+        QGP_LOG_ERROR("P2P", "Push: DHT context not available");
+        return true;
     }
 
+    // Fetch from the specific contact's outbox (not all contacts)
+    uint8_t *outbox_data = NULL;
+    size_t outbox_len = 0;
+    int fetch_result = -1;
+
+    // Retry up to 3 times with delay for DHT propagation
+    for (int retry = 0; retry < 3; retry++) {
+        fetch_result = dht_chunked_fetch(dht, cb_ctx->base_key, &outbox_data, &outbox_len);
+        if (fetch_result == 0 && outbox_data && outbox_len > 0) {
+            break;
+        }
+        if (retry < 2) {
+            QGP_LOG_DEBUG("P2P", "Push: fetch attempt %d failed (result=%d), retrying...\n", retry + 1, fetch_result);
+            struct timespec delay = {.tv_sec = 2, .tv_nsec = 0};
+            nanosleep(&delay, NULL);
+        }
+    }
+
+    if (fetch_result != 0 || !outbox_data || outbox_len == 0) {
+        QGP_LOG_WARN("P2P", "Push: failed to fetch outbox (result=%d), falling back to full poll\n", fetch_result);
+        // Fallback to polling all contacts
+        size_t msg_count = 0;
+        messenger_p2p_check_offline_messages(ctx, &msg_count);
+        return true;
+    }
+
+    QGP_LOG_DEBUG("P2P", "Push: fetched %zu bytes from outbox\n", outbox_len);
+
+    // Deserialize messages
+    dht_offline_message_t *messages = NULL;
+    size_t count = 0;
+    if (dht_deserialize_messages(outbox_data, outbox_len, &messages, &count) != 0 || count == 0) {
+        QGP_LOG_WARN("P2P", "Push: failed to deserialize messages\n");
+        free(outbox_data);
+        return true;
+    }
+
+    free(outbox_data);
+    QGP_LOG_INFO("P2P", "Push: %zu message(s) from contact\n", count);
+
+    // Deliver each message
+    for (size_t i = 0; i < count; i++) {
+        dht_offline_message_t *msg = &messages[i];
+        QGP_LOG_DEBUG("P2P", "Push: delivering message %zu/%zu from %s (%zu bytes)\n",
+               i + 1, count, msg->sender, msg->ciphertext_len);
+
+        p2p_transport_deliver_message(
+            ctx->p2p_transport,
+            NULL,  // peer_pubkey unknown for offline
+            msg->ciphertext,
+            msg->ciphertext_len
+        );
+    }
+
+    dht_offline_messages_free(messages, count);
     return true;  // Continue listening
 }
 
