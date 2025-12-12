@@ -639,11 +639,25 @@ class _MessageBubble extends StatelessWidget {
 
   const _MessageBubble({required this.message});
 
+  /// Check if message is a CPUNK transfer by parsing JSON content
+  Map<String, dynamic>? _parseTransferData() {
+    try {
+      final data = jsonDecode(message.plaintext) as Map<String, dynamic>;
+      if (data['type'] == 'cpunk_transfer') {
+        return data;
+      }
+    } catch (_) {
+      // Not JSON or invalid format - treat as regular message
+    }
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
-    // Handle transfer messages with special bubble
-    if (message.type == MessageType.cpunkTransfer) {
-      return _TransferBubble(message: message);
+    // Handle transfer messages with special bubble (detected by JSON tag)
+    final transferData = _parseTransferData();
+    if (transferData != null) {
+      return _TransferBubble(message: message, transferData: transferData);
     }
 
     final theme = Theme.of(context);
@@ -889,7 +903,7 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
 
         // Send the transfer message to the conversation
         ref.read(conversationProvider(widget.contact.fingerprint).notifier)
-            .sendMessage(transferData, messageType: MessageType.cpunkTransfer);
+            .sendMessage(transferData);
 
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -1129,26 +1143,18 @@ class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
 /// Special bubble for CPUNK transfer messages
 class _TransferBubble extends StatelessWidget {
   final Message message;
+  final Map<String, dynamic> transferData;
 
-  const _TransferBubble({required this.message});
+  const _TransferBubble({required this.message, required this.transferData});
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isOutgoing = message.isOutgoing;
 
-    // Parse transfer data from plaintext JSON
-    Map<String, dynamic>? transferData;
-    try {
-      transferData = jsonDecode(message.plaintext) as Map<String, dynamic>;
-    } catch (e) {
-      // Fallback for invalid JSON
-      transferData = null;
-    }
-
-    final amount = transferData?['amount'] ?? '?';
-    final token = transferData?['token'] ?? 'CPUNK';
-    final txHash = transferData?['txHash'] as String?;
+    final amount = transferData['amount'] ?? '?';
+    final token = transferData['token'] ?? 'CPUNK';
+    final txHash = transferData['txHash'] as String?;
 
     // Shorten tx hash for display (e.g., 0xABC...XYZ)
     String? shortTxHash;

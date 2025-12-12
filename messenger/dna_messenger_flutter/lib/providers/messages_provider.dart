@@ -32,9 +32,9 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
   /// - -1: queue full
   /// - -2: other error
   ///
-  /// For transfer messages (messageType: cpunkTransfer), the message is stored
-  /// locally but not sent through the network (the transfer was already executed).
-  int sendMessage(String text, {MessageType messageType = MessageType.chat}) {
+  /// Transfer messages are sent as JSON with "type": "cpunk_transfer" tag.
+  /// The UI detects this tag and displays them as transfer bubbles.
+  int sendMessage(String text) {
     final engine = ref.read(engineProvider).valueOrNull;
     final fingerprint = engine?.fingerprint;
     if (fingerprint == null || engine == null) return -2;
@@ -44,7 +44,6 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
       sender: fingerprint,
       recipient: arg,
       plaintext: text,
-      type: messageType,
     );
 
     // Add to UI immediately with pending status
@@ -55,31 +54,6 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
     } else {
       // If loading or error, start fresh with just this message
       state = AsyncValue.data([pendingMessage]);
-    }
-
-    // For transfer messages, don't send through network - just record locally
-    // Transfer messages are visual records of wallet transfers, not network messages
-    if (messageType == MessageType.cpunkTransfer) {
-      // Update the pending message to show as sent (transfer already completed)
-      state.whenData((messages) {
-        final updated = messages.map((m) {
-          if (m.id == pendingMessage.id) {
-            return Message(
-              id: m.id,
-              sender: m.sender,
-              recipient: m.recipient,
-              plaintext: m.plaintext,
-              timestamp: m.timestamp,
-              isOutgoing: m.isOutgoing,
-              status: MessageStatus.sent,
-              type: m.type,
-            );
-          }
-          return m;
-        }).toList();
-        state = AsyncValue.data(updated);
-      });
-      return 0; // Success - transfer record added to chat
     }
 
     // Queue message for async sending (returns immediately)
