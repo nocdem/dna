@@ -265,6 +265,11 @@ Future<List<Contact>> _updateContactsPresence(DnaEngine engine, List<Contact> co
    - Supported tokens: **CPUNK, CELL only** (Backbone network)
    - Transaction history UI with full details dialog
    - Balances display per wallet (fetched via Cellframe RPC)
+   - **Send CPUNK via chat:** Transfer CPUNK directly from chat conversation
+     - App bar button in chat header
+     - Auto-resolve contact fingerprint → backbone wallet address
+     - Special transfer bubble with gradient styling
+     - Transaction speed selector (slow/normal/fast)
 
 4. **Profile/Identity:**
    - Nickname registration on DHT
@@ -384,6 +389,7 @@ dna_messenger_flutter/
 - Message status indicators: pending (spinner), sent (checkmark), failed (red X)
 - Enter sends message, Shift+Enter adds newline
 - Emoji picker with shortcode support (:smile: etc.)
+- **CPUNK transfer via chat:** Send CPUNK directly from conversation with special transfer bubble
 
 **Background Tasks:**
 - Initial DHT offline message poll on login (15 second delay)
