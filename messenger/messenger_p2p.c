@@ -30,6 +30,7 @@
 #include <openssl/sha.h>
 #include <json-c/json.h>
 #include <pthread.h>
+#include <time.h>
 
 // Platform-specific headers for home directory detection
 #ifndef _WIN32
@@ -75,6 +76,11 @@ static subscription_manager_t g_subscription_manager = {
     .mutex = PTHREAD_MUTEX_INITIALIZER,
     .messenger_ctx = NULL
 };
+
+// Last poll timestamp (for push notification throttling)
+static time_t g_last_poll_timestamp = 0;
+static pthread_mutex_t g_poll_timestamp_mutex = PTHREAD_MUTEX_INITIALIZER;
+#define PUSH_POLL_THROTTLE_SECONDS 10
 
 // ============================================================================
 // HELPER FUNCTIONS
@@ -1038,7 +1044,7 @@ static bool messenger_push_notification_callback(
     bool expired,
     void *user_data)
 {
-    (void)user_data;  // Currently unused - polling handles message retrieval
+    messenger_context_t *ctx = (messenger_context_t*)user_data;
 
     if (expired) {
         QGP_LOG_DEBUG("P2P", "Push notification: expiration");
@@ -1049,15 +1055,29 @@ static bool messenger_push_notification_callback(
         return true;
     }
 
-    // Push notification received - this indicates new messages available.
-    // The actual message retrieval is handled by the polling mechanism
-    // (messenger_p2p_check_offline_messages) which correctly handles
-    // the chunked data format.
-    //
-    // Note: The received value is chunk0 data (chunked format), not raw
-    // message data. Direct deserialization would fail because chunk0
-    // has a different format (total_chunks | original_size | compressed_data).
-    QGP_LOG_INFO("P2P", "Push notification received (%zu bytes) - new messages available\n", value_len);
+    QGP_LOG_INFO("P2P", "Push notification received (%zu bytes)\n", value_len);
+
+    // Check if we should trigger polling (throttle to avoid spam)
+    time_t now = time(NULL);
+    bool should_poll = false;
+
+    pthread_mutex_lock(&g_poll_timestamp_mutex);
+    if (now - g_last_poll_timestamp >= PUSH_POLL_THROTTLE_SECONDS) {
+        should_poll = true;
+        g_last_poll_timestamp = now;
+    }
+    pthread_mutex_unlock(&g_poll_timestamp_mutex);
+
+    if (should_poll && ctx) {
+        QGP_LOG_INFO("P2P", "Push notification: triggering offline message poll\n");
+        size_t msg_count = 0;
+        messenger_p2p_check_offline_messages(ctx, &msg_count);
+        if (msg_count > 0) {
+            QGP_LOG_INFO("P2P", "Push notification: retrieved %zu message(s)\n", msg_count);
+        }
+    } else if (!should_poll) {
+        QGP_LOG_DEBUG("P2P", "Push notification: skipping poll (throttled)\n");
+    }
 
     return true;  // Continue listening
 }
@@ -1281,6 +1301,11 @@ int messenger_p2p_check_offline_messages(
         if (messages_received) *messages_received = 0;
         return -1;
     }
+
+    // Update last poll timestamp (for push notification throttling)
+    pthread_mutex_lock(&g_poll_timestamp_mutex);
+    g_last_poll_timestamp = time(NULL);
+    pthread_mutex_unlock(&g_poll_timestamp_mutex);
 
     QGP_LOG_DEBUG("P2P", "Checking for offline messages in DHT...");
 
