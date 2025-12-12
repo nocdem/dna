@@ -70,19 +70,26 @@ class EventHandler {
       case MessageReceivedEvent(message: final msg):
         // New message received - refresh conversation from DB (decrypts messages)
         final contactFp = msg.isOutgoing ? msg.recipient : msg.sender;
-        _ref.invalidate(conversationProvider(contactFp));
-        // Also refresh contacts to update last message preview
-        _ref.invalidate(contactsProvider);
-        // Increment unread count if this is an incoming message
-        if (!msg.isOutgoing) {
-          // Check if the chat with this contact is currently open
-          final selectedContact = _ref.read(selectedContactProvider);
-          if (selectedContact == null ||
-              selectedContact.fingerprint != contactFp) {
-            // Chat not open - increment unread count
+        // Check if the chat with this contact is currently open
+        final selectedContact = _ref.read(selectedContactProvider);
+        final isChatOpen = selectedContact != null &&
+            selectedContact.fingerprint == contactFp;
+
+        if (isChatOpen) {
+          // Chat is open - directly refresh to update messages immediately
+          // Don't invalidate (causes race condition), just refresh the notifier
+          _ref.read(conversationProvider(contactFp).notifier).refresh();
+        } else {
+          // Chat not open - invalidate so it reloads when opened
+          _ref.invalidate(conversationProvider(contactFp));
+          // Increment unread count for incoming messages
+          if (!msg.isOutgoing) {
             _ref.read(unreadCountsProvider.notifier).incrementCount(contactFp);
           }
         }
+
+        // Always refresh contacts to update last message preview
+        _ref.invalidate(contactsProvider);
 
       case MessageSentEvent():
         // Message was sent - status will be updated via delivered event
