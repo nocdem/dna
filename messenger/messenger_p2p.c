@@ -1035,6 +1035,25 @@ int messenger_p2p_lookup_presence(
 // ============================================================================
 
 /**
+ * Thread function for delayed push notification poll
+ */
+static void* push_notification_poll_thread(void *arg) {
+    messenger_context_t *ctx = (messenger_context_t*)arg;
+
+    QGP_LOG_INFO("P2P", "Push notification: waiting 5s before poll...\n");
+    sleep(5);  // Wait for DHT propagation
+
+    QGP_LOG_INFO("P2P", "Push notification: triggering offline message poll\n");
+    size_t msg_count = 0;
+    messenger_p2p_check_offline_messages(ctx, &msg_count);
+    if (msg_count > 0) {
+        QGP_LOG_INFO("P2P", "Push notification: retrieved %zu message(s)\n", msg_count);
+    }
+
+    return NULL;
+}
+
+/**
  * Push notification callback - invoked when DHT listen() receives values
  * Runs on DHT worker thread, must be thread-safe
  */
@@ -1069,13 +1088,13 @@ static bool messenger_push_notification_callback(
     pthread_mutex_unlock(&g_poll_timestamp_mutex);
 
     if (should_poll && ctx) {
-        QGP_LOG_INFO("P2P", "Push notification: waiting 5s before poll...\n");
-        sleep(5);  // Wait for DHT propagation
-        QGP_LOG_INFO("P2P", "Push notification: triggering offline message poll\n");
-        size_t msg_count = 0;
-        messenger_p2p_check_offline_messages(ctx, &msg_count);
-        if (msg_count > 0) {
-            QGP_LOG_INFO("P2P", "Push notification: retrieved %zu message(s)\n", msg_count);
+        // Schedule async poll (don't block DHT worker thread)
+        pthread_t poll_thread;
+        if (pthread_create(&poll_thread, NULL, push_notification_poll_thread, ctx) == 0) {
+            pthread_detach(poll_thread);  // Don't need to join
+            QGP_LOG_INFO("P2P", "Push notification: scheduled poll in 5s\n");
+        } else {
+            QGP_LOG_ERROR("P2P", "Push notification: failed to create poll thread\n");
         }
     } else if (!should_poll) {
         QGP_LOG_DEBUG("P2P", "Push notification: skipping poll (throttled)\n");
