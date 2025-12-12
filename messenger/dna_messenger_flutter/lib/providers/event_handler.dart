@@ -74,17 +74,21 @@ class EventHandler {
         final isChatOpen = selectedContact != null &&
             selectedContact.fingerprint == contactFp;
 
+        // Debug: log fingerprint comparison
+        print('[EVENT] MessageReceived: contactFp=${contactFp.length > 16 ? contactFp.substring(0, 16) : contactFp}...');
+        print('[EVENT] selectedContact fp=${selectedContact?.fingerprint.substring(0, 16) ?? "null"}...');
+        print('[EVENT] isChatOpen=$isChatOpen (match=${selectedContact?.fingerprint == contactFp})');
+
         // Always invalidate the conversation provider
         _ref.invalidate(conversationProvider(contactFp));
 
-        if (isChatOpen) {
-          // Chat is open - increment refresh trigger to force UI rebuild
-          _ref.read(conversationRefreshTriggerProvider.notifier).state++;
-        } else {
+        // Always increment refresh trigger when message received (regardless of chat state)
+        _ref.read(conversationRefreshTriggerProvider.notifier).state++;
+        print('[EVENT] Incremented refresh trigger');
+
+        if (!isChatOpen && !msg.isOutgoing) {
           // Increment unread count for incoming messages when chat not open
-          if (!msg.isOutgoing) {
-            _ref.read(unreadCountsProvider.notifier).incrementCount(contactFp);
-          }
+          _ref.read(unreadCountsProvider.notifier).incrementCount(contactFp);
         }
 
         // Always refresh contacts to update last message preview
