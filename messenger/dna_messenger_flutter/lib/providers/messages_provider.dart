@@ -106,8 +106,14 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
   }
 }
 
+/// Refresh trigger - increment to force conversation rebuild
+final conversationRefreshTriggerProvider = StateProvider<int>((ref) => 0);
+
 /// Current conversation provider (for the selected contact)
 final currentConversationProvider = Provider<AsyncValue<List<Message>>>((ref) {
+  // Watch the refresh trigger to force rebuilds
+  ref.watch(conversationRefreshTriggerProvider);
+
   final contact = ref.watch(selectedContactProvider);
   if (contact == null) {
     return const AsyncValue.data([]);

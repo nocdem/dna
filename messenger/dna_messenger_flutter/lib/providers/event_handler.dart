@@ -74,15 +74,12 @@ class EventHandler {
         final isChatOpen = selectedContact != null &&
             selectedContact.fingerprint == contactFp;
 
-        // Always invalidate the conversation provider first
+        // Always invalidate the conversation provider
         _ref.invalidate(conversationProvider(contactFp));
 
-        // If chat is open, also force immediate rebuild via notifier
         if (isChatOpen) {
-          // Use microtask to ensure invalidation is processed first
-          Future.microtask(() {
-            _ref.read(conversationProvider(contactFp).notifier).refresh();
-          });
+          // Chat is open - increment refresh trigger to force UI rebuild
+          _ref.read(conversationRefreshTriggerProvider.notifier).state++;
         } else {
           // Increment unread count for incoming messages when chat not open
           if (!msg.isOutgoing) {
