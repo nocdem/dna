@@ -893,11 +893,12 @@ static void p2p_message_received_internal(
         message_type        // message_type (chat or invitation)
     );
 
-    if (result != 0) {
+    if (result < 0) {
         QGP_LOG_ERROR("P2P", "Failed to store received message in SQLite");
-    } else {
+    } else if (result == 0) {
         QGP_LOG_INFO("P2P", "Message from %s stored in SQLite (type=%d)\n", sender_identity, message_type);
     }
+    // result == 1 means duplicate (already exists), not an error
 
     // Fetch sender profile for caching (only if expired or missing) - Phase 5: Unified Identity
     if (profile_cache_is_expired(sender_identity)) {
@@ -1037,49 +1038,27 @@ static bool messenger_push_notification_callback(
     bool expired,
     void *user_data)
 {
-    messenger_context_t *ctx = (messenger_context_t*)user_data;
+    (void)user_data;  // Currently unused - polling handles message retrieval
 
     if (expired) {
-        QGP_LOG_DEBUG("P2P", "Received expiration notification");
-        return true;  // Continue listening
+        QGP_LOG_DEBUG("P2P", "Push notification: expiration");
+        return true;
     }
 
     if (!value || value_len == 0) {
-        return true;  // Continue listening
+        return true;
     }
 
-    QGP_LOG_DEBUG("P2P", "Received notification (%zu bytes)\n", value_len);
+    // Push notification received - this indicates new messages available.
+    // The actual message retrieval is handled by the polling mechanism
+    // (messenger_p2p_check_offline_messages) which correctly handles
+    // the chunked data format.
+    //
+    // Note: The received value is chunk0 data (chunked format), not raw
+    // message data. Direct deserialization would fail because chunk0
+    // has a different format (total_chunks | original_size | compressed_data).
+    QGP_LOG_INFO("P2P", "Push notification received (%zu bytes) - new messages available\n", value_len);
 
-    // Deserialize offline messages
-    dht_offline_message_t *messages = NULL;
-    size_t count = 0;
-    int result = dht_deserialize_messages(value, value_len, &messages, &count);
-
-    if (result != 0 || count == 0) {
-        QGP_LOG_ERROR("P2P", "Failed to deserialize messages");
-        return true;  // Continue listening despite error
-    }
-
-    QGP_LOG_DEBUG("P2P", "Deserialized %zu message(s)\n", count);
-
-    // Deliver each message via P2P callback (same path as polling)
-    if (ctx->p2p_transport) {
-        for (size_t i = 0; i < count; i++) {
-            dht_offline_message_t *msg = &messages[i];
-
-            QGP_LOG_DEBUG("P2P", "Delivering message %zu/%zu from %s (%zu bytes)\n",
-                   i + 1, count, msg->sender, msg->ciphertext_len);
-
-            p2p_transport_deliver_message(
-                ctx->p2p_transport,
-                NULL,  // peer_pubkey (unknown for offline messages)
-                msg->ciphertext,
-                msg->ciphertext_len
-            );
-        }
-    }
-
-    dht_offline_messages_free(messages, count);
     return true;  // Continue listening
 }
 
