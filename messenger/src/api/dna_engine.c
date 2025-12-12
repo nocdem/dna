@@ -2546,27 +2546,44 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     const char *recipient = task->params.send_tokens.recipient;
     const char *amount_str = task->params.send_tokens.amount;
     const char *token = task->params.send_tokens.token;
+    const char *network = task->params.send_tokens.network;
     int gas_speed = task->params.send_tokens.gas_speed;
 
-    /* Check blockchain type from multi-chain wallet list */
+    /* Determine blockchain type from network parameter */
+    blockchain_type_t bc_type;
+    const char *chain_name;
+    if (strcmp(network, "Ethereum") == 0) {
+        bc_type = BLOCKCHAIN_ETHEREUM;
+        chain_name = "Ethereum";
+    } else if (strcmp(network, "Solana") == 0) {
+        bc_type = BLOCKCHAIN_SOLANA;
+        chain_name = "Solana";
+    } else if (strcmp(network, "Tron") == 0) {
+        bc_type = BLOCKCHAIN_TRON;
+        chain_name = "Tron";
+    } else {
+        /* Default: Backbone = Cellframe */
+        bc_type = BLOCKCHAIN_CELLFRAME;
+        chain_name = "Cellframe";
+    }
+
+    /* Find wallet for this blockchain type */
     blockchain_wallet_list_t *bc_wallets = engine->blockchain_wallets;
-    if (wallet_index < 0 || wallet_index >= (int)bc_wallets->count) {
+    blockchain_wallet_info_t *bc_wallet_info = NULL;
+    for (size_t i = 0; i < bc_wallets->count; i++) {
+        if (bc_wallets->wallets[i].type == bc_type) {
+            bc_wallet_info = &bc_wallets->wallets[i];
+            break;
+        }
+    }
+
+    if (!bc_wallet_info) {
+        QGP_LOG_ERROR(LOG_TAG, "No wallet found for network: %s", network);
         error = DNA_ERROR_INVALID_ARG;
         goto done;
     }
 
-    blockchain_wallet_info_t *bc_wallet_info = &bc_wallets->wallets[wallet_index];
-
-    /* Map wallet type to blockchain_wallet type */
-    blockchain_type_t bc_type;
-    const char *chain_name;
-    if (bc_wallet_info->type == BLOCKCHAIN_ETHEREUM) {
-        bc_type = BLOCKCHAIN_ETHEREUM;
-        chain_name = "ETH";
-    } else {
-        bc_type = BLOCKCHAIN_CELLFRAME;
-        chain_name = "Cellframe";
-    }
+    (void)wallet_index; /* wallet_index no longer used - network determines wallet */
 
     char tx_hash[128] = {0};
 
