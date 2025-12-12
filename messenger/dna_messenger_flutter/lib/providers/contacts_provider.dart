@@ -132,3 +132,77 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
 
 /// Currently selected contact for chat
 final selectedContactProvider = StateProvider<Contact?>((ref) => null);
+
+/// Unread message counts per contact (fingerprint -> count)
+final unreadCountsProvider = AsyncNotifierProvider<UnreadCountsNotifier, Map<String, int>>(
+  UnreadCountsNotifier.new,
+);
+
+class UnreadCountsNotifier extends AsyncNotifier<Map<String, int>> {
+  @override
+  Future<Map<String, int>> build() async {
+    // Only fetch if identity is loaded
+    final identityLoaded = ref.watch(identityLoadedProvider);
+    if (!identityLoaded) {
+      return {};
+    }
+
+    final engine = await ref.watch(engineProvider.future);
+    final contacts = await ref.watch(contactsProvider.future);
+
+    final counts = <String, int>{};
+    for (final contact in contacts) {
+      final count = engine.getUnreadCount(contact.fingerprint);
+      if (count > 0) {
+        counts[contact.fingerprint] = count;
+      }
+    }
+    return counts;
+  }
+
+  Future<void> refresh() async {
+    state = const AsyncValue.loading();
+    state = await AsyncValue.guard(() async {
+      final engine = await ref.read(engineProvider.future);
+      final contacts = await ref.read(contactsProvider.future);
+
+      final counts = <String, int>{};
+      for (final contact in contacts) {
+        final count = engine.getUnreadCount(contact.fingerprint);
+        if (count > 0) {
+          counts[contact.fingerprint] = count;
+        }
+      }
+      return counts;
+    });
+  }
+
+  /// Update count for a single contact (used when message received)
+  void incrementCount(String fingerprint) {
+    state.whenData((counts) {
+      final updated = Map<String, int>.from(counts);
+      updated[fingerprint] = (updated[fingerprint] ?? 0) + 1;
+      state = AsyncValue.data(updated);
+    });
+  }
+
+  /// Clear count for a contact (used when conversation opened)
+  void clearCount(String fingerprint) {
+    state.whenData((counts) {
+      if (counts.containsKey(fingerprint)) {
+        final updated = Map<String, int>.from(counts);
+        updated.remove(fingerprint);
+        state = AsyncValue.data(updated);
+      }
+    });
+  }
+}
+
+/// Get total unread count across all contacts
+final totalUnreadCountProvider = Provider<int>((ref) {
+  final countsAsync = ref.watch(unreadCountsProvider);
+  return countsAsync.maybeWhen(
+    data: (counts) => counts.values.fold(0, (sum, count) => sum + count),
+    orElse: () => 0,
+  );
+});

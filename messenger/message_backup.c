@@ -380,6 +380,37 @@ int message_backup_mark_read(message_backup_context_t *ctx, int message_id) {
 }
 
 /**
+ * Get unread message count for a specific contact
+ */
+int message_backup_get_unread_count(message_backup_context_t *ctx, const char *contact_identity) {
+    if (!ctx || !ctx->db || !contact_identity) return -1;
+
+    /* Count unread incoming messages from contact (where I am recipient) */
+    const char *sql =
+        "SELECT COUNT(*) FROM messages "
+        "WHERE sender = ? AND recipient = ? AND read = 0 AND is_outgoing = 0";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare unread count query: %s\n", sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, contact_identity, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, ctx->identity, -1, SQLITE_STATIC);
+
+    int count = 0;
+    rc = sqlite3_step(stmt);
+    if (rc == SQLITE_ROW) {
+        count = sqlite3_column_int(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+
+    return count;
+}
+
+/**
  * Get conversation history (returns encrypted messages)
  */
 int message_backup_get_conversation(message_backup_context_t *ctx,

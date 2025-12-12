@@ -1371,6 +1371,39 @@ class DnaBindings {
   }
 
   // ---------------------------------------------------------------------------
+  // MESSAGE STATUS / READ RECEIPTS
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_get_unread_count = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_engine_t>, Pointer<Utf8>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>)>('dna_engine_get_unread_count');
+
+  /// Get unread message count for a specific contact (synchronous)
+  int dna_engine_get_unread_count(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> contact_fingerprint,
+  ) {
+    return _dna_engine_get_unread_count(engine, contact_fingerprint);
+  }
+
+  late final _dna_engine_mark_conversation_read = _lib.lookupFunction<
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>),
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+          Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_mark_conversation_read');
+
+  /// Mark all messages in conversation as read (async callback)
+  int dna_engine_mark_conversation_read(
+    Pointer<dna_engine_t> engine,
+    Pointer<Utf8> contact_fingerprint,
+    Pointer<DnaCompletionCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_mark_conversation_read(
+        engine, contact_fingerprint, callback, user_data);
+  }
+
+  // ---------------------------------------------------------------------------
   // GROUPS
   // ---------------------------------------------------------------------------
 

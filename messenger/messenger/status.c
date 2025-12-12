@@ -59,3 +59,11 @@ int messenger_mark_conversation_read(messenger_context_t *ctx, const char *sende
     message_backup_free_messages(messages, count);
     return 0;
 }
+
+int messenger_get_unread_count(messenger_context_t *ctx, const char *contact_identity) {
+    if (!ctx || !contact_identity) {
+        return -1;
+    }
+
+    return message_backup_get_unread_count(ctx->backup_ctx, contact_identity);
+}

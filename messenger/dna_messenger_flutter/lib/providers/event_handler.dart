@@ -73,6 +73,16 @@ class EventHandler {
         _ref.read(conversationProvider(contactFp).notifier).addMessage(msg);
         // Also refresh contacts to update last message preview if needed
         _ref.invalidate(contactsProvider);
+        // Increment unread count if this is an incoming message
+        if (!msg.isOutgoing) {
+          // Check if the chat with this contact is currently open
+          final selectedContact = _ref.read(selectedContactProvider);
+          if (selectedContact == null ||
+              selectedContact.fingerprint != contactFp) {
+            // Chat not open - increment unread count
+            _ref.read(unreadCountsProvider.notifier).incrementCount(contactFp);
+          }
+        }
 
       case MessageSentEvent():
         // Message was sent - status will be updated via delivered event

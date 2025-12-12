@@ -38,6 +38,15 @@ int messenger_mark_delivered(messenger_context_t *ctx, int message_id);
  */
 int messenger_mark_conversation_read(messenger_context_t *ctx, const char *sender_identity);
 
+/**
+ * Get unread message count for a specific contact
+ *
+ * @param ctx: Messenger context
+ * @param contact_identity: Contact fingerprint
+ * @return: Unread count (>=0), or -1 on error
+ */
+int messenger_get_unread_count(messenger_context_t *ctx, const char *contact_identity);
+
 #ifdef __cplusplus
 }
 #endif

@@ -29,6 +29,25 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     super.initState();
     // Listen to text changes to update send button state
     _messageController.addListener(_onTextChanged);
+
+    // Mark messages as read when chat opens
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _markMessagesAsRead();
+    });
+  }
+
+  Future<void> _markMessagesAsRead() async {
+    final contact = ref.read(selectedContactProvider);
+    if (contact == null) return;
+
+    try {
+      final engine = await ref.read(engineProvider.future);
+      await engine.markConversationRead(contact.fingerprint);
+      // Clear unread count in the provider
+      ref.read(unreadCountsProvider.notifier).clearCount(contact.fingerprint);
+    } catch (e) {
+      debugPrint('[CHAT] Failed to mark messages as read: $e');
+    }
   }
 
   @override

@@ -1745,6 +1745,57 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // MESSAGE STATUS / READ RECEIPTS
+  // ---------------------------------------------------------------------------
+
+  /// Get unread message count for a specific contact (synchronous)
+  int getUnreadCount(String contactFingerprint) {
+    final contactPtr = contactFingerprint.toNativeUtf8();
+    try {
+      return _bindings.dna_engine_get_unread_count(_engine, contactPtr.cast());
+    } finally {
+      calloc.free(contactPtr);
+    }
+  }
+
+  /// Mark all messages in conversation as read
+  Future<void> markConversationRead(String contactFingerprint) async {
+    final completer = Completer<void>();
+    final localId = _nextLocalId++;
+
+    final contactPtr = contactFingerprint.toNativeUtf8();
+
+    void onComplete(int requestId, int error, Pointer<Void> userData) {
+      calloc.free(contactPtr);
+
+      if (error == 0) {
+        completer.complete();
+      } else {
+        completer.completeError(DnaEngineException.fromCode(error, _bindings));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaCompletionCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_mark_conversation_read(
+      _engine,
+      contactPtr.cast(),
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      calloc.free(contactPtr);
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit request');
+    }
+
+    return completer.future;
+  }
+
+  // ---------------------------------------------------------------------------
   // GROUPS OPERATIONS
   // ---------------------------------------------------------------------------
 

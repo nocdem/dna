@@ -131,6 +131,15 @@ int message_backup_mark_delivered(message_backup_context_t *ctx, int message_id)
 int message_backup_mark_read(message_backup_context_t *ctx, int message_id);
 
 /**
+ * Get unread message count for a specific contact
+ *
+ * @param ctx Backup context
+ * @param contact_identity Contact fingerprint
+ * @return Unread count (>=0), or -1 on error
+ */
+int message_backup_get_unread_count(message_backup_context_t *ctx, const char *contact_identity);
+
+/**
  * Update message status
  *
  * @param ctx Backup context

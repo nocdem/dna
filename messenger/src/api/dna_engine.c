@@ -52,6 +52,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dna_engine_internal.h"
 #include "dna_api.h"
 #include "messenger_p2p.h"
+#include "messenger/status.h"
 #include "dht/client/dht_singleton.h"
 #include "dht/core/dht_keyserver.h"
 #include "dht/core/dht_listen.h"
@@ -3631,6 +3632,35 @@ dna_request_id_t dna_engine_check_offline_messages(
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_CHECK_OFFLINE_MESSAGES, NULL, cb, user_data);
+}
+
+int dna_engine_get_unread_count(
+    dna_engine_t *engine,
+    const char *contact_fingerprint
+) {
+    if (!engine || !contact_fingerprint) return -1;
+    if (!engine->messenger) return -1;
+
+    return messenger_get_unread_count(engine->messenger, contact_fingerprint);
+}
+
+dna_request_id_t dna_engine_mark_conversation_read(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+) {
+    if (!engine || !contact_fingerprint || !callback) return DNA_REQUEST_ID_INVALID;
+
+    /* Mark as read synchronously since it's a fast local DB operation */
+    int result = -1;
+    if (engine->messenger) {
+        result = messenger_mark_conversation_read(engine->messenger, contact_fingerprint);
+    }
+
+    /* Call callback immediately with result (0=success, negative=error) */
+    callback(1, result == 0 ? 0 : -1, user_data);
+    return 1; /* Return valid request ID */
 }
 
 /* Groups */

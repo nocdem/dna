@@ -1214,6 +1214,38 @@ dna_request_id_t dna_engine_check_offline_messages(
     void *user_data
 );
 
+/**
+ * Get unread message count for a contact (synchronous)
+ *
+ * Returns number of unread incoming messages from the specified contact.
+ *
+ * @param engine              Engine instance
+ * @param contact_fingerprint Contact fingerprint
+ * @return                    Unread count (>=0), or -1 on error
+ */
+int dna_engine_get_unread_count(
+    dna_engine_t *engine,
+    const char *contact_fingerprint
+);
+
+/**
+ * Mark all messages from contact as read
+ *
+ * Call when user opens conversation to clear unread badge.
+ *
+ * @param engine              Engine instance
+ * @param contact_fingerprint Contact fingerprint
+ * @param callback            Called on completion
+ * @param user_data           User data for callback
+ * @return                    Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_mark_conversation_read(
+    dna_engine_t *engine,
+    const char *contact_fingerprint,
+    dna_completion_cb callback,
+    void *user_data
+);
+
 /* ============================================================================
  * 5. GROUPS (6 async functions)
  * ============================================================================ */

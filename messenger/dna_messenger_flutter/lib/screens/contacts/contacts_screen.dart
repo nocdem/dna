@@ -155,7 +155,7 @@ class ContactsScreen extends ConsumerWidget {
   }
 }
 
-class _ContactTile extends StatelessWidget {
+class _ContactTile extends ConsumerWidget {
   final Contact contact;
   final VoidCallback onTap;
 
@@ -165,8 +165,13 @@ class _ContactTile extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+    final unreadCounts = ref.watch(unreadCountsProvider);
+    final unreadCount = unreadCounts.maybeWhen(
+      data: (counts) => counts[contact.fingerprint] ?? 0,
+      orElse: () => 0,
+    );
 
     return ListTile(
       leading: Stack(
@@ -205,6 +210,9 @@ class _ContactTile extends StatelessWidget {
         contact.displayName.isNotEmpty
             ? contact.displayName
             : _shortenFingerprint(contact.fingerprint),
+        style: unreadCount > 0
+            ? const TextStyle(fontWeight: FontWeight.bold)
+            : null,
       ),
       subtitle: Text(
         contact.isOnline
@@ -216,7 +224,29 @@ class _ContactTile extends StatelessWidget {
               : theme.textTheme.bodySmall?.color,
         ),
       ),
-      trailing: const Icon(Icons.chevron_right),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (unreadCount > 0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.primary,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                unreadCount > 99 ? '99+' : unreadCount.toString(),
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          const SizedBox(width: 4),
+          const Icon(Icons.chevron_right),
+        ],
+      ),
       onTap: onTap,
     );
   }
