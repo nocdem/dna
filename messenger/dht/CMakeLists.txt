@@ -109,3 +109,14 @@ set_property(TARGET dht_lib PROPERTY CXX_STANDARD 17)
 set_property(TARGET dht_lib PROPERTY CXX_STANDARD_REQUIRED ON)
 
 # Note: persistent_bootstrap has been moved to bootstrap/CMakeLists.txt
+
+# Quick lookup tool (for debugging profile data)
+if(NOT ANDROID AND NOT WIN32)
+    add_executable(quick_lookup quick_lookup.c ../crypto/utils/qgp_random.c)
+    target_link_libraries(quick_lookup dht_lib ${OPENSSL_LIBRARIES})
+    target_include_directories(quick_lookup PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/client
+        ${CMAKE_CURRENT_SOURCE_DIR}/../crypto
+    )
+endif()

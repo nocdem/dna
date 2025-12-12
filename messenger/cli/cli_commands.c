@@ -7,6 +7,8 @@
 #include "cli_commands.h"
 #include "bip39.h"
 #include "crypto/utils/qgp_log.h"
+#include "dht/core/dht_keyserver.h"
+#include "dht/client/dht_singleton.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -291,6 +293,7 @@ void cmd_help(void) {
     printf("  register <name>            - Register a name on DHT\n");
     printf("  name                       - Show registered name\n");
     printf("  lookup <name>              - Check if name is available\n");
+    printf("  lookup-profile <name|fp>   - View any user's DHT profile\n");
     printf("  profile [field=value]      - Show or update profile\n");
     printf("\n");
 
@@ -814,6 +817,88 @@ int cmd_profile(dna_engine_t *engine, const char *field, const char *value) {
     }
 
     cli_wait_destroy(&wait);
+    return 0;
+}
+
+int cmd_lookup_profile(dna_engine_t *engine, const char *identifier) {
+    (void)engine;  /* Not needed - uses DHT singleton directly */
+
+    if (!identifier || strlen(identifier) == 0) {
+        printf("Error: Name or fingerprint required\n");
+        return -1;
+    }
+
+    dht_context_t *dht = dht_singleton_get();
+    if (!dht) {
+        printf("Error: DHT not initialized\n");
+        return -1;
+    }
+
+    printf("Looking up profile for '%s'...\n", identifier);
+
+    /* Lookup identity from DHT (handles both name and fingerprint) */
+    dna_unified_identity_t *identity = NULL;
+    int ret = dht_keyserver_lookup(dht, identifier, &identity);
+
+    if (ret == -2) {
+        printf("Error: Identity not found in DHT\n");
+        return -1;
+    }
+
+    if (ret != 0 || !identity) {
+        printf("Error: Failed to lookup identity (error %d)\n", ret);
+        return -1;
+    }
+
+    /* Print profile info */
+    printf("\n========================================\n");
+
+    /* Compute fingerprint from pubkey */
+    char fingerprint[129];
+    dna_compute_fingerprint(identity->dilithium_pubkey, fingerprint);
+    printf("Fingerprint: %s\n", fingerprint);
+
+    printf("Name: %s\n", identity->has_registered_name ? identity->registered_name : "(none)");
+    printf("Registered: %lu\n", (unsigned long)identity->name_registered_at);
+    printf("Expires: %lu\n", (unsigned long)identity->name_expires_at);
+    printf("Version: %u\n", identity->version);
+    printf("Timestamp: %lu\n", (unsigned long)identity->timestamp);
+
+    printf("\n--- Wallet Addresses ---\n");
+    if (identity->wallets.backbone[0])
+        printf("Backbone: %s\n", identity->wallets.backbone);
+    if (identity->wallets.btc[0])
+        printf("Bitcoin: %s\n", identity->wallets.btc);
+    if (identity->wallets.eth[0])
+        printf("Ethereum: %s\n", identity->wallets.eth);
+    if (identity->wallets.sol[0])
+        printf("Solana: %s\n", identity->wallets.sol);
+
+    printf("\n--- Social Links ---\n");
+    if (identity->socials.x[0])
+        printf("X: %s\n", identity->socials.x);
+    if (identity->socials.telegram[0])
+        printf("Telegram: %s\n", identity->socials.telegram);
+    if (identity->socials.github[0])
+        printf("GitHub: %s\n", identity->socials.github);
+
+    printf("\n--- Profile ---\n");
+    if (identity->bio[0])
+        printf("Bio: %s\n", identity->bio);
+    else
+        printf("(no bio)\n");
+
+    printf("\n--- Avatar ---\n");
+    if (identity->avatar_base64[0] != '\0') {
+        size_t avatar_len = strlen(identity->avatar_base64);
+        printf("Avatar: %zu bytes (base64)\n", avatar_len);
+    } else {
+        printf("(no avatar)\n");
+    }
+
+    printf("========================================\n\n");
+
+    dna_identity_free(identity);
     return 0;
 }
 
@@ -1377,6 +1462,14 @@ bool execute_command(dna_engine_t *engine, const char *line) {
             printf("Usage: lookup <name>\n");
         } else {
             cmd_lookup(engine, name);
+        }
+    }
+    else if (strcmp(cmd, "lookup-profile") == 0) {
+        char *id = strtok(NULL, " \t");
+        if (!id) {
+            printf("Usage: lookup-profile <name|fingerprint>\n");
+        } else {
+            cmd_lookup_profile(engine, id);
         }
     }
     else if (strcmp(cmd, "name") == 0) {

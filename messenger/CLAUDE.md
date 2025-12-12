@@ -57,6 +57,41 @@ When writing ANY code:
 - **REMOTE TESTING**: All functional/GUI testing is performed on other machines by the user
 - **NEVER** launch `dna-messenger`, Flutter app, or any GUI executable locally
 
+## CLI FOR DEBUGGING AND TESTING
+The CLI tool (`dna-messenger-cli`) is the primary tool for debugging and testing DNA Messenger features.
+
+**Documentation:** [`docs/CLI_TESTING.md`](docs/CLI_TESTING.md) - Complete CLI reference
+
+**Build:**
+```bash
+cd build && make dna-messenger-cli
+```
+
+**Key debugging commands:**
+```bash
+CLI=/opt/dna-messenger/build/cli/dna-messenger-cli
+
+# DHT Profile debugging
+$CLI lookup-profile <name|fp>    # View any user's full DHT profile
+$CLI lookup <name>               # Check if name is registered
+
+# Messaging debugging
+$CLI check-offline               # Poll DHT for offline messages
+$CLI listen                      # Subscribe to push notifications
+
+# Identity debugging
+$CLI whoami                      # Show current identity
+$CLI profile                     # Show own profile
+$CLI contacts                    # List contacts with status
+```
+
+**When to use CLI:**
+- Debug DHT profile registration issues
+- Test offline message delivery
+- Verify contact request flow
+- Check name registration status
+- Compare profile data between users
+
 ## Protocol Mode
 
 PROTOCOL MODE: ACTIVE                                  NO ASSUMPTIONS
@@ -160,6 +195,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 - **[README.md](README.md)** - Project overview and getting started
 
 ### 🔧 Technical Docs
+- **[CLI Testing](docs/CLI_TESTING.md)** - CLI tool for debugging and testing
 - **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)
 - **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap + STUN/TURN server (v0.3)
 - **[DHT System](docs/DHT_SYSTEM.md)** - DHT architecture and operations

@@ -131,6 +131,14 @@ int cmd_name(dna_engine_t *engine);
  */
 int cmd_profile(dna_engine_t *engine, const char *field, const char *value);
 
+/**
+ * Lookup another user's profile from DHT
+ * @param engine DNA engine instance
+ * @param identifier Name or fingerprint to lookup
+ * @return 0 on success, negative on error
+ */
+int cmd_lookup_profile(dna_engine_t *engine, const char *identifier);
+
 /* ============================================================================
  * CONTACT COMMANDS (new)
  * ============================================================================ */

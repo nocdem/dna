@@ -1,7 +1,7 @@
 # DNA Messenger CLI Testing Guide
 
-**Version:** 2.1.0
-**Purpose:** Command-line tool for automated testing of DNA Messenger without GUI
+**Version:** 2.2.0
+**Purpose:** Command-line tool for automated testing and debugging of DNA Messenger without GUI
 **Location:** `build/cli/dna-messenger-cli`
 
 ---
@@ -44,6 +44,7 @@ $CLI whoami                           # Show current identity
 $CLI register <name>                  # Register DHT name
 $CLI name                             # Show registered name
 $CLI lookup <name>                    # Check name availability
+$CLI lookup-profile <name|fp>         # View any user's DHT profile
 $CLI profile                          # Show profile
 $CLI profile bio="Hello world"        # Update profile field
 
@@ -201,6 +202,48 @@ dna-messenger-cli lookup alice
 - `Name 'alice' is TAKEN by: <fingerprint>` - name registered
 
 **Note:** If you just registered a name, wait ~1 minute for DHT propagation before lookup will find it.
+
+---
+
+### `lookup-profile <name|fingerprint>` - View Any User's DHT Profile
+
+View complete profile data from DHT for any user (by name or fingerprint).
+
+```bash
+dna-messenger-cli lookup-profile alice
+dna-messenger-cli lookup-profile 5a8f2c3d4e6b7a9c...
+```
+
+**Sample Output:**
+```
+========================================
+Fingerprint: 5a8f2c3d4e6b7a9c...
+Name: alice
+Registered: 1765484288
+Expires: 1797020288
+Version: 3
+Timestamp: 1765504847
+
+--- Wallet Addresses ---
+Backbone: Rj7J7MiX...
+Ethereum: 0x2e976Ec...
+
+--- Social Links ---
+Telegram: @alice
+
+--- Profile ---
+Bio: Post-quantum enthusiast
+
+--- Avatar ---
+(no avatar)
+========================================
+```
+
+**Use Cases:**
+- Debug profile registration issues
+- Verify name registration data (Registered/Expires timestamps)
+- Check if profile data is properly stored in DHT
+- Compare profiles between users
 
 ---
 
@@ -539,6 +582,10 @@ These warnings appear during normal operation and don't indicate errors:
 ---
 
 ## Changelog
+
+### v2.2.0
+- Added `lookup-profile <name|fp>` command to view any user's DHT profile
+- Useful for debugging profile registration issues and comparing profiles
 
 ### v2.1.0
 - Added `-i, --identity` option to specify identity by fingerprint prefix

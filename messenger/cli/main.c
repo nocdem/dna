@@ -367,6 +367,14 @@ int main(int argc, char *argv[]) {
             result = cmd_lookup(g_engine, argv[optind + 1]);
         }
     }
+    else if (strcmp(command, "lookup-profile") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'lookup-profile' requires <name|fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_lookup_profile(g_engine, argv[optind + 1]);
+        }
+    }
     else if (strcmp(command, "profile") == 0) {
         if (optind + 1 >= argc) {
             result = cmd_profile(g_engine, NULL, NULL);
