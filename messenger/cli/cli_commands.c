@@ -287,6 +287,7 @@ void cmd_help(void) {
     printf("IDENTITY:\n");
     printf("  create <name>              - Create new identity (generates BIP39 mnemonic)\n");
     printf("  restore <mnemonic...>      - Restore identity from 24-word mnemonic\n");
+    printf("  delete <fingerprint>       - Delete an identity permanently\n");
     printf("  list                       - List all available identities\n");
     printf("  load <fingerprint>         - Load an identity (can use prefix)\n");
     printf("  whoami                     - Show current identity\n");
@@ -603,6 +604,30 @@ int cmd_restore(dna_engine_t *engine, const char *mnemonic) {
 
     printf("Identity restored successfully!\n");
     printf("Fingerprint: %s\n", fingerprint);
+    return 0;
+}
+
+int cmd_delete(dna_engine_t *engine, const char *fingerprint) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return -1;
+    }
+
+    if (!fingerprint || strlen(fingerprint) == 0) {
+        printf("Error: Fingerprint required\n");
+        return -1;
+    }
+
+    printf("Deleting identity %.16s...\n", fingerprint);
+
+    int result = dna_engine_delete_identity_sync(engine, fingerprint);
+
+    if (result != 0) {
+        printf("Error: Failed to delete identity: %s\n", dna_engine_error_string(result));
+        return result;
+    }
+
+    printf("Identity deleted successfully!\n");
     return 0;
 }
 

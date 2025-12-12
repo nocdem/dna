@@ -70,6 +70,7 @@ static void print_usage(const char *prog_name) {
     printf("IDENTITY COMMANDS:\n");
     printf("  create <name>               Create new identity\n");
     printf("  restore <mnemonic...>       Restore identity from 24-word mnemonic\n");
+    printf("  delete <fingerprint>        Delete an identity\n");
     printf("  list                        List all identities\n");
     printf("  load <fingerprint>          Load an identity\n");
     printf("  whoami                      Show current identity\n");
@@ -290,9 +291,10 @@ int main(int argc, char *argv[]) {
     }
 
     /* Auto-load identity for commands that need it */
-    /* Skip auto-load for: create, restore, list, help */
+    /* Skip auto-load for: create, restore, delete, list, help */
     int needs_identity = !(strcmp(command, "create") == 0 ||
                            strcmp(command, "restore") == 0 ||
+                           strcmp(command, "delete") == 0 ||
                            strcmp(command, "list") == 0 ||
                            strcmp(command, "ls") == 0 ||
                            strcmp(command, "help") == 0);
@@ -335,6 +337,14 @@ int main(int argc, char *argv[]) {
     }
     else if (strcmp(command, "list") == 0 || strcmp(command, "ls") == 0) {
         result = cmd_list(g_engine);
+    }
+    else if (strcmp(command, "delete") == 0) {
+        if (optind + 1 >= argc) {
+            fprintf(stderr, "Error: 'delete' requires <fingerprint> argument\n");
+            result = 1;
+        } else {
+            result = cmd_delete(g_engine, argv[optind + 1]);
+        }
     }
     else if (strcmp(command, "load") == 0) {
         if (optind + 1 >= argc) {

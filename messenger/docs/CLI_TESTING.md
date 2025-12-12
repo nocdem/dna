@@ -38,6 +38,7 @@ CLI=/opt/dna-messenger/build/cli/dna-messenger-cli
 # Identity
 $CLI create <name>                    # Create new identity
 $CLI restore <mnemonic...>            # Restore from 24 words
+$CLI delete <fingerprint>             # Delete an identity
 $CLI list                             # List identities
 $CLI load <fingerprint>               # Load identity
 $CLI whoami                           # Show current identity

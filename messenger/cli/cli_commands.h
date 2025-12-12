@@ -100,6 +100,14 @@ void cmd_whoami(dna_engine_t *engine);
 int cmd_restore(dna_engine_t *engine, const char *mnemonic);
 
 /**
+ * Delete an identity and all associated data
+ * @param engine DNA engine instance
+ * @param fingerprint Identity fingerprint to delete
+ * @return 0 on success, negative on error
+ */
+int cmd_delete(dna_engine_t *engine, const char *fingerprint);
+
+/**
  * Register a name for current identity on DHT
  * @param engine DNA engine instance
  * @param name Name to register (3-20 chars)
