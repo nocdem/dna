@@ -22,6 +22,7 @@
 #include "database/presence_cache.h"
 #include "database/profile_manager.h"
 #include "database/profile_cache.h"
+#include "dht/client/dht_singleton.h"
 #include "dna_api.h"
 #include "dna_config.h"
 #include <stdio.h>
@@ -58,6 +59,12 @@ typedef struct {
     char *contact_fingerprint;  // Contact whose outbox we're watching
     size_t listen_token;         // DHT listen() token
 } subscription_entry_t;
+
+// Per-subscription callback context (passed to DHT listen callback)
+typedef struct {
+    char *base_key;              // Base key for dht_chunked_fetch
+    messenger_context_t *ctx;    // Messenger context for delivery
+} subscription_callback_ctx_t;
 
 // Global subscription manager
 typedef struct {
@@ -1030,6 +1037,9 @@ int messenger_p2p_lookup_presence(
 /**
  * Push notification callback - invoked when DHT listen() receives values
  * Runs on DHT worker thread, must be thread-safe
+ *
+ * Note: DHT listen() receives chunk0 metadata, not the actual message data.
+ * We use dht_chunked_fetch() with the stored base_key to get the full data.
  */
 static bool messenger_push_notification_callback(
     const uint8_t *value,
@@ -1037,7 +1047,13 @@ static bool messenger_push_notification_callback(
     bool expired,
     void *user_data)
 {
-    messenger_context_t *ctx = (messenger_context_t*)user_data;
+    subscription_callback_ctx_t *cb_ctx = (subscription_callback_ctx_t*)user_data;
+    if (!cb_ctx || !cb_ctx->ctx || !cb_ctx->base_key) {
+        QGP_LOG_ERROR("P2P", "Invalid callback context");
+        return true;  // Continue listening
+    }
+
+    messenger_context_t *ctx = cb_ctx->ctx;
 
     if (expired) {
         QGP_LOG_DEBUG("P2P", "Received expiration notification");
@@ -1048,38 +1064,16 @@ static bool messenger_push_notification_callback(
         return true;  // Continue listening
     }
 
-    QGP_LOG_DEBUG("P2P", "Received notification (%zu bytes)\n", value_len);
+    QGP_LOG_INFO("P2P", "Push notification received, triggering offline message check...\n");
 
-    // Deserialize offline messages
-    dht_offline_message_t *messages = NULL;
-    size_t count = 0;
-    int result = dht_deserialize_messages(value, value_len, &messages, &count);
+    // Simply trigger polling - it works reliably
+    size_t msg_count = 0;
+    messenger_p2p_check_offline_messages(ctx, &msg_count);
 
-    if (result != 0 || count == 0) {
-        QGP_LOG_ERROR("P2P", "Failed to deserialize messages");
-        return true;  // Continue listening despite error
+    if (msg_count > 0) {
+        QGP_LOG_INFO("P2P", "Push notification: retrieved %zu message(s)\n", msg_count);
     }
 
-    QGP_LOG_DEBUG("P2P", "Deserialized %zu message(s)\n", count);
-
-    // Deliver each message via P2P callback (same path as polling)
-    if (ctx->p2p_transport) {
-        for (size_t i = 0; i < count; i++) {
-            dht_offline_message_t *msg = &messages[i];
-
-            QGP_LOG_DEBUG("P2P", "Delivering message %zu/%zu from %s (%zu bytes)\n",
-                   i + 1, count, msg->sender, msg->ciphertext_len);
-
-            p2p_transport_deliver_message(
-                ctx->p2p_transport,
-                NULL,  // peer_pubkey (unknown for offline messages)
-                msg->ciphertext,
-                msg->ciphertext_len
-            );
-        }
-    }
-
-    dht_offline_messages_free(messages, count);
     return true;  // Continue listening
 }
 
@@ -1113,16 +1107,32 @@ int messenger_p2p_subscribe_to_contact(
         return -1;
     }
 
+    // Create per-subscription callback context
+    subscription_callback_ctx_t *cb_ctx = (subscription_callback_ctx_t*)malloc(sizeof(subscription_callback_ctx_t));
+    if (!cb_ctx) {
+        QGP_LOG_ERROR("P2P", "Failed to allocate callback context");
+        return -1;
+    }
+    cb_ctx->base_key = strdup(base_key);
+    cb_ctx->ctx = ctx;
+
+    if (!cb_ctx->base_key) {
+        free(cb_ctx);
+        return -1;
+    }
+
     size_t token = dht_listen(
         dht,
         chunk0_key,
         DHT_CHUNK_KEY_SIZE,
         messenger_push_notification_callback,
-        ctx
+        cb_ctx  // Pass per-subscription context instead of messenger_context
     );
 
     if (token == 0) {
         QGP_LOG_ERROR("P2P", "Failed to subscribe to %s\n", contact_fingerprint);
+        free(cb_ctx->base_key);
+        free(cb_ctx);
         return -1;
     }
 
@@ -1140,6 +1150,8 @@ int messenger_p2p_subscribe_to_contact(
         if (!new_subs) {
             pthread_mutex_unlock(&g_subscription_manager.mutex);
             dht_cancel_listen(dht, token);
+            free(cb_ctx->base_key);
+            free(cb_ctx);
             return -1;
         }
 
