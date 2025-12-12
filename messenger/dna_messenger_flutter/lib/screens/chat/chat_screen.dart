@@ -1,4 +1,5 @@
 // Chat Screen - Conversation with message bubbles
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:intl/intl.dart';
@@ -176,6 +177,12 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ],
         ),
         actions: [
+          // Send CPUNK button
+          IconButton(
+            icon: const Icon(Icons.currency_exchange),
+            tooltip: 'Send CPUNK',
+            onPressed: () => _showSendCpunk(context, contact),
+          ),
           // Check offline messages button
           IconButton(
             icon: _isCheckingOffline
@@ -542,6 +549,15 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     setState(() {});
   }
 
+  void _showSendCpunk(BuildContext context, Contact contact) {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => _ChatSendSheet(contact: contact),
+    );
+  }
+
   void _showContactOptions(BuildContext context) {
     showModalBottomSheet(
       context: context,
@@ -625,6 +641,11 @@ class _MessageBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Handle transfer messages with special bubble
+    if (message.type == MessageType.cpunkTransfer) {
+      return _TransferBubble(message: message);
+    }
+
     final theme = Theme.of(context);
     final isOutgoing = message.isOutgoing;
 
@@ -732,5 +753,501 @@ class _MessageBubble extends StatelessWidget {
       case MessageStatus.read:
         return Icons.done_all; // Would be colored differently
     }
+  }
+}
+
+/// Simplified send sheet for CPUNK transfers from chat
+class _ChatSendSheet extends ConsumerStatefulWidget {
+  final Contact contact;
+
+  const _ChatSendSheet({required this.contact});
+
+  @override
+  ConsumerState<_ChatSendSheet> createState() => _ChatSendSheetState();
+}
+
+class _ChatSendSheetState extends ConsumerState<_ChatSendSheet> {
+  final _amountController = TextEditingController();
+  bool _isSending = false;
+  String? _resolvedAddress;
+  String? _resolveError;
+  bool _isResolving = true;
+  int _selectedGasSpeed = 1; // 0=slow, 1=normal, 2=fast
+
+  // Backbone network fees (validator fee varies by speed, network fee is fixed)
+  static const double _backboneNetworkFee = 0.002;
+  static const double _backboneValidatorSlow = 0.0001;
+  static const double _backboneValidatorNormal = 0.01;
+  static const double _backboneValidatorFast = 0.05;
+
+  @override
+  void initState() {
+    super.initState();
+    _resolveContactWallet();
+  }
+
+  @override
+  void dispose() {
+    _amountController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _resolveContactWallet() async {
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final profile = await engine.lookupProfile(widget.contact.fingerprint);
+
+      if (!mounted) return;
+
+      if (profile == null || profile.backbone.isEmpty) {
+        setState(() {
+          _isResolving = false;
+          _resolveError = 'Contact has no Backbone wallet';
+        });
+        return;
+      }
+
+      setState(() {
+        _isResolving = false;
+        _resolvedAddress = profile.backbone;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isResolving = false;
+        _resolveError = 'Failed to lookup wallet address';
+      });
+    }
+  }
+
+  /// Get current CPUNK balance
+  String? _getCpunkBalance() {
+    final walletsAsync = ref.watch(walletsProvider);
+    return walletsAsync.whenOrNull(
+      data: (wallets) {
+        if (wallets.isEmpty) return null;
+        // Use first wallet (current identity's wallet)
+        final balancesAsync = ref.watch(balancesProvider(0));
+        return balancesAsync.whenOrNull(
+          data: (balances) {
+            for (final b in balances) {
+              if (b.token == 'CPUNK' && b.network == 'Backbone') {
+                return b.balance;
+              }
+            }
+            return null;
+          },
+        );
+      },
+    );
+  }
+
+  /// Calculate max sendable amount (CPUNK has no fee deduction since fees are paid in CELL)
+  double? _calculateMaxAmount() {
+    final balanceStr = _getCpunkBalance();
+    if (balanceStr == null || balanceStr.isEmpty) return null;
+    final balance = double.tryParse(balanceStr);
+    if (balance == null || balance <= 0) return null;
+    return balance;
+  }
+
+  bool _canSend() {
+    if (_isSending || _isResolving) return false;
+    if (_resolvedAddress == null || _resolveError != null) return false;
+    if (_amountController.text.trim().isEmpty) return false;
+    final amount = double.tryParse(_amountController.text.trim());
+    if (amount == null || amount <= 0) return false;
+    return true;
+  }
+
+  Future<void> _send() async {
+    setState(() => _isSending = true);
+
+    try {
+      await ref.read(walletsProvider.notifier).sendTokens(
+        walletIndex: 0, // Current identity's wallet
+        recipientAddress: _resolvedAddress!,
+        amount: _amountController.text.trim(),
+        token: 'CPUNK',
+        network: 'Backbone',
+        gasSpeed: _selectedGasSpeed,
+      );
+
+      if (mounted) {
+        Navigator.pop(context);
+
+        // Create transfer message in chat
+        final transferData = jsonEncode({
+          'type': 'cpunk_transfer',
+          'amount': _amountController.text.trim(),
+          'token': 'CPUNK',
+          'network': 'Backbone',
+          'recipientAddress': _resolvedAddress,
+          'recipientName': widget.contact.displayName,
+        });
+
+        // Send the transfer message to the conversation
+        ref.read(conversationProvider(widget.contact.fingerprint).notifier)
+            .sendMessage(transferData, messageType: MessageType.cpunkTransfer);
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Sent ${_amountController.text.trim()} CPUNK'),
+            backgroundColor: DnaColors.snackbarSuccess,
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() => _isSending = false);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Failed to send: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final balance = _getCpunkBalance();
+    final maxAmount = _calculateMaxAmount();
+
+    return Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      child: Padding(
+        padding: EdgeInsets.only(
+          left: 24,
+          right: 24,
+          top: 24,
+          bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // Header
+            Row(
+              children: [
+                const Icon(Icons.currency_exchange, size: 24),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Send CPUNK',
+                        style: theme.textTheme.titleLarge,
+                      ),
+                      Text(
+                        'to ${widget.contact.displayName.isNotEmpty ? widget.contact.displayName : "contact"}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: DnaColors.textMuted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+
+            // Wallet resolution status
+            if (_isResolving)
+              const Center(
+                child: Padding(
+                  padding: EdgeInsets.all(16),
+                  child: Column(
+                    children: [
+                      CircularProgressIndicator(),
+                      SizedBox(height: 12),
+                      Text('Looking up wallet address...'),
+                    ],
+                  ),
+                ),
+              )
+            else if (_resolveError != null)
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: DnaColors.textWarning.withAlpha(30),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.error_outline, color: DnaColors.textWarning),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _resolveError!,
+                        style: TextStyle(color: DnaColors.textWarning),
+                      ),
+                    ),
+                  ],
+                ),
+              )
+            else ...[
+              // Resolved address indicator
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: DnaColors.textSuccess.withAlpha(20),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: DnaColors.textSuccess.withAlpha(50)),
+                ),
+                child: Row(
+                  children: [
+                    Icon(Icons.check_circle, color: DnaColors.textSuccess, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '${_resolvedAddress!.substring(0, 12)}...${_resolvedAddress!.substring(_resolvedAddress!.length - 8)}',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontFamily: 'NotoSansMono',
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+
+              // Amount input
+              TextField(
+                controller: _amountController,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: 'Amount',
+                  hintText: '0.00',
+                  suffixText: 'CPUNK',
+                  helperText: balance != null ? 'Available: $balance CPUNK' : null,
+                ),
+                onChanged: (_) => setState(() {}),
+              ),
+              const SizedBox(height: 8),
+
+              // Max button
+              if (maxAmount != null && maxAmount > 0)
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: TextButton(
+                    onPressed: () {
+                      _amountController.text = maxAmount.toStringAsFixed(
+                        maxAmount < 0.01 ? 8 : (maxAmount < 1 ? 4 : 2),
+                      );
+                      setState(() {});
+                    },
+                    child: const Text('Max'),
+                  ),
+                ),
+              const SizedBox(height: 16),
+
+              // Transaction speed selector
+              Text(
+                'Transaction Speed',
+                style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  _buildSpeedChip('Slow', _backboneValidatorSlow + _backboneNetworkFee, 0),
+                  const SizedBox(width: 8),
+                  _buildSpeedChip('Normal', _backboneValidatorNormal + _backboneNetworkFee, 1),
+                  const SizedBox(width: 8),
+                  _buildSpeedChip('Fast', _backboneValidatorFast + _backboneNetworkFee, 2),
+                ],
+              ),
+              const SizedBox(height: 24),
+
+              // Send button
+              ElevatedButton(
+                onPressed: _canSend() ? _send : null,
+                child: _isSending
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Send CPUNK'),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSpeedChip(String label, double fee, int speed) {
+    final selected = _selectedGasSpeed == speed;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => setState(() => _selectedGasSpeed = speed),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+          decoration: BoxDecoration(
+            color: selected ? DnaColors.primary.withAlpha(30) : Colors.transparent,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: selected ? DnaColors.primary : DnaColors.textMuted.withAlpha(50),
+            ),
+          ),
+          child: Column(
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                  color: selected ? DnaColors.primary : null,
+                ),
+              ),
+              Text(
+                '${fee.toStringAsFixed(fee < 0.01 ? 4 : 3)} CELL',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  fontSize: 10,
+                  color: DnaColors.textMuted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Special bubble for CPUNK transfer messages
+class _TransferBubble extends StatelessWidget {
+  final Message message;
+
+  const _TransferBubble({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isOutgoing = message.isOutgoing;
+
+    // Parse transfer data from plaintext JSON
+    Map<String, dynamic>? transferData;
+    try {
+      transferData = jsonDecode(message.plaintext) as Map<String, dynamic>;
+    } catch (e) {
+      // Fallback for invalid JSON
+      transferData = null;
+    }
+
+    final amount = transferData?['amount'] ?? '?';
+    final token = transferData?['token'] ?? 'CPUNK';
+
+    return Align(
+      alignment: isOutgoing ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: EdgeInsets.only(
+          top: 4,
+          bottom: 4,
+          left: isOutgoing ? 48 : 0,
+          right: isOutgoing ? 0 : 48,
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          gradient: LinearGradient(
+            colors: isOutgoing
+                ? [DnaColors.primary.withAlpha(200), DnaColors.accent.withAlpha(150)]
+                : [theme.colorScheme.surface, theme.colorScheme.surface],
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.only(
+            topLeft: const Radius.circular(16),
+            topRight: const Radius.circular(16),
+            bottomLeft: Radius.circular(isOutgoing ? 16 : 4),
+            bottomRight: Radius.circular(isOutgoing ? 4 : 16),
+          ),
+          border: isOutgoing
+              ? null
+              : Border.all(color: DnaColors.primary.withAlpha(50)),
+        ),
+        child: Column(
+          crossAxisAlignment:
+              isOutgoing ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          children: [
+            // Transfer icon and label
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  isOutgoing ? Icons.arrow_upward : Icons.arrow_downward,
+                  size: 16,
+                  color: isOutgoing
+                      ? theme.colorScheme.onPrimary
+                      : DnaColors.primary,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  isOutgoing ? 'Sent' : 'Received',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: isOutgoing
+                        ? theme.colorScheme.onPrimary.withAlpha(200)
+                        : DnaColors.textMuted,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+
+            // Amount
+            Text(
+              '$amount $token',
+              style: theme.textTheme.titleLarge?.copyWith(
+                fontWeight: FontWeight.bold,
+                color: isOutgoing
+                    ? theme.colorScheme.onPrimary
+                    : DnaColors.primary,
+              ),
+            ),
+            const SizedBox(height: 4),
+
+            // Timestamp and status
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  DateFormat('HH:mm').format(message.timestamp),
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    fontSize: 10,
+                    color: isOutgoing
+                        ? theme.colorScheme.onPrimary.withAlpha(179)
+                        : theme.textTheme.bodySmall?.color,
+                  ),
+                ),
+                if (isOutgoing) ...[
+                  const SizedBox(width: 4),
+                  Icon(
+                    message.status == MessageStatus.pending
+                        ? Icons.schedule
+                        : (message.status == MessageStatus.failed
+                            ? Icons.error_outline
+                            : Icons.check),
+                    size: 14,
+                    color: message.status == MessageStatus.failed
+                        ? DnaColors.textWarning
+                        : theme.colorScheme.onPrimary.withAlpha(179),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

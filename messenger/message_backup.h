@@ -32,6 +32,7 @@ typedef struct message_backup_context message_backup_context_t;
  */
 #define MESSAGE_TYPE_CHAT 0
 #define MESSAGE_TYPE_GROUP_INVITATION 1
+#define MESSAGE_TYPE_CPUNK_TRANSFER 2
 
 /**
  * Invitation Status (Phase 6.2 - only for MESSAGE_TYPE_GROUP_INVITATION)

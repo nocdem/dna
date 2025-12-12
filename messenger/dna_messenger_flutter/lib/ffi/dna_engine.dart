@@ -125,7 +125,11 @@ class Message {
       timestamp: DateTime.fromMillisecondsSinceEpoch(native.timestamp * 1000),
       isOutgoing: native.is_outgoing,
       status: MessageStatus.values[native.status.clamp(0, 4)],
-      type: native.message_type == 0 ? MessageType.chat : MessageType.groupInvitation,
+      type: native.message_type == 2
+          ? MessageType.cpunkTransfer
+          : (native.message_type == 1
+              ? MessageType.groupInvitation
+              : MessageType.chat),
     );
   }
 
@@ -134,6 +138,7 @@ class Message {
     required String sender,
     required String recipient,
     required String plaintext,
+    MessageType type = MessageType.chat,
   }) {
     return Message(
       id: -DateTime.now().millisecondsSinceEpoch, // Negative temp ID
@@ -143,7 +148,7 @@ class Message {
       timestamp: DateTime.now(),
       isOutgoing: true,
       status: MessageStatus.pending,
-      type: MessageType.chat,
+      type: type,
     );
   }
 
@@ -163,7 +168,7 @@ class Message {
 }
 
 enum MessageStatus { pending, sent, failed, delivered, read }
-enum MessageType { chat, groupInvitation }
+enum MessageType { chat, groupInvitation, cpunkTransfer }
 
 /// Group information
 class Group {
