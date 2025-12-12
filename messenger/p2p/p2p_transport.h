@@ -268,6 +268,7 @@ int p2p_check_offline_messages(
  * @param recipient Recipient identity string
  * @param message Encrypted message data
  * @param message_len Length of message
+ * @param seq_num Monotonic sequence number for watermark pruning (from message_backup_get_next_seq)
  * @return 0 on success, -1 on failure
  */
 int p2p_queue_offline_message(
@@ -275,7 +276,8 @@ int p2p_queue_offline_message(
     const char *sender,
     const char *recipient,
     const uint8_t *message,
-    size_t message_len
+    size_t message_len,
+    uint64_t seq_num
 );
 
 // ============================================================================

@@ -730,18 +730,26 @@ int messenger_send_p2p(
             return -1;
         }
 
+        // Get next sequence number for watermark pruning
+        uint64_t seq_num = 1;
+        if (ctx->backup_ctx) {
+            seq_num = message_backup_get_next_seq(ctx->backup_ctx, recipient_fingerprint);
+        }
+
         int queue_result = p2p_queue_offline_message(
             ctx->p2p_transport,
             ctx->identity,      // sender (should already be fingerprint)
             recipient_fingerprint,  // recipient (NOW using fingerprint!)
             encrypted_message,
-            encrypted_len
+            encrypted_len,
+            seq_num
         );
 
-        QGP_LOG_WARN("P2P", ">>> p2p_queue_offline_message returned %d\n", queue_result);
+        QGP_LOG_WARN("P2P", ">>> p2p_queue_offline_message returned %d (seq=%lu)\n",
+               queue_result, (unsigned long)seq_num);
         if (queue_result == 0) {
-            QGP_LOG_WARN("P2P", ">>> Message queued in DHT for %s (fingerprint: %.20s...)\n",
-                   recipient, recipient_fingerprint);
+            QGP_LOG_WARN("P2P", ">>> Message queued in DHT for %s (fingerprint: %.20s..., seq=%lu)\n",
+                   recipient, recipient_fingerprint, (unsigned long)seq_num);
             return 0;  // Success via DHT queue
         } else {
             QGP_LOG_ERROR("P2P", "Failed to queue message in DHT (result=%d)\n", queue_result);

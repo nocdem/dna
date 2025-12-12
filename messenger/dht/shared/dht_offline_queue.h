@@ -28,8 +28,8 @@ extern "C" {
  * - Spam prevention: Recipients only query known contacts' outboxes
  * - Sender control: Senders can edit/unsend messages (within 7-day TTL)
  *
- * Message Format:
- * [4-byte magic "DNA "][1-byte version][8-byte timestamp][8-byte expiry]
+ * Message Format (v2):
+ * [4-byte magic "DNA "][1-byte version][8-byte seq_num][8-byte timestamp][8-byte expiry]
  * [2-byte sender_len][2-byte recipient_len][4-byte ciphertext_len]
  * [sender string][recipient string][ciphertext bytes]
  *
@@ -38,16 +38,20 @@ extern "C" {
 
 // Magic bytes for message format validation
 #define DHT_OFFLINE_QUEUE_MAGIC 0x444E4120  // "DNA "
-#define DHT_OFFLINE_QUEUE_VERSION 1
+#define DHT_OFFLINE_QUEUE_VERSION 2  // v2: Added seq_num for watermark pruning
 
 // Default TTL: 7 days
 #define DHT_OFFLINE_QUEUE_DEFAULT_TTL 604800
+
+// Watermark TTL: 30 days (longer than message TTL)
+#define DHT_WATERMARK_TTL (30 * 24 * 3600)
 
 /**
  * Offline message structure
  */
 typedef struct {
-    uint64_t timestamp;           // Unix timestamp (when queued)
+    uint64_t seq_num;             // Monotonic sequence number per sender-recipient pair (for watermark pruning)
+    uint64_t timestamp;           // Unix timestamp (when queued, for display)
     uint64_t expiry;              // Unix timestamp (when expires)
     char *sender;                 // Sender identity (dynamically allocated)
     char *recipient;              // Recipient identity (dynamically allocated)
@@ -58,22 +62,27 @@ typedef struct {
 /**
  * Store encrypted message in sender's outbox to recipient
  *
- * Workflow (Model E - Sender Outbox):
+ * Workflow (Model E - Sender Outbox with Watermark Pruning):
  * 1. Generate sender's outbox key: SHA3-512(sender + ":outbox:" + recipient)
- * 2. Query existing outbox (sender's messages to this recipient)
- * 3. Deserialize existing messages (if any)
- * 4. Append new message to array
- * 5. Serialize updated array
- * 6. Store with dht_put_signed(value_id=1) - replaces old outbox version
+ * 2. Fetch recipient's watermark (highest seq_num they've received)
+ * 3. Query existing outbox (sender's messages to this recipient)
+ * 4. Deserialize existing messages (if any)
+ * 5. Prune messages where seq_num <= watermark (already delivered)
+ * 6. Create new message with provided seq_num
+ * 7. Append new message to pruned array
+ * 8. Serialize updated array
+ * 9. Store with dht_put_signed(value_id=1) - replaces old outbox version
  *
  * Note: Uses signed put with fixed value_id=1 to prevent accumulation.
  *       Each update to sender's outbox REPLACES the old version (not appends).
+ *       Caller should use message_backup_get_next_seq() to get seq_num.
  *
  * @param ctx DHT context
  * @param sender Sender identity (fingerprint - 128 hex chars)
  * @param recipient Recipient identity (fingerprint - 128 hex chars)
  * @param ciphertext Encrypted message blob (already encrypted)
  * @param ciphertext_len Length of ciphertext
+ * @param seq_num Monotonic sequence number for this message (from message_backup_get_next_seq)
  * @param ttl_seconds Time-to-live in seconds (0 = use default 7 days)
  * @return 0 on success, -1 on failure
  */
@@ -83,6 +92,7 @@ int dht_queue_message(
     const char *recipient,
     const uint8_t *ciphertext,
     size_t ciphertext_len,
+    uint64_t seq_num,
     uint32_t ttl_seconds
 );
 
@@ -174,8 +184,8 @@ void dht_offline_messages_free(dht_offline_message_t *messages, size_t count);
  * Format:
  * [4-byte count][message1][message2]...[messageN]
  *
- * Each message:
- * [4-byte magic][1-byte version][8-byte timestamp][8-byte expiry]
+ * Each message (v2):
+ * [4-byte magic][1-byte version][8-byte seq_num][8-byte timestamp][8-byte expiry]
  * [2-byte sender_len][2-byte recipient_len][4-byte ciphertext_len]
  * [sender string][recipient string][ciphertext bytes]
  *
@@ -228,6 +238,82 @@ void dht_generate_outbox_key(
     const char *recipient,
     uint8_t *key_out
 );
+
+/**
+ * ============================================================================
+ * Watermark API (Delivery Acknowledgment for Outbox Pruning)
+ * ============================================================================
+ *
+ * Watermarks allow recipients to acknowledge received messages so senders
+ * can prune their outboxes. Uses sequence numbers (clock-skew immune).
+ *
+ * Key format: SHA3-512(recipient + ":watermark:" + sender)
+ * Value: 8-byte big-endian seq_num (latest received from this sender)
+ *
+ * Flow:
+ * 1. Alice sends msg to Bob with seq_num=3
+ * 2. Bob receives, publishes watermark(seq=3) asynchronously
+ * 3. Alice sends new msg (seq=4), fetches Bob's watermark
+ * 4. Alice prunes outbox: remove msgs where seq <= 3
+ */
+
+/**
+ * Generate DHT key for watermark storage
+ *
+ * Key format: SHA3-512(recipient + ":watermark:" + sender)
+ *
+ * @param recipient Recipient fingerprint (watermark owner)
+ * @param sender Sender fingerprint (whose messages were received)
+ * @param key_out Output buffer (64 bytes for SHA3-512)
+ */
+void dht_generate_watermark_key(
+    const char *recipient,
+    const char *sender,
+    uint8_t *key_out
+);
+
+/**
+ * Publish watermark asynchronously (fire-and-forget)
+ *
+ * Used by recipient after receiving messages from a sender.
+ * Publishes the highest seq_num received from that sender.
+ * Async: does not block, failure is tolerable (retry on next receive).
+ *
+ * @param ctx DHT context
+ * @param recipient My fingerprint (watermark owner)
+ * @param sender Contact fingerprint (whose messages I received)
+ * @param seq_num Latest seq_num received from this sender
+ */
+void dht_publish_watermark_async(
+    dht_context_t *ctx,
+    const char *recipient,
+    const char *sender,
+    uint64_t seq_num
+);
+
+/**
+ * Get watermark synchronously (blocking)
+ *
+ * Used by sender before queueing a message to check what the recipient
+ * has already received. Returns highest seq_num acknowledged by recipient.
+ *
+ * @param ctx DHT context
+ * @param recipient Recipient fingerprint (watermark owner)
+ * @param sender My fingerprint
+ * @param seq_num_out Output: latest seq_num recipient has received (0 if none)
+ * @return 0 on success (including no watermark found), -1 on error
+ */
+int dht_get_watermark(
+    dht_context_t *ctx,
+    const char *recipient,
+    const char *sender,
+    uint64_t *seq_num_out
+);
+
+/**
+ * NOTE: For seq_num, callers should use message_backup_get_next_seq() from message_backup.h
+ * to get the next sequence number before calling dht_queue_message().
+ */
 
 #ifdef __cplusplus
 }

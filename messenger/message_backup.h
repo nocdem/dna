@@ -268,6 +268,27 @@ void message_backup_free_messages(backup_message_t *messages, int count);
 void* message_backup_get_db(message_backup_context_t *ctx);
 
 /**
+ * ============================================================================
+ * Offline Message Sequence Numbers (Watermark Pruning)
+ * ============================================================================
+ *
+ * Track monotonic sequence numbers for offline message watermarks.
+ * Each sender-recipient pair has independent sequence numbers.
+ */
+
+/**
+ * Get and increment the next sequence number for a recipient
+ *
+ * Atomically returns current next_seq and increments it for next call.
+ * Creates new entry if recipient doesn't exist in table.
+ *
+ * @param ctx Backup context
+ * @param recipient Recipient fingerprint
+ * @return Next seq_num to use (always >= 1)
+ */
+uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *recipient);
+
+/**
  * Close backup context
  *
  * @param ctx Backup context

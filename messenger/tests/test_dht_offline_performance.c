@@ -79,6 +79,7 @@ int test_sequential_message_queueing(dht_context_t *ctx,
                 recipient_fps[contact],
                 test_message,
                 TEST_MESSAGE_SIZE,
+                (uint64_t)(contact * TEST_MESSAGES_PER_CONTACT + msg + 1),  // seq_num
                 7 * 24 * 3600  // 7 days TTL
             );
 
@@ -279,6 +280,7 @@ int test_parallel_vs_sequential(dht_context_t *ctx,
                 recipient_fp,
                 test_message,
                 1024,
+                (uint64_t)(sender_idx * 20 + msg + 1),  // seq_num
                 7 * 24 * 3600
             );
             if (ret == 0) total_queued++;
@@ -486,6 +488,7 @@ int test_large_queue_handling(dht_context_t *ctx,
             recipient_fp,
             test_message,
             TEST_MESSAGE_SIZE,
+            (uint64_t)(i + 1),  // seq_num
             7 * 24 * 3600
         );
 

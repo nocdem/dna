@@ -73,13 +73,14 @@ void dht_offline_messages_free(dht_offline_message_t *messages, size_t count) {
 }
 
 /**
- * Serialize message array to binary format
+ * Serialize message array to binary format (v2)
  *
  * Format:
  * [4-byte count (network order)]
  * For each message:
  *   [4-byte magic (network order)]
  *   [1-byte version]
+ *   [8-byte seq_num (network order)] - NEW in v2
  *   [8-byte timestamp (network order)]
  *   [8-byte expiry (network order)]
  *   [2-byte sender_len (network order)]
@@ -106,6 +107,7 @@ int dht_serialize_messages(
     for (size_t i = 0; i < count; i++) {
         total_size += sizeof(uint32_t);  // magic
         total_size += 1;                  // version
+        total_size += sizeof(uint64_t);  // seq_num (v2)
         total_size += sizeof(uint64_t);  // timestamp
         total_size += sizeof(uint64_t);  // expiry
         total_size += sizeof(uint16_t);  // sender_len
@@ -141,6 +143,14 @@ int dht_serialize_messages(
 
         // Version
         *ptr++ = DHT_OFFLINE_QUEUE_VERSION;
+
+        // Seq_num (8 bytes, split into 2x4 bytes for network order) - v2
+        uint32_t seq_high = htonl((uint32_t)(msg->seq_num >> 32));
+        uint32_t seq_low = htonl((uint32_t)(msg->seq_num & 0xFFFFFFFF));
+        memcpy(ptr, &seq_high, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
+        memcpy(ptr, &seq_low, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
 
         // Timestamp (8 bytes, split into 2x4 bytes for network order)
         uint32_t ts_high = htonl((uint32_t)(msg->timestamp >> 32));
@@ -247,9 +257,18 @@ int dht_deserialize_messages(
         if (ptr + 1 > end) goto truncated;
         uint8_t version = *ptr++;
         if (version != DHT_OFFLINE_QUEUE_VERSION) {
-            QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %u\n", version);
+            QGP_LOG_ERROR(LOG_TAG, "Unsupported version: %u (expected %u)\n", version, DHT_OFFLINE_QUEUE_VERSION);
             goto error;
         }
+
+        // Seq_num (8 bytes from 2x4 bytes) - v2
+        if (ptr + 2 * sizeof(uint32_t) > end) goto truncated;
+        uint32_t seq_high, seq_low;
+        memcpy(&seq_high, ptr, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
+        memcpy(&seq_low, ptr, sizeof(uint32_t));
+        ptr += sizeof(uint32_t);
+        msg->seq_num = ((uint64_t)ntohl(seq_high) << 32) | ntohl(seq_low);
 
         // Timestamp (8 bytes from 2x4 bytes)
         if (ptr + 2 * sizeof(uint32_t) > end) goto truncated;
@@ -323,7 +342,7 @@ error:
 }
 
 /**
- * Store encrypted message in DHT for offline recipient
+ * Store encrypted message in DHT for offline recipient (with watermark pruning)
  */
 int dht_queue_message(
     dht_context_t *ctx,
@@ -331,6 +350,7 @@ int dht_queue_message(
     const char *recipient,
     const uint8_t *ciphertext,
     size_t ciphertext_len,
+    uint64_t seq_num,
     uint32_t ttl_seconds)
 {
     if (!ctx || !sender || !recipient || !ciphertext || ciphertext_len == 0) {
@@ -345,8 +365,8 @@ int dht_queue_message(
     struct timespec queue_start, get_start, deserialize_start, serialize_start, put_start;
     clock_gettime(CLOCK_MONOTONIC, &queue_start);
 
-    QGP_LOG_INFO(LOG_TAG, "Queueing message from %s to %s (%zu bytes, TTL=%u)\n",
-           sender, recipient, ciphertext_len, ttl_seconds);
+    QGP_LOG_INFO(LOG_TAG, "Queueing message from %s to %s (%zu bytes, seq=%lu, TTL=%u)\n",
+           sender, recipient, ciphertext_len, (unsigned long)seq_num, ttl_seconds);
 
     // Generate sender's outbox base key (Model E)
     char base_key[512];
@@ -354,7 +374,12 @@ int dht_queue_message(
 
     QGP_LOG_INFO(LOG_TAG, "Outbox base key: %s\n", base_key);
 
-    // 1. Try to retrieve existing queue via chunked layer
+    // 1. Get recipient's watermark (highest seq_num they've received from us)
+    uint64_t watermark_seq = 0;
+    dht_get_watermark(ctx, recipient, sender, &watermark_seq);
+    QGP_LOG_INFO(LOG_TAG, "Recipient watermark: seq=%lu\n", (unsigned long)watermark_seq);
+
+    // 2. Try to retrieve existing queue via chunked layer
     uint8_t *existing_data = NULL;
     size_t existing_len = 0;
     dht_offline_message_t *existing_messages = NULL;
@@ -387,8 +412,49 @@ int dht_queue_message(
         QGP_LOG_INFO(LOG_TAG, "No existing queue found, creating new (get took %ld ms)\n", get_ms);
     }
 
-    // 2. Create new message
+    // 3. Prune messages where seq_num <= watermark (already delivered)
+    size_t kept_count = 0;
+    if (existing_count > 0 && watermark_seq > 0) {
+        // Count messages to keep
+        for (size_t i = 0; i < existing_count; i++) {
+            if (existing_messages[i].seq_num > watermark_seq) {
+                kept_count++;
+            }
+        }
+
+        size_t pruned = existing_count - kept_count;
+        if (pruned > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Pruning %zu delivered messages (seq <= %lu)\n",
+                   pruned, (unsigned long)watermark_seq);
+
+            // Create new array with only undelivered messages
+            dht_offline_message_t *kept_messages = NULL;
+            if (kept_count > 0) {
+                kept_messages = (dht_offline_message_t*)calloc(kept_count, sizeof(dht_offline_message_t));
+                size_t k = 0;
+                for (size_t i = 0; i < existing_count; i++) {
+                    if (existing_messages[i].seq_num > watermark_seq) {
+                        kept_messages[k++] = existing_messages[i];
+                    } else {
+                        dht_offline_message_free(&existing_messages[i]);
+                    }
+                }
+            } else {
+                // All messages were delivered, free them all
+                for (size_t i = 0; i < existing_count; i++) {
+                    dht_offline_message_free(&existing_messages[i]);
+                }
+            }
+
+            free(existing_messages);
+            existing_messages = kept_messages;
+            existing_count = kept_count;
+        }
+    }
+
+    // 4. Create new message with seq_num
     dht_offline_message_t new_msg = {
+        .seq_num = seq_num,
         .timestamp = (uint64_t)time(NULL),
         .expiry = (uint64_t)time(NULL) + ttl_seconds,
         .sender = strdup(sender),
@@ -406,9 +472,7 @@ int dht_queue_message(
 
     memcpy(new_msg.ciphertext, ciphertext, ciphertext_len);
 
-    // 3. APPEND new message to existing queue (Model E: accumulate offline messages)
-    // Important: When recipient is offline, ALL messages must be queued
-    // Duplicate prevention happens at recipient side (message_backup_exists_ciphertext)
+    // 5. APPEND new message to pruned queue
     size_t new_count = existing_count + 1;
     dht_offline_message_t *all_messages = (dht_offline_message_t*)calloc(new_count, sizeof(dht_offline_message_t));
     if (!all_messages) {
@@ -418,7 +482,7 @@ int dht_queue_message(
         return -1;
     }
 
-    // Copy existing messages
+    // Copy kept messages
     for (size_t i = 0; i < existing_count; i++) {
         all_messages[i] = existing_messages[i];
     }
@@ -431,9 +495,9 @@ int dht_queue_message(
         free(existing_messages);
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Appended new message to outbox (%zu total messages)\n", new_count);
+    QGP_LOG_INFO(LOG_TAG, "Appended new message to outbox (%zu total after pruning)\n", new_count);
 
-    // 4. Serialize combined queue
+    // 6. Serialize combined queue
     uint8_t *serialized = NULL;
     size_t serialized_len = 0;
     clock_gettime(CLOCK_MONOTONIC, &serialize_start);
@@ -450,7 +514,7 @@ int dht_queue_message(
     QGP_LOG_INFO(LOG_TAG, "Serialized queue: %zu messages, %zu bytes (took %ld ms)\n",
            new_count, serialized_len, serialize_ms);
 
-    // 5. Store in DHT via chunked layer (7-day TTL for offline queue)
+    // 7. Store in DHT via chunked layer (7-day TTL for offline queue)
     QGP_LOG_INFO(LOG_TAG, "→ DHT CHUNKED_PUBLISH: Queueing offline message (%zu total in queue)\n", new_count);
     clock_gettime(CLOCK_MONOTONIC, &put_start);
     int put_result = dht_chunked_publish(ctx, base_key, serialized, serialized_len, DHT_CHUNK_TTL_7DAY);
@@ -473,8 +537,8 @@ int dht_queue_message(
     long total_queue_ms = (queue_end.tv_sec - queue_start.tv_sec) * 1000 +
                           (queue_end.tv_nsec - queue_start.tv_nsec) / 1000000;
 
-    QGP_LOG_INFO(LOG_TAG, "✓ Message queued successfully (total: %ld ms, get: %ld ms, put: %ld ms)\n",
-           total_queue_ms, get_ms, put_ms);
+    QGP_LOG_INFO(LOG_TAG, "✓ Message queued successfully (seq=%lu, total: %ld ms, get: %ld ms, put: %ld ms)\n",
+           (unsigned long)seq_num, total_queue_ms, get_ms, put_ms);
     return 0;
 }
 
@@ -647,4 +711,175 @@ int dht_retrieve_queued_messages_from_contacts_parallel(
     QGP_LOG_INFO(LOG_TAG, "Note: Using chunked layer sequential fetch (parallel chunk fetching enabled internally)\n");
     return dht_retrieve_queued_messages_from_contacts(ctx, recipient, sender_list, sender_count,
                                                        messages_out, count_out);
+}
+
+/**
+ * ============================================================================
+ * WATERMARK API IMPLEMENTATION
+ * ============================================================================
+ * Watermarks allow recipients to acknowledge received messages so senders
+ * can prune their outboxes. Uses monotonic sequence numbers (clock-skew immune).
+ */
+
+/**
+ * Generate base key for watermark storage
+ * Key format: recipient + ":watermark:" + sender
+ */
+static void make_watermark_base_key(const char *recipient, const char *sender,
+                                     char *key_out, size_t key_out_size) {
+    snprintf(key_out, key_out_size, "%s:watermark:%s", recipient, sender);
+}
+
+/**
+ * Generate DHT key for watermark storage (SHA3-512 hash of base key)
+ */
+void dht_generate_watermark_key(const char *recipient, const char *sender,
+                                 uint8_t *key_out) {
+    char base_key[512];
+    make_watermark_base_key(recipient, sender, base_key, sizeof(base_key));
+    qgp_sha3_512((const uint8_t*)base_key, strlen(base_key), key_out);
+}
+
+/**
+ * Async watermark publish context (for pthread)
+ */
+typedef struct {
+    dht_context_t *ctx;
+    char recipient[129];
+    char sender[129];
+    uint64_t seq_num;
+} watermark_publish_ctx_t;
+
+/**
+ * Background thread for async watermark publish
+ */
+static void *watermark_publish_thread(void *arg) {
+    watermark_publish_ctx_t *wctx = (watermark_publish_ctx_t *)arg;
+
+    if (!wctx || !wctx->ctx) {
+        free(wctx);
+        return NULL;
+    }
+
+    // Generate watermark key
+    char base_key[512];
+    make_watermark_base_key(wctx->recipient, wctx->sender, base_key, sizeof(base_key));
+
+    // Serialize seq_num to 8 bytes big-endian
+    uint8_t value[8];
+    value[0] = (uint8_t)(wctx->seq_num >> 56);
+    value[1] = (uint8_t)(wctx->seq_num >> 48);
+    value[2] = (uint8_t)(wctx->seq_num >> 40);
+    value[3] = (uint8_t)(wctx->seq_num >> 32);
+    value[4] = (uint8_t)(wctx->seq_num >> 24);
+    value[5] = (uint8_t)(wctx->seq_num >> 16);
+    value[6] = (uint8_t)(wctx->seq_num >> 8);
+    value[7] = (uint8_t)(wctx->seq_num);
+
+    // Put signed with value_id=1 (replacement) and watermark TTL
+    int result = dht_put_signed(wctx->ctx,
+                                 (const uint8_t*)base_key, strlen(base_key),
+                                 value, sizeof(value),
+                                 1,  // value_id=1 for replacement
+                                 DHT_WATERMARK_TTL);
+
+    if (result == 0) {
+        QGP_LOG_DEBUG(LOG_TAG, "Watermark published: %.20s... → %.20s... seq=%lu\n",
+               wctx->recipient, wctx->sender, (unsigned long)wctx->seq_num);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "Watermark publish failed (will retry on next receive)\n");
+    }
+
+    free(wctx);
+    return NULL;
+}
+
+/**
+ * Publish watermark asynchronously (fire-and-forget)
+ */
+void dht_publish_watermark_async(dht_context_t *ctx,
+                                  const char *recipient,
+                                  const char *sender,
+                                  uint64_t seq_num) {
+    if (!ctx || !recipient || !sender || seq_num == 0) {
+        return;
+    }
+
+    // Allocate context for background thread
+    watermark_publish_ctx_t *wctx = (watermark_publish_ctx_t *)calloc(1, sizeof(watermark_publish_ctx_t));
+    if (!wctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate watermark publish context\n");
+        return;
+    }
+
+    wctx->ctx = ctx;
+    strncpy(wctx->recipient, recipient, sizeof(wctx->recipient) - 1);
+    strncpy(wctx->sender, sender, sizeof(wctx->sender) - 1);
+    wctx->seq_num = seq_num;
+
+    // Create detached thread for fire-and-forget
+    pthread_t thread;
+    pthread_attr_t attr;
+    pthread_attr_init(&attr);
+    pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+
+    int rc = pthread_create(&thread, &attr, watermark_publish_thread, wctx);
+    pthread_attr_destroy(&attr);
+
+    if (rc != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to create watermark publish thread: %s\n", strerror(rc));
+        free(wctx);
+    } else {
+        QGP_LOG_DEBUG(LOG_TAG, "Spawned async watermark publish: seq=%lu\n", (unsigned long)seq_num);
+    }
+}
+
+/**
+ * Get watermark synchronously (blocking)
+ *
+ * Returns the highest seq_num that recipient has acknowledged receiving from sender.
+ */
+int dht_get_watermark(dht_context_t *ctx,
+                       const char *recipient,
+                       const char *sender,
+                       uint64_t *seq_num_out) {
+    if (!ctx || !recipient || !sender || !seq_num_out) {
+        return -1;
+    }
+
+    *seq_num_out = 0;  // Default: no watermark found
+
+    // Generate watermark key
+    char base_key[512];
+    make_watermark_base_key(recipient, sender, base_key, sizeof(base_key));
+
+    // Try to fetch from DHT
+    uint8_t *value = NULL;
+    size_t value_len = 0;
+
+    int result = dht_get(ctx, (const uint8_t*)base_key, strlen(base_key), &value, &value_len);
+
+    if (result == 0 && value && value_len == 8) {
+        // Deserialize 8 bytes big-endian to uint64_t
+        *seq_num_out = ((uint64_t)value[0] << 56) |
+                       ((uint64_t)value[1] << 48) |
+                       ((uint64_t)value[2] << 40) |
+                       ((uint64_t)value[3] << 32) |
+                       ((uint64_t)value[4] << 24) |
+                       ((uint64_t)value[5] << 16) |
+                       ((uint64_t)value[6] << 8) |
+                       ((uint64_t)value[7]);
+
+        QGP_LOG_DEBUG(LOG_TAG, "Got watermark: %.20s... → %.20s... seq=%lu\n",
+               recipient, sender, (unsigned long)*seq_num_out);
+    } else if (result == -1) {
+        // No watermark found - this is normal for new conversations
+        QGP_LOG_DEBUG(LOG_TAG, "No watermark found: %.20s... → %.20s...\n", recipient, sender);
+    }
+
+    if (value) {
+        free(value);
+    }
+
+    return 0;  // Success (even if no watermark found)
 }

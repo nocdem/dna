@@ -16,6 +16,7 @@
  * @param recipient: Recipient fingerprint
  * @param message: Encrypted message data
  * @param message_len: Message length
+ * @param seq_num: Monotonic sequence number for watermark pruning
  * @return: 0 on success, -1 on error
  */
 int p2p_queue_offline_message(
@@ -23,9 +24,11 @@ int p2p_queue_offline_message(
     const char *sender,
     const char *recipient,
     const uint8_t *message,
-    size_t message_len)
+    size_t message_len,
+    uint64_t seq_num)
 {
-    QGP_LOG_WARN(LOG_TAG, ">>> p2p_queue_offline_message called (msg_len=%zu)\n", message_len);
+    QGP_LOG_WARN(LOG_TAG, ">>> p2p_queue_offline_message called (msg_len=%zu, seq=%lu)\n",
+                 message_len, (unsigned long)seq_num);
 
     if (!ctx || !sender || !recipient || !message || message_len == 0) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for queuing offline message\n");
@@ -37,8 +40,8 @@ int p2p_queue_offline_message(
         return -1;
     }
 
-    QGP_LOG_WARN(LOG_TAG, ">>> Calling dht_queue_message (dht=%p, ttl=%u)\n",
-                 (void*)ctx->dht, ctx->config.offline_ttl_seconds);
+    QGP_LOG_WARN(LOG_TAG, ">>> Calling dht_queue_message (dht=%p, seq=%lu, ttl=%u)\n",
+                 (void*)ctx->dht, (unsigned long)seq_num, ctx->config.offline_ttl_seconds);
 
     int result = dht_queue_message(
         ctx->dht,
@@ -46,6 +49,7 @@ int p2p_queue_offline_message(
         recipient,
         message,
         message_len,
+        seq_num,
         ctx->config.offline_ttl_seconds
     );
 
@@ -144,10 +148,52 @@ int p2p_check_offline_messages(
         return 0;
     }
 
-    // 4. Deliver each message via callback
+    // 4. Track max seq_num per sender for watermark publishing
+    // Using a simple array (O(n²) but contacts count is small)
+    typedef struct {
+        char sender[129];
+        uint64_t max_seq_num;
+    } sender_watermark_t;
+
+    sender_watermark_t *watermarks = NULL;
+    size_t watermark_count = 0;
+    size_t watermark_capacity = 0;
+
+    // 5. Deliver each message via callback and track max seq_num per sender
     size_t delivered_count = 0;
     for (size_t i = 0; i < count; i++) {
         dht_offline_message_t *msg = &messages[i];
+
+        // Track max seq_num for this sender
+        bool found = false;
+        for (size_t j = 0; j < watermark_count; j++) {
+            if (strcmp(watermarks[j].sender, msg->sender) == 0) {
+                if (msg->seq_num > watermarks[j].max_seq_num) {
+                    watermarks[j].max_seq_num = msg->seq_num;
+                }
+                found = true;
+                break;
+            }
+        }
+
+        if (!found) {
+            // Add new sender to watermarks array
+            if (watermark_count >= watermark_capacity) {
+                size_t new_capacity = (watermark_capacity == 0) ? 16 : (watermark_capacity * 2);
+                sender_watermark_t *new_array = realloc(watermarks, new_capacity * sizeof(sender_watermark_t));
+                if (new_array) {
+                    watermarks = new_array;
+                    watermark_capacity = new_capacity;
+                }
+            }
+
+            if (watermark_count < watermark_capacity) {
+                strncpy(watermarks[watermark_count].sender, msg->sender, sizeof(watermarks[watermark_count].sender) - 1);
+                watermarks[watermark_count].sender[sizeof(watermarks[watermark_count].sender) - 1] = '\0';
+                watermarks[watermark_count].max_seq_num = msg->seq_num;
+                watermark_count++;
+            }
+        }
 
         // Deliver to application layer (messenger_p2p.c)
         if (ctx->message_callback) {
@@ -162,8 +208,25 @@ int p2p_check_offline_messages(
         }
     }
 
+    // 6. Publish watermarks asynchronously (fire-and-forget)
+    // This tells senders which messages we've received so they can prune their outboxes
+    for (size_t i = 0; i < watermark_count; i++) {
+        QGP_LOG_INFO(LOG_TAG, "Publishing watermark for sender %.20s...: seq=%lu\n",
+               watermarks[i].sender, (unsigned long)watermarks[i].max_seq_num);
+        dht_publish_watermark_async(
+            ctx->dht,
+            ctx->config.identity,     // My fingerprint (recipient/watermark owner)
+            watermarks[i].sender,     // Sender fingerprint
+            watermarks[i].max_seq_num
+        );
+    }
+
+    if (watermarks) {
+        free(watermarks);
+    }
+
     // Note (Model E): No queue clearing needed - recipients don't control sender outboxes.
-    // Senders manage their own outboxes. Messages delivered to local SQLite only.
+    // Senders manage their own outboxes. Watermarks tell senders to prune delivered messages.
 
     if (messages_received) {
         *messages_received = delivered_count;

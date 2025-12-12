@@ -248,6 +248,21 @@ message_backup_context_t* message_backup_init(const char *identity) {
         QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v7 (added gsk_version column)\n");
     }
 
+    // Migration: Create offline_seq table if it doesn't exist (v8 - Watermark pruning)
+    // Tracks monotonic sequence numbers for offline message watermarks
+    const char *migration_sql_v8 =
+        "CREATE TABLE IF NOT EXISTS offline_seq ("
+        "  recipient TEXT PRIMARY KEY,"   // Recipient fingerprint
+        "  next_seq INTEGER DEFAULT 1"    // Next seq_num to use
+        ");";
+    rc = sqlite3_exec(ctx->db, migration_sql_v8, NULL, NULL, &err_msg);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Migration warning (v8): %s\n", err_msg);
+        sqlite3_free(err_msg);
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "Migrated database schema to v8 (added offline_seq table)\n");
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Initialized successfully for identity: %s (ENCRYPTED STORAGE)\n", identity);
     return ctx;
 }
@@ -821,6 +836,52 @@ void message_backup_free_messages(backup_message_t *messages, int count) {
  */
 void* message_backup_get_db(message_backup_context_t *ctx) {
     return ctx ? ctx->db : NULL;
+}
+
+/**
+ * Get and increment the next sequence number for a recipient
+ *
+ * Uses INSERT OR REPLACE to atomically get-and-increment.
+ */
+uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *recipient) {
+    if (!ctx || !ctx->db || !recipient) {
+        return 1;  // Safe default
+    }
+
+    uint64_t seq_num = 1;
+
+    // First, try to get existing value
+    const char *select_sql = "SELECT next_seq FROM offline_seq WHERE recipient = ?";
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, select_sql, -1, &stmt, NULL);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, recipient, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            seq_num = (uint64_t)sqlite3_column_int64(stmt, 0);
+        }
+        sqlite3_finalize(stmt);
+    }
+
+    // Now increment and store the next value
+    const char *upsert_sql =
+        "INSERT INTO offline_seq (recipient, next_seq) VALUES (?, ?)"
+        "ON CONFLICT(recipient) DO UPDATE SET next_seq = ?";
+    rc = sqlite3_prepare_v2(ctx->db, upsert_sql, -1, &stmt, NULL);
+    if (rc == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, recipient, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 2, (sqlite3_int64)(seq_num + 1));
+        sqlite3_bind_int64(stmt, 3, (sqlite3_int64)(seq_num + 1));
+        rc = sqlite3_step(stmt);
+        sqlite3_finalize(stmt);
+
+        if (rc != SQLITE_DONE) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to update offline_seq: %s\n", sqlite3_errmsg(ctx->db));
+        }
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Seq num for %.20s...: %lu (next: %lu)\n",
+           recipient, (unsigned long)seq_num, (unsigned long)(seq_num + 1));
+    return seq_num;
 }
 
 /**

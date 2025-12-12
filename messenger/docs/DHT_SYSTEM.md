@@ -1,6 +1,6 @@
 # DHT System Documentation
 
-**Last Updated:** 2025-12-07
+**Last Updated:** 2025-12-12
 
 Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system, covering both client operations and the dna-nodus bootstrap server.
 
@@ -502,7 +502,7 @@ void dht_value_storage_free(dht_value_storage_t *storage);
 
 ### 5.2 dht_offline_queue.h/c
 
-Sender-based outbox for offline message delivery (Model E).
+Sender-based outbox for offline message delivery (Model E) with watermark pruning.
 
 #### Architecture
 
@@ -510,6 +510,27 @@ Sender-based outbox for offline message delivery (Model E).
 - **TTL**: 7 days default
 - **Put Type**: Signed with `value_id=1` (enables replacement)
 - **Approach**: Each sender controls their outbox to each recipient
+
+#### Watermark Pruning
+
+To prevent unbounded outbox growth, recipients publish delivery acknowledgments ("watermarks"):
+
+- **Watermark Key**: `SHA3-512(recipient + ":watermark:" + sender)`
+- **Watermark TTL**: 30 days
+- **Value**: 8-byte big-endian seq_num (latest message received from sender)
+
+**Flow:**
+1. Alice sends messages to Bob with monotonic seq_num (1, 2, 3...)
+2. Bob receives messages, publishes watermark `seq=3` asynchronously
+3. Alice sends new message (`seq=4`), fetches Bob's watermark (`seq=3`)
+4. Alice prunes outbox: removes messages where `seq_num <= 3`
+5. Alice publishes updated outbox with only `seq=4`
+
+**Benefits:**
+- **Bounded storage**: Delivered messages are pruned on next send
+- **Clock-skew immune**: Uses monotonic seq_num, not timestamps
+- **Async publish**: Watermark publishing is fire-and-forget (non-blocking)
+- **Self-healing**: If watermark publish fails, retry happens on next receive
 
 #### Benefits
 
@@ -519,26 +540,36 @@ Sender-based outbox for offline message delivery (Model E).
 - **Automatic retrieval**: `dna_engine_load_identity()` checks all contacts' outboxes on login
 - **DHT listen (push)**: Real-time notifications via `dht_listen()` on contacts' outbox keys
 
-#### Message Format
+#### Message Format (v2)
 
 ```
-[4-byte magic "DNA "][1-byte version][8-byte timestamp][8-byte expiry]
+[4-byte magic "DNA "][1-byte version (2)]
+[8-byte seq_num][8-byte timestamp][8-byte expiry]
 [2-byte sender_len][2-byte recipient_len][4-byte ciphertext_len]
 [sender string][recipient string][ciphertext bytes]
 ```
 
+Note: `seq_num` is monotonic per sender-recipient pair (for watermark pruning).
+`timestamp` is kept for display purposes only.
+
 #### API
 
 ```c
-// Queue message in sender's outbox
+// Queue message in sender's outbox (with watermark pruning)
 int dht_queue_message(
     dht_context_t *ctx,
     const char *sender,           // 128-char fingerprint
     const char *recipient,        // 128-char fingerprint
     const uint8_t *ciphertext,    // Encrypted message
     size_t ciphertext_len,
+    uint64_t seq_num,             // From message_backup_get_next_seq()
     uint32_t ttl_seconds          // 0 = default 7 days
 );
+
+// Watermark API
+void dht_generate_watermark_key(const char *recipient, const char *sender, uint8_t *key_out);
+void dht_publish_watermark_async(dht_context_t *ctx, const char *recipient, const char *sender, uint64_t seq_num);
+int dht_get_watermark(dht_context_t *ctx, const char *recipient, const char *sender, uint64_t *seq_num_out);
 
 // Retrieve messages from all contacts (sequential)
 int dht_retrieve_queued_messages_from_contacts(
@@ -816,6 +847,7 @@ Stats printed every 60 seconds:
 |-----------|-----|----------------|-----------|-------|
 | **Presence** | 7 days | `SHA3-512(public_key)` = fingerprint | No | IP:port:timestamp |
 | Offline Messages | 7 days | `SHA3-512(sender:outbox:recipient)` | No | Model E outbox |
+| **Watermarks** | 30 days | `SHA3-512(recipient:watermark:sender)` | No | Delivery ack (8-byte seq_num) |
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
 | **Contact Requests** | 7 days | `SHA3-512(fingerprint:requests)` | No | ICQ-style contact request inbox |
 | **Identity** | 365 days | `SHA3-512(fingerprint:profile)` | Yes | Unified: keys + name + profile |

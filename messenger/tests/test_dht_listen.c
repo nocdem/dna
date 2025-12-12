@@ -142,6 +142,7 @@ static int test_basic_listen(dht_context_t *ctx) {
         recipient_fp,
         test_message,
         sizeof(test_message),
+        1,    // seq_num for watermark
         3600  // 1 hour TTL
     );
 
@@ -276,6 +277,7 @@ static int test_multiple_subscriptions(dht_context_t *ctx) {
             recipient_fp,
             test_message,
             sizeof(test_message),
+            (uint64_t)(i + 1),  // seq_num for watermark
             3600
         );
 
