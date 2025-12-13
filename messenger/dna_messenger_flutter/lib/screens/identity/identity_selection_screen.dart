@@ -723,6 +723,9 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
   Future<void> _createIdentity() async {
     setState(() => _step = _CreateStep.creating);
 
+    // Allow Flutter to render the loading screen before heavy sync operations
+    await Future.delayed(Duration.zero);
+
     try {
       // Create identity from mnemonic (local keys only)
       final nickname = _nicknameController.text.trim();
@@ -1129,6 +1132,9 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
   Future<void> _restoreIdentity() async {
     setState(() => _step = _RestoreStep.restoring);
 
+    // Allow Flutter to render the loading screen before heavy sync operations
+    await Future.delayed(Duration.zero);
+
     try {
       final mnemonic = _getMnemonic();
 
@@ -1201,6 +1207,9 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
     if (_restoredFingerprint == null) return;
 
     setState(() => _step = _RestoreStep.restoring);
+
+    // Allow Flutter to render the loading screen before operations
+    await Future.delayed(Duration.zero);
 
     try {
       await ref.read(identitiesProvider.notifier).loadIdentity(_restoredFingerprint!);
