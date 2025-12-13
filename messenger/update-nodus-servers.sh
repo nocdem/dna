@@ -1,6 +1,6 @@
 #!/bin/bash
 # Update DNA Nodus on all production servers
-# Runs nodus_build.sh on each server sequentially
+# Pulls latest code and runs build-nodus.sh on each server
 
 set -e
 
@@ -24,7 +24,7 @@ for entry in "${SERVERS[@]}"; do
 
     echo -e "${YELLOW}[$NAME] Updating $IP...${NC}"
 
-    if ssh root@$IP "cd /opt/dna-messenger && bash nodus_build.sh"; then
+    if ssh root@$IP "cd /opt/dna-messenger && git pull && bash build-nodus.sh"; then
         echo -e "${GREEN}[$NAME] Success${NC}"
     else
         echo -e "${RED}[$NAME] Failed${NC}"
