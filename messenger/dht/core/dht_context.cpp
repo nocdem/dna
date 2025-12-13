@@ -930,13 +930,23 @@ extern "C" int dht_republish_packed(dht_context_t *ctx,
         }
 
         // Deserialize the packed Value using msgpack
-        auto msg = msgpack::unpack((const char*)packed_data, packed_len);
-        auto value = std::make_shared<dht::Value>();
-        value->msgpack_unpack(msg.get());
+        // NOTE: Corrupt data may throw std::bad_cast - we catch and skip these
+        std::shared_ptr<dht::Value> value;
+        try {
+            auto msg = msgpack::unpack((const char*)packed_data, packed_len);
+            value = std::make_shared<dht::Value>();
+            value->msgpack_unpack(msg.get());
+        } catch (const std::bad_cast& e) {
+            QGP_LOG_WARN("DHT", "REPUBLISH_PACKED: %s skipped (corrupt data: bad_cast)", key_hex);
+            return -1;  // Skip corrupt value, don't crash
+        } catch (const msgpack::type_error& e) {
+            QGP_LOG_WARN("DHT", "REPUBLISH_PACKED: %s skipped (corrupt data: type_error)", key_hex);
+            return -1;  // Skip corrupt value
+        }
 
         // Log details about what we're republishing
         bool is_signed = value->owner && !value->signature.empty();
-        QGP_LOG_INFO("DHT", "REPUBLISH_PACKED: %s (type=0x%x, id=%lu, data=%zu bytes, signed=%s)",
+        QGP_LOG_DEBUG("DHT", "REPUBLISH_PACKED: %s (type=0x%x, id=%lu, data=%zu bytes, signed=%s)",
                      hash.toString().c_str(), value->type, value->id, value->data.size(), is_signed ? "YES" : "no");
 
         // Put the value back to the DHT network exactly as-is

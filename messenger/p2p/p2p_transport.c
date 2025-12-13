@@ -47,10 +47,10 @@ p2p_transport_t* p2p_transport_init(
     // Copy configuration
     memcpy(&ctx->config, config, sizeof(p2p_config_t));
 
-    // Copy keys
-    memcpy(ctx->my_private_key, my_privkey_dilithium, 4016);
-    memcpy(ctx->my_public_key, my_pubkey_dilithium, 2592);  // Dilithium5 public key size
-    memcpy(ctx->my_kyber_key, my_kyber_key, 2400);
+    // Copy keys (NIST Category 5 key sizes)
+    memcpy(ctx->my_private_key, my_privkey_dilithium, 4896);  // Dilithium5 (ML-DSA-87) private key
+    memcpy(ctx->my_public_key, my_pubkey_dilithium, 2592);    // Dilithium5 (ML-DSA-87) public key
+    memcpy(ctx->my_kyber_key, my_kyber_key, 3168);            // Kyber1024 (ML-KEM-1024) private key
 
     // Compute my fingerprint (SHA3-512 hex) for ICE DHT keys
     uint8_t my_dht_key[64];  // SHA3-512 = 64 bytes
