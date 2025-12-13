@@ -340,8 +340,10 @@ engine.shutdown();
 |------------|---------|--------------|
 | OpenSSL | AES, SHA, crypto | Android: Use NDK OpenSSL or BoringSSL |
 | | | iOS: Use CommonCrypto or bundled OpenSSL |
-| CURL | HTTP/RPC | Android: Works via NDK |
+| CURL | HTTP/RPC | Android: Works via NDK (requires CA bundle) |
 | | | iOS: Replace with URLSession or bundle |
+| CA Bundle | SSL certificates | Android: Bundle cacert.pem in assets, copy to filesDir |
+| | | iOS: Uses system certificates |
 | OpenDHT-PQ | DHT networking | Needs NDK/Xcode build testing |
 
 ---
@@ -362,12 +364,19 @@ engine.shutdown();
    - Foreground service for active P2P connections
    - Handle Doze mode (network restrictions)
 
-3. **Storage**
+3. **SSL CA Certificates**
+   - Android doesn't provide system CA certificates to native code
+   - CURL needs explicit CA bundle for HTTPS (blockchain RPCs)
+   - Solution: Bundle `cacert.pem` in `assets/` and copy to `filesDir` on startup
+   - The native code uses `qgp_platform_ca_bundle_path()` to locate the bundle
+   - Download latest bundle from: https://curl.se/ca/cacert.pem
+
+4. **Storage**
    - Use `Context.getFilesDir()` for keys/data
    - Use `Context.getCacheDir()` for cache
    - Call `qgp_platform_set_app_dirs()` during init
 
-4. **Network Handling**
+5. **Network Handling**
    - Implement ConnectivityManager listener
    - Call `qgp_platform_update_network_state()` on changes
    - Handle WiFi ↔ Cellular transitions

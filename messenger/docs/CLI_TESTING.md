@@ -1,6 +1,6 @@
 # DNA Messenger CLI Testing Guide
 
-**Version:** 2.2.0
+**Version:** 2.3.0
 **Purpose:** Command-line tool for automated testing and debugging of DNA Messenger without GUI
 **Location:** `build/cli/dna-messenger-cli`
 
@@ -10,10 +10,11 @@
 
 The `dna-messenger-cli` tool allows Claude (or any automated system) to test DNA Messenger functionality through single-command invocations. Each command initializes the engine, executes the operation, and exits cleanly.
 
-**Key Features (v2.1.0):**
+**Key Features (v2.3.0):**
 - Auto-loads identity if only one exists
 - Waits for DHT connection before network operations
 - Includes propagation delays for DHT put operations
+- `messages` command resolves names to fingerprints via DHT
 
 ---
 
@@ -59,7 +60,7 @@ $CLI approve <fp>                     # Approve request
 
 # Messaging
 $CLI send <name|fp> "message"         # Send message (use name or FULL fingerprint)
-$CLI messages <fp>                    # Show conversation
+$CLI messages <name|fp>               # Show conversation (resolves name to fp)
 $CLI check-offline                    # Check offline messages
 
 # Wallet
@@ -359,20 +360,25 @@ dna-messenger-cli send 5a8f2c3d4e6b7a9c1b2a34567890abcd... "Hello from CLI!"
 
 ---
 
-### `messages <fingerprint>` - Show Conversation
+### `messages <name|fingerprint>` - Show Conversation
+
+Shows messages with a contact. If a name is provided, it resolves to fingerprint via DHT lookup.
 
 ```bash
-dna-messenger-cli messages 5a8f2c3d
+dna-messenger-cli messages nox          # By registered name (resolves to fp)
+dna-messenger-cli messages 5a8f2c3d...  # By full fingerprint
 ```
 
 **Sample Output:**
 ```
-Conversation with 5a8f2c3d4e6b7a9c... (5 messages):
+Conversation with f6ddccbee2b3ee69... (3 messages):
 
 [2024-01-15 14:30] >>> Hello!
 [2024-01-15 14:31] <<< Hi there!
 [2024-01-15 14:32] >>> How are you?
 ```
+
+**Note:** Name resolution queries the DHT, so the contact must have a registered name.
 
 ---
 

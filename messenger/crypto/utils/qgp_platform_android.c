@@ -330,3 +330,37 @@ void qgp_platform_update_network_state(int state) {
         }
     }
 }
+
+/* ============================================================================
+ * SSL/TLS Certificate Bundle (Android Implementation)
+ * On Android, we bundle cacert.pem in the app's data directory
+ * ============================================================================ */
+
+static char g_ca_bundle_path[4096] = {0};
+
+const char* qgp_platform_ca_bundle_path(void) {
+    /* Return cached path if already computed */
+    if (g_ca_bundle_path[0]) {
+        return g_ca_bundle_path;
+    }
+
+    /* Need app data directory to be set */
+    if (!g_dirs_initialized || !g_app_data_dir[0]) {
+        fprintf(stderr, "[DNA] WARNING: CA bundle path requested before app dirs initialized\n");
+        return NULL;
+    }
+
+    /* Build path to bundled CA certificate file */
+    snprintf(g_ca_bundle_path, sizeof(g_ca_bundle_path), "%s/cacert.pem", g_app_data_dir);
+
+    /* Check if file exists */
+    if (access(g_ca_bundle_path, R_OK) != 0) {
+        fprintf(stderr, "[DNA] WARNING: CA bundle not found at %s\n", g_ca_bundle_path);
+        fprintf(stderr, "[DNA] HTTPS requests may fail. Copy cacert.pem to app data directory.\n");
+        g_ca_bundle_path[0] = '\0';
+        return NULL;
+    }
+
+    fprintf(stderr, "[DNA] Using CA bundle: %s\n", g_ca_bundle_path);
+    return g_ca_bundle_path;
+}

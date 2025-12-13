@@ -15,6 +15,7 @@
 // Default values
 #define NODUS_DEFAULT_DHT_PORT 4000
 #define NODUS_DEFAULT_TURN_PORT 3478
+#define NODUS_DEFAULT_CREDENTIAL_PORT 3479
 #define NODUS_DEFAULT_RELAY_PORT_BEGIN 49152
 #define NODUS_DEFAULT_RELAY_PORT_END 65535
 #define NODUS_DEFAULT_CREDENTIAL_TTL 604800  // 7 days in seconds
@@ -30,6 +31,7 @@ struct NodusConfig {
 
     // TURN settings
     uint16_t turn_port = NODUS_DEFAULT_TURN_PORT;
+    uint16_t credential_port = NODUS_DEFAULT_CREDENTIAL_PORT;
     uint16_t relay_port_begin = NODUS_DEFAULT_RELAY_PORT_BEGIN;
     uint16_t relay_port_end = NODUS_DEFAULT_RELAY_PORT_END;
     uint32_t credential_ttl_seconds = NODUS_DEFAULT_CREDENTIAL_TTL;

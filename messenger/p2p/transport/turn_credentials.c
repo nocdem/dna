@@ -20,13 +20,46 @@
 
 #ifdef _WIN32
 #include <windows.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+typedef int socklen_t;
 #else
 #include <unistd.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <errno.h>
+#include <fcntl.h>
+#define INVALID_SOCKET -1
+#define SOCKET_ERROR -1
+#define closesocket close
+typedef int SOCKET;
 #endif
 
 // Request format constants (must match server)
 #define REQUEST_VERSION 1
 #define REQUEST_TYPE_CREDENTIAL 1
+
+// UDP protocol constants (must match turn_credential_udp.h)
+#define CRED_UDP_MAGIC 0x444E4143
+#define CRED_UDP_VERSION 1
+#define CRED_UDP_TYPE_REQUEST 1
+#define CRED_UDP_TYPE_RESPONSE 2
+#define CRED_UDP_FINGERPRINT_SIZE 128
+#define CRED_UDP_NONCE_SIZE 32
+#define CRED_UDP_HOST_SIZE 64
+#define CRED_UDP_USERNAME_SIZE 128
+#define CRED_UDP_PASSWORD_SIZE 128
+
+// Bootstrap servers for direct credential requests
+#define CRED_UDP_DEFAULT_PORT 3479
+static const char *bootstrap_servers[] = {
+    "154.38.182.161",   // US-1
+    "164.68.105.227",   // EU-1
+    "164.68.116.180",   // EU-2
+    NULL
+};
 #define REQUEST_HEADER_SIZE (1 + 1 + 8 + 32)
 
 // Response format constants
@@ -261,6 +294,207 @@ static int parse_credential_response(
 }
 
 // =============================================================================
+// Direct UDP Credential Request (bypasses DHT - faster and more reliable)
+// =============================================================================
+
+/**
+ * Request credentials via direct UDP to bootstrap servers
+ * Returns 0 on success, -1 on error
+ */
+static int request_credentials_udp(
+    const char *fingerprint,
+    const uint8_t *pubkey,
+    const uint8_t *privkey,
+    turn_credentials_t *out,
+    int timeout_ms)
+{
+    QGP_LOG_INFO("TURN", "Trying direct UDP credential request...");
+
+    // Create UDP socket
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) {
+        QGP_LOG_ERROR("TURN", "Failed to create UDP socket");
+        return -1;
+    }
+
+    // Set socket timeout
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+
+    // Build request packet
+    // [MAGIC:4][VERSION:1][TYPE:1][TIMESTAMP:8][FINGERPRINT:128][NONCE:32][SIGNATURE:4627]
+    size_t request_size = 4 + 1 + 1 + 8 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE + 4627;
+    uint8_t *request = (uint8_t*)malloc(request_size);
+    if (!request) {
+        closesocket(sock);
+        return -1;
+    }
+
+    size_t offset = 0;
+
+    // Magic
+    uint32_t magic = CRED_UDP_MAGIC;
+    memcpy(request + offset, &magic, 4);
+    offset += 4;
+
+    // Version
+    request[offset++] = CRED_UDP_VERSION;
+
+    // Type
+    request[offset++] = CRED_UDP_TYPE_REQUEST;
+
+    // Timestamp (big-endian)
+    uint64_t timestamp = (uint64_t)time(NULL);
+    for (int i = 7; i >= 0; i--) {
+        request[offset++] = (timestamp >> (i * 8)) & 0xFF;
+    }
+
+    // Fingerprint (128 chars)
+    memset(request + offset, 0, CRED_UDP_FINGERPRINT_SIZE);
+    strncpy((char*)(request + offset), fingerprint, CRED_UDP_FINGERPRINT_SIZE);
+    offset += CRED_UDP_FINGERPRINT_SIZE;
+
+    // Nonce (32 random bytes)
+    uint8_t nonce[CRED_UDP_NONCE_SIZE];
+    qgp_randombytes(nonce, CRED_UDP_NONCE_SIZE);
+    memcpy(request + offset, nonce, CRED_UDP_NONCE_SIZE);
+    offset += CRED_UDP_NONCE_SIZE;
+
+    // Sign the request (timestamp + fingerprint + nonce)
+    size_t sign_data_len = 8 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE;
+    uint8_t *sign_data = request + 6;  // After magic, version, type
+    size_t sig_len = 0;
+
+    if (qgp_dsa87_sign(request + offset, &sig_len, sign_data, sign_data_len, privkey) != 0) {
+        QGP_LOG_ERROR("TURN", "Failed to sign request");
+        free(request);
+        closesocket(sock);
+        return -1;
+    }
+    offset += sig_len;
+
+    // Try each bootstrap server
+    int result = -1;
+    uint8_t response[2048];
+
+    for (int i = 0; bootstrap_servers[i] != NULL; i++) {
+        struct sockaddr_in server_addr;
+        memset(&server_addr, 0, sizeof(server_addr));
+        server_addr.sin_family = AF_INET;
+        server_addr.sin_port = htons(CRED_UDP_DEFAULT_PORT);
+
+        if (inet_pton(AF_INET, bootstrap_servers[i], &server_addr.sin_addr) <= 0) {
+            QGP_LOG_WARN("TURN", "Invalid server IP: %s", bootstrap_servers[i]);
+            continue;
+        }
+
+        QGP_LOG_INFO("TURN", "Sending credential request to %s:%d",
+                     bootstrap_servers[i], CRED_UDP_DEFAULT_PORT);
+
+        // Send request
+        ssize_t sent = sendto(sock, (char*)request, offset, 0,
+                              (struct sockaddr*)&server_addr, sizeof(server_addr));
+        if (sent != (ssize_t)offset) {
+            QGP_LOG_WARN("TURN", "Send failed to %s", bootstrap_servers[i]);
+            continue;
+        }
+
+        // Receive response
+        struct sockaddr_in from_addr;
+        socklen_t from_len = sizeof(from_addr);
+        ssize_t recv_len = recvfrom(sock, (char*)response, sizeof(response), 0,
+                                    (struct sockaddr*)&from_addr, &from_len);
+
+        if (recv_len <= 0) {
+            QGP_LOG_WARN("TURN", "No response from %s (timeout)", bootstrap_servers[i]);
+            continue;
+        }
+
+        QGP_LOG_INFO("TURN", "Got %zd byte response from %s", recv_len, bootstrap_servers[i]);
+
+        // Validate response
+        if (recv_len < 7) {
+            QGP_LOG_WARN("TURN", "Response too short");
+            continue;
+        }
+
+        // Check magic
+        uint32_t resp_magic;
+        memcpy(&resp_magic, response, 4);
+        if (resp_magic != CRED_UDP_MAGIC) {
+            QGP_LOG_WARN("TURN", "Invalid response magic");
+            continue;
+        }
+
+        // Check version and type
+        if (response[4] != CRED_UDP_VERSION || response[5] != CRED_UDP_TYPE_RESPONSE) {
+            QGP_LOG_WARN("TURN", "Invalid response version/type");
+            continue;
+        }
+
+        // Parse servers
+        uint8_t server_count = response[6];
+        if (server_count == 0 || server_count > MAX_TURN_SERVERS) {
+            QGP_LOG_WARN("TURN", "Invalid server count: %d", server_count);
+            continue;
+        }
+
+        out->server_count = server_count;
+        out->fetched_at = time(NULL);
+
+        size_t resp_offset = 7;
+        for (size_t s = 0; s < server_count && s < MAX_TURN_SERVERS; s++) {
+            turn_server_info_t *srv = &out->servers[s];
+
+            // Host (64 bytes)
+            strncpy(srv->host, (const char*)(response + resp_offset), CRED_UDP_HOST_SIZE - 1);
+            srv->host[CRED_UDP_HOST_SIZE - 1] = '\0';
+            resp_offset += CRED_UDP_HOST_SIZE;
+
+            // Port (2 bytes, big-endian)
+            srv->port = (response[resp_offset] << 8) | response[resp_offset + 1];
+            resp_offset += 2;
+
+            // Username (128 bytes)
+            strncpy(srv->username, (const char*)(response + resp_offset), CRED_UDP_USERNAME_SIZE - 1);
+            srv->username[CRED_UDP_USERNAME_SIZE - 1] = '\0';
+            resp_offset += CRED_UDP_USERNAME_SIZE;
+
+            // Password (128 bytes)
+            strncpy(srv->password, (const char*)(response + resp_offset), CRED_UDP_PASSWORD_SIZE - 1);
+            srv->password[CRED_UDP_PASSWORD_SIZE - 1] = '\0';
+            resp_offset += CRED_UDP_PASSWORD_SIZE;
+
+            // Expires (8 bytes, big-endian)
+            srv->expires_at = 0;
+            for (int b = 0; b < 8; b++) {
+                srv->expires_at = (srv->expires_at << 8) | response[resp_offset + b];
+            }
+            resp_offset += 8;
+
+            QGP_LOG_INFO("TURN", "Server %zu: %s:%d user=%s",
+                         s, srv->host, srv->port, srv->username);
+        }
+
+        result = 0;
+        break;
+    }
+
+    free(request);
+    closesocket(sock);
+
+    if (result == 0) {
+        QGP_LOG_INFO("TURN", "Got %zu TURN servers via UDP", out->server_count);
+    } else {
+        QGP_LOG_ERROR("TURN", "All UDP servers failed");
+    }
+
+    return result;
+}
+
+// =============================================================================
 // Public API
 // =============================================================================
 
@@ -275,14 +509,29 @@ int turn_credentials_request(
         return -1;
     }
 
-    // Get DHT instance
+    QGP_LOG_INFO("TURN", "Requesting credentials for %.16s...", fingerprint);
+
+    // Try UDP first (faster, more reliable)
+    int udp_timeout = timeout_ms > 0 ? timeout_ms / 2 : 3000;  // Half timeout for UDP
+    if (request_credentials_udp(fingerprint, pubkey, privkey, out, udp_timeout) == 0) {
+        // Cache credentials
+        pthread_mutex_lock(&cache_mutex);
+        cache_entry_t *entry = add_cache_entry(fingerprint);
+        if (entry) {
+            memcpy(&entry->credentials, out, sizeof(*out));
+        }
+        pthread_mutex_unlock(&cache_mutex);
+        return 0;
+    }
+
+    QGP_LOG_WARN("TURN", "UDP request failed, falling back to DHT...");
+
+    // Get DHT instance for fallback
     dht_context_t *dht = dht_singleton_get();
     if (!dht) {
         QGP_LOG_ERROR("TURN", "DHT not initialized");
         return -1;
     }
-
-    QGP_LOG_DEBUG("TURN", "Requesting credentials for %.16s...", fingerprint);
 
     // Create signed request
     uint8_t *request_data = NULL;

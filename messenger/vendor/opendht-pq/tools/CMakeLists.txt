@@ -44,6 +44,7 @@ set(DNA_NODUS_SOURCES
     nodus_config.cpp
     turn_server.cpp
     turn_credential_manager.cpp
+    turn_credential_udp.cpp
 )
 
 function (configure_nodus name)
