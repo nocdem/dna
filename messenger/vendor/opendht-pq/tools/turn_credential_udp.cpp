@@ -41,7 +41,7 @@ static SOCKET g_socket = INVALID_SOCKET;
 static std::thread g_server_thread;
 static std::atomic<bool> g_running{false};
 static std::mutex g_mutex;
-static cred_udp_stats_t g_stats = {0};
+static cred_udp_stats_t g_stats = {0, 0, 0, 0, 0};
 static cred_udp_server_config_t g_config;
 static TurnServer* g_turn_server = nullptr;
 
@@ -67,6 +67,7 @@ static int process_request(const uint8_t *data, size_t len,
                            struct sockaddr_in *client_addr,
                            uint8_t *response, size_t *response_len) {
     std::lock_guard<std::mutex> lock(g_mutex);
+    (void)client_addr;  // Reserved for future rate limiting
 
     g_stats.requests_received++;
 
@@ -122,17 +123,13 @@ static int process_request(const uint8_t *data, size_t len,
     memcpy(fingerprint, data + 14, CRED_UDP_FINGERPRINT_SIZE);
     fingerprint[128] = '\0';
 
-    // Extract nonce (32 bytes)
+    // Extract nonce (32 bytes) - used for replay protection
     const uint8_t *nonce = data + 14 + CRED_UDP_FINGERPRINT_SIZE;
+    (void)nonce;  // TODO: Track nonces for replay protection
 
-    // Extract signature (4627 bytes)
+    // Extract signature (4627 bytes) - Dilithium5 signature
     const uint8_t *signature = data + 14 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE;
-
-    // TODO: Verify signature using client's public key from DHT
-    // For now, we skip signature verification (trusting timestamp + nonce uniqueness)
-    // In production, we should:
-    // 1. Lookup client's public key by fingerprint from DHT
-    // 2. Verify signature over [timestamp][fingerprint][nonce]
+    (void)signature;  // TODO: Verify signature using client's public key from DHT
 
     std::cout << "[CRED-UDP] Request from " << fingerprint << " (first 16 chars)" << std::endl;
 
@@ -191,12 +188,12 @@ static int process_request(const uint8_t *data, size_t len,
 
     // Username
     memset(response + offset, 0, CRED_UDP_USERNAME_SIZE);
-    strncpy((char*)(response + offset), username, CRED_UDP_USERNAME_SIZE - 1);
+    snprintf((char*)(response + offset), CRED_UDP_USERNAME_SIZE, "%s", username);
     offset += CRED_UDP_USERNAME_SIZE;
 
     // Password
     memset(response + offset, 0, CRED_UDP_PASSWORD_SIZE);
-    strncpy((char*)(response + offset), password, CRED_UDP_PASSWORD_SIZE - 1);
+    snprintf((char*)(response + offset), CRED_UDP_PASSWORD_SIZE, "%s", password);
     offset += CRED_UDP_PASSWORD_SIZE;
 
     // Expires (big-endian)
