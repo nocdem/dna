@@ -76,6 +76,12 @@ build_nodus() {
 install_binary() {
     echo -e "${YELLOW}Installing dna-nodus to /usr/local/bin/...${NC}"
 
+    # Stop service if running (binary will be busy otherwise)
+    if systemctl is-active --quiet dna-nodus 2>/dev/null; then
+        echo "Stopping dna-nodus service..."
+        sudo systemctl stop dna-nodus
+    fi
+
     sudo cp "$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus" /usr/local/bin/dna-nodus
     sudo chmod +x /usr/local/bin/dna-nodus
 
@@ -126,12 +132,12 @@ update_install() {
     sudo cp "$SERVICE_FILE" /etc/systemd/system/dna-nodus.service
     sudo systemctl daemon-reload
 
-    # Restart service
-    echo "Restarting dna-nodus service..."
-    sudo systemctl restart dna-nodus
+    # Start service (was stopped in install_binary)
+    echo "Starting dna-nodus service..."
+    sudo systemctl start dna-nodus
     sleep 2
 
-    echo -e "${GREEN}Service restarted${NC}"
+    echo -e "${GREEN}Service started${NC}"
     echo ""
 }
 
