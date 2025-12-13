@@ -72,21 +72,15 @@ build_nodus() {
     echo ""
 }
 
-# Install binary
-install_binary() {
-    echo -e "${YELLOW}Installing dna-nodus to /usr/local/bin/...${NC}"
-
-    # Stop service if running (binary will be busy otherwise)
-    if systemctl is-active --quiet dna-nodus 2>/dev/null; then
-        echo "Stopping dna-nodus service..."
-        sudo systemctl stop dna-nodus
+# Verify binary exists
+verify_binary() {
+    if [ ! -f "$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus" ]; then
+        echo -e "${RED}Error: Binary not found at $BUILD_DIR/vendor/opendht-pq/tools/dna-nodus${NC}"
+        exit 1
     fi
 
-    sudo cp "$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus" /usr/local/bin/dna-nodus
-    sudo chmod +x /usr/local/bin/dna-nodus
-
-    SIZE=$(ls -lh /usr/local/bin/dna-nodus | awk '{print $5}')
-    echo -e "${GREEN}Installed /usr/local/bin/dna-nodus ($SIZE)${NC}"
+    SIZE=$(ls -lh "$BUILD_DIR/vendor/opendht-pq/tools/dna-nodus" | awk '{print $5}')
+    echo -e "${GREEN}Binary ready: $BUILD_DIR/vendor/opendht-pq/tools/dna-nodus ($SIZE)${NC}"
     echo ""
 }
 
@@ -132,12 +126,12 @@ update_install() {
     sudo cp "$SERVICE_FILE" /etc/systemd/system/dna-nodus.service
     sudo systemctl daemon-reload
 
-    # Start service (was stopped in install_binary)
-    echo "Starting dna-nodus service..."
-    sudo systemctl start dna-nodus
+    # Restart service
+    echo "Restarting dna-nodus service..."
+    sudo systemctl restart dna-nodus
     sleep 2
 
-    echo -e "${GREEN}Service started${NC}"
+    echo -e "${GREEN}Service restarted${NC}"
     echo ""
 }
 
@@ -152,7 +146,7 @@ main() {
     check_dependencies
     pull_latest
     build_nodus
-    install_binary
+    verify_binary
 
     # Check if first-time install or update
     if [ ! -f /etc/systemd/system/dna-nodus.service ]; then
@@ -168,7 +162,8 @@ main() {
 if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Usage: $0 [OPTIONS]"
     echo ""
-    echo "Builds and installs dna-nodus. Handles first-time setup automatically."
+    echo "Builds dna-nodus and manages systemd service."
+    echo "Binary runs directly from build directory (no copy needed)."
     echo ""
     echo "First-time install:"
     echo "  - Creates /var/lib/dna-dht"
@@ -178,7 +173,7 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo ""
     echo "Update:"
     echo "  - Pulls latest code"
-    echo "  - Rebuilds binary"
+    echo "  - Rebuilds binary in place"
     echo "  - Restarts service"
     echo ""
     echo "Options:"
