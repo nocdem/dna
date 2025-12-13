@@ -16,25 +16,23 @@
 #include <string.h>
 #include <time.h>
 #include <json-c/json.h>
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "DHT_CONTACTS"
 
 #ifdef _WIN32
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
-// Network byte order functions for Windows
-#define htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
-#define ntohll(x) ((1==ntohl(1)) ? (x) : ((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
 #else
 #include <arpa/inet.h>
-#include "crypto/utils/qgp_log.h"
+#endif
 
-#define LOG_TAG "DHT_CONTACTS"
-// Define htonll/ntohll for Linux (may not be available on all systems)
+// Network byte order functions (may not be available on all systems)
 #ifndef htonll
 #define htonll(x) ((1==htonl(1)) ? (x) : ((uint64_t)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
 #endif
 #ifndef ntohll
 #define ntohll(x) ((1==ntohl(1)) ? (x) : ((uint64_t)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
-#endif
 #endif
 
 // ============================================================================
