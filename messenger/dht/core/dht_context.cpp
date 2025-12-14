@@ -936,12 +936,13 @@ extern "C" int dht_republish_packed(dht_context_t *ctx,
             auto msg = msgpack::unpack((const char*)packed_data, packed_len);
             value = std::make_shared<dht::Value>();
             value->msgpack_unpack(msg.get());
+        } catch (const msgpack::type_error& e) {
+            // NOTE: type_error inherits from std::bad_cast, so catch it first
+            QGP_LOG_WARN("DHT", "REPUBLISH_PACKED: %s skipped (corrupt data: type_error)", key_hex);
+            return -1;  // Skip corrupt value
         } catch (const std::bad_cast& e) {
             QGP_LOG_WARN("DHT", "REPUBLISH_PACKED: %s skipped (corrupt data: bad_cast)", key_hex);
             return -1;  // Skip corrupt value, don't crash
-        } catch (const msgpack::type_error& e) {
-            QGP_LOG_WARN("DHT", "REPUBLISH_PACKED: %s skipped (corrupt data: type_error)", key_hex);
-            return -1;  // Skip corrupt value
         }
 
         // Log details about what we're republishing
