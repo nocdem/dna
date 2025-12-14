@@ -750,6 +750,13 @@ int messenger_send_p2p(
         if (queue_result == 0) {
             QGP_LOG_WARN("P2P", ">>> Message queued in DHT for %s (fingerprint: %.20s..., seq=%lu)\n",
                    recipient, recipient_fingerprint, (unsigned long)seq_num);
+
+            // Start tracking delivery for this recipient (delivery confirmation feature)
+            dna_engine_t *engine = dna_engine_get_global();
+            if (engine) {
+                dna_engine_track_delivery(engine, recipient_fingerprint);
+            }
+
             return 0;  // Success via DHT queue
         } else {
             QGP_LOG_ERROR("P2P", "Failed to queue message in DHT (result=%d)\n", queue_result);

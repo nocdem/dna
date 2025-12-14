@@ -52,6 +52,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dna_engine_internal.h"
 #include "dna_api.h"
 #include "messenger_p2p.h"
+#include "message_backup.h"
 #include "messenger/status.h"
 #include "dht/client/dht_singleton.h"
 #include "dht/core/dht_keyserver.h"
@@ -584,6 +585,11 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     engine->outbox_listener_count = 0;
     memset(engine->outbox_listeners, 0, sizeof(engine->outbox_listeners));
 
+    /* Initialize delivery trackers */
+    pthread_mutex_init(&engine->delivery_trackers_mutex, NULL);
+    engine->delivery_tracker_count = 0;
+    memset(engine->delivery_trackers, 0, sizeof(engine->delivery_trackers));
+
     /* Initialize task queue */
     dna_task_queue_init(&engine->task_queue);
 
@@ -656,6 +662,10 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Cancel all outbox listeners */
     dna_engine_cancel_all_outbox_listeners(engine);
     pthread_mutex_destroy(&engine->outbox_listeners_mutex);
+
+    /* Cancel all delivery trackers */
+    dna_engine_cancel_all_delivery_trackers(engine);
+    pthread_mutex_destroy(&engine->delivery_trackers_mutex);
 
     /* Free message queue */
     pthread_mutex_lock(&engine->message_queue.mutex);
@@ -4250,6 +4260,210 @@ void dna_engine_cancel_all_outbox_listeners(dna_engine_t *engine)
     QGP_LOG_INFO(LOG_TAG, "Cancelled all outbox listeners");
 
     pthread_mutex_unlock(&engine->outbox_listeners_mutex);
+}
+
+/* ============================================================================
+ * DELIVERY TRACKERS (Message delivery confirmation)
+ * ============================================================================ */
+
+/**
+ * Callback context for delivery tracker
+ */
+typedef struct {
+    dna_engine_t *engine;
+    char recipient[129];
+} delivery_tracker_ctx_t;
+
+/**
+ * Internal callback for watermark updates
+ * Updates message status and dispatches DNA_EVENT_MESSAGE_DELIVERED
+ */
+static void delivery_watermark_callback(
+    const char *sender,
+    const char *recipient,
+    uint64_t seq_num,
+    void *user_data
+) {
+    delivery_tracker_ctx_t *ctx = (delivery_tracker_ctx_t *)user_data;
+    if (!ctx || !ctx->engine) {
+        return;
+    }
+
+    dna_engine_t *engine = ctx->engine;
+
+    QGP_LOG_INFO(LOG_TAG, "Delivery confirmed: %.20s... → %.20s... seq=%lu",
+                 sender, recipient, (unsigned long)seq_num);
+
+    /* Update tracker's last known watermark */
+    pthread_mutex_lock(&engine->delivery_trackers_mutex);
+    for (int i = 0; i < engine->delivery_tracker_count; i++) {
+        if (engine->delivery_trackers[i].active &&
+            strcmp(engine->delivery_trackers[i].recipient, recipient) == 0) {
+            engine->delivery_trackers[i].last_known_watermark = seq_num;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+
+    /* Update message status in database (all messages with seq <= seq_num are delivered) */
+    if (engine->messenger && engine->messenger->backup_ctx) {
+        int updated = message_backup_mark_delivered_up_to_seq(
+            engine->messenger->backup_ctx,
+            sender,      /* My fingerprint - I sent the messages */
+            recipient,   /* Contact fingerprint - they received */
+            seq_num
+        );
+        if (updated > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Updated %d messages to DELIVERED status", updated);
+        }
+    }
+
+    /* Dispatch DNA_EVENT_MESSAGE_DELIVERED event */
+    dna_event_t event = {0};
+    event.type = DNA_EVENT_MESSAGE_DELIVERED;
+    strncpy(event.data.message_delivered.recipient, recipient,
+            sizeof(event.data.message_delivered.recipient) - 1);
+    event.data.message_delivered.seq_num = seq_num;
+    event.data.message_delivered.timestamp = (uint64_t)time(NULL);
+
+    dna_dispatch_event(engine, &event);
+}
+
+int dna_engine_track_delivery(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint
+) {
+    if (!engine || !recipient_fingerprint || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "Cannot track delivery: invalid params or no identity");
+        return -1;
+    }
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Cannot track delivery: DHT not available");
+        return -1;
+    }
+
+    pthread_mutex_lock(&engine->delivery_trackers_mutex);
+
+    /* Check if already tracking this recipient */
+    for (int i = 0; i < engine->delivery_tracker_count; i++) {
+        if (engine->delivery_trackers[i].active &&
+            strcmp(engine->delivery_trackers[i].recipient, recipient_fingerprint) == 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "Already tracking delivery for %s...", recipient_fingerprint);
+            pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+            return 0;  /* Already tracking - success */
+        }
+    }
+
+    /* Check capacity */
+    if (engine->delivery_tracker_count >= DNA_MAX_DELIVERY_TRACKERS) {
+        QGP_LOG_ERROR(LOG_TAG, "Maximum delivery trackers reached (%d)", DNA_MAX_DELIVERY_TRACKERS);
+        pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+        return -1;
+    }
+
+    /* Create callback context */
+    delivery_tracker_ctx_t *ctx = malloc(sizeof(delivery_tracker_ctx_t));
+    if (!ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate delivery tracker context");
+        pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+        return -1;
+    }
+    ctx->engine = engine;
+    strncpy(ctx->recipient, recipient_fingerprint, sizeof(ctx->recipient) - 1);
+    ctx->recipient[sizeof(ctx->recipient) - 1] = '\0';
+
+    /* Start watermark listener
+     * Key: SHA3-512(recipient + ":watermark:" + sender)
+     * sender = my fingerprint, recipient = contact */
+    size_t token = dht_listen_watermark(dht_ctx,
+                                        engine->fingerprint,
+                                        recipient_fingerprint,
+                                        delivery_watermark_callback,
+                                        ctx);
+    if (token == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start watermark listener for %s...", recipient_fingerprint);
+        free(ctx);
+        pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+        return -1;
+    }
+
+    /* Store tracker info */
+    int idx = engine->delivery_tracker_count++;
+    strncpy(engine->delivery_trackers[idx].recipient, recipient_fingerprint,
+            sizeof(engine->delivery_trackers[idx].recipient) - 1);
+    engine->delivery_trackers[idx].recipient[sizeof(engine->delivery_trackers[idx].recipient) - 1] = '\0';
+    engine->delivery_trackers[idx].listener_token = token;
+    engine->delivery_trackers[idx].last_known_watermark = 0;
+    engine->delivery_trackers[idx].active = true;
+
+    QGP_LOG_INFO(LOG_TAG, "Started delivery tracker for %s... (token=%zu)",
+                 recipient_fingerprint, token);
+
+    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+    return 0;
+}
+
+void dna_engine_untrack_delivery(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint
+) {
+    if (!engine || !recipient_fingerprint) {
+        return;
+    }
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+
+    pthread_mutex_lock(&engine->delivery_trackers_mutex);
+
+    for (int i = 0; i < engine->delivery_tracker_count; i++) {
+        if (engine->delivery_trackers[i].active &&
+            strcmp(engine->delivery_trackers[i].recipient, recipient_fingerprint) == 0) {
+
+            /* Cancel the watermark listener */
+            if (dht_ctx) {
+                dht_cancel_watermark_listener(dht_ctx, engine->delivery_trackers[i].listener_token);
+            }
+
+            QGP_LOG_INFO(LOG_TAG, "Cancelled delivery tracker for %s...",
+                         recipient_fingerprint);
+
+            /* Remove by swapping with last element */
+            if (i < engine->delivery_tracker_count - 1) {
+                engine->delivery_trackers[i] = engine->delivery_trackers[engine->delivery_tracker_count - 1];
+            }
+            engine->delivery_tracker_count--;
+            break;
+        }
+    }
+
+    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
+}
+
+void dna_engine_cancel_all_delivery_trackers(dna_engine_t *engine)
+{
+    if (!engine) {
+        return;
+    }
+
+    dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+
+    pthread_mutex_lock(&engine->delivery_trackers_mutex);
+
+    for (int i = 0; i < engine->delivery_tracker_count; i++) {
+        if (engine->delivery_trackers[i].active && dht_ctx) {
+            dht_cancel_watermark_listener(dht_ctx, engine->delivery_trackers[i].listener_token);
+            QGP_LOG_DEBUG(LOG_TAG, "Cancelled delivery tracker for %s...",
+                          engine->delivery_trackers[i].recipient);
+        }
+        engine->delivery_trackers[i].active = false;
+    }
+
+    engine->delivery_tracker_count = 0;
+    QGP_LOG_INFO(LOG_TAG, "Cancelled all delivery trackers");
+
+    pthread_mutex_unlock(&engine->delivery_trackers_mutex);
 }
 
 /* ============================================================================

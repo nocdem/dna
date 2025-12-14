@@ -400,6 +400,21 @@ typedef struct {
 } dna_outbox_listener_t;
 
 /**
+ * Delivery tracker entry (for message delivery confirmation)
+ *
+ * Tracks watermark updates from recipients to confirm message delivery.
+ * When recipient publishes watermark >= sent seq_num, message is DELIVERED.
+ */
+#define DNA_MAX_DELIVERY_TRACKERS 128
+
+typedef struct {
+    char recipient[129];            /* Recipient fingerprint we're tracking */
+    uint64_t last_known_watermark;  /* Last watermark value received */
+    size_t listener_token;          /* Token from dht_listen_watermark() */
+    bool active;                    /* True if tracker is active */
+} dna_delivery_tracker_t;
+
+/**
  * DNA Engine internal state
  */
 struct dna_engine {
@@ -428,6 +443,11 @@ struct dna_engine {
     dna_outbox_listener_t outbox_listeners[DNA_MAX_OUTBOX_LISTENERS];
     int outbox_listener_count;
     pthread_mutex_t outbox_listeners_mutex;
+
+    /* Delivery trackers (for message delivery confirmation) */
+    dna_delivery_tracker_t delivery_trackers[DNA_MAX_DELIVERY_TRACKERS];
+    int delivery_tracker_count;
+    pthread_mutex_t delivery_trackers_mutex;
 
     /* Event callback */
     dna_event_cb event_callback;

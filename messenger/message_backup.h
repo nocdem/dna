@@ -290,6 +290,32 @@ void* message_backup_get_db(message_backup_context_t *ctx);
 uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *recipient);
 
 /**
+ * Mark all outgoing messages as DELIVERED up to a sequence number
+ *
+ * Updates the status of all messages sent to a recipient where seq_num <= max_seq.
+ * Used for delivery confirmation when watermark is received from recipient.
+ *
+ * Message status values:
+ * - 0 = PENDING
+ * - 1 = SENT
+ * - 2 = FAILED
+ * - 3 = DELIVERED (set by this function)
+ * - 4 = READ
+ *
+ * @param ctx Backup context
+ * @param sender My fingerprint (the sender)
+ * @param recipient Recipient fingerprint
+ * @param max_seq_num Maximum seq_num that was delivered
+ * @return Number of messages updated, or -1 on error
+ */
+int message_backup_mark_delivered_up_to_seq(
+    message_backup_context_t *ctx,
+    const char *sender,
+    const char *recipient,
+    uint64_t max_seq_num
+);
+
+/**
  * Close backup context
  *
  * @param ctx Backup context

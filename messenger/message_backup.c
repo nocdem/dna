@@ -885,6 +885,62 @@ uint64_t message_backup_get_next_seq(message_backup_context_t *ctx, const char *
 }
 
 /**
+ * Mark all outgoing messages as DELIVERED up to a sequence number
+ *
+ * Note: The current messages table doesn't store seq_num per message.
+ * This implementation marks ALL outgoing SENT messages to the recipient
+ * as DELIVERED. A future enhancement would add seq_num tracking per message.
+ *
+ * Message status values: 0=PENDING, 1=SENT, 2=FAILED, 3=DELIVERED, 4=READ
+ */
+int message_backup_mark_delivered_up_to_seq(
+    message_backup_context_t *ctx,
+    const char *sender,
+    const char *recipient,
+    uint64_t max_seq_num
+) {
+    if (!ctx || !ctx->db || !sender || !recipient) {
+        return -1;
+    }
+
+    (void)max_seq_num;  // Not used yet - future: add seq_num column to messages
+
+    // Update all outgoing messages to recipient with status = SENT(1) to DELIVERED(3)
+    // is_outgoing = 1 means we sent it, sender = our fingerprint
+    const char *sql =
+        "UPDATE messages SET status = 3 "
+        "WHERE sender = ? AND recipient = ? AND is_outgoing = 1 AND status = 1";
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(ctx->db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to prepare mark_delivered query: %s\n",
+               sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    sqlite3_bind_text(stmt, 1, sender, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, recipient, -1, SQLITE_TRANSIENT);
+
+    rc = sqlite3_step(stmt);
+    int changes = sqlite3_changes(ctx->db);
+    sqlite3_finalize(stmt);
+
+    if (rc != SQLITE_DONE) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to mark messages delivered: %s\n",
+               sqlite3_errmsg(ctx->db));
+        return -1;
+    }
+
+    if (changes > 0) {
+        QGP_LOG_INFO(LOG_TAG, "Marked %d messages as DELIVERED to %.20s...\n",
+               changes, recipient);
+    }
+
+    return changes;
+}
+
+/**
  * Close backup context
  */
 void message_backup_close(message_backup_context_t *ctx) {

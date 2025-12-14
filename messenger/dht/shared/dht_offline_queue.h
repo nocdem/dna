@@ -315,6 +315,74 @@ int dht_get_watermark(
  * to get the next sequence number before calling dht_queue_message().
  */
 
+/**
+ * ============================================================================
+ * Watermark Listener API (Delivery Confirmation)
+ * ============================================================================
+ *
+ * Listen for watermark updates from recipients. When a recipient retrieves
+ * messages, they publish a watermark. Senders can listen for these updates
+ * to confirm delivery and update message status to DELIVERED.
+ *
+ * Flow:
+ * 1. Sender calls dht_listen_watermark() after sending offline message
+ * 2. Recipient retrieves messages, publishes watermark asynchronously
+ * 3. Sender's callback is invoked with new seq_num
+ * 4. Sender updates message status to DELIVERED for all seq <= watermark
+ */
+
+/**
+ * Watermark update callback
+ *
+ * @param sender My fingerprint (I sent messages to recipient)
+ * @param recipient Contact fingerprint (they received my messages)
+ * @param seq_num Latest seq_num recipient has received from me
+ * @param user_data User-provided context pointer
+ */
+typedef void (*dht_watermark_callback_t)(
+    const char *sender,
+    const char *recipient,
+    uint64_t seq_num,
+    void *user_data
+);
+
+/**
+ * Listen for watermark updates from a recipient
+ *
+ * Subscribes to real-time notifications when recipient publishes watermark
+ * updates. Callback fires when recipient acknowledges receiving messages.
+ *
+ * Key: SHA3-512(recipient + ":watermark:" + sender)
+ *
+ * @param ctx DHT context
+ * @param sender My fingerprint (I'm the sender)
+ * @param recipient Contact fingerprint (they're the recipient)
+ * @param callback Function to invoke when watermark updates
+ * @param user_data Context pointer passed to callback
+ *
+ * @return Listen token (> 0 on success, 0 on failure)
+ */
+size_t dht_listen_watermark(
+    dht_context_t *ctx,
+    const char *sender,
+    const char *recipient,
+    dht_watermark_callback_t callback,
+    void *user_data
+);
+
+/**
+ * Cancel watermark listener
+ *
+ * Stops receiving notifications for the watermark subscription.
+ *
+ * @param ctx DHT context
+ * @param token Listen token returned by dht_listen_watermark()
+ */
+void dht_cancel_watermark_listener(
+    dht_context_t *ctx,
+    size_t token
+);
+
 #ifdef __cplusplus
 }
 #endif

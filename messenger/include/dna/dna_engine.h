@@ -552,6 +552,11 @@ typedef struct {
             char contact_fingerprint[129];  /* Contact whose outbox was updated */
         } outbox_updated;
         struct {
+            char recipient[129];            /* Recipient fingerprint */
+            uint64_t seq_num;               /* Watermark value (messages up to this are delivered) */
+            uint64_t timestamp;             /* When delivery was confirmed */
+        } message_delivered;
+        struct {
             int code;
             char message[256];
         } error;
@@ -1653,6 +1658,51 @@ int dna_engine_listen_all_contacts(
  * @param engine    Engine instance
  */
 void dna_engine_cancel_all_outbox_listeners(
+    dna_engine_t *engine
+);
+
+/* ============================================================================
+ * 7.6 DELIVERY TRACKERS (Message delivery confirmation)
+ * ============================================================================ */
+
+/**
+ * Start tracking delivery status for a recipient
+ *
+ * Listens for watermark updates from the recipient. When they retrieve
+ * messages and publish their watermark, this fires DNA_EVENT_MESSAGE_DELIVERED
+ * and updates message status in the local database.
+ *
+ * Call this after sending an offline message to start tracking delivery.
+ * Duplicate calls for the same recipient are ignored (idempotent).
+ *
+ * @param engine               Engine instance
+ * @param recipient_fingerprint Recipient's fingerprint (128 hex chars)
+ * @return                     0 on success, negative on error
+ */
+int dna_engine_track_delivery(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint
+);
+
+/**
+ * Stop tracking delivery for a recipient
+ *
+ * Cancels the watermark listener for the specified recipient.
+ *
+ * @param engine               Engine instance
+ * @param recipient_fingerprint Recipient's fingerprint
+ */
+void dna_engine_untrack_delivery(
+    dna_engine_t *engine,
+    const char *recipient_fingerprint
+);
+
+/**
+ * Cancel all active delivery trackers
+ *
+ * @param engine    Engine instance
+ */
+void dna_engine_cancel_all_delivery_trackers(
     dna_engine_t *engine
 );
 

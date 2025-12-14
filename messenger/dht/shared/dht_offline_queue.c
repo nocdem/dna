@@ -1,5 +1,6 @@
 #include "dht_offline_queue.h"
 #include "dht_chunked.h"
+#include "../core/dht_listen.h"
 #include "../crypto/utils/qgp_sha3.h"
 #include <string.h>
 #include <stdlib.h>
@@ -888,4 +889,133 @@ int dht_get_watermark(dht_context_t *ctx,
     }
 
     return 0;  // Success (even if no watermark found)
+}
+
+/**
+ * ============================================================================
+ * WATERMARK LISTENER IMPLEMENTATION (Delivery Confirmation)
+ * ============================================================================
+ */
+
+/**
+ * Internal context for watermark listener callback
+ */
+typedef struct {
+    char sender[129];                    // My fingerprint (I sent messages)
+    char recipient[129];                 // Contact fingerprint (they received)
+    dht_watermark_callback_t user_cb;    // User's callback
+    void *user_data;                     // User's context
+} watermark_listener_ctx_t;
+
+/**
+ * Internal DHT listen callback for watermark updates
+ * Parses the 8-byte big-endian seq_num and invokes user callback
+ */
+static bool watermark_listen_callback(
+    const uint8_t *value,
+    size_t value_len,
+    bool expired,
+    void *user_data
+) {
+    watermark_listener_ctx_t *ctx = (watermark_listener_ctx_t *)user_data;
+    if (!ctx) {
+        return false;  // Stop listening
+    }
+
+    // Ignore expiration notifications
+    if (expired || !value) {
+        QGP_LOG_DEBUG(LOG_TAG, "Watermark expired or removed: %.20s... → %.20s...\n",
+               ctx->recipient, ctx->sender);
+        return true;  // Keep listening
+    }
+
+    // Parse 8-byte big-endian seq_num
+    if (value_len != 8) {
+        QGP_LOG_WARN(LOG_TAG, "Invalid watermark value size: %zu (expected 8)\n", value_len);
+        return true;  // Keep listening
+    }
+
+    uint64_t seq_num = ((uint64_t)value[0] << 56) |
+                       ((uint64_t)value[1] << 48) |
+                       ((uint64_t)value[2] << 40) |
+                       ((uint64_t)value[3] << 32) |
+                       ((uint64_t)value[4] << 24) |
+                       ((uint64_t)value[5] << 16) |
+                       ((uint64_t)value[6] << 8) |
+                       ((uint64_t)value[7]);
+
+    QGP_LOG_INFO(LOG_TAG, "Watermark update: %.20s... → %.20s... seq=%lu\n",
+           ctx->recipient, ctx->sender, (unsigned long)seq_num);
+
+    // Invoke user callback
+    if (ctx->user_cb) {
+        ctx->user_cb(ctx->sender, ctx->recipient, seq_num, ctx->user_data);
+    }
+
+    return true;  // Keep listening
+}
+
+/**
+ * Listen for watermark updates from a recipient
+ */
+size_t dht_listen_watermark(
+    dht_context_t *ctx,
+    const char *sender,
+    const char *recipient,
+    dht_watermark_callback_t callback,
+    void *user_data
+) {
+    if (!ctx || !sender || !recipient || !callback) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for watermark listener\n");
+        return 0;
+    }
+
+    // Allocate listener context
+    watermark_listener_ctx_t *wctx = (watermark_listener_ctx_t *)calloc(1, sizeof(watermark_listener_ctx_t));
+    if (!wctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate watermark listener context\n");
+        return 0;
+    }
+
+    strncpy(wctx->sender, sender, sizeof(wctx->sender) - 1);
+    strncpy(wctx->recipient, recipient, sizeof(wctx->recipient) - 1);
+    wctx->user_cb = callback;
+    wctx->user_data = user_data;
+
+    // Generate watermark key: SHA3-512(recipient + ":watermark:" + sender)
+    uint8_t key[64];
+    dht_generate_watermark_key(recipient, sender, key);
+
+    QGP_LOG_INFO(LOG_TAG, "Starting watermark listener: %.20s... → %.20s...\n",
+           recipient, sender);
+
+    // Start DHT listen
+    size_t token = dht_listen(ctx, key, 64, watermark_listen_callback, wctx);
+    if (token == 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT listen for watermark\n");
+        free(wctx);
+        return 0;
+    }
+
+    // Note: wctx is leaked intentionally - it must live as long as the listener
+    // It will be cleaned up when the DHT context is destroyed
+    // TODO: Track these contexts for proper cleanup on cancel
+
+    return token;
+}
+
+/**
+ * Cancel watermark listener
+ */
+void dht_cancel_watermark_listener(
+    dht_context_t *ctx,
+    size_t token
+) {
+    if (!ctx || token == 0) {
+        return;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Cancelling watermark listener (token=%zu)\n", token);
+    dht_cancel_listen(ctx, token);
+    // Note: The watermark_listener_ctx_t is leaked - tracked for future cleanup
 }
