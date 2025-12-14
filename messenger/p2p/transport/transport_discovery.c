@@ -250,8 +250,11 @@ int p2p_send_message(
     peer_info_t peer_info;
     int tier1_lookup_success = (p2p_lookup_peer(ctx, peer_pubkey, &peer_info) == 0);
 
+    QGP_LOG_WARN(LOG_TAG, "[TIER 1] lookup_success=%d, is_online=%d\n",
+           tier1_lookup_success, tier1_lookup_success ? peer_info.is_online : -1);
+
     if (tier1_lookup_success && peer_info.is_online) {
-        QGP_LOG_INFO(LOG_TAG, "[TIER 1] Peer found with IPs: %s (port %d)\n",
+        QGP_LOG_WARN(LOG_TAG, "[TIER 1] Peer found with IPs: %s (port %d)\n",
                peer_info.ip, peer_info.port);
 
         // Step 2: Try ALL peer IPs (comma-separated) until one works

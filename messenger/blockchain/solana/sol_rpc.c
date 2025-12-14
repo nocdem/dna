@@ -10,6 +10,7 @@
 #include "sol_wallet.h"
 #include "../../crypto/utils/base58.h"
 #include "../../crypto/utils/qgp_log.h"
+#include "../../crypto/utils/qgp_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,6 +83,12 @@ static int sol_rpc_call(
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    /* Configure SSL CA bundle (required for Android) */
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
 
     CURLcode res = curl_easy_perform(curl);
 

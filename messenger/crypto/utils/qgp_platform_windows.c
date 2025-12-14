@@ -205,4 +205,15 @@ char* qgp_platform_join_path(const char *dir, const char *file) {
     return result;
 }
 
+/* ============================================================================
+ * SSL/TLS Certificate Bundle (Windows Implementation)
+ * On Windows, curl uses the Windows certificate store via Schannel
+ * ============================================================================ */
+
+const char* qgp_platform_ca_bundle_path(void) {
+    /* On Windows, curl can use the Windows certificate store when built
+     * with Schannel SSL backend. Return NULL to use system defaults. */
+    return NULL;
+}
+
 #endif /* _WIN32 */

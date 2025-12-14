@@ -214,6 +214,25 @@ typedef void (*qgp_network_callback_t)(qgp_network_state_t new_state, void *user
 void qgp_platform_set_network_callback(qgp_network_callback_t callback, void *user_data);
 
 /* ============================================================================
+ * SSL/TLS Certificate Bundle
+ * ============================================================================ */
+
+/**
+ * Get the path to CA certificate bundle for SSL/TLS
+ *
+ * Desktop (Linux): Returns NULL (use system certs via /etc/ssl/certs)
+ * Desktop (Windows): Returns NULL (use Windows certificate store)
+ * Mobile (Android): Returns path to bundled cacert.pem in app data directory
+ * Mobile (iOS): Returns NULL (use system certs)
+ *
+ * When this returns non-NULL, the path should be passed to CURLOPT_CAINFO.
+ * When this returns NULL, curl will use the system's default certificate store.
+ *
+ * @return Path to CA bundle file, or NULL to use system defaults
+ */
+const char* qgp_platform_ca_bundle_path(void);
+
+/* ============================================================================
  * Platform Detection Macros
  * ============================================================================ */
 

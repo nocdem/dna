@@ -9,6 +9,7 @@
 #include "trx_rpc.h"
 #include "trx_wallet.h"
 #include "../../crypto/utils/qgp_log.h"
+#include "../../crypto/utils/qgp_platform.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -129,6 +130,12 @@ int trx_rpc_get_balance_sun(
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
+
+    /* Configure SSL CA bundle (required for Android) */
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
 
     /* Perform request */
     CURLcode res = curl_easy_perform(curl);
@@ -270,6 +277,12 @@ int trx_rpc_get_transactions(
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, 10L);
     curl_easy_setopt(curl, CURLOPT_USERAGENT, "DNA-Messenger/1.0");
+
+    /* Configure SSL CA bundle (required for Android) */
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
 
     /* Perform request */
     CURLcode res = curl_easy_perform(curl);

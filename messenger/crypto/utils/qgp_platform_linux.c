@@ -354,3 +354,18 @@ void qgp_secure_memzero(void *ptr, size_t len) {
     }
 #endif
 }
+
+/* ============================================================================
+ * SSL/TLS Certificate Bundle (Linux Implementation)
+ * On Linux, curl uses the system certificate store automatically
+ * ============================================================================ */
+
+const char* qgp_platform_ca_bundle_path(void) {
+    /* On Linux, curl automatically uses system certificates from:
+     * - /etc/ssl/certs/ca-certificates.crt (Debian/Ubuntu)
+     * - /etc/pki/tls/certs/ca-bundle.crt (RHEL/CentOS)
+     * - /etc/ssl/ca-bundle.pem (OpenSUSE)
+     *
+     * Return NULL to let curl use system defaults */
+    return NULL;
+}

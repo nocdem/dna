@@ -15,6 +15,7 @@
 #include "nodus_config.h"
 #include "turn_server.h"
 #include "turn_credential_manager.h"
+#include "turn_credential_udp.h"
 
 #include "../../dht/core/dht_context.h"
 #include "../../dht/shared/dht_value_storage.h"
@@ -38,6 +39,9 @@ static TurnCredentialManager *global_cred_mgr = nullptr;
 void signal_handler(int sig) {
     (void)sig;
     std::cout << "\nShutting down..." << std::endl;
+
+    // Stop credential UDP server first
+    cred_udp_server_stop();
 
     if (global_cred_mgr) {
         delete global_cred_mgr;
@@ -237,6 +241,24 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Start credential UDP server (direct credential requests, bypasses DHT)
+    if (global_turn) {
+        std::cout << std::endl << "[CRED-UDP] Starting credential UDP server..." << std::endl;
+
+        // Set TURN server reference for credential issuance
+        cred_udp_set_turn_server(global_turn);
+
+        cred_udp_server_config_t cred_udp_config;
+        cred_udp_config.port = cfg.credential_port > 0 ? cfg.credential_port : 3479;
+        cred_udp_config.turn_host = public_ip.c_str();
+        cred_udp_config.turn_port = cfg.turn_port;
+        cred_udp_config.credential_ttl = cfg.credential_ttl_seconds;
+
+        if (cred_udp_server_start(&cred_udp_config) != 0) {
+            std::cerr << "[CRED-UDP] WARNING: Failed to start credential UDP server" << std::endl;
+        }
+    }
+
     // Register in bootstrap registry
     if (dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), cfg.dht_port,
                                          node_id, "v0.3", 0) == 0) {
@@ -247,6 +269,7 @@ int main(int argc, char** argv) {
     std::cout << "=== DNA Nodus v0.3 Running ===" << std::endl;
     std::cout << "DHT:   " << public_ip << ":" << cfg.dht_port << std::endl;
     std::cout << "TURN:  " << public_ip << ":" << cfg.turn_port << std::endl;
+    std::cout << "CRED:  " << public_ip << ":" << (cfg.credential_port > 0 ? cfg.credential_port : 3479) << std::endl;
     std::cout << "===============================" << std::endl;
     std::cout << std::endl;
 

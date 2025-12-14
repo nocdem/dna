@@ -17,6 +17,7 @@ void NodusConfig::apply_defaults() {
     persistence_path = NODUS_DEFAULT_PERSISTENCE_PATH;
 
     turn_port = NODUS_DEFAULT_TURN_PORT;
+    credential_port = NODUS_DEFAULT_CREDENTIAL_PORT;
     relay_port_begin = NODUS_DEFAULT_RELAY_PORT_BEGIN;
     relay_port_end = NODUS_DEFAULT_RELAY_PORT_END;
     credential_ttl_seconds = NODUS_DEFAULT_CREDENTIAL_TTL;
@@ -71,6 +72,35 @@ bool NodusConfig::load(const std::string& path) {
             if (turn.contains("credential_ttl_seconds")) {
                 credential_ttl_seconds = turn["credential_ttl_seconds"].get<uint32_t>();
             }
+        }
+
+        // Flat config keys (actual format used in /etc/dna-nodus.conf)
+        if (config.contains("dht_port")) {
+            dht_port = config["dht_port"].get<uint16_t>();
+        }
+        if (config.contains("seed_nodes")) {
+            seed_nodes.clear();
+            for (const auto& node : config["seed_nodes"]) {
+                seed_nodes.push_back(node.get<std::string>());
+            }
+        }
+        if (config.contains("persistence_path")) {
+            persistence_path = config["persistence_path"].get<std::string>();
+        }
+        if (config.contains("turn_port")) {
+            turn_port = config["turn_port"].get<uint16_t>();
+        }
+        if (config.contains("credential_port")) {
+            credential_port = config["credential_port"].get<uint16_t>();
+        }
+        if (config.contains("relay_port_begin")) {
+            relay_port_begin = config["relay_port_begin"].get<uint16_t>();
+        }
+        if (config.contains("relay_port_end")) {
+            relay_port_end = config["relay_port_end"].get<uint16_t>();
+        }
+        if (config.contains("credential_ttl_seconds")) {
+            credential_ttl_seconds = config["credential_ttl_seconds"].get<uint32_t>();
         }
 
         // General settings

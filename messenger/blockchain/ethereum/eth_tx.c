@@ -11,6 +11,7 @@
 #include "eth_wallet.h"
 #include "../../crypto/utils/keccak256.h"
 #include "../../crypto/utils/qgp_log.h"
+#include "../../crypto/utils/qgp_platform.h"
 #include <secp256k1.h>
 #include <secp256k1_recovery.h>
 #include <stdio.h>
@@ -80,6 +81,12 @@ static int eth_rpc_call(const char *method, json_object *params, json_object **r
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
+
+    /* Configure SSL CA bundle (required for Android) */
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
 
     CURLcode res = curl_easy_perform(curl);
 

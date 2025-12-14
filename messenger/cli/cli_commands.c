@@ -1180,7 +1180,7 @@ int cmd_approve(dna_engine_t *engine, const char *fingerprint) {
  * MESSAGING COMMANDS
  * ============================================================================ */
 
-int cmd_messages(dna_engine_t *engine, const char *fingerprint) {
+int cmd_messages(dna_engine_t *engine, const char *identifier) {
     if (!engine) {
         printf("Error: Engine not initialized\n");
         return -1;
@@ -1192,15 +1192,40 @@ int cmd_messages(dna_engine_t *engine, const char *fingerprint) {
         return -1;
     }
 
-    if (!fingerprint || strlen(fingerprint) == 0) {
-        printf("Error: Contact fingerprint required\n");
+    if (!identifier || strlen(identifier) == 0) {
+        printf("Error: Contact name or fingerprint required\n");
         return -1;
+    }
+
+    /* Resolve name to fingerprint if needed */
+    char resolved_fp[129] = {0};
+    size_t id_len = strlen(identifier);
+
+    if (id_len == 128) {
+        /* Already a fingerprint */
+        strncpy(resolved_fp, identifier, 128);
+    } else {
+        /* Assume it's a name - resolve via DHT lookup */
+        cli_wait_t lookup_wait;
+        cli_wait_init(&lookup_wait);
+
+        dna_engine_lookup_name(engine, identifier, on_display_name, &lookup_wait);
+        int lookup_result = cli_wait_for(&lookup_wait);
+
+        if (lookup_result != 0 || strlen(lookup_wait.display_name) == 0) {
+            printf("Error: Name '%s' not found in DHT\n", identifier);
+            cli_wait_destroy(&lookup_wait);
+            return -1;
+        }
+
+        strncpy(resolved_fp, lookup_wait.display_name, 128);
+        cli_wait_destroy(&lookup_wait);
     }
 
     cli_wait_t wait;
     cli_wait_init(&wait);
 
-    dna_engine_get_conversation(engine, fingerprint, on_messages_listed, &wait);
+    dna_engine_get_conversation(engine, resolved_fp, on_messages_listed, &wait);
     int result = cli_wait_for(&wait);
 
     if (result != 0) {
@@ -1212,7 +1237,7 @@ int cmd_messages(dna_engine_t *engine, const char *fingerprint) {
     if (wait.message_count == 0) {
         printf("No messages with this contact.\n");
     } else {
-        printf("\nConversation with %.16s... (%d messages):\n\n", fingerprint, wait.message_count);
+        printf("\nConversation with %.16s... (%d messages):\n\n", resolved_fp, wait.message_count);
         for (int i = 0; i < wait.message_count; i++) {
             time_t ts = (time_t)wait.messages[i].timestamp;
             char time_str[32];
