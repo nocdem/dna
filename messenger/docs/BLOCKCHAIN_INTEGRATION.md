@@ -14,12 +14,72 @@ blockchain/
 │   ├── eth_chain.c           # blockchain_ops_t implementation
 │   ├── eth_tx.c              # Transaction building/signing
 │   ├── eth_rpc.c             # JSON-RPC client
+│   ├── eth_erc20.c           # ERC-20 token support (USDT, USDC)
 │   └── eth_wallet.h          # Wallet utilities
+├── tron/
+│   ├── trx_chain.c           # blockchain_ops_t implementation
+│   ├── trx_tx.c              # Transaction building/signing
+│   ├── trx_rpc.c             # TronGrid API client
+│   ├── trx_trc20.c           # TRC-20 token support (USDT, USDC)
+│   ├── trx_base58.c          # Base58Check encoding
+│   └── trx_wallet.h          # Wallet utilities
+├── solana/
+│   ├── sol_chain.c           # blockchain_ops_t implementation
+│   ├── sol_tx.c              # Transaction building/signing
+│   ├── sol_rpc.c             # JSON-RPC client
+│   └── sol_wallet.c          # Wallet utilities (Ed25519)
 └── cellframe/
     ├── cell_chain.c          # blockchain_ops_t implementation
     ├── cellframe_tx_builder.c
     ├── cellframe_rpc.c
     └── cellframe_wallet.c
+```
+
+## Supported Tokens
+
+### Ethereum (ERC-20)
+
+| Token | Contract Address | Decimals |
+|-------|-----------------|----------|
+| USDT | `0xdAC17F958D2ee523a2206206994597C13D831ec7` | 6 |
+| USDC | `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` | 6 |
+
+### TRON (TRC-20)
+
+| Token | Contract Address | Decimals |
+|-------|-----------------|----------|
+| USDT | `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t` | 6 |
+| USDC | `TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8` | 6 |
+| USDD | `TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn` | 18 |
+
+### Using Token Support
+
+```c
+#include "blockchain/blockchain.h"
+
+// Get ETH chain
+const blockchain_ops_t *eth = blockchain_get("ethereum");
+
+// Get native ETH balance
+char balance[64];
+eth->get_balance("0x...", NULL, balance, sizeof(balance));
+
+// Get USDT balance (pass token symbol)
+eth->get_balance("0x...", "USDT", balance, sizeof(balance));
+
+// Send USDT
+eth->send(from, to, "100.0", "USDT", privkey, 32,
+          BLOCKCHAIN_FEE_NORMAL, txhash, sizeof(txhash));
+
+// Get TRON chain
+const blockchain_ops_t *trx = blockchain_get("tron");
+
+// Get TRC-20 USDT balance
+trx->get_balance("T...", "USDT", balance, sizeof(balance));
+
+// Send TRC-20 USDT
+trx->send(from, to, "100.0", "USDT", privkey, 32,
+          BLOCKCHAIN_FEE_NORMAL, txhash, sizeof(txhash));
 ```
 
 ## Adding a New Blockchain

@@ -156,9 +156,13 @@ add_library(dna_lib ${DNA_LIB_TYPE}
     blockchain/solana/sol_wallet.c                 # Solana wallet (SLIP-10 Ed25519)
     blockchain/solana/sol_rpc.c                    # Solana JSON-RPC client
     blockchain/solana/sol_tx.c                     # Solana transaction building/signing
+    blockchain/ethereum/eth_erc20.c                # ERC-20 token support (USDT, USDC)
     blockchain/tron/trx_base58.c                   # TRON Base58Check encoding
     blockchain/tron/trx_wallet_create.c            # TRON wallet creation (BIP-44)
     blockchain/tron/trx_rpc.c                      # TRON JSON-RPC client (TronGrid)
+    blockchain/tron/trx_chain.c                    # TRON blockchain_ops implementation
+    blockchain/tron/trx_tx.c                       # TRON transaction building/signing
+    blockchain/tron/trx_trc20.c                    # TRC-20 token support (USDT, USDC)
     crypto/bip32/bip32.c                           # BIP-32 HD key derivation
     crypto/utils/keccak256.c                       # Keccak-256 (Ethereum hash)
     crypto/utils/base58.c       # Base58 encoding for addresses

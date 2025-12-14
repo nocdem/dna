@@ -6,6 +6,7 @@
 #include "../blockchain.h"
 #include "eth_tx.h"
 #include "eth_wallet.h"
+#include "eth_erc20.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,13 +38,18 @@ static int eth_chain_get_balance(
         return -1;
     }
 
-    /* Only native ETH supported for now */
-    if (token != NULL && strlen(token) > 0 && strcasecmp(token, "ETH") != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "ERC-20 tokens not yet supported");
-        return -1;
+    /* Native ETH */
+    if (token == NULL || strlen(token) == 0 || strcasecmp(token, "ETH") == 0) {
+        return eth_rpc_get_balance(address, balance_out, balance_out_size);
     }
 
-    return eth_rpc_get_balance(address, balance_out, balance_out_size);
+    /* ERC-20 token */
+    if (eth_erc20_is_supported(token)) {
+        return eth_erc20_get_balance_by_symbol(address, token, balance_out, balance_out_size);
+    }
+
+    QGP_LOG_ERROR(LOG_TAG, "Unsupported token: %s", token);
+    return -1;
 }
 
 static int eth_chain_estimate_fee(
@@ -109,14 +115,35 @@ static int eth_chain_send(
     }
 
     char tx_hash[67];
-    int ret = eth_send_eth_with_gas(
-        private_key,
-        from_address,
-        to_address,
-        amount,
-        gas_speed,
-        tx_hash
-    );
+    int ret;
+
+    /* Check if ERC-20 token or native ETH */
+    if (token != NULL && strlen(token) > 0 && strcasecmp(token, "ETH") != 0) {
+        /* ERC-20 token transfer */
+        if (!eth_erc20_is_supported(token)) {
+            QGP_LOG_ERROR(LOG_TAG, "Unsupported token: %s", token);
+            return -1;
+        }
+        ret = eth_erc20_send_by_symbol(
+            private_key,
+            from_address,
+            to_address,
+            amount,
+            token,
+            gas_speed,
+            tx_hash
+        );
+    } else {
+        /* Native ETH transfer */
+        ret = eth_send_eth_with_gas(
+            private_key,
+            from_address,
+            to_address,
+            amount,
+            gas_speed,
+            tx_hash
+        );
+    }
 
     if (ret == 0 && txhash_out && txhash_out_size > 0) {
         strncpy(txhash_out, tx_hash, txhash_out_size - 1);
@@ -142,10 +169,12 @@ static int eth_chain_send_from_wallet(
         return -1;
     }
 
-    /* Only native ETH supported for now */
+    /* Validate ERC-20 token if specified */
     if (token != NULL && strlen(token) > 0 && strcasecmp(token, "ETH") != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "ERC-20 tokens not yet supported");
-        return -1;
+        if (!eth_erc20_is_supported(token)) {
+            QGP_LOG_ERROR(LOG_TAG, "Unsupported token: %s", token);
+            return -1;
+        }
     }
 
     /* Load wallet */
@@ -170,14 +199,31 @@ static int eth_chain_send_from_wallet(
     }
 
     char tx_hash[67];
-    int ret = eth_send_eth_with_gas(
-        wallet.private_key,
-        wallet.address_hex,
-        to_address,
-        amount,
-        gas_speed,
-        tx_hash
-    );
+    int ret;
+
+    /* Check if ERC-20 token or native ETH */
+    if (token != NULL && strlen(token) > 0 && strcasecmp(token, "ETH") != 0) {
+        /* ERC-20 token transfer */
+        ret = eth_erc20_send_by_symbol(
+            wallet.private_key,
+            wallet.address_hex,
+            to_address,
+            amount,
+            token,
+            gas_speed,
+            tx_hash
+        );
+    } else {
+        /* Native ETH transfer */
+        ret = eth_send_eth_with_gas(
+            wallet.private_key,
+            wallet.address_hex,
+            to_address,
+            amount,
+            gas_speed,
+            tx_hash
+        );
+    }
 
     /* Clear sensitive data */
     eth_wallet_clear(&wallet);

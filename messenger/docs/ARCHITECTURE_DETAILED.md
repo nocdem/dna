@@ -1067,7 +1067,10 @@ typedef enum {
 **Files:**
 - `eth_wallet.h` - Ethereum wallet interface
 - `eth_wallet_create.c` - Wallet creation (BIP-44 derivation)
+- `eth_chain.c` - blockchain_ops_t implementation
+- `eth_tx.c` - Transaction building/signing (EIP-155)
 - `eth_rpc.c` - Ethereum JSON-RPC client
+- `eth_erc20.c` - ERC-20 token support (USDT, USDC)
 
 **Key Features:**
 - BIP-32/BIP-44 HD key derivation
@@ -1075,6 +1078,11 @@ typedef enum {
 - Keccak-256 address derivation (Ethereum variant, NOT SHA3-256)
 - EIP-55 checksummed addresses
 - JSON-RPC balance queries via public endpoint
+- ERC-20 token transfers (USDT, USDC)
+
+**Supported Tokens (ERC-20):**
+- USDT: `0xdAC17F958D2ee523a2206206994597C13D831ec7` (6 decimals)
+- USDC: `0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48` (6 decimals)
 
 **RPC Endpoint:** `https://eth.llamarpc.com` (configurable)
 
@@ -1085,8 +1093,11 @@ typedef enum {
 **Files:**
 - `trx_wallet.h` - TRON wallet interface
 - `trx_wallet_create.c` - Wallet creation (BIP-44 derivation)
+- `trx_chain.c` - blockchain_ops_t implementation
+- `trx_tx.c` - Transaction building/signing via TronGrid
 - `trx_base58.c` - Base58Check encoding for addresses
-- `trx_rpc.c` - TronGrid JSON-RPC client
+- `trx_rpc.c` - TronGrid API client
+- `trx_trc20.c` - TRC-20 token support (USDT, USDC, USDD)
 
 **Key Features:**
 - BIP-44 derivation path `m/44'/195'/0'/0/0` (SLIP-44 coin type 195)
@@ -1095,6 +1106,12 @@ typedef enum {
 - Address prefix: `0x41` + hash[-20:]
 - Base58Check encoding for addresses (start with 'T')
 - 34-character address format
+- TRC-20 token transfers (USDT, USDC, USDD)
+
+**Supported Tokens (TRC-20):**
+- USDT: `TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t` (6 decimals)
+- USDC: `TEkxiTehnzSmSe2XqrBj4w32RUN966rdz8` (6 decimals)
+- USDD: `TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn` (18 decimals)
 
 **Address Derivation:**
 ```
