@@ -11,12 +11,27 @@
 #include "sol_rpc.h"
 #include "sol_tx.h"
 #include <string.h>
+#include <strings.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdbool.h>
 #include <math.h>
 
 #define LOG_TAG "SOL_CHAIN"
 #include "../../crypto/utils/qgp_log.h"
+
+/* ============================================================================
+ * HELPER FUNCTIONS
+ * ============================================================================ */
+
+/* Check if token is native SOL (NULL, empty, or "SOL") */
+static inline bool is_native_sol(const char *token) {
+    if (token == NULL || token[0] == '\0') {
+        return true;
+    }
+    /* Case-insensitive comparison for "SOL" */
+    return (strcasecmp(token, "SOL") == 0);
+}
 
 /* ============================================================================
  * INTERFACE IMPLEMENTATIONS
@@ -42,8 +57,8 @@ static int sol_chain_get_balance(
     }
 
     /* Only native SOL supported */
-    if (token != NULL && strlen(token) > 0) {
-        QGP_LOG_ERROR(LOG_TAG, "SPL tokens not yet supported");
+    if (!is_native_sol(token)) {
+        QGP_LOG_ERROR(LOG_TAG, "SPL tokens not yet supported: %s", token);
         return -1;
     }
 
@@ -103,8 +118,8 @@ static int sol_chain_send(
     }
 
     /* Only native SOL supported */
-    if (token != NULL && strlen(token) > 0) {
-        QGP_LOG_ERROR(LOG_TAG, "SPL tokens not yet supported");
+    if (!is_native_sol(token)) {
+        QGP_LOG_ERROR(LOG_TAG, "SPL tokens not yet supported: %s", token);
         return -1;
     }
 
@@ -154,8 +169,8 @@ static int sol_chain_send_from_wallet(
     }
 
     /* Only native SOL supported */
-    if (token != NULL && strlen(token) > 0) {
-        QGP_LOG_ERROR(LOG_TAG, "SPL tokens not yet supported");
+    if (!is_native_sol(token)) {
+        QGP_LOG_ERROR(LOG_TAG, "SPL tokens not yet supported: %s", token);
         return -1;
     }
 
