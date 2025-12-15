@@ -27,6 +27,9 @@ static char* win_strndup(const char* s, size_t n) {
 }
 #define strndup win_strndup
 
+/* Windows doesn't have strcasecmp */
+#define strcasecmp _stricmp
+
 /* Windows doesn't have strptime - simple parser for YYYY-MM-DD HH:MM:SS */
 static char* win_strptime(const char* s, const char* format, struct tm* tm) {
     (void)format; /* We only support one format */
@@ -46,6 +49,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #define strptime win_strptime
 
 #else
+#include <strings.h>  /* For strcasecmp */
 #define platform_mkdir(path, mode) mkdir(path, mode)
 #endif
 
@@ -2682,9 +2686,9 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     } else if (strcmp(network, "Solana") == 0) {
         bc_type = BLOCKCHAIN_SOLANA;
         chain_name = "Solana";
-    } else if (strcmp(network, "Tron") == 0) {
+    } else if (strcasecmp(network, "Tron") == 0) {
         bc_type = BLOCKCHAIN_TRON;
-        chain_name = "Tron";
+        chain_name = "TRON";
     } else {
         /* Default: Backbone = Cellframe */
         bc_type = BLOCKCHAIN_CELLFRAME;
