@@ -537,9 +537,8 @@ int cellframe_uint256_from_str(const char *value_str, uint256_t *value_out) {
     // Find decimal point
     char *point = strchr(buf, '.');
     if (!point) {
-        // SDK requires decimal point - treat integer as CELL amount
-        // Append ".0" to make "3000" -> "3000.0"
-        QGP_LOG_ERROR(LOG_TAG, "No decimal point in '%s', treating as CELL amount\n", value_str);
+        // SDK requires decimal point - append ".0" to make "2" -> "2.0"
+        QGP_LOG_DEBUG(LOG_TAG, "Integer input '%s', appending .0 for parsing", value_str);
         buf[len] = '.';
         buf[len + 1] = '0';
         len += 2;
