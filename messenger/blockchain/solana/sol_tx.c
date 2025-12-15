@@ -220,6 +220,28 @@ int sol_tx_send_lamports(
         return -1;
     }
 
+    /* Check rent-exemption requirements */
+    uint64_t recipient_balance = 0;
+    sol_rpc_get_balance(to_address, &recipient_balance); /* OK if fails (new account = 0) */
+
+    uint64_t rent_minimum = 0;
+    if (sol_rpc_get_minimum_balance_for_rent(0, &rent_minimum) != 0) {
+        /* Default to ~0.00089 SOL if RPC fails */
+        rent_minimum = 890880;
+    }
+
+    uint64_t final_balance = recipient_balance + lamports;
+    if (final_balance < rent_minimum && final_balance > 0) {
+        double need_sol = (double)rent_minimum / SOL_LAMPORTS_PER_SOL;
+        double have_sol = (double)final_balance / SOL_LAMPORTS_PER_SOL;
+        QGP_LOG_ERROR(LOG_TAG,
+            "Transfer would leave recipient below rent-exempt minimum. "
+            "Recipient needs at least %.6f SOL but would have %.6f SOL. "
+            "Send at least %.6f SOL to a new account.",
+            need_sol, have_sol, need_sol);
+        return -1;
+    }
+
     /* Get recent blockhash */
     uint8_t blockhash[32];
     if (sol_rpc_get_recent_blockhash(blockhash) != 0) {
