@@ -757,31 +757,34 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
 
   /// Get the appropriate wallet address from profile based on selected network
   String? _getWalletAddressForNetwork(UserProfile profile) {
-    switch (_selectedNetwork) {
-      case 'Ethereum':
-        return profile.eth.isNotEmpty ? profile.eth : null;
-      case 'Bitcoin':
-        return profile.btc.isNotEmpty ? profile.btc : null;
-      case 'Solana':
-        return profile.sol.isNotEmpty ? profile.sol : null;
-      case 'Backbone':
-      default:
-        return profile.backbone.isNotEmpty ? profile.backbone : null;
+    final network = _selectedNetwork.toLowerCase();
+    if (network == 'ethereum') {
+      return profile.eth.isNotEmpty ? profile.eth : null;
+    } else if (network == 'bitcoin') {
+      return profile.btc.isNotEmpty ? profile.btc : null;
+    } else if (network == 'solana') {
+      return profile.sol.isNotEmpty ? profile.sol : null;
+    } else if (network == 'tron') {
+      return profile.trx.isNotEmpty ? profile.trx : null;
+    } else {
+      // Backbone (default)
+      return profile.backbone.isNotEmpty ? profile.backbone : null;
     }
   }
 
   /// Get network-friendly name for error messages
   String _getNetworkWalletName() {
-    switch (_selectedNetwork) {
-      case 'Ethereum':
-        return 'ETH';
-      case 'Bitcoin':
-        return 'BTC';
-      case 'Solana':
-        return 'SOL';
-      case 'Backbone':
-      default:
-        return 'Backbone';
+    final network = _selectedNetwork.toLowerCase();
+    if (network == 'ethereum') {
+      return 'ETH';
+    } else if (network == 'bitcoin') {
+      return 'BTC';
+    } else if (network == 'solana') {
+      return 'SOL';
+    } else if (network == 'tron') {
+      return 'TRX';
+    } else {
+      return 'Backbone';
     }
   }
 
