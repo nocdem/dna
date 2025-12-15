@@ -68,6 +68,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "database/profile_manager.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/key_encryption.h"
 
 /* Blockchain/Wallet includes for send_tokens */
 #include "cellframe_wallet.h"
@@ -79,6 +80,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "blockchain/ethereum/eth_wallet.h"
 #include "blockchain/blockchain_wallet.h"
 #include "crypto/utils/seed_storage.h"
+#include "crypto/bip39/bip39.h"
 #include <time.h>
 
 #include <stdlib.h>
@@ -99,6 +101,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 /* Forward declarations for static helpers */
 static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine);
 static qgp_key_t* dna_load_private_key(dna_engine_t *engine);
+static qgp_key_t* dna_load_encryption_key(dna_engine_t *engine);
 static void init_log_config(void);
 
 /* Global engine pointer for DHT status callback and event dispatch from lower layers
@@ -150,6 +153,8 @@ const char* dna_engine_error_string(int error) {
     if (error == DNA_ENGINE_ERROR_NO_IDENTITY) return "No identity loaded";
     if (error == DNA_ENGINE_ERROR_ALREADY_EXISTS) return "Already exists";
     if (error == DNA_ENGINE_ERROR_PERMISSION) return "Permission denied";
+    if (error == DNA_ENGINE_ERROR_PASSWORD_REQUIRED) return "Password required for encrypted keys";
+    if (error == DNA_ENGINE_ERROR_WRONG_PASSWORD) return "Incorrect password";
     /* Fall back to base dna_api.h error strings */
     if (error == DNA_ERROR_INVALID_ARG) return "Invalid argument";
     if (error == DNA_ERROR_NOT_FOUND) return "Not found";
@@ -253,6 +258,22 @@ dna_request_id_t dna_submit_task(
 
 void dna_free_task_params(dna_task_t *task) {
     switch (task->type) {
+        case TASK_CREATE_IDENTITY:
+            if (task->params.create_identity.password) {
+                /* Secure clear password before freeing */
+                memset(task->params.create_identity.password, 0,
+                       strlen(task->params.create_identity.password));
+                free(task->params.create_identity.password);
+            }
+            break;
+        case TASK_LOAD_IDENTITY:
+            if (task->params.load_identity.password) {
+                /* Secure clear password before freeing */
+                memset(task->params.load_identity.password, 0,
+                       strlen(task->params.load_identity.password));
+                free(task->params.load_identity.password);
+            }
+            break;
         case TASK_SEND_MESSAGE:
             free(task->params.send_message.message);
             break;
@@ -687,6 +708,13 @@ void dna_engine_destroy(dna_engine_t *engine) {
     /* Cleanup global caches */
     keyserver_cache_cleanup();
 
+    /* Securely clear session password */
+    if (engine->session_password) {
+        memset(engine->session_password, 0, strlen(engine->session_password));
+        free(engine->session_password);
+        engine->session_password = NULL;
+    }
+
     /* Free data directory */
     free(engine->data_dir);
 
@@ -871,6 +899,7 @@ void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
         task->params.create_identity.master_seed,  /* master_seed - for ETH/SOL wallets */
         task->params.create_identity.mnemonic,     /* mnemonic - for Cellframe wallet */
         engine->data_dir,
+        task->params.create_identity.password,     /* password for key encryption */
         fingerprint_buf
     );
 
@@ -893,13 +922,57 @@ void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
 
 void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     const char *fingerprint = task->params.load_identity.fingerprint;
+    const char *password = task->params.load_identity.password;
     int error = DNA_OK;
+
+    /* Free existing session password if any */
+    if (engine->session_password) {
+        /* Secure clear before freeing */
+        memset(engine->session_password, 0, strlen(engine->session_password));
+        free(engine->session_password);
+        engine->session_password = NULL;
+    }
+    engine->keys_encrypted = false;
 
     /* Free existing messenger context if any */
     if (engine->messenger) {
         messenger_free(engine->messenger);
         engine->messenger = NULL;
         engine->identity_loaded = false;
+    }
+
+    /* Check if keys are encrypted and validate password */
+    {
+        char kem_path[512];
+        snprintf(kem_path, sizeof(kem_path), "%s/%s/keys/%s.kem",
+                 engine->data_dir, fingerprint, fingerprint);
+
+        bool is_encrypted = qgp_key_file_is_encrypted(kem_path);
+        engine->keys_encrypted = is_encrypted;
+
+        if (is_encrypted) {
+            if (!password) {
+                QGP_LOG_ERROR(LOG_TAG, "Identity keys are encrypted but no password provided");
+                error = DNA_ENGINE_ERROR_PASSWORD_REQUIRED;
+                goto done;
+            }
+
+            /* Verify password by attempting to load key */
+            qgp_key_t *test_key = NULL;
+            int load_rc = qgp_key_load_encrypted(kem_path, password, &test_key);
+            if (load_rc != 0 || !test_key) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to decrypt keys - incorrect password");
+                error = DNA_ENGINE_ERROR_WRONG_PASSWORD;
+                goto done;
+            }
+            qgp_key_free(test_key);
+
+            /* Store password for session (needed for sensitive operations) */
+            engine->session_password = strdup(password);
+            QGP_LOG_INFO(LOG_TAG, "Loaded password-protected identity");
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "Loaded unprotected identity");
+        }
     }
 
     /* Initialize messenger with fingerprint */
@@ -974,7 +1047,14 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                  engine->data_dir, fingerprint, fingerprint);
 
         qgp_key_t *kem_key = NULL;
-        if (qgp_key_load(kyber_path, &kem_key) == 0 && kem_key &&
+        int load_rc;
+        if (engine->keys_encrypted && engine->session_password) {
+            load_rc = qgp_key_load_encrypted(kyber_path, engine->session_password, &kem_key);
+        } else {
+            load_rc = qgp_key_load(kyber_path, &kem_key);
+        }
+
+        if (load_rc == 0 && kem_key &&
             kem_key->private_key && kem_key->private_key_size == 3168) {
 
             int wallets_created = 0;
@@ -1324,11 +1404,8 @@ populate_wallets:
             /* Load keys for signing */
             qgp_key_t *sign_key = dna_load_private_key(engine);
             if (sign_key) {
-                char enc_key_path[512];
-                snprintf(enc_key_path, sizeof(enc_key_path), "%s/%s/keys/%s.kem",
-                         engine->data_dir, engine->fingerprint, engine->fingerprint);
-                qgp_key_t *enc_key = NULL;
-                if (qgp_key_load(enc_key_path, &enc_key) == 0 && enc_key) {
+                qgp_key_t *enc_key = dna_load_encryption_key(engine);
+                if (enc_key) {
                     /* Build profile data */
                     dna_profile_data_t profile_data = {0};
                     strncpy(profile_data.wallets.backbone, profile->backbone, sizeof(profile_data.wallets.backbone) - 1);
@@ -1452,11 +1529,8 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Load encryption key for kyber pubkey */
-    char enc_key_path[512];
-    snprintf(enc_key_path, sizeof(enc_key_path), "%s/%s/keys/%s.kem",
-             engine->data_dir, engine->fingerprint, engine->fingerprint);
-    qgp_key_t *enc_key = NULL;
-    if (qgp_key_load(enc_key_path, &enc_key) != 0 || !enc_key) {
+    qgp_key_t *enc_key = dna_load_encryption_key(engine);
+    if (!enc_key) {
         error = DNA_ENGINE_ERROR_PERMISSION;
         qgp_key_free(sign_key);
         goto done;
@@ -2370,9 +2444,49 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
         engine->blockchain_wallets = NULL;
     }
 
-    /* Load multi-chain wallets for current identity */
+    /* Try to load wallets from wallet files first */
     int rc = blockchain_list_wallets(engine->fingerprint, &engine->blockchain_wallets);
-    if (rc != 0 || !engine->blockchain_wallets) {
+
+    /* If no wallet files found, derive wallets on-demand from mnemonic */
+    if (rc == 0 && engine->blockchain_wallets && engine->blockchain_wallets->count == 0) {
+        QGP_LOG_INFO(LOG_TAG, "No wallet files found, deriving wallets on-demand from mnemonic");
+
+        /* Free the empty list */
+        blockchain_wallet_list_free(engine->blockchain_wallets);
+        engine->blockchain_wallets = NULL;
+
+        /* Load and decrypt mnemonic */
+        char mnemonic[512] = {0};
+        if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) != DNA_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to get mnemonic for wallet derivation");
+            error = DNA_ERROR_CRYPTO;
+            goto done;
+        }
+
+        /* Convert mnemonic to 64-byte master seed */
+        uint8_t master_seed[64];
+        if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to derive master seed from mnemonic");
+            memset(mnemonic, 0, sizeof(mnemonic));
+            error = DNA_ERROR_CRYPTO;
+            goto done;
+        }
+
+        /* Clear mnemonic from memory */
+        memset(mnemonic, 0, sizeof(mnemonic));
+
+        /* Derive wallet addresses from master seed */
+        rc = blockchain_derive_wallets_from_seed(master_seed, engine->fingerprint, &engine->blockchain_wallets);
+
+        /* Clear master seed from memory */
+        memset(master_seed, 0, sizeof(master_seed));
+
+        if (rc != 0 || !engine->blockchain_wallets) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to derive wallets from seed");
+            error = DNA_ENGINE_ERROR_DATABASE;
+            goto done;
+        }
+    } else if (rc != 0 || !engine->blockchain_wallets) {
         error = DNA_ENGINE_ERROR_DATABASE;
         goto done;
     }
@@ -2600,18 +2714,64 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
     QGP_LOG_INFO(LOG_TAG, "Sending %s: %s %s to %s (gas_speed=%d)",
                  chain_name, amount_str, token ? token : "(native)", recipient, gas_speed);
 
-    /* Use unified blockchain interface for all chains */
-    if (blockchain_send_tokens(
+    /* Check if wallet has a file (legacy) or needs on-demand derivation */
+    if (bc_wallet_info->file_path[0] != '\0') {
+        /* Legacy: use wallet file */
+        if (blockchain_send_tokens(
+                bc_type,
+                bc_wallet_info->file_path,
+                recipient,
+                amount_str,
+                token,
+                gas_speed,
+                tx_hash) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s send failed (wallet file)", chain_name);
+            error = DNA_ENGINE_ERROR_NETWORK;
+            goto done;
+        }
+    } else {
+        /* On-demand derivation: derive wallet from mnemonic */
+        QGP_LOG_INFO(LOG_TAG, "Using on-demand wallet derivation for %s", chain_name);
+
+        /* Load and decrypt mnemonic */
+        char mnemonic[512] = {0};
+        if (dna_engine_get_mnemonic(engine, mnemonic, sizeof(mnemonic)) != DNA_OK) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to get mnemonic for send operation");
+            error = DNA_ERROR_CRYPTO;
+            goto done;
+        }
+
+        /* Convert mnemonic to 64-byte master seed */
+        uint8_t master_seed[64];
+        if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to derive master seed from mnemonic");
+            memset(mnemonic, 0, sizeof(mnemonic));
+            error = DNA_ERROR_CRYPTO;
+            goto done;
+        }
+
+        /* Clear mnemonic from memory */
+        memset(mnemonic, 0, sizeof(mnemonic));
+
+        /* Send using on-demand derived wallet */
+        int send_rc = blockchain_send_tokens_with_seed(
             bc_type,
-            bc_wallet_info->file_path,
+            master_seed,
             recipient,
             amount_str,
             token,
             gas_speed,
-            tx_hash) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "%s send failed", chain_name);
-        error = DNA_ENGINE_ERROR_NETWORK;
-        goto done;
+            tx_hash
+        );
+
+        /* Clear master seed from memory */
+        memset(master_seed, 0, sizeof(master_seed));
+
+        if (send_rc != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "%s send failed (on-demand)", chain_name);
+            error = DNA_ENGINE_ERROR_NETWORK;
+            goto done;
+        }
     }
 
     QGP_LOG_INFO(LOG_TAG, "%s tx sent: %s", chain_name, tx_hash);
@@ -2984,7 +3144,7 @@ int dna_engine_create_identity_sync(
     /* Step 1: Create keys locally */
     int rc = messenger_generate_keys_from_seeds(name, signing_seed, encryption_seed,
                                                  wallet_seed, master_seed, mnemonic,
-                                                 engine->data_dir, fingerprint_out);
+                                                 engine->data_dir, NULL, fingerprint_out);
     if (rc != 0) {
         return DNA_ERROR_CRYPTO;
     }
@@ -3036,10 +3196,10 @@ int dna_engine_restore_identity_sync(
         return DNA_ERROR_INVALID_ARG;
     }
 
-    /* Step 1: Create keys and wallets locally (uses fingerprint as directory name) */
+    /* Step 1: Create keys locally (uses fingerprint as directory name) */
     int rc = messenger_generate_keys_from_seeds(NULL, signing_seed, encryption_seed,
                                                  wallet_seed, master_seed, mnemonic,
-                                                 engine->data_dir, fingerprint_out);
+                                                 engine->data_dir, NULL, fingerprint_out);
     if (rc != 0) {
         return DNA_ERROR_CRYPTO;
     }
@@ -3159,6 +3319,7 @@ int dna_engine_delete_identity_sync(
 dna_request_id_t dna_engine_load_identity(
     dna_engine_t *engine,
     const char *fingerprint,
+    const char *password,
     dna_completion_cb callback,
     void *user_data
 ) {
@@ -3166,6 +3327,7 @@ dna_request_id_t dna_engine_load_identity(
 
     dna_task_params_t params = {0};
     strncpy(params.load_identity.fingerprint, fingerprint, 128);
+    params.load_identity.password = password ? strdup(password) : NULL;
 
     dna_task_callback_t cb = { .completion = callback };
     return dna_submit_task(engine, TASK_LOAD_IDENTITY, &params, cb, user_data);
@@ -3303,9 +3465,15 @@ int dna_engine_get_mnemonic(
         return DNA_ENGINE_ERROR_NOT_FOUND;
     }
 
-    /* Load Kyber private key */
+    /* Load Kyber private key (use password if keys are encrypted) */
     qgp_key_t *kem_key = NULL;
-    if (qgp_key_load(kyber_path, &kem_key) != 0 || !kem_key) {
+    int load_rc;
+    if (engine->keys_encrypted && engine->session_password) {
+        load_rc = qgp_key_load_encrypted(kyber_path, engine->session_password, &kem_key);
+    } else {
+        load_rc = qgp_key_load(kyber_path, &kem_key);
+    }
+    if (load_rc != 0 || !kem_key) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber private key");
         return DNA_ERROR_CRYPTO;
     }
@@ -3328,6 +3496,82 @@ int dna_engine_get_mnemonic(
     }
 
     QGP_LOG_INFO(LOG_TAG, "Mnemonic retrieved successfully");
+    return DNA_OK;
+}
+
+int dna_engine_change_password_sync(
+    dna_engine_t *engine,
+    const char *old_password,
+    const char *new_password
+) {
+    if (!engine) {
+        return DNA_ENGINE_ERROR_INVALID_PARAM;
+    }
+    if (!engine->identity_loaded) {
+        return DNA_ENGINE_ERROR_NO_IDENTITY;
+    }
+
+    /* Build paths to key files */
+    char dsa_path[512];
+    char kem_path[512];
+    char mnemonic_path[512];
+
+    snprintf(dsa_path, sizeof(dsa_path), "%s/%s/keys/%s.dsa",
+             engine->data_dir, engine->fingerprint, engine->fingerprint);
+    snprintf(kem_path, sizeof(kem_path), "%s/%s/keys/%s.kem",
+             engine->data_dir, engine->fingerprint, engine->fingerprint);
+    snprintf(mnemonic_path, sizeof(mnemonic_path), "%s/%s/mnemonic.enc",
+             engine->data_dir, engine->fingerprint);
+
+    /* Verify old password is correct by trying to load a key */
+    if (engine->keys_encrypted || old_password) {
+        if (key_verify_password(dsa_path, old_password) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Old password is incorrect");
+            return DNA_ENGINE_ERROR_WRONG_PASSWORD;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Changing password for identity %s", engine->fingerprint);
+
+    /* Change password on DSA key */
+    if (key_change_password(dsa_path, old_password, new_password) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to change password on DSA key");
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Change password on KEM key */
+    if (key_change_password(kem_path, old_password, new_password) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to change password on KEM key");
+        /* Try to rollback DSA key */
+        key_change_password(dsa_path, new_password, old_password);
+        return DNA_ERROR_CRYPTO;
+    }
+
+    /* Change password on mnemonic file if it exists */
+    if (qgp_platform_file_exists(mnemonic_path)) {
+        if (key_change_password(mnemonic_path, old_password, new_password) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to change password on mnemonic file");
+            /* Try to rollback DSA and KEM keys */
+            key_change_password(dsa_path, new_password, old_password);
+            key_change_password(kem_path, new_password, old_password);
+            return DNA_ERROR_CRYPTO;
+        }
+    }
+
+    /* Update session password and encryption state */
+    if (engine->session_password) {
+        free(engine->session_password);
+        engine->session_password = NULL;
+    }
+
+    if (new_password && new_password[0] != '\0') {
+        engine->session_password = strdup(new_password);
+        engine->keys_encrypted = true;
+    } else {
+        engine->keys_encrypted = false;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Password changed successfully for identity %s", engine->fingerprint);
     return DNA_OK;
 }
 
@@ -4845,7 +5089,36 @@ static qgp_key_t* dna_load_private_key(dna_engine_t *engine) {
              engine->data_dir, engine->fingerprint, engine->fingerprint);
 
     qgp_key_t *key = NULL;
-    if (qgp_key_load(key_path, &key) != 0 || !key) {
+    int load_rc;
+    if (engine->keys_encrypted && engine->session_password) {
+        load_rc = qgp_key_load_encrypted(key_path, engine->session_password, &key);
+    } else {
+        load_rc = qgp_key_load(key_path, &key);
+    }
+    if (load_rc != 0 || !key) {
+        return NULL;
+    }
+    return key;
+}
+
+/* Helper: Get encryption key (caller frees with qgp_key_free) */
+static qgp_key_t* dna_load_encryption_key(dna_engine_t *engine) {
+    if (!engine || !engine->identity_loaded) {
+        return NULL;
+    }
+
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.kem",
+             engine->data_dir, engine->fingerprint, engine->fingerprint);
+
+    qgp_key_t *key = NULL;
+    int load_rc;
+    if (engine->keys_encrypted && engine->session_password) {
+        load_rc = qgp_key_load_encrypted(key_path, engine->session_password, &key);
+    } else {
+        load_rc = qgp_key_load(key_path, &key);
+    }
+    if (load_rc != 0 || !key) {
         return NULL;
     }
     return key;

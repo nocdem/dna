@@ -227,6 +227,19 @@ int qgp_pubkey_save(const qgp_key_t *key, const char *path);
 int qgp_pubkey_load(const char *path, qgp_key_t **key_out);
 
 /**
+ * Password-protected key serialization
+ *
+ * @param key       Key to save/load
+ * @param path      File path
+ * @param password  Password for encryption (NULL for unencrypted - not recommended)
+ * @param key_out   Output key (caller must free with qgp_key_free())
+ * @return          0 on success, -1 on error
+ */
+int qgp_key_save_encrypted(const qgp_key_t *key, const char *path, const char *password);
+int qgp_key_load_encrypted(const char *path, const char *password, qgp_key_t **key_out);
+bool qgp_key_file_is_encrypted(const char *path);
+
+/**
  * Hash utilities
  */
 void qgp_hash_from_bytes(qgp_hash_t *hash, const uint8_t *data, size_t len);

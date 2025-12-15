@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.6.0
-**Date:** 2025-12-10
+**Version:** 1.7.0
+**Date:** 2025-12-15
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.7.0 (2025-12-15): Added password protection for identity keys - `dna_engine_change_password_sync()`, password parameter in `dna_engine_load_identity()`, on-demand wallet derivation from mnemonic
 - v1.6.0 (2025-12-10): Added ICQ-style Contact Request API (section 3a) - send/approve/deny requests, block/unblock users
 - v1.5.0 (2025-12-10): Added `dna_engine_lookup_profile()` to lookup any user's profile by fingerprint (for wallet address resolution)
 - v1.4.0 (2025-12-10): Added `dna_engine_restore_identity_sync()` for restoring identity from seed without DHT registration
@@ -464,6 +465,7 @@ if (rc == DNA_OK) {
 dna_request_id_t dna_engine_load_identity(
     dna_engine_t *engine,
     const char *fingerprint,
+    const char *password,
     dna_completion_cb callback,
     void *user_data
 );
@@ -471,29 +473,98 @@ dna_request_id_t dna_engine_load_identity(
 
 Loads and activates an identity.
 
-**What it does:**
-1. Loads keypairs from disk
-2. Initializes messenger context
-3. Loads DHT identity
-4. Initializes P2P transport
-5. Registers presence in DHT (announces user is online)
-6. Subscribes to contacts for push notifications
-7. Checks for offline messages from contacts' DHT outboxes
-8. Dispatches `DNA_EVENT_IDENTITY_LOADED` event
+**Parameters:**
+- `engine` - Engine instance
+- `fingerprint` - Identity fingerprint (128 hex chars, or prefix)
+- `password` - Password for encrypted keys (NULL if keys are unencrypted)
+- `callback` - Called on completion
+- `user_data` - User data for callback
 
-**Note:** Steps 5-7 happen automatically after P2P initialization succeeds.
+**What it does:**
+1. Decrypts and loads keypairs from disk (using password if encrypted)
+2. Stores session password in engine (for subsequent operations)
+3. Initializes messenger context
+4. Loads DHT identity
+5. Initializes P2P transport
+6. Registers presence in DHT (announces user is online)
+7. Subscribes to contacts for push notifications
+8. Checks for offline messages from contacts' DHT outboxes
+9. Dispatches `DNA_EVENT_IDENTITY_LOADED` event
+
+**Error Codes:**
+- `DNA_ENGINE_ERROR_WRONG_PASSWORD` - Password incorrect for encrypted keys
+- `DNA_ENGINE_ERROR_PASSWORD_REQUIRED` - Keys are encrypted but no password provided
+
+**Note:** Steps 6-8 happen automatically after P2P initialization succeeds.
 This ensures offline messages are retrieved without additional API calls.
 
 **Example:**
 ```c
-dna_engine_load_identity(engine, fingerprint,
+// Load identity with password
+dna_engine_load_identity(engine, fingerprint, "my_password",
     [](dna_request_id_t id, int err, void* ud) {
         if (err == 0) {
             printf("Identity loaded!\n");
+        } else if (err == DNA_ENGINE_ERROR_WRONG_PASSWORD) {
+            printf("Wrong password!\n");
         } else {
             printf("Error: %s\n", dna_engine_error_string(err));
         }
     }, NULL);
+
+// Load identity without password (unencrypted keys)
+dna_engine_load_identity(engine, fingerprint, NULL, callback, NULL);
+```
+
+---
+
+### dna_engine_change_password_sync
+
+```c
+int dna_engine_change_password_sync(
+    dna_engine_t *engine,
+    const char *old_password,
+    const char *new_password
+);
+```
+
+Changes the password for the current identity's encrypted keys.
+
+**Parameters:**
+- `engine` - Engine instance
+- `old_password` - Current password (NULL if keys are unencrypted)
+- `new_password` - New password (NULL to remove encryption - not recommended)
+
+**Returns:** 0 on success, error code on failure
+
+**What it does:**
+1. Verifies old password is correct
+2. Re-encrypts `.dsa` key with new password
+3. Re-encrypts `.kem` key with new password
+4. Re-encrypts `mnemonic.enc` with new password
+5. Updates session password in engine
+6. Rolls back on failure (atomic operation)
+
+**Error Codes:**
+- `DNA_ENGINE_ERROR_WRONG_PASSWORD` - Old password is incorrect
+- `DNA_ENGINE_ERROR_NO_IDENTITY` - No identity loaded
+- `DNA_ERROR_CRYPTO` - Encryption/decryption failure
+
+**Example:**
+```c
+// Change password
+int rc = dna_engine_change_password_sync(engine, "old_password", "new_password");
+if (rc == 0) {
+    printf("Password changed successfully!\n");
+} else if (rc == DNA_ENGINE_ERROR_WRONG_PASSWORD) {
+    printf("Current password is incorrect!\n");
+}
+
+// Add password to unencrypted identity
+int rc = dna_engine_change_password_sync(engine, NULL, "new_password");
+
+// Remove password (not recommended)
+int rc = dna_engine_change_password_sync(engine, "old_password", NULL);
 ```
 
 ---

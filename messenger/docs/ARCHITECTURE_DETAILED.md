@@ -1,6 +1,6 @@
 # DNA Messenger - Comprehensive Architecture Documentation
 
-**Version:** 0.1.x | **Last Updated:** 2025-11-26 | **Phase:** 13 (GSK v0.09)
+**Version:** 0.1.x | **Last Updated:** 2025-12-15 | **Phase:** 13 (GSK v0.09)
 
 This document provides a complete technical architecture reference for DNA Messenger, derived entirely from source code analysis.
 
@@ -480,10 +480,32 @@ qgp_log_enable_tag("P2P");
 
 **Location:** `<data_dir>/` (see [Data Directory](#data-directory) section)
 
-| File | Contents |
-|------|----------|
-| `<fingerprint>/keys/<fingerprint>.dsa` | Dilithium5 private key (4896 bytes) |
-| `<fingerprint>/keys/<fingerprint>.kem` | Kyber1024 private key (3168 bytes) |
+| File | Contents | Encryption |
+|------|----------|------------|
+| `<fingerprint>/keys/<fingerprint>.dsa` | Dilithium5 private key (4896 bytes) | Password-based (optional) |
+| `<fingerprint>/keys/<fingerprint>.kem` | Kyber1024 private key (3168 bytes) | Password-based (optional) |
+| `<fingerprint>/mnemonic.enc` | BIP39 mnemonic phrase | KEM + Password (optional) |
+
+#### Key Encryption (v1.7.0+)
+
+Private keys can be encrypted at rest using password-based encryption:
+
+**Encryption Scheme:**
+- Key Derivation: PBKDF2-SHA256 with 210,000 iterations (OWASP 2023)
+- Encryption: AES-256-GCM (authenticated encryption)
+- File Format: `DNAK` magic header (4 bytes) + salt (32 bytes) + IV (12 bytes) + ciphertext + auth tag (16 bytes)
+
+**Password Protection:**
+- Optional but strongly recommended
+- Set during identity creation via `dna_engine_create_identity_sync()`
+- Changed via `dna_engine_change_password_sync()`
+- Required for: loading identity, sending transactions, viewing seed phrase
+- NOT required after login for: messaging, viewing balances
+
+**Wallet Security (v1.7.0+):**
+- No plaintext wallet files stored (`.eth.json`, `.sol.json`, `.trx.json` removed)
+- Wallet addresses derived on-demand from mnemonic for balance display
+- Wallet private keys derived on-demand during transactions, then immediately cleared
 
 #### Data Directory
 
@@ -904,8 +926,8 @@ int messenger_reject_group_invitation(ctx, group_uuid);
 ├── keyserver_cache.db                 # Public key cache (7-day TTL)
 ├── <fingerprint>/                     # Per-identity directory
 │   ├── keys/
-│   │   ├── <fingerprint>.dsa          # Dilithium5 private key
-│   │   └── <fingerprint>.kem          # Kyber1024 private key
+│   │   ├── <fingerprint>.dsa          # Dilithium5 private key (password-encrypted)
+│   │   └── <fingerprint>.kem          # Kyber1024 private key (password-encrypted)
 │   ├── wallets/
 │   │   └── <fingerprint>.dwallet      # Cellframe wallet
 │   ├── db/
@@ -1688,8 +1710,9 @@ All messages are signed with Dilithium5 before transmission:
 
 | Data | Encryption | Location |
 |------|------------|----------|
-| Private keys | None (file permissions) | `<data_dir>/*.dsa`, `<data_dir>/*.kem` |
-| Messages | AES-256-GCM (encrypted at rest) | `<data_dir>/messages.db` |
+| Private keys | PBKDF2 + AES-256-GCM (optional password) | `<data_dir>/<fp>/keys/*.dsa`, `*.kem` |
+| Mnemonic | KEM + PBKDF2/AES-256-GCM (optional password) | `<data_dir>/<fp>/mnemonic.enc` |
+| Messages | AES-256-GCM (encrypted at rest) | `<data_dir>/<fp>/db/messages.db` |
 | Contacts | Plaintext | Per-identity SQLite |
 | Cache | Plaintext | Per-identity SQLite |
 

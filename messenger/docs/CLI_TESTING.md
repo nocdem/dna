@@ -1,6 +1,6 @@
 # DNA Messenger CLI Testing Guide
 
-**Version:** 2.3.0
+**Version:** 2.4.0
 **Purpose:** Command-line tool for automated testing and debugging of DNA Messenger without GUI
 **Location:** `build/cli/dna-messenger-cli`
 
@@ -37,12 +37,13 @@ The executable will be at: `build/cli/dna-messenger-cli`
 CLI=/opt/dna-messenger/build/cli/dna-messenger-cli
 
 # Identity
-$CLI create <name>                    # Create new identity
+$CLI create <name>                    # Create new identity (prompts for password)
 $CLI restore <mnemonic...>            # Restore from 24 words
 $CLI delete <fingerprint>             # Delete an identity
 $CLI list                             # List identities
-$CLI load <fingerprint>               # Load identity
+$CLI load <fingerprint>               # Load identity (prompts for password if encrypted)
 $CLI whoami                           # Show current identity
+$CLI change-password                  # Change password for current identity
 $CLI register <name>                  # Register DHT name
 $CLI name                             # Show registered name
 $CLI lookup <name>                    # Check name availability
@@ -105,14 +106,21 @@ dna-messenger-cli create alice
 ```
 
 **Output:**
+- Prompts for optional password (recommended for key encryption)
 - Generates 24-word BIP39 mnemonic (SAVE THIS!)
 - Creates Dilithium5 signing key
 - Creates Kyber1024 encryption key
-- Creates blockchain wallets
+- Encrypts keys with password (PBKDF2-SHA256 + AES-256-GCM)
 - Registers name on DHT keyserver
 - Returns 128-character hex fingerprint
 
-**Note:** Identity creation automatically registers the name on DHT and creates wallets.
+**Password Protection:**
+- Password encrypts: `.dsa` key, `.kem` key, `mnemonic.enc`
+- Uses PBKDF2-SHA256 with 210,000 iterations (OWASP 2023)
+- Password is optional but strongly recommended
+- Wallet addresses are derived on-demand from mnemonic (no plaintext wallet files)
+
+**Note:** Identity creation automatically registers the name on DHT.
 
 ---
 
@@ -157,6 +165,7 @@ dna-messenger-cli load db73e609
 
 **Notes:**
 - Fingerprint can be a prefix (at least 8 chars)
+- Prompts for password if keys are encrypted
 - Loads keys, starts DHT, registers presence
 
 ---
@@ -166,6 +175,31 @@ dna-messenger-cli load db73e609
 ```bash
 dna-messenger-cli whoami
 ```
+
+---
+
+### `change-password` - Change Identity Password
+
+Changes the password protecting the current identity's keys.
+
+```bash
+dna-messenger-cli change-password
+```
+
+**Process:**
+1. Prompts for current password (Enter for none)
+2. Prompts for new password (Enter to remove password)
+3. Confirms new password
+4. Re-encrypts all key files with new password
+
+**Files Updated:**
+- `~/.dna/<fingerprint>/keys/<fingerprint>.dsa`
+- `~/.dna/<fingerprint>/keys/<fingerprint>.kem`
+- `~/.dna/<fingerprint>/mnemonic.enc`
+
+**Requirements:**
+- Identity must be loaded
+- Current password must be correct
 
 ---
 

@@ -171,8 +171,10 @@ int messenger_generate_keys_from_seeds(
     const uint8_t *master_seed,
     const char *mnemonic,
     const char *data_dir,
+    const char *password,
     char *fingerprint_out)
 {
+    (void)wallet_seed;  /* Deprecated, unused */
     if (!signing_seed || !encryption_seed || !data_dir || !fingerprint_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to messenger_generate_keys_from_seeds");
         return -1;
@@ -266,14 +268,18 @@ int messenger_generate_keys_from_seeds(
     printf("✓ ML-DSA-87 signing key generated from seed\n");
     printf("  Fingerprint: %s\n", fingerprint);
 
-    // Save to keys directory
+    // Save to keys directory (optionally encrypted with password)
     char dilithium_path[512];
     snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", keys_dir, fingerprint);
 
-    if (qgp_key_save(sign_key, dilithium_path) != 0) {
+    if (qgp_key_save_encrypted(sign_key, dilithium_path, password) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to save signing key");
         qgp_key_free(sign_key);
         return -1;
+    }
+
+    if (password && strlen(password) > 0) {
+        QGP_LOG_INFO(LOG_TAG, "✓ Signing key encrypted with password");
     }
 
     // Keep copies of keys for DHT publishing (before freeing)
@@ -324,11 +330,11 @@ int messenger_generate_keys_from_seeds(
     enc_key->private_key = kyber_sk;
     enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
-    // Save to keys directory
+    // Save to keys directory (optionally encrypted with password)
     char kyber_path[512];
     snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", keys_dir, fingerprint);
 
-    if (qgp_key_save(enc_key, kyber_path) != 0) {
+    if (qgp_key_save_encrypted(enc_key, kyber_path, password) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to save encryption key");
         qgp_key_free(enc_key);
         free(dilithium_pubkey_copy);
@@ -337,6 +343,10 @@ int messenger_generate_keys_from_seeds(
     }
 
     printf("✓ ML-KEM-1024 encryption key generated from seed\n");
+
+    if (password && strlen(password) > 0) {
+        QGP_LOG_INFO(LOG_TAG, "✓ Encryption key encrypted with password");
+    }
 
     // Keep copies of public keys for DHT publishing (before freeing)
     uint8_t *kyber_pubkey_copy = malloc(enc_key->public_key_size);
@@ -378,37 +388,20 @@ int messenger_generate_keys_from_seeds(
         QGP_LOG_INFO(LOG_TAG, "Keys saved locally. DHT publish requires DNA name registration.\n");
     }
 
-    // Create blockchain wallets from master_seed and mnemonic
-    // - Cellframe uses SHA3-256(mnemonic) to match Cellframe wallet app
-    // - ETH/SOL use BIP-44/SLIP-10 from 64-byte master_seed
-    if (master_seed) {
-        QGP_LOG_INFO(LOG_TAG, "Creating blockchain wallets...\n");
-
-        if (blockchain_create_all_wallets(master_seed, mnemonic, dir_name, wallets_dir) == 0) {
-            QGP_LOG_INFO(LOG_TAG, "✓ Blockchain wallets created in %s\n", wallets_dir);
+    // Save encrypted mnemonic for recovery and on-demand wallet derivation
+    // Wallet private keys are NOT stored - they are derived when needed for transactions
+    // This reduces attack surface: only mnemonic.enc needs to be protected
+    if (mnemonic && strlen(mnemonic) > 0) {
+        if (mnemonic_storage_save(mnemonic, kyber_pk, identity_dir) == 0) {
+            QGP_LOG_INFO(LOG_TAG, "✓ Encrypted mnemonic saved (wallet keys derived on-demand)\n");
         } else {
-            QGP_LOG_WARN(LOG_TAG, "Warning: Some wallets may have failed to create (non-fatal)\n");
-        }
-
-        // Save encrypted master seed for future chain wallet creation
-        // Uses Kyber1024 KEM + AES-256-GCM encryption
-        if (seed_storage_save(master_seed, kyber_pk, identity_dir) == 0) {
-            QGP_LOG_INFO(LOG_TAG, "✓ Encrypted master seed saved for future wallet creation\n");
-        } else {
-            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to save encrypted seed (non-fatal)\n");
-        }
-
-        // Save encrypted mnemonic so user can view seed phrase in settings
-        if (mnemonic && strlen(mnemonic) > 0) {
-            if (mnemonic_storage_save(mnemonic, kyber_pk, identity_dir) == 0) {
-                QGP_LOG_INFO(LOG_TAG, "✓ Encrypted mnemonic saved for seed phrase export\n");
-            } else {
-                QGP_LOG_WARN(LOG_TAG, "Warning: Failed to save encrypted mnemonic (non-fatal)\n");
-            }
+            QGP_LOG_WARN(LOG_TAG, "Warning: Failed to save encrypted mnemonic\n");
         }
     } else {
-        QGP_LOG_WARN(LOG_TAG, "No master_seed provided - skipping wallet creation\n");
+        QGP_LOG_WARN(LOG_TAG, "No mnemonic provided - wallet recovery will not be possible\n");
     }
+
+    (void)master_seed;  /* No longer stored - derived from mnemonic when needed */
 
     qgp_key_free(enc_key);
 

@@ -318,3 +318,70 @@ cleanup:
 
     return result;
 }
+
+int cellframe_wallet_derive_address(
+    const uint8_t seed[CF_WALLET_SEED_SIZE],
+    char *address_out
+) {
+    if (!seed || !address_out) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to cellframe_wallet_derive_address\n");
+        return -1;
+    }
+
+    int result = -1;
+    dilithium_public_key_t pubkey = {0};
+    dilithium_private_key_t privkey = {0};
+    uint8_t *serialized_pubkey = NULL;
+
+    /* Generate Dilithium MODE_1 keypair from 32-byte seed */
+    if (dilithium_crypto_sign_keypair(&pubkey, &privkey, MODE_1, seed, CF_WALLET_SEED_SIZE) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate Dilithium keypair\n");
+        goto cleanup;
+    }
+
+    /* Verify key sizes match expectations */
+    if (pubkey.kind != MODE_1) {
+        QGP_LOG_ERROR(LOG_TAG, "Unexpected key kind\n");
+        goto cleanup;
+    }
+
+    /* Allocate buffer for serialized public key */
+    size_t serialized_pubkey_size = 8 + 4 + CF_DILITHIUM_PUBLICKEYBYTES;
+    serialized_pubkey = malloc(serialized_pubkey_size);
+    if (!serialized_pubkey) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
+        goto cleanup;
+    }
+
+    /* Serialize public key */
+    size_t actual_pubkey_size;
+    serialize_dilithium_key(pubkey.data, CF_DILITHIUM_PUBLICKEYBYTES,
+                           CF_DILITHIUM_KIND_MODE_1,
+                           serialized_pubkey, &actual_pubkey_size);
+
+    /* Generate address from serialized public key */
+    if (cellframe_addr_from_pubkey(serialized_pubkey, actual_pubkey_size,
+                                   CELLFRAME_NET_BACKBONE, address_out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate address\n");
+        goto cleanup;
+    }
+
+    result = 0;
+
+cleanup:
+    /* Securely clear sensitive data */
+    if (serialized_pubkey) {
+        memset(serialized_pubkey, 0, serialized_pubkey_size);
+        free(serialized_pubkey);
+    }
+
+    /* Clean up Dilithium keys (private key was generated but not needed) */
+    if (privkey.data) {
+        dilithium_private_key_delete(&privkey);
+    }
+    if (pubkey.data) {
+        dilithium_public_key_delete(&pubkey);
+    }
+
+    return result;
+}

@@ -132,16 +132,17 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
  * Generates keys deterministically from provided seeds without user prompts.
  * Creates fingerprint-based identity (no name required).
  * Keys are saved as <data_dir>/<fingerprint>.dsa and <data_dir>/<fingerprint>.kem
- * Optionally creates Cellframe wallet if wallet_seed is provided.
- * Directory structure: ~/.dna/<name>/keys/, ~/.dna/<name>/wallets/
+ * Wallet keys are derived on-demand from mnemonic (no plaintext wallet files).
+ * Directory structure: ~/.dna/<fingerprint>/keys/
  *
- * @param name: Identity name (required, used for directory structure)
+ * @param name: Identity name (optional display name, can be NULL)
  * @param signing_seed: 32-byte seed for Dilithium5 key generation
  * @param encryption_seed: 32-byte seed for Kyber1024 key generation
  * @param wallet_seed: 32-byte seed for Cellframe wallet (DEPRECATED, use mnemonic)
  * @param master_seed: 64-byte BIP39 master seed for multi-chain wallets (optional, can be NULL)
- * @param mnemonic: Space-separated BIP39 mnemonic (for Cellframe wallet, optional)
+ * @param mnemonic: Space-separated BIP39 mnemonic (for recovery, optional)
  * @param data_dir: Base directory (e.g., ~/.dna)
+ * @param password: Password to encrypt keys (NULL for no encryption - not recommended)
  * @param fingerprint_out: Output buffer for 128-char fingerprint (must be 129 bytes for null terminator)
  * @return: 0 on success, -1 on error
  */
@@ -153,6 +154,7 @@ int messenger_generate_keys_from_seeds(
     const uint8_t *master_seed,
     const char *mnemonic,
     const char *data_dir,
+    const char *password,
     char *fingerprint_out
 );
 

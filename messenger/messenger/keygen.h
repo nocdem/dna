@@ -36,20 +36,18 @@ int messenger_generate_keys(messenger_context_t *ctx, const char *identity);
  * Used for identity restoration across devices (same seed → same keys).
  * Auto-publishes public keys to DHT keyserver.
  * Creates encrypted DHT identity backup.
- * Optionally creates blockchain wallets:
- * - Cellframe wallet from mnemonic via SHA3-256 (matches Cellframe app)
- * - Ethereum wallet from master_seed (64 bytes) via BIP-44
- * - Solana wallet from master_seed (64 bytes) via SLIP-10
+ * Stores only mnemonic.enc - wallet keys derived on-demand for transactions.
  *
- * Directory structure: ~/.dna/<name>/keys/, ~/.dna/<name>/wallets/
+ * Directory structure: ~/.dna/<fingerprint>/keys/, ~/.dna/<fingerprint>/
  *
- * @param name: Identity name (required, used for directory and wallet naming)
+ * @param name: Identity name (optional display name, can be NULL)
  * @param signing_seed: 32-byte seed for Dilithium5 key derivation
  * @param encryption_seed: 32-byte seed for Kyber1024 key derivation
  * @param wallet_seed: 32-byte seed for Cellframe wallet (DEPRECATED, use mnemonic)
  * @param master_seed: 64-byte BIP39 master seed for multi-chain wallets (optional, can be NULL)
- * @param mnemonic: Space-separated BIP39 mnemonic (for Cellframe wallet, optional)
+ * @param mnemonic: Space-separated BIP39 mnemonic (for recovery, optional)
  * @param data_dir: Base directory (e.g., ~/.dna)
+ * @param password: Password to encrypt keys (NULL for no encryption - not recommended)
  * @param fingerprint_out: Output buffer for fingerprint (129 bytes)
  * @return: 0 on success, -1 on error
  */
@@ -61,6 +59,7 @@ int messenger_generate_keys_from_seeds(
     const uint8_t *master_seed,
     const char *mnemonic,
     const char *data_dir,
+    const char *password,
     char *fingerprint_out
 );
 

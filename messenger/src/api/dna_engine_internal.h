@@ -125,11 +125,13 @@ typedef union {
         uint8_t *wallet_seed;  /* Optional: 32-byte Cellframe wallet seed (DEPRECATED) */
         uint8_t *master_seed;  /* Optional: 64-byte BIP39 master seed for multi-chain wallets (ETH, SOL) */
         char *mnemonic;        /* Optional: space-separated BIP39 mnemonic (for Cellframe wallet) */
+        char *password;        /* Optional: password to encrypt keys (NULL for no encryption) */
     } create_identity;
 
     /* Load identity */
     struct {
         char fingerprint[129];
+        char *password;          /* Password for encrypted keys (NULL if unencrypted) */
     } load_identity;
 
     /* Register name */
@@ -425,6 +427,10 @@ struct dna_engine {
     messenger_context_t *messenger;  /* Core messenger context */
     char fingerprint[129];           /* Current identity fingerprint */
     bool identity_loaded;            /* True if identity is active */
+
+    /* Password protection (session state) */
+    char *session_password;          /* Password for current session (NULL if unprotected) */
+    bool keys_encrypted;             /* True if identity keys are password-protected */
 
     /* Wallet */
     wallet_list_t *wallet_list;      /* Cached Cellframe wallet list (legacy) */

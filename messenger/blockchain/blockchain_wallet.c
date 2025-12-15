@@ -33,10 +33,14 @@ extern int blockchain_ops_send_from_wallet(
 #include "cellframe/cellframe_wallet.h"
 #include "ethereum/eth_wallet.h"
 #include "ethereum/eth_tx.h"
+#include "ethereum/eth_erc20.h"
 #include "solana/sol_wallet.h"
 #include "solana/sol_rpc.h"
+#include "solana/sol_tx.h"
 #include "tron/trx_wallet.h"
 #include "tron/trx_rpc.h"
+#include "tron/trx_tx.h"
+#include "tron/trx_trc20.h"
 #include "../crypto/utils/qgp_log.h"
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/seed_storage.h"
@@ -770,5 +774,229 @@ int blockchain_send_tokens(
     );
 
     QGP_LOG_INFO(LOG_TAG, "<<< blockchain_send_tokens result: %d (chain=%s)", ret, chain_name);
+    return ret;
+}
+
+/* ============================================================================
+ * ON-DEMAND WALLET DERIVATION
+ * ============================================================================ */
+
+int blockchain_derive_wallets_from_seed(
+    const uint8_t master_seed[64],
+    const char *fingerprint,
+    blockchain_wallet_list_t **list_out
+) {
+    if (!master_seed || !fingerprint || !list_out) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to blockchain_derive_wallets_from_seed");
+        return -1;
+    }
+
+    /* Allocate list for all blockchain types */
+    blockchain_wallet_list_t *list = calloc(1, sizeof(blockchain_wallet_list_t));
+    if (!list) {
+        return -1;
+    }
+
+    /* Allocate wallets for ETH, SOL, TRX, Cellframe */
+    list->wallets = calloc(BLOCKCHAIN_COUNT, sizeof(blockchain_wallet_info_t));
+    if (!list->wallets) {
+        free(list);
+        return -1;
+    }
+
+    size_t idx = 0;
+
+    /* Derive Ethereum wallet address */
+    {
+        eth_wallet_t eth_wallet;
+        if (eth_wallet_generate(master_seed, 64, &eth_wallet) == 0) {
+            blockchain_wallet_info_t *info = &list->wallets[idx];
+            info->type = BLOCKCHAIN_ETHEREUM;
+            strncpy(info->name, fingerprint, sizeof(info->name) - 1);
+            strncpy(info->address, eth_wallet.address_hex, sizeof(info->address) - 1);
+            info->file_path[0] = '\0';  /* No file - derived on-demand */
+            info->is_encrypted = false;
+            eth_wallet_clear(&eth_wallet);
+            idx++;
+            QGP_LOG_DEBUG(LOG_TAG, "Derived ETH address: %s", info->address);
+        }
+    }
+
+    /* Derive Solana wallet address */
+    {
+        sol_wallet_t sol_wallet;
+        if (sol_wallet_generate(master_seed, 64, &sol_wallet) == 0) {
+            blockchain_wallet_info_t *info = &list->wallets[idx];
+            info->type = BLOCKCHAIN_SOLANA;
+            strncpy(info->name, fingerprint, sizeof(info->name) - 1);
+            strncpy(info->address, sol_wallet.address, sizeof(info->address) - 1);
+            info->file_path[0] = '\0';  /* No file - derived on-demand */
+            info->is_encrypted = false;
+            sol_wallet_clear(&sol_wallet);
+            idx++;
+            QGP_LOG_DEBUG(LOG_TAG, "Derived SOL address: %s", info->address);
+        }
+    }
+
+    /* Derive TRON wallet address */
+    {
+        trx_wallet_t trx_wallet;
+        if (trx_wallet_generate(master_seed, 64, &trx_wallet) == 0) {
+            blockchain_wallet_info_t *info = &list->wallets[idx];
+            info->type = BLOCKCHAIN_TRON;
+            strncpy(info->name, fingerprint, sizeof(info->name) - 1);
+            strncpy(info->address, trx_wallet.address, sizeof(info->address) - 1);
+            info->file_path[0] = '\0';  /* No file - derived on-demand */
+            info->is_encrypted = false;
+            trx_wallet_clear(&trx_wallet);
+            idx++;
+            QGP_LOG_DEBUG(LOG_TAG, "Derived TRX address: %s", info->address);
+        }
+    }
+
+    /* Derive Cellframe wallet address
+     * Cellframe uses SHA3-256(mnemonic) not BIP39 master seed directly.
+     * Since we only have the master seed here, we cannot derive Cellframe address.
+     * Cellframe derivation requires the original mnemonic string.
+     * This will be handled separately if needed.
+     */
+
+    list->count = idx;
+    *list_out = list;
+
+    QGP_LOG_INFO(LOG_TAG, "Derived %zu wallet addresses from seed", idx);
+    return 0;
+}
+
+int blockchain_send_tokens_with_seed(
+    blockchain_type_t type,
+    const uint8_t master_seed[64],
+    const char *to_address,
+    const char *amount,
+    const char *token,
+    int gas_speed,
+    char *tx_hash_out
+) {
+    if (!master_seed || !to_address || !amount || !tx_hash_out) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to blockchain_send_tokens_with_seed");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, ">>> blockchain_send_tokens_with_seed: type=%d to=%s amount=%s token=%s",
+                 type, to_address, amount, token ? token : "(native)");
+
+    int ret = -1;
+    const char *chain_name = NULL;
+
+    switch (type) {
+        case BLOCKCHAIN_ETHEREUM: {
+            chain_name = "Ethereum";
+
+            /* Derive ETH wallet on-demand */
+            eth_wallet_t eth_wallet;
+            if (eth_wallet_generate(master_seed, 64, &eth_wallet) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to derive ETH wallet");
+                return -1;
+            }
+
+            /* Send using direct ETH functions */
+            if (token != NULL && strlen(token) > 0 && strcasecmp(token, "ETH") != 0) {
+                /* ERC-20 token transfer */
+                ret = eth_erc20_send_by_symbol(
+                    eth_wallet.private_key,
+                    eth_wallet.address_hex,
+                    to_address,
+                    amount,
+                    token,
+                    gas_speed,
+                    tx_hash_out
+                );
+            } else {
+                /* Native ETH transfer */
+                ret = eth_send_eth_with_gas(
+                    eth_wallet.private_key,
+                    eth_wallet.address_hex,
+                    to_address,
+                    amount,
+                    gas_speed,
+                    tx_hash_out
+                );
+            }
+
+            /* Securely clear private key */
+            eth_wallet_clear(&eth_wallet);
+            break;
+        }
+
+        case BLOCKCHAIN_SOLANA: {
+            chain_name = "Solana";
+
+            /* Derive SOL wallet on-demand */
+            sol_wallet_t sol_wallet;
+            if (sol_wallet_generate(master_seed, 64, &sol_wallet) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to derive SOL wallet");
+                return -1;
+            }
+
+            /* Native SOL transfer (SPL tokens not yet supported) */
+            double sol_amount = atof(amount);
+            ret = sol_tx_send_sol(&sol_wallet, to_address, sol_amount, tx_hash_out, 128);
+
+            /* Securely clear private key */
+            sol_wallet_clear(&sol_wallet);
+            break;
+        }
+
+        case BLOCKCHAIN_TRON: {
+            chain_name = "TRON";
+
+            /* Derive TRX wallet on-demand */
+            trx_wallet_t trx_wallet;
+            if (trx_wallet_generate(master_seed, 64, &trx_wallet) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to derive TRX wallet");
+                return -1;
+            }
+
+            /* Send using direct TRX functions */
+            if (token != NULL && strlen(token) > 0 && strcasecmp(token, "TRX") != 0) {
+                /* TRC-20 token transfer */
+                ret = trx_trc20_send_by_symbol(
+                    trx_wallet.private_key,
+                    trx_wallet.address,
+                    to_address,
+                    amount,
+                    token,
+                    tx_hash_out
+                );
+            } else {
+                /* Native TRX transfer */
+                ret = trx_send_trx(
+                    trx_wallet.private_key,
+                    trx_wallet.address,
+                    to_address,
+                    amount,
+                    tx_hash_out
+                );
+            }
+
+            /* Securely clear private key */
+            trx_wallet_clear(&trx_wallet);
+            break;
+        }
+
+        case BLOCKCHAIN_CELLFRAME:
+            /* Cellframe requires mnemonic string, not master seed.
+             * This needs to be handled differently via cellframe_wallet_send()
+             */
+            chain_name = "Cellframe";
+            QGP_LOG_ERROR(LOG_TAG, "Cellframe send with seed not yet implemented");
+            return -1;
+
+        default:
+            QGP_LOG_ERROR(LOG_TAG, "Unknown blockchain type: %d", type);
+            return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "<<< blockchain_send_tokens_with_seed result: %d (chain=%s)", ret, chain_name);
     return ret;
 }

@@ -61,6 +61,8 @@ typedef uint64_t dna_request_id_t;
 #define DNA_ENGINE_ERROR_PERMISSION     (-108)
 #define DNA_ENGINE_ERROR_INVALID_PARAM  (-109)
 #define DNA_ENGINE_ERROR_NOT_FOUND      (-110)
+#define DNA_ENGINE_ERROR_PASSWORD_REQUIRED (-111)
+#define DNA_ENGINE_ERROR_WRONG_PASSWORD (-112)
 
 /**
  * Get human-readable error message for engine errors
@@ -753,6 +755,7 @@ int dna_engine_delete_identity_sync(
  *
  * @param engine      Engine instance
  * @param fingerprint Identity fingerprint (128 hex chars)
+ * @param password    Password for encrypted keys (NULL if keys are unencrypted)
  * @param callback    Called on completion
  * @param user_data   User data for callback
  * @return            Request ID (0 on immediate error)
@@ -760,6 +763,7 @@ int dna_engine_delete_identity_sync(
 dna_request_id_t dna_engine_load_identity(
     dna_engine_t *engine,
     const char *fingerprint,
+    const char *password,
     dna_completion_cb callback,
     void *user_data
 );
@@ -915,6 +919,36 @@ int dna_engine_get_mnemonic(
     dna_engine_t *engine,
     char *mnemonic_out,
     size_t mnemonic_size
+);
+
+/**
+ * Change password for identity keys
+ *
+ * Changes the password used to encrypt the identity's private keys
+ * (.dsa, .kem) and mnemonic file. All files are re-encrypted with
+ * the new password atomically.
+ *
+ * Requirements:
+ * - Identity must be loaded
+ * - Old password must be correct (or NULL if keys are unencrypted)
+ * - New password should be strong (recommended: 12+ characters)
+ *
+ * Files updated:
+ * - ~/.dna/<fingerprint>/keys/<fingerprint>.dsa
+ * - ~/.dna/<fingerprint>/keys/<fingerprint>.kem
+ * - ~/.dna/<fingerprint>/mnemonic.enc
+ *
+ * @param engine        Engine instance
+ * @param old_password  Current password (NULL if keys are unencrypted)
+ * @param new_password  New password (NULL to remove encryption - not recommended)
+ * @return              0 on success, negative error code on failure
+ *                      DNA_ENGINE_ERROR_WRONG_PASSWORD if old password is incorrect
+ *                      DNA_ENGINE_ERROR_NOT_INITIALIZED if no identity loaded
+ */
+int dna_engine_change_password_sync(
+    dna_engine_t *engine,
+    const char *old_password,
+    const char *new_password
 );
 
 /* ============================================================================

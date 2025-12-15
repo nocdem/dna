@@ -97,6 +97,7 @@ set(COMMON_SOURCES
     # NOTE: qgp_log.c is ONLY in dht_lib to ensure single copy of static vars
     # SDK Independence: Infrastructure modules
     crypto/utils/qgp_key.c
+    crypto/utils/key_encryption.c
     crypto/utils/qgp_signature.c
     crypto/utils/qgp_utils_standalone.c
     crypto/utils/avatar_utils.c     # Avatar processing (stb_image)

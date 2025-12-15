@@ -70,6 +70,21 @@ int cellframe_wallet_create_from_seed(
     char *address_out
 );
 
+/**
+ * Derive Cellframe wallet address from seed (address only, no file)
+ *
+ * Same derivation as cellframe_wallet_create_from_seed but only returns
+ * the address without creating any wallet file. Used for on-demand derivation.
+ *
+ * @param seed          32-byte seed (from SHA3-256 of mnemonic)
+ * @param address_out   Buffer for generated address (CF_WALLET_ADDRESS_MAX bytes)
+ * @return 0 on success, -1 on error
+ */
+int cellframe_wallet_derive_address(
+    const uint8_t seed[CF_WALLET_SEED_SIZE],
+    char *address_out
+);
+
 #ifdef __cplusplus
 }
 #endif

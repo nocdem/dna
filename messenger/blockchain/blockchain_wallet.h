@@ -277,6 +277,52 @@ int blockchain_send_tokens(
     char *tx_hash_out
 );
 
+/* ============================================================================
+ * ON-DEMAND WALLET DERIVATION (No wallet files required)
+ * ============================================================================ */
+
+/**
+ * Derive wallet addresses from master seed without creating files
+ *
+ * Used when wallet files don't exist - derives addresses on-demand from mnemonic.
+ * Private keys are NOT stored, only addresses are returned.
+ *
+ * @param master_seed   64-byte BIP39 master seed
+ * @param fingerprint   Identity fingerprint (used for wallet naming)
+ * @param list_out      Output: allocated wallet list (caller must free)
+ * @return              0 on success, -1 on error
+ */
+int blockchain_derive_wallets_from_seed(
+    const uint8_t master_seed[64],
+    const char *fingerprint,
+    blockchain_wallet_list_t **list_out
+);
+
+/**
+ * Send tokens using on-demand derived wallet
+ *
+ * Derives private key from seed, signs transaction, then immediately clears key.
+ * No wallet files are read or created.
+ *
+ * @param type          Blockchain type
+ * @param master_seed   64-byte BIP39 master seed
+ * @param to_address    Recipient address
+ * @param amount        Amount to send (decimal string, e.g., "0.1")
+ * @param token         Token symbol (NULL or empty for native token)
+ * @param gas_speed     Gas speed preset (ETH only, ignored for others)
+ * @param tx_hash_out   Output: transaction hash (128 bytes min)
+ * @return              0 on success, -1 on error
+ */
+int blockchain_send_tokens_with_seed(
+    blockchain_type_t type,
+    const uint8_t master_seed[64],
+    const char *to_address,
+    const char *amount,
+    const char *token,
+    int gas_speed,
+    char *tx_hash_out
+);
+
 #ifdef __cplusplus
 }
 #endif

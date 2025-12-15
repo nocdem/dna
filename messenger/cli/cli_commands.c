@@ -291,6 +291,7 @@ void cmd_help(void) {
     printf("  list                       - List all available identities\n");
     printf("  load <fingerprint>         - Load an identity (can use prefix)\n");
     printf("  whoami                     - Show current identity\n");
+    printf("  change-password            - Change password for current identity\n");
     printf("  register <name>            - Register a name on DHT\n");
     printf("  name                       - Show registered name\n");
     printf("  lookup <name>              - Check if name is available\n");
@@ -479,7 +480,7 @@ int cmd_load(dna_engine_t *engine, const char *fingerprint) {
     cli_wait_t wait;
     cli_wait_init(&wait);
 
-    dna_engine_load_identity(engine, fingerprint, on_completion, &wait);
+    dna_engine_load_identity(engine, fingerprint, NULL, on_completion, &wait);
     int result = cli_wait_for(&wait);
     cli_wait_destroy(&wait);
 
@@ -550,6 +551,87 @@ void cmd_whoami(dna_engine_t *engine) {
         printf("Current identity: %s\n", fp);
     } else {
         printf("No identity loaded. Use 'load <fingerprint>' or 'create <name>'.\n");
+    }
+}
+
+void cmd_change_password(dna_engine_t *engine) {
+    if (!engine) {
+        printf("Error: Engine not initialized\n");
+        return;
+    }
+
+    const char *fp = dna_engine_get_fingerprint(engine);
+    if (!fp) {
+        printf("Error: No identity loaded. Use 'load <fingerprint>' first.\n");
+        return;
+    }
+
+    /* Prompt for old password */
+    char old_password[256] = {0};
+    printf("Enter current password (or press Enter if none): ");
+    fflush(stdout);
+    if (fgets(old_password, sizeof(old_password), stdin)) {
+        /* Remove trailing newline */
+        size_t len = strlen(old_password);
+        if (len > 0 && old_password[len - 1] == '\n') {
+            old_password[len - 1] = '\0';
+        }
+    }
+
+    /* Prompt for new password */
+    char new_password[256] = {0};
+    printf("Enter new password (or press Enter to remove password): ");
+    fflush(stdout);
+    if (fgets(new_password, sizeof(new_password), stdin)) {
+        /* Remove trailing newline */
+        size_t len = strlen(new_password);
+        if (len > 0 && new_password[len - 1] == '\n') {
+            new_password[len - 1] = '\0';
+        }
+    }
+
+    /* Confirm new password if setting one */
+    if (strlen(new_password) > 0) {
+        char confirm_password[256] = {0};
+        printf("Confirm new password: ");
+        fflush(stdout);
+        if (fgets(confirm_password, sizeof(confirm_password), stdin)) {
+            size_t len = strlen(confirm_password);
+            if (len > 0 && confirm_password[len - 1] == '\n') {
+                confirm_password[len - 1] = '\0';
+            }
+        }
+
+        if (strcmp(new_password, confirm_password) != 0) {
+            printf("Error: Passwords do not match\n");
+            memset(old_password, 0, sizeof(old_password));
+            memset(new_password, 0, sizeof(new_password));
+            memset(confirm_password, 0, sizeof(confirm_password));
+            return;
+        }
+        memset(confirm_password, 0, sizeof(confirm_password));
+    }
+
+    /* Change password */
+    const char *old_pwd = (strlen(old_password) > 0) ? old_password : NULL;
+    const char *new_pwd = (strlen(new_password) > 0) ? new_password : NULL;
+
+    int result = dna_engine_change_password_sync(engine, old_pwd, new_pwd);
+
+    /* Clear passwords from memory */
+    memset(old_password, 0, sizeof(old_password));
+    memset(new_password, 0, sizeof(new_password));
+
+    if (result == 0) {
+        if (new_pwd) {
+            printf("Password changed successfully.\n");
+        } else {
+            printf("Password removed successfully.\n");
+        }
+    } else if (result == DNA_ENGINE_ERROR_WRONG_PASSWORD) {
+        printf("Error: Current password is incorrect\n");
+    } else {
+        printf("Error: Failed to change password (code: %d)\n", result);
     }
 }
 
@@ -1525,6 +1607,9 @@ bool execute_command(dna_engine_t *engine, const char *line) {
     }
     else if (strcmp(cmd, "whoami") == 0) {
         cmd_whoami(engine);
+    }
+    else if (strcmp(cmd, "change-password") == 0) {
+        cmd_change_password(engine);
     }
     else if (strcmp(cmd, "register") == 0) {
         char *name = strtok(NULL, " \t");
