@@ -981,18 +981,19 @@ class DnaBindings {
   }
 
   late final _dna_engine_load_identity = _lib.lookupFunction<
-      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+      Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
           Pointer<DnaCompletionCb>, Pointer<Void>),
-      int Function(Pointer<dna_engine_t>, Pointer<Utf8>,
+      int Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
           Pointer<DnaCompletionCb>, Pointer<Void>)>('dna_engine_load_identity');
 
   int dna_engine_load_identity(
     Pointer<dna_engine_t> engine,
     Pointer<Utf8> fingerprint,
+    Pointer<Utf8> password,
     Pointer<DnaCompletionCb> callback,
     Pointer<Void> user_data,
   ) {
-    return _dna_engine_load_identity(engine, fingerprint, callback, user_data);
+    return _dna_engine_load_identity(engine, fingerprint, password, callback, user_data);
   }
 
   late final _dna_engine_get_mnemonic = _lib.lookupFunction<

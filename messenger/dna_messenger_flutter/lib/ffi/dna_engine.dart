@@ -1176,14 +1176,19 @@ class DnaEngine {
   }
 
   /// Load and activate identity
-  Future<void> loadIdentity(String fingerprint) async {
+  ///
+  /// [fingerprint] - Identity fingerprint (128 hex chars)
+  /// [password] - Optional password for encrypted keys (null if unencrypted)
+  Future<void> loadIdentity(String fingerprint, {String? password}) async {
     final completer = Completer<void>();
     final localId = _nextLocalId++;
 
     final fpPtr = fingerprint.toNativeUtf8();
+    final pwPtr = password?.toNativeUtf8();
 
     void onComplete(int requestId, int error, Pointer<Void> userData) {
       calloc.free(fpPtr);
+      if (pwPtr != null) calloc.free(pwPtr);
 
       if (error == 0) {
         completer.complete();
@@ -1199,12 +1204,14 @@ class DnaEngine {
     final requestId = _bindings.dna_engine_load_identity(
       _engine,
       fpPtr.cast(),
+      pwPtr?.cast() ?? nullptr,
       callback.nativeFunction.cast(),
       nullptr,
     );
 
     if (requestId == 0) {
       calloc.free(fpPtr);
+      if (pwPtr != null) calloc.free(pwPtr);
       _cleanupRequest(localId);
       throw DnaEngineException(-1, 'Failed to submit request');
     }
