@@ -1245,6 +1245,202 @@ extern "C" int dht_get_all(dht_context_t *ctx,
 }
 
 /**
+ * Batch GET - retrieve multiple keys in parallel
+ */
+extern "C" void dht_get_batch(
+    dht_context_t *ctx,
+    const uint8_t **keys,
+    const size_t *key_lens,
+    size_t count,
+    dht_batch_callback_t callback,
+    void *userdata)
+{
+    if (!ctx || !keys || !key_lens || count == 0 || !callback) {
+        QGP_LOG_ERROR("DHT", "Invalid parameters in dht_get_batch");
+        if (callback) callback(nullptr, 0, userdata);
+        return;
+    }
+
+    if (!ctx->running) {
+        QGP_LOG_ERROR("DHT", "Node not running in dht_get_batch");
+        callback(nullptr, 0, userdata);
+        return;
+    }
+
+    try {
+        QGP_LOG_INFO("DHT", "BATCH_GET: %zu keys in parallel", count);
+
+        // Build vector of InfoHash keys
+        std::vector<dht::InfoHash> hashes;
+        hashes.reserve(count);
+        for (size_t i = 0; i < count; i++) {
+            hashes.push_back(dht::InfoHash::get(keys[i], key_lens[i]));
+        }
+
+        // Capture callback state
+        struct BatchCallbackState {
+            const uint8_t **keys;
+            const size_t *key_lens;
+            size_t count;
+            dht_batch_callback_t callback;
+            void *userdata;
+        };
+
+        auto state = std::make_shared<BatchCallbackState>();
+        state->keys = keys;
+        state->key_lens = key_lens;
+        state->count = count;
+        state->callback = callback;
+        state->userdata = userdata;
+
+        // Call OpenDHT batch GET
+        dht::DhtRunner::BatchDoneCallback batch_cb = [state](dht::DhtRunner::BatchGetResult&& results) {
+                // Allocate results array for C callback
+                dht_batch_result_t *c_results = (dht_batch_result_t*)calloc(
+                    state->count, sizeof(dht_batch_result_t));
+
+                if (!c_results) {
+                    QGP_LOG_ERROR("DHT", "Failed to allocate batch results");
+                    state->callback(nullptr, 0, state->userdata);
+                    return;
+                }
+
+                // Convert C++ results to C results
+                for (size_t i = 0; i < results.size() && i < state->count; i++) {
+                    auto& [hash, values] = results[i];
+
+                    c_results[i].key = state->keys[i];
+                    c_results[i].key_len = state->key_lens[i];
+
+                    if (!values.empty() && values[0] && !values[0]->data.empty()) {
+                        // Found value - copy first one
+                        c_results[i].value = (uint8_t*)malloc(values[0]->data.size());
+                        if (c_results[i].value) {
+                            memcpy(c_results[i].value, values[0]->data.data(), values[0]->data.size());
+                            c_results[i].value_len = values[0]->data.size();
+                            c_results[i].found = 1;
+                        } else {
+                            c_results[i].found = 0;
+                        }
+                    } else {
+                        // Not found
+                        c_results[i].value = nullptr;
+                        c_results[i].value_len = 0;
+                        c_results[i].found = 0;
+                    }
+                }
+
+                QGP_LOG_INFO("DHT", "BATCH_GET: Complete, %zu results", state->count);
+
+                // Call user callback
+                state->callback(c_results, state->count, state->userdata);
+
+            // Note: c_results values must be freed by caller or in callback
+            // We free the array structure here, but not the value buffers
+            // Actually, the callback owns everything now, so we don't free here
+        };
+
+        ctx->runner.getBatch(hashes, std::move(batch_cb));
+
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR("DHT", "Exception in dht_get_batch: %s", e.what());
+        callback(nullptr, 0, userdata);
+    }
+}
+
+/**
+ * Synchronous batch GET - blocks until all complete
+ */
+extern "C" int dht_get_batch_sync(
+    dht_context_t *ctx,
+    const uint8_t **keys,
+    const size_t *key_lens,
+    size_t count,
+    dht_batch_result_t **results_out)
+{
+    if (!ctx || !keys || !key_lens || count == 0 || !results_out) {
+        QGP_LOG_ERROR("DHT", "Invalid parameters in dht_get_batch_sync");
+        return -1;
+    }
+
+    if (!ctx->running) {
+        QGP_LOG_ERROR("DHT", "Node not running in dht_get_batch_sync");
+        return -1;
+    }
+
+    try {
+        QGP_LOG_INFO("DHT", "BATCH_GET_SYNC: %zu keys in parallel", count);
+
+        // Build vector of InfoHash keys
+        std::vector<dht::InfoHash> hashes;
+        hashes.reserve(count);
+        for (size_t i = 0; i < count; i++) {
+            hashes.push_back(dht::InfoHash::get(keys[i], key_lens[i]));
+        }
+
+        // Call synchronous batch GET
+        auto results = ctx->runner.getBatch(hashes);
+
+        // Allocate results array
+        dht_batch_result_t *c_results = (dht_batch_result_t*)calloc(
+            count, sizeof(dht_batch_result_t));
+
+        if (!c_results) {
+            QGP_LOG_ERROR("DHT", "Failed to allocate batch results");
+            return -1;
+        }
+
+        // Convert C++ results to C results
+        for (size_t i = 0; i < results.size() && i < count; i++) {
+            auto& [hash, values] = results[i];
+
+            c_results[i].key = keys[i];
+            c_results[i].key_len = key_lens[i];
+
+            if (!values.empty() && values[0] && !values[0]->data.empty()) {
+                // Found value - copy first one
+                c_results[i].value = (uint8_t*)malloc(values[0]->data.size());
+                if (c_results[i].value) {
+                    memcpy(c_results[i].value, values[0]->data.data(), values[0]->data.size());
+                    c_results[i].value_len = values[0]->data.size();
+                    c_results[i].found = 1;
+                } else {
+                    c_results[i].found = 0;
+                }
+            } else {
+                // Not found
+                c_results[i].value = nullptr;
+                c_results[i].value_len = 0;
+                c_results[i].found = 0;
+            }
+        }
+
+        QGP_LOG_INFO("DHT", "BATCH_GET_SYNC: Complete, %zu results", count);
+
+        *results_out = c_results;
+        return 0;
+
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR("DHT", "Exception in dht_get_batch_sync: %s", e.what());
+        return -1;
+    }
+}
+
+/**
+ * Free batch results array
+ */
+extern "C" void dht_batch_results_free(dht_batch_result_t *results, size_t count) {
+    if (!results) return;
+
+    for (size_t i = 0; i < count; i++) {
+        if (results[i].value) {
+            free(results[i].value);
+        }
+    }
+    free(results);
+}
+
+/**
  * Delete value from DHT
  */
 extern "C" int dht_delete(dht_context_t *ctx,

@@ -743,6 +743,73 @@ DhtRunner::get(const std::string& key, GetCallback vcb, DoneCallbackSimple dcb, 
 {
     get(InfoHash::get(key), std::move(vcb), std::move(dcb), std::move(f), std::move(w));
 }
+
+void
+DhtRunner::getBatch(const std::vector<InfoHash>& keys, BatchDoneCallback done_cb, Value::Filter f, Where w)
+{
+    if (keys.empty()) {
+        if (done_cb) done_cb({});
+        return;
+    }
+
+    // Shared state for collecting results from all parallel GET operations
+    struct BatchState {
+        std::mutex mtx;
+        std::atomic<size_t> remaining;
+        BatchGetResult results;
+        BatchDoneCallback callback;
+
+        BatchState(size_t count, BatchDoneCallback&& cb)
+            : remaining(count)
+            , results(count)
+            , callback(std::move(cb)) {}
+    };
+
+    auto state = std::make_shared<BatchState>(keys.size(), std::move(done_cb));
+
+    // Fire all GET operations simultaneously
+    for (size_t i = 0; i < keys.size(); i++) {
+        const auto& key = keys[i];
+        auto values = std::make_shared<std::vector<std::shared_ptr<Value>>>();
+
+        get(key,
+            // Value callback - accumulate values for this key
+            [values](const std::vector<std::shared_ptr<Value>>& vlist) {
+                values->insert(values->end(), vlist.begin(), vlist.end());
+                return true;
+            },
+            // Done callback - store result and check if all complete
+            [state, i, key, values](bool /* success */) {
+                {
+                    std::lock_guard<std::mutex> lk(state->mtx);
+                    state->results[i] = {key, std::move(*values)};
+                }
+
+                // Decrement counter and check if all done
+                if (state->remaining.fetch_sub(1) == 1) {
+                    // Last one - call the batch done callback
+                    if (state->callback)
+                        state->callback(std::move(state->results));
+                }
+            },
+            f, w
+        );
+    }
+}
+
+DhtRunner::BatchGetResult
+DhtRunner::getBatch(const std::vector<InfoHash>& keys, Value::Filter f, Where w)
+{
+    auto p = std::make_shared<std::promise<BatchGetResult>>();
+    getBatch(keys,
+        [p](BatchGetResult&& results) {
+            p->set_value(std::move(results));
+        },
+        std::move(f), std::move(w)
+    );
+    return p->get_future().get();
+}
+
 void
 DhtRunner::query(const InfoHash& hash, QueryCallback cb, DoneCallback done_cb, Query q) {
     std::unique_lock<std::mutex> lck(storage_mtx);

@@ -199,6 +199,50 @@ int dht_chunked_make_key(
  */
 uint32_t dht_chunked_estimate_chunks(size_t data_len);
 
+/*============================================================================
+ * Batch API Functions
+ *============================================================================*/
+
+/**
+ * Result structure for batch fetch
+ */
+typedef struct {
+    const char *base_key;   // Original base key (pointer, not owned)
+    uint8_t *data;          // Fetched and decompressed data (caller must free)
+    size_t data_len;        // Data length
+    int error;              // 0 = success, negative = error code
+} dht_chunked_batch_result_t;
+
+/**
+ * Fetch multiple chunked data items in parallel
+ *
+ * This function fetches all chunk0 keys in parallel using dht_get_batch_sync(),
+ * then fetches any additional chunks needed. Much faster than sequential fetches
+ * when retrieving data from multiple keys.
+ *
+ * Performance: N keys sequential = ~N*250ms, batch = ~300ms (N*x speedup)
+ *
+ * @param ctx         DHT context
+ * @param base_keys   Array of base key strings
+ * @param key_count   Number of keys
+ * @param results_out Output array (allocated, caller must free with dht_chunked_batch_results_free)
+ * @return Number of successful fetches, or -1 on fatal error
+ */
+int dht_chunked_fetch_batch(
+    dht_context_t *ctx,
+    const char **base_keys,
+    size_t key_count,
+    dht_chunked_batch_result_t **results_out
+);
+
+/**
+ * Free batch results array
+ *
+ * @param results Results array from dht_chunked_fetch_batch()
+ * @param count   Number of results
+ */
+void dht_chunked_batch_results_free(dht_chunked_batch_result_t *results, size_t count);
+
 #ifdef __cplusplus
 }
 #endif

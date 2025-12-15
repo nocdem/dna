@@ -772,3 +772,174 @@ const char *dht_chunked_strerror(int error) {
         default:                        return "Unknown error";
     }
 }
+
+/*============================================================================
+ * Batch API Implementation
+ *============================================================================*/
+
+int dht_chunked_fetch_batch(
+    dht_context_t *ctx,
+    const char **base_keys,
+    size_t key_count,
+    dht_chunked_batch_result_t **results_out)
+{
+    if (!ctx || !base_keys || key_count == 0 || !results_out) {
+        return -1;
+    }
+
+    struct timespec batch_start;
+    clock_gettime(CLOCK_MONOTONIC, &batch_start);
+
+    QGP_LOG_INFO(LOG_TAG, "BATCH_FETCH: Starting parallel fetch of %zu keys\n", key_count);
+
+    // Allocate results array
+    dht_chunked_batch_result_t *results = (dht_chunked_batch_result_t *)calloc(
+        key_count, sizeof(dht_chunked_batch_result_t));
+    if (!results) {
+        QGP_LOG_ERROR(LOG_TAG, "BATCH_FETCH: Failed to allocate results array\n");
+        return -1;
+    }
+
+    // Initialize results with base keys
+    for (size_t i = 0; i < key_count; i++) {
+        results[i].base_key = base_keys[i];
+        results[i].data = NULL;
+        results[i].data_len = 0;
+        results[i].error = DHT_CHUNK_ERR_DHT_GET;  // Default to not found
+    }
+
+    // Step 1: Build all chunk0 keys
+    uint8_t **chunk0_keys = (uint8_t **)malloc(key_count * sizeof(uint8_t *));
+    size_t *chunk0_key_lens = (size_t *)malloc(key_count * sizeof(size_t));
+    if (!chunk0_keys || !chunk0_key_lens) {
+        QGP_LOG_ERROR(LOG_TAG, "BATCH_FETCH: Failed to allocate key arrays\n");
+        free(chunk0_keys);
+        free(chunk0_key_lens);
+        free(results);
+        return -1;
+    }
+
+    for (size_t i = 0; i < key_count; i++) {
+        chunk0_keys[i] = (uint8_t *)malloc(DHT_CHUNK_KEY_SIZE);
+        if (!chunk0_keys[i]) {
+            for (size_t j = 0; j < i; j++) {
+                free(chunk0_keys[j]);
+            }
+            free(chunk0_keys);
+            free(chunk0_key_lens);
+            free(results);
+            return -1;
+        }
+        dht_chunked_make_key(base_keys[i], 0, chunk0_keys[i]);
+        chunk0_key_lens[i] = DHT_CHUNK_KEY_SIZE;
+    }
+
+    // Step 2: Batch fetch all chunk0 keys in parallel
+    dht_batch_result_t *batch_results = NULL;
+    int batch_ret = dht_get_batch_sync(ctx,
+                                       (const uint8_t **)chunk0_keys,
+                                       chunk0_key_lens,
+                                       key_count,
+                                       &batch_results);
+
+    // Free chunk0 keys (no longer needed)
+    for (size_t i = 0; i < key_count; i++) {
+        free(chunk0_keys[i]);
+    }
+    free(chunk0_keys);
+    free(chunk0_key_lens);
+
+    if (batch_ret != 0 || !batch_results) {
+        QGP_LOG_ERROR(LOG_TAG, "BATCH_FETCH: dht_get_batch_sync failed\n");
+        free(results);
+        return -1;
+    }
+
+    struct timespec batch_get_end;
+    clock_gettime(CLOCK_MONOTONIC, &batch_get_end);
+    long batch_get_ms = (batch_get_end.tv_sec - batch_start.tv_sec) * 1000 +
+                        (batch_get_end.tv_nsec - batch_start.tv_nsec) / 1000000;
+    QGP_LOG_INFO(LOG_TAG, "BATCH_FETCH: Parallel DHT fetch took %ld ms for %zu keys\n",
+                 batch_get_ms, key_count);
+
+    // Step 3: Process each result
+    int success_count = 0;
+    for (size_t i = 0; i < key_count; i++) {
+        if (!batch_results[i].found || !batch_results[i].value || batch_results[i].value_len == 0) {
+            // Not found - already initialized to error
+            continue;
+        }
+
+        // Parse chunk0 header
+        dht_chunk_header_t header0;
+        const uint8_t *payload0;
+        if (deserialize_chunk(batch_results[i].value, batch_results[i].value_len,
+                             &header0, &payload0) != 0) {
+            results[i].error = DHT_CHUNK_ERR_INVALID_FORMAT;
+            continue;
+        }
+
+        uint32_t total_chunks = header0.total_chunks;
+        uint32_t original_size = header0.original_size;
+
+        // Single chunk case - decompress directly
+        if (total_chunks == 1) {
+            uint8_t *decompressed = NULL;
+            size_t decompressed_len = 0;
+            if (decompress_data(payload0, header0.chunk_data_size, original_size,
+                               &decompressed, &decompressed_len) == 0) {
+                results[i].data = decompressed;
+                results[i].data_len = decompressed_len;
+                results[i].error = DHT_CHUNK_OK;
+                success_count++;
+            } else {
+                results[i].error = DHT_CHUNK_ERR_DECOMPRESS;
+            }
+            continue;
+        }
+
+        // Multi-chunk case - need to fetch remaining chunks
+        // For now, fall back to sequential fetch for additional chunks
+        // (This is rare for typical offline messages)
+        QGP_LOG_INFO(LOG_TAG, "BATCH_FETCH: Key %zu needs %u chunks, fetching sequentially\n",
+                     i, total_chunks);
+
+        // Use the existing dht_chunked_fetch for multi-chunk data
+        uint8_t *full_data = NULL;
+        size_t full_len = 0;
+        int fetch_ret = dht_chunked_fetch(ctx, base_keys[i], &full_data, &full_len);
+        if (fetch_ret == DHT_CHUNK_OK) {
+            results[i].data = full_data;
+            results[i].data_len = full_len;
+            results[i].error = DHT_CHUNK_OK;
+            success_count++;
+        } else {
+            results[i].error = fetch_ret;
+        }
+    }
+
+    // Free batch results
+    dht_batch_results_free(batch_results, key_count);
+
+    struct timespec batch_end;
+    clock_gettime(CLOCK_MONOTONIC, &batch_end);
+    long total_ms = (batch_end.tv_sec - batch_start.tv_sec) * 1000 +
+                    (batch_end.tv_nsec - batch_start.tv_nsec) / 1000000;
+
+    QGP_LOG_INFO(LOG_TAG, "BATCH_FETCH: Complete - %d/%zu successful in %ld ms\n",
+                 success_count, key_count, total_ms);
+
+    *results_out = results;
+    return success_count;
+}
+
+void dht_chunked_batch_results_free(dht_chunked_batch_result_t *results, size_t count) {
+    if (!results) return;
+
+    for (size_t i = 0; i < count; i++) {
+        if (results[i].data) {
+            free(results[i].data);
+        }
+    }
+    free(results);
+}

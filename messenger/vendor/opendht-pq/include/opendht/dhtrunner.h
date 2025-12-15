@@ -156,6 +156,34 @@ public:
         return p->get_future();
     }
 
+    /**
+     * Batch GET - retrieve multiple keys in parallel
+     *
+     * Fires all GET operations simultaneously and calls the done callback
+     * once when ALL operations complete. Much faster than sequential GETs
+     * for retrieving data from multiple keys.
+     *
+     * @param keys Vector of InfoHash keys to retrieve
+     * @param cb Callback for each key's values (called per-key as values arrive)
+     * @param done_cb Called once when ALL keys have completed
+     * @param f Optional value filter
+     * @param w Optional where clause
+     */
+    using BatchGetResult = std::vector<std::pair<InfoHash, std::vector<std::shared_ptr<Value>>>>;
+    using BatchDoneCallback = std::function<void(BatchGetResult&&)>;
+
+    void getBatch(const std::vector<InfoHash>& keys, BatchDoneCallback done_cb, Value::Filter f = {}, Where w = {});
+
+    /**
+     * Synchronous batch GET - blocks until all keys are retrieved
+     *
+     * @param keys Vector of InfoHash keys to retrieve
+     * @param f Optional value filter
+     * @param w Optional where clause
+     * @return Vector of (key, values) pairs
+     */
+    BatchGetResult getBatch(const std::vector<InfoHash>& keys, Value::Filter f = {}, Where w = {});
+
     void query(const InfoHash& hash, QueryCallback cb, DoneCallback done_cb = {}, Query q = {});
     void query(const InfoHash& hash, QueryCallback cb, DoneCallbackSimple done_cb = {}, Query q = {}) {
         query(hash, cb, bindDoneCb(done_cb), q);
