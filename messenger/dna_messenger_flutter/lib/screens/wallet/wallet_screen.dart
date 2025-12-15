@@ -1230,27 +1230,28 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   }
 
   List<DropdownMenuItem<String>> _getNetworkItems() {
+    final network = _selectedNetwork.toLowerCase();
     // If Ethereum network, show only Ethereum
-    if (_selectedNetwork == 'Ethereum') {
-      return const [
-        DropdownMenuItem(value: 'Ethereum', child: Text('Ethereum')),
+    if (network == 'ethereum') {
+      return [
+        DropdownMenuItem(value: _selectedNetwork, child: const Text('Ethereum')),
       ];
     }
     // If Solana network, show only Solana
-    if (_selectedNetwork == 'Solana') {
-      return const [
-        DropdownMenuItem(value: 'Solana', child: Text('Solana')),
+    if (network == 'solana') {
+      return [
+        DropdownMenuItem(value: _selectedNetwork, child: const Text('Solana')),
       ];
     }
     // If Tron network, show only Tron
-    if (_selectedNetwork == 'Tron') {
-      return const [
-        DropdownMenuItem(value: 'Tron', child: Text('Tron')),
+    if (network == 'tron') {
+      return [
+        DropdownMenuItem(value: _selectedNetwork, child: const Text('TRON')),
       ];
     }
     // Default: Backbone network
-    return const [
-      DropdownMenuItem(value: 'Backbone', child: Text('Backbone')),
+    return [
+      DropdownMenuItem(value: _selectedNetwork, child: const Text('Backbone')),
     ];
   }
 
