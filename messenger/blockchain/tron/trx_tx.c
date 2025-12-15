@@ -409,7 +409,8 @@ int trx_tx_broadcast(
     json_object_array_add(sig_array, json_object_new_string(sig_hex));
     json_object_object_add(body, "signature", sig_array);
 
-    json_object_object_add(body, "visible", json_object_new_boolean(0));
+    /* Must match visible flag from createtransaction (true = Base58 addresses) */
+    json_object_object_add(body, "visible", json_object_new_boolean(1));
 
     free(raw_data_hex);
 
