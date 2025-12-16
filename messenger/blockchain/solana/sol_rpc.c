@@ -146,6 +146,132 @@ static int sol_rpc_call(
     return 0;
 }
 
+/**
+ * Make batch JSON-RPC call to Solana (multiple requests in one HTTP call)
+ * This avoids rate limiting by sending all requests together
+ *
+ * @param methods Array of method names
+ * @param params Array of params (one per method)
+ * @param count Number of requests
+ * @param results_out Output array of results (caller must free each with json_object_put)
+ * @return 0 on success, -1 on failure
+ */
+static int sol_rpc_batch_call(
+    const char **methods,
+    json_object **params,
+    int count,
+    json_object **results_out
+) {
+    if (count == 0) return 0;
+
+    CURL *curl = curl_easy_init();
+    if (!curl) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize CURL for batch call");
+        return -1;
+    }
+
+    /* Build batch request as JSON array */
+    json_object *batch = json_object_new_array();
+    for (int i = 0; i < count; i++) {
+        json_object *req = json_object_new_object();
+        json_object_object_add(req, "jsonrpc", json_object_new_string("2.0"));
+        json_object_object_add(req, "id", json_object_new_int(i + 1));
+        json_object_object_add(req, "method", json_object_new_string(methods[i]));
+
+        if (params && params[i]) {
+            /* Need to get a reference since we're adding to batch */
+            json_object_object_add(req, "params", json_object_get(params[i]));
+        } else {
+            json_object_object_add(req, "params", json_object_new_array());
+        }
+        json_object_array_add(batch, req);
+    }
+
+    const char *json_str = json_object_to_json_string(batch);
+    QGP_LOG_DEBUG(LOG_TAG, "Batch RPC request (%d calls)", count);
+
+    struct response_buffer resp_buf = {0};
+    struct curl_slist *headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, sol_rpc_get_endpoint());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str);
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, 60L);  /* Longer timeout for batch */
+
+    const char *ca_bundle = qgp_platform_ca_bundle_path();
+    if (ca_bundle) {
+        curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    }
+
+    CURLcode res = curl_easy_perform(curl);
+
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+    json_object_put(batch);
+
+    if (res != CURLE_OK) {
+        QGP_LOG_ERROR(LOG_TAG, "Batch CURL failed: %s", curl_easy_strerror(res));
+        if (resp_buf.data) free(resp_buf.data);
+        return -1;
+    }
+
+    if (!resp_buf.data) {
+        QGP_LOG_ERROR(LOG_TAG, "Empty batch response");
+        return -1;
+    }
+
+    QGP_LOG_DEBUG(LOG_TAG, "Batch RPC response received (len=%zu)", resp_buf.size);
+
+    /* Parse batch response (array of responses) */
+    json_object *resp_array = json_tokener_parse(resp_buf.data);
+    free(resp_buf.data);
+
+    if (!resp_array || !json_object_is_type(resp_array, json_type_array)) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to parse batch JSON response");
+        if (resp_array) json_object_put(resp_array);
+        return -1;
+    }
+
+    int resp_len = json_object_array_length(resp_array);
+
+    /* Initialize all results to NULL */
+    for (int i = 0; i < count; i++) {
+        results_out[i] = NULL;
+    }
+
+    /* Extract results - responses may be out of order, use id to match */
+    for (int i = 0; i < resp_len; i++) {
+        json_object *resp_item = json_object_array_get_idx(resp_array, i);
+
+        json_object *id_obj;
+        if (!json_object_object_get_ex(resp_item, "id", &id_obj)) continue;
+        int id = json_object_get_int(id_obj) - 1;  /* Convert back to 0-indexed */
+        if (id < 0 || id >= count) continue;
+
+        /* Check for error */
+        json_object *error_obj;
+        if (json_object_object_get_ex(resp_item, "error", &error_obj) && error_obj) {
+            json_object *msg_obj;
+            if (json_object_object_get_ex(error_obj, "message", &msg_obj)) {
+                QGP_LOG_DEBUG(LOG_TAG, "Batch item %d error: %s", id, json_object_get_string(msg_obj));
+            }
+            continue;  /* Leave result as NULL */
+        }
+
+        /* Extract result */
+        json_object *result;
+        if (json_object_object_get_ex(resp_item, "result", &result)) {
+            results_out[id] = json_object_get(result);
+        }
+    }
+
+    json_object_put(resp_array);
+    return 0;
+}
+
 /* ============================================================================
  * PUBLIC API
  * ============================================================================ */
@@ -551,29 +677,15 @@ static int64_t parse_spl_token_balances(
 }
 
 /**
- * Helper to get transaction details for a single signature
+ * Helper to parse transaction details from a result object
+ * (can be used with either single call or batch call results)
  */
-static int sol_rpc_get_tx_details(
-    const char *signature,
+static int parse_tx_result(
+    json_object *result,
     const char *our_address,
     sol_transaction_t *tx_out
 ) {
-    /* Build params for getTransaction */
-    json_object *params = json_object_new_array();
-    json_object_array_add(params, json_object_new_string(signature));
-
-    json_object *opts = json_object_new_object();
-    json_object_object_add(opts, "encoding", json_object_new_string("json"));
-    json_object_object_add(opts, "maxSupportedTransactionVersion", json_object_new_int(0));
-    json_object_array_add(params, opts);
-
-    json_object *result = NULL;
-    if (sol_rpc_call("getTransaction", params, &result) != 0) {
-        return -1;
-    }
-
     if (!result || json_object_is_type(result, json_type_null)) {
-        if (result) json_object_put(result);
         return -1;
     }
 
@@ -809,8 +921,35 @@ static int sol_rpc_get_tx_details(
         }
     }
 
-    json_object_put(result);
     return 0;
+}
+
+/**
+ * Helper to get transaction details for a single signature (makes RPC call)
+ * Note: Only used as fallback; prefer batch calls for multiple transactions
+ */
+static int sol_rpc_get_tx_details(
+    const char *signature,
+    const char *our_address,
+    sol_transaction_t *tx_out
+) {
+    /* Build params for getTransaction */
+    json_object *params = json_object_new_array();
+    json_object_array_add(params, json_object_new_string(signature));
+
+    json_object *opts = json_object_new_object();
+    json_object_object_add(opts, "encoding", json_object_new_string("json"));
+    json_object_object_add(opts, "maxSupportedTransactionVersion", json_object_new_int(0));
+    json_object_array_add(params, opts);
+
+    json_object *result = NULL;
+    if (sol_rpc_call("getTransaction", params, &result) != 0) {
+        return -1;
+    }
+
+    int ret = parse_tx_result(result, our_address, tx_out);
+    if (result) json_object_put(result);
+    return ret;
 }
 
 int sol_rpc_get_transactions(
@@ -852,10 +991,12 @@ int sol_rpc_get_transactions(
         return -1;
     }
 
-    int valid_count = 0;
+    /* First pass: collect signatures and basic info from signature list */
+    const char **signatures = calloc(arr_len, sizeof(char*));
+    int sig_count = 0;
+
     for (int i = 0; i < arr_len; i++) {
         json_object *sig_info = json_object_array_get_idx(result, i);
-
         json_object *sig_obj, *err_obj;
 
         if (!json_object_object_get_ex(sig_info, "signature", &sig_obj)) {
@@ -863,33 +1004,80 @@ int sol_rpc_get_transactions(
         }
 
         const char *signature = json_object_get_string(sig_obj);
-        strncpy(txs[valid_count].signature, signature,
-                sizeof(txs[valid_count].signature) - 1);
+        signatures[sig_count] = signature;
+
+        strncpy(txs[sig_count].signature, signature,
+                sizeof(txs[sig_count].signature) - 1);
 
         /* Check error status from signature list */
         if (json_object_object_get_ex(sig_info, "err", &err_obj)) {
-            txs[valid_count].success = json_object_is_type(err_obj, json_type_null);
+            txs[sig_count].success = json_object_is_type(err_obj, json_type_null);
         } else {
-            txs[valid_count].success = true;
+            txs[sig_count].success = true;
         }
 
-        /* Fetch full transaction details */
-        if (sol_rpc_get_tx_details(signature, address, &txs[valid_count]) != 0) {
-            /* If we can't get details, use basic info from signature list */
-            json_object *slot_obj, *time_obj;
-            if (json_object_object_get_ex(sig_info, "slot", &slot_obj)) {
-                txs[valid_count].slot = json_object_get_uint64(slot_obj);
-            }
-            if (json_object_object_get_ex(sig_info, "blockTime", &time_obj) &&
-                !json_object_is_type(time_obj, json_type_null)) {
-                txs[valid_count].block_time = json_object_get_int64(time_obj);
-            }
-            strncpy(txs[valid_count].from, address, sizeof(txs[valid_count].from) - 1);
+        /* Store basic info from signature list as fallback */
+        json_object *slot_obj, *time_obj;
+        if (json_object_object_get_ex(sig_info, "slot", &slot_obj)) {
+            txs[sig_count].slot = json_object_get_uint64(slot_obj);
+        }
+        if (json_object_object_get_ex(sig_info, "blockTime", &time_obj) &&
+            !json_object_is_type(time_obj, json_type_null)) {
+            txs[sig_count].block_time = json_object_get_int64(time_obj);
         }
 
+        sig_count++;
+    }
+
+    /* Build batch params for all getTransaction calls */
+    const char **methods = malloc(sig_count * sizeof(char*));
+    json_object **batch_params = malloc(sig_count * sizeof(json_object*));
+    json_object **batch_results = calloc(sig_count, sizeof(json_object*));
+
+    for (int i = 0; i < sig_count; i++) {
+        methods[i] = "getTransaction";
+
+        json_object *tx_params = json_object_new_array();
+        json_object_array_add(tx_params, json_object_new_string(signatures[i]));
+
+        json_object *tx_opts = json_object_new_object();
+        json_object_object_add(tx_opts, "encoding", json_object_new_string("json"));
+        json_object_object_add(tx_opts, "maxSupportedTransactionVersion", json_object_new_int(0));
+        json_object_array_add(tx_params, tx_opts);
+
+        batch_params[i] = tx_params;
+    }
+
+    /* Make single batch call for all transactions */
+    QGP_LOG_DEBUG(LOG_TAG, "Fetching %d transactions via batch request", sig_count);
+    int batch_ret = sol_rpc_batch_call(methods, batch_params, sig_count, batch_results);
+
+    /* Clean up batch params */
+    for (int i = 0; i < sig_count; i++) {
+        if (batch_params[i]) json_object_put(batch_params[i]);
+    }
+    free(methods);
+    free(batch_params);
+    free(signatures);
+
+    /* Parse results from batch */
+    int valid_count = 0;
+    for (int i = 0; i < sig_count; i++) {
+        if (batch_ret == 0 && batch_results[i]) {
+            /* Parse full transaction details from batch result */
+            if (parse_tx_result(batch_results[i], address, &txs[i]) != 0) {
+                /* Use basic info from signature list (already set above) */
+                strncpy(txs[i].from, address, sizeof(txs[i].from) - 1);
+            }
+            json_object_put(batch_results[i]);
+        } else {
+            /* Batch failed or no result for this tx - use basic info */
+            strncpy(txs[i].from, address, sizeof(txs[i].from) - 1);
+        }
         valid_count++;
     }
 
+    free(batch_results);
     json_object_put(result);
 
     *txs_out = txs;
