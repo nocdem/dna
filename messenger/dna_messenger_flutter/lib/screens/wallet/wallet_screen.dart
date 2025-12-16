@@ -2,9 +2,29 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Wallet;
 import '../../providers/providers.dart' hide UserProfile;
 import '../../theme/dna_theme.dart';
+
+/// Get the SVG icon path for a token
+String? getTokenIconPath(String token) {
+  switch (token.toUpperCase()) {
+    case 'ETH':
+      return 'assets/icons/crypto/eth.svg';
+    case 'SOL':
+      return 'assets/icons/crypto/sol.svg';
+    case 'TRX':
+      return 'assets/icons/crypto/trx.svg';
+    case 'USDT':
+      return 'assets/icons/crypto/usdt.svg';
+    case 'CELL':
+    case 'CPUNK':
+      return 'assets/icons/crypto/cell.svg';
+    default:
+      return null;
+  }
+}
 
 /// Convert internal network name to display label
 String getNetworkDisplayLabel(String network) {
@@ -414,16 +434,29 @@ class _BalanceTile extends ConsumerWidget {
     final theme = Theme.of(context);
     final balance = walletBalance.balance;
 
+    final iconPath = getTokenIconPath(balance.token);
+
     return ListTile(
       leading: CircleAvatar(
         backgroundColor: _getTokenColor(balance.token).withAlpha(51),
-        child: Text(
-          balance.token.isNotEmpty ? balance.token[0].toUpperCase() : '?',
-          style: TextStyle(
-            color: _getTokenColor(balance.token),
-            fontWeight: FontWeight.bold,
-          ),
-        ),
+        child: iconPath != null
+            ? Padding(
+                padding: const EdgeInsets.all(8),
+                child: SvgPicture.asset(
+                  iconPath,
+                  colorFilter: ColorFilter.mode(
+                    _getTokenColor(balance.token),
+                    BlendMode.srcIn,
+                  ),
+                ),
+              )
+            : Text(
+                balance.token.isNotEmpty ? balance.token[0].toUpperCase() : '?',
+                style: TextStyle(
+                  color: _getTokenColor(balance.token),
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
       ),
       title: Text(balance.token),
       subtitle: Text(getNetworkDisplayLabel(balance.network)),
@@ -1379,47 +1412,63 @@ class _TokenDetailSheet extends ConsumerWidget {
                 padding: const EdgeInsets.all(16),
                 child: Column(
                   children: [
-                    Row(
-                      children: [
-                        CircleAvatar(
-                          backgroundColor: _getTokenColor(token).withAlpha(51),
-                          radius: 24,
-                          child: Text(
-                            token.isNotEmpty ? token[0].toUpperCase() : '?',
-                            style: TextStyle(
-                              color: _getTokenColor(token),
-                              fontWeight: FontWeight.bold,
-                              fontSize: 20,
+                    Builder(
+                      builder: (context) {
+                        final iconPath = getTokenIconPath(token);
+                        return Row(
+                          children: [
+                            CircleAvatar(
+                              backgroundColor: _getTokenColor(token).withAlpha(51),
+                              radius: 24,
+                              child: iconPath != null
+                                  ? Padding(
+                                      padding: const EdgeInsets.all(10),
+                                      child: SvgPicture.asset(
+                                        iconPath,
+                                        colorFilter: ColorFilter.mode(
+                                          _getTokenColor(token),
+                                          BlendMode.srcIn,
+                                        ),
+                                      ),
+                                    )
+                                  : Text(
+                                      token.isNotEmpty ? token[0].toUpperCase() : '?',
+                                      style: TextStyle(
+                                        color: _getTokenColor(token),
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 20,
+                                      ),
+                                    ),
                             ),
-                          ),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                '$balance $token',
-                                style: theme.textTheme.headlineSmall?.copyWith(
-                                  fontWeight: FontWeight.bold,
-                                ),
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    '$balance $token',
+                                    style: theme.textTheme.headlineSmall?.copyWith(
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                  Text(
+                                    getNetworkDisplayLabel(network),
+                                    style: theme.textTheme.bodySmall,
+                                  ),
+                                ],
                               ),
-                              Text(
-                                getNetworkDisplayLabel(network),
-                                style: theme.textTheme.bodySmall,
-                              ),
-                            ],
-                          ),
-                        ),
-                        IconButton(
-                          icon: const Icon(Icons.refresh),
-                          onPressed: () {
-                            ref.invalidate(balancesProvider(walletIndex));
-                            ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network == 'Ethereum' ? 'Ethereum' : 'Backbone')));
-                          },
-                          tooltip: 'Refresh',
-                        ),
-                      ],
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.refresh),
+                              onPressed: () {
+                                ref.invalidate(balancesProvider(walletIndex));
+                                ref.invalidate(transactionsProvider((walletIndex: walletIndex, network: network == 'Ethereum' ? 'Ethereum' : 'Backbone')));
+                              },
+                              tooltip: 'Refresh',
+                            ),
+                          ],
+                        );
+                      },
                     ),
                     const SizedBox(height: 16),
                     // Address section
