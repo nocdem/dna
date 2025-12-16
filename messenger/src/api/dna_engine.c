@@ -85,6 +85,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "blockchain/ethereum/eth_erc20.h"
 #include "blockchain/solana/sol_wallet.h"
 #include "blockchain/solana/sol_rpc.h"
+#include "blockchain/solana/sol_spl.h"
 #include "blockchain/tron/trx_wallet.h"
 #include "blockchain/tron/trx_rpc.h"
 #include "blockchain/tron/trx_trc20.h"
@@ -2619,14 +2620,15 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     }
 
     if (wallet_info->type == BLOCKCHAIN_SOLANA) {
-        /* Solana: SOL only (SPL tokens not yet supported) */
-        balances = calloc(1, sizeof(dna_balance_t));
+        /* Solana: SOL + USDT (SPL) */
+        balances = calloc(2, sizeof(dna_balance_t));
         if (!balances) {
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
-        count = 1;
+        count = 2;
 
+        /* Native SOL balance */
         strncpy(balances[0].token, "SOL", sizeof(balances[0].token) - 1);
         strncpy(balances[0].network, "Solana", sizeof(balances[0].network) - 1);
         strcpy(balances[0].balance, "0.0");
@@ -2634,6 +2636,16 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
         blockchain_balance_t bc_balance;
         if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
             strncpy(balances[0].balance, bc_balance.balance, sizeof(balances[0].balance) - 1);
+        }
+
+        /* USDT (SPL) balance */
+        strncpy(balances[1].token, "USDT", sizeof(balances[1].token) - 1);
+        strncpy(balances[1].network, "Solana", sizeof(balances[1].network) - 1);
+        strcpy(balances[1].balance, "0");
+
+        char usdt_balance[64] = {0};
+        if (sol_spl_get_balance_by_symbol(wallet_info->address, "USDT", usdt_balance, sizeof(usdt_balance)) == 0) {
+            strncpy(balances[1].balance, usdt_balance, sizeof(balances[1].balance) - 1);
         }
 
         goto done;
