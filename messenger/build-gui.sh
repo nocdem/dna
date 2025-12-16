@@ -132,7 +132,9 @@ run_flutter() {
         if [ -f "$ASAN_LIB" ]; then
             echo -e "${YELLOW}Preloading ASAN runtime: $ASAN_LIB${NC}"
             # Disable LeakSanitizer - Dart VM has leaks we can't control
-            ASAN_OPTIONS=detect_leaks=0 LD_PRELOAD="$ASAN_LIB" flutter run -d linux "${FLUTTER_ARGS[@]}"
+            # GLYCIN_DISABLE_SANDBOX: Prevents glycin SVG loader from using bwrap sandbox
+            # which crashes when ASAN is preloaded (sandbox child process inherits LD_PRELOAD)
+            GLYCIN_DISABLE_SANDBOX=1 ASAN_OPTIONS=detect_leaks=0 LD_PRELOAD="$ASAN_LIB" flutter run -d linux "${FLUTTER_ARGS[@]}"
         else
             echo -e "${RED}Warning: ASAN library not found, running without preload${NC}"
             flutter run -d linux "${FLUTTER_ARGS[@]}"
