@@ -348,6 +348,209 @@ static const char* get_account_key_str(json_object *key_obj) {
 }
 
 /**
+ * Helper to get account key at index, considering both static and loaded addresses
+ * For versioned transactions, addresses can come from:
+ * - staticAccountKeys (indices 0 to N-1)
+ * - loadedAddresses.writable (indices N to N+W-1)
+ * - loadedAddresses.readonly (indices N+W to N+W+R-1)
+ */
+static const char* get_full_account_key(
+    json_object *account_keys_obj,
+    json_object *loaded_addresses_obj,
+    int index,
+    int num_static_keys
+) {
+    if (index < num_static_keys) {
+        /* Static key */
+        return get_account_key_str(json_object_array_get_idx(account_keys_obj, index));
+    }
+
+    if (!loaded_addresses_obj) {
+        return NULL;
+    }
+
+    int loaded_index = index - num_static_keys;
+
+    /* Try writable loaded addresses first */
+    json_object *writable_obj;
+    if (json_object_object_get_ex(loaded_addresses_obj, "writable", &writable_obj)) {
+        int writable_len = json_object_array_length(writable_obj);
+        if (loaded_index < writable_len) {
+            return json_object_get_string(json_object_array_get_idx(writable_obj, loaded_index));
+        }
+        loaded_index -= writable_len;
+    }
+
+    /* Then readonly loaded addresses */
+    json_object *readonly_obj;
+    if (json_object_object_get_ex(loaded_addresses_obj, "readonly", &readonly_obj)) {
+        int readonly_len = json_object_array_length(readonly_obj);
+        if (loaded_index < readonly_len) {
+            return json_object_get_string(json_object_array_get_idx(readonly_obj, loaded_index));
+        }
+    }
+
+    return NULL;
+}
+
+/**
+ * Parse SPL token balances to detect token transfers
+ * Returns the token amount change for our address (positive = received, negative = sent)
+ */
+static int64_t parse_spl_token_balances(
+    json_object *pre_token_balances,
+    json_object *post_token_balances,
+    const char *our_address,
+    char *counterparty_out,
+    size_t counterparty_size,
+    char *mint_out,
+    size_t mint_size
+) {
+    if (!our_address) {
+        return 0;
+    }
+
+    int pre_len = pre_token_balances ? json_object_array_length(pre_token_balances) : 0;
+    int post_len = post_token_balances ? json_object_array_length(post_token_balances) : 0;
+
+    int64_t our_change = 0;
+    const char *counterparty = NULL;
+    const char *token_mint = NULL;
+
+    /* First pass: find our token balance change in post balances */
+    for (int i = 0; i < post_len; i++) {
+        json_object *post_entry = json_object_array_get_idx(post_token_balances, i);
+        json_object *owner_obj;
+
+        if (!json_object_object_get_ex(post_entry, "owner", &owner_obj)) {
+            continue;
+        }
+        const char *owner = json_object_get_string(owner_obj);
+        if (!owner) continue;
+
+        json_object *ui_token_amount;
+        if (!json_object_object_get_ex(post_entry, "uiTokenAmount", &ui_token_amount)) {
+            continue;
+        }
+
+        /* Get mint address */
+        json_object *mint_obj;
+        const char *mint = NULL;
+        if (json_object_object_get_ex(post_entry, "mint", &mint_obj)) {
+            mint = json_object_get_string(mint_obj);
+        }
+
+        /* Get account index to match with pre-balance */
+        json_object *account_idx_obj;
+        int account_idx = -1;
+        if (json_object_object_get_ex(post_entry, "accountIndex", &account_idx_obj)) {
+            account_idx = json_object_get_int(account_idx_obj);
+        }
+
+        /* Get post balance as raw amount string */
+        json_object *amount_obj;
+        int64_t post_amount = 0;
+        if (json_object_object_get_ex(ui_token_amount, "amount", &amount_obj)) {
+            post_amount = strtoll(json_object_get_string(amount_obj), NULL, 10);
+        }
+
+        /* Find corresponding pre-balance */
+        int64_t pre_amount = 0;
+        for (int j = 0; j < pre_len; j++) {
+            json_object *pre_entry = json_object_array_get_idx(pre_token_balances, j);
+            json_object *pre_idx_obj;
+            if (json_object_object_get_ex(pre_entry, "accountIndex", &pre_idx_obj)) {
+                if (json_object_get_int(pre_idx_obj) == account_idx) {
+                    json_object *pre_ui_token_amount;
+                    if (json_object_object_get_ex(pre_entry, "uiTokenAmount", &pre_ui_token_amount)) {
+                        json_object *pre_amt_obj;
+                        if (json_object_object_get_ex(pre_ui_token_amount, "amount", &pre_amt_obj)) {
+                            pre_amount = strtoll(json_object_get_string(pre_amt_obj), NULL, 10);
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+
+        int64_t change = post_amount - pre_amount;
+
+        if (strcmp(owner, our_address) == 0 && change != 0) {
+            our_change = change;
+            token_mint = mint;
+        } else if (change != 0 && !counterparty) {
+            counterparty = owner;
+        }
+    }
+
+    /* Also check pre-balances for accounts that no longer exist in post */
+    for (int i = 0; i < pre_len; i++) {
+        json_object *pre_entry = json_object_array_get_idx(pre_token_balances, i);
+        json_object *owner_obj;
+
+        if (!json_object_object_get_ex(pre_entry, "owner", &owner_obj)) {
+            continue;
+        }
+        const char *owner = json_object_get_string(owner_obj);
+        if (!owner) continue;
+
+        json_object *account_idx_obj;
+        int account_idx = -1;
+        if (json_object_object_get_ex(pre_entry, "accountIndex", &account_idx_obj)) {
+            account_idx = json_object_get_int(account_idx_obj);
+        }
+
+        /* Check if this account exists in post */
+        bool found_in_post = false;
+        for (int j = 0; j < post_len; j++) {
+            json_object *post_entry = json_object_array_get_idx(post_token_balances, j);
+            json_object *post_idx_obj;
+            if (json_object_object_get_ex(post_entry, "accountIndex", &post_idx_obj)) {
+                if (json_object_get_int(post_idx_obj) == account_idx) {
+                    found_in_post = true;
+                    break;
+                }
+            }
+        }
+
+        if (!found_in_post) {
+            /* Get mint address */
+            json_object *mint_obj;
+            const char *mint = NULL;
+            if (json_object_object_get_ex(pre_entry, "mint", &mint_obj)) {
+                mint = json_object_get_string(mint_obj);
+            }
+
+            json_object *ui_token_amount;
+            if (json_object_object_get_ex(pre_entry, "uiTokenAmount", &ui_token_amount)) {
+                json_object *amount_obj;
+                if (json_object_object_get_ex(ui_token_amount, "amount", &amount_obj)) {
+                    int64_t pre_amount = strtoll(json_object_get_string(amount_obj), NULL, 10);
+                    if (strcmp(owner, our_address) == 0 && pre_amount > 0) {
+                        our_change = -pre_amount;
+                        token_mint = mint;
+                    } else if (pre_amount > 0 && our_change > 0 && !counterparty) {
+                        counterparty = owner;
+                    }
+                }
+            }
+        }
+    }
+
+    /* Set outputs */
+    if (counterparty && counterparty_out && counterparty_size > 0) {
+        strncpy(counterparty_out, counterparty, counterparty_size - 1);
+        counterparty_out[counterparty_size - 1] = '\0';
+    }
+    if (token_mint && mint_out && mint_size > 0) {
+        strncpy(mint_out, token_mint, mint_size - 1);
+        mint_out[mint_size - 1] = '\0';
+    }
+
+    return our_change;
+}
+
+/**
  * Helper to get transaction details for a single signature
  */
 static int sol_rpc_get_tx_details(
@@ -411,20 +614,42 @@ static int sol_rpc_get_tx_details(
                 json_object_object_get_ex(message_obj, "staticAccountKeys", &account_keys_obj);
             }
 
-            if (account_keys_obj) {
-                int num_accounts = json_object_array_length(account_keys_obj);
-                int num_balances = json_object_array_length(pre_balances);
-                int our_index = -1;
+            /* Get loaded addresses for versioned transactions */
+            json_object *loaded_addresses_obj = NULL;
+            json_object_object_get_ex(meta_obj, "loadedAddresses", &loaded_addresses_obj);
 
-                /* Find our address in account keys */
-                for (int i = 0; i < num_accounts; i++) {
-                    const char *key_str = get_account_key_str(
-                        json_object_array_get_idx(account_keys_obj, i));
+            if (account_keys_obj) {
+                int num_static_keys = json_object_array_length(account_keys_obj);
+                int num_balances = json_object_array_length(pre_balances);
+
+                /* Calculate total number of accounts (static + loaded) */
+                int num_loaded_writable = 0, num_loaded_readonly = 0;
+                if (loaded_addresses_obj) {
+                    json_object *writable_obj, *readonly_obj;
+                    if (json_object_object_get_ex(loaded_addresses_obj, "writable", &writable_obj)) {
+                        num_loaded_writable = json_object_array_length(writable_obj);
+                    }
+                    if (json_object_object_get_ex(loaded_addresses_obj, "readonly", &readonly_obj)) {
+                        num_loaded_readonly = json_object_array_length(readonly_obj);
+                    }
+                }
+                int total_accounts = num_static_keys + num_loaded_writable + num_loaded_readonly;
+
+                /* Find our address in ALL account keys (static + loaded) */
+                int our_index = -1;
+                for (int i = 0; i < total_accounts && i < num_balances; i++) {
+                    const char *key_str = get_full_account_key(
+                        account_keys_obj, loaded_addresses_obj, i, num_static_keys);
                     if (key_str && strcmp(key_str, our_address) == 0) {
                         our_index = i;
                         break;
                     }
                 }
+
+                /* Check for SPL token transfers first */
+                json_object *pre_token_balances = NULL, *post_token_balances = NULL;
+                json_object_object_get_ex(meta_obj, "preTokenBalances", &pre_token_balances);
+                json_object_object_get_ex(meta_obj, "postTokenBalances", &post_token_balances);
 
                 /* If we found our address and have balance data */
                 if (our_index >= 0 && our_index < num_balances) {
@@ -434,7 +659,37 @@ static int sol_rpc_get_tx_details(
                         json_object_array_get_idx(post_balances, our_index));
                     int64_t diff = post - pre;
 
-                    if (diff < 0) {
+                    /* Check if this is an SPL token transfer */
+                    /* Token transfers have small native SOL changes (just fees) but token balance changes */
+                    char counterparty[48] = {0};
+                    char mint[48] = {0};
+                    int64_t token_change = parse_spl_token_balances(
+                        pre_token_balances, post_token_balances,
+                        our_address, counterparty, sizeof(counterparty),
+                        mint, sizeof(mint));
+
+                    if (token_change != 0) {
+                        /* SPL token transfer detected */
+                        tx_out->is_token_transfer = true;
+                        if (mint[0]) {
+                            strncpy(tx_out->token_mint, mint, sizeof(tx_out->token_mint) - 1);
+                        }
+                        if (token_change < 0) {
+                            tx_out->lamports = (uint64_t)(-token_change);
+                            tx_out->is_outgoing = true;
+                            strncpy(tx_out->from, our_address, sizeof(tx_out->from) - 1);
+                            if (counterparty[0]) {
+                                strncpy(tx_out->to, counterparty, sizeof(tx_out->to) - 1);
+                            }
+                        } else {
+                            tx_out->lamports = (uint64_t)token_change;
+                            tx_out->is_outgoing = false;
+                            strncpy(tx_out->to, our_address, sizeof(tx_out->to) - 1);
+                            if (counterparty[0]) {
+                                strncpy(tx_out->from, counterparty, sizeof(tx_out->from) - 1);
+                            }
+                        }
+                    } else if (diff < 0) {
                         /* We sent (balance decreased) */
                         tx_out->lamports = (uint64_t)(-diff);
                         tx_out->is_outgoing = true;
@@ -443,7 +698,7 @@ static int sol_rpc_get_tx_details(
                         /* Find recipient with largest positive balance change */
                         int64_t max_received = 0;
                         int recipient_idx = -1;
-                        for (int i = 0; i < num_balances && i < num_accounts; i++) {
+                        for (int i = 0; i < num_balances && i < total_accounts; i++) {
                             if (i == our_index) continue;
                             int64_t o_pre = json_object_get_int64(
                                 json_object_array_get_idx(pre_balances, i));
@@ -456,8 +711,8 @@ static int sol_rpc_get_tx_details(
                             }
                         }
                         if (recipient_idx >= 0) {
-                            const char *key_str = get_account_key_str(
-                                json_object_array_get_idx(account_keys_obj, recipient_idx));
+                            const char *key_str = get_full_account_key(
+                                account_keys_obj, loaded_addresses_obj, recipient_idx, num_static_keys);
                             if (key_str) {
                                 strncpy(tx_out->to, key_str, sizeof(tx_out->to) - 1);
                             }
@@ -471,7 +726,7 @@ static int sol_rpc_get_tx_details(
                         /* Find sender with largest negative balance change */
                         int64_t max_sent = 0;
                         int sender_idx = -1;
-                        for (int i = 0; i < num_balances && i < num_accounts; i++) {
+                        for (int i = 0; i < num_balances && i < total_accounts; i++) {
                             if (i == our_index) continue;
                             int64_t o_pre = json_object_get_int64(
                                 json_object_array_get_idx(pre_balances, i));
@@ -484,20 +739,20 @@ static int sol_rpc_get_tx_details(
                             }
                         }
                         if (sender_idx >= 0) {
-                            const char *key_str = get_account_key_str(
-                                json_object_array_get_idx(account_keys_obj, sender_idx));
+                            const char *key_str = get_full_account_key(
+                                account_keys_obj, loaded_addresses_obj, sender_idx, num_static_keys);
                             if (key_str) {
                                 strncpy(tx_out->from, key_str, sizeof(tx_out->from) - 1);
                             }
                         }
                     }
                 } else {
-                    /* Address not found - scan all balance changes */
+                    /* Address not found in static or loaded keys - scan all balance changes */
                     /* Find the largest positive and negative balance changes */
                     int64_t max_increase = 0, max_decrease = 0;
                     int increase_idx = -1, decrease_idx = -1;
 
-                    for (int i = 0; i < num_balances && i < num_accounts; i++) {
+                    for (int i = 0; i < num_balances && i < total_accounts; i++) {
                         int64_t pre = json_object_get_int64(
                             json_object_array_get_idx(pre_balances, i));
                         int64_t post = json_object_get_int64(
@@ -516,15 +771,15 @@ static int sol_rpc_get_tx_details(
 
                     /* Check if we're the recipient (largest increase) */
                     if (increase_idx >= 0) {
-                        const char *key_str = get_account_key_str(
-                            json_object_array_get_idx(account_keys_obj, increase_idx));
+                        const char *key_str = get_full_account_key(
+                            account_keys_obj, loaded_addresses_obj, increase_idx, num_static_keys);
                         if (key_str && strcmp(key_str, our_address) == 0) {
                             tx_out->lamports = (uint64_t)max_increase;
                             tx_out->is_outgoing = false;
                             strncpy(tx_out->to, our_address, sizeof(tx_out->to) - 1);
                             if (decrease_idx >= 0) {
-                                const char *sender = get_account_key_str(
-                                    json_object_array_get_idx(account_keys_obj, decrease_idx));
+                                const char *sender = get_full_account_key(
+                                    account_keys_obj, loaded_addresses_obj, decrease_idx, num_static_keys);
                                 if (sender) {
                                     strncpy(tx_out->from, sender, sizeof(tx_out->from) - 1);
                                 }
@@ -534,15 +789,15 @@ static int sol_rpc_get_tx_details(
 
                     /* Check if we're the sender (largest decrease) */
                     if (decrease_idx >= 0 && tx_out->lamports == 0) {
-                        const char *key_str = get_account_key_str(
-                            json_object_array_get_idx(account_keys_obj, decrease_idx));
+                        const char *key_str = get_full_account_key(
+                            account_keys_obj, loaded_addresses_obj, decrease_idx, num_static_keys);
                         if (key_str && strcmp(key_str, our_address) == 0) {
                             tx_out->lamports = (uint64_t)max_decrease;
                             tx_out->is_outgoing = true;
                             strncpy(tx_out->from, our_address, sizeof(tx_out->from) - 1);
                             if (increase_idx >= 0) {
-                                const char *recipient = get_account_key_str(
-                                    json_object_array_get_idx(account_keys_obj, increase_idx));
+                                const char *recipient = get_full_account_key(
+                                    account_keys_obj, loaded_addresses_obj, increase_idx, num_static_keys);
                                 if (recipient) {
                                     strncpy(tx_out->to, recipient, sizeof(tx_out->to) - 1);
                                 }

@@ -27,11 +27,13 @@ typedef struct {
     char signature[128];        /* Transaction signature (base58) */
     char from[48];              /* Sender address */
     char to[48];                /* Recipient address */
-    uint64_t lamports;          /* Amount in lamports */
+    uint64_t lamports;          /* Amount in lamports (or token base units for SPL) */
     uint64_t slot;              /* Slot number */
     int64_t block_time;         /* Unix timestamp */
     bool is_outgoing;           /* Direction */
     bool success;               /* Transaction success */
+    bool is_token_transfer;     /* True if SPL token transfer (not native SOL) */
+    char token_mint[48];        /* Token mint address (if is_token_transfer) */
 } sol_transaction_t;
 
 /**

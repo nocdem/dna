@@ -6,6 +6,23 @@ import '../../ffi/dna_engine.dart' show Contact, Transaction, UserProfile, Walle
 import '../../providers/providers.dart' hide UserProfile;
 import '../../theme/dna_theme.dart';
 
+/// Convert internal network name to display label
+String getNetworkDisplayLabel(String network) {
+  switch (network.toLowerCase()) {
+    case 'backbone':
+    case 'cellframe':
+      return 'CF20';
+    case 'ethereum':
+      return 'ERC20';
+    case 'solana':
+      return 'SPL';
+    case 'tron':
+      return 'TRC20';
+    default:
+      return network;
+  }
+}
+
 class WalletScreen extends ConsumerWidget {
   final VoidCallback? onMenuPressed;
 
@@ -409,7 +426,7 @@ class _BalanceTile extends ConsumerWidget {
         ),
       ),
       title: Text(balance.token),
-      subtitle: Text(balance.network),
+      subtitle: Text(getNetworkDisplayLabel(balance.network)),
       trailing: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 150),
         child: Row(
@@ -1237,24 +1254,24 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
     // If Ethereum network, show only Ethereum
     if (network == 'ethereum') {
       return [
-        DropdownMenuItem(value: _selectedNetwork, child: const Text('Ethereum')),
+        DropdownMenuItem(value: _selectedNetwork, child: const Text('ERC20')),
       ];
     }
     // If Solana network, show only Solana
     if (network == 'solana') {
       return [
-        DropdownMenuItem(value: _selectedNetwork, child: const Text('Solana')),
+        DropdownMenuItem(value: _selectedNetwork, child: const Text('SPL')),
       ];
     }
     // If Tron network, show only Tron
     if (network == 'tron') {
       return [
-        DropdownMenuItem(value: _selectedNetwork, child: const Text('TRON')),
+        DropdownMenuItem(value: _selectedNetwork, child: const Text('TRC20')),
       ];
     }
-    // Default: Backbone network
+    // Default: Backbone (Cellframe) network
     return [
-      DropdownMenuItem(value: _selectedNetwork, child: const Text('Backbone')),
+      DropdownMenuItem(value: _selectedNetwork, child: const Text('CF20')),
     ];
   }
 
@@ -1388,7 +1405,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                                 ),
                               ),
                               Text(
-                                network,
+                                getNetworkDisplayLabel(network),
                                 style: theme.textTheme.bodySmall,
                               ),
                             ],
