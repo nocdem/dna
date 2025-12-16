@@ -14,11 +14,18 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * Copy cacert.pem from assets to app's files directory.
+     * Copy cacert.pem from assets to app's dna_messenger data directory.
      * This is required for curl to verify SSL certificates on Android.
+     * Must match the path that Flutter uses: filesDir/dna_messenger/cacert.pem
      */
     private fun copyCACertificateBundle() {
-        val destFile = File(filesDir, "cacert.pem")
+        // Create dna_messenger subdirectory to match Flutter's data path
+        val dnaDir = File(filesDir, "dna_messenger")
+        if (!dnaDir.exists()) {
+            dnaDir.mkdirs()
+        }
+
+        val destFile = File(dnaDir, "cacert.pem")
 
         // Only copy if not exists or is outdated (check size as simple version check)
         try {
