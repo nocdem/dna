@@ -35,7 +35,9 @@ extern "C" {
 #define SOL_BIP44_CHANGE        0
 
 /* RPC endpoint */
-#define SOL_RPC_MAINNET         "https://api.mainnet-beta.solana.com"
+/* Note: Public Solana RPC is heavily rate limited. Use Ankr free tier for better performance */
+#define SOL_RPC_MAINNET         "https://rpc.ankr.com/solana"
+#define SOL_RPC_MAINNET_BACKUP  "https://api.mainnet-beta.solana.com"
 #define SOL_RPC_DEVNET          "https://api.devnet.solana.com"
 
 /**

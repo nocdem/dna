@@ -437,27 +437,24 @@ class _BalanceTile extends ConsumerWidget {
     final iconPath = getTokenIconPath(balance.token);
 
     return ListTile(
-      leading: CircleAvatar(
-        backgroundColor: _getTokenColor(balance.token).withAlpha(51),
-        child: iconPath != null
-            ? Padding(
-                padding: const EdgeInsets.all(8),
-                child: SvgPicture.asset(
-                  iconPath,
-                  colorFilter: ColorFilter.mode(
-                    _getTokenColor(balance.token),
-                    BlendMode.srcIn,
-                  ),
-                ),
-              )
-            : Text(
+      leading: iconPath != null
+          ? ClipOval(
+              child: SvgPicture.asset(
+                iconPath,
+                width: 40,
+                height: 40,
+              ),
+            )
+          : CircleAvatar(
+              backgroundColor: _getTokenColor(balance.token).withAlpha(51),
+              child: Text(
                 balance.token.isNotEmpty ? balance.token[0].toUpperCase() : '?',
                 style: TextStyle(
                   color: _getTokenColor(balance.token),
                   fontWeight: FontWeight.bold,
                 ),
               ),
-      ),
+            ),
       title: Text(balance.token),
       subtitle: Text(getNetworkDisplayLabel(balance.network)),
       trailing: ConstrainedBox(
@@ -1417,21 +1414,18 @@ class _TokenDetailSheet extends ConsumerWidget {
                         final iconPath = getTokenIconPath(token);
                         return Row(
                           children: [
-                            CircleAvatar(
-                              backgroundColor: _getTokenColor(token).withAlpha(51),
-                              radius: 24,
-                              child: iconPath != null
-                                  ? Padding(
-                                      padding: const EdgeInsets.all(10),
-                                      child: SvgPicture.asset(
-                                        iconPath,
-                                        colorFilter: ColorFilter.mode(
-                                          _getTokenColor(token),
-                                          BlendMode.srcIn,
-                                        ),
-                                      ),
-                                    )
-                                  : Text(
+                            iconPath != null
+                                ? ClipOval(
+                                    child: SvgPicture.asset(
+                                      iconPath,
+                                      width: 48,
+                                      height: 48,
+                                    ),
+                                  )
+                                : CircleAvatar(
+                                    backgroundColor: _getTokenColor(token).withAlpha(51),
+                                    radius: 24,
+                                    child: Text(
                                       token.isNotEmpty ? token[0].toUpperCase() : '?',
                                       style: TextStyle(
                                         color: _getTokenColor(token),
@@ -1439,7 +1433,7 @@ class _TokenDetailSheet extends ConsumerWidget {
                                         fontSize: 20,
                                       ),
                                     ),
-                            ),
+                                  ),
                             const SizedBox(width: 12),
                             Expanded(
                               child: Column(
