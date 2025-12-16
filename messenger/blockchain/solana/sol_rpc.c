@@ -326,6 +326,28 @@ int sol_rpc_get_transaction_status(
 }
 
 /**
+ * Helper to extract pubkey string from account key object
+ */
+static const char* get_account_key_str(json_object *key_obj) {
+    if (!key_obj) return NULL;
+
+    /* Handle string format (legacy transactions) */
+    if (json_object_is_type(key_obj, json_type_string)) {
+        return json_object_get_string(key_obj);
+    }
+
+    /* Handle object format with pubkey field (versioned transactions) */
+    if (json_object_is_type(key_obj, json_type_object)) {
+        json_object *pubkey_obj;
+        if (json_object_object_get_ex(key_obj, "pubkey", &pubkey_obj)) {
+            return json_object_get_string(pubkey_obj);
+        }
+    }
+
+    return NULL;
+}
+
+/**
  * Helper to get transaction details for a single signature
  */
 static int sol_rpc_get_tx_details(
@@ -374,100 +396,157 @@ static int sol_rpc_get_tx_details(
             tx_out->success = json_object_is_type(err_obj, json_type_null);
         }
 
-        /* Get pre and post balances to calculate transfer amount */
+        /* Get pre and post balances */
         json_object *pre_balances, *post_balances;
-        json_object *transaction_obj, *message_obj, *account_keys_obj;
+        json_object *transaction_obj, *message_obj;
 
         if (json_object_object_get_ex(meta_obj, "preBalances", &pre_balances) &&
             json_object_object_get_ex(meta_obj, "postBalances", &post_balances) &&
             json_object_object_get_ex(result, "transaction", &transaction_obj) &&
-            json_object_object_get_ex(transaction_obj, "message", &message_obj) &&
-            json_object_object_get_ex(message_obj, "accountKeys", &account_keys_obj)) {
+            json_object_object_get_ex(transaction_obj, "message", &message_obj)) {
 
-            int num_accounts = json_object_array_length(account_keys_obj);
-            int our_index = -1;
+            /* Try both accountKeys (legacy) and staticAccountKeys (versioned) */
+            json_object *account_keys_obj = NULL;
+            if (!json_object_object_get_ex(message_obj, "accountKeys", &account_keys_obj)) {
+                json_object_object_get_ex(message_obj, "staticAccountKeys", &account_keys_obj);
+            }
 
-            /* Find our address in account keys */
-            for (int i = 0; i < num_accounts; i++) {
-                json_object *key_obj = json_object_array_get_idx(account_keys_obj, i);
-                const char *key_str = NULL;
+            if (account_keys_obj) {
+                int num_accounts = json_object_array_length(account_keys_obj);
+                int num_balances = json_object_array_length(pre_balances);
+                int our_index = -1;
 
-                /* Handle both string format and object format (with pubkey field) */
-                if (json_object_is_type(key_obj, json_type_string)) {
-                    key_str = json_object_get_string(key_obj);
-                } else if (json_object_is_type(key_obj, json_type_object)) {
-                    json_object *pubkey_obj;
-                    if (json_object_object_get_ex(key_obj, "pubkey", &pubkey_obj)) {
-                        key_str = json_object_get_string(pubkey_obj);
+                /* Find our address in account keys */
+                for (int i = 0; i < num_accounts; i++) {
+                    const char *key_str = get_account_key_str(
+                        json_object_array_get_idx(account_keys_obj, i));
+                    if (key_str && strcmp(key_str, our_address) == 0) {
+                        our_index = i;
+                        break;
                     }
                 }
 
-                if (key_str && strcmp(key_str, our_address) == 0) {
-                    our_index = i;
-                    strncpy(tx_out->from, our_address, sizeof(tx_out->from) - 1);
-                    break;
-                }
-            }
+                /* If we found our address and have balance data */
+                if (our_index >= 0 && our_index < num_balances) {
+                    int64_t pre = json_object_get_int64(
+                        json_object_array_get_idx(pre_balances, our_index));
+                    int64_t post = json_object_get_int64(
+                        json_object_array_get_idx(post_balances, our_index));
+                    int64_t diff = post - pre;
 
-            if (our_index >= 0 && our_index < json_object_array_length(pre_balances)) {
-                int64_t pre = json_object_get_int64(json_object_array_get_idx(pre_balances, our_index));
-                int64_t post = json_object_get_int64(json_object_array_get_idx(post_balances, our_index));
-                int64_t diff = post - pre;
+                    if (diff < 0) {
+                        /* We sent (balance decreased) */
+                        tx_out->lamports = (uint64_t)(-diff);
+                        tx_out->is_outgoing = true;
+                        strncpy(tx_out->from, our_address, sizeof(tx_out->from) - 1);
 
-                if (diff < 0) {
-                    /* We sent (balance decreased) */
-                    tx_out->lamports = (uint64_t)(-diff);
-                    tx_out->is_outgoing = true;
-                    strncpy(tx_out->from, our_address, sizeof(tx_out->from) - 1);
-
-                    /* Find recipient (first account that received) */
-                    for (int i = 0; i < num_accounts && i < json_object_array_length(pre_balances); i++) {
-                        if (i == our_index) continue;
-                        int64_t other_pre = json_object_get_int64(json_object_array_get_idx(pre_balances, i));
-                        int64_t other_post = json_object_get_int64(json_object_array_get_idx(post_balances, i));
-                        if (other_post > other_pre) {
-                            json_object *key_obj = json_object_array_get_idx(account_keys_obj, i);
-                            const char *key_str = NULL;
-                            if (json_object_is_type(key_obj, json_type_string)) {
-                                key_str = json_object_get_string(key_obj);
-                            } else if (json_object_is_type(key_obj, json_type_object)) {
-                                json_object *pubkey_obj;
-                                if (json_object_object_get_ex(key_obj, "pubkey", &pubkey_obj)) {
-                                    key_str = json_object_get_string(pubkey_obj);
-                                }
+                        /* Find recipient with largest positive balance change */
+                        int64_t max_received = 0;
+                        int recipient_idx = -1;
+                        for (int i = 0; i < num_balances && i < num_accounts; i++) {
+                            if (i == our_index) continue;
+                            int64_t o_pre = json_object_get_int64(
+                                json_object_array_get_idx(pre_balances, i));
+                            int64_t o_post = json_object_get_int64(
+                                json_object_array_get_idx(post_balances, i));
+                            int64_t o_diff = o_post - o_pre;
+                            if (o_diff > max_received) {
+                                max_received = o_diff;
+                                recipient_idx = i;
                             }
+                        }
+                        if (recipient_idx >= 0) {
+                            const char *key_str = get_account_key_str(
+                                json_object_array_get_idx(account_keys_obj, recipient_idx));
                             if (key_str) {
                                 strncpy(tx_out->to, key_str, sizeof(tx_out->to) - 1);
                             }
-                            break;
                         }
-                    }
-                } else if (diff > 0) {
-                    /* We received (balance increased) */
-                    tx_out->lamports = (uint64_t)diff;
-                    tx_out->is_outgoing = false;
-                    strncpy(tx_out->to, our_address, sizeof(tx_out->to) - 1);
+                    } else if (diff > 0) {
+                        /* We received (balance increased) */
+                        tx_out->lamports = (uint64_t)diff;
+                        tx_out->is_outgoing = false;
+                        strncpy(tx_out->to, our_address, sizeof(tx_out->to) - 1);
 
-                    /* Find sender (first account that sent) */
-                    for (int i = 0; i < num_accounts && i < json_object_array_length(pre_balances); i++) {
-                        if (i == our_index) continue;
-                        int64_t other_pre = json_object_get_int64(json_object_array_get_idx(pre_balances, i));
-                        int64_t other_post = json_object_get_int64(json_object_array_get_idx(post_balances, i));
-                        if (other_post < other_pre) {
-                            json_object *key_obj = json_object_array_get_idx(account_keys_obj, i);
-                            const char *key_str = NULL;
-                            if (json_object_is_type(key_obj, json_type_string)) {
-                                key_str = json_object_get_string(key_obj);
-                            } else if (json_object_is_type(key_obj, json_type_object)) {
-                                json_object *pubkey_obj;
-                                if (json_object_object_get_ex(key_obj, "pubkey", &pubkey_obj)) {
-                                    key_str = json_object_get_string(pubkey_obj);
-                                }
+                        /* Find sender with largest negative balance change */
+                        int64_t max_sent = 0;
+                        int sender_idx = -1;
+                        for (int i = 0; i < num_balances && i < num_accounts; i++) {
+                            if (i == our_index) continue;
+                            int64_t o_pre = json_object_get_int64(
+                                json_object_array_get_idx(pre_balances, i));
+                            int64_t o_post = json_object_get_int64(
+                                json_object_array_get_idx(post_balances, i));
+                            int64_t o_diff = o_pre - o_post; /* Positive if sent */
+                            if (o_diff > max_sent) {
+                                max_sent = o_diff;
+                                sender_idx = i;
                             }
+                        }
+                        if (sender_idx >= 0) {
+                            const char *key_str = get_account_key_str(
+                                json_object_array_get_idx(account_keys_obj, sender_idx));
                             if (key_str) {
                                 strncpy(tx_out->from, key_str, sizeof(tx_out->from) - 1);
                             }
-                            break;
+                        }
+                    }
+                } else {
+                    /* Address not found - scan all balance changes */
+                    /* Find the largest positive and negative balance changes */
+                    int64_t max_increase = 0, max_decrease = 0;
+                    int increase_idx = -1, decrease_idx = -1;
+
+                    for (int i = 0; i < num_balances && i < num_accounts; i++) {
+                        int64_t pre = json_object_get_int64(
+                            json_object_array_get_idx(pre_balances, i));
+                        int64_t post = json_object_get_int64(
+                            json_object_array_get_idx(post_balances, i));
+                        int64_t diff = post - pre;
+
+                        if (diff > max_increase) {
+                            max_increase = diff;
+                            increase_idx = i;
+                        }
+                        if (-diff > max_decrease) {
+                            max_decrease = -diff;
+                            decrease_idx = i;
+                        }
+                    }
+
+                    /* Check if we're the recipient (largest increase) */
+                    if (increase_idx >= 0) {
+                        const char *key_str = get_account_key_str(
+                            json_object_array_get_idx(account_keys_obj, increase_idx));
+                        if (key_str && strcmp(key_str, our_address) == 0) {
+                            tx_out->lamports = (uint64_t)max_increase;
+                            tx_out->is_outgoing = false;
+                            strncpy(tx_out->to, our_address, sizeof(tx_out->to) - 1);
+                            if (decrease_idx >= 0) {
+                                const char *sender = get_account_key_str(
+                                    json_object_array_get_idx(account_keys_obj, decrease_idx));
+                                if (sender) {
+                                    strncpy(tx_out->from, sender, sizeof(tx_out->from) - 1);
+                                }
+                            }
+                        }
+                    }
+
+                    /* Check if we're the sender (largest decrease) */
+                    if (decrease_idx >= 0 && tx_out->lamports == 0) {
+                        const char *key_str = get_account_key_str(
+                            json_object_array_get_idx(account_keys_obj, decrease_idx));
+                        if (key_str && strcmp(key_str, our_address) == 0) {
+                            tx_out->lamports = (uint64_t)max_decrease;
+                            tx_out->is_outgoing = true;
+                            strncpy(tx_out->from, our_address, sizeof(tx_out->from) - 1);
+                            if (increase_idx >= 0) {
+                                const char *recipient = get_account_key_str(
+                                    json_object_array_get_idx(account_keys_obj, increase_idx));
+                                if (recipient) {
+                                    strncpy(tx_out->to, recipient, sizeof(tx_out->to) - 1);
+                                }
+                            }
                         }
                     }
                 }
