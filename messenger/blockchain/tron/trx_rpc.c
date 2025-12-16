@@ -20,12 +20,49 @@
 #endif
 #include <curl/curl.h>
 #include <json-c/json.h>
+#ifndef _WIN32
+#include <unistd.h>
+#include <sys/time.h>
+#else
+#include <windows.h>
+#endif
 
 #define LOG_TAG "TRX_RPC"
 
 /* TRX decimal places (1 TRX = 1,000,000 SUN) */
 #define TRX_DECIMALS 6
 #define SUN_PER_TRX 1000000ULL
+
+/* Rate limiting - TronGrid allows 1 req/sec without API key */
+#define TRX_RPC_MIN_DELAY_MS 1100
+
+/* Track last request time for rate limiting (shared across all TRON modules) */
+static uint64_t g_trx_last_request_ms = 0;
+
+static uint64_t trx_get_current_ms(void) {
+#ifdef _WIN32
+    return GetTickCount64();
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+#endif
+}
+
+void trx_rate_limit_delay(void) {
+    uint64_t now = trx_get_current_ms();
+    uint64_t elapsed = now - g_trx_last_request_ms;
+    if (elapsed < TRX_RPC_MIN_DELAY_MS && g_trx_last_request_ms > 0) {
+        uint64_t delay = TRX_RPC_MIN_DELAY_MS - elapsed;
+        QGP_LOG_DEBUG(LOG_TAG, "Rate limiting: waiting %lu ms", (unsigned long)delay);
+#ifdef _WIN32
+        Sleep((DWORD)delay);
+#else
+        usleep((useconds_t)(delay * 1000));
+#endif
+    }
+    g_trx_last_request_ms = trx_get_current_ms();
+}
 
 /* Response buffer for curl */
 struct response_buffer {
@@ -107,6 +144,9 @@ int trx_rpc_get_balance_sun(
         QGP_LOG_ERROR(LOG_TAG, "Invalid TRON address: %s", address);
         return -1;
     }
+
+    /* Rate limit to avoid 429 errors (TronGrid: 1 req/sec) */
+    trx_rate_limit_delay();
 
     /* Initialize curl */
     CURL *curl = curl_easy_init();
@@ -252,6 +292,9 @@ int trx_rpc_get_transactions(
         QGP_LOG_ERROR(LOG_TAG, "Invalid TRON address: %s", address);
         return -1;
     }
+
+    /* Rate limit to avoid 429 errors (TronGrid: 1 req/sec) */
+    trx_rate_limit_delay();
 
     /* Initialize curl */
     CURL *curl = curl_easy_init();

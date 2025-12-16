@@ -19,8 +19,44 @@
 #endif
 #include <curl/curl.h>
 #include <json-c/json.h>
+#ifndef _WIN32
+#include <unistd.h>
+#include <sys/time.h>
+#else
+#include <windows.h>
+#endif
 
 #define LOG_TAG "SOL_RPC"
+
+/* Rate limiting - minimum ms between requests to avoid 429 errors */
+#define SOL_RPC_MIN_DELAY_MS 250
+
+/* Track last request time for rate limiting */
+static uint64_t g_last_request_ms = 0;
+
+static uint64_t get_current_ms(void) {
+#ifdef _WIN32
+    return GetTickCount64();
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)(tv.tv_sec * 1000 + tv.tv_usec / 1000);
+#endif
+}
+
+static void rate_limit_delay(void) {
+    uint64_t now = get_current_ms();
+    uint64_t elapsed = now - g_last_request_ms;
+    if (elapsed < SOL_RPC_MIN_DELAY_MS && g_last_request_ms > 0) {
+        uint64_t delay = SOL_RPC_MIN_DELAY_MS - elapsed;
+#ifdef _WIN32
+        Sleep((DWORD)delay);
+#else
+        usleep((useconds_t)(delay * 1000));
+#endif
+    }
+    g_last_request_ms = get_current_ms();
+}
 
 /* Response buffer */
 struct response_buffer {
@@ -51,6 +87,9 @@ static int sol_rpc_call(
     json_object *params,
     json_object **result_out
 ) {
+    /* Rate limit to avoid 429 errors */
+    rate_limit_delay();
+
     CURL *curl = curl_easy_init();
     if (!curl) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize CURL");
@@ -163,6 +202,9 @@ static int sol_rpc_batch_call(
     json_object **results_out
 ) {
     if (count == 0) return 0;
+
+    /* Rate limit to avoid 429 errors */
+    rate_limit_delay();
 
     CURL *curl = curl_easy_init();
     if (!curl) {

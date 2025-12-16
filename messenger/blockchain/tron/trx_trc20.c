@@ -9,6 +9,7 @@
 #include "trx_trc20.h"
 #include "trx_tx.h"
 #include "trx_wallet.h"
+#include "trx_rpc.h"
 #include "../../crypto/utils/qgp_log.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -181,6 +182,9 @@ int trx_trc20_get_balance(
         QGP_LOG_ERROR(LOG_TAG, "Invalid contract: %s", contract);
         return -1;
     }
+
+    /* Rate limit to avoid 429 errors (TronGrid: 1 req/sec) */
+    trx_rate_limit_delay();
 
     /* Initialize curl */
     CURL *curl = curl_easy_init();

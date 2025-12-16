@@ -69,6 +69,14 @@ int trx_rpc_get_transactions(
  */
 void trx_rpc_free_transactions(trx_transaction_t *txs, int count);
 
+/**
+ * Rate limit delay for TronGrid API
+ *
+ * Call before making TronGrid requests to avoid 429 rate limit errors.
+ * TronGrid allows 1 request per second without API key.
+ */
+void trx_rate_limit_delay(void);
+
 #ifdef __cplusplus
 }
 #endif
