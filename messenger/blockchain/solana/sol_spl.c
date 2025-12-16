@@ -107,6 +107,9 @@ int sol_spl_get_balance(
         return -1;
     }
 
+    /* Rate limit to avoid 429 errors */
+    sol_rpc_rate_limit_delay();
+
     CURL *curl = curl_easy_init();
     if (!curl) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize CURL");

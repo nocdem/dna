@@ -123,6 +123,14 @@ void sol_rpc_free_transactions(sol_transaction_t *txs, int count);
  */
 int sol_rpc_get_slot(uint64_t *slot_out);
 
+/**
+ * Rate limit delay for Solana RPC
+ *
+ * Call before making RPC requests to avoid 429 rate limit errors.
+ * Enforces minimum delay between requests.
+ */
+void sol_rpc_rate_limit_delay(void);
+
 #ifdef __cplusplus
 }
 #endif
