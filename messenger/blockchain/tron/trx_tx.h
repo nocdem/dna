@@ -55,6 +55,7 @@ typedef struct {
     char tx_id[65];                     /* Transaction ID (32 bytes hex) */
     uint8_t raw_data[TRX_TX_MAX_SIZE];  /* Serialized raw_data */
     size_t raw_data_len;                /* Length of raw_data */
+    char raw_data_json[TRX_TX_MAX_SIZE * 4]; /* Original raw_data JSON from API */
     uint64_t timestamp;                 /* Transaction timestamp */
     uint64_t expiration;                /* Expiration timestamp */
 } trx_tx_t;
@@ -67,6 +68,7 @@ typedef struct {
     uint8_t signature[65];              /* secp256k1 recoverable signature */
     uint8_t raw_data[TRX_TX_MAX_SIZE];  /* Serialized raw_data */
     size_t raw_data_len;                /* Length of raw_data */
+    char raw_data_json[TRX_TX_MAX_SIZE * 4]; /* Original raw_data JSON from API */
 } trx_signed_tx_t;
 
 /* ============================================================================

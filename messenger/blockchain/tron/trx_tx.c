@@ -210,6 +210,16 @@ int trx_tx_create_transfer(
         }
     }
 
+    /* Extract raw_data JSON object for broadcast */
+    json_object *jraw_data = NULL;
+    if (json_object_object_get_ex(resp, "raw_data", &jraw_data)) {
+        const char *raw_json = json_object_to_json_string(jraw_data);
+        if (raw_json) {
+            strncpy(tx_out->raw_data_json, raw_json, sizeof(tx_out->raw_data_json) - 1);
+            tx_out->raw_data_json[sizeof(tx_out->raw_data_json) - 1] = '\0';
+        }
+    }
+
     json_object_put(resp);
 
     QGP_LOG_INFO(LOG_TAG, "Transaction created: %s", tx_out->tx_id);
@@ -308,6 +318,16 @@ int trx_tx_create_trc20_transfer(
         }
     }
 
+    /* Extract raw_data JSON object for broadcast */
+    json_object *jraw_data = NULL;
+    if (json_object_object_get_ex(jtx, "raw_data", &jraw_data)) {
+        const char *raw_json = json_object_to_json_string(jraw_data);
+        if (raw_json) {
+            strncpy(tx_out->raw_data_json, raw_json, sizeof(tx_out->raw_data_json) - 1);
+            tx_out->raw_data_json[sizeof(tx_out->raw_data_json) - 1] = '\0';
+        }
+    }
+
     json_object_put(resp);
 
     QGP_LOG_INFO(LOG_TAG, "TRC-20 transaction created: %s", tx_out->tx_id);
@@ -333,6 +353,8 @@ int trx_tx_sign(
     strncpy(signed_out->tx_id, tx->tx_id, sizeof(signed_out->tx_id) - 1);
     memcpy(signed_out->raw_data, tx->raw_data, tx->raw_data_len);
     signed_out->raw_data_len = tx->raw_data_len;
+    strncpy(signed_out->raw_data_json, tx->raw_data_json, sizeof(signed_out->raw_data_json) - 1);
+    signed_out->raw_data_json[sizeof(signed_out->raw_data_json) - 1] = '\0';
 
     /* Parse txID (32 bytes hex) to bytes */
     uint8_t tx_hash[32];
@@ -404,6 +426,14 @@ int trx_tx_broadcast(
     json_object *body = json_object_new_object();
     json_object_object_add(body, "txID", json_object_new_string(signed_tx->tx_id));
     json_object_object_add(body, "raw_data_hex", json_object_new_string(raw_data_hex));
+
+    /* Include raw_data JSON object (required by TronGrid) */
+    if (signed_tx->raw_data_json[0] != '\0') {
+        json_object *raw_data_obj = json_tokener_parse(signed_tx->raw_data_json);
+        if (raw_data_obj) {
+            json_object_object_add(body, "raw_data", raw_data_obj);
+        }
+    }
 
     json_object *sig_array = json_object_new_array();
     json_object_array_add(sig_array, json_object_new_string(sig_hex));
