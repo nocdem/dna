@@ -82,10 +82,12 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "cellframe_json.h"
 #include "crypto/utils/base58.h"
 #include "blockchain/ethereum/eth_wallet.h"
+#include "blockchain/ethereum/eth_erc20.h"
 #include "blockchain/solana/sol_wallet.h"
 #include "blockchain/solana/sol_rpc.h"
 #include "blockchain/tron/trx_wallet.h"
 #include "blockchain/tron/trx_rpc.h"
+#include "blockchain/tron/trx_trc20.h"
 #include "blockchain/blockchain_wallet.h"
 #include "crypto/utils/seed_storage.h"
 #include "crypto/bip39/bip39.h"
@@ -2552,29 +2554,83 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     blockchain_wallet_info_t *wallet_info = &list->wallets[idx];
 
     /* Handle non-Cellframe blockchains via modular interface */
-    if (wallet_info->type == BLOCKCHAIN_ETHEREUM || wallet_info->type == BLOCKCHAIN_SOLANA ||
-        wallet_info->type == BLOCKCHAIN_TRON) {
+    if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
+        /* Ethereum: ETH + USDT (ERC-20) */
+        balances = calloc(2, sizeof(dna_balance_t));
+        if (!balances) {
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+        count = 2;
+
+        /* Native ETH balance */
+        strncpy(balances[0].token, "ETH", sizeof(balances[0].token) - 1);
+        strncpy(balances[0].network, "Ethereum", sizeof(balances[0].network) - 1);
+        strcpy(balances[0].balance, "0.0");
+
+        blockchain_balance_t bc_balance;
+        if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
+            strncpy(balances[0].balance, bc_balance.balance, sizeof(balances[0].balance) - 1);
+        }
+
+        /* USDT (ERC-20) balance */
+        strncpy(balances[1].token, "USDT", sizeof(balances[1].token) - 1);
+        strncpy(balances[1].network, "Ethereum", sizeof(balances[1].network) - 1);
+        strcpy(balances[1].balance, "0.0");
+
+        char usdt_balance[64] = {0};
+        if (eth_erc20_get_balance_by_symbol(wallet_info->address, "USDT", usdt_balance, sizeof(usdt_balance)) == 0) {
+            strncpy(balances[1].balance, usdt_balance, sizeof(balances[1].balance) - 1);
+        }
+
+        goto done;
+    }
+
+    if (wallet_info->type == BLOCKCHAIN_TRON) {
+        /* TRON: TRX + USDT (TRC-20) */
+        balances = calloc(2, sizeof(dna_balance_t));
+        if (!balances) {
+            error = DNA_ERROR_INTERNAL;
+            goto done;
+        }
+        count = 2;
+
+        /* Native TRX balance */
+        strncpy(balances[0].token, "TRX", sizeof(balances[0].token) - 1);
+        strncpy(balances[0].network, "Tron", sizeof(balances[0].network) - 1);
+        strcpy(balances[0].balance, "0.0");
+
+        blockchain_balance_t bc_balance;
+        if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
+            strncpy(balances[0].balance, bc_balance.balance, sizeof(balances[0].balance) - 1);
+        }
+
+        /* USDT (TRC-20) balance */
+        strncpy(balances[1].token, "USDT", sizeof(balances[1].token) - 1);
+        strncpy(balances[1].network, "Tron", sizeof(balances[1].network) - 1);
+        strcpy(balances[1].balance, "0.0");
+
+        char usdt_balance[64] = {0};
+        if (trx_trc20_get_balance_by_symbol(wallet_info->address, "USDT", usdt_balance, sizeof(usdt_balance)) == 0) {
+            strncpy(balances[1].balance, usdt_balance, sizeof(balances[1].balance) - 1);
+        }
+
+        goto done;
+    }
+
+    if (wallet_info->type == BLOCKCHAIN_SOLANA) {
+        /* Solana: SOL only (SPL tokens not yet supported) */
         balances = calloc(1, sizeof(dna_balance_t));
         if (!balances) {
             error = DNA_ERROR_INTERNAL;
             goto done;
         }
-
-        /* Set token and network based on type */
-        if (wallet_info->type == BLOCKCHAIN_ETHEREUM) {
-            strncpy(balances[0].token, "ETH", sizeof(balances[0].token) - 1);
-            strncpy(balances[0].network, "Ethereum", sizeof(balances[0].network) - 1);
-        } else if (wallet_info->type == BLOCKCHAIN_SOLANA) {
-            strncpy(balances[0].token, "SOL", sizeof(balances[0].token) - 1);
-            strncpy(balances[0].network, "Solana", sizeof(balances[0].network) - 1);
-        } else {
-            strncpy(balances[0].token, "TRX", sizeof(balances[0].token) - 1);
-            strncpy(balances[0].network, "TRON", sizeof(balances[0].network) - 1);
-        }
-        strcpy(balances[0].balance, "0.0");
         count = 1;
 
-        /* Query balance via modular blockchain interface */
+        strncpy(balances[0].token, "SOL", sizeof(balances[0].token) - 1);
+        strncpy(balances[0].network, "Solana", sizeof(balances[0].network) - 1);
+        strcpy(balances[0].balance, "0.0");
+
         blockchain_balance_t bc_balance;
         if (blockchain_get_balance(wallet_info->type, wallet_info->address, &bc_balance) == 0) {
             strncpy(balances[0].balance, bc_balance.balance, sizeof(balances[0].balance) - 1);
