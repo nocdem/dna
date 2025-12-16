@@ -82,6 +82,10 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "cellframe_json.h"
 #include "crypto/utils/base58.h"
 #include "blockchain/ethereum/eth_wallet.h"
+#include "blockchain/solana/sol_wallet.h"
+#include "blockchain/solana/sol_rpc.h"
+#include "blockchain/tron/trx_wallet.h"
+#include "blockchain/tron/trx_rpc.h"
 #include "blockchain/blockchain_wallet.h"
 #include "crypto/utils/seed_storage.h"
 #include "crypto/bip39/bip39.h"
@@ -2863,6 +2867,98 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
             }
             count = eth_count;
             eth_rpc_free_transactions(eth_txs, eth_count);
+        }
+        goto done;
+    }
+
+    /* TRON transactions via TronGrid API */
+    if (wallet_info->type == BLOCKCHAIN_TRON) {
+        trx_transaction_t *trx_txs = NULL;
+        int trx_count = 0;
+
+        if (trx_rpc_get_transactions(wallet_info->address, &trx_txs, &trx_count) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+            goto done;
+        }
+
+        if (trx_count > 0 && trx_txs) {
+            transactions = calloc(trx_count, sizeof(dna_transaction_t));
+            if (!transactions) {
+                trx_rpc_free_transactions(trx_txs, trx_count);
+                error = DNA_ERROR_INTERNAL;
+                goto done;
+            }
+
+            for (int i = 0; i < trx_count; i++) {
+                strncpy(transactions[i].tx_hash, trx_txs[i].tx_hash,
+                        sizeof(transactions[i].tx_hash) - 1);
+                strncpy(transactions[i].token, "TRX", sizeof(transactions[i].token) - 1);
+                strncpy(transactions[i].amount, trx_txs[i].value,
+                        sizeof(transactions[i].amount) - 1);
+                snprintf(transactions[i].timestamp, sizeof(transactions[i].timestamp),
+                        "%llu", (unsigned long long)(trx_txs[i].timestamp / 1000)); /* ms to sec */
+
+                if (trx_txs[i].is_outgoing) {
+                    strncpy(transactions[i].direction, "sent",
+                            sizeof(transactions[i].direction) - 1);
+                    strncpy(transactions[i].other_address, trx_txs[i].to,
+                            sizeof(transactions[i].other_address) - 1);
+                } else {
+                    strncpy(transactions[i].direction, "received",
+                            sizeof(transactions[i].direction) - 1);
+                    strncpy(transactions[i].other_address, trx_txs[i].from,
+                            sizeof(transactions[i].other_address) - 1);
+                }
+
+                strncpy(transactions[i].status,
+                        trx_txs[i].is_confirmed ? "CONFIRMED" : "PENDING",
+                        sizeof(transactions[i].status) - 1);
+            }
+            count = trx_count;
+            trx_rpc_free_transactions(trx_txs, trx_count);
+        }
+        goto done;
+    }
+
+    /* Solana transactions via Solana RPC */
+    if (wallet_info->type == BLOCKCHAIN_SOLANA) {
+        sol_transaction_t *sol_txs = NULL;
+        int sol_count = 0;
+
+        if (sol_rpc_get_transactions(wallet_info->address, &sol_txs, &sol_count) != 0) {
+            error = DNA_ENGINE_ERROR_NETWORK;
+            goto done;
+        }
+
+        if (sol_count > 0 && sol_txs) {
+            transactions = calloc(sol_count, sizeof(dna_transaction_t));
+            if (!transactions) {
+                sol_rpc_free_transactions(sol_txs, sol_count);
+                error = DNA_ERROR_INTERNAL;
+                goto done;
+            }
+
+            for (int i = 0; i < sol_count; i++) {
+                strncpy(transactions[i].tx_hash, sol_txs[i].signature,
+                        sizeof(transactions[i].tx_hash) - 1);
+                strncpy(transactions[i].token, "SOL", sizeof(transactions[i].token) - 1);
+                /* Solana basic query doesn't return amounts, just signatures */
+                strncpy(transactions[i].amount, "0", sizeof(transactions[i].amount) - 1);
+                snprintf(transactions[i].timestamp, sizeof(transactions[i].timestamp),
+                        "%lld", (long long)sol_txs[i].block_time);
+
+                /* Direction not available from basic signature query */
+                strncpy(transactions[i].direction, "unknown",
+                        sizeof(transactions[i].direction) - 1);
+                strncpy(transactions[i].other_address, "",
+                        sizeof(transactions[i].other_address) - 1);
+
+                strncpy(transactions[i].status,
+                        sol_txs[i].success ? "CONFIRMED" : "FAILED",
+                        sizeof(transactions[i].status) - 1);
+            }
+            count = sol_count;
+            sol_rpc_free_transactions(sol_txs, sol_count);
         }
         goto done;
     }
