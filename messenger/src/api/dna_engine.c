@@ -2655,8 +2655,8 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     char address[120] = {0};
     strncpy(address, wallet_info->address, sizeof(address) - 1);
 
-    /* Pre-allocate balances for CPUNK and CELL (only supported tokens) */
-    balances = calloc(2, sizeof(dna_balance_t));
+    /* Pre-allocate balances for CF20 tokens: CPUNK, CELL, NYS, KEL, QEVM */
+    balances = calloc(5, sizeof(dna_balance_t));
     if (!balances) {
         error = DNA_ERROR_INTERNAL;
         goto done;
@@ -2671,7 +2671,19 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
     strncpy(balances[1].network, "Backbone", sizeof(balances[1].network) - 1);
     strcpy(balances[1].balance, "0.0");
 
-    count = 2;
+    strncpy(balances[2].token, "NYS", sizeof(balances[2].token) - 1);
+    strncpy(balances[2].network, "Backbone", sizeof(balances[2].network) - 1);
+    strcpy(balances[2].balance, "0.0");
+
+    strncpy(balances[3].token, "KEL", sizeof(balances[3].token) - 1);
+    strncpy(balances[3].network, "Backbone", sizeof(balances[3].network) - 1);
+    strcpy(balances[3].balance, "0.0");
+
+    strncpy(balances[4].token, "QEVM", sizeof(balances[4].token) - 1);
+    strncpy(balances[4].network, "Backbone", sizeof(balances[4].network) - 1);
+    strcpy(balances[4].balance, "0.0");
+
+    count = 5;
 
     /* Query balance via RPC - response contains all tokens for address */
     cellframe_rpc_response_t *response = NULL;
@@ -2718,6 +2730,12 @@ void dna_handle_get_balances(dna_engine_t *engine, dna_task_t *task) {
                                     strncpy(balances[0].balance, coins, sizeof(balances[0].balance) - 1);
                                 } else if (strcmp(ticker, "CELL") == 0) {
                                     strncpy(balances[1].balance, coins, sizeof(balances[1].balance) - 1);
+                                } else if (strcmp(ticker, "NYS") == 0) {
+                                    strncpy(balances[2].balance, coins, sizeof(balances[2].balance) - 1);
+                                } else if (strcmp(ticker, "KEL") == 0) {
+                                    strncpy(balances[3].balance, coins, sizeof(balances[3].balance) - 1);
+                                } else if (strcmp(ticker, "QEVM") == 0) {
+                                    strncpy(balances[4].balance, coins, sizeof(balances[4].balance) - 1);
                                 }
                             }
                         }
