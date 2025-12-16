@@ -8,6 +8,7 @@
 
 #include "trx_rpc.h"
 #include "trx_wallet.h"
+#include "trx_tx.h"
 #include "../../crypto/utils/qgp_log.h"
 #include "../../crypto/utils/qgp_platform.h"
 #include <stdio.h>
@@ -365,18 +366,24 @@ int trx_rpc_get_transactions(
                 if (jcontract0 && json_object_object_get_ex(jcontract0, "parameter", &jparam)) {
                     json_object *jvalue = NULL;
                     if (json_object_object_get_ex(jparam, "value", &jvalue)) {
-                        /* Get owner_address (from) */
+                        /* Get owner_address (from) - convert hex to Base58 */
                         json_object *jowner = NULL;
                         if (json_object_object_get_ex(jvalue, "owner_address", &jowner)) {
-                            strncpy(txs[count].from, json_object_get_string(jowner),
-                                    sizeof(txs[count].from) - 1);
+                            const char *hex_addr = json_object_get_string(jowner);
+                            if (trx_hex_to_base58(hex_addr, txs[count].from, sizeof(txs[count].from)) != 0) {
+                                /* Fallback to hex if conversion fails */
+                                strncpy(txs[count].from, hex_addr, sizeof(txs[count].from) - 1);
+                            }
                         }
 
-                        /* Get to_address */
+                        /* Get to_address - convert hex to Base58 */
                         json_object *jto = NULL;
                         if (json_object_object_get_ex(jvalue, "to_address", &jto)) {
-                            strncpy(txs[count].to, json_object_get_string(jto),
-                                    sizeof(txs[count].to) - 1);
+                            const char *hex_addr = json_object_get_string(jto);
+                            if (trx_hex_to_base58(hex_addr, txs[count].to, sizeof(txs[count].to)) != 0) {
+                                /* Fallback to hex if conversion fails */
+                                strncpy(txs[count].to, hex_addr, sizeof(txs[count].to) - 1);
+                            }
                         }
 
                         /* Get amount */

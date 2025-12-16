@@ -325,6 +325,160 @@ int sol_rpc_get_transaction_status(
     return 0;
 }
 
+/**
+ * Helper to get transaction details for a single signature
+ */
+static int sol_rpc_get_tx_details(
+    const char *signature,
+    const char *our_address,
+    sol_transaction_t *tx_out
+) {
+    /* Build params for getTransaction */
+    json_object *params = json_object_new_array();
+    json_object_array_add(params, json_object_new_string(signature));
+
+    json_object *opts = json_object_new_object();
+    json_object_object_add(opts, "encoding", json_object_new_string("json"));
+    json_object_object_add(opts, "maxSupportedTransactionVersion", json_object_new_int(0));
+    json_object_array_add(params, opts);
+
+    json_object *result = NULL;
+    if (sol_rpc_call("getTransaction", params, &result) != 0) {
+        return -1;
+    }
+
+    if (!result || json_object_is_type(result, json_type_null)) {
+        if (result) json_object_put(result);
+        return -1;
+    }
+
+    /* Get block time */
+    json_object *block_time_obj;
+    if (json_object_object_get_ex(result, "blockTime", &block_time_obj) &&
+        !json_object_is_type(block_time_obj, json_type_null)) {
+        tx_out->block_time = json_object_get_int64(block_time_obj);
+    }
+
+    /* Get slot */
+    json_object *slot_obj;
+    if (json_object_object_get_ex(result, "slot", &slot_obj)) {
+        tx_out->slot = json_object_get_uint64(slot_obj);
+    }
+
+    /* Parse meta for balance changes */
+    json_object *meta_obj;
+    if (json_object_object_get_ex(result, "meta", &meta_obj)) {
+        /* Check transaction error */
+        json_object *err_obj;
+        if (json_object_object_get_ex(meta_obj, "err", &err_obj)) {
+            tx_out->success = json_object_is_type(err_obj, json_type_null);
+        }
+
+        /* Get pre and post balances to calculate transfer amount */
+        json_object *pre_balances, *post_balances;
+        json_object *transaction_obj, *message_obj, *account_keys_obj;
+
+        if (json_object_object_get_ex(meta_obj, "preBalances", &pre_balances) &&
+            json_object_object_get_ex(meta_obj, "postBalances", &post_balances) &&
+            json_object_object_get_ex(result, "transaction", &transaction_obj) &&
+            json_object_object_get_ex(transaction_obj, "message", &message_obj) &&
+            json_object_object_get_ex(message_obj, "accountKeys", &account_keys_obj)) {
+
+            int num_accounts = json_object_array_length(account_keys_obj);
+            int our_index = -1;
+
+            /* Find our address in account keys */
+            for (int i = 0; i < num_accounts; i++) {
+                json_object *key_obj = json_object_array_get_idx(account_keys_obj, i);
+                const char *key_str = NULL;
+
+                /* Handle both string format and object format (with pubkey field) */
+                if (json_object_is_type(key_obj, json_type_string)) {
+                    key_str = json_object_get_string(key_obj);
+                } else if (json_object_is_type(key_obj, json_type_object)) {
+                    json_object *pubkey_obj;
+                    if (json_object_object_get_ex(key_obj, "pubkey", &pubkey_obj)) {
+                        key_str = json_object_get_string(pubkey_obj);
+                    }
+                }
+
+                if (key_str && strcmp(key_str, our_address) == 0) {
+                    our_index = i;
+                    strncpy(tx_out->from, our_address, sizeof(tx_out->from) - 1);
+                    break;
+                }
+            }
+
+            if (our_index >= 0 && our_index < json_object_array_length(pre_balances)) {
+                int64_t pre = json_object_get_int64(json_object_array_get_idx(pre_balances, our_index));
+                int64_t post = json_object_get_int64(json_object_array_get_idx(post_balances, our_index));
+                int64_t diff = post - pre;
+
+                if (diff < 0) {
+                    /* We sent (balance decreased) */
+                    tx_out->lamports = (uint64_t)(-diff);
+                    tx_out->is_outgoing = true;
+                    strncpy(tx_out->from, our_address, sizeof(tx_out->from) - 1);
+
+                    /* Find recipient (first account that received) */
+                    for (int i = 0; i < num_accounts && i < json_object_array_length(pre_balances); i++) {
+                        if (i == our_index) continue;
+                        int64_t other_pre = json_object_get_int64(json_object_array_get_idx(pre_balances, i));
+                        int64_t other_post = json_object_get_int64(json_object_array_get_idx(post_balances, i));
+                        if (other_post > other_pre) {
+                            json_object *key_obj = json_object_array_get_idx(account_keys_obj, i);
+                            const char *key_str = NULL;
+                            if (json_object_is_type(key_obj, json_type_string)) {
+                                key_str = json_object_get_string(key_obj);
+                            } else if (json_object_is_type(key_obj, json_type_object)) {
+                                json_object *pubkey_obj;
+                                if (json_object_object_get_ex(key_obj, "pubkey", &pubkey_obj)) {
+                                    key_str = json_object_get_string(pubkey_obj);
+                                }
+                            }
+                            if (key_str) {
+                                strncpy(tx_out->to, key_str, sizeof(tx_out->to) - 1);
+                            }
+                            break;
+                        }
+                    }
+                } else if (diff > 0) {
+                    /* We received (balance increased) */
+                    tx_out->lamports = (uint64_t)diff;
+                    tx_out->is_outgoing = false;
+                    strncpy(tx_out->to, our_address, sizeof(tx_out->to) - 1);
+
+                    /* Find sender (first account that sent) */
+                    for (int i = 0; i < num_accounts && i < json_object_array_length(pre_balances); i++) {
+                        if (i == our_index) continue;
+                        int64_t other_pre = json_object_get_int64(json_object_array_get_idx(pre_balances, i));
+                        int64_t other_post = json_object_get_int64(json_object_array_get_idx(post_balances, i));
+                        if (other_post < other_pre) {
+                            json_object *key_obj = json_object_array_get_idx(account_keys_obj, i);
+                            const char *key_str = NULL;
+                            if (json_object_is_type(key_obj, json_type_string)) {
+                                key_str = json_object_get_string(key_obj);
+                            } else if (json_object_is_type(key_obj, json_type_object)) {
+                                json_object *pubkey_obj;
+                                if (json_object_object_get_ex(key_obj, "pubkey", &pubkey_obj)) {
+                                    key_str = json_object_get_string(pubkey_obj);
+                                }
+                            }
+                            if (key_str) {
+                                strncpy(tx_out->from, key_str, sizeof(tx_out->from) - 1);
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    json_object_put(result);
+    return 0;
+}
+
 int sol_rpc_get_transactions(
     const char *address,
     sol_transaction_t **txs_out,
@@ -368,35 +522,36 @@ int sol_rpc_get_transactions(
     for (int i = 0; i < arr_len; i++) {
         json_object *sig_info = json_object_array_get_idx(result, i);
 
-        json_object *sig_obj, *slot_obj, *time_obj, *err_obj;
+        json_object *sig_obj, *err_obj;
 
         if (!json_object_object_get_ex(sig_info, "signature", &sig_obj)) {
             continue;
         }
 
-        strncpy(txs[valid_count].signature,
-                json_object_get_string(sig_obj),
+        const char *signature = json_object_get_string(sig_obj);
+        strncpy(txs[valid_count].signature, signature,
                 sizeof(txs[valid_count].signature) - 1);
 
-        if (json_object_object_get_ex(sig_info, "slot", &slot_obj)) {
-            txs[valid_count].slot = json_object_get_uint64(slot_obj);
-        }
-
-        if (json_object_object_get_ex(sig_info, "blockTime", &time_obj) &&
-            !json_object_is_type(time_obj, json_type_null)) {
-            txs[valid_count].block_time = json_object_get_int64(time_obj);
-        }
-
-        /* Check error status */
+        /* Check error status from signature list */
         if (json_object_object_get_ex(sig_info, "err", &err_obj)) {
             txs[valid_count].success = json_object_is_type(err_obj, json_type_null);
         } else {
             txs[valid_count].success = true;
         }
 
-        /* Note: Full transaction details would require another RPC call
-         * For now, we just have signature and status */
-        strncpy(txs[valid_count].from, address, sizeof(txs[valid_count].from) - 1);
+        /* Fetch full transaction details */
+        if (sol_rpc_get_tx_details(signature, address, &txs[valid_count]) != 0) {
+            /* If we can't get details, use basic info from signature list */
+            json_object *slot_obj, *time_obj;
+            if (json_object_object_get_ex(sig_info, "slot", &slot_obj)) {
+                txs[valid_count].slot = json_object_get_uint64(slot_obj);
+            }
+            if (json_object_object_get_ex(sig_info, "blockTime", &time_obj) &&
+                !json_object_is_type(time_obj, json_type_null)) {
+                txs[valid_count].block_time = json_object_get_int64(time_obj);
+            }
+            strncpy(txs[valid_count].from, address, sizeof(txs[valid_count].from) - 1);
+        }
 
         valid_count++;
     }

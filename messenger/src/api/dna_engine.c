@@ -2942,16 +2942,42 @@ void dna_handle_get_transactions(dna_engine_t *engine, dna_task_t *task) {
                 strncpy(transactions[i].tx_hash, sol_txs[i].signature,
                         sizeof(transactions[i].tx_hash) - 1);
                 strncpy(transactions[i].token, "SOL", sizeof(transactions[i].token) - 1);
-                /* Solana basic query doesn't return amounts, just signatures */
-                strncpy(transactions[i].amount, "0", sizeof(transactions[i].amount) - 1);
+
+                /* Convert lamports to SOL */
+                if (sol_txs[i].lamports > 0) {
+                    double sol_amount = (double)sol_txs[i].lamports / 1000000000.0;
+                    snprintf(transactions[i].amount, sizeof(transactions[i].amount),
+                            "%.9f", sol_amount);
+                    /* Trim trailing zeros */
+                    char *dot = strchr(transactions[i].amount, '.');
+                    if (dot) {
+                        char *end = transactions[i].amount + strlen(transactions[i].amount) - 1;
+                        while (end > dot && *end == '0') {
+                            *end-- = '\0';
+                        }
+                        if (end == dot) {
+                            strcpy(dot, ".0");
+                        }
+                    }
+                } else {
+                    strncpy(transactions[i].amount, "0", sizeof(transactions[i].amount) - 1);
+                }
+
                 snprintf(transactions[i].timestamp, sizeof(transactions[i].timestamp),
                         "%lld", (long long)sol_txs[i].block_time);
 
-                /* Direction not available from basic signature query */
-                strncpy(transactions[i].direction, "unknown",
-                        sizeof(transactions[i].direction) - 1);
-                strncpy(transactions[i].other_address, "",
-                        sizeof(transactions[i].other_address) - 1);
+                /* Set direction and other address */
+                if (sol_txs[i].is_outgoing) {
+                    strncpy(transactions[i].direction, "sent",
+                            sizeof(transactions[i].direction) - 1);
+                    strncpy(transactions[i].other_address, sol_txs[i].to,
+                            sizeof(transactions[i].other_address) - 1);
+                } else {
+                    strncpy(transactions[i].direction, "received",
+                            sizeof(transactions[i].direction) - 1);
+                    strncpy(transactions[i].other_address, sol_txs[i].from,
+                            sizeof(transactions[i].other_address) - 1);
+                }
 
                 strncpy(transactions[i].status,
                         sol_txs[i].success ? "CONFIRMED" : "FAILED",
