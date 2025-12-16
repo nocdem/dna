@@ -438,11 +438,12 @@ class _BalanceTile extends ConsumerWidget {
 
     return ListTile(
       leading: iconPath != null
-          ? ClipOval(
+          ? SizedBox(
+              width: 40,
+              height: 40,
               child: SvgPicture.asset(
                 iconPath,
-                width: 40,
-                height: 40,
+                fit: BoxFit.contain,
               ),
             )
           : CircleAvatar(
@@ -1415,11 +1416,12 @@ class _TokenDetailSheet extends ConsumerWidget {
                         return Row(
                           children: [
                             iconPath != null
-                                ? ClipOval(
+                                ? SizedBox(
+                                    width: 48,
+                                    height: 48,
                                     child: SvgPicture.asset(
                                       iconPath,
-                                      width: 48,
-                                      height: 48,
+                                      fit: BoxFit.contain,
                                     ),
                                   )
                                 : CircleAvatar(
