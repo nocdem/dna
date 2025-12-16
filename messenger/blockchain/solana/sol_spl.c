@@ -8,6 +8,7 @@
 
 #include "sol_spl.h"
 #include "sol_rpc.h"
+#include "sol_wallet.h"
 #include "../../crypto/utils/qgp_log.h"
 #include "../../crypto/utils/qgp_platform.h"
 #include <stdio.h>
@@ -99,6 +100,13 @@ int sol_spl_get_balance(
     /* Initialize with 0 balance */
     strncpy(balance_out, "0", balance_size);
 
+    /* Check endpoint is available */
+    const char *endpoint = sol_rpc_get_endpoint();
+    if (!endpoint || endpoint[0] == '\0') {
+        QGP_LOG_ERROR(LOG_TAG, "Solana RPC endpoint not configured");
+        return -1;
+    }
+
     CURL *curl = curl_easy_init();
     if (!curl) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize CURL");
@@ -133,7 +141,7 @@ int sol_spl_get_balance(
     struct curl_slist *headers = NULL;
     headers = curl_slist_append(headers, "Content-Type: application/json");
 
-    curl_easy_setopt(curl, CURLOPT_URL, sol_rpc_get_endpoint());
+    curl_easy_setopt(curl, CURLOPT_URL, endpoint);
     curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_str);
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
