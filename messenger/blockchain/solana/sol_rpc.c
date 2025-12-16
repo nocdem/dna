@@ -1033,10 +1033,7 @@ int sol_rpc_get_transactions(
         return -1;
     }
 
-    /* First pass: collect signatures and basic info from signature list */
-    const char **signatures = calloc(arr_len, sizeof(char*));
-    int sig_count = 0;
-
+    int valid_count = 0;
     for (int i = 0; i < arr_len; i++) {
         json_object *sig_info = json_object_array_get_idx(result, i);
         json_object *sig_obj, *err_obj;
@@ -1046,80 +1043,33 @@ int sol_rpc_get_transactions(
         }
 
         const char *signature = json_object_get_string(sig_obj);
-        signatures[sig_count] = signature;
-
-        strncpy(txs[sig_count].signature, signature,
-                sizeof(txs[sig_count].signature) - 1);
+        strncpy(txs[valid_count].signature, signature,
+                sizeof(txs[valid_count].signature) - 1);
 
         /* Check error status from signature list */
         if (json_object_object_get_ex(sig_info, "err", &err_obj)) {
-            txs[sig_count].success = json_object_is_type(err_obj, json_type_null);
+            txs[valid_count].success = json_object_is_type(err_obj, json_type_null);
         } else {
-            txs[sig_count].success = true;
+            txs[valid_count].success = true;
         }
 
-        /* Store basic info from signature list as fallback */
-        json_object *slot_obj, *time_obj;
-        if (json_object_object_get_ex(sig_info, "slot", &slot_obj)) {
-            txs[sig_count].slot = json_object_get_uint64(slot_obj);
-        }
-        if (json_object_object_get_ex(sig_info, "blockTime", &time_obj) &&
-            !json_object_is_type(time_obj, json_type_null)) {
-            txs[sig_count].block_time = json_object_get_int64(time_obj);
-        }
-
-        sig_count++;
-    }
-
-    /* Build batch params for all getTransaction calls */
-    const char **methods = malloc(sig_count * sizeof(char*));
-    json_object **batch_params = malloc(sig_count * sizeof(json_object*));
-    json_object **batch_results = calloc(sig_count, sizeof(json_object*));
-
-    for (int i = 0; i < sig_count; i++) {
-        methods[i] = "getTransaction";
-
-        json_object *tx_params = json_object_new_array();
-        json_object_array_add(tx_params, json_object_new_string(signatures[i]));
-
-        json_object *tx_opts = json_object_new_object();
-        json_object_object_add(tx_opts, "encoding", json_object_new_string("json"));
-        json_object_object_add(tx_opts, "maxSupportedTransactionVersion", json_object_new_int(0));
-        json_object_array_add(tx_params, tx_opts);
-
-        batch_params[i] = tx_params;
-    }
-
-    /* Make single batch call for all transactions */
-    QGP_LOG_DEBUG(LOG_TAG, "Fetching %d transactions via batch request", sig_count);
-    int batch_ret = sol_rpc_batch_call(methods, batch_params, sig_count, batch_results);
-
-    /* Clean up batch params */
-    for (int i = 0; i < sig_count; i++) {
-        if (batch_params[i]) json_object_put(batch_params[i]);
-    }
-    free(methods);
-    free(batch_params);
-    free(signatures);
-
-    /* Parse results from batch */
-    int valid_count = 0;
-    for (int i = 0; i < sig_count; i++) {
-        if (batch_ret == 0 && batch_results[i]) {
-            /* Parse full transaction details from batch result */
-            if (parse_tx_result(batch_results[i], address, &txs[i]) != 0) {
-                /* Use basic info from signature list (already set above) */
-                strncpy(txs[i].from, address, sizeof(txs[i].from) - 1);
+        /* Fetch full transaction details (rate limited via sol_rpc_call) */
+        if (sol_rpc_get_tx_details(signature, address, &txs[valid_count]) != 0) {
+            /* If we can't get details, use basic info from signature list */
+            json_object *slot_obj, *time_obj;
+            if (json_object_object_get_ex(sig_info, "slot", &slot_obj)) {
+                txs[valid_count].slot = json_object_get_uint64(slot_obj);
             }
-            json_object_put(batch_results[i]);
-        } else {
-            /* Batch failed or no result for this tx - use basic info */
-            strncpy(txs[i].from, address, sizeof(txs[i].from) - 1);
+            if (json_object_object_get_ex(sig_info, "blockTime", &time_obj) &&
+                !json_object_is_type(time_obj, json_type_null)) {
+                txs[valid_count].block_time = json_object_get_int64(time_obj);
+            }
+            strncpy(txs[valid_count].from, address, sizeof(txs[valid_count].from) - 1);
         }
+
         valid_count++;
     }
 
-    free(batch_results);
     json_object_put(result);
 
     *txs_out = txs;
