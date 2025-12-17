@@ -98,6 +98,30 @@ $CLI contacts                    # List contacts with status (shows names + fing
 
 **IMPORTANT:** For `send` command, use the contact's **registered name** (e.g., `nox`) or the **full 128-character fingerprint**. Partial fingerprints will fail with "Network error".
 
+## FUZZ TESTING REQUIREMENT
+When implementing **new methods in dna_engine or dna_api** that parse external input (network data, user input, file formats), you **MUST** add a corresponding fuzz test.
+
+**Documentation:** [`docs/FUZZING.md`](docs/FUZZING.md) - Complete fuzzing guide
+
+**When to add fuzz tests:**
+- New deserialization/parsing functions
+- Functions that handle untrusted network data
+- Cryptographic operations with external input
+- Any function processing variable-length binary data
+
+**How to add:**
+1. Create `tests/fuzz/fuzz_<function>.c` with `LLVMFuzzerTestOneInput()`
+2. Add target to `tests/CMakeLists.txt` using `add_fuzz_target()` macro
+3. Create seed corpus in `tests/fuzz/corpus/<function>/`
+4. Update `docs/FUZZING.md`
+
+**Build & run:**
+```bash
+cd tests && mkdir build-fuzz && cd build-fuzz
+CC=clang CXX=clang++ cmake -DENABLE_FUZZING=ON -DCMAKE_BUILD_TYPE=Debug ..
+make && ./fuzz_<target> ../fuzz/corpus/<target>/ -max_total_time=60
+```
+
 ## Protocol Mode
 
 PROTOCOL MODE: ACTIVE                                  NO ASSUMPTIONS
