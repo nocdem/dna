@@ -29,7 +29,8 @@
 #define LOG_TAG "SOL_RPC"
 
 /* Rate limiting - minimum ms between requests to avoid 429 errors */
-#define SOL_RPC_MIN_DELAY_MS 250
+/* Note: getTransaction is heavily rate limited on public RPC */
+#define SOL_RPC_MIN_DELAY_MS 500
 
 /* Track last request time for rate limiting */
 static uint64_t g_last_request_ms = 0;
@@ -44,7 +45,7 @@ static uint64_t get_current_ms(void) {
 #endif
 }
 
-static void rate_limit_delay(void) {
+void sol_rpc_rate_limit_delay(void) {
     uint64_t now = get_current_ms();
     uint64_t elapsed = now - g_last_request_ms;
     if (elapsed < SOL_RPC_MIN_DELAY_MS && g_last_request_ms > 0) {
@@ -88,7 +89,7 @@ static int sol_rpc_call(
     json_object **result_out
 ) {
     /* Rate limit to avoid 429 errors */
-    rate_limit_delay();
+    sol_rpc_rate_limit_delay();
 
     CURL *curl = curl_easy_init();
     if (!curl) {
@@ -204,7 +205,7 @@ static int sol_rpc_batch_call(
     if (count == 0) return 0;
 
     /* Rate limit to avoid 429 errors */
-    rate_limit_delay();
+    sol_rpc_rate_limit_delay();
 
     CURL *curl = curl_easy_init();
     if (!curl) {

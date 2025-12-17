@@ -14,14 +14,20 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
   @override
   Future<DnaEngine> build() async {
     // Desktop: use ~/.dna for consistency with ImGui app
-    // Mobile: use app-specific documents directory
+    // Mobile: use app-specific files directory
     final String dataDir;
     if (Platform.isLinux || Platform.isMacOS || Platform.isWindows) {
       final home = Platform.environment['HOME'] ??
           Platform.environment['USERPROFILE'] ??
           '.';
       dataDir = '$home/.dna';
+    } else if (Platform.isAndroid) {
+      // Android: use getApplicationSupportDirectory() which maps to filesDir
+      // This matches where MainActivity.kt copies cacert.pem for SSL
+      final appDir = await getApplicationSupportDirectory();
+      dataDir = '${appDir.path}/dna_messenger';
     } else {
+      // iOS: use documents directory
       final appDir = await getApplicationDocumentsDirectory();
       dataDir = '${appDir.path}/dna_messenger';
     }
