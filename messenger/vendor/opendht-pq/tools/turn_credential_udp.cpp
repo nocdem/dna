@@ -312,8 +312,19 @@ static void server_thread_func() {
         size_t response_len = 0;
         if (process_request(recv_buf, recv_len, &client_addr, send_buf, &response_len) == 0) {
             // Send response
-            sendto(g_socket, (char*)send_buf, response_len, 0,
+            char client_ip[INET_ADDRSTRLEN];
+            inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, sizeof(client_ip));
+
+            ssize_t sent = sendto(g_socket, (char*)send_buf, response_len, 0,
                    (struct sockaddr*)&client_addr, client_len);
+
+            if (sent < 0) {
+                std::cerr << "[CRED-UDP] Failed to send response to " << client_ip
+                          << ":" << ntohs(client_addr.sin_port) << " errno=" << errno << std::endl;
+            } else {
+                std::cout << "[CRED-UDP] Sent " << sent << " bytes response to "
+                          << client_ip << ":" << ntohs(client_addr.sin_port) << std::endl;
+            }
         }
     }
 

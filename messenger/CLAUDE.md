@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-21 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13
 
-**Versions:** App v0.2.1 (`include/dna/version.h`) | Nodus v0.4.1 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** App v0.2.1 (`include/dna/version.h`) | Nodus v0.4.2 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -218,7 +218,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | Component | Version File | Current |
 |-----------|--------------|---------|
 | App (CLI + Flutter) | `include/dna/version.h` | v0.2.1 |
-| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.1 |
+| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.2 |
 
 **When to Bump Which Component:**
 - **App version**: Any changes to CLI, Flutter, dna_lib, p2p, dht client code
