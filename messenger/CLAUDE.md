@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-21 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13
 
-**Versions:** App v0.2.0 (`include/dna/version.h`) | Nodus v0.4.0 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** App v0.2.0 (`include/dna/version.h`) | Nodus v0.4.1 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -211,24 +211,32 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 
 **IMPORTANT:** Documentation is the source of truth. Code changes without documentation updates violate protocol mode.
 
-### CHECKPOINT 8: VERSION UPDATE
-When adding **new features** or making **significant changes**, I MUST update the version:
+### CHECKPOINT 8: VERSION UPDATE (MANDATORY ON EVERY PUSH)
+**EVERY successful build that will be pushed MUST increment the version.**
 
 **Version Files:**
-| Component | Version File | When to Update |
-|-----------|--------------|----------------|
-| App (CLI + Flutter) | `include/dna/version.h` | New features, breaking changes, significant fixes |
-| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | Server protocol changes, new nodus features |
+| Component | Version File | Current |
+|-----------|--------------|---------|
+| App (CLI + Flutter) | `include/dna/version.h` | v0.2.0 |
+| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.1 |
 
-**Versioning Rules:**
-- **PATCH** (0.2.X): Bug fixes, minor improvements
-- **MINOR** (0.X.0): New features, non-breaking changes
-- **MAJOR** (X.0.0): Breaking changes, major releases
+**When to Bump Which Component:**
+- **App version**: Any changes to CLI, Flutter, dna_lib, p2p, dht client code
+- **Nodus version**: Any changes to dna-nodus server, turn_credential_udp, nodus_config
+
+**Which Number to Bump:**
+- **PATCH** (0.2.X → 0.2.1): Default for all changes (bug fixes, features, improvements)
+- **MINOR** (0.X.0 → 0.3.0): Major new features, significant API changes
+- **MAJOR** (X.0.0 → 1.0.0): Breaking changes, production release
 
 **Procedure:**
-1. **DETERMINE** if version bump is needed (new feature = yes, bug fix = maybe, refactor = no)
-2. **UPDATE** the appropriate version file(s)
-3. **STATE**: "CHECKPOINT 8 COMPLETE - Version updated: [component] [old] -> [new]" OR "CHECKPOINT 8 COMPLETE - No version update required (reason: [reason])"
+1. **BUILD** succeeds - ready to commit and push
+2. **BUMP** PATCH version in the appropriate file(s)
+3. **UPDATE** the "Current" column in CLAUDE.md (this section)
+4. **COMMIT** with version in commit message
+5. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+
+**IMPORTANT:** Never push code changes without bumping version. This ensures deployed servers always show correct version.
 
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
 
