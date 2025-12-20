@@ -265,12 +265,12 @@ int main(int argc, char** argv) {
 
     // Register in bootstrap registry
     if (dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), cfg.dht_port,
-                                         node_id, "v0.3", 0) == 0) {
+                                         node_id, NODUS_VERSION_STRING, 0) == 0) {
         std::cout << "[REGISTRY] Registered in bootstrap registry" << std::endl;
     }
 
     std::cout << std::endl;
-    std::cout << "=== DNA Nodus v0.3 Running ===" << std::endl;
+    std::cout << "=== DNA Nodus v" << NODUS_VERSION_STRING << " Running ===" << std::endl;
     std::cout << "DHT:   " << public_ip << ":" << cfg.dht_port << std::endl;
     std::cout << "TURN:  " << public_ip << ":" << cfg.turn_port << std::endl;
     std::cout << "CRED:  " << public_ip << ":" << (cfg.credential_port > 0 ? cfg.credential_port : 3479) << std::endl;
@@ -337,7 +337,7 @@ int main(int argc, char** argv) {
         if (seconds % 300 == 0) {
             // Refresh own registration
             dht_bootstrap_registry_register(global_ctx, public_ip.c_str(), cfg.dht_port,
-                                            node_id, "v0.3", seconds);
+                                            node_id, NODUS_VERSION_STRING, seconds);
 
             // Discover new peers
             bootstrap_registry_t registry;
