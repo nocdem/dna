@@ -36,8 +36,8 @@ SyslogIdentifier=dna-nodus
 LimitNOFILE=65535
 LimitNPROC=4096
 
-# Watchdog (optional - restart if unresponsive)
-WatchdogSec=60
+# Watchdog disabled - service doesn't call sd_notify()
+# WatchdogSec=60
 
 [Install]
 WantedBy=multi-user.target
