@@ -1,6 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-12-01 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13
+**Last Updated:** 2025-12-21 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13
+
+**Versions:** App v0.2.0 (`include/dna/version.h`) | Nodus v0.4.0 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -209,6 +211,25 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 
 **IMPORTANT:** Documentation is the source of truth. Code changes without documentation updates violate protocol mode.
 
+### CHECKPOINT 8: VERSION UPDATE
+When adding **new features** or making **significant changes**, I MUST update the version:
+
+**Version Files:**
+| Component | Version File | When to Update |
+|-----------|--------------|----------------|
+| App (CLI + Flutter) | `include/dna/version.h` | New features, breaking changes, significant fixes |
+| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | Server protocol changes, new nodus features |
+
+**Versioning Rules:**
+- **PATCH** (0.2.X): Bug fixes, minor improvements
+- **MINOR** (0.X.0): New features, non-breaking changes
+- **MAJOR** (X.0.0): Breaking changes, major releases
+
+**Procedure:**
+1. **DETERMINE** if version bump is needed (new feature = yes, bug fix = maybe, refactor = no)
+2. **UPDATE** the appropriate version file(s)
+3. **STATE**: "CHECKPOINT 8 COMPLETE - Version updated: [component] [old] -> [new]" OR "CHECKPOINT 8 COMPLETE - No version update required (reason: [reason])"
+
 **ENFORCEMENT**: Each checkpoint requires explicit completion statement. Missing ANY checkpoint statement indicates protocol violation and requires restart.
 
 
@@ -228,7 +249,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 - **[Protocol Specs](docs/PROTOCOL.md)** - Wire formats (Seal, Spillway, Anchor, Atlas, Nexus)
 - **[CLI Testing](docs/CLI_TESTING.md)** - CLI tool for debugging and testing
 - **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)
-- **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap + STUN/TURN server (v0.3)
+- **[DNA Nodus](docs/DNA_NODUS.md)** - Bootstrap + STUN/TURN server (v0.4)
 - **[DHT System](docs/DHT_SYSTEM.md)** - DHT architecture and operations
 - **[Message System](docs/MESSAGE_SYSTEM.md)** - Message handling and encryption
 - **[P2P Architecture](docs/P2P_ARCHITECTURE.md)** - Peer-to-peer transport layer
@@ -317,14 +338,14 @@ Details: what/why/breaking
 
 ## DNA Nodus Deployment
 
-**Bootstrap Servers (dna-nodus v0.3):**
+**Bootstrap Servers (dna-nodus v0.4):**
 | Server | IP | DHT Port | TURN Port |
 |--------|-----|----------|-----------|
 | US-1 | 154.38.182.161 | 4000 | 3478 |
 | EU-1 | 164.68.105.227 | 4000 | 3478 |
 | EU-2 | 164.68.116.180 | 4000 | 3478 |
 
-**Deployment Process (v0.3+):**
+**Deployment Process (v0.4+):**
 ```bash
 # Use the build script on each server:
 ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
@@ -336,7 +357,7 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 # 4. Restart systemd service
 ```
 
-**Configuration (v0.3+):**
+**Configuration (v0.4+):**
 - Config file: `/etc/dna-nodus.conf` (JSON format)
 - No CLI arguments needed - pure config file
 - See `vendor/opendht-pq/tools/dna-nodus.conf.example`

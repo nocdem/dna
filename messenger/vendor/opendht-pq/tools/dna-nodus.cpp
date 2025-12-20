@@ -1,5 +1,5 @@
 /*
- * DNA Nodus v0.3 - Post-Quantum DHT Bootstrap Node + STUN/TURN Server
+ * DNA Nodus - Post-Quantum DHT Bootstrap Node + STUN/TURN Server
  *
  * Features:
  * - SQLite DHT value persistence
@@ -12,6 +12,7 @@
  * Config is loaded from /etc/dna-nodus.conf - no CLI arguments needed.
  */
 
+#include "nodus_version.h"
 #include "nodus_config.h"
 #include "turn_server.h"
 #include "turn_credential_manager.h"
@@ -127,10 +128,13 @@ void mark_connected(const char* ip, uint16_t port) {
 }
 
 int main(int argc, char** argv) {
-    (void)argc;
-    (void)argv;
+    // Handle --version / -v
+    if (argc > 1 && (strcmp(argv[1], "--version") == 0 || strcmp(argv[1], "-v") == 0)) {
+        std::cout << "dna-nodus v" << NODUS_VERSION_STRING << std::endl;
+        return 0;
+    }
 
-    std::cout << "DNA Nodus v0.3 - Post-Quantum DHT Bootstrap + STUN/TURN" << std::endl;
+    std::cout << "DNA Nodus v" << NODUS_VERSION_STRING << " - Post-Quantum DHT Bootstrap + STUN/TURN" << std::endl;
     std::cout << "FIPS 204 / ML-DSA-87 (Dilithium5) - NIST Category 5 Security" << std::endl;
     std::cout << std::endl;
 

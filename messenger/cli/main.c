@@ -16,13 +16,13 @@
 #include <time.h>
 
 #include <dna/dna_engine.h>
+#include <dna/version.h>
 #include "cli_commands.h"
 #include "crypto/utils/qgp_log.h"
 #include "dht/core/dht_context.h"
 #include "dht/client/dht_singleton.h"
 
 #define LOG_TAG "CLI_MAIN"
-#define CLI_VERSION "2.4.0"
 
 /* Global engine pointer for signal handler */
 static dna_engine_t *g_engine = NULL;
@@ -58,7 +58,7 @@ static struct option long_options[] = {
 };
 
 static void print_usage(const char *prog_name) {
-    printf("DNA Messenger CLI v%s\n\n", CLI_VERSION);
+    printf("DNA Messenger CLI v%s\n\n", DNA_VERSION_STRING);
     printf("Usage: %s [OPTIONS] <command> [args...]\n\n", prog_name);
     printf("Options:\n");
     printf("  -d, --data-dir <path>   Data directory (default: ~/.dna)\n");
@@ -253,7 +253,8 @@ int main(int argc, char *argv[]) {
                 print_usage(argv[0]);
                 return 0;
             case 'v':
-                printf("dna-messenger-cli v%s\n", CLI_VERSION);
+                printf("dna-messenger-cli v%s (build %s %s)\n",
+                       DNA_VERSION_STRING, BUILD_HASH, BUILD_TS);
                 return 0;
             default:
                 print_usage(argv[0]);
