@@ -19,6 +19,8 @@ extern "C" {
 #include <thread>
 #include <atomic>
 #include <mutex>
+#include <map>
+#include <string>
 
 #ifdef _WIN32
 #include <winsock2.h>
@@ -44,6 +46,35 @@ static std::mutex g_mutex;
 static cred_udp_stats_t g_stats = {0, 0, 0, 0, 0};
 static cred_udp_server_config_t g_config;
 static TurnServer* g_turn_server = nullptr;
+
+// Nonce tracking for replay protection (nonce_hex -> timestamp)
+static std::map<std::string, time_t> g_used_nonces;
+static const int NONCE_EXPIRY_SECONDS = 600;  // 10 minutes
+
+// Clean expired nonces (called periodically)
+static void cleanup_expired_nonces() {
+    time_t now = time(nullptr);
+    auto it = g_used_nonces.begin();
+    while (it != g_used_nonces.end()) {
+        if (now - it->second > NONCE_EXPIRY_SECONDS) {
+            it = g_used_nonces.erase(it);
+        } else {
+            ++it;
+        }
+    }
+}
+
+// Convert bytes to hex string
+static std::string bytes_to_hex(const uint8_t *data, size_t len) {
+    std::string result;
+    result.reserve(len * 2);
+    for (size_t i = 0; i < len; i++) {
+        char hex[3];
+        snprintf(hex, sizeof(hex), "%02x", data[i]);
+        result += hex;
+    }
+    return result;
+}
 
 // Setter for TURN server reference (called by dna-nodus)
 void cred_udp_set_turn_server(void* turn) {
@@ -71,8 +102,12 @@ static int process_request(const uint8_t *data, size_t len,
 
     g_stats.requests_received++;
 
-    // Validate minimum size: magic(4) + header + fingerprint + nonce + signature
-    size_t min_size = 4 + 2 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE + CRED_UDP_SIGNATURE_SIZE;
+    // Clean expired nonces periodically
+    cleanup_expired_nonces();
+
+    // Validate minimum size: magic(4) + header + fingerprint + nonce + pubkey + signature
+    size_t min_size = 4 + 2 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE +
+                      CRED_UDP_PUBKEY_SIZE + CRED_UDP_SIGNATURE_SIZE;
     if (len < min_size) {
         std::cerr << "[CRED-UDP] Packet too short: " << len << " < " << min_size << std::endl;
         g_stats.invalid_packets++;
@@ -123,15 +158,58 @@ static int process_request(const uint8_t *data, size_t len,
     memcpy(fingerprint, data + 14, CRED_UDP_FINGERPRINT_SIZE);
     fingerprint[128] = '\0';
 
-    // Extract nonce (32 bytes) - used for replay protection
+    // Extract nonce (32 bytes)
     const uint8_t *nonce = data + 14 + CRED_UDP_FINGERPRINT_SIZE;
-    (void)nonce;  // TODO: Track nonces for replay protection
 
-    // Extract signature (4627 bytes) - Dilithium5 signature
-    const uint8_t *signature = data + 14 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE;
-    (void)signature;  // TODO: Verify signature using client's public key from DHT
+    // Check for nonce replay
+    std::string nonce_hex = bytes_to_hex(nonce, CRED_UDP_NONCE_SIZE);
+    std::string replay_key = std::string(fingerprint) + ":" + nonce_hex;
+    if (g_used_nonces.count(replay_key)) {
+        std::cerr << "[CRED-UDP] Replay attack detected (nonce reuse)" << std::endl;
+        g_stats.auth_failures++;
+        return -1;
+    }
 
-    std::cout << "[CRED-UDP] Request from " << fingerprint << " (first 16 chars)" << std::endl;
+    // Extract public key (2592 bytes)
+    const uint8_t *pubkey = data + 14 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE;
+
+    // Verify fingerprint matches SHA3-512(pubkey)
+    char computed_fingerprint[129];
+    if (qgp_sha3_512_hex(pubkey, CRED_UDP_PUBKEY_SIZE,
+                         computed_fingerprint, sizeof(computed_fingerprint)) != 0) {
+        std::cerr << "[CRED-UDP] Failed to compute fingerprint hash" << std::endl;
+        g_stats.auth_failures++;
+        return -1;
+    }
+
+    if (strncmp(fingerprint, computed_fingerprint, 128) != 0) {
+        std::cerr << "[CRED-UDP] Fingerprint mismatch - pubkey doesn't match claimed identity" << std::endl;
+        g_stats.auth_failures++;
+        return -1;
+    }
+
+    // Extract signature (4627 bytes)
+    const uint8_t *signature = data + 14 + CRED_UDP_FINGERPRINT_SIZE +
+                               CRED_UDP_NONCE_SIZE + CRED_UDP_PUBKEY_SIZE;
+
+    // Verify Dilithium5 signature over (timestamp + fingerprint + nonce)
+    // Signed data starts at offset 6 (after magic + version + type)
+    const uint8_t *signed_data = data + 6;
+    size_t signed_len = 8 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE;
+
+    if (qgp_dsa87_verify(signature, CRED_UDP_SIGNATURE_SIZE,
+                         signed_data, signed_len, pubkey) != 0) {
+        std::cerr << "[CRED-UDP] Signature verification FAILED for "
+                  << std::string(fingerprint, 16) << "..." << std::endl;
+        g_stats.auth_failures++;
+        return -1;
+    }
+
+    // Signature valid - record nonce to prevent replay
+    g_used_nonces[replay_key] = now;
+
+    std::cout << "[CRED-UDP] ✓ Verified request from "
+              << std::string(fingerprint, 16) << "..." << std::endl;
 
     // Generate credentials
     char username[CRED_UDP_USERNAME_SIZE];

@@ -39,9 +39,13 @@ extern "C" {
 #define CRED_UDP_USERNAME_SIZE 128
 #define CRED_UDP_PASSWORD_SIZE 128
 
+// Dilithium5 public key size
+#define CRED_UDP_PUBKEY_SIZE 2592
+
 // Request packet structure (after magic)
-// [VERSION:1][TYPE:1][TIMESTAMP:8][FINGERPRINT:128][NONCE:32][SIGNATURE:4627]
-#define CRED_UDP_REQUEST_SIZE (1 + 1 + 8 + 128 + 32 + 4627)
+// [VERSION:1][TYPE:1][TIMESTAMP:8][FINGERPRINT:128][NONCE:32][PUBKEY:2592][SIGNATURE:4627]
+// Note: PUBKEY included so server can verify signature without DHT lookup
+#define CRED_UDP_REQUEST_SIZE (1 + 1 + 8 + 128 + 32 + 2592 + 4627)
 
 // Server entry in response
 // [HOST:64][PORT:2][USERNAME:128][PASSWORD:128][EXPIRES:8]

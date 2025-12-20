@@ -1136,63 +1136,93 @@ static p2p_connection_t* ice_create_connection(
     // Perform ICE connectivity checks
     int ice_connected = (ice_connect(peer_ice_ctx) == 0);
 
-    // If STUN-only ICE failed, try with TURN
+    // If STUN-only ICE failed, try with TURN (multiple servers with failover)
     if (!ice_connected) {
-        QGP_LOG_DEBUG("ICE", "STUN-only ICE failed, requesting TURN credentials...");
+        QGP_LOG_INFO("ICE", "STUN-only ICE failed, trying TURN servers...");
 
-        // Get our fingerprint from transport context (if available)
+        // Get our fingerprint and keys from transport context
         const char *local_fingerprint = ctx ? ctx->my_fingerprint : NULL;
+        const uint8_t *pubkey = ctx ? ctx->my_public_key : NULL;
+        const uint8_t *privkey = ctx ? ctx->my_private_key : NULL;
 
-        if (local_fingerprint && strlen(local_fingerprint) > 0) {
-            turn_credentials_t turn_creds;
+        if (local_fingerprint && strlen(local_fingerprint) > 0 && pubkey && privkey) {
+            // Get list of TURN servers
+            const char *turn_servers[4];
+            int num_servers = turn_credentials_get_server_list(turn_servers, 4);
 
-            // Check cache first, then request new
-            // Note: Full TURN request requires keys from transport context
-            int have_creds = (turn_credentials_get_cached(local_fingerprint, &turn_creds) == 0);
-            if (!have_creds) {
-                // Check if keys are available in transport context
-                const uint8_t *pubkey = ctx->my_public_key;
-                const uint8_t *privkey = ctx->my_private_key;
-                have_creds = (ice_request_turn_credentials(local_fingerprint, &turn_creds,
-                                                           pubkey, privkey) == 0);
-            }
+            // Try each TURN server with failover
+            for (int s = 0; s < num_servers && !ice_connected; s++) {
+                const char *turn_server_ip = turn_servers[s];
+                QGP_LOG_INFO("ICE", "Trying TURN server %d/%d: %s", s + 1, num_servers, turn_server_ip);
 
-            if (have_creds) {
-                // Recreate ICE context with TURN
-                ice_context_free(peer_ice_ctx);
-                peer_ice_ctx = ice_context_new();
+                // Get credentials for this specific server
+                turn_server_info_t server_creds;
+                int have_creds = (turn_credentials_get_for_server(turn_server_ip, &server_creds) == 0);
 
+                if (!have_creds) {
+                    // Request credentials from this server
+                    have_creds = (turn_credentials_request_from_server(
+                        turn_server_ip, 3479,  // Credential port
+                        local_fingerprint, pubkey, privkey,
+                        &server_creds, 5000) == 0);
+                }
+
+                if (!have_creds) {
+                    QGP_LOG_WARN("ICE", "Failed to get credentials from %s, trying next...", turn_server_ip);
+                    continue;
+                }
+
+                // Recreate ICE context with this TURN server
                 if (peer_ice_ctx) {
-                    // Configure TURN
-                    ice_configure_turn(peer_ice_ctx, &turn_creds);
+                    ice_context_free(peer_ice_ctx);
+                }
+                peer_ice_ctx = ice_context_new();
+                if (!peer_ice_ctx) {
+                    QGP_LOG_ERROR("ICE", "Failed to create ICE context for TURN");
+                    continue;
+                }
 
-                    // Gather candidates again (with TURN)
-                    gathered = 0;
-                    for (size_t i = 0; i < 3 && !gathered; i++) {
-                        if (ice_gather_candidates(peer_ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
-                            gathered = 1;
-                            QGP_LOG_DEBUG("ICE", "Gathered candidates with TURN via %s:%d",
-                                   stun_servers[i], stun_ports[i]);
-                            break;
-                        }
-                    }
+                // Configure TURN using per-server credentials
+                turn_credentials_t turn_creds;
+                memset(&turn_creds, 0, sizeof(turn_creds));
+                turn_creds.server_count = 1;
+                memcpy(&turn_creds.servers[0], &server_creds, sizeof(server_creds));
+                ice_configure_turn(peer_ice_ctx, &turn_creds);
 
-                    if (gathered) {
-                        // Fetch peer candidates again
-                        if (ice_fetch_from_dht(peer_ice_ctx, peer_fingerprint) == 0) {
-                            // Try ICE with TURN
-                            ice_connected = (ice_connect(peer_ice_ctx) == 0);
-                            if (ice_connected) {
-                                QGP_LOG_INFO("ICE", "Connected via TURN relay!");
-                            }
-                        }
+                // Gather candidates with TURN
+                gathered = 0;
+                for (size_t i = 0; i < 3 && !gathered; i++) {
+                    if (ice_gather_candidates(peer_ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
+                        gathered = 1;
+                        QGP_LOG_DEBUG("ICE", "Gathered candidates with TURN %s via STUN %s",
+                               turn_server_ip, stun_servers[i]);
+                        break;
                     }
+                }
+
+                if (!gathered) {
+                    QGP_LOG_WARN("ICE", "Failed to gather candidates with TURN %s", turn_server_ip);
+                    continue;
+                }
+
+                // Fetch peer candidates
+                if (ice_fetch_from_dht(peer_ice_ctx, peer_fingerprint) != 0) {
+                    QGP_LOG_WARN("ICE", "Peer candidates not in DHT for TURN attempt");
+                    continue;
+                }
+
+                // Try ICE with this TURN server
+                ice_connected = (ice_connect(peer_ice_ctx) == 0);
+                if (ice_connected) {
+                    QGP_LOG_INFO("ICE", "✓ Connected via TURN relay %s!", turn_server_ip);
+                } else {
+                    QGP_LOG_WARN("ICE", "TURN %s failed, trying next...", turn_server_ip);
                 }
             }
         }
 
         if (!ice_connected) {
-            QGP_LOG_ERROR("ICE", "ICE connectivity checks failed (including TURN)");
+            QGP_LOG_ERROR("ICE", "ICE connectivity checks failed (all TURN servers exhausted)");
             if (peer_ice_ctx) ice_context_free(peer_ice_ctx);
             return NULL;
         }

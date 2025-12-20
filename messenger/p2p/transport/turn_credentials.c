@@ -324,8 +324,9 @@ static int request_credentials_udp(
     setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
 
     // Build request packet
-    // [MAGIC:4][VERSION:1][TYPE:1][TIMESTAMP:8][FINGERPRINT:128][NONCE:32][SIGNATURE:4627]
-    size_t request_size = 4 + 1 + 1 + 8 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE + 4627;
+    // [MAGIC:4][VERSION:1][TYPE:1][TIMESTAMP:8][FINGERPRINT:128][NONCE:32][PUBKEY:2592][SIGNATURE:4627]
+    size_t request_size = 4 + 1 + 1 + 8 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE +
+                          QGP_DSA87_PUBLICKEYBYTES + QGP_DSA87_SIGNATURE_BYTES;
     uint8_t *request = (uint8_t*)malloc(request_size);
     if (!request) {
         closesocket(sock);
@@ -362,7 +363,12 @@ static int request_credentials_udp(
     memcpy(request + offset, nonce, CRED_UDP_NONCE_SIZE);
     offset += CRED_UDP_NONCE_SIZE;
 
+    // Public key (2592 bytes) - included so server can verify signature without DHT lookup
+    memcpy(request + offset, pubkey, QGP_DSA87_PUBLICKEYBYTES);
+    offset += QGP_DSA87_PUBLICKEYBYTES;
+
     // Sign the request (timestamp + fingerprint + nonce)
+    // Note: pubkey is NOT signed, only timestamp+fingerprint+nonce
     size_t sign_data_len = 8 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE;
     uint8_t *sign_data = request + 6;  // After magic, version, type
     size_t sig_len = 0;
@@ -683,4 +689,301 @@ void turn_credentials_clear(const char *fingerprint) {
     }
 
     pthread_mutex_unlock(&cache_mutex);
+}
+
+// =============================================================================
+// Per-Server Credential Cache (for failover support)
+// =============================================================================
+
+// Per-server cache entry
+typedef struct {
+    char server_ip[64];
+    turn_server_info_t credentials;
+    int valid;
+} server_cache_entry_t;
+
+// Per-server cache (separate from fingerprint-based cache)
+static server_cache_entry_t *server_cache = NULL;
+static size_t server_cache_size = 0;
+static size_t server_cache_capacity = 0;
+
+static void init_server_cache(void) {
+    if (server_cache) return;
+    server_cache_capacity = 8;
+    server_cache = calloc(server_cache_capacity, sizeof(server_cache_entry_t));
+    server_cache_size = 0;
+}
+
+static server_cache_entry_t* find_server_cache_entry(const char *server_ip) {
+    for (size_t i = 0; i < server_cache_size; i++) {
+        if (server_cache[i].valid &&
+            strcmp(server_cache[i].server_ip, server_ip) == 0) {
+            return &server_cache[i];
+        }
+    }
+    return NULL;
+}
+
+static server_cache_entry_t* add_server_cache_entry(const char *server_ip) {
+    if (!server_cache) init_server_cache();
+
+    // Look for existing or invalid slot
+    for (size_t i = 0; i < server_cache_size; i++) {
+        if (!server_cache[i].valid ||
+            strcmp(server_cache[i].server_ip, server_ip) == 0) {
+            server_cache[i].valid = 1;
+            strncpy(server_cache[i].server_ip, server_ip, 63);
+            server_cache[i].server_ip[63] = '\0';
+            return &server_cache[i];
+        }
+    }
+
+    // Need new slot
+    if (server_cache_size >= server_cache_capacity) {
+        size_t new_capacity = server_cache_capacity * 2;
+        server_cache_entry_t *new_cache = realloc(server_cache,
+                                                   new_capacity * sizeof(server_cache_entry_t));
+        if (!new_cache) return NULL;
+        memset(new_cache + server_cache_capacity, 0,
+               (new_capacity - server_cache_capacity) * sizeof(server_cache_entry_t));
+        server_cache = new_cache;
+        server_cache_capacity = new_capacity;
+    }
+
+    server_cache_entry_t *entry = &server_cache[server_cache_size++];
+    entry->valid = 1;
+    strncpy(entry->server_ip, server_ip, 63);
+    entry->server_ip[63] = '\0';
+    return entry;
+}
+
+int turn_credentials_request_from_server(
+    const char *server_ip,
+    uint16_t server_port,
+    const char *fingerprint,
+    const uint8_t *pubkey,
+    const uint8_t *privkey,
+    turn_server_info_t *out,
+    int timeout_ms)
+{
+    if (!server_ip || !fingerprint || !pubkey || !privkey || !out) {
+        return -1;
+    }
+
+    QGP_LOG_INFO("TURN", "Requesting credentials from %s:%d", server_ip, server_port);
+
+    // Create UDP socket
+    SOCKET sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (sock == INVALID_SOCKET) {
+        QGP_LOG_ERROR("TURN", "Failed to create UDP socket");
+        return -1;
+    }
+
+    // Set socket timeout
+    struct timeval tv;
+    tv.tv_sec = timeout_ms / 1000;
+    tv.tv_usec = (timeout_ms % 1000) * 1000;
+    setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+
+    // Build request packet
+    size_t request_size = 4 + 1 + 1 + 8 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE +
+                          QGP_DSA87_PUBLICKEYBYTES + QGP_DSA87_SIGNATURE_BYTES;
+    uint8_t *request = (uint8_t*)malloc(request_size);
+    if (!request) {
+        closesocket(sock);
+        return -1;
+    }
+
+    size_t offset = 0;
+
+    // Magic
+    uint32_t magic = CRED_UDP_MAGIC;
+    memcpy(request + offset, &magic, 4);
+    offset += 4;
+
+    // Version
+    request[offset++] = CRED_UDP_VERSION;
+
+    // Type
+    request[offset++] = CRED_UDP_TYPE_REQUEST;
+
+    // Timestamp (big-endian)
+    uint64_t timestamp = (uint64_t)time(NULL);
+    for (int i = 7; i >= 0; i--) {
+        request[offset++] = (timestamp >> (i * 8)) & 0xFF;
+    }
+
+    // Fingerprint
+    memset(request + offset, 0, CRED_UDP_FINGERPRINT_SIZE);
+    strncpy((char*)(request + offset), fingerprint, CRED_UDP_FINGERPRINT_SIZE);
+    offset += CRED_UDP_FINGERPRINT_SIZE;
+
+    // Nonce
+    uint8_t nonce[CRED_UDP_NONCE_SIZE];
+    qgp_randombytes(nonce, CRED_UDP_NONCE_SIZE);
+    memcpy(request + offset, nonce, CRED_UDP_NONCE_SIZE);
+    offset += CRED_UDP_NONCE_SIZE;
+
+    // Public key
+    memcpy(request + offset, pubkey, QGP_DSA87_PUBLICKEYBYTES);
+    offset += QGP_DSA87_PUBLICKEYBYTES;
+
+    // Sign (timestamp + fingerprint + nonce)
+    size_t sign_data_len = 8 + CRED_UDP_FINGERPRINT_SIZE + CRED_UDP_NONCE_SIZE;
+    uint8_t *sign_data = request + 6;
+    size_t sig_len = 0;
+
+    if (qgp_dsa87_sign(request + offset, &sig_len, sign_data, sign_data_len, privkey) != 0) {
+        QGP_LOG_ERROR("TURN", "Failed to sign request");
+        free(request);
+        closesocket(sock);
+        return -1;
+    }
+    offset += sig_len;
+
+    // Send to specific server
+    struct sockaddr_in server_addr;
+    memset(&server_addr, 0, sizeof(server_addr));
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_port = htons(server_port);
+
+    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
+        QGP_LOG_ERROR("TURN", "Invalid server IP: %s", server_ip);
+        free(request);
+        closesocket(sock);
+        return -1;
+    }
+
+    ssize_t sent = sendto(sock, (char*)request, offset, 0,
+                          (struct sockaddr*)&server_addr, sizeof(server_addr));
+    free(request);
+
+    if (sent != (ssize_t)offset) {
+        QGP_LOG_ERROR("TURN", "Send failed to %s", server_ip);
+        closesocket(sock);
+        return -1;
+    }
+
+    // Receive response
+    uint8_t response[2048];
+    struct sockaddr_in from_addr;
+    socklen_t from_len = sizeof(from_addr);
+    ssize_t recv_len = recvfrom(sock, (char*)response, sizeof(response), 0,
+                                (struct sockaddr*)&from_addr, &from_len);
+    closesocket(sock);
+
+    if (recv_len <= 0) {
+        QGP_LOG_ERROR("TURN", "No response from %s (timeout)", server_ip);
+        return -1;
+    }
+
+    // Validate response
+    if (recv_len < 7) {
+        QGP_LOG_ERROR("TURN", "Response too short from %s", server_ip);
+        return -1;
+    }
+
+    // Check magic
+    uint32_t resp_magic;
+    memcpy(&resp_magic, response, 4);
+    if (resp_magic != CRED_UDP_MAGIC) {
+        QGP_LOG_ERROR("TURN", "Invalid response magic from %s", server_ip);
+        return -1;
+    }
+
+    // Check version and type
+    if (response[4] != CRED_UDP_VERSION || response[5] != CRED_UDP_TYPE_RESPONSE) {
+        QGP_LOG_ERROR("TURN", "Invalid response type from %s", server_ip);
+        return -1;
+    }
+
+    // Parse first server entry (we requested from this specific server)
+    uint8_t server_count = response[6];
+    if (server_count == 0) {
+        QGP_LOG_ERROR("TURN", "No servers in response from %s", server_ip);
+        return -1;
+    }
+
+    size_t resp_offset = 7;
+
+    // Host
+    strncpy(out->host, (const char*)(response + resp_offset), CRED_UDP_HOST_SIZE - 1);
+    out->host[CRED_UDP_HOST_SIZE - 1] = '\0';
+    resp_offset += CRED_UDP_HOST_SIZE;
+
+    // Port (big-endian)
+    out->port = (response[resp_offset] << 8) | response[resp_offset + 1];
+    resp_offset += 2;
+
+    // Username
+    strncpy(out->username, (const char*)(response + resp_offset), CRED_UDP_USERNAME_SIZE - 1);
+    out->username[CRED_UDP_USERNAME_SIZE - 1] = '\0';
+    resp_offset += CRED_UDP_USERNAME_SIZE;
+
+    // Password
+    strncpy(out->password, (const char*)(response + resp_offset), CRED_UDP_PASSWORD_SIZE - 1);
+    out->password[CRED_UDP_PASSWORD_SIZE - 1] = '\0';
+    resp_offset += CRED_UDP_PASSWORD_SIZE;
+
+    // Expires (big-endian)
+    out->expires_at = 0;
+    for (int b = 0; b < 8; b++) {
+        out->expires_at = (out->expires_at << 8) | response[resp_offset + b];
+    }
+
+    // Cache the credentials
+    pthread_mutex_lock(&cache_mutex);
+    server_cache_entry_t *entry = add_server_cache_entry(server_ip);
+    if (entry) {
+        memcpy(&entry->credentials, out, sizeof(*out));
+    }
+    pthread_mutex_unlock(&cache_mutex);
+
+    QGP_LOG_INFO("TURN", "✓ Got credentials from %s (user=%s)", server_ip, out->username);
+    return 0;
+}
+
+int turn_credentials_get_for_server(
+    const char *server_ip,
+    turn_server_info_t *out)
+{
+    if (!server_ip || !out) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&cache_mutex);
+
+    server_cache_entry_t *entry = find_server_cache_entry(server_ip);
+    if (!entry) {
+        pthread_mutex_unlock(&cache_mutex);
+        return -1;
+    }
+
+    // Check if credentials are still valid
+    int64_t now = time(NULL);
+    if (entry->credentials.expires_at <= now) {
+        entry->valid = 0;
+        pthread_mutex_unlock(&cache_mutex);
+        return -1;
+    }
+
+    memcpy(out, &entry->credentials, sizeof(*out));
+    pthread_mutex_unlock(&cache_mutex);
+
+    return 0;
+}
+
+int turn_credentials_get_server_list(
+    const char **servers,
+    int max_servers)
+{
+    if (!servers || max_servers <= 0) {
+        return 0;
+    }
+
+    int count = 0;
+    for (int i = 0; bootstrap_servers[i] != NULL && count < max_servers; i++) {
+        servers[count++] = bootstrap_servers[i];
+    }
+    return count;
 }

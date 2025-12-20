@@ -66,6 +66,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/client/dna_profile.h"
 #include "dht/shared/dht_chunked.h"
 #include "p2p/p2p_transport.h"
+#include "p2p/transport/turn_credentials.h"
 #include "database/presence_cache.h"
 #include "database/keyserver_cache.h"
 #include "database/profile_cache.h"
@@ -4389,6 +4390,79 @@ bool dna_engine_is_peer_online(dna_engine_t *engine, const char *fingerprint) {
     }
 
     return messenger_p2p_peer_online(engine->messenger, fingerprint);
+}
+
+int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms) {
+    if (!engine || !engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "Engine not initialized or no identity loaded");
+        return -1;
+    }
+
+    if (timeout_ms <= 0) {
+        timeout_ms = 10000;  // Default 10 seconds
+    }
+
+    // Get data directory
+    const char *data_dir = engine->data_dir;
+    if (!data_dir) {
+        data_dir = qgp_platform_app_data_dir();
+    }
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory");
+        return -1;
+    }
+
+    // Build path to signing key
+    char key_path[512];
+    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa",
+             data_dir, engine->fingerprint, engine->fingerprint);
+
+    // Load signing key (handle encrypted keys)
+    qgp_key_t *sign_key = NULL;
+    int load_rc;
+    if (engine->keys_encrypted && engine->session_password) {
+        load_rc = qgp_key_load_encrypted(key_path, engine->session_password, &sign_key);
+    } else {
+        load_rc = qgp_key_load(key_path, &sign_key);
+    }
+
+    if (load_rc != 0 || !sign_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load signing key: %s", key_path);
+        return -1;
+    }
+
+    if (!sign_key->public_key || !sign_key->private_key) {
+        QGP_LOG_ERROR(LOG_TAG, "Signing key missing public or private component");
+        qgp_key_free(sign_key);
+        return -1;
+    }
+
+    // Initialize TURN credential system
+    turn_credentials_init();
+
+    // Request credentials
+    turn_credentials_t creds;
+    memset(&creds, 0, sizeof(creds));
+
+    QGP_LOG_INFO(LOG_TAG, "Requesting TURN credentials (timeout: %dms)...", timeout_ms);
+
+    int result = turn_credentials_request(
+        engine->fingerprint,
+        sign_key->public_key,
+        sign_key->private_key,
+        &creds,
+        timeout_ms
+    );
+
+    qgp_key_free(sign_key);
+
+    if (result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to obtain TURN credentials");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Successfully obtained TURN credentials (%zu servers)", creds.server_count);
+    return 0;
 }
 
 dna_request_id_t dna_engine_lookup_presence(

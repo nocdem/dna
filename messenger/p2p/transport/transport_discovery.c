@@ -374,30 +374,12 @@ int p2p_send_message(
     }
     peer_fingerprint_hex[128] = '\0';
 
-    // OPTIMIZATION: Skip ICE for offline peers (no point in 10s timeout)
-    // But still try if we have an existing cached connection
+    // Always try ICE/TURN - peer might be behind symmetric NAT and appear offline
+    // TURN relay can reach peers that STUN-only ICE cannot
     if (tier1_lookup_success && !peer_info.is_online) {
-        // Check for existing cached ICE connection first
-        pthread_mutex_lock(&ctx->connections_mutex);
-        p2p_connection_t *cached_conn = NULL;
-        for (size_t i = 0; i < 256; i++) {
-            if (ctx->connections[i] &&
-                ctx->connections[i]->type == CONNECTION_TYPE_ICE &&
-                ctx->connections[i]->active &&
-                strcmp(ctx->connections[i]->peer_fingerprint, peer_fingerprint_hex) == 0) {
-                cached_conn = ctx->connections[i];
-                break;
-            }
-        }
-        pthread_mutex_unlock(&ctx->connections_mutex);
-
-        if (!cached_conn) {
-            QGP_LOG_INFO(LOG_TAG, "[TIER 2] Skipped - peer offline, no cached ICE connection\n");
-            goto tier3_fallback;
-        }
-        QGP_LOG_INFO(LOG_TAG, "[TIER 2] Peer offline but have cached ICE connection, trying it...\n");
+        QGP_LOG_INFO(LOG_TAG, "[TIER 2] Peer appears offline, trying ICE/TURN anyway (NAT may hide them)...\n");
     } else {
-        QGP_LOG_INFO(LOG_TAG, "[TIER 2] Attempting ICE NAT traversal (persistent connections)...\n");
+        QGP_LOG_INFO(LOG_TAG, "[TIER 2] Attempting ICE NAT traversal with TURN failover...\n");
     }
 
     // Find or create ICE connection (reuse existing, create new only if peer online)

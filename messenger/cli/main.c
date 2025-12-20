@@ -22,7 +22,7 @@
 #include "dht/client/dht_singleton.h"
 
 #define LOG_TAG "CLI_MAIN"
-#define CLI_VERSION "2.1.0"
+#define CLI_VERSION "2.4.0"
 
 /* Global engine pointer for signal handler */
 static dna_engine_t *g_engine = NULL;
@@ -99,6 +99,11 @@ static void print_usage(const char *prog_name) {
     printf("\n");
     printf("NETWORK COMMANDS:\n");
     printf("  online <fp>                 Check if peer is online\n");
+    printf("\n");
+    printf("NAT TRAVERSAL COMMANDS:\n");
+    printf("  stun-test                   Test STUN and show public IP\n");
+    printf("  ice-status                  Show ICE connection status\n");
+    printf("  turn-creds [--force]        Show/request TURN credentials\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s create alice\n", prog_name);
@@ -232,8 +237,8 @@ int main(int argc, char *argv[]) {
     int quiet = 0;
     int opt;
 
-    /* Parse command line options */
-    while ((opt = getopt_long(argc, argv, "d:i:hqv", long_options, NULL)) != -1) {
+    /* Parse command line options ('+' prefix = stop at first non-option) */
+    while ((opt = getopt_long(argc, argv, "+d:i:hqv", long_options, NULL)) != -1) {
         switch (opt) {
             case 'd':
                 data_dir = optarg;
@@ -291,13 +296,14 @@ int main(int argc, char *argv[]) {
     }
 
     /* Auto-load identity for commands that need it */
-    /* Skip auto-load for: create, restore, delete, list, help */
+    /* Skip auto-load for: create, restore, delete, list, help, stun-test */
     int needs_identity = !(strcmp(command, "create") == 0 ||
                            strcmp(command, "restore") == 0 ||
                            strcmp(command, "delete") == 0 ||
                            strcmp(command, "list") == 0 ||
                            strcmp(command, "ls") == 0 ||
-                           strcmp(command, "help") == 0);
+                           strcmp(command, "help") == 0 ||
+                           strcmp(command, "stun-test") == 0);
 
     if (needs_identity) {
         if (auto_load_identity(g_engine, identity, quiet) != 0) {
@@ -489,6 +495,18 @@ int main(int argc, char *argv[]) {
         } else {
             result = cmd_online(g_engine, argv[optind + 1]);
         }
+    }
+
+    /* ====== NAT TRAVERSAL COMMANDS ====== */
+    else if (strcmp(command, "stun-test") == 0) {
+        result = cmd_stun_test();
+    }
+    else if (strcmp(command, "ice-status") == 0) {
+        result = cmd_ice_status(g_engine);
+    }
+    else if (strcmp(command, "turn-creds") == 0) {
+        bool force = (optind + 1 < argc && strcmp(argv[optind + 1], "--force") == 0);
+        result = cmd_turn_creds(g_engine, force);
     }
 
     /* ====== UNKNOWN COMMAND ====== */

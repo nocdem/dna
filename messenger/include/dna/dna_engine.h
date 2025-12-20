@@ -1623,6 +1623,18 @@ dna_request_id_t dna_engine_subscribe_to_contacts(
 );
 
 /**
+ * Request TURN relay credentials from DNA Nodus
+ *
+ * Forces a TURN credential request even if not needed for current NAT type.
+ * Useful for testing and pre-caching credentials.
+ *
+ * @param engine      Engine instance
+ * @param timeout_ms  Timeout in milliseconds (0 for default 10s)
+ * @return            0 on success, negative on error
+ */
+int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms);
+
+/**
  * Get registered name for current identity
  *
  * Performs DHT reverse lookup (fingerprint -> name).

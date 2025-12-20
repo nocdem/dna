@@ -113,6 +113,55 @@ int turn_credentials_needed(const char *fingerprint);
  */
 void turn_credentials_clear(const char *fingerprint);
 
+/**
+ * Request TURN credentials from a specific server
+ *
+ * Used for per-server credential requests when implementing failover.
+ * Each server issues its own credentials.
+ *
+ * @param server_ip: IP address of the nodus server
+ * @param server_port: Port for credential requests (typically 3479)
+ * @param fingerprint: Client's fingerprint (128 hex chars)
+ * @param pubkey: Client's Dilithium5 public key (2592 bytes)
+ * @param privkey: Client's Dilithium5 private key (4896 bytes)
+ * @param out: Output server info with credentials
+ * @param timeout_ms: Timeout in milliseconds
+ * @return 0 on success, -1 on error
+ */
+int turn_credentials_request_from_server(
+    const char *server_ip,
+    uint16_t server_port,
+    const char *fingerprint,
+    const uint8_t *pubkey,
+    const uint8_t *privkey,
+    turn_server_info_t *out,
+    int timeout_ms
+);
+
+/**
+ * Get cached credentials for a specific TURN server
+ *
+ * @param server_ip: IP address of the TURN server
+ * @param out: Output server info with credentials
+ * @return 0 if valid credentials found, -1 if expired/not found
+ */
+int turn_credentials_get_for_server(
+    const char *server_ip,
+    turn_server_info_t *out
+);
+
+/**
+ * Get list of all known TURN servers
+ *
+ * @param servers: Output array of server IPs (caller provides)
+ * @param max_servers: Maximum number of servers to return
+ * @return Number of servers returned
+ */
+int turn_credentials_get_server_list(
+    const char **servers,
+    int max_servers
+);
+
 #ifdef __cplusplus
 }
 #endif
