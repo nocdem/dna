@@ -104,6 +104,7 @@ static void print_usage(const char *prog_name) {
     printf("  stun-test                   Test STUN and show public IP\n");
     printf("  ice-status                  Show ICE connection status\n");
     printf("  turn-creds [--force]        Show/request TURN credentials\n");
+    printf("  turn-test                   Test TURN relay with all servers\n");
     printf("\n");
     printf("Examples:\n");
     printf("  %s create alice\n", prog_name);
@@ -508,6 +509,9 @@ int main(int argc, char *argv[]) {
     else if (strcmp(command, "turn-creds") == 0) {
         bool force = (optind + 1 < argc && strcmp(argv[optind + 1], "--force") == 0);
         result = cmd_turn_creds(g_engine, force);
+    }
+    else if (strcmp(command, "turn-test") == 0) {
+        result = cmd_turn_test(g_engine);
     }
 
     /* ====== UNKNOWN COMMAND ====== */
