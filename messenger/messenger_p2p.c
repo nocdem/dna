@@ -234,12 +234,16 @@ static int load_my_privkey(
     }
 
     // Dilithium5 private key (ML-DSA-87) is 4896 bytes
-    // NOTE: Legacy keys may be 4016 bytes (Dilithium3) - migration needed
+    // File format: [HEADER: 276 bytes][PUBLIC_KEY: 2592 bytes][PRIVATE_KEY: 4896 bytes]
+    // Private key is at offset 276 + 2592 = 2868
     uint8_t *privkey = malloc(4896);
     if (!privkey) {
         fclose(f);
         return -1;
     }
+
+    // Skip header (276 bytes) and public key (2592 bytes)
+    fseek(f, 276 + 2592, SEEK_SET);
 
     size_t read = fread(privkey, 1, 4896, f);
     fclose(f);

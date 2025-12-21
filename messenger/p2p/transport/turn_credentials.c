@@ -860,15 +860,19 @@ int turn_credentials_request_from_server(
         return -1;
     }
 
+    QGP_LOG_WARN("TURN", ">>> Sending %zu bytes to %s:%d (socket=%d)", offset, server_ip, server_port, (int)sock);
+
     ssize_t sent = sendto(sock, (char*)request, offset, 0,
                           (struct sockaddr*)&server_addr, sizeof(server_addr));
     free(request);
 
     if (sent != (ssize_t)offset) {
-        QGP_LOG_ERROR("TURN", "Send failed to %s", server_ip);
+        QGP_LOG_ERROR("TURN", "Send failed to %s (sent=%zd, errno=%d)", server_ip, sent, errno);
         closesocket(sock);
         return -1;
     }
+
+    QGP_LOG_WARN("TURN", ">>> Sent %zd bytes, waiting for response (timeout=%dms)...", sent, timeout_ms);
 
     // Receive response
     uint8_t response[2048];
