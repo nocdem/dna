@@ -80,6 +80,68 @@ static size_t cache_capacity = 0;
 static pthread_mutex_t cache_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int initialized = 0;
 
+// Per-server cache entry (forward declaration for cache functions defined later)
+typedef struct {
+    char server_ip[64];
+    turn_server_info_t credentials;
+    int valid;
+} server_cache_entry_t;
+
+// Per-server cache (separate from fingerprint-based cache)
+static server_cache_entry_t *server_cache = NULL;
+static size_t server_cache_size = 0;
+static size_t server_cache_capacity = 0;
+
+static void init_server_cache(void) {
+    if (server_cache) return;
+    server_cache_capacity = 8;
+    server_cache = calloc(server_cache_capacity, sizeof(server_cache_entry_t));
+    server_cache_size = 0;
+}
+
+static server_cache_entry_t* find_server_cache_entry(const char *server_ip) {
+    for (size_t i = 0; i < server_cache_size; i++) {
+        if (server_cache[i].valid &&
+            strcmp(server_cache[i].server_ip, server_ip) == 0) {
+            return &server_cache[i];
+        }
+    }
+    return NULL;
+}
+
+static server_cache_entry_t* add_server_cache_entry(const char *server_ip) {
+    if (!server_cache) init_server_cache();
+
+    // Look for existing or invalid slot
+    for (size_t i = 0; i < server_cache_size; i++) {
+        if (!server_cache[i].valid ||
+            strcmp(server_cache[i].server_ip, server_ip) == 0) {
+            server_cache[i].valid = 1;
+            strncpy(server_cache[i].server_ip, server_ip, 63);
+            server_cache[i].server_ip[63] = '\0';
+            return &server_cache[i];
+        }
+    }
+
+    // Need new slot
+    if (server_cache_size >= server_cache_capacity) {
+        size_t new_capacity = server_cache_capacity * 2;
+        server_cache_entry_t *new_cache = realloc(server_cache,
+                                                   new_capacity * sizeof(server_cache_entry_t));
+        if (!new_cache) return NULL;
+        memset(new_cache + server_cache_capacity, 0,
+               (new_capacity - server_cache_capacity) * sizeof(server_cache_entry_t));
+        server_cache = new_cache;
+        server_cache_capacity = new_capacity;
+    }
+
+    server_cache_entry_t *entry = &server_cache[server_cache_size++];
+    entry->valid = 1;
+    strncpy(entry->server_ip, server_ip, 63);
+    entry->server_ip[63] = '\0';
+    return entry;
+}
+
 // =============================================================================
 // Initialization
 // =============================================================================
@@ -482,6 +544,16 @@ static int request_credentials_udp(
 
             QGP_LOG_INFO("TURN", "Server %zu: %s:%d user=%s",
                          s, srv->host, srv->port, srv->username);
+
+            // Cache credentials for this server in per-server cache
+            pthread_mutex_lock(&cache_mutex);
+            server_cache_entry_t *cache_entry = add_server_cache_entry(srv->host);
+            if (cache_entry) {
+                memcpy(&cache_entry->credentials, srv, sizeof(*srv));
+                cache_entry->valid = 1;
+                QGP_LOG_DEBUG("TURN", "Cached credentials for server %s", srv->host);
+            }
+            pthread_mutex_unlock(&cache_mutex);
         }
 
         result = 0;
@@ -689,72 +761,6 @@ void turn_credentials_clear(const char *fingerprint) {
     }
 
     pthread_mutex_unlock(&cache_mutex);
-}
-
-// =============================================================================
-// Per-Server Credential Cache (for failover support)
-// =============================================================================
-
-// Per-server cache entry
-typedef struct {
-    char server_ip[64];
-    turn_server_info_t credentials;
-    int valid;
-} server_cache_entry_t;
-
-// Per-server cache (separate from fingerprint-based cache)
-static server_cache_entry_t *server_cache = NULL;
-static size_t server_cache_size = 0;
-static size_t server_cache_capacity = 0;
-
-static void init_server_cache(void) {
-    if (server_cache) return;
-    server_cache_capacity = 8;
-    server_cache = calloc(server_cache_capacity, sizeof(server_cache_entry_t));
-    server_cache_size = 0;
-}
-
-static server_cache_entry_t* find_server_cache_entry(const char *server_ip) {
-    for (size_t i = 0; i < server_cache_size; i++) {
-        if (server_cache[i].valid &&
-            strcmp(server_cache[i].server_ip, server_ip) == 0) {
-            return &server_cache[i];
-        }
-    }
-    return NULL;
-}
-
-static server_cache_entry_t* add_server_cache_entry(const char *server_ip) {
-    if (!server_cache) init_server_cache();
-
-    // Look for existing or invalid slot
-    for (size_t i = 0; i < server_cache_size; i++) {
-        if (!server_cache[i].valid ||
-            strcmp(server_cache[i].server_ip, server_ip) == 0) {
-            server_cache[i].valid = 1;
-            strncpy(server_cache[i].server_ip, server_ip, 63);
-            server_cache[i].server_ip[63] = '\0';
-            return &server_cache[i];
-        }
-    }
-
-    // Need new slot
-    if (server_cache_size >= server_cache_capacity) {
-        size_t new_capacity = server_cache_capacity * 2;
-        server_cache_entry_t *new_cache = realloc(server_cache,
-                                                   new_capacity * sizeof(server_cache_entry_t));
-        if (!new_cache) return NULL;
-        memset(new_cache + server_cache_capacity, 0,
-               (new_capacity - server_cache_capacity) * sizeof(server_cache_entry_t));
-        server_cache = new_cache;
-        server_cache_capacity = new_capacity;
-    }
-
-    server_cache_entry_t *entry = &server_cache[server_cache_size++];
-    entry->valid = 1;
-    strncpy(entry->server_ip, server_ip, 63);
-    entry->server_ip[63] = '\0';
-    return entry;
 }
 
 int turn_credentials_request_from_server(
