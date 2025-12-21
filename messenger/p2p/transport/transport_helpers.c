@@ -204,7 +204,7 @@ int stun_get_public_ip(char *ip_out, size_t len) {
     // Configure libjuice for STUN-only query
     juice_config_t config;
     memset(&config, 0, sizeof(config));
-    config.concurrency_mode = JUICE_CONCURRENCY_MODE_POLL;
+    config.concurrency_mode = JUICE_CONCURRENCY_MODE_THREAD;
     config.stun_server_host = "stun.l.google.com";
     config.stun_server_port = 19302;
     config.cb_state_changed = on_stun_state_changed;

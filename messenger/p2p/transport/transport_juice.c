@@ -473,7 +473,7 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
     juice_config_t config;
     memset(&config, 0, sizeof(config));
 
-    config.concurrency_mode = JUICE_CONCURRENCY_MODE_POLL;
+    config.concurrency_mode = JUICE_CONCURRENCY_MODE_THREAD;
     config.stun_server_host = ctx->stun_server;
     config.stun_server_port = ctx->stun_port;
     config.cb_state_changed = on_juice_state_changed;
@@ -1030,7 +1030,9 @@ static int ice_configure_turn(ice_context_t *ice_ctx, const turn_credentials_t *
     strncpy(ice_ctx->turn_password, server->password, sizeof(ice_ctx->turn_password) - 1);
     ice_ctx->turn_enabled = 1;
 
-    QGP_LOG_INFO(LOG_TAG, "TURN configured: %s:%u\n", server->host, server->port);
+    QGP_LOG_WARN(LOG_TAG, ">>> TURN configured: host=%s port=%u user=%s pass=%s",
+           server->host, server->port, server->username,
+           server->password[0] ? "(set)" : "(empty)");
     return 0;
 }
 
@@ -1189,14 +1191,22 @@ static p2p_connection_t* ice_create_connection(
                 memcpy(&turn_creds.servers[0], &server_creds, sizeof(server_creds));
                 ice_configure_turn(peer_ice_ctx, &turn_creds);
 
-                // Gather candidates with TURN
+                // Gather candidates with TURN - use TURN server as STUN first (nodus provides both)
                 gathered = 0;
-                for (size_t i = 0; i < 3 && !gathered; i++) {
-                    if (ice_gather_candidates(peer_ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
-                        gathered = 1;
-                        QGP_LOG_DEBUG("ICE", "Gathered candidates with TURN %s via STUN %s",
-                               turn_server_ip, stun_servers[i]);
-                        break;
+                QGP_LOG_WARN("ICE", ">>> Gathering candidates with STUN %s:%d (TURN server)", turn_server_ip, 3478);
+                if (ice_gather_candidates(peer_ice_ctx, turn_server_ip, 3478) == 0) {
+                    gathered = 1;
+                    QGP_LOG_INFO("ICE", "Gathered candidates via TURN/STUN %s", turn_server_ip);
+                } else {
+                    // Fallback to public STUN servers
+                    for (size_t i = 0; i < 3 && !gathered; i++) {
+                        QGP_LOG_WARN("ICE", ">>> Gathering candidates with STUN %s:%d", stun_servers[i], stun_ports[i]);
+                        if (ice_gather_candidates(peer_ice_ctx, stun_servers[i], stun_ports[i]) == 0) {
+                            gathered = 1;
+                            QGP_LOG_DEBUG("ICE", "Gathered candidates with TURN %s via STUN %s",
+                                   turn_server_ip, stun_servers[i]);
+                            break;
+                        }
                     }
                 }
 
