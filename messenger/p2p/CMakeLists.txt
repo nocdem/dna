@@ -9,15 +9,11 @@ find_package(OpenSSL REQUIRED)
 if(WIN32)
     # Windows cross-compile: OpenDHT found via CMAKE_PREFIX_PATH
     message(STATUS "Using OpenDHT from CMAKE_PREFIX_PATH for Windows (P2P)")
-elseif(ANDROID)
-    # Android: OpenDHT is built as part of vendor/opendht-pq
-    message(STATUS "Using vendor OpenDHT-PQ for Android (P2P)")
+else()
+    # Linux/Android: Use vendored OpenDHT-PQ
+    message(STATUS "Using vendor OpenDHT-PQ (P2P)")
     set(OPENDHT_INCLUDE_DIRS "${CMAKE_SOURCE_DIR}/vendor/opendht-pq/include")
     set(OPENDHT_LIBRARIES opendht)
-else()
-    # Linux: Use pkg-config
-    find_package(PkgConfig REQUIRED)
-    pkg_check_modules(OPENDHT REQUIRED opendht>=3.0)
 endif()
 
 # Get absolute path to DHT directory
