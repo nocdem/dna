@@ -118,9 +118,13 @@ Download from GitLab CI/CD:
 ### Build from Source (Linux)
 
 ```bash
-# Install dependencies
-sudo apt install cmake g++ libssl-dev libsqlite3-dev libcurl4-openssl-dev \
-                 libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev libjson-c-dev
+# Install dependencies (Debian/Ubuntu)
+sudo apt install git cmake g++ libssl-dev libsqlite3-dev libcurl4-openssl-dev \
+                 libjson-c-dev libargon2-dev libfmt-dev libreadline-dev \
+                 libasio-dev libmsgpack-cxx-dev
+
+# For GUI (optional): add OpenGL/GLFW
+sudo apt install libglfw3-dev libgl1-mesa-dev libglu1-mesa-dev
 
 # Clone and build
 git clone https://github.com/nocdem/dna-messenger.git
@@ -128,8 +132,12 @@ cd dna-messenger
 mkdir build && cd build
 cmake .. && make -j$(nproc)
 
-# Run
+# Run GUI
 ./imgui_gui/dna-messenger
+
+# Or CLI only (no GUI deps needed)
+make dna-messenger-cli
+./cli/dna-messenger-cli --help
 ```
 
 ### Cross-Compile for Windows
