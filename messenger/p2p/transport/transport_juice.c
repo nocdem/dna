@@ -505,8 +505,8 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
         return -1;
     }
 
-    // Set log level to WARN (suppress verbose STUN debug messages)
-    juice_set_log_level(JUICE_LOG_LEVEL_WARN);
+    // Set log level to DEBUG temporarily to diagnose connectivity issues
+    juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
 
     QGP_LOG_INFO(LOG_TAG, "libjuice agent created%s\n",
            ctx->turn_enabled ? " (with TURN)" : "");
