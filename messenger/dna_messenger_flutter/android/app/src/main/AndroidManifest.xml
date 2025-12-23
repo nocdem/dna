@@ -40,6 +40,15 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- DNA Messenger Background Service (Phase 14) -->
+        <!-- Keeps DHT connection alive for message delivery when app is backgrounded -->
+        <service
+            android:name=".DnaMessengerService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->
         <meta-data

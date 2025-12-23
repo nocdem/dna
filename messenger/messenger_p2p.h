@@ -64,20 +64,46 @@ void messenger_p2p_shutdown(messenger_context_t *ctx);
 // ============================================================================
 
 /**
- * Send message via P2P with PostgreSQL fallback
+ * Send message via P2P with DHT fallback (DEPRECATED for messaging)
  *
  * Hybrid sending logic:
  * 1. Query DHT to check if recipient is online
  * 2. If online: Send via P2P directly (p2p_send)
- * 3. If offline or P2P fails: Store in PostgreSQL
+ * 3. If offline or P2P fails: Queue in DHT (Spillway)
+ *
+ * NOTE: For messaging, use messenger_queue_to_dht() instead.
+ * This function is kept for potential future audio/video use.
  *
  * @param ctx: Messenger context
  * @param recipient: Recipient identity
  * @param encrypted_message: Encrypted message data
  * @param encrypted_len: Encrypted message length
- * @return: 0 on success (P2P or PostgreSQL), -1 on error
+ * @return: 0 on success (P2P or DHT), -1 on error
  */
 int messenger_send_p2p(
+    messenger_context_t *ctx,
+    const char *recipient,
+    const uint8_t *encrypted_message,
+    size_t encrypted_len
+);
+
+/**
+ * Queue message directly to DHT (Spillway) - DHT-only path
+ *
+ * Phase 14: DHT-only messaging. Messages are queued directly to DHT
+ * without attempting P2P direct delivery. This is the preferred path
+ * for messaging, especially on mobile platforms where P2P connections
+ * are unreliable due to background execution restrictions.
+ *
+ * P2P infrastructure is preserved for future audio/video use.
+ *
+ * @param ctx: Messenger context
+ * @param recipient: Recipient identity (name or fingerprint)
+ * @param encrypted_message: Encrypted message data
+ * @param encrypted_len: Encrypted message length
+ * @return: 0 on success (DHT queued), -1 on error
+ */
+int messenger_queue_to_dht(
     messenger_context_t *ctx,
     const char *recipient,
     const uint8_t *encrypted_message,

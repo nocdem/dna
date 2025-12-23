@@ -46,13 +46,19 @@ struct dht_context {
 // Token counter for generating unique listen tokens
 static std::atomic<size_t> next_listen_token{1};
 
-// Listener management structure
+// Listener management structure (Phase 14: Extended with cleanup and key data)
 struct ListenerContext {
     dht_listen_callback_t callback;
     void *user_data;
+    dht_listen_cleanup_t cleanup;  // Phase 14: Cleanup callback (may be NULL)
     std::future<size_t> future_token;  // Future from dht::DhtRunner::listen()
     size_t opendht_token;  // Token from OpenDHT (for cancellation)
     bool active;
+
+    // Phase 14: Store key data for resubscription after network loss
+    std::vector<uint8_t> key_data;
+    size_t key_len;
+    dht_context_t *ctx;  // Store context for resubscription
 };
 
 // Global map of active listeners (token -> context)
@@ -84,11 +90,23 @@ extern "C" size_t dht_listen(
         // Generate unique token for this subscription
         size_t token = next_listen_token.fetch_add(1);
 
+        // Check listener limit (Phase 14)
+        {
+            std::lock_guard<std::mutex> lock(listeners_mutex);
+            if (active_listeners.size() >= DHT_MAX_LISTENERS) {
+                QGP_LOG_ERROR(LOG_TAG, "Maximum listeners reached (%zu)", DHT_MAX_LISTENERS);
+                return 0;
+            }
+        }
+
         // Create listener context
         auto listener_ctx = std::make_shared<ListenerContext>();
         listener_ctx->callback = callback;
         listener_ctx->user_data = user_data;
+        listener_ctx->cleanup = nullptr;  // No cleanup for basic API
         listener_ctx->active = true;
+        listener_ctx->ctx = ctx;
+        listener_ctx->key_len = 0;  // No key storage for basic API
 
         // Create C++ callback that wraps the C callback
         // We need to capture the token and listener_ctx by value (shared_ptr)
@@ -218,6 +236,12 @@ extern "C" void dht_cancel_listen(
         QGP_LOG_ERROR(LOG_TAG, "Exception while cancelling listener: %s", e.what());
     }
 
+    // Phase 14: Call cleanup callback if provided
+    if (listener_ctx->cleanup) {
+        QGP_LOG_DEBUG(LOG_TAG, "Calling cleanup callback for token %zu", token);
+        listener_ctx->cleanup(listener_ctx->user_data);
+    }
+
     // Remove from active listeners map
     active_listeners.erase(it);
 }
@@ -234,4 +258,259 @@ extern "C" size_t dht_get_active_listen_count(
 
     std::lock_guard<std::mutex> lock(listeners_mutex);
     return active_listeners.size();
+}
+
+// ============================================================================
+// Extended API (Phase 14)
+// ============================================================================
+
+/**
+ * Start listening with cleanup callback support (Phase 14)
+ */
+extern "C" size_t dht_listen_ex(
+    dht_context_t *ctx,
+    const uint8_t *key,
+    size_t key_len,
+    dht_listen_callback_t callback,
+    void *user_data,
+    dht_listen_cleanup_t cleanup)
+{
+    if (!ctx || !key || key_len == 0 || !callback) {
+        QGP_LOG_ERROR(LOG_TAG, "dht_listen_ex: Invalid parameters");
+        return 0;
+    }
+
+    try {
+        // Convert C key to InfoHash
+        dht::InfoHash hash = dht::InfoHash::get(key, key_len);
+        std::string hash_str = hash.toString().substr(0, 16);
+
+        // Check listener limit
+        {
+            std::lock_guard<std::mutex> lock(listeners_mutex);
+            if (active_listeners.size() >= DHT_MAX_LISTENERS) {
+                QGP_LOG_ERROR(LOG_TAG, "Maximum listeners reached (%zu)", DHT_MAX_LISTENERS);
+                return 0;
+            }
+        }
+
+        QGP_LOG_DEBUG(LOG_TAG, "Starting extended subscription for key %s...", hash_str.c_str());
+
+        // Generate unique token for this subscription
+        size_t token = next_listen_token.fetch_add(1);
+
+        // Create listener context with cleanup and key data
+        auto listener_ctx = std::make_shared<ListenerContext>();
+        listener_ctx->callback = callback;
+        listener_ctx->user_data = user_data;
+        listener_ctx->cleanup = cleanup;
+        listener_ctx->active = true;
+        listener_ctx->ctx = ctx;
+
+        // Store key data for resubscription
+        listener_ctx->key_data.assign(key, key + key_len);
+        listener_ctx->key_len = key_len;
+
+        // Create C++ callback that wraps the C callback
+        auto cpp_callback = [token, listener_ctx](
+            const std::vector<std::shared_ptr<dht::Value>>& values,
+            bool expired
+        ) -> bool {
+            // Check if listener is still active
+            std::lock_guard<std::mutex> lock(listeners_mutex);
+            if (!listener_ctx->active) {
+                QGP_LOG_DEBUG(LOG_TAG, "Token %zu is no longer active, stopping", token);
+                return false;
+            }
+
+            // Handle expiration notification
+            if (expired) {
+                QGP_LOG_DEBUG(LOG_TAG, "Token %zu received expiration notification", token);
+                bool continue_listening = listener_ctx->callback(
+                    nullptr, 0, true, listener_ctx->user_data
+                );
+                return continue_listening;
+            }
+
+            // Handle value notifications
+            if (values.empty()) {
+                return true;
+            }
+
+            QGP_LOG_DEBUG(LOG_TAG, "Token %zu received %zu value(s)", token, values.size());
+
+            // Invoke C callback for each value
+            bool continue_listening = true;
+            for (const auto& val : values) {
+                if (!val || val->data.empty()) {
+                    continue;
+                }
+
+                bool result = listener_ctx->callback(
+                    val->data.data(),
+                    val->data.size(),
+                    false,
+                    listener_ctx->user_data
+                );
+
+                if (!result) {
+                    QGP_LOG_DEBUG(LOG_TAG, "Token %zu callback returned false, stopping", token);
+                    continue_listening = false;
+                    break;
+                }
+            }
+
+            return continue_listening;
+        };
+
+        // Start listening via OpenDHT
+        listener_ctx->future_token = ctx->runner.listen(hash, cpp_callback);
+
+        // Wait for the OpenDHT token
+        try {
+            listener_ctx->opendht_token = listener_ctx->future_token.get();
+            QGP_LOG_DEBUG(LOG_TAG, "Extended subscription active for token %zu (OpenDHT: %zu)",
+                          token, listener_ctx->opendht_token);
+        } catch (const std::exception& e) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to get OpenDHT token: %s", e.what());
+            // Call cleanup if provided
+            if (cleanup) {
+                cleanup(user_data);
+            }
+            return 0;
+        }
+
+        // Store listener context
+        {
+            std::lock_guard<std::mutex> lock(listeners_mutex);
+            active_listeners[token] = listener_ctx;
+        }
+
+        return token;
+
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR(LOG_TAG, "Exception in dht_listen_ex: %s", e.what());
+        // Call cleanup if provided
+        if (cleanup) {
+            cleanup(user_data);
+        }
+        return 0;
+    }
+}
+
+/**
+ * Cancel all active listen subscriptions (Phase 14)
+ */
+extern "C" void dht_cancel_all_listeners(
+    dht_context_t *ctx)
+{
+    if (!ctx) {
+        return;
+    }
+
+    std::lock_guard<std::mutex> lock(listeners_mutex);
+
+    QGP_LOG_INFO(LOG_TAG, "Cancelling all %zu active listeners", active_listeners.size());
+
+    for (auto& [token, listener_ctx] : active_listeners) {
+        if (!listener_ctx->active) {
+            continue;
+        }
+
+        QGP_LOG_DEBUG(LOG_TAG, "Cancelling listener token %zu", token);
+        listener_ctx->active = false;
+
+        // Cancel OpenDHT subscription
+        try {
+            ctx->runner.cancelListen(dht::InfoHash(), listener_ctx->opendht_token);
+        } catch (const std::exception& e) {
+            QGP_LOG_ERROR(LOG_TAG, "Exception cancelling listener %zu: %s", token, e.what());
+        }
+
+        // Call cleanup callback if provided
+        if (listener_ctx->cleanup) {
+            listener_ctx->cleanup(listener_ctx->user_data);
+        }
+    }
+
+    active_listeners.clear();
+    QGP_LOG_INFO(LOG_TAG, "All listeners cancelled");
+}
+
+/**
+ * Resubscribe all active listeners (Phase 14)
+ */
+extern "C" size_t dht_resubscribe_all_listeners(
+    dht_context_t *ctx)
+{
+    if (!ctx) {
+        return 0;
+    }
+
+    std::lock_guard<std::mutex> lock(listeners_mutex);
+
+    size_t resubscribed = 0;
+    QGP_LOG_INFO(LOG_TAG, "Resubscribing %zu active listeners", active_listeners.size());
+
+    for (auto& [token, listener_ctx] : active_listeners) {
+        if (!listener_ctx->active) {
+            continue;
+        }
+
+        // Skip listeners without key data (created with basic API)
+        if (listener_ctx->key_data.empty()) {
+            QGP_LOG_DEBUG(LOG_TAG, "Skipping token %zu (no key data)", token);
+            continue;
+        }
+
+        try {
+            // Recreate InfoHash from stored key data
+            dht::InfoHash hash = dht::InfoHash::get(
+                listener_ctx->key_data.data(),
+                listener_ctx->key_len
+            );
+
+            // Create new callback wrapper
+            auto cpp_callback = [token, listener_ctx](
+                const std::vector<std::shared_ptr<dht::Value>>& values,
+                bool expired
+            ) -> bool {
+                std::lock_guard<std::mutex> lock(listeners_mutex);
+                if (!listener_ctx->active) {
+                    return false;
+                }
+
+                if (expired) {
+                    return listener_ctx->callback(nullptr, 0, true, listener_ctx->user_data);
+                }
+
+                if (values.empty()) {
+                    return true;
+                }
+
+                for (const auto& val : values) {
+                    if (!val || val->data.empty()) continue;
+                    if (!listener_ctx->callback(val->data.data(), val->data.size(),
+                                                 false, listener_ctx->user_data)) {
+                        return false;
+                    }
+                }
+                return true;
+            };
+
+            // Resubscribe
+            auto future = ctx->runner.listen(hash, cpp_callback);
+            listener_ctx->opendht_token = future.get();
+
+            QGP_LOG_DEBUG(LOG_TAG, "Resubscribed token %zu (new OpenDHT: %zu)",
+                          token, listener_ctx->opendht_token);
+            resubscribed++;
+
+        } catch (const std::exception& e) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to resubscribe token %zu: %s", token, e.what());
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Resubscribed %zu/%zu listeners", resubscribed, active_listeners.size());
+    return resubscribed;
 }

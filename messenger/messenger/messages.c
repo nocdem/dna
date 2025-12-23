@@ -460,34 +460,35 @@ int messenger_send_message(
         message_ids[i] = message_backup_get_last_id(ctx->backup_ctx);
     }
 
-    // Phase 9.1b: Try P2P delivery for each recipient
-    // If P2P succeeds, message delivered instantly
-    // If P2P fails, message queued in DHT offline queue
-    size_t p2p_success = 0;
+    // Phase 14: DHT-only messaging - queue directly to DHT (Spillway)
+    // P2P infrastructure is kept for future audio/video, but messages bypass P2P
+    // This is more reliable on mobile platforms with background execution restrictions
+    size_t dht_success = 0;
     if (ctx->p2p_enabled && ctx->p2p_transport) {
         for (size_t i = 0; i < recipient_count; i++) {
-            if (messenger_send_p2p(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
-                p2p_success++;
-                // Update status to SENT (1)
+            // Queue directly to DHT - no P2P attempt for messaging
+            if (messenger_queue_to_dht(ctx, recipients[i], ciphertext, ciphertext_len) == 0) {
+                dht_success++;
+                // Update status to SENT (1) - queued in DHT
                 if (message_ids[i] > 0) {
                     message_backup_update_status(ctx->backup_ctx, message_ids[i], 1);
                 }
             } else {
-                // Update status to FAILED (2) - P2P and DHT both failed
+                // Update status to FAILED (2) - DHT queue failed
                 if (message_ids[i] > 0) {
                     message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
                 }
             }
         }
     } else {
-        // P2P disabled - mark all as FAILED since no delivery attempted
+        // P2P transport not available - mark all as FAILED since no delivery attempted
         for (size_t i = 0; i < recipient_count; i++) {
             if (message_ids[i] > 0) {
                 message_backup_update_status(ctx->backup_ctx, message_ids[i], 2);
             }
         }
     }
-    (void)p2p_success;  // Suppress unused variable warning
+    (void)dht_success;  // Suppress unused variable warning
 
     free(message_ids);
     free(ciphertext);

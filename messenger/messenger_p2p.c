@@ -773,6 +773,70 @@ int messenger_send_p2p(
     return -1;  // Message not delivered
 }
 
+// ============================================================================
+// DHT-ONLY MESSAGING (Phase 14)
+// ============================================================================
+
+int messenger_queue_to_dht(
+    messenger_context_t *ctx,
+    const char *recipient,
+    const uint8_t *encrypted_message,
+    size_t encrypted_len)
+{
+    QGP_LOG_INFO("P2P", "Queueing message to DHT for %s (len=%zu)\n",
+                 recipient ? recipient : "NULL", encrypted_len);
+
+    if (!ctx || !recipient || !encrypted_message || encrypted_len == 0) {
+        QGP_LOG_ERROR("P2P", "messenger_queue_to_dht: Invalid parameters\n");
+        return -1;
+    }
+
+    // Require P2P transport for DHT access (transport layer provides DHT connection)
+    if (!ctx->p2p_enabled || !ctx->p2p_transport) {
+        QGP_LOG_WARN("P2P", "P2P transport not available, cannot queue to DHT for %s\n", recipient);
+        return -1;
+    }
+
+    // Resolve recipient to fingerprint for consistent DHT key
+    char recipient_fingerprint[129];
+    if (resolve_identity_to_fingerprint(ctx, recipient, recipient_fingerprint) != 0) {
+        QGP_LOG_ERROR("P2P", "Failed to resolve recipient '%s' to fingerprint for DHT queue\n", recipient);
+        return -1;
+    }
+
+    // Get next sequence number for watermark pruning
+    uint64_t seq_num = 1;
+    if (ctx->backup_ctx) {
+        seq_num = message_backup_get_next_seq(ctx->backup_ctx, recipient_fingerprint);
+    }
+
+    // Queue directly to DHT (Spillway) - no P2P attempt
+    int queue_result = p2p_queue_offline_message(
+        ctx->p2p_transport,
+        ctx->identity,           // sender (fingerprint)
+        recipient_fingerprint,   // recipient (fingerprint)
+        encrypted_message,
+        encrypted_len,
+        seq_num
+    );
+
+    if (queue_result == 0) {
+        QGP_LOG_INFO("P2P", "Message queued in DHT for %s (fp: %.20s..., seq=%lu)\n",
+               recipient, recipient_fingerprint, (unsigned long)seq_num);
+
+        // Start tracking delivery for this recipient (delivery confirmation feature)
+        dna_engine_t *engine = dna_engine_get_global();
+        if (engine) {
+            dna_engine_track_delivery(engine, recipient_fingerprint);
+        }
+
+        return 0;  // Success
+    }
+
+    QGP_LOG_ERROR("P2P", "Failed to queue message in DHT (result=%d)\n", queue_result);
+    return -1;
+}
+
 int messenger_broadcast_p2p(
     messenger_context_t *ctx,
     const char **recipients,

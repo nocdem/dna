@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-12-21 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13
+**Last Updated:** 2025-12-23 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** App v0.2.1 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** App v0.2.5 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -404,9 +404,10 @@ ssh root@<server-ip> "bash /opt/dna-messenger/build-nodus.sh"
 - **Phase 8:** cpunk Wallet Integration
 - **Phase 9.1-9.6:** P2P Transport, Offline Queue, DHT Migrations
 - **Phase 10.1-10.4:** User Profiles, DNA Board, Avatars, Voting
-- **Phase 11:** ICE NAT Traversal 
+- **Phase 11:** ICE NAT Traversal
 - **Phase 12:** Message Format v0.08 - Fingerprint Privacy
-- **Phase 13:** GSK Group Encryption 
+- **Phase 13:** GSK Group Encryption
+- **Phase 14:** DHT-Only Messaging (Android ForegroundService, DHT listen reliability) 
 
 ### 🚧 In Progress
 - **Phase 7:** Mobile/Desktop UI (Flutter + Dart)
