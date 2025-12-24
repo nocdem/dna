@@ -357,8 +357,8 @@ const char* qgp_platform_ca_bundle_path(void) {
 
     /* Try multiple possible locations for CA bundle */
     const char *locations[] = {
-        "%s/cacert.pem",                /* Direct in app data dir */
-        "%s/../cacert.pem",             /* Parent directory (filesDir) */
+        "%s/cacert.pem",                       /* Direct in app data dir */
+        "%s/../cacert.pem",                    /* Parent directory (filesDir) */
         NULL
     };
 

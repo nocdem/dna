@@ -1,6 +1,7 @@
 // Engine Provider - Core DNA Engine state management
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path_provider/path_provider.dart';
 import '../ffi/dna_engine.dart';
@@ -38,6 +39,11 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
       await dir.create(recursive: true);
     }
 
+    // Copy CA certificate bundle for Android HTTPS (curl needs this)
+    if (Platform.isAndroid) {
+      await _copyCACertBundle(dataDir);
+    }
+
     final engine = await DnaEngine.create(dataDir: dataDir);
 
     ref.onDispose(() {
@@ -45,6 +51,31 @@ class EngineNotifier extends AsyncNotifier<DnaEngine> {
     });
 
     return engine;
+  }
+
+  /// Copy CA certificate bundle from Flutter assets to data directory
+  Future<void> _copyCACertBundle(String dataDir) async {
+    final destFile = File('$dataDir/cacert.pem');
+
+    // Check if already exists and up-to-date
+    if (await destFile.exists()) {
+      final size = await destFile.length();
+      if (size > 200000) {
+        // Already copied (cacert.pem is ~225KB)
+        return;
+      }
+    }
+
+    try {
+      // Load from Flutter assets
+      final data = await rootBundle.load('assets/cacert.pem');
+      await destFile.writeAsBytes(data.buffer.asUint8List());
+      // ignore: avoid_print
+      print('[DNA] Copied cacert.pem to $dataDir (${data.lengthInBytes} bytes)');
+    } catch (e) {
+      // ignore: avoid_print
+      print('[DNA] Failed to copy cacert.pem: $e');
+    }
   }
 }
 

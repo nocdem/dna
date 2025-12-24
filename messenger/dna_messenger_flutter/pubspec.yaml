@@ -49,6 +49,7 @@ flutter:
   assets:
     - assets/icon.png
     - assets/icons/crypto/
+    - assets/cacert.pem
 
   fonts:
     - family: NotoSans
