@@ -214,27 +214,40 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 ### CHECKPOINT 8: VERSION UPDATE (MANDATORY ON EVERY PUSH)
 **EVERY successful build that will be pushed MUST increment the version.**
 
-**Version Files:**
+**Version Files (SINGLE SOURCE OF TRUTH):**
 | Component | Version File | Current |
 |-----------|--------------|---------|
-| App (CLI + Flutter) | `include/dna/version.h` | v0.2.1 |
+| App (CLI + Flutter) | `include/dna/version.h` | v0.2.5 |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 |
+
+**IMPORTANT:** `version.h` is the **single source of truth** for app version:
+- CLI reads it directly via `#include <dna/version.h>`
+- Flutter reads it via `dna_engine_get_version()` FFI call
+- C library exports it via `dna_engine_get_version()`
+- **Only edit `version.h`** - all components read from it automatically
 
 **When to Bump Which Component:**
 - **App version**: Any changes to CLI, Flutter, dna_lib, p2p, dht client code
 - **Nodus version**: Any changes to dna-nodus server, turn_credential_udp, nodus_config
 
 **Which Number to Bump:**
-- **PATCH** (0.2.X → 0.2.1): Default for all changes (bug fixes, features, improvements)
+- **PATCH** (0.2.X → 0.2.6): Default for all changes (bug fixes, features, improvements)
 - **MINOR** (0.X.0 → 0.3.0): Major new features, significant API changes
 - **MAJOR** (X.0.0 → 1.0.0): Breaking changes, production release
 
 **Procedure:**
 1. **BUILD** succeeds - ready to commit and push
-2. **BUMP** PATCH version in the appropriate file(s)
+2. **BUMP** version in `include/dna/version.h`:
+   ```c
+   #define DNA_VERSION_MAJOR 0
+   #define DNA_VERSION_MINOR 2
+   #define DNA_VERSION_PATCH 6
+   #define DNA_VERSION_STRING "0.2.6"
+   ```
 3. **UPDATE** the "Current" column in CLAUDE.md (this section)
-4. **COMMIT** with version in commit message
-5. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+4. **UPDATE** the version in CLAUDE.md header line
+5. **COMMIT** with version in commit message
+6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
 **IMPORTANT:** Never push code changes without bumping version. This ensures deployed servers always show correct version.
 
