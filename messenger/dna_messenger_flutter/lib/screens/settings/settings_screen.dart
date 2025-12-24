@@ -978,7 +978,7 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
               GestureDetector(
                 onTap: _handleVersionTap,
                 child: Text(
-                  'DNA Messenger v1.0.0 alpha',
+                  'DNA Messenger v0.2.5',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: developerMode ? DnaColors.textSuccess : null,
                   ),
