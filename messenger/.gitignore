@@ -104,6 +104,8 @@ mxe/
 # Keys and sensitive data
 *.key
 *.pem
+# Exception: CA certificate bundle is public/safe
+!**/cacert.pem
 *.priv
 *.dsa
 *.kem
