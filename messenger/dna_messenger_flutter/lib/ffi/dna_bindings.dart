@@ -2141,6 +2141,18 @@ class DnaBindings {
   }
 
   // ---------------------------------------------------------------------------
+  // VERSION
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_get_version = _lib.lookupFunction<
+      Pointer<Utf8> Function(),
+      Pointer<Utf8> Function()>('dna_engine_get_version');
+
+  Pointer<Utf8> dna_engine_get_version() {
+    return _dna_engine_get_version();
+  }
+
+  // ---------------------------------------------------------------------------
   // LOG CONFIGURATION
   // ---------------------------------------------------------------------------
 

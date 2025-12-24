@@ -26,13 +26,17 @@ extern "C" {
 #endif
 
 /* ============================================================================
- * VERSION
+ * VERSION (from version.h - single source of truth)
  * ============================================================================ */
 
-#define DNA_ENGINE_VERSION_MAJOR 1
-#define DNA_ENGINE_VERSION_MINOR 0
-#define DNA_ENGINE_VERSION_PATCH 0
-#define DNA_ENGINE_VERSION_STRING "1.0.0"
+#include "version.h"
+
+/**
+ * Get DNA Messenger version string
+ *
+ * @return Version string (e.g., "0.2.5") - do not free
+ */
+const char* dna_engine_get_version(void);
 
 /* ============================================================================
  * OPAQUE TYPES

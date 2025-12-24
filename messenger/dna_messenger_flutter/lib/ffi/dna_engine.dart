@@ -3437,6 +3437,26 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // VERSION
+  // ---------------------------------------------------------------------------
+
+  /// Get DNA Messenger version string from native library
+  ///
+  /// Returns version like "0.2.5" - single source of truth from version.h
+  static String getVersion(DnaBindings bindings) {
+    final ptr = bindings.dna_engine_get_version();
+    if (ptr == nullptr) return 'unknown';
+    return ptr.toDartString();
+  }
+
+  /// Get version (instance method)
+  String get version {
+    final ptr = _bindings.dna_engine_get_version();
+    if (ptr == nullptr) return 'unknown';
+    return ptr.toDartString();
+  }
+
+  // ---------------------------------------------------------------------------
   // LOG CONFIGURATION
   // ---------------------------------------------------------------------------
 

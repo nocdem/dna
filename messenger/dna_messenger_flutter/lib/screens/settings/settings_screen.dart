@@ -965,6 +965,12 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final developerMode = ref.watch(developerModeProvider);
+    final engineAsync = ref.watch(engineProvider);
+
+    // Get version from native library (single source of truth)
+    final version = engineAsync.whenOrNull(
+      data: (engine) => engine.version,
+    ) ?? 'unknown';
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -978,7 +984,7 @@ class _AboutSectionState extends ConsumerState<_AboutSection> {
               GestureDetector(
                 onTap: _handleVersionTap,
                 child: Text(
-                  'DNA Messenger v0.2.5',
+                  'DNA Messenger v$version',
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: developerMode ? DnaColors.textSuccess : null,
                   ),

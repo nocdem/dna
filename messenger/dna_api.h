@@ -3,9 +3,6 @@
  *
  * Post-quantum end-to-end encrypted messaging library
  * Memory-based operations (no file I/O in public API)
- *
- * Version: 0.1.0-alpha
- * Status: Phase 2 - Library API Design
  */
 
 #ifndef DNA_API_H
@@ -14,23 +11,19 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include "include/dna/version.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 // ============================================================================
-// VERSION INFORMATION
+// VERSION INFORMATION (from include/dna/version.h)
 // ============================================================================
-
-#define DNA_VERSION_MAJOR 0
-#define DNA_VERSION_MINOR 1
-#define DNA_VERSION_PATCH 0
-#define DNA_VERSION_STRING "0.1.0-alpha"
 
 /**
  * Get library version as string
- * Returns: "0.1.0-alpha"
+ * Returns: e.g., "0.2.5"
  */
 const char* dna_version(void);
 
