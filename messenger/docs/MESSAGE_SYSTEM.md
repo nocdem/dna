@@ -1,7 +1,7 @@
 # DNA Messenger - Message System Documentation
 
-**Version:** v0.08 (Phase 13 - GSK Upgrade)
-**Last Updated:** 2025-11-26
+**Version:** v0.08 (Phase 14 - DHT-Only Messaging)
+**Last Updated:** 2025-12-24
 **Security Level:** NIST Category 5 (256-bit quantum)
 
 This document describes how the DNA Messenger message system works, with all facts verified directly from source code.
@@ -60,21 +60,22 @@ This document describes how the DNA Messenger message system works, with all fac
 │         │                                              ▲                 │
 │         ▼                                              │                 │
 │  ┌─────────────────────────────────────────────────────────────────┐   │
-│  │                    TRANSPORT LAYER                               │   │
+│  │                    TRANSPORT LAYER (Phase 14)                    │   │
 │  │                                                                  │   │
-│  │   ┌────────────────┐           ┌────────────────────────┐       │   │
-│  │   │   P2P Direct   │           │    DHT Offline Queue   │       │   │
-│  │   │  (TCP:4001)    │           │   (7-day TTL, Spillway)│       │   │
-│  │   │   If Online    │           │     If Offline         │       │   │
-│  │   └───────┬────────┘           └───────────┬────────────┘       │   │
-│  │           │                                │                     │   │
-│  │           └────────────┬───────────────────┘                     │   │
-│  │                        ▼                                         │   │
+│  │           ┌────────────────────────────────────┐                 │   │
+│  │           │    DHT Queue (Spillway Protocol)   │                 │   │
+│  │           │   All messages → DHT directly      │                 │   │
+│  │           │   7-day TTL, sender-based outbox   │                 │   │
+│  │           └───────────────┬────────────────────┘                 │   │
+│  │                           │                                      │   │
+│  │                           ▼                                      │   │
 │  │               ┌────────────────┐                                 │   │
 │  │               │   DHT Network  │                                 │   │
 │  │               │   (UDP:4000)   │                                 │   │
 │  │               │  OpenDHT-PQ    │                                 │   │
 │  │               └────────────────┘                                 │   │
+│  │                                                                  │   │
+│  │   Note: P2P infrastructure preserved for future audio/video     │   │
 │  └──────────────────────────────────────────────────────────────────┘   │
 │                                                                          │
 └──────────────────────────────────────────────────────────────────────────┘
@@ -145,20 +146,18 @@ USER INPUT                     ENCRYPTION                      STORAGE          
                        │                                         │                               │
                        │                                         │                               ▼
                        │                                         │              ┌────────────────────────────┐
-                       │                                         │              │ Check recipient online?    │
+                       │                                         │              │ Phase 14: DHT-Only Path    │
+                       │                                         │              │ messenger_queue_to_dht()   │
                        │                                         │              └───────────┬────────────────┘
                        │                                         │                          │
-                       │                                         │              ┌───────────┴───────────┐
-                       │                                         │              │                       │
-                       │                                         │           ONLINE                  OFFLINE
-                       │                                         │              │                       │
-                       │                                         │              ▼                       ▼
-                       │                                         │     ┌──────────────┐      ┌──────────────────┐
-                       │                                         │     │ P2P Direct   │      │ DHT Offline      │
-                       │                                         │     │ TCP Delivery │      │ Queue (7-day TTL)│
-                       │                                         │     └──────┬───────┘      └────────┬─────────┘
-                       │                                         │            │                       │
-                       └─────────────────────────────────────────┼────────────┴───────────────────────┘
+                       │                                         │                          ▼
+                       │                                         │              ┌──────────────────────────┐
+                       │                                         │              │ DHT Queue (Spillway)     │
+                       │                                         │              │ All messages → DHT       │
+                       │                                         │              │ 7-day TTL                │
+                       │                                         │              └────────────┬─────────────┘
+                       │                                         │                           │
+                       └─────────────────────────────────────────┼───────────────────────────┘
                                                                  │
                                                                  ▼
                                                         STATUS_SENT (checkmark)
@@ -537,11 +536,17 @@ Example for 1 recipient, 100-byte plaintext:
 
 ## 6. Transport Layer
 
-### 6.1 Architecture
+### 6.1 Architecture (Phase 14: DHT-Only Messaging)
+
+**As of Phase 14**, all messaging goes directly to DHT (Spillway protocol). P2P direct delivery
+is **disabled for messaging** to improve reliability on mobile platforms where background
+execution restrictions make P2P connections unreliable.
+
+**P2P infrastructure is preserved** for future audio/video calls.
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                        TRANSPORT LAYER DECISION TREE                         │
+│                    TRANSPORT LAYER (Phase 14 - DHT-Only)                     │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │                      ┌─────────────────────────┐                            │
@@ -550,40 +555,28 @@ Example for 1 recipient, 100-byte plaintext:
 │                                  │                                          │
 │                                  ▼                                          │
 │                      ┌─────────────────────────┐                            │
-│                      │ Is P2P enabled?         │                            │
+│                      │ messenger_queue_to_dht()│                            │
+│                      │ (Phase 14: DHT-only)    │                            │
 │                      └───────────┬─────────────┘                            │
 │                                  │                                          │
-│                     ┌────────────┴────────────┐                             │
-│                     │                         │                             │
-│                    YES                        NO                            │
-│                     │                         │                             │
-│                     ▼                         ▼                             │
-│         ┌───────────────────┐      ┌───────────────────────┐               │
-│         │ messenger_send_p2p│      │ DHT Offline Queue     │               │
-│         │ for each recipient│      │ (direct to queue)     │               │
-│         └─────────┬─────────┘      └───────────────────────┘               │
-│                   │                                                         │
-│                   ▼                                                         │
-│         ┌───────────────────┐                                               │
-│         │ p2p_lookup_peer() │                                               │
-│         │ Check DHT presence│                                               │
-│         └─────────┬─────────┘                                               │
-│                   │                                                         │
-│         ┌─────────┴─────────┐                                               │
-│         │                   │                                               │
-│       FOUND              NOT FOUND                                          │
-│         │                   │                                               │
-│         ▼                   ▼                                               │
-│  ┌─────────────────┐  ┌─────────────────────────┐                          │
-│  │ TCP Connection  │  │ p2p_queue_offline_msg() │                          │
-│  │ to peer IP:port │  │ Store in DHT with 7-day │                          │
-│  │ Direct delivery │  │ TTL (Spillway outbox)   │                          │
-│  └─────────────────┘  └─────────────────────────┘                          │
+│                                  ▼                                          │
+│                      ┌─────────────────────────────────┐                    │
+│                      │    DHT Queue (Spillway)         │                    │
+│                      │    Key: sender:outbox:recipient │                    │
+│                      │    TTL: 7 days                  │                    │
+│                      │    Signed put (value_id=1)      │                    │
+│                      └─────────────────────────────────┘                    │
+│                                                                             │
+│  DEPRECATED (kept for future audio/video):                                  │
+│  ─────────────────────────────────────────                                  │
+│  • messenger_send_p2p() - No longer called for messaging                    │
+│  • p2p_lookup_peer() - Used for presence only                               │
+│  • TCP direct delivery - Bypassed for messages                              │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
-**Source:** `messenger/messages.c:477-494`, `p2p/p2p_transport.h:197-259`
+**Source:** `messenger/messages.c:463-491`, `messenger_p2p.c:780-838`
 
 ### 6.2 Port Configuration
 
@@ -1019,6 +1012,7 @@ CREATE INDEX IF NOT EXISTS idx_sender_fingerprint ON messages(sender_fingerprint
 
 | Date | Version | Changes |
 |------|---------|---------|
+| 2025-12-24 | v0.08 | Phase 14: DHT-only messaging (P2P deprecated for messages, kept for future audio/video) |
 | 2025-11-26 | v0.08 | Initial documentation from source code audit |
 
 ---

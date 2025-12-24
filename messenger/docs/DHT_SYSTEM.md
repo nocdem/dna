@@ -1,6 +1,7 @@
 # DHT System Documentation
 
-**Last Updated:** 2025-12-12
+**Last Updated:** 2025-12-24
+**Phase:** 14 (DHT-Only Messaging)
 
 Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system, covering both client operations and the dna-nodus bootstrap server.
 
@@ -269,6 +270,15 @@ void dht_bootstrap_registry_filter_active(bootstrap_registry_t *registry);
 
 Real-time notifications when DHT values change.
 
+#### Constants (Phase 14)
+
+```c
+// Maximum number of simultaneous listeners
+#define DHT_MAX_LISTENERS 256
+```
+
+#### Basic API
+
 ```c
 // Callback type
 typedef bool (*dht_listen_callback_t)(
@@ -296,7 +306,36 @@ void dht_cancel_listen(dht_context_t *ctx, size_t token);
 size_t dht_get_active_listen_count(dht_context_t *ctx);
 ```
 
-Example usage for offline message notifications:
+#### Extended API (Phase 14)
+
+Phase 14 added extended API with cleanup callbacks, auto-resubscription, and
+listener limits for reliable Android background operation.
+
+```c
+// Cleanup callback - invoked when listener is cancelled
+typedef void (*dht_listen_cleanup_t)(void *user_data);
+
+// Start listening with cleanup callback support
+// Also stores key data for auto-resubscription after network loss
+// Returns 0 if DHT_MAX_LISTENERS limit is reached
+size_t dht_listen_ex(dht_context_t *ctx,
+                     const uint8_t *key, size_t key_len,
+                     dht_listen_callback_t callback,
+                     void *user_data,
+                     dht_listen_cleanup_t cleanup);  // may be NULL
+
+// Cancel all active listeners and invoke their cleanup callbacks
+// Useful for shutdown or DHT reconnection
+void dht_cancel_all_listeners(dht_context_t *ctx);
+
+// Re-register all active listeners with OpenDHT
+// Call when DHT connection is restored after network loss
+// Only works for listeners created with dht_listen_ex()
+size_t dht_resubscribe_all_listeners(dht_context_t *ctx);
+```
+
+#### Example: Basic Usage
+
 ```c
 // Listen for messages from a contact's outbox
 // Callback fires when contact sends NEW message (updates their outbox)
@@ -319,6 +358,35 @@ if (token == 0) {
 
 // Later, stop listening:
 dht_cancel_listen(ctx, token);
+```
+
+#### Example: Extended API with Cleanup (Phase 14)
+
+```c
+// Context structure for listener
+typedef struct {
+    char contact_fp[129];
+    dna_engine_t *engine;
+} listener_ctx_t;
+
+// Cleanup function - free resources when listener is cancelled
+void my_cleanup(void *user_data) {
+    listener_ctx_t *ctx = (listener_ctx_t *)user_data;
+    free(ctx);
+}
+
+// Create listener with cleanup
+listener_ctx_t *ctx = malloc(sizeof(listener_ctx_t));
+strncpy(ctx->contact_fp, contact_fp, 128);
+ctx->engine = engine;
+
+size_t token = dht_listen_ex(dht_ctx, key, 64, my_callback, ctx, my_cleanup);
+
+// When cancelled, my_cleanup is called automatically
+dht_cancel_listen(dht_ctx, token);  // calls my_cleanup(ctx)
+
+// Or cancel all listeners at once (during shutdown)
+dht_cancel_all_listeners(dht_ctx);  // calls cleanup for each
 ```
 
 **Note:** The callback is triggered for both new values AND updates to existing values

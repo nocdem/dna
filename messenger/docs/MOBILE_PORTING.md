@@ -1,7 +1,7 @@
 # DNA Messenger Mobile Porting Guide
 
-**Last Updated:** 2025-11-28
-**Status:** Android SDK Complete (Phases 1-6)
+**Last Updated:** 2025-12-24
+**Status:** Android SDK Complete (Phases 1-6, 14)
 **Target:** Android first, iOS later
 
 ---
@@ -22,6 +22,7 @@ DNA Messenger has been successfully ported to Android. The Android SDK provides 
 | 6 | JNI Bindings | ✅ Complete (26 functions) |
 | 7 | Android UI | 🚧 In Progress |
 | 8 | iOS Port | 📋 Future |
+| **14** | **DHT-Only Messaging + ForegroundService** | ✅ **Complete** |
 
 ---
 
@@ -280,6 +281,90 @@ engine.sendMessage(recipientFingerprint, "Hello!", callback);
 engine.shutdown();
 ```
 
+### Phase 14: DHT-Only Messaging + ForegroundService ✅
+
+**Status:** Complete (2025-12-24)
+
+Phase 14 changed the messaging architecture to use DHT-only delivery (no P2P attempts).
+This required adding a ForegroundService for Android to ensure reliable background operation.
+
+**Why DHT-Only?**
+- Mobile platforms have strict background execution restrictions
+- P2P connections fail when app is backgrounded (Android Doze mode, iOS suspension)
+- DHT queue provides reliable, consistent delivery across all platforms
+- P2P infrastructure preserved for future audio/video calls
+
+#### Android ForegroundService
+
+**File:** `dna_messenger_flutter/android/app/src/main/kotlin/io/cpunk/dna_messenger/DnaMessengerService.kt`
+
+**Features:**
+- Keeps DHT connection alive when app is backgrounded
+- Polls for offline messages every 60 seconds
+- Uses `PARTIAL_WAKE_LOCK` to prevent CPU sleep during poll
+- Displays low-priority notification (required for Android 8+)
+- Supports START, STOP, and POLL_NOW actions
+
+**Service Configuration:**
+```kotlin
+companion object {
+    private const val NOTIFICATION_ID = 1001
+    private const val CHANNEL_ID = "dna_messenger_service"
+    private const val POLL_INTERVAL_MS = 60_000L  // 60 seconds
+}
+```
+
+**AndroidManifest.xml Permissions Required:**
+```xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+
+<service
+    android:name=".DnaMessengerService"
+    android:enabled="true"
+    android:exported="false"
+    android:foregroundServiceType="dataSync" />
+```
+
+**Flutter Integration:**
+
+```dart
+// Start service when app goes to background
+void startBackgroundService() {
+  if (Platform.isAndroid) {
+    const platform = MethodChannel('io.cpunk.dna_messenger/service');
+    platform.invokeMethod('startService');
+  }
+}
+
+// Stop service when app comes to foreground
+void stopBackgroundService() {
+  if (Platform.isAndroid) {
+    const platform = MethodChannel('io.cpunk.dna_messenger/service');
+    platform.invokeMethod('stopService');
+  }
+}
+```
+
+**DHT Listen API Extensions (Phase 14):**
+
+The DHT listen API was extended to support reliable Android background operation:
+
+```c
+// Maximum simultaneous listeners (prevents resource exhaustion)
+#define DHT_MAX_LISTENERS 256
+
+// Extended listen with cleanup callback
+size_t dht_listen_ex(ctx, key, key_len, callback, user_data, cleanup_fn);
+
+// Cancel all listeners (for shutdown)
+void dht_cancel_all_listeners(ctx);
+
+// Re-register listeners after network restored
+size_t dht_resubscribe_all_listeners(ctx);
+```
+
 ---
 
 ## Remaining Work
@@ -456,6 +541,15 @@ export ANDROID_NDK=/path/to/ndk
 ---
 
 ## Changelog
+
+### 2025-12-24: Phase 14 - DHT-Only Messaging (v0.2.5)
+- **Phase 14 Complete:** DHT-only messaging for all platforms
+- Messages now queue directly to DHT (Spillway) without P2P attempts
+- Added Android `DnaMessengerService` ForegroundService
+- Background polling every 60 seconds with WakeLock
+- Extended DHT listen API: `dht_listen_ex()`, `dht_cancel_all_listeners()`, `dht_resubscribe_all_listeners()`
+- Added `DHT_MAX_LISTENERS` limit (256)
+- P2P infrastructure preserved for future audio/video
 
 ### 2025-11-28: Android SDK Complete (v0.1.130+)
 - **Phase 6 Complete:** JNI bindings with 26 native methods
