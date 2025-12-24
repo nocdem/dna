@@ -2484,13 +2484,13 @@ void dna_handle_list_wallets(dna_engine_t *engine, dna_task_t *task) {
             goto done;
         }
 
-        /* Clear mnemonic from memory */
+        /* Derive wallet addresses from master seed and mnemonic
+         * Note: Cellframe needs the mnemonic (SHA3-256 hash), ETH/SOL/TRX use master seed
+         */
+        rc = blockchain_derive_wallets_from_seed(master_seed, mnemonic, engine->fingerprint, &engine->blockchain_wallets);
+
+        /* Clear sensitive data from memory */
         memset(mnemonic, 0, sizeof(mnemonic));
-
-        /* Derive wallet addresses from master seed */
-        rc = blockchain_derive_wallets_from_seed(master_seed, engine->fingerprint, &engine->blockchain_wallets);
-
-        /* Clear master seed from memory */
         memset(master_seed, 0, sizeof(master_seed));
 
         if (rc != 0 || !engine->blockchain_wallets) {

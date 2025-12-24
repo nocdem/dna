@@ -783,6 +783,7 @@ int blockchain_send_tokens(
 
 int blockchain_derive_wallets_from_seed(
     const uint8_t master_seed[64],
+    const char *mnemonic,
     const char *fingerprint,
     blockchain_wallet_list_t **list_out
 ) {
@@ -854,12 +855,34 @@ int blockchain_derive_wallets_from_seed(
         }
     }
 
-    /* Derive Cellframe wallet address
-     * Cellframe uses SHA3-256(mnemonic) not BIP39 master seed directly.
-     * Since we only have the master seed here, we cannot derive Cellframe address.
-     * Cellframe derivation requires the original mnemonic string.
-     * This will be handled separately if needed.
+    /* Derive Cellframe wallet address from mnemonic
+     * Cellframe uses SHA3-256(mnemonic) → 32-byte seed → Dilithium keypair
+     * This matches the official Cellframe wallet app derivation.
      */
+    if (mnemonic && mnemonic[0] != '\0') {
+        uint8_t cf_seed[CF_WALLET_SEED_SIZE];
+        if (cellframe_derive_seed_from_mnemonic(mnemonic, cf_seed) == 0) {
+            char cf_address[CF_WALLET_ADDRESS_MAX];
+            if (cellframe_wallet_derive_address(cf_seed, cf_address) == 0) {
+                blockchain_wallet_info_t *info = &list->wallets[idx];
+                info->type = BLOCKCHAIN_CELLFRAME;
+                strncpy(info->name, fingerprint, sizeof(info->name) - 1);
+                strncpy(info->address, cf_address, sizeof(info->address) - 1);
+                info->file_path[0] = '\0';  /* No file - derived on-demand */
+                info->is_encrypted = false;
+                idx++;
+                QGP_LOG_DEBUG(LOG_TAG, "Derived Cellframe address: %s", info->address);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "Failed to derive Cellframe address");
+            }
+            /* Securely clear seed */
+            memset(cf_seed, 0, sizeof(cf_seed));
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Failed to derive Cellframe seed from mnemonic");
+        }
+    } else {
+        QGP_LOG_DEBUG(LOG_TAG, "No mnemonic provided, skipping Cellframe derivation");
+    }
 
     list->count = idx;
     *list_out = list;

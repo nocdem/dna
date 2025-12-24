@@ -282,18 +282,23 @@ int blockchain_send_tokens(
  * ============================================================================ */
 
 /**
- * Derive wallet addresses from master seed without creating files
+ * Derive wallet addresses from master seed and mnemonic without creating files
  *
- * Used when wallet files don't exist - derives addresses on-demand from mnemonic.
+ * Used when wallet files don't exist - derives addresses on-demand.
  * Private keys are NOT stored, only addresses are returned.
  *
- * @param master_seed   64-byte BIP39 master seed
+ * NOTE: Cellframe requires the mnemonic string (SHA3-256 hash), while
+ * ETH/SOL/TRX use the BIP39 master seed. Both are needed for full support.
+ *
+ * @param master_seed   64-byte BIP39 master seed (for ETH/SOL/TRX)
+ * @param mnemonic      Space-separated mnemonic words (for Cellframe, can be NULL)
  * @param fingerprint   Identity fingerprint (used for wallet naming)
  * @param list_out      Output: allocated wallet list (caller must free)
  * @return              0 on success, -1 on error
  */
 int blockchain_derive_wallets_from_seed(
     const uint8_t master_seed[64],
+    const char *mnemonic,
     const char *fingerprint,
     blockchain_wallet_list_t **list_out
 );
