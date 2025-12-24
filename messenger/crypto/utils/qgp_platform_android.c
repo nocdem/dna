@@ -12,6 +12,9 @@
  */
 
 #include "crypto/utils/qgp_platform.h"
+#include "crypto/utils/qgp_log.h"
+
+#define LOG_TAG "PLATFORM"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -346,31 +349,33 @@ const char* qgp_platform_ca_bundle_path(void) {
 
     /* Need app data directory to be set */
     if (!g_dirs_initialized || !g_app_data_dir[0]) {
-        fprintf(stderr, "[DNA] WARNING: CA bundle path requested before app dirs initialized\n");
+        QGP_LOG_ERROR(LOG_TAG, "CA bundle requested before app dirs initialized");
         return NULL;
     }
 
+    QGP_LOG_INFO(LOG_TAG, "Searching for CA bundle (data_dir=%s)", g_app_data_dir);
+
     /* Try multiple possible locations for CA bundle */
     const char *locations[] = {
-        "%s/cacert.pem",           /* Direct in app data dir */
-        "%s/dna_messenger/cacert.pem",  /* In dna_messenger subdirectory */
+        "%s/cacert.pem",                /* Direct in app data dir */
+        "%s/../cacert.pem",             /* Parent directory (filesDir) */
         NULL
     };
 
     char test_path[4096];
     for (int i = 0; locations[i] != NULL; i++) {
         snprintf(test_path, sizeof(test_path), locations[i], g_app_data_dir);
-        fprintf(stderr, "[DNA] Checking CA bundle: %s\n", test_path);
+        QGP_LOG_DEBUG(LOG_TAG, "Checking: %s", test_path);
 
         if (access(test_path, R_OK) == 0) {
             strncpy(g_ca_bundle_path, test_path, sizeof(g_ca_bundle_path) - 1);
-            fprintf(stderr, "[DNA] Found CA bundle: %s\n", g_ca_bundle_path);
+            QGP_LOG_INFO(LOG_TAG, "Found CA bundle: %s", g_ca_bundle_path);
             return g_ca_bundle_path;
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Not found: %s", test_path);
         }
     }
 
-    fprintf(stderr, "[DNA] ERROR: CA bundle not found in any location!\n");
-    fprintf(stderr, "[DNA] Searched in: %s\n", g_app_data_dir);
-    fprintf(stderr, "[DNA] HTTPS requests will fail. Copy cacert.pem to app data directory.\n");
+    QGP_LOG_ERROR(LOG_TAG, "CA bundle NOT FOUND - HTTPS will fail!");
     return NULL;
 }
