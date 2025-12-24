@@ -175,15 +175,21 @@ int trx_rpc_get_balance_sun(
     /* Configure SSL CA bundle (required for Android) */
     const char *ca_bundle = qgp_platform_ca_bundle_path();
     if (ca_bundle) {
+        QGP_LOG_DEBUG(LOG_TAG, "Using CA bundle: %s", ca_bundle);
         curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "No CA bundle - SSL verification may fail");
     }
+
+    QGP_LOG_INFO(LOG_TAG, "GET balance: %s -> %s", address, trx_rpc_get_endpoint());
 
     /* Perform request */
     CURLcode res = curl_easy_perform(curl);
     curl_easy_cleanup(curl);
 
     if (res != CURLE_OK) {
-        QGP_LOG_ERROR(LOG_TAG, "CURL request failed: %s", curl_easy_strerror(res));
+        QGP_LOG_ERROR(LOG_TAG, "CURL error %d: %s (endpoint=%s)",
+                      res, curl_easy_strerror(res), trx_rpc_get_endpoint());
         if (resp_buf.data) free(resp_buf.data);
         return -1;
     }

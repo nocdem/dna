@@ -350,17 +350,27 @@ const char* qgp_platform_ca_bundle_path(void) {
         return NULL;
     }
 
-    /* Build path to bundled CA certificate file */
-    snprintf(g_ca_bundle_path, sizeof(g_ca_bundle_path), "%s/cacert.pem", g_app_data_dir);
+    /* Try multiple possible locations for CA bundle */
+    const char *locations[] = {
+        "%s/cacert.pem",           /* Direct in app data dir */
+        "%s/dna_messenger/cacert.pem",  /* In dna_messenger subdirectory */
+        NULL
+    };
 
-    /* Check if file exists */
-    if (access(g_ca_bundle_path, R_OK) != 0) {
-        fprintf(stderr, "[DNA] WARNING: CA bundle not found at %s\n", g_ca_bundle_path);
-        fprintf(stderr, "[DNA] HTTPS requests may fail. Copy cacert.pem to app data directory.\n");
-        g_ca_bundle_path[0] = '\0';
-        return NULL;
+    char test_path[4096];
+    for (int i = 0; locations[i] != NULL; i++) {
+        snprintf(test_path, sizeof(test_path), locations[i], g_app_data_dir);
+        fprintf(stderr, "[DNA] Checking CA bundle: %s\n", test_path);
+
+        if (access(test_path, R_OK) == 0) {
+            strncpy(g_ca_bundle_path, test_path, sizeof(g_ca_bundle_path) - 1);
+            fprintf(stderr, "[DNA] Found CA bundle: %s\n", g_ca_bundle_path);
+            return g_ca_bundle_path;
+        }
     }
 
-    fprintf(stderr, "[DNA] Using CA bundle: %s\n", g_ca_bundle_path);
-    return g_ca_bundle_path;
+    fprintf(stderr, "[DNA] ERROR: CA bundle not found in any location!\n");
+    fprintf(stderr, "[DNA] Searched in: %s\n", g_app_data_dir);
+    fprintf(stderr, "[DNA] HTTPS requests will fail. Copy cacert.pem to app data directory.\n");
+    return NULL;
 }
