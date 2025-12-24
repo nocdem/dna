@@ -9,6 +9,7 @@
 #include "cellframe_rpc.h"
 #include "cellframe_addr.h"
 #include "cellframe_wallet.h"
+#include "cellframe_wallet_create.h"  /* For cellframe_send_with_wallet */
 #include "cellframe_tx_builder.h"
 #include "cellframe_sign.h"
 #include "cellframe_json.h"
@@ -260,20 +261,17 @@ static int cell_chain_send(
     return -1;
 }
 
-static int cell_chain_send_from_wallet(
-    const char *wallet_path,
+/* Core send logic - takes wallet struct directly, no file I/O */
+static int cell_chain_send_with_wallet_core(
+    cellframe_wallet_t *wallet,
     const char *to_address,
     const char *amount_str,
     const char *token,
     const char *network,
-    blockchain_fee_speed_t fee_speed,
     char *txhash_out,
     size_t txhash_out_size
 ) {
-    (void)fee_speed; /* Cellframe has fixed fees */
-
     int ret = -1;
-    cellframe_wallet_t *wallet = NULL;
     cellframe_rpc_response_t *utxo_resp = NULL;
     cellframe_rpc_response_t *cell_utxo_resp = NULL;
     cellframe_rpc_response_t *submit_resp = NULL;
@@ -285,19 +283,13 @@ static int cell_chain_send_from_wallet(
     uint8_t *dap_sign = NULL;
     char *json = NULL;
 
-    if (!wallet_path || !to_address || !amount_str) {
+    if (!wallet || !to_address || !amount_str) {
         return -1;
     }
 
     const char *net = network ? network : CELLFRAME_DEFAULT_NET;
     int is_native = (!token || token[0] == '\0' || strcmp(token, "CELL") == 0);
     const char *utxo_token = is_native ? "CELL" : token;
-
-    /* Load wallet */
-    if (wallet_read_cellframe_path(wallet_path, &wallet) != 0 || !wallet) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load wallet: %s", wallet_path);
-        goto done;
-    }
 
     if (wallet->address[0] == '\0') {
         QGP_LOG_ERROR(LOG_TAG, "Wallet address not available");
@@ -564,7 +556,7 @@ static int cell_chain_send_from_wallet(
     }
 
 done:
-    if (wallet) wallet_free(wallet);
+    /* Note: wallet is NOT freed here - caller owns it */
     if (utxo_resp) cellframe_rpc_response_free(utxo_resp);
     if (cell_utxo_resp) cellframe_rpc_response_free(cell_utxo_resp);
     if (submit_resp) cellframe_rpc_response_free(submit_resp);
@@ -577,6 +569,50 @@ done:
     if (json) free(json);
 
     return ret;
+}
+
+/* Wrapper that loads wallet from file */
+static int cell_chain_send_from_wallet(
+    const char *wallet_path,
+    const char *to_address,
+    const char *amount_str,
+    const char *token,
+    const char *network,
+    blockchain_fee_speed_t fee_speed,
+    char *txhash_out,
+    size_t txhash_out_size
+) {
+    (void)fee_speed; /* Cellframe has fixed fees */
+
+    if (!wallet_path) {
+        return -1;
+    }
+
+    cellframe_wallet_t *wallet = NULL;
+    if (wallet_read_cellframe_path(wallet_path, &wallet) != 0 || !wallet) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to load wallet: %s", wallet_path);
+        return -1;
+    }
+
+    int ret = cell_chain_send_with_wallet_core(
+        wallet, to_address, amount_str, token, network, txhash_out, txhash_out_size);
+
+    wallet_free(wallet);
+    return ret;
+}
+
+/* Exported function for on-demand derived wallets */
+int cellframe_send_with_wallet(
+    cellframe_wallet_t *wallet,
+    const char *to_address,
+    const char *amount,
+    const char *token,
+    char *txhash_out,
+    size_t txhash_out_size
+) {
+    return cell_chain_send_with_wallet_core(
+        wallet, to_address, amount, token, CELLFRAME_DEFAULT_NET,
+        txhash_out, txhash_out_size);
 }
 
 static int cell_chain_get_tx_status(

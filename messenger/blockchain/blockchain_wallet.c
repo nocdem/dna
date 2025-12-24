@@ -894,6 +894,7 @@ int blockchain_derive_wallets_from_seed(
 int blockchain_send_tokens_with_seed(
     blockchain_type_t type,
     const uint8_t master_seed[64],
+    const char *mnemonic,
     const char *to_address,
     const char *amount,
     const char *token,
@@ -1007,13 +1008,52 @@ int blockchain_send_tokens_with_seed(
             break;
         }
 
-        case BLOCKCHAIN_CELLFRAME:
-            /* Cellframe requires mnemonic string, not master seed.
-             * This needs to be handled differently via cellframe_wallet_send()
-             */
+        case BLOCKCHAIN_CELLFRAME: {
             chain_name = "Cellframe";
-            QGP_LOG_ERROR(LOG_TAG, "Cellframe send with seed not yet implemented");
-            return -1;
+
+            /* Cellframe requires mnemonic string for key derivation */
+            if (!mnemonic || mnemonic[0] == '\0') {
+                QGP_LOG_ERROR(LOG_TAG, "Mnemonic required for Cellframe send");
+                return -1;
+            }
+
+            /* Derive Cellframe seed from mnemonic (SHA3-256 hash) */
+            uint8_t cf_seed[CF_WALLET_SEED_SIZE];
+            if (cellframe_derive_seed_from_mnemonic(mnemonic, cf_seed) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to derive Cellframe seed");
+                return -1;
+            }
+
+            /* Derive wallet keys from seed */
+            cellframe_wallet_t *wallet = NULL;
+            if (cellframe_wallet_derive_keys(cf_seed, &wallet) != 0) {
+                QGP_LOG_ERROR(LOG_TAG, "Failed to derive Cellframe wallet keys");
+                memset(cf_seed, 0, sizeof(cf_seed));
+                return -1;
+            }
+
+            /* Clear seed immediately */
+            memset(cf_seed, 0, sizeof(cf_seed));
+
+            QGP_LOG_INFO(LOG_TAG, "Derived Cellframe wallet: %s", wallet->address);
+
+            /* Send using derived wallet */
+            ret = cellframe_send_with_wallet(
+                wallet,
+                to_address,
+                amount,
+                token,
+                tx_hash_out,
+                128
+            );
+
+            /* Securely clear and free wallet */
+            if (wallet->private_key) {
+                memset(wallet->private_key, 0, wallet->private_key_size);
+            }
+            wallet_free(wallet);
+            break;
+        }
 
         default:
             QGP_LOG_ERROR(LOG_TAG, "Unknown blockchain type: %d", type);

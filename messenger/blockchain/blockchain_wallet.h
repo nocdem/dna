@@ -310,7 +310,8 @@ int blockchain_derive_wallets_from_seed(
  * No wallet files are read or created.
  *
  * @param type          Blockchain type
- * @param master_seed   64-byte BIP39 master seed
+ * @param master_seed   64-byte BIP39 master seed (for ETH/SOL/TRX)
+ * @param mnemonic      Space-separated mnemonic (for Cellframe, can be NULL for others)
  * @param to_address    Recipient address
  * @param amount        Amount to send (decimal string, e.g., "0.1")
  * @param token         Token symbol (NULL or empty for native token)
@@ -321,6 +322,7 @@ int blockchain_derive_wallets_from_seed(
 int blockchain_send_tokens_with_seed(
     blockchain_type_t type,
     const uint8_t master_seed[64],
+    const char *mnemonic,
     const char *to_address,
     const char *amount,
     const char *token,

@@ -2845,13 +2845,13 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
             goto done;
         }
 
-        /* Clear mnemonic from memory */
-        memset(mnemonic, 0, sizeof(mnemonic));
-
-        /* Send using on-demand derived wallet */
+        /* Send using on-demand derived wallet
+         * Note: mnemonic is passed for Cellframe (which uses SHA3-256 hash of mnemonic)
+         * It will be cleared after this call completes */
         int send_rc = blockchain_send_tokens_with_seed(
             bc_type,
             master_seed,
+            mnemonic,  /* For Cellframe - uses SHA3-256(mnemonic) instead of BIP39 seed */
             recipient,
             amount_str,
             token,
@@ -2859,7 +2859,8 @@ void dna_handle_send_tokens(dna_engine_t *engine, dna_task_t *task) {
             tx_hash
         );
 
-        /* Clear master seed from memory */
+        /* Clear sensitive data from memory */
+        memset(mnemonic, 0, sizeof(mnemonic));
         memset(master_seed, 0, sizeof(master_seed));
 
         if (send_rc != 0) {

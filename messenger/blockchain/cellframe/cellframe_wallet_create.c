@@ -385,3 +385,117 @@ cleanup:
 
     return result;
 }
+
+int cellframe_wallet_derive_keys(
+    const uint8_t seed[CF_WALLET_SEED_SIZE],
+    cellframe_wallet_t **wallet_out
+) {
+    if (!seed || !wallet_out) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to cellframe_wallet_derive_keys\n");
+        return -1;
+    }
+
+    int result = -1;
+    dilithium_public_key_t pubkey = {0};
+    dilithium_private_key_t privkey = {0};
+    cellframe_wallet_t *wallet = NULL;
+    uint8_t *serialized_pubkey = NULL;
+    uint8_t *serialized_privkey = NULL;
+
+    /* Allocate wallet structure */
+    wallet = calloc(1, sizeof(cellframe_wallet_t));
+    if (!wallet) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate wallet\n");
+        return -1;
+    }
+
+    /* Generate Dilithium MODE_1 keypair from 32-byte seed */
+    if (dilithium_crypto_sign_keypair(&pubkey, &privkey, MODE_1, seed, CF_WALLET_SEED_SIZE) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate Dilithium keypair\n");
+        goto cleanup;
+    }
+
+    /* Verify key sizes match expectations */
+    if (pubkey.kind != MODE_1 || privkey.kind != MODE_1) {
+        QGP_LOG_ERROR(LOG_TAG, "Unexpected key kind\n");
+        goto cleanup;
+    }
+
+    /* Allocate buffers for serialized keys */
+    /* Serialized size = 8 (length) + 4 (kind) + key_size */
+    size_t serialized_pubkey_size = 8 + 4 + CF_DILITHIUM_PUBLICKEYBYTES;
+    size_t serialized_privkey_size = 8 + 4 + CF_DILITHIUM_SECRETKEYBYTES;
+
+    serialized_pubkey = malloc(serialized_pubkey_size);
+    serialized_privkey = malloc(serialized_privkey_size);
+
+    if (!serialized_pubkey || !serialized_privkey) {
+        QGP_LOG_ERROR(LOG_TAG, "Memory allocation failed\n");
+        goto cleanup;
+    }
+
+    /* Serialize keys */
+    size_t actual_pubkey_size, actual_privkey_size;
+    serialize_dilithium_key(pubkey.data, CF_DILITHIUM_PUBLICKEYBYTES,
+                           CF_DILITHIUM_KIND_MODE_1,
+                           serialized_pubkey, &actual_pubkey_size);
+
+    serialize_dilithium_key(privkey.data, CF_DILITHIUM_SECRETKEYBYTES,
+                           CF_DILITHIUM_KIND_MODE_1,
+                           serialized_privkey, &actual_privkey_size);
+
+    /* Generate address from serialized public key */
+    if (cellframe_addr_from_pubkey(serialized_pubkey, actual_pubkey_size,
+                                   CELLFRAME_NET_BACKBONE, wallet->address) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to generate address\n");
+        goto cleanup;
+    }
+
+    /* Populate wallet structure */
+    strncpy(wallet->name, "derived", WALLET_NAME_MAX - 1);
+    wallet->status = WALLET_STATUS_UNPROTECTED;
+    wallet->sig_type = WALLET_SIG_DILITHIUM;
+    wallet->deprecated = false;
+
+    /* Transfer serialized keys to wallet (ownership transferred) */
+    wallet->public_key = serialized_pubkey;
+    wallet->public_key_size = actual_pubkey_size;
+    wallet->private_key = serialized_privkey;
+    wallet->private_key_size = actual_privkey_size;
+
+    /* Prevent double-free */
+    serialized_pubkey = NULL;
+    serialized_privkey = NULL;
+
+    *wallet_out = wallet;
+    wallet = NULL; /* Prevent cleanup from freeing */
+    result = 0;
+
+    QGP_LOG_DEBUG(LOG_TAG, "Derived wallet keys, address: %s", (*wallet_out)->address);
+
+cleanup:
+    /* Securely clear any remaining buffers */
+    if (serialized_privkey) {
+        memset(serialized_privkey, 0, serialized_privkey_size);
+        free(serialized_privkey);
+    }
+    if (serialized_pubkey) {
+        memset(serialized_pubkey, 0, serialized_pubkey_size);
+        free(serialized_pubkey);
+    }
+
+    /* Clean up Dilithium keys */
+    if (privkey.data) {
+        dilithium_private_key_delete(&privkey);
+    }
+    if (pubkey.data) {
+        dilithium_public_key_delete(&pubkey);
+    }
+
+    /* Free wallet on error */
+    if (wallet) {
+        free(wallet);
+    }
+
+    return result;
+}
