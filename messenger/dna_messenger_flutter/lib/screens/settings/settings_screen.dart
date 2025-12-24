@@ -10,6 +10,7 @@ import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
 import 'blocked_users_screen.dart';
 import 'contacts_management_screen.dart';
+import 'debug_log_screen.dart';
 
 /// Developer mode state provider - persisted to SharedPreferences
 final developerModeProvider = StateNotifierProvider<DeveloperModeNotifier, bool>((ref) {
@@ -519,6 +520,7 @@ class _LogSettingsSection extends ConsumerStatefulWidget {
 class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
   String _currentLevel = 'WARN';
   String _currentTags = '';
+  bool _debugLogEnabled = false;
 
   static const _logLevels = ['DEBUG', 'INFO', 'WARN', 'ERROR', 'NONE'];
   static const _commonTags = [
@@ -544,6 +546,19 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
         setState(() {
           _currentLevel = engine.getLogLevel();
           _currentTags = engine.getLogTags();
+          _debugLogEnabled = engine.debugLogIsEnabled();
+        });
+      }
+    });
+  }
+
+  void _toggleDebugLog(bool enabled) {
+    final engineAsync = ref.read(engineProvider);
+    engineAsync.whenData((engine) {
+      engine.debugLogEnable(enabled);
+      if (mounted) {
+        setState(() {
+          _debugLogEnabled = enabled;
         });
       }
     });
@@ -597,6 +612,36 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader('Developer'),
+        // Debug Log Toggle
+        SwitchListTile(
+          secondary: Icon(
+            Icons.article_outlined,
+            color: _debugLogEnabled ? theme.colorScheme.primary : null,
+          ),
+          title: const Text('Debug Log Capture'),
+          subtitle: Text(_debugLogEnabled ? 'Capturing logs to buffer' : 'Disabled'),
+          value: _debugLogEnabled,
+          onChanged: _toggleDebugLog,
+        ),
+        // View Debug Logs
+        ListTile(
+          leading: const Icon(Icons.visibility),
+          title: const Text('View Debug Logs'),
+          subtitle: const Text('Open in-app log viewer'),
+          trailing: const Icon(Icons.chevron_right),
+          enabled: _debugLogEnabled,
+          onTap: _debugLogEnabled
+              ? () {
+                  Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const DebugLogScreen(),
+                    ),
+                  );
+                }
+              : null,
+        ),
+        const Divider(),
         // Log Level
         ListTile(
           leading: const Icon(Icons.bug_report),

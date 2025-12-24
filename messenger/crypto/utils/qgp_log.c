@@ -11,6 +11,15 @@
 #include "dna_config.h"
 #include <string.h>
 #include <stdarg.h>
+#include <stdint.h>
+#include <time.h>
+#include <pthread.h>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/time.h>
+#endif
 
 /* Maximum number of tags in filter list */
 #define QGP_LOG_MAX_TAGS 64
@@ -215,4 +224,114 @@ void qgp_log_print(qgp_log_level_t level, const char *tag, const char *fmt, ...)
     fflush(out);
 
     va_end(args);
+}
+
+/* ============================================================================
+ * Ring Buffer Implementation
+ * ============================================================================ */
+
+static qgp_log_entry_t g_ring_buffer[QGP_LOG_RING_SIZE];
+static int g_ring_head = 0;      /* Next write position */
+static int g_ring_count = 0;     /* Number of entries in buffer */
+static bool g_ring_enabled = false;
+static pthread_mutex_t g_ring_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* Get current time in milliseconds */
+static uint64_t get_timestamp_ms(void) {
+#ifdef _WIN32
+    FILETIME ft;
+    GetSystemTimeAsFileTime(&ft);
+    uint64_t t = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return (t / 10000) - 11644473600000ULL;  /* Convert to Unix epoch ms */
+#else
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (uint64_t)tv.tv_sec * 1000 + (uint64_t)tv.tv_usec / 1000;
+#endif
+}
+
+void qgp_log_ring_enable(bool enabled) {
+    pthread_mutex_lock(&g_ring_mutex);
+    g_ring_enabled = enabled;
+    if (!enabled) {
+        /* Clear buffer when disabled */
+        g_ring_head = 0;
+        g_ring_count = 0;
+    }
+    pthread_mutex_unlock(&g_ring_mutex);
+}
+
+bool qgp_log_ring_is_enabled(void) {
+    return g_ring_enabled;
+}
+
+void qgp_log_ring_add(qgp_log_level_t level, const char *tag, const char *fmt, ...) {
+    if (!g_ring_enabled) {
+        return;
+    }
+
+    pthread_mutex_lock(&g_ring_mutex);
+
+    qgp_log_entry_t *entry = &g_ring_buffer[g_ring_head];
+
+    entry->timestamp_ms = get_timestamp_ms();
+    entry->level = level;
+
+    strncpy(entry->tag, tag, sizeof(entry->tag) - 1);
+    entry->tag[sizeof(entry->tag) - 1] = '\0';
+
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(entry->message, sizeof(entry->message), fmt, args);
+    va_end(args);
+
+    /* Advance head (circular) */
+    g_ring_head = (g_ring_head + 1) % QGP_LOG_RING_SIZE;
+    if (g_ring_count < QGP_LOG_RING_SIZE) {
+        g_ring_count++;
+    }
+
+    pthread_mutex_unlock(&g_ring_mutex);
+}
+
+int qgp_log_ring_count(void) {
+    pthread_mutex_lock(&g_ring_mutex);
+    int count = g_ring_count;
+    pthread_mutex_unlock(&g_ring_mutex);
+    return count;
+}
+
+int qgp_log_ring_get_entries(qgp_log_entry_t *entries, int max_entries) {
+    if (!entries || max_entries <= 0) {
+        return 0;
+    }
+
+    pthread_mutex_lock(&g_ring_mutex);
+
+    int count = (g_ring_count < max_entries) ? g_ring_count : max_entries;
+
+    /* Calculate start position (oldest entry) */
+    int start;
+    if (g_ring_count < QGP_LOG_RING_SIZE) {
+        start = 0;
+    } else {
+        start = g_ring_head;  /* Oldest is at head when buffer is full */
+    }
+
+    /* Copy entries in chronological order */
+    for (int i = 0; i < count; i++) {
+        int idx = (start + i) % QGP_LOG_RING_SIZE;
+        memcpy(&entries[i], &g_ring_buffer[idx], sizeof(qgp_log_entry_t));
+    }
+
+    pthread_mutex_unlock(&g_ring_mutex);
+
+    return count;
+}
+
+void qgp_log_ring_clear(void) {
+    pthread_mutex_lock(&g_ring_mutex);
+    g_ring_head = 0;
+    g_ring_count = 0;
+    pthread_mutex_unlock(&g_ring_mutex);
 }

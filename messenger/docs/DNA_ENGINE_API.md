@@ -1,10 +1,11 @@
 # DNA Engine API Reference
 
-**Version:** 1.7.0
-**Date:** 2025-12-15
+**Version:** 1.8.0
+**Date:** 2025-12-24
 **Location:** `include/dna/dna_engine.h`
 
 **Changelog:**
+- v1.8.0 (2025-12-24): Added Debug Logging API (section 10) - ring buffer log storage, `dna_engine_debug_log_*()` functions for in-app log viewing on mobile
 - v1.7.0 (2025-12-15): Added password protection for identity keys - `dna_engine_change_password_sync()`, password parameter in `dna_engine_load_identity()`, on-demand wallet derivation from mnemonic
 - v1.6.0 (2025-12-10): Added ICQ-style Contact Request API (section 3a) - send/approve/deny requests, block/unblock users
 - v1.5.0 (2025-12-10): Added `dna_engine_lookup_profile()` to lookup any user's profile by fingerprint (for wallet address resolution)
@@ -1359,6 +1360,65 @@ dna_free_balances(balances, count);         // For balances list
 dna_free_transactions(transactions, count); // For transactions list
 dna_free_profile(profile);                  // For profile
 ```
+
+---
+
+## 10. Debug Logging API
+
+In-app debug log viewer for mobile debugging (no terminal access on Android).
+
+### Enable/Disable Ring Buffer
+
+```c
+// Enable debug log capture (ring buffer stores last 200 entries)
+void dna_engine_debug_log_enable(bool enabled);
+
+// Check if debug logging is enabled
+bool dna_engine_debug_log_is_enabled(void);
+```
+
+### Log Entry Structure
+
+```c
+typedef struct {
+    uint64_t timestamp_ms;  // Unix timestamp in milliseconds
+    int level;              // 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+    char tag[32];           // Module/tag name
+    char message[256];      // Log message
+} dna_debug_log_entry_t;
+```
+
+### Retrieve Log Entries
+
+```c
+// Get all log entries (up to max_entries)
+// Returns: number of entries written to array
+int dna_engine_debug_log_get_entries(dna_debug_log_entry_t *entries, int max_entries);
+
+// Get current entry count
+int dna_engine_debug_log_count(void);
+
+// Clear all entries
+void dna_engine_debug_log_clear(void);
+```
+
+### Usage (Flutter)
+
+```dart
+// Enable debug logging
+engine.debugLogEnable(true);
+
+// Get entries
+final entries = engine.debugLogGetEntries();
+for (final entry in entries) {
+  print('[${entry.levelString}] ${entry.tag}: ${entry.message}');
+}
+
+// Clear logs
+engine.debugLogClear();
+```
+
+**Note:** Ring buffer is thread-safe. Logs are automatically captured when enabled.
 
 ---
 

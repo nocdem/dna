@@ -496,6 +496,43 @@ class FeedComment {
   }
 }
 
+/// Debug log level
+enum DebugLogLevel { debug, info, warn, error }
+
+/// Debug log entry from ring buffer
+class DebugLogEntry {
+  final int timestampMs;
+  final DebugLogLevel level;
+  final String tag;
+  final String message;
+
+  DebugLogEntry({
+    required this.timestampMs,
+    required this.level,
+    required this.tag,
+    required this.message,
+  });
+
+  DateTime get timestamp => DateTime.fromMillisecondsSinceEpoch(timestampMs);
+
+  String get levelString {
+    switch (level) {
+      case DebugLogLevel.debug:
+        return 'DEBUG';
+      case DebugLogLevel.info:
+        return 'INFO';
+      case DebugLogLevel.warn:
+        return 'WARN';
+      case DebugLogLevel.error:
+        return 'ERROR';
+    }
+  }
+
+  @override
+  String toString() =>
+      '${timestamp.toIso8601String()} [$levelString] $tag: $message';
+}
+
 /// User profile information (synced with DHT dna_unified_identity_t)
 class UserProfile {
   // Cellframe wallets
@@ -3497,6 +3534,53 @@ class DnaEngine {
     } finally {
       calloc.free(tagsPtr);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // DEBUG LOG RING BUFFER
+  // ---------------------------------------------------------------------------
+
+  /// Enable or disable debug log ring buffer
+  /// When enabled, logs are captured for in-app viewing
+  void debugLogEnable(bool enabled) {
+    _bindings.dna_engine_debug_log_enable(enabled);
+  }
+
+  /// Check if debug logging is enabled
+  bool debugLogIsEnabled() {
+    return _bindings.dna_engine_debug_log_is_enabled();
+  }
+
+  /// Get debug log entries from ring buffer
+  /// Returns list of DebugLogEntry objects
+  List<DebugLogEntry> debugLogGetEntries({int maxEntries = 200}) {
+    final entriesPtr = calloc<dna_debug_log_entry_t>(maxEntries);
+    try {
+      final count = _bindings.dna_engine_debug_log_get_entries(entriesPtr, maxEntries);
+      final entries = <DebugLogEntry>[];
+      for (var i = 0; i < count; i++) {
+        final entry = entriesPtr[i];
+        entries.add(DebugLogEntry(
+          timestampMs: entry.timestamp_ms,
+          level: DebugLogLevel.values[entry.level.clamp(0, 3)],
+          tag: entry.tag.toDartString(32),
+          message: entry.message.toDartString(256),
+        ));
+      }
+      return entries;
+    } finally {
+      calloc.free(entriesPtr);
+    }
+  }
+
+  /// Get number of entries in debug log buffer
+  int debugLogCount() {
+    return _bindings.dna_engine_debug_log_count();
+  }
+
+  /// Clear all debug log entries
+  void debugLogClear() {
+    _bindings.dna_engine_debug_log_clear();
   }
 
   // ---------------------------------------------------------------------------

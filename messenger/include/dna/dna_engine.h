@@ -2149,6 +2149,61 @@ dna_engine_t* dna_engine_get_global(void);
  */
 void dna_dispatch_event(dna_engine_t *engine, const dna_event_t *event);
 
+/* ============================================================================
+ * DEBUG LOG API - In-app log viewing for mobile debugging
+ * ============================================================================ */
+
+/**
+ * Debug log entry structure (matches qgp_log_entry_t)
+ */
+typedef struct {
+    uint64_t timestamp_ms;      /* Unix timestamp in milliseconds */
+    int level;                  /* 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR */
+    char tag[32];               /* Module/tag name */
+    char message[256];          /* Log message */
+} dna_debug_log_entry_t;
+
+/**
+ * Enable/disable debug log ring buffer
+ *
+ * When enabled, logs are captured to an in-memory ring buffer
+ * that can be viewed in the app. Disabled by default for performance.
+ *
+ * @param enabled   true to enable, false to disable
+ */
+void dna_engine_debug_log_enable(bool enabled);
+
+/**
+ * Check if debug logging is enabled
+ *
+ * @return true if debug log ring buffer is active
+ */
+bool dna_engine_debug_log_is_enabled(void);
+
+/**
+ * Get debug log entries from ring buffer
+ *
+ * Returns up to max_entries log entries in chronological order.
+ * Caller must allocate the entries array.
+ *
+ * @param entries       Array to fill with log entries
+ * @param max_entries   Maximum entries to return
+ * @return              Number of entries actually filled
+ */
+int dna_engine_debug_log_get_entries(dna_debug_log_entry_t *entries, int max_entries);
+
+/**
+ * Get number of entries in debug log buffer
+ *
+ * @return Number of log entries currently stored
+ */
+int dna_engine_debug_log_count(void);
+
+/**
+ * Clear all debug log entries
+ */
+void dna_engine_debug_log_clear(void);
+
 #ifdef __cplusplus
 }
 #endif

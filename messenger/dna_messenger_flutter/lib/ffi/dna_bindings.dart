@@ -281,6 +281,21 @@ final class dna_comment_info_t extends Struct {
   external bool verified;
 }
 
+/// Debug log entry (for in-app log viewing)
+final class dna_debug_log_entry_t extends Struct {
+  @Uint64()
+  external int timestamp_ms;
+
+  @Int32()
+  external int level; // 0=DEBUG, 1=INFO, 2=WARN, 3=ERROR
+
+  @Array(32)
+  external Array<Char> tag;
+
+  @Array(256)
+  external Array<Char> message;
+}
+
 /// User profile information (synced with DHT dna_unified_identity_t)
 final class dna_profile_t extends Struct {
   // Cellframe wallets
@@ -2186,6 +2201,50 @@ class DnaBindings {
 
   int dna_engine_set_log_tags(Pointer<Utf8> tags) {
     return _dna_engine_set_log_tags(tags);
+  }
+
+  // ---------------------------------------------------------------------------
+  // DEBUG LOG RING BUFFER
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_debug_log_enable = _lib.lookupFunction<
+      Void Function(Bool),
+      void Function(bool)>('dna_engine_debug_log_enable');
+
+  void dna_engine_debug_log_enable(bool enabled) {
+    _dna_engine_debug_log_enable(enabled);
+  }
+
+  late final _dna_engine_debug_log_is_enabled = _lib.lookupFunction<
+      Bool Function(),
+      bool Function()>('dna_engine_debug_log_is_enabled');
+
+  bool dna_engine_debug_log_is_enabled() {
+    return _dna_engine_debug_log_is_enabled();
+  }
+
+  late final _dna_engine_debug_log_get_entries = _lib.lookupFunction<
+      Int32 Function(Pointer<dna_debug_log_entry_t>, Int32),
+      int Function(Pointer<dna_debug_log_entry_t>, int)>('dna_engine_debug_log_get_entries');
+
+  int dna_engine_debug_log_get_entries(Pointer<dna_debug_log_entry_t> entries, int maxEntries) {
+    return _dna_engine_debug_log_get_entries(entries, maxEntries);
+  }
+
+  late final _dna_engine_debug_log_count = _lib.lookupFunction<
+      Int32 Function(),
+      int Function()>('dna_engine_debug_log_count');
+
+  int dna_engine_debug_log_count() {
+    return _dna_engine_debug_log_count();
+  }
+
+  late final _dna_engine_debug_log_clear = _lib.lookupFunction<
+      Void Function(),
+      void Function()>('dna_engine_debug_log_clear');
+
+  void dna_engine_debug_log_clear() {
+    _dna_engine_debug_log_clear();
   }
 }
 

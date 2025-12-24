@@ -35,6 +35,7 @@
 
 #include <stdio.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -72,37 +73,84 @@ bool qgp_log_should_log(qgp_log_level_t level, const char *tag);
 /* Internal logging functions (use macros instead) */
 void qgp_log_print(qgp_log_level_t level, const char *tag, const char *fmt, ...);
 
+/* ============================================================================
+ * Ring Buffer API - For in-app log viewing (Flutter debug screen)
+ * ============================================================================ */
+
+#define QGP_LOG_RING_SIZE 200       /* Number of entries to keep */
+#define QGP_LOG_MSG_MAX_LEN 256     /* Max message length per entry */
+
+/* Log entry structure */
+typedef struct {
+    uint64_t timestamp_ms;          /* Unix timestamp in milliseconds */
+    qgp_log_level_t level;          /* Log level */
+    char tag[32];                   /* Tag/module name */
+    char message[QGP_LOG_MSG_MAX_LEN]; /* Log message */
+} qgp_log_entry_t;
+
+/* Enable/disable ring buffer storage (disabled by default for performance) */
+void qgp_log_ring_enable(bool enabled);
+bool qgp_log_ring_is_enabled(void);
+
+/* Get all log entries (returns count, fills entries array up to max_entries) */
+int qgp_log_ring_get_entries(qgp_log_entry_t *entries, int max_entries);
+
+/* Get entry count in ring buffer */
+int qgp_log_ring_count(void);
+
+/* Clear all entries */
+void qgp_log_ring_clear(void);
+
+/* Internal: add entry to ring buffer (called by macros) */
+void qgp_log_ring_add(qgp_log_level_t level, const char *tag, const char *fmt, ...);
+
 #if defined(__ANDROID__)
     #include <android/log.h>
 
     /* All DNA logs use "DNA/" prefix for easy filtering: adb logcat -s "DNA/" */
     #define QGP_LOG_DEBUG(tag, fmt, ...) \
-        do { if (qgp_log_should_log(QGP_LOG_LEVEL_DEBUG, tag)) \
-            __android_log_print(ANDROID_LOG_DEBUG, "DNA/" tag, fmt, ##__VA_ARGS__); } while(0)
+        do { if (qgp_log_should_log(QGP_LOG_LEVEL_DEBUG, tag)) { \
+            __android_log_print(ANDROID_LOG_DEBUG, "DNA/" tag, fmt, ##__VA_ARGS__); \
+            qgp_log_ring_add(QGP_LOG_LEVEL_DEBUG, tag, fmt, ##__VA_ARGS__); \
+        } } while(0)
     #define QGP_LOG_INFO(tag, fmt, ...) \
-        do { if (qgp_log_should_log(QGP_LOG_LEVEL_INFO, tag)) \
-            __android_log_print(ANDROID_LOG_INFO, "DNA/" tag, fmt, ##__VA_ARGS__); } while(0)
+        do { if (qgp_log_should_log(QGP_LOG_LEVEL_INFO, tag)) { \
+            __android_log_print(ANDROID_LOG_INFO, "DNA/" tag, fmt, ##__VA_ARGS__); \
+            qgp_log_ring_add(QGP_LOG_LEVEL_INFO, tag, fmt, ##__VA_ARGS__); \
+        } } while(0)
     #define QGP_LOG_WARN(tag, fmt, ...) \
-        do { if (qgp_log_should_log(QGP_LOG_LEVEL_WARN, tag)) \
-            __android_log_print(ANDROID_LOG_WARN, "DNA/" tag, fmt, ##__VA_ARGS__); } while(0)
+        do { if (qgp_log_should_log(QGP_LOG_LEVEL_WARN, tag)) { \
+            __android_log_print(ANDROID_LOG_WARN, "DNA/" tag, fmt, ##__VA_ARGS__); \
+            qgp_log_ring_add(QGP_LOG_LEVEL_WARN, tag, fmt, ##__VA_ARGS__); \
+        } } while(0)
     #define QGP_LOG_ERROR(tag, fmt, ...) \
-        do { if (qgp_log_should_log(QGP_LOG_LEVEL_ERROR, tag)) \
-            __android_log_print(ANDROID_LOG_ERROR, "DNA/" tag, fmt, ##__VA_ARGS__); } while(0)
+        do { if (qgp_log_should_log(QGP_LOG_LEVEL_ERROR, tag)) { \
+            __android_log_print(ANDROID_LOG_ERROR, "DNA/" tag, fmt, ##__VA_ARGS__); \
+            qgp_log_ring_add(QGP_LOG_LEVEL_ERROR, tag, fmt, ##__VA_ARGS__); \
+        } } while(0)
 
 #else
-    /* Non-Android: use standard stdio with filtering */
+    /* Non-Android: use standard stdio with filtering + ring buffer */
     #define QGP_LOG_DEBUG(tag, fmt, ...) \
-        do { if (qgp_log_should_log(QGP_LOG_LEVEL_DEBUG, tag)) \
-            fprintf(stdout, "[%s] DEBUG: " fmt "\n", tag, ##__VA_ARGS__); } while(0)
+        do { if (qgp_log_should_log(QGP_LOG_LEVEL_DEBUG, tag)) { \
+            fprintf(stdout, "[%s] DEBUG: " fmt "\n", tag, ##__VA_ARGS__); \
+            qgp_log_ring_add(QGP_LOG_LEVEL_DEBUG, tag, fmt, ##__VA_ARGS__); \
+        } } while(0)
     #define QGP_LOG_INFO(tag, fmt, ...) \
-        do { if (qgp_log_should_log(QGP_LOG_LEVEL_INFO, tag)) \
-            fprintf(stdout, "[%s] " fmt "\n", tag, ##__VA_ARGS__); } while(0)
+        do { if (qgp_log_should_log(QGP_LOG_LEVEL_INFO, tag)) { \
+            fprintf(stdout, "[%s] " fmt "\n", tag, ##__VA_ARGS__); \
+            qgp_log_ring_add(QGP_LOG_LEVEL_INFO, tag, fmt, ##__VA_ARGS__); \
+        } } while(0)
     #define QGP_LOG_WARN(tag, fmt, ...) \
-        do { if (qgp_log_should_log(QGP_LOG_LEVEL_WARN, tag)) \
-            fprintf(stderr, "[%s] WARN: " fmt "\n", tag, ##__VA_ARGS__); } while(0)
+        do { if (qgp_log_should_log(QGP_LOG_LEVEL_WARN, tag)) { \
+            fprintf(stderr, "[%s] WARN: " fmt "\n", tag, ##__VA_ARGS__); \
+            qgp_log_ring_add(QGP_LOG_LEVEL_WARN, tag, fmt, ##__VA_ARGS__); \
+        } } while(0)
     #define QGP_LOG_ERROR(tag, fmt, ...) \
-        do { if (qgp_log_should_log(QGP_LOG_LEVEL_ERROR, tag)) \
-            fprintf(stderr, "[%s] ERROR: " fmt "\n", tag, ##__VA_ARGS__); } while(0)
+        do { if (qgp_log_should_log(QGP_LOG_LEVEL_ERROR, tag)) { \
+            fprintf(stderr, "[%s] ERROR: " fmt "\n", tag, ##__VA_ARGS__); \
+            qgp_log_ring_add(QGP_LOG_LEVEL_ERROR, tag, fmt, ##__VA_ARGS__); \
+        } } while(0)
 
 #endif
 

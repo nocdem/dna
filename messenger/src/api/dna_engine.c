@@ -6019,3 +6019,49 @@ dna_request_id_t dna_engine_get_comment_votes(
     cb.feed_comment = callback;
     return dna_submit_task(engine, TASK_GET_COMMENT_VOTES, &params, cb, user_data);
 }
+
+
+/* ============================================================================
+ * DEBUG LOG API - In-app log viewing for mobile debugging
+ * ============================================================================ */
+
+void dna_engine_debug_log_enable(bool enabled) {
+    qgp_log_ring_enable(enabled);
+}
+
+bool dna_engine_debug_log_is_enabled(void) {
+    return qgp_log_ring_is_enabled();
+}
+
+int dna_engine_debug_log_get_entries(dna_debug_log_entry_t *entries, int max_entries) {
+    if (!entries || max_entries <= 0) {
+        return 0;
+    }
+
+    /* Allocate temp buffer for qgp entries */
+    qgp_log_entry_t *qgp_entries = calloc(max_entries, sizeof(qgp_log_entry_t));
+    if (!qgp_entries) {
+        return 0;
+    }
+
+    int count = qgp_log_ring_get_entries(qgp_entries, max_entries);
+
+    /* Convert to dna_debug_log_entry_t (same structure, just copy) */
+    for (int i = 0; i < count; i++) {
+        entries[i].timestamp_ms = qgp_entries[i].timestamp_ms;
+        entries[i].level = (int)qgp_entries[i].level;
+        memcpy(entries[i].tag, qgp_entries[i].tag, sizeof(entries[i].tag));
+        memcpy(entries[i].message, qgp_entries[i].message, sizeof(entries[i].message));
+    }
+
+    free(qgp_entries);
+    return count;
+}
+
+int dna_engine_debug_log_count(void) {
+    return qgp_log_ring_count();
+}
+
+void dna_engine_debug_log_clear(void) {
+    qgp_log_ring_clear();
+}
