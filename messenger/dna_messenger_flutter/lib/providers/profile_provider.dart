@@ -17,9 +17,13 @@ class ProfileNotifier extends AsyncNotifier<UserProfile?> {
 
     final engine = await ref.watch(engineProvider.future);
     try {
-      return await engine.getProfile();
+      final profile = await engine.getProfile();
+      // DEBUG: Log avatar data in profile provider
+      print('[AVATAR_DEBUG] ProfileNotifier.build: profile.avatarBase64.length=${profile.avatarBase64.length}');
+      return profile;
     } catch (e) {
       // If fetching fails, return empty profile
+      print('[AVATAR_DEBUG] ProfileNotifier.build: FAILED with error=$e');
       return UserProfile();
     }
   }

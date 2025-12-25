@@ -596,6 +596,9 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     dna_config_apply_log_settings(&config);
     init_log_config();  /* Populate global buffers for get functions */
 
+    /* Enable debug ring buffer by default for in-app log viewing */
+    qgp_log_ring_enable(true);
+
     /* Initialize synchronization */
     pthread_mutex_init(&engine->event_mutex, NULL);
     pthread_mutex_init(&engine->task_mutex, NULL);
@@ -1386,6 +1389,14 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile->bio, identity->bio, sizeof(profile->bio) - 1);
     strncpy(profile->avatar_base64, identity->avatar_base64, sizeof(profile->avatar_base64) - 1);
 
+    /* DEBUG: Log avatar data after copy to profile */
+    {
+        size_t src_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
+        size_t dst_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
+        QGP_LOG_INFO(LOG_TAG, "[AVATAR_DEBUG] get_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
+                     src_len, dst_len, dst_len > 0 ? profile->avatar_base64 : "(empty)");
+    }
+
     dna_identity_free(identity);
 
 populate_wallets:
@@ -1528,6 +1539,14 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     /* Bio and avatar */
     strncpy(profile->bio, identity->bio, sizeof(profile->bio) - 1);
     strncpy(profile->avatar_base64, identity->avatar_base64, sizeof(profile->avatar_base64) - 1);
+
+    /* DEBUG: Log avatar data after copy to profile */
+    {
+        size_t src_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
+        size_t dst_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
+        QGP_LOG_INFO(LOG_TAG, "[AVATAR_DEBUG] lookup_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
+                     src_len, dst_len, dst_len > 0 ? profile->avatar_base64 : "(empty)");
+    }
 
     /* Display name */
     strncpy(profile->display_name, identity->display_name, sizeof(profile->display_name) - 1);

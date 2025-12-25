@@ -166,6 +166,11 @@ int dna_load_identity(
     }
     free(json_str);
 
+    // DEBUG: Log avatar data after JSON parse
+    size_t avatar_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
+    QGP_LOG_INFO(LOG_TAG, "[AVATAR_DEBUG] dna_load_identity: avatar_base64 length=%zu (first 20 chars: %.20s)\n",
+                 avatar_len, avatar_len > 0 ? identity->avatar_base64 : "(empty)");
+
     // Verify signature against JSON representation (for forward compatibility)
     // This allows struct changes without breaking signature verification
     char *json_unsigned = dna_identity_to_json_unsigned(identity);

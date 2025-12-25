@@ -583,6 +583,12 @@ class UserProfile {
   });
 
   factory UserProfile.fromNative(dna_profile_t native) {
+    final avatarBase64 = native.avatar_base64.toDartString(20484);
+
+    // DEBUG: Log avatar data received from native
+    print('[AVATAR_DEBUG] UserProfile.fromNative: avatarBase64.length=${avatarBase64.length}, '
+          'first20=${avatarBase64.length > 0 ? avatarBase64.substring(0, avatarBase64.length > 20 ? 20 : avatarBase64.length) : "(empty)"}');
+
     return UserProfile(
       backbone: native.backbone.toDartString(120),
       alvin: native.alvin.toDartString(120),
@@ -601,7 +607,7 @@ class UserProfile {
       bio: native.bio.toDartString(512),
       location: native.location.toDartString(128),
       website: native.website.toDartString(256),
-      avatarBase64: native.avatar_base64.toDartString(20484),
+      avatarBase64: avatarBase64,
     );
   }
 
