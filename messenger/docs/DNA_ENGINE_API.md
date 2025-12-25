@@ -486,18 +486,21 @@ Loads and activates an identity.
 2. Stores session password in engine (for subsequent operations)
 3. Initializes messenger context
 4. Loads DHT identity
-5. Initializes P2P transport
-6. Registers presence in DHT (announces user is online)
-7. Subscribes to contacts for push notifications
-8. Checks for offline messages from contacts' DHT outboxes
-9. Dispatches `DNA_EVENT_IDENTITY_LOADED` event
+5. Initializes contacts database, profile cache, and profile manager
+6. **Syncs contacts from DHT** (restores contact list on new device, v0.2.14+)
+7. Initializes P2P transport
+8. Registers presence in DHT (announces user is online)
+9. Subscribes to contacts for push notifications
+10. Checks for offline messages from contacts' DHT outboxes
+11. Dispatches `DNA_EVENT_IDENTITY_LOADED` event
 
 **Error Codes:**
 - `DNA_ENGINE_ERROR_WRONG_PASSWORD` - Password incorrect for encrypted keys
 - `DNA_ENGINE_ERROR_PASSWORD_REQUIRED` - Keys are encrypted but no password provided
 
-**Note:** Steps 6-8 happen automatically after P2P initialization succeeds.
+**Note:** Steps 8-10 happen automatically after P2P initialization succeeds.
 This ensures offline messages are retrieved without additional API calls.
+Step 6 enables multi-device sync by fetching the encrypted contact list from DHT.
 
 **Example:**
 ```c

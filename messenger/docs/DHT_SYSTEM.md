@@ -504,12 +504,18 @@ void dht_identity_free(dht_identity_t *id);
 
 ### 4.3 dht_contactlist.h/c
 
-Self-encrypted contact list storage in DHT.
+Self-encrypted contact list storage in DHT for multi-device sync.
 
 - **DHT Key**: `SHA3-512(identity + ":contactlist")`
-- **TTL**: 7 days
-- **Auto-republish**: Every 6 days
-- **Encryption**: Self-encrypted using identity's own key
+- **TTL**: 365 days (stored via chunked layer)
+- **Encryption**: Self-encrypted using identity's own Kyber1024 pubkey
+- **Signature**: Dilithium5 signed for authenticity
+
+**Sync Behavior:**
+- **Push (to DHT)**: Automatic on every contact add/remove
+- **Pull (from DHT)**: Automatic during `dna_engine_load_identity()` (v0.2.14+)
+
+This enables seamless contact list restore when logging in on a new device.
 
 ---
 

@@ -652,6 +652,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
   String? _resolvedContactName;  // Display name if resolved from fingerprint
   bool _isResolving = false;     // Loading state during DHT lookup
   String? _resolveError;         // Error message if resolution failed
+  int _resolveRequestId = 0;     // Counter to handle race conditions in async lookups
 
   // Gas fee estimates for ETH
   String? _gasFee0; // slow
@@ -841,6 +842,9 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
 
   /// Resolve DNA identity (name or fingerprint) to wallet address
   Future<void> _resolveDnaIdentity(String input) async {
+    // Increment request ID to track this specific request
+    final thisRequestId = ++_resolveRequestId;
+
     setState(() {
       _isResolving = true;
       _resolveError = null;
@@ -856,7 +860,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       // If it's a name, first resolve to fingerprint
       if (_isDnaName(input) && !_isFingerprint(input)) {
         final fp = await engine.lookupName(input);
-        if (!mounted) return;
+        if (!mounted || thisRequestId != _resolveRequestId) return;
 
         if (fp.isEmpty) {
           setState(() {
@@ -872,7 +876,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
       // Now lookup the profile to get wallet address
       final profile = await engine.lookupProfile(fingerprint);
 
-      if (!mounted) return;
+      if (!mounted || thisRequestId != _resolveRequestId) return;
 
       if (profile == null) {
         setState(() {
@@ -902,7 +906,7 @@ class _SendSheetState extends ConsumerState<_SendSheet> {
                 : '${fingerprint.substring(0, 8)}...');
       });
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted || thisRequestId != _resolveRequestId) return;
       setState(() {
         _isResolving = false;
         _resolveError = 'Could not resolve address';
