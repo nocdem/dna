@@ -8,7 +8,9 @@
 #include <string.h>
 #include "../crypto/utils/qgp_platform.h"
 #include "../crypto/utils/qgp_types.h"
+#include "../crypto/utils/key_encryption.h"
 #include "../dht/client/dht_contactlist.h"
+#include "../dht/client/dht_singleton.h"
 #include "../dht/core/dht_context.h"
 #include "../database/contacts_db.h"
 #include "../p2p/p2p_transport.h"
@@ -49,10 +51,10 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    // Get DHT context
-    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    // Get DHT context from singleton (works even before P2P init)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT singleton not available\n");
         return -1;
     }
 
@@ -65,25 +67,42 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    // Load Kyber keypair
+    // Load Kyber keypair (try encrypted if password available, fallback to unencrypted)
     char kyber_path[1024];
     snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem", data_dir, ctx->identity, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path, &kyber_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key\n");
-        return -1;
+    if (ctx->session_password) {
+        // Try encrypted loading first
+        if (qgp_key_load_encrypted(kyber_path, ctx->session_password, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted Kyber key\n");
+            return -1;
+        }
+    } else {
+        // Try unencrypted loading
+        if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key\n");
+            return -1;
+        }
     }
 
-    // Load Dilithium keypair
+    // Load Dilithium keypair (try encrypted if password available, fallback to unencrypted)
     char dilithium_path[1024];
     snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s/keys/%s.dsa", data_dir, ctx->identity, ctx->identity);
 
     qgp_key_t *dilithium_key = NULL;
-    if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key\n");
-        qgp_key_free(kyber_key);
-        return -1;
+    if (ctx->session_password) {
+        if (qgp_key_load_encrypted(dilithium_path, ctx->session_password, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted Dilithium key\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+    } else {
+        if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
     }
 
     // Get contact list from local database
@@ -161,10 +180,10 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    // Get DHT context
-    dht_context_t *dht_ctx = p2p_transport_get_dht_context(ctx->p2p_transport);
+    // Get DHT context from singleton (works even before P2P init)
+    dht_context_t *dht_ctx = dht_singleton_get();
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
+        QGP_LOG_ERROR(LOG_TAG, "DHT singleton not available\n");
         return -1;
     }
 
@@ -177,25 +196,40 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    // Load Kyber private key for decryption
+    // Load Kyber private key for decryption (try encrypted if password available)
     char kyber_path2[1024];
     snprintf(kyber_path2, sizeof(kyber_path2), "%s/%s/keys/%s.kem", data_dir2, ctx->identity, ctx->identity);
 
     qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path2, &kyber_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key\n");
-        return -1;
+    if (ctx->session_password) {
+        if (qgp_key_load_encrypted(kyber_path2, ctx->session_password, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted Kyber key\n");
+            return -1;
+        }
+    } else {
+        if (qgp_key_load(kyber_path2, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key\n");
+            return -1;
+        }
     }
 
-    // Load Dilithium public key for signature verification
+    // Load Dilithium public key for signature verification (try encrypted if password available)
     char dilithium_path2[1024];
     snprintf(dilithium_path2, sizeof(dilithium_path2), "%s/%s/keys/%s.dsa", data_dir2, ctx->identity, ctx->identity);
 
     qgp_key_t *dilithium_key = NULL;
-    if (qgp_key_load(dilithium_path2, &dilithium_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key\n");
-        qgp_key_free(kyber_key);
-        return -1;
+    if (ctx->session_password) {
+        if (qgp_key_load_encrypted(dilithium_path2, ctx->session_password, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted Dilithium key\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+    } else {
+        if (qgp_key_load(dilithium_path2, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key\n");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
     }
 
     // Fetch from DHT

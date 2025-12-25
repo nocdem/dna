@@ -994,6 +994,11 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
+    /* Pass session password to messenger for encrypted key operations (v0.2.17+) */
+    if (engine->keys_encrypted && engine->session_password) {
+        messenger_set_session_password(engine->messenger, engine->session_password);
+    }
+
     /* Copy fingerprint */
     strncpy(engine->fingerprint, fingerprint, 128);
     engine->fingerprint[128] = '\0';

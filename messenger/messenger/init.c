@@ -234,12 +234,37 @@ void messenger_free(messenger_context_t *ctx) {
         free(ctx->fingerprint);
     }
 
+    // Securely clear and free session password (v0.2.17+)
+    if (ctx->session_password) {
+        memset(ctx->session_password, 0, strlen(ctx->session_password));
+        free(ctx->session_password);
+    }
+
     // DON'T cleanup global keyserver cache - it's shared across all contexts
     // Only cleanup on app shutdown, not on temporary context free
     // keyserver_cache_cleanup();
 
     free(ctx->identity);
     free(ctx);
+}
+
+/**
+ * Set session password for encrypted key operations (v0.2.17+)
+ */
+void messenger_set_session_password(messenger_context_t *ctx, const char *password) {
+    if (!ctx) return;
+
+    // Clear existing password if any
+    if (ctx->session_password) {
+        memset(ctx->session_password, 0, strlen(ctx->session_password));
+        free(ctx->session_password);
+        ctx->session_password = NULL;
+    }
+
+    // Set new password
+    if (password) {
+        ctx->session_password = strdup(password);
+    }
 }
 
 /**

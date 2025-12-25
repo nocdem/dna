@@ -54,6 +54,9 @@ typedef struct {
     p2p_transport_t *p2p_transport;  // P2P transport layer (NULL if disabled)
     bool p2p_enabled;                 // Enable/disable P2P messaging
 
+    // Session password for encrypted keys (v0.2.17+)
+    char *session_password;          // Password for encrypted keys (NULL if unencrypted)
+
     // Public key cache (API fetch caching)
     pubkey_cache_entry_t cache[PUBKEY_CACHE_SIZE];
     int cache_count;
@@ -96,6 +99,18 @@ messenger_context_t* messenger_init(const char *identity);
  * @param ctx: Messenger context to free
  */
 void messenger_free(messenger_context_t *ctx);
+
+/**
+ * Set session password for encrypted key operations (v0.2.17+)
+ *
+ * Call this after loading an identity with encrypted keys.
+ * The password is used by messenger_sync_contacts_from_dht() and
+ * messenger_sync_contacts_to_dht() to load encrypted keys.
+ *
+ * @param ctx: Messenger context
+ * @param password: Password for encrypted keys (NULL to clear)
+ */
+void messenger_set_session_password(messenger_context_t *ctx, const char *password);
 
 /**
  * Load DHT identity and reinitialize DHT singleton with permanent identity
