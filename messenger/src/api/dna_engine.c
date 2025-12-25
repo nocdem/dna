@@ -1389,11 +1389,11 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile->bio, identity->bio, sizeof(profile->bio) - 1);
     strncpy(profile->avatar_base64, identity->avatar_base64, sizeof(profile->avatar_base64) - 1);
 
-    /* DEBUG: Log avatar data after copy to profile */
+    /* DEBUG: Log avatar data after copy to profile (WARN level to ensure visibility) */
     {
         size_t src_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
         size_t dst_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
-        QGP_LOG_INFO(LOG_TAG, "[AVATAR_DEBUG] get_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
+        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] get_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
                      src_len, dst_len, dst_len > 0 ? profile->avatar_base64 : "(empty)");
     }
 
@@ -1540,11 +1540,11 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile->bio, identity->bio, sizeof(profile->bio) - 1);
     strncpy(profile->avatar_base64, identity->avatar_base64, sizeof(profile->avatar_base64) - 1);
 
-    /* DEBUG: Log avatar data after copy to profile */
+    /* DEBUG: Log avatar data after copy to profile (WARN level to ensure visibility) */
     {
         size_t src_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
         size_t dst_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
-        QGP_LOG_INFO(LOG_TAG, "[AVATAR_DEBUG] lookup_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
+        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] lookup_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
                      src_len, dst_len, dst_len > 0 ? profile->avatar_base64 : "(empty)");
     }
 
