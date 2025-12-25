@@ -1020,6 +1020,20 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize profile manager\n");
     }
 
+    /* Sync contacts from DHT (restore on new device)
+     * This must happen BEFORE subscribing to contacts for push notifications.
+     * If DHT has a newer contact list, it will be merged into local SQLite. */
+    if (engine->messenger) {
+        int sync_result = messenger_sync_contacts_from_dht(engine->messenger);
+        if (sync_result == 0) {
+            QGP_LOG_INFO(LOG_TAG, "Synced contacts from DHT");
+        } else if (sync_result == -2) {
+            QGP_LOG_INFO(LOG_TAG, "No contact list in DHT (new identity or first device)");
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "Warning: Failed to sync contacts from DHT");
+        }
+    }
+
     /* Initialize P2P transport for DHT and messaging */
     if (messenger_p2p_init(engine->messenger) != 0) {
         QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize P2P transport\n");
@@ -5365,12 +5379,10 @@ void dna_free_profile(dna_profile_t *profile) {
  * FEED HANDLERS
  * ============================================================================ */
 
-/* Helper: Get DHT context from engine */
+/* Helper: Get DHT context (uses singleton - P2P transport reserved for voice/video) */
 static dht_context_t* dna_get_dht_ctx(dna_engine_t *engine) {
-    if (!engine || !engine->messenger || !engine->messenger->p2p_transport) {
-        return NULL;
-    }
-    return p2p_transport_get_dht_context(engine->messenger->p2p_transport);
+    (void)engine;  /* Unused until voice/video P2P */
+    return dht_singleton_get();
 }
 
 /* Helper: Get private key for signing (caller frees with qgp_key_free) */
