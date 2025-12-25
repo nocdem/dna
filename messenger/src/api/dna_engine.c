@@ -1335,13 +1335,17 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_profile_t *profile = NULL;
 
+    QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] dna_handle_get_profile called\n");
+
     if (!engine->identity_loaded || !engine->messenger) {
+        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] get_profile: no identity loaded\n");
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
     }
 
     dht_context_t *dht = dna_get_dht_ctx(engine);
     if (!dht) {
+        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] get_profile: no DHT context\n");
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
     }
