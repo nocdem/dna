@@ -249,8 +249,13 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     qgp_key_free(dilithium_key);
 
     if (result == -2) {
-        // Not found in DHT - this is OK for first time users
-        QGP_LOG_INFO(LOG_TAG, "No contacts found in DHT (first time user)\n");
+        // Not found in DHT - check if we have local contacts to publish
+        int local_count = contacts_db_count();
+        if (local_count > 0) {
+            QGP_LOG_INFO(LOG_TAG, "DHT empty but local has %d contacts - publishing to DHT\n", local_count);
+            return messenger_sync_contacts_to_dht(ctx);
+        }
+        QGP_LOG_INFO(LOG_TAG, "No contacts in DHT or local (first time user)\n");
         return 0;
     }
 
