@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
+import 'contact_profile_cache_provider.dart';
 
 /// Contact list provider
 final contactsProvider = AsyncNotifierProvider<ContactsNotifier, List<Contact>>(
@@ -33,6 +34,12 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       }
       return a.displayName.compareTo(b.displayName);
     });
+
+    // Prefetch contact profiles in background (for avatars, display names)
+    if (updatedContacts.isNotEmpty) {
+      final fingerprints = updatedContacts.map((c) => c.fingerprint).toList();
+      ref.read(contactProfileCacheProvider.notifier).prefetchProfiles(fingerprints);
+    }
 
     return updatedContacts;
   }
@@ -89,6 +96,13 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
         }
         return a.displayName.compareTo(b.displayName);
       });
+
+      // Prefetch contact profiles in background
+      if (updatedContacts.isNotEmpty) {
+        final fingerprints = updatedContacts.map((c) => c.fingerprint).toList();
+        ref.read(contactProfileCacheProvider.notifier).prefetchProfiles(fingerprints);
+      }
+
       return updatedContacts;
     });
   }
