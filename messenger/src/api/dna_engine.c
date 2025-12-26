@@ -1335,17 +1335,17 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
     dna_profile_t *profile = NULL;
 
-    QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] dna_handle_get_profile called\n");
+    QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] dna_handle_get_profile called\n");
 
     if (!engine->identity_loaded || !engine->messenger) {
-        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] get_profile: no identity loaded\n");
+        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] get_profile: no identity loaded\n");
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
         goto done;
     }
 
     dht_context_t *dht = dna_get_dht_ctx(engine);
     if (!dht) {
-        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] get_profile: no DHT context\n");
+        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] get_profile: no DHT context\n");
         error = DNA_ENGINE_ERROR_NETWORK;
         goto done;
     }
@@ -1397,7 +1397,7 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
     {
         size_t src_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
         size_t dst_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
-        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] get_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
+        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] get_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
                      src_len, dst_len, dst_len > 0 ? profile->avatar_base64 : "(empty)");
     }
 
@@ -1485,9 +1485,9 @@ done:
     /* DEBUG: Log before callback */
     if (profile) {
         size_t avatar_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
-        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] get_profile CALLBACK: error=%d, avatar_len=%zu\n", error, avatar_len);
+        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] get_profile CALLBACK: error=%d, avatar_len=%zu\n", error, avatar_len);
     } else {
-        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] get_profile CALLBACK: error=%d, profile=NULL\n", error);
+        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] get_profile CALLBACK: error=%d, profile=NULL\n", error);
     }
     task->callback.profile(task->request_id, error, profile, task->user_data);
 }
@@ -1555,7 +1555,7 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
     {
         size_t src_len = identity->avatar_base64[0] ? strlen(identity->avatar_base64) : 0;
         size_t dst_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
-        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] lookup_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
+        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] lookup_profile: src_len=%zu, dst_len=%zu (first 20: %.20s)\n",
                      src_len, dst_len, dst_len > 0 ? profile->avatar_base64 : "(empty)");
     }
 
@@ -1620,7 +1620,7 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     /* DEBUG: Log avatar being saved */
     size_t src_len = p->avatar_base64[0] ? strlen(p->avatar_base64) : 0;
     size_t dst_len = profile_data.avatar_base64[0] ? strlen(profile_data.avatar_base64) : 0;
-    QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] update_profile: src_len=%zu, dst_len=%zu\n", src_len, dst_len);
+    QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] update_profile: src_len=%zu, dst_len=%zu\n", src_len, dst_len);
 
     /* Update profile in DHT */
     int rc = dna_update_profile(dht, engine->fingerprint, &profile_data,
