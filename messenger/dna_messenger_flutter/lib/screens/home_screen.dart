@@ -141,7 +141,7 @@ class _DrawerHeader extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Avatar
-          _buildAvatar(fullProfile, userProfile.valueOrNull?.nickname ?? shortFp),
+          _buildAvatar(fullProfile, userProfile.valueOrNull?.nickname ?? shortFp, ref),
           const SizedBox(height: 12),
           // Display name
           userProfile.when(
@@ -196,18 +196,25 @@ class _DrawerHeader extends ConsumerWidget {
     return name[0].toUpperCase();
   }
 
-  Widget _buildAvatar(AsyncValue<dynamic> fullProfile, String fallbackName) {
+  Widget _buildAvatar(AsyncValue<dynamic> fullProfile, String fallbackName, WidgetRef ref) {
+    // DEBUG: Log what state fullProfile is in
+    final engine = ref.read(engineProvider).valueOrNull;
+    engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar: fullProfile.isLoading=${fullProfile.isLoading}, hasValue=${fullProfile.hasValue}');
+
     return fullProfile.when(
       data: (profile) {
         final avatarBase64 = profile?.avatarBase64 ?? '';
+        engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar data: avatarBase64.length=${avatarBase64.length}');
         if (avatarBase64.isNotEmpty) {
           try {
             final bytes = base64Decode(avatarBase64);
+            engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar: decoded ${bytes.length} bytes, showing avatar');
             return CircleAvatar(
               radius: 32,
               backgroundImage: MemoryImage(bytes),
             );
           } catch (e) {
+            engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar: decode FAILED: $e');
             // Fall through to initials
           }
         }
@@ -224,15 +231,18 @@ class _DrawerHeader extends ConsumerWidget {
           ),
         );
       },
-      loading: () => CircleAvatar(
-        radius: 32,
-        backgroundColor: DnaColors.primarySoft,
-        child: const SizedBox(
-          width: 24,
-          height: 24,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-      ),
+      loading: () {
+        engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar: LOADING state');
+        return CircleAvatar(
+          radius: 32,
+          backgroundColor: DnaColors.primarySoft,
+          child: const SizedBox(
+            width: 24,
+            height: 24,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        );
+      },
       error: (_, __) => CircleAvatar(
         radius: 32,
         backgroundColor: DnaColors.primarySoft,
