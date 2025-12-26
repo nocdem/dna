@@ -1482,6 +1482,13 @@ populate_wallets:
     }
 
 done:
+    /* DEBUG: Log before callback */
+    if (profile) {
+        size_t avatar_len = profile->avatar_base64[0] ? strlen(profile->avatar_base64) : 0;
+        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] get_profile CALLBACK: error=%d, avatar_len=%zu\n", error, avatar_len);
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] get_profile CALLBACK: error=%d, profile=NULL\n", error);
+    }
     task->callback.profile(task->request_id, error, profile, task->user_data);
 }
 
