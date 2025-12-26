@@ -1,13 +1,27 @@
-// Cache Database - SQLite storage for contact profile caching
-import 'dart:convert';
+// Cache Database - SQLite storage for profile caching (contacts + identities)
 import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import '../ffi/dna_engine.dart';
 
-/// SQLite database for caching contact profiles
+/// Cached identity data (for identity selection screen)
+class CachedIdentity {
+  final String fingerprint;
+  final String displayName;
+  final String avatarBase64;
+  final DateTime cachedAt;
+
+  CachedIdentity({
+    required this.fingerprint,
+    required this.displayName,
+    required this.avatarBase64,
+    required this.cachedAt,
+  });
+}
+
+/// SQLite database for caching profiles (contacts + identities)
 class CacheDatabase {
   static const _databaseName = 'dna_cache.db';
-  static const _databaseVersion = 1;
+  static const _databaseVersion = 2; // Bumped for identity_profiles table
 
   // Singleton instance
   static CacheDatabase? _instance;
@@ -69,13 +83,23 @@ class CacheDatabase {
     await db.execute(
       'CREATE INDEX idx_contact_profiles_cached_at ON contact_profiles(cached_at)'
     );
+
+    // Identity profiles cache table (for identity selection screen)
+    await db.execute('''
+      CREATE TABLE identity_profiles (
+        fingerprint TEXT PRIMARY KEY,
+        display_name TEXT,
+        avatar_base64 TEXT,
+        cached_at INTEGER
+      )
+    ''');
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    // Handle future schema migrations here
+    // Alpha stage: drop and recreate all tables
     if (oldVersion < newVersion) {
-      // Drop and recreate for now (alpha stage)
       await db.execute('DROP TABLE IF EXISTS contact_profiles');
+      await db.execute('DROP TABLE IF EXISTS identity_profiles');
       await _onCreate(db, newVersion);
     }
   }
@@ -205,6 +229,93 @@ class CacheDatabase {
       limit: 1,
     );
     return results.isNotEmpty;
+  }
+
+  // ==========================================================================
+  // Identity Profile Operations
+  // ==========================================================================
+
+  /// Get cached identity by fingerprint
+  Future<CachedIdentity?> getIdentity(String fingerprint) async {
+    final db = await database;
+    final results = await db.query(
+      'identity_profiles',
+      where: 'fingerprint = ?',
+      whereArgs: [fingerprint],
+      limit: 1,
+    );
+
+    if (results.isEmpty) return null;
+    return _rowToIdentity(results.first);
+  }
+
+  /// Get all cached identities
+  Future<Map<String, CachedIdentity>> getAllIdentities() async {
+    final db = await database;
+    final results = await db.query('identity_profiles');
+
+    final identities = <String, CachedIdentity>{};
+    for (final row in results) {
+      final fp = row['fingerprint'] as String;
+      identities[fp] = _rowToIdentity(row);
+    }
+    return identities;
+  }
+
+  /// Save identity to cache
+  Future<void> saveIdentity(String fingerprint, String displayName, String avatarBase64) async {
+    final db = await database;
+    final now = DateTime.now().millisecondsSinceEpoch;
+
+    await db.insert(
+      'identity_profiles',
+      {
+        'fingerprint': fingerprint,
+        'display_name': displayName,
+        'avatar_base64': avatarBase64,
+        'cached_at': now,
+      },
+      conflictAlgorithm: ConflictAlgorithm.replace,
+    );
+  }
+
+  /// Delete identity from cache
+  Future<void> deleteIdentity(String fingerprint) async {
+    final db = await database;
+    await db.delete(
+      'identity_profiles',
+      where: 'fingerprint = ?',
+      whereArgs: [fingerprint],
+    );
+  }
+
+  /// Clear all cached identities
+  Future<void> clearIdentities() async {
+    final db = await database;
+    await db.delete('identity_profiles');
+  }
+
+  /// Check if identity cache is stale
+  Future<bool> isIdentityStale(String fingerprint, Duration maxAge) async {
+    final db = await database;
+    final cutoff = DateTime.now().subtract(maxAge).millisecondsSinceEpoch;
+    final results = await db.query(
+      'identity_profiles',
+      columns: ['cached_at'],
+      where: 'fingerprint = ? AND cached_at < ?',
+      whereArgs: [fingerprint, cutoff],
+      limit: 1,
+    );
+    return results.isNotEmpty;
+  }
+
+  CachedIdentity _rowToIdentity(Map<String, dynamic> row) {
+    return CachedIdentity(
+      fingerprint: row['fingerprint'] as String,
+      displayName: row['display_name'] as String? ?? '',
+      avatarBase64: row['avatar_base64'] as String? ?? '',
+      cachedAt: DateTime.fromMillisecondsSinceEpoch(row['cached_at'] as int? ?? 0),
+    );
   }
 
   // ==========================================================================

@@ -1,8 +1,9 @@
 // Profile Provider - Full user profile management
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
-import 'engine_provider.dart';
-import 'identity_provider.dart' show currentFingerprintProvider, identityAvatarCacheProvider;
+import 'engine_provider.dart' show engineProvider, currentFingerprintProvider;
+import 'identity_provider.dart' show identityAvatarCacheProvider;
+import 'identity_profile_cache_provider.dart';
 
 /// Full user profile data from DHT (wallets, socials, bio, avatar)
 final fullProfileProvider = AsyncNotifierProvider<ProfileNotifier, UserProfile?>(
@@ -221,12 +222,21 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
       // This avoids race condition where GET happens before PUT propagates
       _ref.read(fullProfileProvider.notifier).updateState(state.profile);
 
-      // Update avatar cache for identity selector (in-memory Flutter cache)
+      // Update identity profile cache (SQLite + in-memory)
       final fingerprint = _ref.read(currentFingerprintProvider);
-      if (fingerprint != null && state.profile.avatarBase64.isNotEmpty) {
-        final newCache = Map<String, String>.from(_ref.read(identityAvatarCacheProvider));
-        newCache[fingerprint] = state.profile.avatarBase64;
-        _ref.read(identityAvatarCacheProvider.notifier).state = newCache;
+      if (fingerprint != null) {
+        _ref.read(identityProfileCacheProvider.notifier).updateIdentity(
+          fingerprint,
+          state.profile.displayName,
+          state.profile.avatarBase64,
+        );
+
+        // Also update legacy in-memory cache for backwards compatibility
+        if (state.profile.avatarBase64.isNotEmpty) {
+          final newCache = Map<String, String>.from(_ref.read(identityAvatarCacheProvider));
+          newCache[fingerprint] = state.profile.avatarBase64;
+          _ref.read(identityAvatarCacheProvider.notifier).state = newCache;
+        }
       }
 
       state = state.copyWith(

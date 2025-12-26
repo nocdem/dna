@@ -12,5 +12,6 @@ export 'wallet_provider.dart';
 // export 'feed_provider.dart';
 export 'profile_provider.dart';
 export 'contact_profile_cache_provider.dart';
+export 'identity_profile_cache_provider.dart';
 export 'background_tasks_provider.dart';
 export 'foreground_service_provider.dart'; // Phase 14: Android background service

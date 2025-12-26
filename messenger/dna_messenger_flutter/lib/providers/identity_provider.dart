@@ -1,6 +1,7 @@
 // Identity Provider - Identity management state
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'engine_provider.dart';
+import 'identity_profile_cache_provider.dart';
 
 /// List of available identities (fingerprints)
 final identitiesProvider = AsyncNotifierProvider<IdentitiesNotifier, List<String>>(
@@ -11,7 +12,14 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
   @override
   Future<List<String>> build() async {
     final engine = await ref.watch(engineProvider.future);
-    return engine.listIdentities();
+    final identities = await engine.listIdentities();
+
+    // Prefetch identity profiles in background (for names/avatars)
+    if (identities.isNotEmpty) {
+      ref.read(identityProfileCacheProvider.notifier).prefetchIdentities(identities);
+    }
+
+    return identities;
   }
 
   Future<void> refresh() async {
@@ -203,26 +211,24 @@ final identityAvatarCacheProvider = StateProvider<Map<String, String>>((ref) => 
 
 /// Provider to fetch and cache display name for a fingerprint
 final identityDisplayNameProvider = FutureProvider.family<String?, String>((ref, fingerprint) async {
-  // Watch cache so provider rebuilds when cache updates
-  final cache = ref.watch(identityNameCacheProvider);
-  if (cache.containsKey(fingerprint)) {
-    return cache[fingerprint];
+  // Watch SQLite-backed cache so provider rebuilds when cache updates
+  final cache = ref.watch(identityProfileCacheProvider);
+  final cached = cache[fingerprint];
+  if (cached != null && cached.displayName.isNotEmpty) {
+    return cached.displayName;
   }
 
-  // Fetch from DHT
-  try {
-    final engine = await ref.read(engineProvider.future);
-    final displayName = await engine.getDisplayName(fingerprint);
+  // Also check legacy in-memory cache for backwards compatibility
+  final legacyCache = ref.watch(identityNameCacheProvider);
+  if (legacyCache.containsKey(fingerprint)) {
+    return legacyCache[fingerprint];
+  }
 
-    if (displayName.isNotEmpty) {
-      // Update cache (use read here since we're inside the provider)
-      final currentCache = ref.read(identityNameCacheProvider);
-      if (!currentCache.containsKey(fingerprint)) {
-        final newCache = Map<String, String>.from(currentCache);
-        newCache[fingerprint] = displayName;
-        ref.read(identityNameCacheProvider.notifier).state = newCache;
-      }
-      return displayName;
+  // Fetch from DHT via cache provider
+  try {
+    final identity = await ref.read(identityProfileCacheProvider.notifier).fetchAndCache(fingerprint);
+    if (identity != null && identity.displayName.isNotEmpty) {
+      return identity.displayName;
     }
   } catch (e) {
     // DHT lookup failed, return null
@@ -233,26 +239,24 @@ final identityDisplayNameProvider = FutureProvider.family<String?, String>((ref,
 
 /// Provider to fetch and cache avatar for a fingerprint
 final identityAvatarProvider = FutureProvider.family<String?, String>((ref, fingerprint) async {
-  // Watch cache so provider rebuilds when cache updates
-  final cache = ref.watch(identityAvatarCacheProvider);
-  if (cache.containsKey(fingerprint)) {
-    return cache[fingerprint];
+  // Watch SQLite-backed cache so provider rebuilds when cache updates
+  final cache = ref.watch(identityProfileCacheProvider);
+  final cached = cache[fingerprint];
+  if (cached != null && cached.avatarBase64.isNotEmpty) {
+    return cached.avatarBase64;
   }
 
-  // Fetch from backend (checks SQLite cache first, then DHT)
-  try {
-    final engine = await ref.read(engineProvider.future);
-    final avatar = await engine.getAvatar(fingerprint);
+  // Also check legacy in-memory cache for backwards compatibility
+  final legacyCache = ref.watch(identityAvatarCacheProvider);
+  if (legacyCache.containsKey(fingerprint)) {
+    return legacyCache[fingerprint];
+  }
 
-    if (avatar != null && avatar.isNotEmpty) {
-      // Update cache
-      final currentCache = ref.read(identityAvatarCacheProvider);
-      if (!currentCache.containsKey(fingerprint)) {
-        final newCache = Map<String, String>.from(currentCache);
-        newCache[fingerprint] = avatar;
-        ref.read(identityAvatarCacheProvider.notifier).state = newCache;
-      }
-      return avatar;
+  // Fetch from DHT via cache provider
+  try {
+    final identity = await ref.read(identityProfileCacheProvider.notifier).fetchAndCache(fingerprint);
+    if (identity != null && identity.avatarBase64.isNotEmpty) {
+      return identity.avatarBase64;
     }
   } catch (_) {
     // Avatar fetch failed, return null
