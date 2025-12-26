@@ -1617,6 +1617,11 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     strncpy(profile_data.bio, p->bio, sizeof(profile_data.bio) - 1);
     strncpy(profile_data.avatar_base64, p->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
 
+    /* DEBUG: Log avatar being saved */
+    size_t src_len = p->avatar_base64[0] ? strlen(p->avatar_base64) : 0;
+    size_t dst_len = profile_data.avatar_base64[0] ? strlen(profile_data.avatar_base64) : 0;
+    QGP_LOG_WARN(LOG_TAG, "[AVATAR_DEBUG] update_profile: src_len=%zu, dst_len=%zu\n", src_len, dst_len);
+
     /* Update profile in DHT */
     int rc = dna_update_profile(dht, engine->fingerprint, &profile_data,
                                  sign_key->private_key, sign_key->public_key,

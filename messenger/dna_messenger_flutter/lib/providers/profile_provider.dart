@@ -190,6 +190,10 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
 
   /// Set avatar base64
   void setAvatar(String base64) {
+    // DEBUG: Log avatar being set
+    _ref.read(engineProvider).whenData((engine) {
+      engine.debugLog('FLUTTER', '[AVATAR_DEBUG] setAvatar: length=${base64.length}');
+    });
     state = state.copyWith(
       profile: state.profile.copyWith(avatarBase64: base64),
       successMessage: null,
@@ -209,7 +213,9 @@ class ProfileEditorNotifier extends StateNotifier<ProfileEditorState> {
     state = state.copyWith(isSaving: true, error: null, successMessage: null);
     try {
       final engine = await _ref.read(engineProvider.future);
+      engine.debugLog('FLUTTER', '[AVATAR_DEBUG] save(): sending avatar length=${state.profile.avatarBase64.length}');
       await engine.updateProfile(state.profile);
+      engine.debugLog('FLUTTER', '[AVATAR_DEBUG] save(): updateProfile completed');
 
       // Optimistic update: use local data instead of re-fetching from DHT
       // This avoids race condition where GET happens before PUT propagates
