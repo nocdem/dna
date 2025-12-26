@@ -12,14 +12,20 @@ final fullProfileProvider = AsyncNotifierProvider<ProfileNotifier, UserProfile?>
 class ProfileNotifier extends AsyncNotifier<UserProfile?> {
   @override
   Future<UserProfile?> build() async {
+    print('[AVATAR_DEBUG] ProfileNotifier.build() STARTED');
     final fingerprint = ref.watch(currentFingerprintProvider);
-    if (fingerprint == null) return null;
+    if (fingerprint == null) {
+      print('[AVATAR_DEBUG] ProfileNotifier.build: no fingerprint');
+      return null;
+    }
 
+    print('[AVATAR_DEBUG] ProfileNotifier.build: waiting for engine');
     final engine = await ref.watch(engineProvider.future);
+    print('[AVATAR_DEBUG] ProfileNotifier.build: calling getProfile');
     try {
       final profile = await engine.getProfile();
       // DEBUG: Log avatar data in profile provider
-      print('[AVATAR_DEBUG] ProfileNotifier.build: profile.avatarBase64.length=${profile.avatarBase64.length}');
+      print('[AVATAR_DEBUG] ProfileNotifier.build: DONE avatarBase64.length=${profile.avatarBase64.length}');
       return profile;
     } catch (e) {
       // If fetching fails, return empty profile
