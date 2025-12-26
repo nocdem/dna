@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../ffi/dna_engine.dart' as engine;
+import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 import '../profile/profile_editor_screen.dart';
@@ -199,14 +200,12 @@ class _ProfileSection extends StatelessWidget {
       data: (p) {
         final avatarBase64 = p?.avatarBase64 ?? '';
         if (avatarBase64.isNotEmpty) {
-          try {
-            final bytes = base64Decode(avatarBase64);
+          final bytes = decodeBase64WithPadding(avatarBase64);
+          if (bytes != null) {
             return CircleAvatar(
               radius: 32,
               backgroundImage: MemoryImage(bytes),
             );
-          } catch (e) {
-            // Fall through to default avatar
           }
         }
         return CircleAvatar(

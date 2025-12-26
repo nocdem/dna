@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 
@@ -1273,11 +1274,13 @@ class _RestoreIdentityScreenState extends ConsumerState<RestoreIdentityScreen> {
   Widget _buildAvatar(ThemeData theme, String? avatarBase64) {
     if (avatarBase64 != null && avatarBase64.isNotEmpty) {
       try {
-        final bytes = base64Decode(avatarBase64);
-        return CircleAvatar(
-          radius: 48,
-          backgroundImage: MemoryImage(bytes),
-        );
+        final bytes = decodeBase64WithPadding(avatarBase64);
+        if (bytes != null) {
+          return CircleAvatar(
+            radius: 48,
+            backgroundImage: MemoryImage(bytes),
+          );
+        }
       } catch (e) {
         // Invalid base64, fall through to default
       }
@@ -1554,13 +1557,11 @@ class _IdentityListTile extends ConsumerWidget {
 
   Widget _buildAvatar(ThemeData theme, String? avatarBase64) {
     if (avatarBase64 != null && avatarBase64.isNotEmpty) {
-      try {
-        final bytes = base64Decode(avatarBase64);
+      final bytes = decodeBase64WithPadding(avatarBase64);
+      if (bytes != null) {
         return CircleAvatar(
           backgroundImage: MemoryImage(bytes),
         );
-      } catch (e) {
-        // Invalid base64, fall through to default
       }
     }
     return CircleAvatar(

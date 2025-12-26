@@ -1,11 +1,9 @@
 // Contact Profile Dialog - View another user's profile from DHT
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
-import '../../ffi/dna_engine.dart' show UserProfile;
+import '../../ffi/dna_engine.dart' show UserProfile, decodeBase64WithPadding;
 import '../../providers/providers.dart' show engineProvider;
 import '../../theme/dna_theme.dart';
 
@@ -234,23 +232,24 @@ class _ContactProfileSheetState extends ConsumerState<ContactProfileSheet> {
     return Column(
       children: [
         // Avatar
-        CircleAvatar(
-          radius: 48,
-          backgroundColor: DnaColors.primary.withValues(alpha: 0.2),
-          backgroundImage: hasAvatar
-              ? MemoryImage(base64Decode(profile!.avatarBase64))
-              : null,
-          child: !hasAvatar
-              ? Text(
-                  _getInitials(name),
-                  style: TextStyle(
-                    fontSize: 32,
-                    fontWeight: FontWeight.bold,
-                    color: DnaColors.primary,
-                  ),
-                )
-              : null,
-        ),
+        Builder(builder: (context) {
+          final avatarBytes = hasAvatar ? decodeBase64WithPadding(profile.avatarBase64) : null;
+          return CircleAvatar(
+            radius: 48,
+            backgroundColor: DnaColors.primary.withValues(alpha: 0.2),
+            backgroundImage: avatarBytes != null ? MemoryImage(avatarBytes) : null,
+            child: avatarBytes == null
+                ? Text(
+                    _getInitials(name),
+                    style: TextStyle(
+                      fontSize: 32,
+                      fontWeight: FontWeight.bold,
+                      color: DnaColors.primary,
+                    ),
+                  )
+                : null,
+          );
+        }),
         const SizedBox(height: 16),
         // Display name
         Text(

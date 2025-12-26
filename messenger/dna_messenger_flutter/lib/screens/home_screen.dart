@@ -205,18 +205,13 @@ class _DrawerHeader extends ConsumerWidget {
       data: (profile) {
         final avatarBase64 = profile?.avatarBase64 ?? '';
         engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar data: avatarBase64.length=${avatarBase64.length}');
-        if (avatarBase64.isNotEmpty) {
-          try {
-            final bytes = base64Decode(avatarBase64);
-            engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar: decoded ${bytes.length} bytes, showing avatar');
-            return CircleAvatar(
-              radius: 32,
-              backgroundImage: MemoryImage(bytes),
-            );
-          } catch (e) {
-            engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar: decode FAILED: $e');
-            // Fall through to initials
-          }
+        final avatarBytes = profile?.decodeAvatar();
+        if (avatarBytes != null) {
+          engine?.debugLog('FLUTTER', '[AVATAR_DEBUG] _buildAvatar: decoded ${avatarBytes.length} bytes, showing avatar');
+          return CircleAvatar(
+            radius: 32,
+            backgroundImage: MemoryImage(avatarBytes),
+          );
         }
         return CircleAvatar(
           radius: 32,

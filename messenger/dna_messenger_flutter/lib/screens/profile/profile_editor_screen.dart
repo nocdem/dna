@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/profile_provider.dart';
 import '../../theme/dna_theme.dart';
 
@@ -530,24 +531,12 @@ class _AvatarSection extends StatelessWidget {
     final hasAvatar = avatarBase64.isNotEmpty;
 
     Widget avatarWidget;
-    if (hasAvatar) {
-      try {
-        final bytes = base64Decode(avatarBase64);
-        avatarWidget = CircleAvatar(
-          radius: 48,
-          backgroundImage: MemoryImage(bytes),
-        );
-      } catch (e) {
-        avatarWidget = CircleAvatar(
-          radius: 48,
-          backgroundColor: theme.colorScheme.primary.withAlpha(51),
-          child: Icon(
-            Icons.person,
-            size: 48,
-            color: theme.colorScheme.primary,
-          ),
-        );
-      }
+    final bytes = hasAvatar ? decodeBase64WithPadding(avatarBase64) : null;
+    if (bytes != null) {
+      avatarWidget = CircleAvatar(
+        radius: 48,
+        backgroundImage: MemoryImage(bytes),
+      );
     } else {
       avatarWidget = CircleAvatar(
         radius: 48,

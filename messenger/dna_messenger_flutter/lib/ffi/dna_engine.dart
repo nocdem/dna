@@ -2,8 +2,10 @@
 // Converts C callbacks to Dart Futures/Streams
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 
@@ -704,6 +706,38 @@ class UserProfile {
       website: website ?? this.website,
       avatarBase64: avatarBase64 ?? this.avatarBase64,
     );
+  }
+
+  /// Decode avatar base64 with padding fix
+  /// Buffer limit is 20483 bytes which may truncate padding characters
+  Uint8List? decodeAvatar() {
+    if (avatarBase64.isEmpty) return null;
+    try {
+      var b64 = avatarBase64;
+      final remainder = b64.length % 4;
+      if (remainder > 0) {
+        b64 = b64 + '=' * (4 - remainder);
+      }
+      return base64Decode(b64);
+    } catch (e) {
+      return null;
+    }
+  }
+}
+
+/// Decode base64 string with padding fix for truncated avatar data
+/// C buffer limit is 20484 bytes, strncpy copies max 20483, which may truncate padding
+Uint8List? decodeBase64WithPadding(String base64Str) {
+  if (base64Str.isEmpty) return null;
+  try {
+    var b64 = base64Str;
+    final remainder = b64.length % 4;
+    if (remainder > 0) {
+      b64 = b64 + '=' * (4 - remainder);
+    }
+    return base64Decode(b64);
+  } catch (e) {
+    return null;
   }
 }
 
