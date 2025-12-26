@@ -23,7 +23,8 @@ dependencies:
   path_provider: ^2.1.0
   shared_preferences: ^2.2.0
   window_manager: ^0.4.0
-  sqflite: ^2.3.0  # Local SQLite for caching
+  sqflite: ^2.3.0  # Local SQLite for caching (Android/iOS)
+  sqflite_common_ffi: ^2.3.0  # SQLite FFI for desktop (Linux/Windows/macOS)
 
   # UI components
   qr_flutter: ^4.1.0

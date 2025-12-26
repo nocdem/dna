@@ -1,7 +1,9 @@
 // DNA Messenger - Post-Quantum Encrypted P2P Messenger
 // Phase 14: DHT-only messaging with Android background support
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'providers/providers.dart';
 import 'screens/screens.dart';
@@ -11,6 +13,12 @@ import 'utils/lifecycle_observer.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Initialize SQLite FFI for desktop platforms
+  if (Platform.isLinux || Platform.isWindows || Platform.isMacOS) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+  }
 
   // Initialize window manager on desktop (restores position/size)
   if (WindowStateManager.isDesktop) {
