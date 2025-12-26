@@ -2204,6 +2204,13 @@ int dna_engine_debug_log_count(void);
  */
 void dna_engine_debug_log_clear(void);
 
+/**
+ * Add a log message from external code (e.g., Dart/Flutter)
+ * @param tag Log tag (e.g., "FLUTTER")
+ * @param message Log message
+ */
+void dna_engine_debug_log_message(const char *tag, const char *message);
+
 #ifdef __cplusplus
 }
 #endif

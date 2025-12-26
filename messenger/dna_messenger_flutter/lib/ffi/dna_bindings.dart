@@ -2246,6 +2246,18 @@ class DnaBindings {
   void dna_engine_debug_log_clear() {
     _dna_engine_debug_log_clear();
   }
+
+  late final _dna_engine_debug_log_message = _lib.lookupFunction<
+      Void Function(Pointer<Utf8>, Pointer<Utf8>),
+      void Function(Pointer<Utf8>, Pointer<Utf8>)>('dna_engine_debug_log_message');
+
+  void dna_engine_debug_log_message(String tag, String message) {
+    final tagPtr = tag.toNativeUtf8();
+    final msgPtr = message.toNativeUtf8();
+    _dna_engine_debug_log_message(tagPtr, msgPtr);
+    malloc.free(tagPtr);
+    malloc.free(msgPtr);
+  }
 }
 
 // =============================================================================

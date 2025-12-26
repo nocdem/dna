@@ -6113,3 +6113,8 @@ int dna_engine_debug_log_count(void) {
 void dna_engine_debug_log_clear(void) {
     qgp_log_ring_clear();
 }
+
+void dna_engine_debug_log_message(const char *tag, const char *message) {
+    if (!tag || !message) return;
+    qgp_log_ring_add(QGP_LOG_LEVEL_WARN, tag, "%s", message);
+}
