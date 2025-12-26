@@ -282,20 +282,42 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   Widget _buildAvatar(Contact contact, ThemeData theme) {
-    return Stack(
-      children: [
-        CircleAvatar(
-          radius: 18,
-          backgroundColor: theme.colorScheme.primary.withAlpha(51),
-          child: Text(
-            _getInitials(contact.displayName),
-            style: TextStyle(
-              color: theme.colorScheme.primary,
-              fontWeight: FontWeight.bold,
-              fontSize: 14,
-            ),
+    // Get cached avatar
+    final profileCache = ref.watch(contactProfileCacheProvider);
+    final cachedProfile = profileCache[contact.fingerprint];
+    final avatarBytes = cachedProfile?.decodeAvatar();
+
+    // Trigger fetch if not cached
+    if (cachedProfile == null) {
+      Future.microtask(() {
+        ref.read(contactProfileCacheProvider.notifier).fetchAndCache(contact.fingerprint);
+      });
+    }
+
+    Widget avatarWidget;
+    if (avatarBytes != null) {
+      avatarWidget = CircleAvatar(
+        radius: 18,
+        backgroundImage: MemoryImage(avatarBytes),
+      );
+    } else {
+      avatarWidget = CircleAvatar(
+        radius: 18,
+        backgroundColor: theme.colorScheme.primary.withAlpha(51),
+        child: Text(
+          _getInitials(contact.displayName),
+          style: TextStyle(
+            color: theme.colorScheme.primary,
+            fontWeight: FontWeight.bold,
+            fontSize: 14,
           ),
         ),
+      );
+    }
+
+    return Stack(
+      children: [
+        avatarWidget,
         Positioned(
           right: 0,
           bottom: 0,

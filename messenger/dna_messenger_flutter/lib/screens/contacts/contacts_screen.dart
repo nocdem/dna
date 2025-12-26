@@ -1,5 +1,6 @@
 // Contacts Screen - Contact list with online status
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -173,18 +174,25 @@ class _ContactTile extends ConsumerWidget {
       orElse: () => 0,
     );
 
+    // Get cached avatar
+    final profileCache = ref.watch(contactProfileCacheProvider);
+    final cachedProfile = profileCache[contact.fingerprint];
+    final avatarBytes = cachedProfile?.decodeAvatar();
+
+    // Trigger fetch if not cached (fire and forget)
+    if (cachedProfile == null) {
+      Future.microtask(() {
+        ref.read(contactProfileCacheProvider.notifier).fetchAndCache(contact.fingerprint);
+      });
+    }
+
     return ListTile(
       leading: Stack(
         children: [
-          CircleAvatar(
-            backgroundColor: theme.colorScheme.primary.withAlpha(51),
-            child: Text(
-              _getInitials(contact.displayName),
-              style: TextStyle(
-                color: theme.colorScheme.primary,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
+          _ContactAvatar(
+            avatarBytes: avatarBytes,
+            displayName: contact.displayName,
+            theme: theme,
           ),
           Positioned(
             right: 0,
@@ -679,3 +687,49 @@ class _ContactRequestsBadge extends ConsumerWidget {
   }
 }
 
+/// Widget to display contact avatar with fallback to initials
+class _ContactAvatar extends StatelessWidget {
+  final Uint8List? avatarBytes;
+  final String displayName;
+  final ThemeData theme;
+  final double radius;
+
+  const _ContactAvatar({
+    required this.avatarBytes,
+    required this.displayName,
+    required this.theme,
+    this.radius = 20,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    if (avatarBytes != null) {
+      return CircleAvatar(
+        radius: radius,
+        backgroundImage: MemoryImage(avatarBytes!),
+      );
+    }
+
+    return CircleAvatar(
+      radius: radius,
+      backgroundColor: theme.colorScheme.primary.withAlpha(51),
+      child: Text(
+        _getInitials(displayName),
+        style: TextStyle(
+          color: theme.colorScheme.primary,
+          fontWeight: FontWeight.bold,
+          fontSize: radius * 0.8,
+        ),
+      ),
+    );
+  }
+
+  String _getInitials(String name) {
+    if (name.isEmpty) return '?';
+    final words = name.split(' ');
+    if (words.length >= 2) {
+      return '${words[0][0]}${words[1][0]}'.toUpperCase();
+    }
+    return name.substring(0, name.length.clamp(0, 2)).toUpperCase();
+  }
+}
