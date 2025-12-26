@@ -22,12 +22,74 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     final engine = await ref.watch(engineProvider.future);
     final contacts = await engine.getContacts();
 
-    // Lookup presence from DHT for each contact (in parallel, with timeout)
-    final updatedContacts = await _updateContactsPresence(engine, contacts);
+    // Sort by name initially (presence will update sort order later)
+    final sortedContacts = List<Contact>.from(contacts);
+    sortedContacts.sort((a, b) => a.displayName.compareTo(b.displayName));
 
-    // Sort: by last seen (most recent first), then by name
-    updatedContacts.sort((a, b) {
-      // Compare by lastSeen (more recent first)
+    // Prefetch contact profiles in background (for avatars, display names)
+    if (sortedContacts.isNotEmpty) {
+      final fingerprints = sortedContacts.map((c) => c.fingerprint).toList();
+      ref.read(contactProfileCacheProvider.notifier).prefetchProfiles(fingerprints);
+    }
+
+    // Start presence lookups in background (non-blocking)
+    _updatePresenceInBackground(engine, sortedContacts);
+
+    return sortedContacts;
+  }
+
+  /// Update presence for contacts in background, updating state as data arrives
+  Future<void> _updatePresenceInBackground(
+    DnaEngine engine,
+    List<Contact> contacts,
+  ) async {
+    if (contacts.isEmpty) return;
+
+    // Track which contacts have been updated
+    final presenceMap = <String, DateTime>{};
+
+    // Query presence for all contacts in parallel
+    for (final contact in contacts) {
+      // Fire and forget - each lookup updates state independently
+      _lookupSinglePresence(engine, contact.fingerprint).then((lastSeen) {
+        if (lastSeen != null && lastSeen.millisecondsSinceEpoch > 0) {
+          presenceMap[contact.fingerprint] = lastSeen;
+          _updateContactPresence(contact.fingerprint, lastSeen);
+        }
+      });
+    }
+  }
+
+  /// Lookup presence for a single contact with timeout
+  Future<DateTime?> _lookupSinglePresence(DnaEngine engine, String fingerprint) async {
+    try {
+      return await engine
+          .lookupPresence(fingerprint)
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Update a single contact's presence and re-sort the list
+  void _updateContactPresence(String fingerprint, DateTime lastSeen) {
+    final currentState = state.valueOrNull;
+    if (currentState == null) return;
+
+    final index = currentState.indexWhere((c) => c.fingerprint == fingerprint);
+    if (index == -1) return;
+
+    final contact = currentState[index];
+    final updated = List<Contact>.from(currentState);
+    updated[index] = Contact(
+      fingerprint: contact.fingerprint,
+      displayName: contact.displayName,
+      isOnline: contact.isOnline,
+      lastSeen: lastSeen,
+    );
+
+    // Re-sort: by last seen (most recent first), then by name
+    updated.sort((a, b) {
       final lastSeenCompare = b.lastSeen.compareTo(a.lastSeen);
       if (lastSeenCompare != 0) {
         return lastSeenCompare;
@@ -35,48 +97,7 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       return a.displayName.compareTo(b.displayName);
     });
 
-    // Prefetch contact profiles in background (for avatars, display names)
-    if (updatedContacts.isNotEmpty) {
-      final fingerprints = updatedContacts.map((c) => c.fingerprint).toList();
-      ref.read(contactProfileCacheProvider.notifier).prefetchProfiles(fingerprints);
-    }
-
-    return updatedContacts;
-  }
-
-  /// Update contacts with presence from DHT
-  Future<List<Contact>> _updateContactsPresence(
-    DnaEngine engine,
-    List<Contact> contacts,
-  ) async {
-    final updated = <Contact>[];
-
-    // Query presence for all contacts in parallel with timeout
-    final futures = contacts.map((contact) async {
-      try {
-        final lastSeen = await engine
-            .lookupPresence(contact.fingerprint)
-            .timeout(const Duration(seconds: 5));
-
-        // Only use DHT value if it's not epoch (i.e., presence was found)
-        if (lastSeen.millisecondsSinceEpoch > 0) {
-          return Contact(
-            fingerprint: contact.fingerprint,
-            displayName: contact.displayName,
-            isOnline: contact.isOnline,
-            lastSeen: lastSeen,
-          );
-        }
-      } catch (e) {
-        // Timeout or error - use original contact
-      }
-      return contact;
-    }).toList();
-
-    final results = await Future.wait(futures);
-    updated.addAll(results);
-
-    return updated;
+    state = AsyncValue.data(updated);
   }
 
   Future<void> refresh() async {
@@ -85,25 +106,20 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
       final engine = await ref.read(engineProvider.future);
       final contacts = await engine.getContacts();
 
-      // Lookup presence from DHT for each contact
-      final updatedContacts = await _updateContactsPresence(engine, contacts);
-
-      // Sort: by last seen (most recent first), then by name
-      updatedContacts.sort((a, b) {
-        final lastSeenCompare = b.lastSeen.compareTo(a.lastSeen);
-        if (lastSeenCompare != 0) {
-          return lastSeenCompare;
-        }
-        return a.displayName.compareTo(b.displayName);
-      });
+      // Sort by name initially
+      final sortedContacts = List<Contact>.from(contacts);
+      sortedContacts.sort((a, b) => a.displayName.compareTo(b.displayName));
 
       // Prefetch contact profiles in background
-      if (updatedContacts.isNotEmpty) {
-        final fingerprints = updatedContacts.map((c) => c.fingerprint).toList();
+      if (sortedContacts.isNotEmpty) {
+        final fingerprints = sortedContacts.map((c) => c.fingerprint).toList();
         ref.read(contactProfileCacheProvider.notifier).prefetchProfiles(fingerprints);
       }
 
-      return updatedContacts;
+      // Start presence lookups in background (non-blocking)
+      _updatePresenceInBackground(engine, sortedContacts);
+
+      return sortedContacts;
     });
   }
 
