@@ -21,7 +21,7 @@ class CachedIdentity {
 /// SQLite database for caching profiles (contacts + identities)
 class CacheDatabase {
   static const _databaseName = 'dna_cache.db';
-  static const _databaseVersion = 2; // Bumped for identity_profiles table
+  static const _databaseVersion = 3; // Bumped for identity_list table
 
   // Singleton instance
   static CacheDatabase? _instance;
@@ -93,6 +93,14 @@ class CacheDatabase {
         cached_at INTEGER
       )
     ''');
+
+    // Identity list cache (fingerprints only - for fast startup)
+    await db.execute('''
+      CREATE TABLE identity_list (
+        fingerprint TEXT PRIMARY KEY,
+        order_index INTEGER
+      )
+    ''');
   }
 
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -100,6 +108,7 @@ class CacheDatabase {
     if (oldVersion < newVersion) {
       await db.execute('DROP TABLE IF EXISTS contact_profiles');
       await db.execute('DROP TABLE IF EXISTS identity_profiles');
+      await db.execute('DROP TABLE IF EXISTS identity_list');
       await _onCreate(db, newVersion);
     }
   }
@@ -316,6 +325,42 @@ class CacheDatabase {
       avatarBase64: row['avatar_base64'] as String? ?? '',
       cachedAt: DateTime.fromMillisecondsSinceEpoch(row['cached_at'] as int? ?? 0),
     );
+  }
+
+  // ==========================================================================
+  // Identity List Operations (for fast startup)
+  // ==========================================================================
+
+  /// Get cached identity list (fingerprints only)
+  Future<List<String>> getIdentityList() async {
+    final db = await database;
+    final results = await db.query(
+      'identity_list',
+      orderBy: 'order_index ASC',
+    );
+    return results.map((row) => row['fingerprint'] as String).toList();
+  }
+
+  /// Save identity list to cache
+  Future<void> saveIdentityList(List<String> fingerprints) async {
+    final db = await database;
+
+    // Clear existing and insert new
+    await db.transaction((txn) async {
+      await txn.delete('identity_list');
+      for (int i = 0; i < fingerprints.length; i++) {
+        await txn.insert('identity_list', {
+          'fingerprint': fingerprints[i],
+          'order_index': i,
+        });
+      }
+    });
+  }
+
+  /// Clear identity list cache
+  Future<void> clearIdentityList() async {
+    final db = await database;
+    await db.delete('identity_list');
   }
 
   // ==========================================================================

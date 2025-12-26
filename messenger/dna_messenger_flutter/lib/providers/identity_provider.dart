@@ -1,5 +1,6 @@
 // Identity Provider - Identity management state
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import '../services/cache_database.dart';
 import 'engine_provider.dart';
 import 'identity_profile_cache_provider.dart';
 
@@ -9,10 +10,32 @@ final identitiesProvider = AsyncNotifierProvider<IdentitiesNotifier, List<String
 );
 
 class IdentitiesNotifier extends AsyncNotifier<List<String>> {
+  final CacheDatabase _db = CacheDatabase.instance;
+
   @override
   Future<List<String>> build() async {
+    // Step 1: Try to load cached identity list immediately (fast startup)
+    List<String> cachedIdentities = [];
+    try {
+      cachedIdentities = await _db.getIdentityList();
+      if (cachedIdentities.isNotEmpty) {
+        // Prefetch profiles for cached identities
+        ref.read(identityProfileCacheProvider.notifier).prefetchIdentities(cachedIdentities);
+
+        // Return cached list immediately, then refresh in background
+        _refreshFromEngineInBackground();
+        return cachedIdentities;
+      }
+    } catch (_) {
+      // Cache not ready, continue to engine
+    }
+
+    // Step 2: No cache - wait for engine (first run or cache cleared)
     final engine = await ref.watch(engineProvider.future);
     final identities = await engine.listIdentities();
+
+    // Cache the list for next startup
+    _db.saveIdentityList(identities);
 
     // Prefetch identity profiles in background (for names/avatars)
     if (identities.isNotEmpty) {
@@ -22,11 +45,43 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     return identities;
   }
 
+  /// Refresh identity list from engine in background (after showing cached data)
+  Future<void> _refreshFromEngineInBackground() async {
+    try {
+      final engine = await ref.read(engineProvider.future);
+      final identities = await engine.listIdentities();
+
+      // Update cache
+      _db.saveIdentityList(identities);
+
+      // Update state if different
+      final current = state.valueOrNull ?? [];
+      if (!_listEquals(current, identities)) {
+        state = AsyncValue.data(identities);
+        // Prefetch profiles for new identities
+        ref.read(identityProfileCacheProvider.notifier).prefetchIdentities(identities);
+      }
+    } catch (_) {
+      // Background refresh failed, keep cached data
+    }
+  }
+
+  bool _listEquals(List<String> a, List<String> b) {
+    if (a.length != b.length) return false;
+    for (int i = 0; i < a.length; i++) {
+      if (a[i] != b[i]) return false;
+    }
+    return true;
+  }
+
   Future<void> refresh() async {
     state = const AsyncValue.loading();
     state = await AsyncValue.guard(() async {
       final engine = await ref.read(engineProvider.future);
-      return engine.listIdentities();
+      final identities = await engine.listIdentities();
+      // Update cache
+      _db.saveIdentityList(identities);
+      return identities;
     });
   }
 
