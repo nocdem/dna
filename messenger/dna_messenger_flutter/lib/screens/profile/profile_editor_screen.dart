@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:image/image.dart' as img;
 
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/profile_provider.dart';
@@ -492,14 +493,42 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
     final picker = ImagePicker();
     final image = await picker.pickImage(
       source: ImageSource.gallery,
-      maxWidth: 64,
-      maxHeight: 64,
-      imageQuality: 80,
     );
 
     if (image != null) {
       final bytes = await File(image.path).readAsBytes();
-      final base64 = base64Encode(bytes);
+
+      // Decode, resize to 64x64, and compress as JPEG
+      // image_picker's maxWidth/maxHeight doesn't work reliably on all platforms
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Failed to decode image')),
+          );
+        }
+        return;
+      }
+
+      // Resize to 64x64 (avatar size)
+      final resized = img.copyResize(decoded, width: 64, height: 64);
+
+      // Encode as JPEG with 70% quality (small file size)
+      final compressed = img.encodeJpg(resized, quality: 70);
+
+      // Base64 encode - should be ~2-5KB for 64x64 JPEG
+      final base64 = base64Encode(compressed);
+
+      // Sanity check: avatar should be under 15KB base64 (buffer is 20KB)
+      if (base64.length > 15000) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Avatar too large, please try a smaller image')),
+          );
+        }
+        return;
+      }
+
       notifier.setAvatar(base64);
     }
   }

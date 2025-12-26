@@ -27,6 +27,7 @@ dependencies:
   # UI components
   qr_flutter: ^4.1.0
   image_picker: ^1.0.0
+  image: ^4.1.0  # For reliable cross-platform image resizing
   emoji_picker_flutter: ^3.0.0
   flutter_svg: ^2.0.9
 
