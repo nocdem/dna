@@ -49,6 +49,9 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
     } catch (e) {
       debugPrint('[CHAT] Failed to mark messages as read: $e');
     }
+
+    // Refresh contact profile in background (for latest avatar/name)
+    ref.read(contactProfileCacheProvider.notifier).refreshProfile(contact.fingerprint);
   }
 
   @override
