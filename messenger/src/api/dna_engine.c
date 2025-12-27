@@ -1101,6 +1101,145 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
+    /* Check if DHT profile exists and has wallet addresses - auto-republish if needed */
+    {
+        dht_context_t *dht = dna_get_dht_ctx(engine);
+        if (dht) {
+            /* Lookup own profile from DHT */
+            dna_unified_identity_t *identity = NULL;
+            int lookup_rc = dht_keyserver_lookup(dht, fingerprint, &identity);
+
+            if (lookup_rc != 0 || !identity) {
+                /* Profile NOT found in DHT - this is the bug we're fixing!
+                 * Identity was created locally but never published to DHT.
+                 * Try to republish using cached name. */
+                char cached_name[64] = {0};
+                if (keyserver_cache_get_name(fingerprint, cached_name, sizeof(cached_name)) == 0 &&
+                    cached_name[0] != '\0') {
+                    QGP_LOG_WARN(LOG_TAG, "Profile not found in DHT - republishing for '%s'", cached_name);
+
+                    /* Load keys for republishing */
+                    qgp_key_t *sign_key = dna_load_private_key(engine);
+                    if (sign_key) {
+                        qgp_key_t *enc_key = dna_load_encryption_key(engine);
+                        if (enc_key) {
+                            /* Get wallet addresses for republish */
+                            char cf_addr[128] = {0}, eth_addr[48] = {0}, sol_addr[48] = {0};
+                            blockchain_wallet_list_t *bc_wallets = NULL;
+                            if (blockchain_list_wallets(fingerprint, &bc_wallets) == 0 && bc_wallets) {
+                                for (size_t i = 0; i < bc_wallets->count; i++) {
+                                    blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
+                                    switch (w->type) {
+                                        case BLOCKCHAIN_ETHEREUM:
+                                            strncpy(eth_addr, w->address, sizeof(eth_addr) - 1);
+                                            break;
+                                        case BLOCKCHAIN_SOLANA:
+                                            strncpy(sol_addr, w->address, sizeof(sol_addr) - 1);
+                                            break;
+                                        case BLOCKCHAIN_CELLFRAME:
+                                            strncpy(cf_addr, w->address, sizeof(cf_addr) - 1);
+                                            break;
+                                        default:
+                                            break;
+                                    }
+                                }
+                                blockchain_wallet_list_free(bc_wallets);
+                            }
+
+                            /* Republish identity to DHT */
+                            int publish_rc = dht_keyserver_publish(dht, fingerprint, cached_name,
+                                sign_key->public_key, enc_key->public_key, sign_key->private_key,
+                                cf_addr[0] ? cf_addr : NULL,
+                                eth_addr[0] ? eth_addr : NULL,
+                                sol_addr[0] ? sol_addr : NULL);
+
+                            if (publish_rc == 0) {
+                                QGP_LOG_INFO(LOG_TAG, "Profile republished to DHT successfully");
+                            } else if (publish_rc == -2) {
+                                QGP_LOG_WARN(LOG_TAG, "Name '%s' already taken by another user", cached_name);
+                            } else if (publish_rc == -3) {
+                                QGP_LOG_WARN(LOG_TAG, "DHT not ready - will retry on next login");
+                            } else {
+                                QGP_LOG_WARN(LOG_TAG, "Failed to republish profile to DHT: %d", publish_rc);
+                            }
+                            qgp_key_free(enc_key);
+                        }
+                        qgp_key_free(sign_key);
+                    }
+                } else {
+                    QGP_LOG_WARN(LOG_TAG, "Profile not in DHT and no cached name - cannot republish");
+                }
+            } else {
+                /* Profile found in DHT - check if wallet addresses need updating */
+                blockchain_wallet_list_t *bc_wallets = NULL;
+                if (blockchain_list_wallets(fingerprint, &bc_wallets) == 0 && bc_wallets && bc_wallets->count > 0) {
+                    bool need_publish = false;
+                    char eth_addr[48] = {0}, sol_addr[48] = {0}, trx_addr[48] = {0}, cf_addr[128] = {0};
+
+                    for (size_t i = 0; i < bc_wallets->count; i++) {
+                        blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
+                        switch (w->type) {
+                            case BLOCKCHAIN_ETHEREUM:
+                                strncpy(eth_addr, w->address, sizeof(eth_addr) - 1);
+                                if (identity->wallets.eth[0] == '\0' && w->address[0]) need_publish = true;
+                                break;
+                            case BLOCKCHAIN_SOLANA:
+                                strncpy(sol_addr, w->address, sizeof(sol_addr) - 1);
+                                if (identity->wallets.sol[0] == '\0' && w->address[0]) need_publish = true;
+                                break;
+                            case BLOCKCHAIN_TRON:
+                                strncpy(trx_addr, w->address, sizeof(trx_addr) - 1);
+                                if (identity->wallets.trx[0] == '\0' && w->address[0]) need_publish = true;
+                                break;
+                            case BLOCKCHAIN_CELLFRAME:
+                                strncpy(cf_addr, w->address, sizeof(cf_addr) - 1);
+                                if (identity->wallets.backbone[0] == '\0' && w->address[0]) need_publish = true;
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+
+                    if (need_publish) {
+                        QGP_LOG_INFO(LOG_TAG, "DHT profile has empty wallet addresses - auto-publishing");
+
+                        /* Load keys for signing */
+                        qgp_key_t *sign_key = dna_load_private_key(engine);
+                        if (sign_key) {
+                            qgp_key_t *enc_key = dna_load_encryption_key(engine);
+                            if (enc_key) {
+                                /* Build profile data with wallet addresses */
+                                dna_profile_data_t profile_data = {0};
+                                strncpy(profile_data.wallets.backbone, cf_addr[0] ? cf_addr : identity->wallets.backbone, sizeof(profile_data.wallets.backbone) - 1);
+                                strncpy(profile_data.wallets.eth, eth_addr[0] ? eth_addr : identity->wallets.eth, sizeof(profile_data.wallets.eth) - 1);
+                                strncpy(profile_data.wallets.sol, sol_addr[0] ? sol_addr : identity->wallets.sol, sizeof(profile_data.wallets.sol) - 1);
+                                strncpy(profile_data.wallets.trx, trx_addr[0] ? trx_addr : identity->wallets.trx, sizeof(profile_data.wallets.trx) - 1);
+                                strncpy(profile_data.socials.telegram, identity->socials.telegram, sizeof(profile_data.socials.telegram) - 1);
+                                strncpy(profile_data.socials.x, identity->socials.x, sizeof(profile_data.socials.x) - 1);
+                                strncpy(profile_data.socials.github, identity->socials.github, sizeof(profile_data.socials.github) - 1);
+                                strncpy(profile_data.bio, identity->bio, sizeof(profile_data.bio) - 1);
+                                strncpy(profile_data.avatar_base64, identity->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
+
+                                int update_rc = dna_update_profile(dht, fingerprint, &profile_data,
+                                                                   sign_key->private_key, sign_key->public_key,
+                                                                   enc_key->public_key);
+                                if (update_rc == 0) {
+                                    QGP_LOG_INFO(LOG_TAG, "Profile auto-published with wallet addresses on login");
+                                } else {
+                                    QGP_LOG_WARN(LOG_TAG, "Failed to auto-publish profile on login: %d", update_rc);
+                                }
+                                qgp_key_free(enc_key);
+                            }
+                            qgp_key_free(sign_key);
+                        }
+                    }
+                    blockchain_wallet_list_free(bc_wallets);
+                }
+                dna_identity_free(identity);
+            }
+        }
+    }
+
     /* Dispatch identity loaded event */
     dna_event_t event = {0};
     event.type = DNA_EVENT_IDENTITY_LOADED;
