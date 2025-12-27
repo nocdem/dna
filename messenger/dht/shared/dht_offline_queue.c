@@ -12,6 +12,11 @@
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "DHT_OFFLINE"
+
+// Mutex to serialize DHT queue read-modify-write operations
+// Prevents race conditions when sending multiple messages quickly
+static pthread_mutex_t g_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
+
 // Platform-specific network byte order functions
 #ifdef _WIN32
     #include <winsock2.h>  // For htonl/ntohl on Windows
@@ -369,6 +374,10 @@ int dht_queue_message(
         ttl_seconds = DHT_OFFLINE_QUEUE_DEFAULT_TTL;
     }
 
+    // Lock to prevent race conditions when multiple messages are sent quickly
+    // Without this, parallel sends can overwrite each other's queue updates
+    pthread_mutex_lock(&g_queue_mutex);
+
     struct timespec queue_start, get_start, deserialize_start, serialize_start, put_start;
     clock_gettime(CLOCK_MONOTONIC, &queue_start);
 
@@ -474,6 +483,7 @@ int dht_queue_message(
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate memory for new message\n");
         dht_offline_message_free(&new_msg);
         dht_offline_messages_free(existing_messages, existing_count);
+        pthread_mutex_unlock(&g_queue_mutex);
         return -1;
     }
 
@@ -486,6 +496,7 @@ int dht_queue_message(
         QGP_LOG_ERROR(LOG_TAG, "Failed to allocate combined message array\n");
         dht_offline_message_free(&new_msg);
         dht_offline_messages_free(existing_messages, existing_count);
+        pthread_mutex_unlock(&g_queue_mutex);
         return -1;
     }
 
@@ -511,6 +522,7 @@ int dht_queue_message(
     if (dht_serialize_messages(all_messages, new_count, &serialized, &serialized_len) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to serialize message queue\n");
         dht_offline_messages_free(all_messages, new_count);
+        pthread_mutex_unlock(&g_queue_mutex);
         return -1;
     }
     struct timespec serialize_end;
@@ -536,6 +548,7 @@ int dht_queue_message(
     if (put_result != DHT_CHUNK_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to store queue in DHT: %s (put took %ld ms)\n",
                 dht_chunked_strerror(put_result), put_ms);
+        pthread_mutex_unlock(&g_queue_mutex);
         return -1;
     }
 
@@ -546,6 +559,7 @@ int dht_queue_message(
 
     QGP_LOG_INFO(LOG_TAG, "✓ Message queued successfully (seq=%lu, total: %ld ms, get: %ld ms, put: %ld ms)\n",
            (unsigned long)seq_num, total_queue_ms, get_ms, put_ms);
+    pthread_mutex_unlock(&g_queue_mutex);
     return 0;
 }
 

@@ -190,9 +190,9 @@ int messenger_store_pubkey(
 
     // Fingerprint-first DHT publishing
     if (display_name && strlen(display_name) > 0) {
-        printf("⟳ Publishing public keys for '%s' (fingerprint: %s) to DHT keyserver...\n", display_name, fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Publishing public keys for '%s' (fingerprint: %.16s...) to DHT keyserver", display_name, fingerprint);
     } else {
-        printf("⟳ Publishing public keys for fingerprint '%s' to DHT keyserver...\n", fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Publishing public keys for fingerprint '%.16s...' to DHT keyserver", fingerprint);
     }
 
     // Use global DHT singleton (initialized at app startup)
@@ -262,7 +262,7 @@ int messenger_store_pubkey(
         return -1;
     }
 
-    printf("✓ Public keys published to DHT successfully!\n");
+    QGP_LOG_INFO(LOG_TAG, "Public keys published to DHT successfully");
     return 0;
 }
 
@@ -306,12 +306,12 @@ int messenger_load_pubkey(
         }
 
         keyserver_cache_free_entry(cached);
-        printf("✓ Loaded public keys for '%s' from cache\n", identity);
+        QGP_LOG_DEBUG(LOG_TAG, "Loaded public keys for '%s' from cache", identity);
         return 0;
     }
 
     // Cache miss - fetch from DHT keyserver
-    printf("⟳ Fetching public keys for '%s' from DHT keyserver...\n", identity);
+    QGP_LOG_INFO(LOG_TAG, "Fetching public keys for '%s' from DHT keyserver...", identity);
 
     // Get DHT context from P2P transport
     if (!ctx->p2p_transport) {
@@ -374,7 +374,7 @@ int messenger_load_pubkey(
     *signing_pubkey_len_out = dil_len;
     *encryption_pubkey_out = kyber_decoded;
     *encryption_pubkey_len_out = kyber_len;
-    printf("✓ Loaded public keys for '%s' from keyserver\n", identity);
+    QGP_LOG_INFO(LOG_TAG, "Loaded public keys for '%s' from keyserver", identity);
     return 0;
 }
 

@@ -165,7 +165,7 @@ static int decompress_data(const uint8_t *in, size_t in_len,
     size_t decompressed_size = ZSTD_decompress(buf, expected_size, in, in_len);
 
     if (ZSTD_isError(decompressed_size)) {
-        QGP_LOG_ERROR(LOG_TAG, "ZSTD decompression failed: %s\n",
+        QGP_LOG_WARN(LOG_TAG, "ZSTD decompression failed (stale DHT data?): %s",
                 ZSTD_getErrorName(decompressed_size));
         free(buf);
         return -1;
