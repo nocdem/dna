@@ -75,48 +75,100 @@ class _NavigationDrawer extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final currentTab = ref.watch(currentTabProvider);
 
-    return NavigationDrawer(
-      selectedIndex: currentTab,
-      onDestinationSelected: (index) {
-        ref.read(currentTabProvider.notifier).state = index;
-        Navigator.of(context).pop(); // Close drawer
-      },
-      children: [
-        // Header with profile
-        const _DrawerHeader(),
-        const SizedBox(height: 8),
-        // Navigation items
-        // Feed disabled - will be reimplemented in the future
-        const NavigationDrawerDestination(
-          icon: Icon(Icons.chat_outlined),
-          selectedIcon: Icon(Icons.chat),
-          label: Text('Chats'),
+    void selectTab(int index) {
+      ref.read(currentTabProvider.notifier).state = index;
+      Navigator.of(context).pop();
+    }
+
+    return Drawer(
+      child: SafeArea(
+        child: Column(
+          children: [
+            // Header with profile
+            const _DrawerHeader(),
+            const SizedBox(height: 8),
+            // Navigation items
+            Expanded(
+              child: ListView(
+                padding: EdgeInsets.zero,
+                children: [
+                  _DrawerItem(
+                    icon: Icons.chat_outlined,
+                    selectedIcon: Icons.chat,
+                    label: 'Chats',
+                    selected: currentTab == 0,
+                    onTap: () => selectTab(0),
+                  ),
+                  _DrawerItem(
+                    icon: Icons.groups_outlined,
+                    selectedIcon: Icons.groups,
+                    label: 'Groups',
+                    selected: currentTab == 1,
+                    onTap: () => selectTab(1),
+                  ),
+                  _DrawerItem(
+                    icon: Icons.account_balance_wallet_outlined,
+                    selectedIcon: Icons.account_balance_wallet,
+                    label: 'Wallet',
+                    selected: currentTab == 2,
+                    onTap: () => selectTab(2),
+                  ),
+                  const Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 16),
+                    child: Divider(),
+                  ),
+                  _DrawerItem(
+                    icon: Icons.settings_outlined,
+                    selectedIcon: Icons.settings,
+                    label: 'Settings',
+                    selected: currentTab == 3,
+                    onTap: () => selectTab(3),
+                  ),
+                ],
+              ),
+            ),
+            // DHT Connection Status at bottom
+            const _DhtStatusIndicator(),
+            const SizedBox(height: 16),
+          ],
         ),
-        const NavigationDrawerDestination(
-          icon: Icon(Icons.groups_outlined),
-          selectedIcon: Icon(Icons.groups),
-          label: Text('Groups'),
+      ),
+    );
+  }
+}
+
+class _DrawerItem extends StatelessWidget {
+  final IconData icon;
+  final IconData selectedIcon;
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _DrawerItem({
+    required this.icon,
+    required this.selectedIcon,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return ListTile(
+      leading: Icon(
+        selected ? selectedIcon : icon,
+        color: selected ? theme.colorScheme.primary : null,
+      ),
+      title: Text(
+        label,
+        style: TextStyle(
+          color: selected ? theme.colorScheme.primary : null,
+          fontWeight: selected ? FontWeight.w600 : null,
         ),
-        const NavigationDrawerDestination(
-          icon: Icon(Icons.account_balance_wallet_outlined),
-          selectedIcon: Icon(Icons.account_balance_wallet),
-          label: Text('Wallet'),
-        ),
-        const Padding(
-          padding: EdgeInsets.symmetric(horizontal: 16),
-          child: Divider(),
-        ),
-        const NavigationDrawerDestination(
-          icon: Icon(Icons.settings_outlined),
-          selectedIcon: Icon(Icons.settings),
-          label: Text('Settings'),
-        ),
-        // Spacer to push status to bottom
-        const Spacer(),
-        // DHT Connection Status
-        const _DhtStatusIndicator(),
-        const SizedBox(height: 16),
-      ],
+      ),
+      selected: selected,
+      onTap: onTap,
     );
   }
 }
