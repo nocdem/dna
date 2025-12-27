@@ -41,6 +41,7 @@ class EventHandler {
   StreamSubscription<DnaEvent>? _subscription;
   Timer? _refreshTimer;
   Timer? _contactRequestsTimer;
+  Timer? _presenceTimer;
 
   EventHandler(this._ref);
 
@@ -63,6 +64,8 @@ class EventHandler {
         _ref.invalidate(contactRequestsProvider);
         // Start periodic contact request polling (every 60 seconds)
         _startContactRequestsPolling();
+        // Start periodic presence refresh (every 5 seconds)
+        _startPresencePolling();
 
       case DhtDisconnectedEvent():
         _ref.read(dhtConnectionStateProvider.notifier).state =
@@ -70,6 +73,8 @@ class EventHandler {
         // Stop polling when disconnected
         _contactRequestsTimer?.cancel();
         _contactRequestsTimer = null;
+        _presenceTimer?.cancel();
+        _presenceTimer = null;
 
       case ContactOnlineEvent(fingerprint: final fp):
         _ref.read(contactsProvider.notifier).updateContactStatus(fp, true);
@@ -182,10 +187,25 @@ class EventHandler {
     });
   }
 
+  /// Start periodic presence refresh (every 5 seconds)
+  /// Announces our presence to DHT and refreshes contact presence
+  void _startPresencePolling() {
+    _presenceTimer?.cancel();
+    _presenceTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      _ref.read(engineProvider).whenData((engine) async {
+        // Announce our presence to DHT
+        await engine.refreshPresence();
+        // Refresh contacts to update their last seen times
+        _ref.invalidate(contactsProvider);
+      });
+    });
+  }
+
   void dispose() {
     _subscription?.cancel();
     _refreshTimer?.cancel();
     _contactRequestsTimer?.cancel();
+    _presenceTimer?.cancel();
   }
 }
 
