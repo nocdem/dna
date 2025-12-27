@@ -204,81 +204,67 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
         ],
       ),
-      body: Stack(
+      body: Column(
         children: [
-          // Main content
-          Column(
-            children: [
-              // Messages list
-              Expanded(
-                child: messages.when(
-                  data: (list) => _buildMessageList(context, list),
-                  loading: () => const Center(child: CircularProgressIndicator()),
-                  error: (error, stack) => Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(Icons.error_outline, color: DnaColors.textWarning),
-                        const SizedBox(height: 8),
-                        Text('Failed to load messages'),
-                        TextButton(
-                          onPressed: () => ref.invalidate(
-                            conversationProvider(contact.fingerprint),
-                          ),
-                          child: const Text('Retry'),
-                        ),
-                      ],
+          // Messages list
+          Expanded(
+            child: messages.when(
+              data: (list) => _buildMessageList(context, list),
+              loading: () => const Center(child: CircularProgressIndicator()),
+              error: (error, stack) => Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.error_outline, color: DnaColors.textWarning),
+                    const SizedBox(height: 8),
+                    Text('Failed to load messages'),
+                    TextButton(
+                      onPressed: () => ref.invalidate(
+                        conversationProvider(contact.fingerprint),
+                      ),
+                      child: const Text('Retry'),
                     ),
-                  ),
+                  ],
                 ),
               ),
-
-              // Input area
-              _buildInputArea(context, contact),
-            ],
+            ),
           ),
 
-          // Emoji picker (overlays chat, positioned above emoji button on left)
+          // Emoji picker (inline above input area when visible)
           if (_showEmojiPicker)
-            Positioned(
-              left: 8,
-              bottom: 70, // Above input area
-              child: Material(
-                elevation: 8,
-                borderRadius: BorderRadius.circular(12),
-                color: theme.colorScheme.surface,
-                child: Container(
-                  constraints: const BoxConstraints(maxWidth: 380, maxHeight: 280),
-                  clipBehavior: Clip.antiAlias,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: EmojiPicker(
-                    onEmojiSelected: (category, emoji) {
-                      _onEmojiSelected(emoji);
-                    },
-                    config: Config(
-                      checkPlatformCompatibility: true,
-                      emojiViewConfig: EmojiViewConfig(
-                        columns: 7,
-                        emojiSizeMax: 28,
-                        backgroundColor: theme.colorScheme.surface,
-                      ),
-                      categoryViewConfig: CategoryViewConfig(
-                        indicatorColor: theme.colorScheme.primary,
-                        iconColorSelected: theme.colorScheme.primary,
-                        iconColor: DnaColors.textMuted,
-                        backgroundColor: theme.colorScheme.surface,
-                      ),
-                      bottomActionBarConfig: BottomActionBarConfig(
-                        backgroundColor: theme.colorScheme.surface,
-                        buttonColor: theme.colorScheme.primary,
-                      ),
+            Material(
+              elevation: 4,
+              color: theme.colorScheme.surface,
+              child: Container(
+                constraints: const BoxConstraints(maxHeight: 280),
+                child: EmojiPicker(
+                  onEmojiSelected: (category, emoji) {
+                    _onEmojiSelected(emoji);
+                  },
+                  config: Config(
+                    checkPlatformCompatibility: true,
+                    emojiViewConfig: EmojiViewConfig(
+                      columns: 8,
+                      emojiSizeMax: 28,
+                      backgroundColor: theme.colorScheme.surface,
+                    ),
+                    categoryViewConfig: CategoryViewConfig(
+                      indicatorColor: theme.colorScheme.primary,
+                      iconColorSelected: theme.colorScheme.primary,
+                      iconColor: DnaColors.textMuted,
+                      backgroundColor: theme.colorScheme.surface,
+                    ),
+                    bottomActionBarConfig: BottomActionBarConfig(
+                      backgroundColor: theme.colorScheme.surface,
+                      buttonColor: theme.colorScheme.primary,
                     ),
                   ),
                 ),
               ),
             ),
+
+          // Input area
+          _buildInputArea(context, contact),
         ],
       ),
     );
