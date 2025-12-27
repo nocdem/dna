@@ -38,6 +38,7 @@ final eventHandlerProvider = Provider<EventHandler>((ref) {
 class EventHandler {
   final Ref _ref;
   StreamSubscription<DnaEvent>? _subscription;
+  Timer? _refreshTimer;
 
   EventHandler(this._ref);
 
@@ -95,7 +96,8 @@ class EventHandler {
         _ref.invalidate(contactsProvider);
 
       case MessageSentEvent():
-        // Message was sent - status will be updated via delivered event
+        // Debounced refresh - only once after last message sent
+        _scheduleConversationRefresh();
         break;
 
       case MessageDeliveredEvent(messageId: final id):
@@ -142,13 +144,29 @@ class EventHandler {
   }
 
   void _updateMessageStatus(int messageId, MessageStatus status) {
-    // This is a bit tricky - we need to find which conversation has this message
-    // For now, we'll rely on the conversation refreshing
-    // A more sophisticated approach would track message IDs to conversations
+    // Update the message status in the current conversation
+    final selectedContact = _ref.read(selectedContactProvider);
+    if (selectedContact != null) {
+      _ref.read(conversationProvider(selectedContact.fingerprint).notifier)
+          .updateMessageStatus(messageId, status);
+    }
+  }
+
+  /// Schedule a debounced conversation refresh
+  /// Coalesces rapid MessageSentEvents into a single refresh
+  void _scheduleConversationRefresh() {
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer(const Duration(milliseconds: 300), () {
+      final selectedContact = _ref.read(selectedContactProvider);
+      if (selectedContact != null) {
+        _ref.invalidate(conversationProvider(selectedContact.fingerprint));
+      }
+    });
   }
 
   void dispose() {
     _subscription?.cancel();
+    _refreshTimer?.cancel();
   }
 }
 

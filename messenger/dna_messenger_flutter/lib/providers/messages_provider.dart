@@ -65,19 +65,11 @@ class ConversationNotifier extends FamilyAsyncNotifier<List<Message>, String> {
         final updated = messages.where((m) => m.id != pendingMessage.id).toList();
         state = AsyncValue.data(updated);
       });
-    } else {
-      // Start a background refresh to update message status
-      _scheduleRefresh();
     }
+    // On success: message shown via optimistic UI
+    // Status updated via MessageSentEvent in event_handler.dart
 
     return result;
-  }
-
-  /// Schedule a delayed refresh to pick up sent message status
-  void _scheduleRefresh() {
-    Future.delayed(const Duration(milliseconds: 500), () {
-      refresh();
-    });
   }
 
   void addMessage(Message message) {
