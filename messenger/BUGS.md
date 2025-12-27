@@ -8,7 +8,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-<!-- Add new bugs here -->
+- [ ] Add contact: show avatar in search result instead of name initials (P3)
 
 
 ## Fixed Bugs
