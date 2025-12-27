@@ -308,6 +308,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
   // Found contact info
   String? _foundFingerprint;
   String? _foundName;
+  Uint8List? _foundAvatarBytes;
 
   // Error state
   String? _errorMessage;
@@ -339,6 +340,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
       setState(() {
         _foundFingerprint = null;
         _foundName = null;
+        _foundAvatarBytes = null;
         _errorMessage = null;
       });
     }
@@ -366,6 +368,7 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
       _errorMessage = null;
       _foundFingerprint = null;
       _foundName = null;
+      _foundAvatarBytes = null;
       _lastSearchedInput = input;
     });
 
@@ -435,11 +438,28 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
         return;
       }
 
-      // Success - found valid contact
+      // Success - found valid contact, now fetch their profile for avatar
+      Uint8List? avatarBytes;
+      try {
+        final profile = await engine.lookupProfile(fingerprint);
+        if (profile != null) {
+          avatarBytes = profile.decodeAvatar();
+          // Use profile name if we don't have one yet
+          if (displayName == null && profile.displayName.isNotEmpty) {
+            displayName = profile.displayName;
+          }
+        }
+      } catch (_) {
+        // Profile lookup failed, continue without avatar
+      }
+
+      if (!mounted) return;
+
       setState(() {
         _isSearching = false;
         _foundFingerprint = fingerprint;
         _foundName = displayName;
+        _foundAvatarBytes = avatarBytes;
       });
 
     } catch (e) {
@@ -571,12 +591,10 @@ class _AddContactDialogState extends ConsumerState<_AddContactDialog> {
                 ),
                 child: Row(
                   children: [
-                    CircleAvatar(
-                      backgroundColor: theme.colorScheme.primary.withAlpha(51),
-                      child: Icon(
-                        Icons.person,
-                        color: theme.colorScheme.primary,
-                      ),
+                    _ContactAvatar(
+                      avatarBytes: _foundAvatarBytes,
+                      displayName: _foundName ?? '?',
+                      theme: theme,
                     ),
                     const SizedBox(width: 12),
                     Expanded(
