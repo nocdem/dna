@@ -514,10 +514,15 @@ build:windows:
     - copy C:\tools\msys64\mingw64\bin\*.dll dist\flutter-windows\
     # Check artifact size
     - powershell -Command "(Get-ChildItem -Path dist\flutter-windows -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB"
+    # Build Windows installer with Inno Setup
+    - powershell -Command "if (!(Test-Path 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe')) { Write-Host 'Downloading Inno Setup...'; Invoke-WebRequest -Uri 'https://jrsoftware.org/download.php/is.exe' -OutFile 'innosetup.exe'; Start-Process -Wait -FilePath '.\innosetup.exe' -ArgumentList '/VERYSILENT /SUPPRESSMSGBOXES /NORESTART' }"
+    - '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" /DMyAppVersion="${CI_COMMIT_SHORT_SHA}" scripts\installer.iss'
+    - move dist\dna-messenger-setup.exe dist\dna-messenger-setup-${CI_COMMIT_SHORT_SHA}.exe
   artifacts:
     name: "dna-messenger-windows-${CI_COMMIT_SHORT_SHA}"
     paths:
       - dist/flutter-windows/
+      - dist/dna-messenger-setup-*.exe
     expire_in: 1 day
   allow_failure: true
   rules:
