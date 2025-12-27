@@ -33,7 +33,7 @@ int dna_config_load(dna_config_t *config) {
     FILE *f = fopen(config_path, "r");
     if (!f) {
         // Default config if file doesn't exist
-        strcpy(config->log_level, "WARN");
+        strcpy(config->log_level, "DEBUG");
         config->log_tags[0] = '\0';  // Empty = show all
 
         // Default bootstrap nodes
@@ -98,7 +98,7 @@ int dna_config_load(dna_config_t *config) {
 
     // Set defaults if not in config
     if (config->log_level[0] == '\0') {
-        strcpy(config->log_level, "WARN");
+        strcpy(config->log_level, "DEBUG");
     }
 
     // Default bootstrap nodes if none specified
@@ -162,7 +162,7 @@ void dna_config_apply_log_settings(const dna_config_t *config) {
     }
 
     // Set log level
-    qgp_log_level_t level = QGP_LOG_LEVEL_WARN;  // default
+    qgp_log_level_t level = QGP_LOG_LEVEL_DEBUG;  // default
     if (strcmp(config->log_level, "DEBUG") == 0) {
         level = QGP_LOG_LEVEL_DEBUG;
     } else if (strcmp(config->log_level, "INFO") == 0) {

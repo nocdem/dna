@@ -376,12 +376,14 @@ int dht_queue_message(
 
     // Lock to prevent race conditions when multiple messages are sent quickly
     // Without this, parallel sends can overwrite each other's queue updates
+    QGP_LOG_DEBUG(LOG_TAG, "Waiting for queue mutex (seq=%lu)...", (unsigned long)seq_num);
     pthread_mutex_lock(&g_queue_mutex);
+    QGP_LOG_DEBUG(LOG_TAG, "Acquired queue mutex (seq=%lu)", (unsigned long)seq_num);
 
     struct timespec queue_start, get_start, deserialize_start, serialize_start, put_start;
     clock_gettime(CLOCK_MONOTONIC, &queue_start);
 
-    QGP_LOG_INFO(LOG_TAG, "Queueing message from %s to %s (%zu bytes, seq=%lu, TTL=%u)\n",
+    QGP_LOG_INFO(LOG_TAG, "Queueing message from %.16s... to %.16s... (%zu bytes, seq=%lu, TTL=%u)",
            sender, recipient, ciphertext_len, (unsigned long)seq_num, ttl_seconds);
 
     // Generate sender's outbox base key (Spillway)
