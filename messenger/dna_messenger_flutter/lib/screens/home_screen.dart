@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/providers.dart';
+import '../providers/event_handler.dart';
 import '../theme/dna_theme.dart';
 import 'identity/identity_selection_screen.dart';
 // Feed disabled - will be reimplemented in the future
@@ -110,7 +111,50 @@ class _NavigationDrawer extends ConsumerWidget {
           selectedIcon: Icon(Icons.settings),
           label: Text('Settings'),
         ),
+        // Spacer to push status to bottom
+        const Spacer(),
+        // DHT Connection Status
+        const _DhtStatusIndicator(),
+        const SizedBox(height: 16),
       ],
+    );
+  }
+}
+
+// =============================================================================
+// DHT STATUS INDICATOR
+// =============================================================================
+
+class _DhtStatusIndicator extends ConsumerWidget {
+  const _DhtStatusIndicator();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final dhtState = ref.watch(dhtConnectionStateProvider);
+
+    final (String text, Color color, IconData icon) = switch (dhtState) {
+      DhtConnectionState.connected => ('DHT Connected', Colors.green, Icons.cloud_done),
+      DhtConnectionState.connecting => ('DHT Connecting', Colors.orange, Icons.cloud_sync),
+      DhtConnectionState.disconnected => ('DHT Disconnected', Colors.red, Icons.cloud_off),
+    };
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 16, color: color),
+          const SizedBox(width: 8),
+          Text(
+            text,
+            style: TextStyle(
+              color: color,
+              fontSize: 12,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
