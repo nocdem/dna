@@ -120,13 +120,19 @@ int dht_keyserver_lookup(
     int sig_result = qgp_dsa87_verify(identity->signature, sizeof(identity->signature),
                                        (uint8_t*)json_unsigned, strlen(json_unsigned),
                                        identity->dilithium_pubkey);
-    free(json_unsigned);
 
     if (sig_result != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Signature verification failed\n");
+        QGP_LOG_ERROR(LOG_TAG, "Signature verification failed for identity: name=%s, fp=%.16s...\n",
+                      identity->has_registered_name ? identity->registered_name : "(none)",
+                      identity->fingerprint);
+        QGP_LOG_DEBUG(LOG_TAG, "Verification details: json_len=%zu, sig_result=%d, version=%u\n",
+                      strlen(json_unsigned), sig_result, identity->version);
+        QGP_LOG_DEBUG(LOG_TAG, "Possible causes: 1) Corrupted data in DHT, 2) Key rotation in progress, 3) Different signing format\n");
+        free(json_unsigned);
         dna_identity_free(identity);
         return -3;
     }
+    free(json_unsigned);
 
     // Verify fingerprint matches pubkey
     char computed_fingerprint[129];

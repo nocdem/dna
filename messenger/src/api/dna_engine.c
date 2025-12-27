@@ -141,10 +141,15 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
 
     dna_event_t event = {0};
     if (is_connected) {
-        QGP_LOG_INFO(LOG_TAG, "DHT connected");
+        QGP_LOG_INFO(LOG_TAG, "DHT connected (bootstrap complete, ready for operations)");
         event.type = DNA_EVENT_DHT_CONNECTED;
     } else {
-        QGP_LOG_WARN(LOG_TAG, "DHT disconnected");
+        /* DHT disconnection can happen during:
+         * 1. Initial bootstrap (network not ready yet)
+         * 2. Network interface changes (WiFi->mobile, etc.)
+         * 3. All bootstrap nodes unreachable
+         * The DHT will automatically attempt to reconnect */
+        QGP_LOG_WARN(LOG_TAG, "DHT disconnected (will auto-reconnect when network available)");
         event.type = DNA_EVENT_DHT_DISCONNECTED;
     }
     dna_dispatch_event(engine, &event);

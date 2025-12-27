@@ -52,6 +52,7 @@
 
 /**
  * Custom libjuice log handler - redirects to QGP_LOG format
+ * Adds context for common error codes to aid debugging
  */
 static void juice_log_handler(juice_log_level_t level, const char *message) {
     // Strip trailing newline if present (QGP_LOG adds its own)
@@ -66,20 +67,37 @@ static void juice_log_handler(juice_log_level_t level, const char *message) {
         }
     }
 
+    /* Add context for common errno values in libjuice messages */
+    const char *context = "";
+    if (strstr(msg, "errno=101")) {
+        context = " [ENETUNREACH: No route to host - IPv6 or network unavailable]";
+    } else if (strstr(msg, "errno=111")) {
+        context = " [ECONNREFUSED: Connection refused by peer]";
+    } else if (strstr(msg, "errno=110")) {
+        context = " [ETIMEDOUT: Connection timed out]";
+    } else if (strstr(msg, "errno=113")) {
+        context = " [EHOSTUNREACH: No route to host]";
+    }
+
     switch (level) {
         case JUICE_LOG_LEVEL_VERBOSE:
         case JUICE_LOG_LEVEL_DEBUG:
-            QGP_LOG_DEBUG("ICE", "%s", msg);
+            QGP_LOG_DEBUG("ICE", "%s%s", msg, context);
             break;
         case JUICE_LOG_LEVEL_INFO:
-            QGP_LOG_INFO("ICE", "%s", msg);
+            QGP_LOG_INFO("ICE", "%s%s", msg, context);
             break;
         case JUICE_LOG_LEVEL_WARN:
-            QGP_LOG_WARN("ICE", "%s", msg);
+            /* Downgrade common transient errors to DEBUG to reduce noise */
+            if (strstr(msg, "errno=101") || strstr(msg, "errno=111")) {
+                QGP_LOG_DEBUG("ICE", "%s%s", msg, context);
+            } else {
+                QGP_LOG_WARN("ICE", "%s%s", msg, context);
+            }
             break;
         case JUICE_LOG_LEVEL_ERROR:
         case JUICE_LOG_LEVEL_FATAL:
-            QGP_LOG_ERROR("ICE", "%s", msg);
+            QGP_LOG_ERROR("ICE", "%s%s", msg, context);
             break;
         default:
             break;
