@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import 'engine_provider.dart';
+import 'contacts_provider.dart';
 
 /// Contact requests list provider
 final contactRequestsProvider =
@@ -20,6 +21,9 @@ class ContactRequestsNotifier extends AsyncNotifier<List<ContactRequest>> {
 
     final engine = await ref.watch(engineProvider.future);
     final requests = await engine.getContactRequests();
+
+    // Refresh contacts - reciprocal requests may have been auto-approved
+    ref.invalidate(contactsProvider);
 
     // Sort by requested_at (most recent first)
     requests.sort((a, b) => b.requestedAt.compareTo(a.requestedAt));

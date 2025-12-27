@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-27 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** App v0.2.43 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** App v0.2.45 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -361,6 +361,11 @@ Short summary (<50 chars)
 Details: what/why/breaking
 
 ```
+
+**CI Build Trigger:**
+- CI only runs when commit message contains `[BUILD]` or when triggered manually via web
+- When user asks for a "build commit", include `[BUILD]` in the commit message
+- Example: `feat: Add presence refresh (v0.2.45) [BUILD]`
 
 ---
 

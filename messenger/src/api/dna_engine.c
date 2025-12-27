@@ -1890,7 +1890,26 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
             /* Store new requests in local database */
             for (size_t i = 0; i < dht_count; i++) {
                 /* Skip if blocked */
-                if (!contacts_db_is_blocked(dht_requests[i].sender_fingerprint)) {
+                if (contacts_db_is_blocked(dht_requests[i].sender_fingerprint)) {
+                    continue;
+                }
+
+                /* Auto-approve reciprocal requests (they accepted our request) */
+                if (dht_requests[i].message &&
+                    strcmp(dht_requests[i].message, "Contact request accepted") == 0) {
+                    QGP_LOG_INFO(LOG_TAG, "Auto-approving reciprocal request from %.20s...",
+                                 dht_requests[i].sender_fingerprint);
+                    /* Add directly as contact (notes = display name) */
+                    contacts_db_add(
+                        dht_requests[i].sender_fingerprint,
+                        dht_requests[i].sender_name
+                    );
+                    /* Sync to DHT */
+                    if (engine->messenger) {
+                        messenger_sync_contacts_to_dht(engine->messenger);
+                    }
+                } else {
+                    /* Regular request - add to pending */
                     contacts_db_add_incoming_request(
                         dht_requests[i].sender_fingerprint,
                         dht_requests[i].sender_name,
