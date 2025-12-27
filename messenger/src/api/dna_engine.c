@@ -71,6 +71,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "database/keyserver_cache.h"
 #include "database/profile_cache.h"
 #include "database/profile_manager.h"
+#include "database/contacts_db.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/key_encryption.h"
@@ -172,6 +173,7 @@ const char* dna_engine_error_string(int error) {
     if (error == DNA_ENGINE_ERROR_PERMISSION) return "Permission denied";
     if (error == DNA_ENGINE_ERROR_PASSWORD_REQUIRED) return "Password required for encrypted keys";
     if (error == DNA_ENGINE_ERROR_WRONG_PASSWORD) return "Incorrect password";
+    if (error == DNA_ENGINE_ERROR_INVALID_SIGNATURE) return "Profile signature verification failed (corrupted or stale DHT data)";
     /* Fall back to base dna_api.h error strings */
     if (error == DNA_ERROR_INVALID_ARG) return "Invalid argument";
     if (error == DNA_ERROR_NOT_FOUND) return "Not found";
@@ -1665,6 +1667,12 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
         if (rc == -2) {
             /* Profile not found */
             error = DNA_ENGINE_ERROR_NOT_FOUND;
+        } else if (rc == -3) {
+            /* Signature verification failed - corrupted or stale DHT data
+             * Auto-remove this contact since their profile is invalid */
+            QGP_LOG_WARN(LOG_TAG, "Invalid signature for %.16s... - auto-removing from contacts", fingerprint);
+            contacts_db_remove(fingerprint);
+            error = DNA_ENGINE_ERROR_INVALID_SIGNATURE;
         } else {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
