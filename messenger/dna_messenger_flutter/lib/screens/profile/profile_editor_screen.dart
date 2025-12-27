@@ -490,9 +490,35 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
   }
 
   Future<void> _pickAvatar(ProfileEditorNotifier notifier) async {
+    // Show bottom sheet to choose between camera and gallery
+    final source = await showModalBottomSheet<ImageSource>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.camera_alt),
+              title: const Text('Take a Selfie'),
+              onTap: () => Navigator.pop(context, ImageSource.camera),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library),
+              title: const Text('Choose from Gallery'),
+              onTap: () => Navigator.pop(context, ImageSource.gallery),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+
+    if (source == null) return;
+
     final picker = ImagePicker();
     final image = await picker.pickImage(
-      source: ImageSource.gallery,
+      source: source,
+      preferredCameraDevice: CameraDevice.front, // Front camera for selfies
     );
 
     if (image != null) {
