@@ -2163,6 +2163,13 @@ void dna_handle_send_message(dna_engine_t *engine, dna_task_t *task) {
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
+    } else {
+        /* Emit MESSAGE_SENT event so UI can update spinner */
+        dna_event_t event = {0};
+        event.type = DNA_EVENT_MESSAGE_SENT;
+        event.data.message_status.message_id = 0;  /* ID not available here */
+        event.data.message_status.new_status = 1;  /* SENT */
+        dna_dispatch_event(engine, &event);
     }
 
     /* Clear message queue slot if this was a queued message */

@@ -973,6 +973,12 @@ class DnaEngine {
           type: msgType,
         ));
         break;
+      case DnaEventType.DNA_EVENT_MESSAGE_SENT:
+        // Message was successfully sent - trigger UI refresh
+        // message_status.message_id is at offset 0 in union (4 bytes)
+        final messageId = event.data[0] | (event.data[1] << 8) | (event.data[2] << 16) | (event.data[3] << 24);
+        dartEvent = MessageSentEvent(messageId);
+        break;
       case DnaEventType.DNA_EVENT_CONTACT_ONLINE:
         // Parse fingerprint from union data
         dartEvent = ContactOnlineEvent('');
