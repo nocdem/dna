@@ -85,6 +85,7 @@ struct dht_context {
     dht_config_t config;
     bool running;
     dht_value_storage_t *storage;  // Value persistence (NULL for user nodes)
+    dht_identity_t *owned_identity;  // User-provided identity (freed on cleanup)
 
     // ValueTypes with lambda-captured context (eliminates global storage pointer)
     dht::ValueType type_7day;
@@ -342,6 +343,7 @@ extern "C" dht_context_t* dht_context_new(const dht_config_t *config) {
     try {
         auto ctx = new dht_context();
         memcpy(&ctx->config, config, sizeof(dht_config_t));
+        ctx->owned_identity = nullptr;
 
         QGP_LOG_INFO("DHT", "Created context for node: %s", config->identity);
         QGP_LOG_INFO("DHT", "Requested port: %d%s", config->port, config->port == 0 ? " (auto-assign)" : "");
@@ -497,6 +499,9 @@ extern "C" int dht_context_start_with_identity(dht_context_t *ctx, dht_identity_
         // Use provided identity instead of generating one
         dht::crypto::Identity& identity = user_identity->identity;
 
+        // Take ownership of identity for cleanup
+        ctx->owned_identity = user_identity;
+
         QGP_LOG_INFO("DHT", "Using user-provided DHT identity");
 
         // User nodes always run memory-only (no disk persistence)
@@ -555,6 +560,13 @@ extern "C" void dht_context_free(dht_context_t *ctx) {
 
     try {
         dht_context_stop(ctx);
+
+        // Free owned identity (if any)
+        if (ctx->owned_identity) {
+            delete ctx->owned_identity;
+            ctx->owned_identity = nullptr;
+        }
+
         delete ctx;
         QGP_LOG_INFO("DHT", "Context freed");
     } catch (const std::exception& e) {

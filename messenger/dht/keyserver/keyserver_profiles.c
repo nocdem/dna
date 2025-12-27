@@ -150,14 +150,6 @@ int dna_load_identity(
 
     QGP_LOG_INFO(LOG_TAG, "Loaded profile (%zu bytes), verifying...\n", value_len);
 
-    // DEBUG: Check if avatar_base64 key exists in raw JSON
-    {
-        const char *avatar_key = "\"avatar_base64\"";
-        const char *found = strstr((char*)value, avatar_key);
-        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] Raw JSON has avatar_base64 key: %s\n",
-                     found ? "YES" : "NO");
-    }
-
     // Create null-terminated copy for JSON parsing
     char *json_str = (char*)malloc(value_len + 1);
     if (!json_str) {
@@ -168,6 +160,14 @@ int dna_load_identity(
     memcpy(json_str, value, value_len);
     json_str[value_len] = '\0';
     free(value);
+
+    // DEBUG: Check if avatar_base64 key exists in raw JSON (must use null-terminated string)
+    {
+        const char *avatar_key = "\"avatar_base64\"";
+        const char *found = strstr(json_str, avatar_key);
+        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] Raw JSON has avatar_base64 key: %s\n",
+                     found ? "YES" : "NO");
+    }
 
     // Parse JSON
     dna_unified_identity_t *identity = NULL;

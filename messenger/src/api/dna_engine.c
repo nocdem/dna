@@ -1928,6 +1928,9 @@ done:
 
 void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
+    const char *fp = task->params.remove_contact.fingerprint;
+
+    QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Request to remove %.16s...\n", fp ? fp : "(null)");
 
     if (!engine->identity_loaded) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
@@ -1940,13 +1943,23 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    if (contacts_db_remove(task->params.remove_contact.fingerprint) != 0) {
+    int db_result = contacts_db_remove(fp);
+    if (db_result != 0) {
+        QGP_LOG_WARN(LOG_TAG, "REMOVE_CONTACT: contacts_db_remove failed (rc=%d) for %.16s...\n", db_result, fp);
         error = DNA_ERROR_NOT_FOUND;
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Successfully removed %.16s... from local DB\n", fp);
     }
 
     /* Sync to DHT */
     if (error == DNA_OK) {
-        messenger_sync_contacts_to_dht(engine->messenger);
+        QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Syncing updated contact list to DHT...\n");
+        int sync_result = messenger_sync_contacts_to_dht(engine->messenger);
+        if (sync_result != 0) {
+            QGP_LOG_WARN(LOG_TAG, "REMOVE_CONTACT: DHT sync failed (rc=%d) - contact may reappear on next sync!\n", sync_result);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: DHT sync successful\n");
+        }
     }
 
 done:
