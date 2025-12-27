@@ -17,10 +17,10 @@
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
-#include "crypto/utils/qgp_log.h"
-
-#define LOG_TAG "DNA_FEED"
 #endif
+
+#include "crypto/utils/qgp_log.h"
+#define LOG_TAG "DNA_VOTES"
 
 /* Dilithium5 functions */
 extern int pqcrystals_dilithium5_ref_verify(const uint8_t *sig, size_t siglen,

@@ -26,10 +26,10 @@
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
-#include "crypto/utils/qgp_log.h"
-
-#define LOG_TAG "DNA_OUTBOX"
 #endif
+
+#include "crypto/utils/qgp_log.h"
+#define LOG_TAG "DNA_OUTBOX"
 
 /* External DHT functions */
 extern int dht_put_signed(dht_context_t *ctx, const uint8_t *key, size_t key_len,
