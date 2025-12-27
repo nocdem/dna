@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-27 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** App v0.2.34 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** App v0.2.35 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -217,7 +217,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files (SINGLE SOURCE OF TRUTH):**
 | Component | Version File | Current |
 |-----------|--------------|---------|
-| App (CLI + Flutter) | `include/dna/version.h` | v0.2.34 |
+| App (CLI + Flutter) | `include/dna/version.h` | v0.2.35 |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 |
 
 **IMPORTANT:** `version.h` is the **single source of truth** for app version:

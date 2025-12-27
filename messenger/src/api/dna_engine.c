@@ -1855,12 +1855,8 @@ void dna_handle_send_contact_request(dna_engine_t *engine, dna_task_t *task) {
 
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
-    } else {
-        /* Initialize contacts database and add as pending outgoing */
-        if (contacts_db_init(engine->fingerprint) == 0) {
-            contacts_db_add(task->params.send_contact_request.recipient, "Pending contact request");
-        }
     }
+    /* Contact will be added when the recipient approves and we approve their reciprocal request */
 
 done:
     if (task->callback.completion) {
