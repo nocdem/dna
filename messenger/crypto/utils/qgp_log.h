@@ -101,6 +101,9 @@ int qgp_log_ring_count(void);
 /* Clear all entries */
 void qgp_log_ring_clear(void);
 
+/* Export ring buffer to file (returns 0 on success, -1 on error) */
+int qgp_log_export_to_file(const char *filepath);
+
 /* Internal: add entry to ring buffer (called by macros) */
 void qgp_log_ring_add(qgp_log_level_t level, const char *tag, const char *fmt, ...);
 

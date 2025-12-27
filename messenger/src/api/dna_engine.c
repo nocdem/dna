@@ -6145,3 +6145,8 @@ void dna_engine_debug_log_message(const char *tag, const char *message) {
     if (!tag || !message) return;
     qgp_log_ring_add(QGP_LOG_LEVEL_WARN, tag, "%s", message);
 }
+
+int dna_engine_debug_log_export(const char *filepath) {
+    if (!filepath) return -1;
+    return qgp_log_export_to_file(filepath);
+}

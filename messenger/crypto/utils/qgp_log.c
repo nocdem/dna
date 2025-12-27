@@ -335,3 +335,63 @@ void qgp_log_ring_clear(void) {
     g_ring_count = 0;
     pthread_mutex_unlock(&g_ring_mutex);
 }
+
+int qgp_log_export_to_file(const char *filepath) {
+    if (!filepath) {
+        return -1;
+    }
+
+    FILE *f = fopen(filepath, "w");
+    if (!f) {
+        return -1;
+    }
+
+    pthread_mutex_lock(&g_ring_mutex);
+
+    /* Write header */
+    fprintf(f, "DNA Messenger Log Export\n");
+    fprintf(f, "========================\n");
+    fprintf(f, "Entries: %d\n\n", g_ring_count);
+
+    if (g_ring_count > 0) {
+        /* Calculate start position (oldest entry) */
+        int start;
+        if (g_ring_count < QGP_LOG_RING_SIZE) {
+            start = 0;
+        } else {
+            start = g_ring_head;
+        }
+
+        /* Write entries in chronological order */
+        for (int i = 0; i < g_ring_count; i++) {
+            int idx = (start + i) % QGP_LOG_RING_SIZE;
+            qgp_log_entry_t *entry = &g_ring_buffer[idx];
+
+            /* Format timestamp */
+            time_t secs = entry->timestamp_ms / 1000;
+            int ms = entry->timestamp_ms % 1000;
+            struct tm *tm_info = localtime(&secs);
+
+            char time_buf[32];
+            strftime(time_buf, sizeof(time_buf), "%Y-%m-%d %H:%M:%S", tm_info);
+
+            /* Level string */
+            const char *level_str;
+            switch (entry->level) {
+                case QGP_LOG_LEVEL_DEBUG: level_str = "DEBUG"; break;
+                case QGP_LOG_LEVEL_INFO:  level_str = "INFO "; break;
+                case QGP_LOG_LEVEL_WARN:  level_str = "WARN "; break;
+                case QGP_LOG_LEVEL_ERROR: level_str = "ERROR"; break;
+                default: level_str = "?????"; break;
+            }
+
+            fprintf(f, "%s.%03d [%s] %s: %s\n",
+                    time_buf, ms, level_str, entry->tag, entry->message);
+        }
+    }
+
+    pthread_mutex_unlock(&g_ring_mutex);
+
+    fclose(f);
+    return 0;
+}

@@ -1,8 +1,11 @@
 // Settings Screen - App settings and profile management
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import '../../ffi/dna_engine.dart' as engine;
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
@@ -600,6 +603,50 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
     _setLogTags(newTags);
   }
 
+  Future<void> _exportLogs(BuildContext context) async {
+    final engineAsync = ref.read(engineProvider);
+
+    await engineAsync.whenData((engine) async {
+      try {
+        // Get temp directory for export file
+        final tempDir = await getTemporaryDirectory();
+        final timestamp = DateTime.now().toIso8601String().replaceAll(':', '-').split('.')[0];
+        final filepath = '${tempDir.path}/dna_messenger_logs_$timestamp.txt';
+
+        // Export logs to file
+        final success = engine.debugLogExport(filepath);
+        if (!success) {
+          if (context.mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(
+                content: const Text('Failed to export logs'),
+                backgroundColor: DnaColors.snackbarError,
+              ),
+            );
+          }
+          return;
+        }
+
+        // Share the file
+        final file = XFile(filepath);
+        await Share.shareXFiles(
+          [file],
+          subject: 'DNA Messenger Logs',
+          text: 'Debug logs from DNA Messenger',
+        );
+      } catch (e) {
+        if (context.mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Export failed: $e'),
+              backgroundColor: DnaColors.snackbarError,
+            ),
+          );
+        }
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -639,6 +686,15 @@ class _LogSettingsSectionState extends ConsumerState<_LogSettingsSection> {
                   );
                 }
               : null,
+        ),
+        // Export Logs
+        ListTile(
+          leading: const Icon(Icons.share),
+          title: const Text('Export Logs'),
+          subtitle: const Text('Share log file for debugging'),
+          trailing: const Icon(Icons.chevron_right),
+          enabled: _debugLogEnabled,
+          onTap: _debugLogEnabled ? () => _exportLogs(context) : null,
         ),
         const Divider(),
         // Log Level
