@@ -44,10 +44,47 @@
 #include <windows.h>
 #else
 #include <unistd.h>
+#endif
+
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "P2P_ICE"
-#endif
+
+/**
+ * Custom libjuice log handler - redirects to QGP_LOG format
+ */
+static void juice_log_handler(juice_log_level_t level, const char *message) {
+    // Strip trailing newline if present (QGP_LOG adds its own)
+    size_t len = message ? strlen(message) : 0;
+    char *msg = (char *)message;
+    char buf[512];
+    if (len > 0 && message[len-1] == '\n') {
+        if (len < sizeof(buf)) {
+            memcpy(buf, message, len - 1);
+            buf[len - 1] = '\0';
+            msg = buf;
+        }
+    }
+
+    switch (level) {
+        case JUICE_LOG_LEVEL_VERBOSE:
+        case JUICE_LOG_LEVEL_DEBUG:
+            QGP_LOG_DEBUG("ICE", "%s", msg);
+            break;
+        case JUICE_LOG_LEVEL_INFO:
+            QGP_LOG_INFO("ICE", "%s", msg);
+            break;
+        case JUICE_LOG_LEVEL_WARN:
+            QGP_LOG_WARN("ICE", "%s", msg);
+            break;
+        case JUICE_LOG_LEVEL_ERROR:
+        case JUICE_LOG_LEVEL_FATAL:
+            QGP_LOG_ERROR("ICE", "%s", msg);
+            break;
+        default:
+            break;
+    }
+}
 
 #define MAX_CANDIDATES_SIZE 4096
 #define MAX_MESSAGE_QUEUE_SIZE 16  // Maximum number of queued messages
@@ -505,8 +542,9 @@ int ice_gather_candidates(ice_context_t *ctx, const char *stun_server, uint16_t 
         return -1;
     }
 
-    // Set log level to DEBUG temporarily to diagnose connectivity issues
+    // Set log level and custom handler for consistent QGP_LOG format
     juice_set_log_level(JUICE_LOG_LEVEL_DEBUG);
+    juice_set_log_handler(juice_log_handler);
 
     QGP_LOG_INFO(LOG_TAG, "libjuice agent created%s\n",
            ctx->turn_enabled ? " (with TURN)" : "");
