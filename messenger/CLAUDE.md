@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-27 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** App v0.2.45 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** App v0.2.48 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -221,17 +221,19 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 ### CHECKPOINT 8: VERSION UPDATE (MANDATORY ON EVERY PUSH)
 **EVERY successful build that will be pushed MUST increment the version.**
 
-**Version Files (SINGLE SOURCE OF TRUTH):**
+**Version Files:**
 | Component | Version File | Current |
 |-----------|--------------|---------|
-| App (CLI + Flutter) | `include/dna/version.h` | v0.2.39 |
+| App (CLI + C lib) | `include/dna/version.h` | v0.2.48 |
+| Flutter/Android | `dna_messenger_flutter/pubspec.yaml` | v0.2.48+248 |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 |
 
-**IMPORTANT:** `version.h` is the **single source of truth** for app version:
-- CLI reads it directly via `#include <dna/version.h>`
-- Flutter reads it via `dna_engine_get_version()` FFI call
-- C library exports it via `dna_engine_get_version()`
-- **Only edit `version.h`** - all components read from it automatically
+**IMPORTANT:** Keep versions in sync:
+- `version.h` - C library and CLI version (e.g., `0.2.47`)
+- `pubspec.yaml` - Flutter version, format: `0.2.47+247` (version+versionCode)
+  - versionCode = MAJOR*10000 + MINOR*100 + PATCH (e.g., 0*10000 + 2*100 + 47 = 247)
+- Flutter reads native version via `dna_engine_get_version()` FFI call
+- Android APK uses pubspec.yaml version for Play Store
 
 **When to Bump Which Component:**
 - **App version**: Any changes to CLI, Flutter, dna_lib, p2p, dht client code
@@ -248,13 +250,17 @@ When changes are made to ANY of the following topics, I MUST update the relevant
    ```c
    #define DNA_VERSION_MAJOR 0
    #define DNA_VERSION_MINOR 2
-   #define DNA_VERSION_PATCH 6
-   #define DNA_VERSION_STRING "0.2.6"
+   #define DNA_VERSION_PATCH 47
+   #define DNA_VERSION_STRING "0.2.47"
    ```
-3. **UPDATE** the "Current" column in CLAUDE.md (this section)
-4. **UPDATE** the version in CLAUDE.md header line
-5. **COMMIT** with version in commit message
-6. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
+3. **BUMP** version in `dna_messenger_flutter/pubspec.yaml`:
+   ```yaml
+   version: 0.2.47+247
+   ```
+4. **UPDATE** the "Current" column in CLAUDE.md (this section)
+5. **UPDATE** the version in CLAUDE.md header line
+6. **COMMIT** with version in commit message
+7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
 **IMPORTANT:** Never push code changes without bumping version. This ensures deployed servers always show correct version.
 

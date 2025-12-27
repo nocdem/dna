@@ -2211,6 +2211,13 @@ void dna_engine_debug_log_clear(void);
  */
 void dna_engine_debug_log_message(const char *tag, const char *message);
 
+/**
+ * Export debug logs to a file
+ * @param filepath Path to write log file
+ * @return 0 on success, -1 on error
+ */
+int dna_engine_debug_log_export(const char *filepath);
+
 #ifdef __cplusplus
 }
 #endif

@@ -3638,6 +3638,12 @@ class DnaEngine {
     _bindings.dna_engine_debug_log_message(tag, message);
   }
 
+  /// Export debug logs to a file
+  /// Returns true on success, false on error
+  bool debugLogExport(String filepath) {
+    return _bindings.dna_engine_debug_log_export(filepath) == 0;
+  }
+
   // ---------------------------------------------------------------------------
   // CLEANUP
   // ---------------------------------------------------------------------------

@@ -2258,6 +2258,17 @@ class DnaBindings {
     malloc.free(tagPtr);
     malloc.free(msgPtr);
   }
+
+  late final _dna_engine_debug_log_export = _lib.lookupFunction<
+      Int32 Function(Pointer<Utf8>),
+      int Function(Pointer<Utf8>)>('dna_engine_debug_log_export');
+
+  int dna_engine_debug_log_export(String filepath) {
+    final pathPtr = filepath.toNativeUtf8();
+    final result = _dna_engine_debug_log_export(pathPtr);
+    malloc.free(pathPtr);
+    return result;
+  }
 }
 
 // =============================================================================
