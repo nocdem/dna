@@ -33,8 +33,11 @@
 #include <pthread.h>
 #include <time.h>
 
-// Platform-specific headers for home directory detection
-#ifndef _WIN32
+// Platform-specific headers
+#ifdef _WIN32
+#include <windows.h>
+#define sleep(s) Sleep((s) * 1000)
+#else
 #include <unistd.h>
 #include <pwd.h>
 #include <sys/types.h>

@@ -12,6 +12,7 @@
 #include "../crypto/utils/qgp_random.h"
 #include "../crypto/utils/qgp_kyber.h"
 #include "../crypto/utils/qgp_dilithium.h"
+#include "../crypto/utils/qgp_log.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,10 +20,9 @@
 #include <winsock2.h>
 #else
 #include <arpa/inet.h>
-#include "crypto/utils/qgp_log.h"
+#endif
 
 #define LOG_TAG "MSG_GSK"
-#endif
 
 /**
  * Calculate expected packet size
