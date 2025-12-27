@@ -871,30 +871,17 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         }
         key_hex_debug[40] = '\0';
 
-        // CRITICAL FIX: Use promise/future to wait for DHT publish to complete
-        // Without this, concurrent sends race and overwrite each other's queue updates
-        // because the next fetch happens before the previous publish propagates.
-        std::promise<bool> put_promise;
-        std::future<bool> put_future = put_promise.get_future();
-
+        // Fire-and-forget publish - don't block on network confirmation
+        // Race conditions prevented by local outbox cache in dht_queue_message
         ctx->runner.putSigned(hash, dht_value,
-                             [key_hex_debug, &put_promise](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
+                             [key_hex_debug](bool success, const std::vector<std::shared_ptr<dht::Node>>& nodes){
                                  if (success) {
-                                     QGP_LOG_INFO("DHT", "PUT_SIGNED: Stored/updated on %zu remote node(s)", nodes.size());
+                                     QGP_LOG_DEBUG("DHT", "PUT_SIGNED: Stored on %zu node(s)", nodes.size());
                                  } else {
-                                     QGP_LOG_INFO("DHT", "PUT_SIGNED: Failed to store on any node");
-                                     QGP_LOG_DEBUG("DHT", "Failed PUT key: %s...", key_hex_debug);
+                                     QGP_LOG_WARN("DHT", "PUT_SIGNED: Failed to store on any node (key=%s...)", key_hex_debug);
                                  }
-                                 put_promise.set_value(success);
                              },
                              true);  // permanent=true for maintain_storage behavior
-
-        // Wait for DHT publish to complete (max 30 seconds timeout)
-        auto status = put_future.wait_for(std::chrono::seconds(30));
-        if (status == std::future_status::timeout) {
-            QGP_LOG_WARN("DHT", "PUT_SIGNED: Timeout waiting for DHT publish");
-            // Continue anyway - value may still be stored
-        }
 
         // Store value to persistent storage (if enabled)
         persist_value_if_enabled(ctx, key, key_len, value, value_len, dht_value->type, ttl_seconds);

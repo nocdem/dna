@@ -17,6 +17,99 @@
 // Prevents race conditions when sending multiple messages quickly
 static pthread_mutex_t g_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+// ============================================================================
+// LOCAL OUTBOX CACHE
+// ============================================================================
+// Caches outbox messages in memory to avoid network fetch on every send.
+// Protected by g_queue_mutex. Entries expire after 60 seconds.
+
+#define OUTBOX_CACHE_MAX_ENTRIES 32
+#define OUTBOX_CACHE_TTL_SECONDS 60
+
+typedef struct {
+    char base_key[512];                  // Outbox key (sender:outbox:recipient)
+    dht_offline_message_t *messages;     // Cached messages (owned)
+    size_t count;                        // Number of messages
+    time_t last_update;                  // When cache was last updated
+    bool valid;                          // True if entry is in use
+} outbox_cache_entry_t;
+
+static outbox_cache_entry_t g_outbox_cache[OUTBOX_CACHE_MAX_ENTRIES];
+static bool g_cache_initialized = false;
+
+static void outbox_cache_init(void) {
+    if (g_cache_initialized) return;
+    memset(g_outbox_cache, 0, sizeof(g_outbox_cache));
+    g_cache_initialized = true;
+}
+
+// Find cache entry for key (returns NULL if not found or expired)
+static outbox_cache_entry_t *outbox_cache_find(const char *base_key) {
+    outbox_cache_init();
+    time_t now = time(NULL);
+
+    for (int i = 0; i < OUTBOX_CACHE_MAX_ENTRIES; i++) {
+        if (g_outbox_cache[i].valid &&
+            strcmp(g_outbox_cache[i].base_key, base_key) == 0) {
+            // Check if expired
+            if (now - g_outbox_cache[i].last_update > OUTBOX_CACHE_TTL_SECONDS) {
+                // Expired - invalidate and return NULL
+                if (g_outbox_cache[i].messages) {
+                    dht_offline_messages_free(g_outbox_cache[i].messages, g_outbox_cache[i].count);
+                }
+                g_outbox_cache[i].valid = false;
+                return NULL;
+            }
+            return &g_outbox_cache[i];
+        }
+    }
+    return NULL;
+}
+
+// Store messages in cache (takes ownership of messages array)
+static void outbox_cache_store(const char *base_key, dht_offline_message_t *messages, size_t count) {
+    outbox_cache_init();
+
+    // Find existing entry or empty slot
+    outbox_cache_entry_t *entry = NULL;
+    int oldest_idx = 0;
+    time_t oldest_time = time(NULL);
+
+    for (int i = 0; i < OUTBOX_CACHE_MAX_ENTRIES; i++) {
+        if (g_outbox_cache[i].valid && strcmp(g_outbox_cache[i].base_key, base_key) == 0) {
+            // Found existing - free old data
+            if (g_outbox_cache[i].messages) {
+                dht_offline_messages_free(g_outbox_cache[i].messages, g_outbox_cache[i].count);
+            }
+            entry = &g_outbox_cache[i];
+            break;
+        }
+        if (!g_outbox_cache[i].valid) {
+            entry = &g_outbox_cache[i];
+            break;
+        }
+        if (g_outbox_cache[i].last_update < oldest_time) {
+            oldest_time = g_outbox_cache[i].last_update;
+            oldest_idx = i;
+        }
+    }
+
+    // If no slot found, evict oldest
+    if (!entry) {
+        entry = &g_outbox_cache[oldest_idx];
+        if (entry->messages) {
+            dht_offline_messages_free(entry->messages, entry->count);
+        }
+    }
+
+    strncpy(entry->base_key, base_key, sizeof(entry->base_key) - 1);
+    entry->base_key[sizeof(entry->base_key) - 1] = '\0';
+    entry->messages = messages;
+    entry->count = count;
+    entry->last_update = time(NULL);
+    entry->valid = true;
+}
+
 // Platform-specific network byte order functions
 #ifdef _WIN32
     #include <winsock2.h>  // For htonl/ntohl on Windows
@@ -397,37 +490,62 @@ int dht_queue_message(
     dht_get_watermark(ctx, recipient, sender, &watermark_seq);
     QGP_LOG_INFO(LOG_TAG, "Recipient watermark: seq=%lu\n", (unsigned long)watermark_seq);
 
-    // 2. Try to retrieve existing queue via chunked layer
-    uint8_t *existing_data = NULL;
-    size_t existing_len = 0;
+    // 2. Try to get existing queue from LOCAL CACHE first (fast!)
+    //    Only fetch from DHT network if cache miss (slow, but only once per recipient)
     dht_offline_message_t *existing_messages = NULL;
     size_t existing_count = 0;
+    long get_ms = 0;
 
-    QGP_LOG_INFO(LOG_TAG, "→ DHT CHUNKED_FETCH: Checking existing offline queue\n");
-
-    clock_gettime(CLOCK_MONOTONIC, &get_start);
-    int get_result = dht_chunked_fetch(ctx, base_key, &existing_data, &existing_len);
-    struct timespec get_end;
-    clock_gettime(CLOCK_MONOTONIC, &get_end);
-    long get_ms = (get_end.tv_sec - get_start.tv_sec) * 1000 +
-                  (get_end.tv_nsec - get_start.tv_nsec) / 1000000;
-
-    if (get_result == DHT_CHUNK_OK && existing_data && existing_len > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Found existing queue (%zu bytes, get took %ld ms)\n", existing_len, get_ms);
-
-        clock_gettime(CLOCK_MONOTONIC, &deserialize_start);
-        if (dht_deserialize_messages(existing_data, existing_len, &existing_messages, &existing_count) == 0) {
-            struct timespec deserialize_end;
-            clock_gettime(CLOCK_MONOTONIC, &deserialize_end);
-            long deserialize_ms = (deserialize_end.tv_sec - deserialize_start.tv_sec) * 1000 +
-                                  (deserialize_end.tv_nsec - deserialize_start.tv_nsec) / 1000000;
-            QGP_LOG_INFO(LOG_TAG, "Existing queue has %zu messages (deserialize took %ld ms)\n",
-                   existing_count, deserialize_ms);
+    outbox_cache_entry_t *cache_entry = outbox_cache_find(base_key);
+    if (cache_entry && cache_entry->count > 0) {
+        // CACHE HIT - copy messages from cache (fast!)
+        QGP_LOG_DEBUG(LOG_TAG, "Cache HIT: %zu messages in local cache", cache_entry->count);
+        existing_count = cache_entry->count;
+        existing_messages = (dht_offline_message_t*)calloc(existing_count, sizeof(dht_offline_message_t));
+        if (existing_messages) {
+            for (size_t i = 0; i < existing_count; i++) {
+                existing_messages[i].seq_num = cache_entry->messages[i].seq_num;
+                existing_messages[i].timestamp = cache_entry->messages[i].timestamp;
+                existing_messages[i].expiry = cache_entry->messages[i].expiry;
+                existing_messages[i].sender = strdup(cache_entry->messages[i].sender);
+                existing_messages[i].recipient = strdup(cache_entry->messages[i].recipient);
+                existing_messages[i].ciphertext_len = cache_entry->messages[i].ciphertext_len;
+                existing_messages[i].ciphertext = (uint8_t*)malloc(cache_entry->messages[i].ciphertext_len);
+                if (existing_messages[i].ciphertext) {
+                    memcpy(existing_messages[i].ciphertext, cache_entry->messages[i].ciphertext,
+                           cache_entry->messages[i].ciphertext_len);
+                }
+            }
         }
-
-        free(existing_data);
+        get_ms = 0;  // Instant from cache
     } else {
-        QGP_LOG_INFO(LOG_TAG, "No existing queue found, creating new (get took %ld ms)\n", get_ms);
+        // CACHE MISS - fetch from DHT network (slow, but only once)
+        QGP_LOG_DEBUG(LOG_TAG, "Cache MISS: fetching from DHT network...");
+        uint8_t *existing_data = NULL;
+        size_t existing_len = 0;
+
+        clock_gettime(CLOCK_MONOTONIC, &get_start);
+        int get_result = dht_chunked_fetch(ctx, base_key, &existing_data, &existing_len);
+        struct timespec get_end;
+        clock_gettime(CLOCK_MONOTONIC, &get_end);
+        get_ms = (get_end.tv_sec - get_start.tv_sec) * 1000 +
+                      (get_end.tv_nsec - get_start.tv_nsec) / 1000000;
+
+        if (get_result == DHT_CHUNK_OK && existing_data && existing_len > 0) {
+            QGP_LOG_INFO(LOG_TAG, "DHT fetch: %zu bytes in %ld ms", existing_len, get_ms);
+
+            clock_gettime(CLOCK_MONOTONIC, &deserialize_start);
+            if (dht_deserialize_messages(existing_data, existing_len, &existing_messages, &existing_count) == 0) {
+                struct timespec deserialize_end;
+                clock_gettime(CLOCK_MONOTONIC, &deserialize_end);
+                long deserialize_ms = (deserialize_end.tv_sec - deserialize_start.tv_sec) * 1000 +
+                                      (deserialize_end.tv_nsec - deserialize_start.tv_nsec) / 1000000;
+                QGP_LOG_DEBUG(LOG_TAG, "Deserialized %zu messages in %ld ms", existing_count, deserialize_ms);
+            }
+            free(existing_data);
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "No existing queue in DHT (fetch took %ld ms)", get_ms);
+        }
     }
 
     // 3. Prune messages where seq_num <= watermark (already delivered)
@@ -545,14 +663,17 @@ int dht_queue_message(
                   (put_end.tv_nsec - put_start.tv_nsec) / 1000000;
 
     free(serialized);
-    dht_offline_messages_free(all_messages, new_count);
 
     if (put_result != DHT_CHUNK_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to store queue in DHT: %s (put took %ld ms)\n",
                 dht_chunked_strerror(put_result), put_ms);
+        dht_offline_messages_free(all_messages, new_count);
         pthread_mutex_unlock(&g_queue_mutex);
         return -1;
     }
+
+    // Success - update local cache with new queue (takes ownership of all_messages)
+    outbox_cache_store(base_key, all_messages, new_count);
 
     struct timespec queue_end;
     clock_gettime(CLOCK_MONOTONIC, &queue_end);
