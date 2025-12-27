@@ -4,8 +4,13 @@
 
 workflow:
   rules:
+    # Run when triggered from GitLab web UI
     - if: $CI_PIPELINE_SOURCE == "web"
       when: always
+    # Run when commit message contains [BUILD]
+    - if: $CI_COMMIT_MESSAGE =~ /\[BUILD\]/
+      when: always
+    # Otherwise skip
     - when: never
 
 stages:
