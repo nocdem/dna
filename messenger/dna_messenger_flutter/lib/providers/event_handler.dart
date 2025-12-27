@@ -6,6 +6,7 @@ import 'engine_provider.dart';
 import 'contacts_provider.dart';
 import 'messages_provider.dart';
 import 'groups_provider.dart';
+import 'contact_requests_provider.dart';
 
 /// Connection state for DHT
 enum DhtConnectionState { disconnected, connecting, connected }
@@ -39,6 +40,7 @@ class EventHandler {
   final Ref _ref;
   StreamSubscription<DnaEvent>? _subscription;
   Timer? _refreshTimer;
+  Timer? _contactRequestsTimer;
 
   EventHandler(this._ref);
 
@@ -57,10 +59,17 @@ class EventHandler {
             DhtConnectionState.connected;
         // Refresh contacts when DHT connects
         _ref.invalidate(contactsProvider);
+        // Refresh contact requests when DHT connects
+        _ref.invalidate(contactRequestsProvider);
+        // Start periodic contact request polling (every 60 seconds)
+        _startContactRequestsPolling();
 
       case DhtDisconnectedEvent():
         _ref.read(dhtConnectionStateProvider.notifier).state =
             DhtConnectionState.disconnected;
+        // Stop polling when disconnected
+        _contactRequestsTimer?.cancel();
+        _contactRequestsTimer = null;
 
       case ContactOnlineEvent(fingerprint: final fp):
         _ref.read(contactsProvider.notifier).updateContactStatus(fp, true);
@@ -123,6 +132,7 @@ class EventHandler {
         _ref.invalidate(contactsProvider);
         _ref.invalidate(groupsProvider);
         _ref.invalidate(invitationsProvider);
+        _ref.invalidate(contactRequestsProvider);
         break;
 
       case OutboxUpdatedEvent(contactFingerprint: final contactFp):
@@ -164,9 +174,18 @@ class EventHandler {
     });
   }
 
+  /// Start periodic polling for contact requests (every 60 seconds)
+  void _startContactRequestsPolling() {
+    _contactRequestsTimer?.cancel();
+    _contactRequestsTimer = Timer.periodic(const Duration(seconds: 60), (_) {
+      _ref.invalidate(contactRequestsProvider);
+    });
+  }
+
   void dispose() {
     _subscription?.cancel();
     _refreshTimer?.cancel();
+    _contactRequestsTimer?.cancel();
   }
 }
 
