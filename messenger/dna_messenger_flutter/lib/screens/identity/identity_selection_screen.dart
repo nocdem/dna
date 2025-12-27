@@ -728,18 +728,13 @@ class _CreateIdentityScreenState extends ConsumerState<CreateIdentityScreen> {
     await Future.delayed(Duration.zero);
 
     try {
-      // Create identity from mnemonic (local keys only)
+      // Create identity from mnemonic (creates keys + registers name on DHT)
       final nickname = _nicknameController.text.trim();
       final fingerprint = await ref.read(identitiesProvider.notifier)
           .createIdentityFromMnemonic(nickname, _mnemonic);
 
-      // Load the identity (required before DHT operations)
+      // Load the identity
       await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
-
-      // Register name on DHT (publishes identity with name)
-      if (nickname.isNotEmpty) {
-        await ref.read(identitiesProvider.notifier).registerName(nickname);
-      }
 
       if (mounted) {
         Navigator.of(context).popUntil((route) => route.isFirst);
