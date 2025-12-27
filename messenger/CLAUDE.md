@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-27 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** App v0.2.39 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** App v0.2.40 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -13,6 +13,13 @@ NO DUMMY DATA
 Source of truth is the sourcecode and documentation
 Always ask user what to do if unsure
 Anything against protocol mode breaks the blockchain / encryption.
+
+## BUG TRACKING
+**ALWAYS check `BUGS.md`** at the start of a session for open bugs to fix.
+- Open bugs are marked with `- [ ]`
+- Fixed bugs are marked with `- [x]` and include version number
+- Add new bugs reported by user to the Open Bugs section
+- Mark bugs as fixed with version number when resolved
 
 ## LOGGING STANDARD
 When adding debug/logging to C code, ALWAYS use QGP_LOG macros:
