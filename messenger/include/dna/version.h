@@ -10,9 +10,9 @@
 
 #define DNA_VERSION_MAJOR 0
 #define DNA_VERSION_MINOR 2
-#define DNA_VERSION_PATCH 50
+#define DNA_VERSION_PATCH 51
 
-#define DNA_VERSION_STRING "0.2.50"
+#define DNA_VERSION_STRING "0.2.51"
 
 /* Build info (set by CMake) */
 #ifndef BUILD_HASH

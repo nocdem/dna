@@ -400,7 +400,12 @@ int blockchain_list_wallets(
             count++;
         }
     }
-    rewinddir(dir);
+    /* Reopen directory (rewinddir not available on Windows) */
+    closedir(dir);
+    dir = opendir(wallet_dir);
+    if (!dir) {
+        return -1;
+    }
 
     /* Allocate list */
     blockchain_wallet_list_t *list = calloc(1, sizeof(blockchain_wallet_list_t));
