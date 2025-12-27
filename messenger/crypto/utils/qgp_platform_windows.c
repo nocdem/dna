@@ -216,4 +216,98 @@ const char* qgp_platform_ca_bundle_path(void) {
     return NULL;
 }
 
+/* ============================================================================
+ * App Directory Management (Windows Implementation)
+ * ============================================================================ */
+
+/* Static storage for app directories (set via qgp_platform_set_app_dirs) */
+static char g_app_data_dir[MAX_PATH] = {0};
+static char g_app_cache_dir[MAX_PATH] = {0};
+static int g_dirs_initialized = 0;
+
+const char* qgp_platform_app_data_dir(void) {
+    /* If already set via qgp_platform_set_app_dirs, return that */
+    if (g_dirs_initialized && g_app_data_dir[0]) {
+        return g_app_data_dir;
+    }
+
+    /* Default for Windows: %APPDATA%\DNA */
+    const char *appdata = getenv("APPDATA");
+    if (!appdata) {
+        /* Fallback to home directory */
+        const char *home = qgp_platform_home_dir();
+        if (!home) {
+            return NULL;
+        }
+        snprintf(g_app_data_dir, sizeof(g_app_data_dir), "%s\\.dna", home);
+    } else {
+        snprintf(g_app_data_dir, sizeof(g_app_data_dir), "%s\\DNA", appdata);
+    }
+
+    /* Create directory if it doesn't exist */
+    qgp_platform_mkdir(g_app_data_dir);
+
+    return g_app_data_dir;
+}
+
+const char* qgp_platform_cache_dir(void) {
+    /* If already set via qgp_platform_set_app_dirs, return that */
+    if (g_dirs_initialized && g_app_cache_dir[0]) {
+        return g_app_cache_dir;
+    }
+
+    /* Default for Windows: %LOCALAPPDATA%\DNA\cache */
+    const char *localappdata = getenv("LOCALAPPDATA");
+    if (!localappdata) {
+        /* Fallback to app data dir */
+        const char *data_dir = qgp_platform_app_data_dir();
+        if (!data_dir) {
+            return NULL;
+        }
+        snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s\\cache", data_dir);
+    } else {
+        char parent[MAX_PATH];
+        snprintf(parent, sizeof(parent), "%s\\DNA", localappdata);
+        qgp_platform_mkdir(parent);
+        snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s\\cache", parent);
+    }
+
+    /* Create cache directory */
+    qgp_platform_mkdir(g_app_cache_dir);
+
+    return g_app_cache_dir;
+}
+
+int qgp_platform_set_app_dirs(const char *data_dir, const char *cache_dir) {
+    if (!data_dir) {
+        return -1;
+    }
+
+    /* Copy data directory */
+    size_t data_len = strlen(data_dir);
+    if (data_len >= sizeof(g_app_data_dir)) {
+        return -1;  /* Path too long */
+    }
+    memcpy(g_app_data_dir, data_dir, data_len + 1);
+
+    /* Copy cache directory (or use data_dir\cache as fallback) */
+    if (cache_dir) {
+        size_t cache_len = strlen(cache_dir);
+        if (cache_len >= sizeof(g_app_cache_dir)) {
+            return -1;  /* Path too long */
+        }
+        memcpy(g_app_cache_dir, cache_dir, cache_len + 1);
+    } else {
+        snprintf(g_app_cache_dir, sizeof(g_app_cache_dir), "%s\\cache", data_dir);
+    }
+
+    g_dirs_initialized = 1;
+
+    /* Create directories if they don't exist */
+    qgp_platform_mkdir(g_app_data_dir);
+    qgp_platform_mkdir(g_app_cache_dir);
+
+    return 0;
+}
+
 #endif /* _WIN32 */
