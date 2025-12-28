@@ -23,6 +23,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Username not showing on identity selection screen - refresh identity profiles when DHT connects (v0.2.91)
 - [x] Send CPUNK fails "no Backbone wallet" - derive address from Dilithium pubkey (v0.2.89)
 - [x] DHT status always shows "Disconnected" in menu drawer - sync status on event handler init (v0.2.88)
 - [x] DHT operations during reinit - dht_singleton_get now waits for DHT to be ready (v0.2.62)

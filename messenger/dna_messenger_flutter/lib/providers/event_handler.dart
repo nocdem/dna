@@ -7,6 +7,8 @@ import 'contacts_provider.dart';
 import 'messages_provider.dart';
 import 'groups_provider.dart';
 import 'contact_requests_provider.dart';
+import 'identity_provider.dart';
+import 'identity_profile_cache_provider.dart';
 
 /// Connection state for DHT
 enum DhtConnectionState { disconnected, connecting, connected }
@@ -59,6 +61,8 @@ class EventHandler {
       // Start polling since we're connected
       _startContactRequestsPolling();
       _startPresencePolling();
+      // Refresh identity profiles (display names/avatars) now that DHT is connected
+      _refreshIdentityProfiles();
     }
   }
 
@@ -71,6 +75,9 @@ class EventHandler {
         _ref.invalidate(contactsProvider);
         // Refresh contact requests when DHT connects
         _ref.invalidate(contactRequestsProvider);
+        // Refresh identity profiles (display names/avatars) now that DHT is connected
+        // This fixes the race condition where prefetch fails on startup before DHT ready
+        _refreshIdentityProfiles();
         // Start periodic contact request polling (every 60 seconds)
         _startContactRequestsPolling();
         // Start periodic presence refresh (every 5 seconds)
@@ -208,6 +215,16 @@ class EventHandler {
         // Contact presence is updated on demand when viewing contacts
       });
     });
+  }
+
+  /// Refresh identity profiles from DHT
+  /// Called when DHT connects to fetch display names/avatars that may have
+  /// failed during startup (race condition: prefetch before DHT ready)
+  void _refreshIdentityProfiles() {
+    final identities = _ref.read(identitiesProvider).valueOrNull;
+    if (identities != null && identities.isNotEmpty) {
+      _ref.read(identityProfileCacheProvider.notifier).prefetchIdentities(identities);
+    }
   }
 
   void dispose() {
