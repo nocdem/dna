@@ -629,6 +629,7 @@ int messenger_register_name(
     (void)trx_address;  // TRX not yet in dht_keyserver_publish, but derived for future use
 
     // Publish identity to DHT (unified: creates fingerprint:profile and name:lookup)
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] keygen calling dht_keyserver_publish for new identity");
     int publish_result = dht_keyserver_publish(
         dht_ctx,
         fingerprint,

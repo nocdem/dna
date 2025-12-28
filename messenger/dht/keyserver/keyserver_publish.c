@@ -40,7 +40,7 @@ int dht_keyserver_publish(
     const char *eth_address,     // Optional - Ethereum wallet address
     const char *sol_address      // Optional - Solana wallet address
 ) {
-    QGP_LOG_INFO(LOG_TAG, "Publishing identity: name=%s, fingerprint=%.16s...\n",
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] dht_keyserver_publish called: name=%s, fp=%.16s...\n",
            name, fingerprint);
 
     // Validate required arguments
@@ -168,7 +168,7 @@ int dht_keyserver_publish(
     char profile_base_key[256];
     snprintf(profile_base_key, sizeof(profile_base_key), "%s:profile", fingerprint);
 
-    QGP_LOG_INFO(LOG_TAG, "Publishing to DHT key: %s\n", profile_base_key);
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] Publishing to DHT key: %s\n", profile_base_key);
 
     int ret = dht_chunked_publish(dht_ctx, profile_base_key,
                                   (uint8_t*)json, strlen(json),

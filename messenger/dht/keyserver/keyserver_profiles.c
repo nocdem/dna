@@ -99,8 +99,8 @@ int dna_update_profile(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    QGP_LOG_INFO(LOG_TAG, "Updating profile for fingerprint %.16s...\n", fingerprint);
-    QGP_LOG_INFO(LOG_TAG, "Base key: %s\n", base_key);
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] dna_update_profile called for %.16s...\n", fingerprint);
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] Base key: %s\n", base_key);
 
     // Store in DHT via chunked layer (permanent storage)
     ret = dht_chunked_publish(dht_ctx, base_key,
