@@ -1290,162 +1290,52 @@ done:
     task->callback.completion(task->request_id, error, task->user_data);
 }
 
-/* Helper: Update in-memory name cache */
-static void update_name_cache(dna_engine_t *engine, const char *fingerprint, const char *name) {
-    if (!name || strlen(name) == 0) return;
-    /* Only cache real names, not shortened fingerprints */
-    if (strlen(name) >= 20 && strstr(name, "...") != NULL) return;
-
-    pthread_mutex_lock(&engine->name_cache_mutex);
-    /* Check if already cached */
-    for (int i = 0; i < engine->name_cache_count; i++) {
-        if (strcmp(engine->name_cache[i].fingerprint, fingerprint) == 0) {
-            /* Update existing entry */
-            strncpy(engine->name_cache[i].display_name, name, 63);
-            pthread_mutex_unlock(&engine->name_cache_mutex);
-            return;
-        }
-    }
-    /* Add new entry */
-    if (engine->name_cache_count < DNA_NAME_CACHE_MAX) {
-        strncpy(engine->name_cache[engine->name_cache_count].fingerprint,
-                fingerprint, 128);
-        strncpy(engine->name_cache[engine->name_cache_count].display_name,
-                name, 63);
-        engine->name_cache_count++;
-        QGP_LOG_INFO(LOG_TAG, "Cached name: %s -> %s\n", fingerprint, name);
-    }
-    pthread_mutex_unlock(&engine->name_cache_mutex);
-}
-
-/* Helper: Background DHT refresh for display name (runs in worker thread) */
-static void refresh_display_name_from_dht(dna_engine_t *engine, const char *fingerprint) {
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) return;
-
-    char *name_out = NULL;
-    int rc = dna_get_display_name(dht, fingerprint, &name_out);
-
-    if (rc == 0 && name_out && strlen(name_out) > 0) {
-        /* Update in-memory cache */
-        update_name_cache(engine, fingerprint, name_out);
-        QGP_LOG_INFO(LOG_TAG, "Background refresh: %s -> %s\n", fingerprint, name_out);
-        free(name_out);
-    }
-}
-
 void dna_handle_get_display_name(dna_engine_t *engine, dna_task_t *task) {
+    (void)engine;
     char display_name_buf[256] = {0};
     int error = DNA_OK;
     char *display_name = NULL;
     const char *fingerprint = task->params.get_display_name.fingerprint;
 
-    /* 1. Check in-memory cache first (fastest) */
-    pthread_mutex_lock(&engine->name_cache_mutex);
-    for (int i = 0; i < engine->name_cache_count; i++) {
-        if (strcmp(engine->name_cache[i].fingerprint, fingerprint) == 0) {
-            strncpy(display_name_buf, engine->name_cache[i].display_name,
-                    sizeof(display_name_buf) - 1);
-            pthread_mutex_unlock(&engine->name_cache_mutex);
-            QGP_LOG_INFO(LOG_TAG, "Memory cache hit: %s -> %s\n", fingerprint, display_name_buf);
-            goto done;
+    /* Use profile_manager (cache first, then DHT) */
+    dna_unified_identity_t *identity = NULL;
+    int rc = profile_manager_get_profile(fingerprint, &identity);
+
+    if (rc == 0 && identity) {
+        if (identity->display_name[0] != '\0') {
+            strncpy(display_name_buf, identity->display_name, sizeof(display_name_buf) - 1);
+        } else {
+            /* No display name - use shortened fingerprint */
+            snprintf(display_name_buf, sizeof(display_name_buf), "%.16s...", fingerprint);
         }
-    }
-    pthread_mutex_unlock(&engine->name_cache_mutex);
-
-    /* 2. Check persistent name_cache (global SQLite, works before login) */
-    char cached_name[64] = {0};
-    int cache_rc = keyserver_cache_get_name(fingerprint, cached_name, sizeof(cached_name));
-
-    if (cache_rc == 0 && cached_name[0] != '\0') {
-        /* Found in global name cache */
-        strncpy(display_name_buf, cached_name, sizeof(display_name_buf) - 1);
-
-        /* Update in-memory cache */
-        update_name_cache(engine, fingerprint, cached_name);
-
-        QGP_LOG_INFO(LOG_TAG, "Name cache hit: %s -> %s\n", fingerprint, display_name_buf);
-
-        /* Return cached value immediately - 7-day TTL handles freshness */
-        /* Note: True background refresh would require async task submission */
-        goto done;
-    }
-
-    /* 3. Not in any cache - fetch from DHT */
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
-        error = DNA_ENGINE_ERROR_NETWORK;
-        goto done;
-    }
-
-    char *name_out = NULL;
-    int rc = dna_get_display_name(dht, fingerprint, &name_out);
-
-    if (rc == 0 && name_out) {
-        strncpy(display_name_buf, name_out, sizeof(display_name_buf) - 1);
-
-        /* Update in-memory cache */
-        update_name_cache(engine, fingerprint, name_out);
-
-        /* Store in persistent global name cache */
-        keyserver_cache_put_name(fingerprint, name_out, 0);
-
-        free(name_out);
+        dna_identity_free(identity);
     } else {
-        /* Fall back to shortened fingerprint */
+        /* Profile not found - use shortened fingerprint */
         snprintf(display_name_buf, sizeof(display_name_buf), "%.16s...", fingerprint);
     }
 
-done:
     /* Allocate on heap for thread-safe callback - caller frees via dna_free_string */
     display_name = strdup(display_name_buf);
     task->callback.display_name(task->request_id, error, display_name, task->user_data);
 }
 
 void dna_handle_get_avatar(dna_engine_t *engine, dna_task_t *task) {
-    (void)engine;  /* Engine not needed for avatar lookup */
+    (void)engine;
     int error = DNA_OK;
     char *avatar = NULL;
     const char *fingerprint = task->params.get_avatar.fingerprint;
 
-    /* 1. Check avatar cache first */
-    char *cached_avatar = NULL;
-    int cache_rc = keyserver_cache_get_avatar(fingerprint, &cached_avatar);
-    if (cache_rc == 0 && cached_avatar) {
-        avatar = cached_avatar;  /* Caller will free */
-        QGP_LOG_INFO(LOG_TAG, "Avatar cache hit: %.16s...\n", fingerprint);
-        goto done;
-    }
-
-    /* 2. Not in cache - fetch full profile from DHT */
-    dht_context_t *dht = dht_singleton_get();
-    if (!dht) {
-        error = DNA_ENGINE_ERROR_NETWORK;
-        goto done;
-    }
-
+    /* Use profile_manager (cache first, then DHT) */
     dna_unified_identity_t *identity = NULL;
-    int rc = dna_load_identity(dht, fingerprint, &identity);
+    int rc = profile_manager_get_profile(fingerprint, &identity);
 
     if (rc == 0 && identity) {
-        /* Check if profile has avatar */
         if (identity->avatar_base64[0] != '\0') {
             avatar = strdup(identity->avatar_base64);
-
-            /* Cache avatar for next time */
-            keyserver_cache_put_avatar(fingerprint, identity->avatar_base64);
-
-            /* Also cache the display name if we got it */
-            if (identity->has_registered_name && !dna_is_name_expired(identity)) {
-                keyserver_cache_put_name(fingerprint, identity->registered_name, 0);
-            }
-
-            QGP_LOG_INFO(LOG_TAG, "Avatar fetched from DHT: %.16s...\n", fingerprint);
         }
         dna_identity_free(identity);
     }
 
-done:
     /* avatar may be NULL if no avatar set - that's OK */
     task->callback.display_name(task->request_id, error, avatar, task->user_data);
 }
@@ -1856,21 +1746,19 @@ void dna_handle_get_contacts(dna_engine_t *engine, dna_task_t *task) {
             goto done;
         }
 
-        dht_context_t *dht = dht_singleton_get();
-
         for (size_t i = 0; i < list->count; i++) {
             strncpy(contacts[i].fingerprint, list->contacts[i].identity, 128);
 
-            /* Try to get display name from DHT */
-            if (dht) {
-                char *name = NULL;
-                if (dna_get_display_name(dht, list->contacts[i].identity, &name) == 0 && name) {
-                    strncpy(contacts[i].display_name, name, sizeof(contacts[i].display_name) - 1);
-                    free(name);
+            /* Get display name from profile cache */
+            dna_unified_identity_t *identity = NULL;
+            if (profile_manager_get_profile(list->contacts[i].identity, &identity) == 0 && identity) {
+                if (identity->display_name[0] != '\0') {
+                    strncpy(contacts[i].display_name, identity->display_name, sizeof(contacts[i].display_name) - 1);
                 } else {
                     snprintf(contacts[i].display_name, sizeof(contacts[i].display_name),
                              "%.16s...", list->contacts[i].identity);
                 }
+                dna_identity_free(identity);
             } else {
                 snprintf(contacts[i].display_name, sizeof(contacts[i].display_name),
                          "%.16s...", list->contacts[i].identity);
