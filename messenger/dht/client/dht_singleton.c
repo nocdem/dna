@@ -89,11 +89,25 @@ int dht_singleton_init(void)
 
 dht_context_t* dht_singleton_get(void)
 {
-    // Return NULL if context doesn't exist or has been stopped
-    // This prevents race conditions during DHT reinit where the pointer
-    // is valid but ctx->running is false
+    // If DHT doesn't exist or is stopped, wait for it to become ready
+    // This handles race conditions during DHT reinit (identity loading)
     if (!g_dht_context || !dht_context_is_running(g_dht_context)) {
-        return NULL;
+        // Wait up to 5 seconds for DHT to become ready
+        int wait_count = 0;
+        while (wait_count < 50) {
+            if (g_dht_context && dht_context_is_running(g_dht_context)) {
+                QGP_LOG_INFO(LOG_TAG, "DHT became ready after %d00ms wait", wait_count);
+                break;
+            }
+            usleep(100000);  // 100ms
+            wait_count++;
+        }
+
+        // Still not ready after timeout
+        if (!g_dht_context || !dht_context_is_running(g_dht_context)) {
+            QGP_LOG_WARN(LOG_TAG, "DHT not available after 5s wait");
+            return NULL;
+        }
     }
     return g_dht_context;
 }
