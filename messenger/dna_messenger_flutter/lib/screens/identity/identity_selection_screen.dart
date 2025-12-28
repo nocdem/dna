@@ -146,6 +146,8 @@ class IdentitySelectionScreen extends ConsumerWidget {
   }
 
   Future<void> _loadIdentity(BuildContext context, WidgetRef ref, String fingerprint) async {
+    print('[IDENTITY_SELECT] _loadIdentity called: ${fingerprint.substring(0, 16)}...');
+
     showDialog(
       context: context,
       barrierDismissible: false,
@@ -155,11 +157,16 @@ class IdentitySelectionScreen extends ConsumerWidget {
     );
 
     try {
+      print('[IDENTITY_SELECT] Calling identitiesProvider.loadIdentity...');
       await ref.read(identitiesProvider.notifier).loadIdentity(fingerprint);
+      print('[IDENTITY_SELECT] loadIdentity completed successfully');
       if (context.mounted) {
         Navigator.of(context).pop();
+        print('[IDENTITY_SELECT] Dialog closed');
       }
-    } catch (e) {
+    } catch (e, stack) {
+      print('[IDENTITY_SELECT] ERROR: $e');
+      print('[IDENTITY_SELECT] Stack: $stack');
       if (context.mounted) {
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
