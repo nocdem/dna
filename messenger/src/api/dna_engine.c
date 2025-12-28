@@ -142,7 +142,7 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
 
     dna_event_t event = {0};
     if (is_connected) {
-        QGP_LOG_INFO(LOG_TAG, "DHT connected (bootstrap complete, ready for operations)");
+        QGP_LOG_WARN(LOG_TAG, "DHT connected (bootstrap complete, ready for operations)");
         event.type = DNA_EVENT_DHT_CONNECTED;
     } else {
         /* DHT disconnection can happen during:
