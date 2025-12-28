@@ -1109,6 +1109,8 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Check if DHT profile exists and has wallet addresses - auto-republish if needed */
+    /* Track if we already published to avoid redundant PUTs */
+    bool profile_published = false;
     {
         dht_context_t *dht = dna_get_dht_ctx(engine);
         if (dht) {
@@ -1162,6 +1164,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
 
                             if (publish_rc == 0) {
                                 QGP_LOG_INFO(LOG_TAG, "Profile republished to DHT successfully");
+                                profile_published = true;
                             } else if (publish_rc == -2) {
                                 QGP_LOG_WARN(LOG_TAG, "Name '%s' already taken by another user", cached_name);
                             } else if (publish_rc == -3) {
@@ -1207,7 +1210,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                         }
                     }
 
-                    if (need_publish) {
+                    if (need_publish && !profile_published) {
                         QGP_LOG_INFO(LOG_TAG, "DHT profile has empty wallet addresses - auto-publishing");
 
                         /* Load keys for signing */
@@ -1232,6 +1235,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                                                                    enc_key->public_key);
                                 if (update_rc == 0) {
                                     QGP_LOG_INFO(LOG_TAG, "Profile auto-published with wallet addresses on login");
+                                    profile_published = true;
                                 } else {
                                     QGP_LOG_WARN(LOG_TAG, "Failed to auto-publish profile on login: %d", update_rc);
                                 }
