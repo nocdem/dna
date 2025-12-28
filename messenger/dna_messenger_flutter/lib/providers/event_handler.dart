@@ -158,12 +158,16 @@ class EventHandler {
 
       case OutboxUpdatedEvent(contactFingerprint: final contactFp):
         // Contact's outbox has new messages - fetch them
+        print('[EVENT] OutboxUpdatedEvent received for: ${contactFp.length > 16 ? contactFp.substring(0, 16) : contactFp}...');
         // Trigger offline message check, then refresh UI AFTER messages are in DB
         _ref.read(engineProvider).whenData((engine) async {
+          print('[EVENT] Calling checkOfflineMessages...');
           await engine.checkOfflineMessages();
+          print('[EVENT] checkOfflineMessages complete, invalidating providers...');
           // Now invalidate to refresh UI with new messages
           _ref.invalidate(conversationProvider(contactFp));
           _ref.invalidate(contactsProvider);
+          print('[EVENT] Providers invalidated');
         });
         break;
 

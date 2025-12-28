@@ -906,7 +906,7 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
             sprintf(&key_hex_start[i * 2], "%02x", key[i]);
         }
         key_hex_start[40] = '\0';
-        QGP_LOG_WARN("DHT", "PUT_SIGNED: key=%s... (%zu bytes, TTL=%us, type=0x%x, id=%lu)",
+        QGP_LOG_DEBUG("DHT", "PUT_SIGNED: key=%s... (%zu bytes, TTL=%us, type=0x%x, id=%lu)",
                      key_hex_start, value_len, ttl_seconds, dht_value->type, value_id);
 
         // Use putSigned() instead of put() to enable editing/replacement

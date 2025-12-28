@@ -430,7 +430,7 @@ int dht_chunked_publish(dht_context_t *ctx, const char *base_key,
     uint64_t value_id = 1;
     dht_get_owner_value_id(ctx, &value_id);
 
-    QGP_LOG_WARN(LOG_TAG, "[CHUNK_PUBLISH] Publishing %zu bytes -> %zu compressed -> %u chunks (base_key=%s)\n",
+    QGP_LOG_DEBUG(LOG_TAG, "[CHUNK_PUBLISH] Publishing %zu bytes -> %zu compressed -> %u chunks (base_key=%s)\n",
            data_len, compressed_len, total_chunks, base_key);
 
     // Step 4: Publish each chunk

@@ -1009,6 +1009,7 @@ class DnaEngine {
         break;
       case DnaEventType.DNA_EVENT_OUTBOX_UPDATED:
         // Parse contact fingerprint from union data (at offset 0, 129 bytes)
+        print('[FLUTTER-EVENT] DNA_EVENT_OUTBOX_UPDATED received from C');
         final fpBytes = <int>[];
         for (var i = 0; i < 128; i++) {
           final byte = event.data[i];
@@ -1016,6 +1017,7 @@ class DnaEngine {
           fpBytes.add(byte);
         }
         final contactFp = String.fromCharCodes(fpBytes);
+        print('[FLUTTER-EVENT] Parsed contactFp: ${contactFp.length > 16 ? contactFp.substring(0, 16) : contactFp}... (len=${contactFp.length})');
         dartEvent = OutboxUpdatedEvent(contactFp);
         break;
       case DnaEventType.DNA_EVENT_ERROR:
@@ -1027,7 +1029,10 @@ class DnaEngine {
     }
 
     if (dartEvent != null) {
+      print('[FLUTTER-EVENT] Broadcasting event: ${dartEvent.runtimeType}');
       _eventController.add(dartEvent);
+    } else {
+      print('[FLUTTER-EVENT] Event type $type not handled, dartEvent is null');
     }
   }
 
