@@ -154,11 +154,13 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
 
         /* Restart outbox listeners on DHT connect (handles reconnection)
          * Listeners fire DNA_EVENT_OUTBOX_UPDATED -> Flutter polls + refreshes UI */
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT connected, identity_loaded=%d", engine->identity_loaded);
         if (engine->identity_loaded) {
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Starting outbox listeners from DHT callback...");
             int count = dna_engine_listen_all_contacts(engine);
-            if (count > 0) {
-                QGP_LOG_INFO(LOG_TAG, "Restarted %d outbox listeners on DHT connect", count);
-            }
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] DHT callback: started %d listeners", count);
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Skipping listeners (no identity loaded yet)");
         }
     } else {
         /* DHT disconnection can happen during:
@@ -1081,13 +1083,13 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
 
         /* 2. Start outbox listeners for Flutter events (DNA_EVENT_OUTBOX_UPDATED)
          * When DHT value changes, fires event -> Flutter polls + refreshes UI */
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: starting outbox listeners...");
         int listener_count = dna_engine_listen_all_contacts(engine);
-        if (listener_count > 0) {
-            QGP_LOG_INFO(LOG_TAG, "Started %d outbox listeners for events\n", listener_count);
-        }
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: started %d listeners", listener_count);
     }
 
     engine->identity_loaded = true;
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, identity_loaded flag set to true");
 
     /* Silent background: Create any missing blockchain wallets
      * This uses the encrypted seed stored during identity creation.
@@ -4732,15 +4734,20 @@ static bool outbox_listen_callback(
     bool expired,
     void *user_data)
 {
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] >>> CALLBACK FIRED! value=%p, len=%zu, expired=%d",
+                 (void*)value, value_len, expired);
+
     outbox_listener_ctx_t *ctx = (outbox_listener_ctx_t *)user_data;
     if (!ctx || !ctx->engine) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN-CB] Invalid context, stopping listener");
         return false;  /* Stop listening */
     }
 
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Contact: %.32s...", ctx->contact_fingerprint);
+
     /* Only fire event for new/updated values, not expirations */
     if (!expired && value && value_len > 0) {
-        QGP_LOG_INFO(LOG_TAG, "Outbox updated for contact %s... (value_len=%zu)",
-                     ctx->contact_fingerprint, value_len);
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] ✓ NEW VALUE! Firing DNA_EVENT_OUTBOX_UPDATED");
 
         /* Fire DNA_EVENT_OUTBOX_UPDATED event */
         dna_event_t event = {0};
@@ -4749,10 +4756,13 @@ static bool outbox_listen_callback(
                 ctx->contact_fingerprint,
                 sizeof(event.data.outbox_updated.contact_fingerprint) - 1);
 
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Dispatching event to Flutter...");
         dna_dispatch_event(ctx->engine, &event);
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Event dispatched successfully");
     } else if (expired) {
-        QGP_LOG_DEBUG(LOG_TAG, "Outbox value expired for contact %s...",
-                      ctx->contact_fingerprint);
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Value expired (ignoring)");
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN-CB] Empty value received (ignoring)");
     }
 
     return true;  /* Continue listening */
@@ -4762,21 +4772,27 @@ size_t dna_engine_listen_outbox(
     dna_engine_t *engine,
     const char *contact_fingerprint)
 {
-    if (!engine || !contact_fingerprint || strlen(contact_fingerprint) < 64) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for listen_outbox");
+    size_t fp_len = contact_fingerprint ? strlen(contact_fingerprint) : 0;
+
+    if (!engine || !contact_fingerprint || fp_len < 64) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Invalid params: engine=%p, fp=%p, fp_len=%zu",
+                      (void*)engine, (void*)contact_fingerprint, fp_len);
         return 0;
     }
 
     if (!engine->identity_loaded) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot listen to outbox: no identity loaded");
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Cannot listen: identity not loaded");
         return 0;
     }
 
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
     if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Cannot listen to outbox: DHT not available");
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Cannot listen: DHT context is NULL");
         return 0;
     }
+
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Setting up listener for %.32s... (len=%zu)",
+                 contact_fingerprint, fp_len);
 
     pthread_mutex_lock(&engine->outbox_listeners_mutex);
 
@@ -4784,7 +4800,8 @@ size_t dna_engine_listen_outbox(
     for (int i = 0; i < engine->outbox_listener_count; i++) {
         if (engine->outbox_listeners[i].active &&
             strcmp(engine->outbox_listeners[i].contact_fingerprint, contact_fingerprint) == 0) {
-            QGP_LOG_DEBUG(LOG_TAG, "Already listening to outbox for %s...", contact_fingerprint);
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] Already listening (existing token=%zu)",
+                         engine->outbox_listeners[i].dht_token);
             pthread_mutex_unlock(&engine->outbox_listeners_mutex);
             return engine->outbox_listeners[i].dht_token;
         }
@@ -4792,7 +4809,7 @@ size_t dna_engine_listen_outbox(
 
     /* Check capacity */
     if (engine->outbox_listener_count >= DNA_MAX_OUTBOX_LISTENERS) {
-        QGP_LOG_ERROR(LOG_TAG, "Maximum outbox listeners reached (%d)", DNA_MAX_OUTBOX_LISTENERS);
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Max listeners reached (%d)", DNA_MAX_OUTBOX_LISTENERS);
         pthread_mutex_unlock(&engine->outbox_listeners_mutex);
         return 0;
     }
@@ -4804,19 +4821,19 @@ size_t dna_engine_listen_outbox(
     snprintf(base_key, sizeof(base_key), "%s:outbox:%s",
              contact_fingerprint, engine->fingerprint);
 
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] base_key=%s", base_key);
+
     uint8_t chunk0_key[DHT_CHUNK_KEY_SIZE];  /* 32 bytes */
     if (dht_chunked_make_key(base_key, 0, chunk0_key) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to generate chunk key for outbox listener");
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to generate chunk key");
         pthread_mutex_unlock(&engine->outbox_listeners_mutex);
         return 0;
     }
 
-    QGP_LOG_DEBUG(LOG_TAG, "Listening to chunk[0] key for base_key=%s", base_key);
-
     /* Create callback context (will be freed when listener is cancelled) */
     outbox_listener_ctx_t *ctx = malloc(sizeof(outbox_listener_ctx_t));
     if (!ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to allocate listener context");
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to allocate context");
         pthread_mutex_unlock(&engine->outbox_listeners_mutex);
         return 0;
     }
@@ -4825,9 +4842,10 @@ size_t dna_engine_listen_outbox(
     ctx->contact_fingerprint[sizeof(ctx->contact_fingerprint) - 1] = '\0';
 
     /* Start DHT listen on chunk[0] key */
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Calling dht_listen()...");
     size_t token = dht_listen(dht_ctx, chunk0_key, DHT_CHUNK_KEY_SIZE, outbox_listen_callback, ctx);
     if (token == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to start DHT listener for %s...", contact_fingerprint);
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] dht_listen() returned 0 (failed)");
         free(ctx);
         pthread_mutex_unlock(&engine->outbox_listeners_mutex);
         return 0;
@@ -4842,8 +4860,8 @@ size_t dna_engine_listen_outbox(
     engine->outbox_listeners[idx].dht_token = token;
     engine->outbox_listeners[idx].active = true;
 
-    QGP_LOG_INFO(LOG_TAG, "Started outbox listener for %s... (token=%zu)",
-                 contact_fingerprint, token);
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] ✓ DHT listener active: token=%zu, total_listeners=%d",
+                 token, engine->outbox_listener_count);
 
     pthread_mutex_unlock(&engine->outbox_listeners_mutex);
     return token;
@@ -4890,37 +4908,63 @@ void dna_engine_cancel_outbox_listener(
 
 int dna_engine_listen_all_contacts(dna_engine_t *engine)
 {
-    if (!engine || !engine->identity_loaded) {
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] dna_engine_listen_all_contacts() called");
+
+    if (!engine) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] engine is NULL");
+        return 0;
+    }
+    if (!engine->identity_loaded) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] identity not loaded yet");
         return 0;
     }
 
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] identity=%s", engine->fingerprint);
+
     /* Initialize contacts database for current identity */
     if (contacts_db_init(engine->fingerprint) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to initialize contacts database");
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] Failed to initialize contacts database");
         return 0;
     }
 
     /* Get all contacts */
     contact_list_t *list = NULL;
-    if (contacts_db_list(&list) != 0 || !list || list->count == 0) {
+    int db_result = contacts_db_list(&list);
+    if (db_result != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "[LISTEN] contacts_db_list failed: %d", db_result);
         if (list) contacts_db_free_list(list);
         return 0;
     }
+    if (!list || list->count == 0) {
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] No contacts in database (count=%zu)", list ? list->count : 0);
+        if (list) contacts_db_free_list(list);
+        return 0;
+    }
+
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Found %zu contacts in database", list->count);
 
     /* Start listener for each contact */
     int started = 0;
     size_t count = list->count;
     for (size_t i = 0; i < count; i++) {
-        /* The identity field contains fingerprint or name - use it directly */
-        if (dna_engine_listen_outbox(engine, list->contacts[i].identity) > 0) {
+        const char *contact_id = list->contacts[i].identity;
+        size_t id_len = contact_id ? strlen(contact_id) : 0;
+        QGP_LOG_WARN(LOG_TAG, "[LISTEN] Contact[%zu]: %.32s... (len=%zu)",
+                     i, contact_id ? contact_id : "(null)", id_len);
+
+        size_t token = dna_engine_listen_outbox(engine, contact_id);
+        if (token > 0) {
+            QGP_LOG_WARN(LOG_TAG, "[LISTEN] ✓ Listener started for contact[%zu], token=%zu", i, token);
             started++;
+        } else {
+            QGP_LOG_ERROR(LOG_TAG, "[LISTEN] ✗ Failed to start listener for contact[%zu]", i);
         }
     }
 
     /* Cleanup */
     contacts_db_free_list(list);
 
-    QGP_LOG_INFO(LOG_TAG, "Started %d outbox listeners for %zu contacts", started, count);
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] RESULT: Started %d/%zu outbox listeners", started, count);
     return started;
 }
 
