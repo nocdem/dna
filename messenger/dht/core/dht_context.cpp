@@ -535,11 +535,25 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
     try {
         QGP_LOG_WARN("DHT", ">>> STOP called (ctx=%p, running=%d) <<<", (void*)ctx, ctx->running);
         if (ctx->running) {
+            // Mark as not running first to stop new operations
+            ctx->running = false;
+
             QGP_LOG_WARN("DHT", ">>> STOP: calling runner.shutdown()...");
             ctx->runner.shutdown();
-            QGP_LOG_WARN("DHT", ">>> STOP: calling runner.join()...");
-            ctx->runner.join();
-            QGP_LOG_WARN("DHT", ">>> STOP: runner stopped");
+
+            // Use timed join to avoid hanging forever
+            // OpenDHT's join can block indefinitely if network ops are pending
+            QGP_LOG_WARN("DHT", ">>> STOP: calling runner.join() with 3s timeout...");
+            auto join_future = std::async(std::launch::async, [ctx]() {
+                ctx->runner.join();
+            });
+
+            auto status = join_future.wait_for(std::chrono::seconds(3));
+            if (status == std::future_status::timeout) {
+                QGP_LOG_WARN("DHT", ">>> STOP: join timed out after 3s, proceeding anyway");
+            } else {
+                QGP_LOG_WARN("DHT", ">>> STOP: runner stopped");
+            }
 
             // Cleanup value storage
             if (ctx->storage) {
