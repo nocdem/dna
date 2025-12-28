@@ -597,6 +597,18 @@ extern "C" bool dht_context_is_ready(dht_context_t *ctx) {
 }
 
 /**
+ * Check if DHT context is running (not stopped/cleaned up)
+ *
+ * This is a simpler check than dht_context_is_ready() - it only checks
+ * if the context is running, not if it's connected to peers.
+ * Use this to detect if DHT is being cleaned up during reinit.
+ */
+extern "C" bool dht_context_is_running(dht_context_t *ctx) {
+    if (!ctx) return false;
+    return ctx->running;
+}
+
+/**
  * Set callback for DHT connection status changes
  */
 extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_callback_t callback, void *user_data) {

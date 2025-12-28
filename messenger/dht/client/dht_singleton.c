@@ -89,6 +89,12 @@ int dht_singleton_init(void)
 
 dht_context_t* dht_singleton_get(void)
 {
+    // Return NULL if context doesn't exist or has been stopped
+    // This prevents race conditions during DHT reinit where the pointer
+    // is valid but ctx->running is false
+    if (!g_dht_context || !dht_context_is_running(g_dht_context)) {
+        return NULL;
+    }
     return g_dht_context;
 }
 
