@@ -1156,6 +1156,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                             }
 
                             /* Republish identity to DHT */
+                            QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] load_identity: profile NOT in DHT, republishing");
                             int publish_rc = dht_keyserver_publish(dht, fingerprint, cached_name,
                                 sign_key->public_key, enc_key->public_key, sign_key->private_key,
                                 cf_addr[0] ? cf_addr : NULL,
@@ -1211,7 +1212,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                     }
 
                     if (need_publish && !profile_published) {
-                        QGP_LOG_INFO(LOG_TAG, "DHT profile has empty wallet addresses - auto-publishing");
+                        QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] load_identity: DHT profile has empty wallet addresses");
 
                         /* Load keys for signing */
                         qgp_key_t *sign_key = dna_load_private_key(engine);
@@ -1595,7 +1596,7 @@ populate_wallets:
 
         /* Auto-publish profile if wallets were populated */
         if (wallets_changed) {
-            QGP_LOG_INFO(LOG_TAG, "Auto-publishing profile with populated wallet addresses");
+            QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] get_profile: wallets changed, auto-publishing");
 
             /* Load keys for signing */
             qgp_key_t *sign_key = dna_load_private_key(engine);
@@ -1777,6 +1778,8 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     size_t src_len = p->avatar_base64[0] ? strlen(p->avatar_base64) : 0;
     size_t dst_len = profile_data.avatar_base64[0] ? strlen(profile_data.avatar_base64) : 0;
     QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] update_profile: src_len=%zu, dst_len=%zu\n", src_len, dst_len);
+
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] update_profile: user-initiated save");
 
     /* Update profile in DHT */
     int rc = dna_update_profile(dht, engine->fingerprint, &profile_data,
