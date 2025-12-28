@@ -151,6 +151,15 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
         if (engine->data_dir) {
             profile_manager_prefetch_local_identities(engine->data_dir);
         }
+
+        /* Resubscribe to contacts for push notifications (Phase 14 fix)
+         * Subscriptions created before DHT was connected may not be active.
+         * This ensures listeners are registered when DHT is actually ready. */
+        if (engine->identity_loaded && engine->messenger) {
+            if (messenger_p2p_subscribe_to_contacts(engine->messenger) == 0) {
+                QGP_LOG_INFO(LOG_TAG, "Resubscribed to contacts on DHT connect");
+            }
+        }
     } else {
         /* DHT disconnection can happen during:
          * 1. Initial bootstrap (network not ready yet)

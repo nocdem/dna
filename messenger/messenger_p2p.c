@@ -1221,6 +1221,17 @@ int messenger_p2p_subscribe_to_contact(
         return -1;
     }
 
+    // Check if already subscribed (avoid duplicate listeners)
+    pthread_mutex_lock(&g_subscription_manager.mutex);
+    for (size_t i = 0; i < g_subscription_manager.count; i++) {
+        if (strcmp(g_subscription_manager.subscriptions[i].contact_fingerprint, contact_fingerprint) == 0) {
+            pthread_mutex_unlock(&g_subscription_manager.mutex);
+            QGP_LOG_DEBUG("P2P", "Already subscribed to %s", contact_fingerprint);
+            return 0;  // Already subscribed, success
+        }
+    }
+    pthread_mutex_unlock(&g_subscription_manager.mutex);
+
     // Generate chunk0 key (must match what dht_chunked_publish uses)
     // Base key format: "sender:outbox:recipient"
     char base_key[512];
