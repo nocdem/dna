@@ -2055,6 +2055,7 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
 
     /* First, fetch new requests from DHT and store them */
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    bool contacts_changed = false;  /* Track if we need to sync */
     if (dht_ctx) {
         dht_contact_request_t *dht_requests = NULL;
         size_t dht_count = 0;
@@ -2077,11 +2078,7 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                         dht_requests[i].sender_fingerprint,
                         dht_requests[i].sender_name
                     );
-                    /* Sync to DHT */
-                    if (engine->messenger) {
-                        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] auto_accept_request: calling sync");
-                        messenger_sync_contacts_to_dht(engine->messenger);
-                    }
+                    contacts_changed = true;  /* Mark for sync AFTER loop */
                 } else {
                     /* Regular request - add to pending */
                     contacts_db_add_incoming_request(
@@ -2094,6 +2091,12 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
             }
             dht_contact_requests_free(dht_requests, dht_count);
         }
+    }
+
+    /* Sync contacts to DHT ONCE after processing all requests */
+    if (contacts_changed && engine->messenger) {
+        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] auto_accept_requests: syncing ONCE after loop");
+        messenger_sync_contacts_to_dht(engine->messenger);
     }
 
     /* Get all pending requests from database */
