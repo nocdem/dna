@@ -21,7 +21,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 ## Fixed Bugs
 
 - [x] Remove Contact button in chat doesn't work - implement confirmation dialog (v0.2.110)
-- [x] DHT push notifications not working - resubscribe to contacts when DHT connects (v0.2.109)
+- [x] DHT push notifications not working - use event-based listeners (v0.2.111)
 - [x] Contact requests reappear after restart - skip if already a contact (v0.2.108)
 - [x] Messages not synced between devices - message backup/restore via DHT (v0.2.106)
 - [x] Username/avatar not showing on identity selection - use lookupProfile (single DHT call) (v0.2.93)

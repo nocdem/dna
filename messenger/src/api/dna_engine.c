@@ -152,12 +152,12 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
             profile_manager_prefetch_local_identities(engine->data_dir);
         }
 
-        /* Resubscribe to contacts for push notifications (Phase 14 fix)
-         * Subscriptions created before DHT was connected may not be active.
-         * This ensures listeners are registered when DHT is actually ready. */
-        if (engine->identity_loaded && engine->messenger) {
-            if (messenger_p2p_subscribe_to_contacts(engine->messenger) == 0) {
-                QGP_LOG_INFO(LOG_TAG, "Resubscribed to contacts on DHT connect");
+        /* Restart outbox listeners on DHT connect (handles reconnection)
+         * Listeners fire DNA_EVENT_OUTBOX_UPDATED -> Flutter polls + refreshes UI */
+        if (engine->identity_loaded) {
+            int count = dna_engine_listen_all_contacts(engine);
+            if (count > 0) {
+                QGP_LOG_INFO(LOG_TAG, "Restarted %d outbox listeners on DHT connect", count);
             }
         }
     } else {
@@ -1070,14 +1070,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         /* P2P initialized successfully - complete P2P setup */
         /* Note: Presence already registered in messenger_p2p_init() */
 
-        /* 1. Subscribe to contacts for push notifications */
-        if (messenger_p2p_subscribe_to_contacts(engine->messenger) == 0) {
-            QGP_LOG_INFO(LOG_TAG, "Subscribed to contacts for push notifications\n");
-        } else {
-            QGP_LOG_INFO(LOG_TAG, "Warning: Failed to subscribe to contacts\n");
-        }
-
-        /* 2. Check for offline messages (Spillway: query contacts' outboxes) */
+        /* 1. Check for offline messages (Spillway: query contacts' outboxes) */
         size_t offline_count = 0;
         if (messenger_p2p_check_offline_messages(engine->messenger, &offline_count) == 0) {
             if (offline_count > 0) {
@@ -1087,6 +1080,13 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             }
         } else {
             QGP_LOG_INFO(LOG_TAG, "Warning: Failed to check offline messages\n");
+        }
+
+        /* 2. Start outbox listeners for Flutter events (DNA_EVENT_OUTBOX_UPDATED)
+         * When DHT value changes, fires event -> Flutter polls + refreshes UI */
+        int listener_count = dna_engine_listen_all_contacts(engine);
+        if (listener_count > 0) {
+            QGP_LOG_INFO(LOG_TAG, "Started %d outbox listeners for events\n", listener_count);
         }
     }
 
