@@ -2172,10 +2172,10 @@ class DnaBindings {
   // ---------------------------------------------------------------------------
 
   late final _dna_engine_is_dht_connected = _lib.lookupFunction<
-      Int32 Function(Pointer<Void>),
-      int Function(Pointer<Void>)>('dna_engine_is_dht_connected');
+      Int32 Function(Pointer<dna_engine_t>),
+      int Function(Pointer<dna_engine_t>)>('dna_engine_is_dht_connected');
 
-  int dna_engine_is_dht_connected(Pointer<Void> engine) {
+  int dna_engine_is_dht_connected(Pointer<dna_engine_t> engine) {
     return _dna_engine_is_dht_connected(engine);
   }
 
