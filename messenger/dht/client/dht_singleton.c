@@ -81,8 +81,6 @@ int dht_singleton_init(void)
         return -1;
     }
 
-    // Non-blocking: DHT bootstraps in its own background threads
-    // Operations will wait/retry as needed when DHT becomes ready
     QGP_LOG_INFO(LOG_TAG, "DHT started (bootstrapping in background)");
     return 0;
 }
@@ -239,6 +237,27 @@ void dht_singleton_set_status_callback(dht_status_callback_t callback, void *use
     // Register on current context if available
     if (g_dht_context) {
         dht_context_set_status_callback(g_dht_context, callback, user_data);
+
+        // Wait for DHT to connect and fire callback manually
+        // OpenDHT's setOnStatusChanged doesn't reliably fire for initial connection
+        if (callback && !dht_context_is_ready(g_dht_context)) {
+            QGP_LOG_INFO(LOG_TAG, "Waiting for DHT connection...");
+            int wait_count = 0;
+            while (!dht_context_is_ready(g_dht_context) && wait_count < 50) {
+                usleep(100000);  // 100ms
+                wait_count++;
+            }
+            if (dht_context_is_ready(g_dht_context)) {
+                QGP_LOG_INFO(LOG_TAG, "DHT connected after %d00ms, firing callback", wait_count);
+                callback(true, user_data);
+            } else {
+                QGP_LOG_WARN(LOG_TAG, "DHT not connected after 5s");
+            }
+        } else if (callback && dht_context_is_ready(g_dht_context)) {
+            // Already connected, fire immediately
+            QGP_LOG_INFO(LOG_TAG, "DHT already connected, firing callback");
+            callback(true, user_data);
+        }
     } else {
         QGP_LOG_INFO(LOG_TAG, "Status callback stored (will register when DHT starts)");
     }
