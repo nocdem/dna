@@ -617,13 +617,103 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               ),
               onTap: () {
                 Navigator.pop(context);
-                // TODO: Confirm and remove
+                final contact = ref.read(selectedContactProvider);
+                if (contact != null) {
+                  _removeContact(contact);
+                }
               },
             ),
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _removeContact(Contact contact) async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            Icon(Icons.person_remove, color: DnaColors.textWarning),
+            const SizedBox(width: 8),
+            const Text('Remove Contact'),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              'Remove ${contact.displayName} from your contacts?',
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: DnaColors.textWarning.withAlpha(26),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: DnaColors.textWarning.withAlpha(51)),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 20, color: DnaColors.textWarning),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'Message history will be preserved. You can re-add this contact later.',
+                      style: TextStyle(
+                        fontSize: 13,
+                        color: DnaColors.textWarning,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: DnaColors.textWarning,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Remove'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      try {
+        await ref.read(contactsProvider.notifier).removeContact(contact.fingerprint);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('${contact.displayName} removed'),
+              backgroundColor: DnaColors.snackbarSuccess,
+            ),
+          );
+          // Navigate back to contacts list since this chat is no longer valid
+          ref.read(selectedContactProvider.notifier).state = null;
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('Failed to remove contact: $e'),
+              backgroundColor: DnaColors.snackbarError,
+            ),
+          );
+        }
+      }
+    }
   }
 
   String _getInitials(String name) {

@@ -12,7 +12,6 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 - [ ] Emoji picker overflows on full-sized window - RenderFlex overflow in search view (P3)
 - [ ] Emoji picker shows only ~4 emojis on large screens - should scale with window size (P3)
 - [ ] Emoji picker search button turns box gray - looks broken even though it works (P4)
-- [ ] Remove Contact button in chat doesn't work (P3)
 - [ ] Show QR Code button in chat doesn't show anything (P4)
 - [ ] Take a Selfie button doesn't work on Linux desktop (P4)
 - [ ] Profile wallet address fields redundant - app auto-generates wallets from seed (P4)
@@ -21,6 +20,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Remove Contact button in chat doesn't work - implement confirmation dialog (v0.2.110)
 - [x] DHT push notifications not working - resubscribe to contacts when DHT connects (v0.2.109)
 - [x] Contact requests reappear after restart - skip if already a contact (v0.2.108)
 - [x] Messages not synced between devices - message backup/restore via DHT (v0.2.106)
