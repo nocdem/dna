@@ -86,6 +86,16 @@ dht_context_t* dht_singleton_get(void);
 bool dht_singleton_is_initialized(void);
 
 /**
+ * Check if global DHT singleton is connected (ready for operations)
+ *
+ * This checks if the DHT has successfully connected to at least one peer.
+ * Use this to query current connection status (e.g., for UI indicators).
+ *
+ * @return: true if connected and ready, false otherwise
+ */
+bool dht_singleton_is_ready(void);
+
+/**
  * Cleanup global DHT singleton
  *
  * Shuts down and frees the global DHT context.

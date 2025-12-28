@@ -51,6 +51,15 @@ class EventHandler {
 
     // Listen to engine events
     _subscription = engine.events.listen(_handleEvent);
+
+    // Sync initial DHT status - event may have been missed during startup race
+    if (engine.isDhtConnected()) {
+      _ref.read(dhtConnectionStateProvider.notifier).state =
+          DhtConnectionState.connected;
+      // Start polling since we're connected
+      _startContactRequestsPolling();
+      _startPresencePolling();
+    }
   }
 
   void _handleEvent(DnaEvent event) {

@@ -1998,6 +1998,17 @@ void* dna_engine_get_messenger_context(dna_engine_t *engine);
  */
 void* dna_engine_get_dht_context(dna_engine_t *engine);
 
+/**
+ * Check if DHT is connected
+ *
+ * Returns the current DHT connection status. Use this to query status
+ * for UI indicators when the event-based status may have been missed.
+ *
+ * @param engine    Engine instance
+ * @return          1 if connected, 0 if not connected
+ */
+int dna_engine_is_dht_connected(dna_engine_t *engine);
+
 /* ============================================================================
  * LOG CONFIGURATION
  * ============================================================================ */

@@ -9,11 +9,11 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 ## Open Bugs
 
 - [ ] Wallet balance formatting inconsistent: SOL extra zeros, USDT plain "0", TRX shows symbol after amount (P3)
-- [ ] DHT status always shows "Disconnected" in menu drawer even when connected (P2)
 - [ ] Emoji picker overflows on full-sized window - RenderFlex overflow in search view (P3)
 - [ ] Emoji picker shows only ~4 emojis on large screens - should scale with window size (P3)
 - [ ] Emoji picker search button turns box gray - looks broken even though it works (P4)
 - [ ] Messages not synced between devices - need cross-platform message sync via DHT (P2)
+- [ ] Contact requests reappear after restart even when already accepted multiple times (P3)
 - [ ] Remove Contact button in chat doesn't work (P3)
 - [ ] Send CPUNK in chat fails - says contact has no Backbone wallet even when they do (P2)
 - [ ] Show QR Code button in chat doesn't show anything (P4)
@@ -24,6 +24,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] DHT status always shows "Disconnected" in menu drawer - sync status on event handler init (v0.2.88)
 - [x] DHT operations during reinit - dht_singleton_get now waits for DHT to be ready (v0.2.62)
 - [x] DHT "Broken promise" errors - operations started before DHT connected after reinit (v0.2.60)
 - [x] Use-after-free in messenger_p2p_subscribe_to_contacts - accessed contacts->count after free (v0.2.59)

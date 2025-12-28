@@ -124,6 +124,14 @@ bool dht_singleton_is_initialized(void)
     return (g_dht_context != NULL);
 }
 
+bool dht_singleton_is_ready(void)
+{
+    if (!g_dht_context) {
+        return false;
+    }
+    return dht_context_is_ready(g_dht_context);
+}
+
 int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 {
     if (!user_identity) {

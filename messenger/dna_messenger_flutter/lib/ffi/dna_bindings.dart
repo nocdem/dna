@@ -2168,6 +2168,18 @@ class DnaBindings {
   }
 
   // ---------------------------------------------------------------------------
+  // DHT STATUS
+  // ---------------------------------------------------------------------------
+
+  late final _dna_engine_is_dht_connected = _lib.lookupFunction<
+      Int32 Function(Pointer<Void>),
+      int Function(Pointer<Void>)>('dna_engine_is_dht_connected');
+
+  int dna_engine_is_dht_connected(Pointer<Void> engine) {
+    return _dna_engine_is_dht_connected(engine);
+  }
+
+  // ---------------------------------------------------------------------------
   // LOG CONFIGURATION
   // ---------------------------------------------------------------------------
 

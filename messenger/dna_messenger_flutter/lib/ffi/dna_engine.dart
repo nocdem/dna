@@ -3544,6 +3544,18 @@ class DnaEngine {
   }
 
   // ---------------------------------------------------------------------------
+  // DHT STATUS
+  // ---------------------------------------------------------------------------
+
+  /// Check if DHT is currently connected
+  ///
+  /// Use this to query current DHT status, especially when the event-based
+  /// status update may have been missed (e.g., on startup race condition).
+  bool isDhtConnected() {
+    return _bindings.dna_engine_is_dht_connected(_engine) != 0;
+  }
+
+  // ---------------------------------------------------------------------------
   // LOG CONFIGURATION
   // ---------------------------------------------------------------------------
 
