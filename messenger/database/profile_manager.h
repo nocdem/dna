@@ -8,9 +8,10 @@
  * - Falls back to DHT if not cached or expired (>7 days)
  * - Automatically updates cache after DHT fetch
  * - Can be initialized before identity is loaded (for prefetching)
+ * - DHT context obtained dynamically via dht_singleton_get() (handles reinit)
  *
  * Usage:
- * 1. Initialize: profile_manager_init(dht_ctx) - at engine startup
+ * 1. Initialize: profile_manager_init() - at engine startup
  * 2. Get profile: profile_manager_get_profile(fingerprint, &profile)
  *    - Returns cached if fresh
  *    - Fetches from DHT if expired/missing
@@ -20,7 +21,7 @@
  * @file profile_manager.h
  * @author DNA Messenger Team
  * @date 2025-11-12
- * @updated 2025-12-28 (Global cache for prefetching)
+ * @updated 2025-12-28 (Dynamic DHT context for reinit support)
  */
 
 #ifndef PROFILE_MANAGER_H
@@ -30,7 +31,6 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "dht/client/dna_profile.h"
-#include "dht/core/dht_context.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -38,12 +38,12 @@ extern "C" {
 
 /**
  * Initialize profile manager (global, no identity required)
- * Opens global cache database and stores DHT context
+ * Opens global cache database
+ * DHT context is obtained dynamically via dht_singleton_get()
  *
- * @param dht_ctx DHT context (must remain valid)
  * @return 0 on success, -1 on error
  */
-int profile_manager_init(dht_context_t *dht_ctx);
+int profile_manager_init(void);
 
 /**
  * Get user profile (smart fetch: cache first, then DHT)

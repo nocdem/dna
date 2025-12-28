@@ -655,11 +655,9 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize global keyserver cache (for display names before login) */
     keyserver_cache_init(NULL);
 
-    /* Initialize global profile cache + manager (for profile prefetching) */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (dht_ctx) {
-        profile_manager_init(dht_ctx);
-    }
+    /* Initialize global profile cache + manager (for profile prefetching)
+     * DHT context is obtained dynamically via dht_singleton_get() to handle reinit */
+    profile_manager_init();
 
     /* Start worker threads */
     if (dna_start_workers(engine) != 0) {

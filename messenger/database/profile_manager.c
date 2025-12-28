@@ -10,6 +10,7 @@
 #include "profile_manager.h"
 #include "profile_cache.h"
 #include "dht/core/dht_keyserver.h"
+#include "dht/client/dht_singleton.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -18,16 +19,15 @@
 
 #define LOG_TAG "DB_PROFILE"
 
-static dht_context_t *g_dht_ctx = NULL;
 static bool g_initialized = false;
 
 /**
  * Initialize profile manager (global, no identity required)
+ * DHT context is fetched dynamically via dht_singleton_get() to handle reinit
  */
-int profile_manager_init(dht_context_t *dht_ctx) {
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
-        return -1;
+int profile_manager_init(void) {
+    if (g_initialized) {
+        return 0;  // Already initialized
     }
 
     // Initialize global cache
@@ -36,9 +36,7 @@ int profile_manager_init(dht_context_t *dht_ctx) {
         return -1;
     }
 
-    g_dht_ctx = dht_ctx;
     g_initialized = true;
-
     QGP_LOG_INFO(LOG_TAG, "Initialized (global)\n");
     return 0;
 }
@@ -47,13 +45,20 @@ int profile_manager_init(dht_context_t *dht_ctx) {
  * Get user profile (smart fetch) - Phase 5: Unified Identity
  */
 int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identity_t **identity_out) {
-    if (!g_initialized || !g_dht_ctx) {
+    if (!g_initialized) {
         QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
         return -1;
     }
 
     if (!user_fingerprint || !identity_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
+        return -1;
+    }
+
+    // Get current DHT context (handles reinit)
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
@@ -86,7 +91,7 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
 
     // Step 2: Fetch from DHT (using keyserver)
     dna_unified_identity_t *fresh_identity = NULL;
-    result = dna_load_identity(g_dht_ctx, user_fingerprint, &fresh_identity);
+    result = dna_load_identity(dht_ctx, user_fingerprint, &fresh_identity);
 
     if (result == -2) {
         // Not found in DHT
@@ -152,7 +157,7 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
  * Refresh profile from DHT (force) - Phase 5: Unified Identity
  */
 int profile_manager_refresh_profile(const char *user_fingerprint, dna_unified_identity_t **identity_out) {
-    if (!g_initialized || !g_dht_ctx) {
+    if (!g_initialized) {
         QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
         return -1;
     }
@@ -162,11 +167,18 @@ int profile_manager_refresh_profile(const char *user_fingerprint, dna_unified_id
         return -1;
     }
 
+    // Get current DHT context (handles reinit)
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
+        return -1;
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Force refresh from DHT: %s\n", user_fingerprint);
 
     // Fetch from DHT (using keyserver)
     dna_unified_identity_t *identity = NULL;
-    int result = dna_load_identity(g_dht_ctx, user_fingerprint, &identity);
+    int result = dna_load_identity(dht_ctx, user_fingerprint, &identity);
 
     if (result == -2) {
         QGP_LOG_INFO(LOG_TAG, "Identity not found in DHT: %s\n", user_fingerprint);
@@ -197,8 +209,15 @@ int profile_manager_refresh_profile(const char *user_fingerprint, dna_unified_id
  * Refresh all expired profiles (background task)
  */
 int profile_manager_refresh_all_expired(void) {
-    if (!g_initialized || !g_dht_ctx) {
+    if (!g_initialized) {
         QGP_LOG_ERROR(LOG_TAG, "Not initialized\n");
+        return -1;
+    }
+
+    // Get current DHT context (handles reinit)
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
         return -1;
     }
 
@@ -222,7 +241,7 @@ int profile_manager_refresh_all_expired(void) {
     int success_count = 0;
     for (size_t i = 0; i < count; i++) {
         dna_unified_identity_t *identity = NULL;
-        int result = dna_load_identity(g_dht_ctx, fingerprints[i], &identity);
+        int result = dna_load_identity(dht_ctx, fingerprints[i], &identity);
 
         if (result == 0 && identity) {
             // Update cache
@@ -319,8 +338,15 @@ int profile_manager_get_stats(int *total_out, int *expired_out) {
  * Called when DHT connects to populate cache for identity selection screen
  */
 int profile_manager_prefetch_local_identities(const char *data_dir) {
-    if (!g_initialized || !g_dht_ctx) {
+    if (!g_initialized) {
         QGP_LOG_DEBUG(LOG_TAG, "Not initialized, skipping prefetch\n");
+        return -1;
+    }
+
+    // Check DHT is available (handles reinit)
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_DEBUG(LOG_TAG, "DHT not available, skipping prefetch\n");
         return -1;
     }
 
@@ -381,7 +407,6 @@ int profile_manager_prefetch_local_identities(const char *data_dir) {
 void profile_manager_close(void) {
     if (g_initialized) {
         profile_cache_close();
-        g_dht_ctx = NULL;
         g_initialized = false;
         QGP_LOG_INFO(LOG_TAG, "Closed\n");
     }
