@@ -4,7 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import '../services/cache_database.dart';
 import 'engine_provider.dart';
-import 'identity_provider.dart';
+import 'identity_provider.dart' show currentFingerprintProvider;
 
 /// Cache staleness threshold - refetch profiles older than this
 const _cacheMaxAge = Duration(hours: 24);
