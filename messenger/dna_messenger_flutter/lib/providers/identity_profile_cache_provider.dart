@@ -125,15 +125,19 @@ class IdentityProfileCacheNotifier extends StateNotifier<Map<String, CachedIdent
 
   /// Prefetch identities for multiple fingerprints in parallel
   Future<void> prefetchIdentities(List<String> fingerprints) async {
-    // Filter out already cached
-    final toFetch = fingerprints.where((fp) => !state.containsKey(fp)).toList();
+    // Filter out already cached WITH valid displayName
+    // (re-fetch if cached but displayName is empty - may have failed before DHT connected)
+    final toFetch = fingerprints.where((fp) {
+      final cached = state[fp];
+      return cached == null || cached.displayName.isEmpty;
+    }).toList();
     if (toFetch.isEmpty) return;
 
-    // First try to load from SQLite
+    // First try to load from SQLite (only if displayName is valid)
     try {
       for (final fp in toFetch.toList()) {
         final dbIdentity = await _db.getIdentity(fp);
-        if (dbIdentity != null && mounted) {
+        if (dbIdentity != null && dbIdentity.displayName.isNotEmpty && mounted) {
           state = {...state, fp: dbIdentity};
           toFetch.remove(fp);
         }
