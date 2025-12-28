@@ -238,23 +238,9 @@ void dht_singleton_set_status_callback(dht_status_callback_t callback, void *use
     if (g_dht_context) {
         dht_context_set_status_callback(g_dht_context, callback, user_data);
 
-        // Wait for DHT to connect and fire callback manually
-        // OpenDHT's setOnStatusChanged doesn't reliably fire for initial connection
-        if (callback && !dht_context_is_ready(g_dht_context)) {
-            QGP_LOG_INFO(LOG_TAG, "Waiting for DHT connection...");
-            int wait_count = 0;
-            while (!dht_context_is_ready(g_dht_context) && wait_count < 50) {
-                usleep(100000);  // 100ms
-                wait_count++;
-            }
-            if (dht_context_is_ready(g_dht_context)) {
-                QGP_LOG_INFO(LOG_TAG, "DHT connected after %d00ms, firing callback", wait_count);
-                callback(true, user_data);
-            } else {
-                QGP_LOG_WARN(LOG_TAG, "DHT not connected after 5s");
-            }
-        } else if (callback && dht_context_is_ready(g_dht_context)) {
-            // Already connected, fire immediately
+        // Check if already connected and fire callback
+        // Don't block - if not ready, callback will fire later via OpenDHT
+        if (callback && dht_context_is_ready(g_dht_context)) {
             QGP_LOG_INFO(LOG_TAG, "DHT already connected, firing callback");
             callback(true, user_data);
         }

@@ -6,6 +6,7 @@
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
 #include "crypto/utils/qgp_log.h"
+#include "database/profile_cache.h"
 
 #define LOG_TAG "KEYSERVER"
 
@@ -264,6 +265,9 @@ int dna_get_display_name(
     ret = dna_load_identity(dht_ctx, fingerprint, &identity);
 
     if (ret == 0 && identity) {
+        // Cache the full profile (including avatar) for later use
+        profile_cache_add_or_update(fingerprint, identity);
+
         // Check if name is registered and not expired
         if (identity->has_registered_name && !dna_is_name_expired(identity)) {
             // Return registered name
