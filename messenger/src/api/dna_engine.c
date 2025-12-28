@@ -648,16 +648,18 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize DHT singleton */
     dht_singleton_init();
 
-    /* Register DHT status callback to emit events on connection changes */
-    g_dht_callback_engine = engine;
-    dht_singleton_set_status_callback(dna_dht_status_callback, NULL);
-
     /* Initialize global keyserver cache (for display names before login) */
     keyserver_cache_init(NULL);
 
     /* Initialize global profile cache + manager (for profile prefetching)
-     * DHT context is obtained dynamically via dht_singleton_get() to handle reinit */
+     * DHT context is obtained dynamically via dht_singleton_get() to handle reinit
+     * MUST be before status callback registration - callback triggers prefetch */
     profile_manager_init();
+
+    /* Register DHT status callback to emit events on connection changes
+     * This waits for DHT connection and fires callback which triggers prefetch */
+    g_dht_callback_engine = engine;
+    dht_singleton_set_status_callback(dna_dht_status_callback, NULL);
 
     /* Start worker threads */
     if (dna_start_workers(engine) != 0) {
