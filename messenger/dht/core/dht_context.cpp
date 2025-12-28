@@ -634,13 +634,15 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
     // NOTE: This callback is called from OpenDHT's internal thread - do NOT call
     // runner methods from here (like getNodesStats) as it causes deadlock!
     ctx->runner.setOnStatusChanged([ctx](dht::NodeStatus old_status, dht::NodeStatus new_status) {
+        QGP_LOG_WARN("DHT", "OpenDHT status: %s -> %s",
+            dht::statusToStr(old_status), dht::statusToStr(new_status));
+
         bool was_connected = (old_status == dht::NodeStatus::Connected);
         bool is_connected = (new_status == dht::NodeStatus::Connected);
 
         // Only notify on actual transitions
         if (was_connected != is_connected) {
-            QGP_LOG_INFO("DHT", "Status changed: %s -> %s",
-                dht::statusToStr(old_status), dht::statusToStr(new_status));
+            QGP_LOG_WARN("DHT", "Status transition: connected=%d", is_connected ? 1 : 0);
 
             // Get callback info (thread-safe)
             dht_status_callback_t cb = nullptr;
@@ -653,6 +655,8 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
 
             if (cb) {
                 cb(is_connected, ud);
+            } else {
+                QGP_LOG_WARN("DHT", "No callback registered!");
             }
         }
     });
