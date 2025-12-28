@@ -64,17 +64,23 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
     if (result == 0) {
         // Found in cache - check if fresh
         if (!profile_cache_is_expired(user_fingerprint)) {
-            // Cache hit (fresh)
-            QGP_LOG_INFO(LOG_TAG, "Cache hit (fresh): %s\n", user_fingerprint);
+            // Cache hit (fresh) - log full profile data
+            size_t avatar_len = cached_identity->avatar_base64[0] ? strlen(cached_identity->avatar_base64) : 0;
+            QGP_LOG_DEBUG(LOG_TAG, "Cache hit (fresh): %.16s...\n", user_fingerprint);
+            QGP_LOG_DEBUG(LOG_TAG, "  name='%s' bio='%.50s' location='%s' website='%s'\n",
+                        cached_identity->display_name, cached_identity->bio,
+                        cached_identity->location, cached_identity->website);
+            QGP_LOG_DEBUG(LOG_TAG, "  avatar=%zu bytes, backbone='%s' telegram='%s'\n",
+                        avatar_len, cached_identity->wallets.backbone, cached_identity->socials.telegram);
             *identity_out = cached_identity;
             return 0;
         } else {
             // Cache hit but expired - keep for fallback
-            QGP_LOG_INFO(LOG_TAG, "Cache hit (expired): %s, refreshing from DHT\n", user_fingerprint);
+            QGP_LOG_INFO(LOG_TAG, "Cache hit (expired): %.16s..., refreshing from DHT\n", user_fingerprint);
         }
     } else {
         // Not in cache
-        QGP_LOG_INFO(LOG_TAG, "Cache miss: %s, fetching from DHT\n", user_fingerprint);
+        QGP_LOG_INFO(LOG_TAG, "Cache miss: %.16s..., fetching from DHT\n", user_fingerprint);
     }
 
     // Step 2: Fetch from DHT (using keyserver)
@@ -120,8 +126,16 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
         return -1;
     }
 
-    // Step 3: Update cache with fresh data
-    QGP_LOG_INFO(LOG_TAG, "Fetched from DHT, updating cache: %s\n", user_fingerprint);
+    // Step 3: Update cache with fresh data - log full profile
+    {
+        size_t avatar_len = fresh_identity->avatar_base64[0] ? strlen(fresh_identity->avatar_base64) : 0;
+        QGP_LOG_DEBUG(LOG_TAG, "Fetched from DHT: %.16s...\n", user_fingerprint);
+        QGP_LOG_DEBUG(LOG_TAG, "  name='%s' bio='%.50s' location='%s' website='%s'\n",
+                    fresh_identity->display_name, fresh_identity->bio,
+                    fresh_identity->location, fresh_identity->website);
+        QGP_LOG_DEBUG(LOG_TAG, "  avatar=%zu bytes, backbone='%s' telegram='%s'\n",
+                    avatar_len, fresh_identity->wallets.backbone, fresh_identity->socials.telegram);
+    }
     profile_cache_add_or_update(user_fingerprint, fresh_identity);
 
     // Free old cached copy if we had one
