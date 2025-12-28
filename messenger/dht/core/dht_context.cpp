@@ -634,10 +634,6 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
     // NOTE: This callback is called from OpenDHT's internal thread - do NOT call
     // runner methods from here (like getNodesStats) as it causes deadlock!
     ctx->runner.setOnStatusChanged([ctx](dht::NodeStatus old_status, dht::NodeStatus new_status) {
-        if (!ctx || !ctx->running) {
-            return;
-        }
-
         bool was_connected = (old_status == dht::NodeStatus::Connected);
         bool is_connected = (new_status == dht::NodeStatus::Connected);
 
