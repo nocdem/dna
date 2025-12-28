@@ -1,4 +1,6 @@
-// Background Tasks Provider - DHT listeners and initial offline message check
+// Background Tasks Provider - Manual refresh support
+// Note: DHT listeners and initial offline check are handled by C code during identity load
+// (messenger_p2p_subscribe_to_contacts + messenger_p2p_check_offline_messages)
 import 'dart:async';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
@@ -7,42 +9,33 @@ import 'identity_provider.dart';
 import 'contacts_provider.dart';
 import 'messages_provider.dart';
 
-/// Initial delay before first poll after identity load (15 seconds)
-const _initialDelay = Duration(seconds: 15);
-
-/// Delay before starting outbox listeners (let DHT stabilize)
-const _listenerDelay = Duration(seconds: 10);
-
 /// Background task manager state
 class BackgroundTasksState {
   final bool isPolling;
   final DateTime? lastPollTime;
   final int messagesReceived;
-  final int activeListeners;  // Number of active outbox listeners
 
   const BackgroundTasksState({
     this.isPolling = false,
     this.lastPollTime,
     this.messagesReceived = 0,
-    this.activeListeners = 0,
   });
 
   BackgroundTasksState copyWith({
     bool? isPolling,
     DateTime? lastPollTime,
     int? messagesReceived,
-    int? activeListeners,
   }) {
     return BackgroundTasksState(
       isPolling: isPolling ?? this.isPolling,
       lastPollTime: lastPollTime ?? this.lastPollTime,
       messagesReceived: messagesReceived ?? this.messagesReceived,
-      activeListeners: activeListeners ?? this.activeListeners,
     );
   }
 }
 
-/// Background tasks manager - handles DHT listeners and initial offline check
+/// Background tasks manager - provides manual refresh capability
+/// Note: Automatic DHT listeners are set up by C code during identity load
 final backgroundTasksProvider = StateNotifierProvider<BackgroundTasksNotifier, BackgroundTasksState>(
   (ref) => BackgroundTasksNotifier(ref),
 );
@@ -50,91 +43,8 @@ final backgroundTasksProvider = StateNotifierProvider<BackgroundTasksNotifier, B
 class BackgroundTasksNotifier extends StateNotifier<BackgroundTasksState> {
   final Ref _ref;
   bool _disposed = false;
-  bool _listenersStarted = false;
 
-  BackgroundTasksNotifier(this._ref) : super(const BackgroundTasksState()) {
-    // Start background tasks when identity is loaded
-    _ref.listen(currentFingerprintProvider, (previous, next) {
-      if (next != null && previous == null) {
-        // Identity just loaded - do initial poll and start outbox listeners
-        _initialPoll();
-        _startOutboxListeners();
-      } else if (next == null && previous != null) {
-        // Identity unloaded - cancel listeners
-        _cancelOutboxListeners();
-      }
-    }, fireImmediately: true);
-  }
-
-  /// Initial poll after identity load (one-time, not periodic)
-  void _initialPoll() {
-    if (_disposed) return;
-
-    Future.delayed(_initialDelay, () {
-      if (!_disposed) {
-        _pollOfflineMessages();
-      }
-    });
-  }
-
-  /// Start outbox listeners for all contacts
-  void _startOutboxListeners() {
-    if (_disposed || _listenersStarted) return;
-
-    // Delay to let DHT connection stabilize
-    Future.delayed(_listenerDelay, () async {
-      if (_disposed) return;
-
-      try {
-        final engine = await _ref.read(engineProvider.future);
-        final count = engine.listenAllContacts();
-        _listenersStarted = true;
-        state = state.copyWith(activeListeners: count);
-      } catch (e) {
-        // Ignore errors - listeners are optional optimization
-      }
-    });
-  }
-
-  /// Cancel all outbox listeners
-  void _cancelOutboxListeners() {
-    if (!_listenersStarted) return;
-
-    try {
-      _ref.read(engineProvider).whenData((engine) {
-        engine.cancelAllOutboxListeners();
-      });
-    } catch (e) {
-      // Ignore errors during cleanup
-    }
-
-    _listenersStarted = false;
-    state = state.copyWith(activeListeners: 0);
-  }
-
-  /// Start listening for a specific contact's outbox (call when contact added)
-  void listenToContact(String contactFingerprint) {
-    if (_disposed || !_listenersStarted) return;
-
-    _ref.read(engineProvider).whenData((engine) {
-      final token = engine.listenOutbox(contactFingerprint);
-      if (token > 0) {
-        state = state.copyWith(activeListeners: state.activeListeners + 1);
-      }
-    });
-  }
-
-  /// Stop listening to a specific contact's outbox (call when contact removed)
-  void stopListeningToContact(String contactFingerprint) {
-    if (_disposed) return;
-
-    _ref.read(engineProvider).whenData((engine) {
-      engine.cancelOutboxListener(contactFingerprint);
-      if (state.activeListeners > 0) {
-        state = state.copyWith(activeListeners: state.activeListeners - 1);
-      }
-    });
-  }
+  BackgroundTasksNotifier(this._ref) : super(const BackgroundTasksState());
 
   Future<void> _pollOfflineMessages() async {
     if (state.isPolling) {
@@ -174,7 +84,6 @@ class BackgroundTasksNotifier extends StateNotifier<BackgroundTasksState> {
   @override
   void dispose() {
     _disposed = true;
-    _cancelOutboxListeners();
     super.dispose();
   }
 }
