@@ -1,8 +1,8 @@
 # DNA Messenger - Development Guidelines for Claude AI
 
-**Last Updated:** 2025-12-27 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
+**Last Updated:** 2025-12-28 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** App v0.2.101 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** App v0.2.106 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -20,6 +20,28 @@ Anything against protocol mode breaks the blockchain / encryption.
 - Fixed bugs are marked with `- [x]` and include version number
 - Add new bugs reported by user to the Open Bugs section
 - Mark bugs as fixed with version number when resolved
+
+## FUNCTION REFERENCE
+**`docs/FUNCTIONS.md`** is the authoritative source for all function signatures in the codebase.
+
+**ALWAYS check `FUNCTIONS.md` when:**
+- Writing new code that calls existing functions
+- Modifying existing function signatures
+- Debugging issues (to understand available APIs)
+- Adding new features (to find relevant functions)
+
+**ALWAYS update `FUNCTIONS.md` when:**
+- Adding new functions (public or internal)
+- Changing function signatures
+- Removing functions
+- Adding new header files
+
+**Format:** Each function entry follows table format:
+```
+| `return_type function_name(params)` | Brief one-line description |
+```
+
+**Sections:** Public API → DNA API → Messenger → Crypto → DHT → P2P → Database → Blockchain → Engine
 
 ## LOGGING STANDARD
 When adding debug/logging to C code, ALWAYS use QGP_LOG macros:
@@ -204,6 +226,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 | DNA Engine API | `docs/DNA_ENGINE_API.md` | Public API functions, data types, callbacks, error codes changes |
 | DNA Nodus | `docs/DNA_NODUS.md` | Bootstrap server, STUN/TURN, config, deployment changes |
 | Flutter UI | `docs/FLUTTER_UI.md` | Screens, FFI bindings, providers, widgets changes |
+| Function Reference | `docs/FUNCTIONS.md` | Adding, modifying, or removing any function signatures |
 | Git Workflow | `docs/GIT_WORKFLOW.md` | Commit guidelines, branch strategy, repo procedures changes |
 | Message System | `docs/MESSAGE_SYSTEM.md` | Message format, encryption, GSK, database schema changes |
 | Mobile Porting | `docs/MOBILE_PORTING.md` | Android SDK, JNI, iOS, platform abstraction changes |
@@ -280,6 +303,7 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 - **[README.md](README.md)** - Project overview and getting started
 
 ### 🔧 Technical Docs
+- **[Functions Reference](docs/FUNCTIONS.md)** - All function signatures (authoritative source)
 - **[Protocol Specs](docs/PROTOCOL.md)** - Wire formats (Seal, Spillway, Anchor, Atlas, Nexus)
 - **[CLI Testing](docs/CLI_TESTING.md)** - CLI tool for debugging and testing
 - **[Flutter UI](docs/FLUTTER_UI.md)** - Flutter migration (Phase 7)

@@ -74,6 +74,8 @@ class SettingsScreen extends ConsumerWidget {
           _ContactsSection(),
           // Security
           _SecuritySection(),
+          // Data (backup/restore)
+          _DataSection(),
           // Developer settings (hidden by default)
           if (developerMode) _LogSettingsSection(),
           // Identity (tap fingerprint 5x to enable developer mode)
@@ -510,6 +512,252 @@ class _SecuritySectionState extends ConsumerState<_SecuritySection> {
           ),
         );
       },
+    );
+  }
+}
+
+class _DataSection extends ConsumerStatefulWidget {
+  @override
+  ConsumerState<_DataSection> createState() => _DataSectionState();
+}
+
+class _DataSectionState extends ConsumerState<_DataSection> {
+  bool _isBackingUp = false;
+  bool _isRestoring = false;
+
+  Future<void> _backupMessages(BuildContext context) async {
+    // Show confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Backup Messages'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This will upload all your messages to the DHT network.',
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary.withAlpha(26),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 20, color: Theme.of(context).colorScheme.primary),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Backup expires after 7 days. Only you can decrypt it.',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Backup'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _isBackingUp = true);
+
+    try {
+      final engineAsync = ref.read(engineProvider);
+      await engineAsync.when(
+        data: (engine) async {
+          final result = await engine.backupMessages();
+          if (mounted) {
+            if (result.success) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text('Backed up ${result.processedCount} messages'),
+                  backgroundColor: DnaColors.snackbarSuccess,
+                ),
+              );
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(result.errorMessage ?? 'Backup failed'),
+                  backgroundColor: DnaColors.snackbarError,
+                ),
+              );
+            }
+          }
+        },
+        loading: () {
+          throw Exception('Engine not ready');
+        },
+        error: (e, st) {
+          throw Exception('Engine error: $e');
+        },
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Backup failed: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isBackingUp = false);
+      }
+    }
+  }
+
+  Future<void> _restoreMessages(BuildContext context) async {
+    // Show confirmation dialog
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Restore Messages'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This will download messages from your DHT backup.',
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Theme.of(context).colorScheme.primary.withAlpha(26),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, size: 20, color: Theme.of(context).colorScheme.primary),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Duplicate messages will be skipped automatically.',
+                      style: TextStyle(fontSize: 13),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Restore'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed != true) return;
+
+    setState(() => _isRestoring = true);
+
+    try {
+      final engineAsync = ref.read(engineProvider);
+      await engineAsync.when(
+        data: (engine) async {
+          final result = await engine.restoreMessages();
+          if (mounted) {
+            if (result.success) {
+              String message = 'Restored ${result.processedCount} messages';
+              if (result.skippedCount > 0) {
+                message += ' (${result.skippedCount} duplicates skipped)';
+              }
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(message),
+                  backgroundColor: DnaColors.snackbarSuccess,
+                ),
+              );
+            } else {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(
+                  content: Text(result.errorMessage ?? 'Restore failed'),
+                  backgroundColor: DnaColors.snackbarError,
+                ),
+              );
+            }
+          }
+        },
+        loading: () {
+          throw Exception('Engine not ready');
+        },
+        error: (e, st) {
+          throw Exception('Engine error: $e');
+        },
+      );
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Restore failed: $e'),
+            backgroundColor: DnaColors.snackbarError,
+          ),
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() => _isRestoring = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader('Data'),
+        ListTile(
+          leading: _isBackingUp
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.cloud_upload),
+          title: const Text('Backup Messages'),
+          subtitle: const Text('Upload messages to DHT (7 day TTL)'),
+          trailing: _isBackingUp ? null : const Icon(Icons.chevron_right),
+          onTap: _isBackingUp || _isRestoring ? null : () => _backupMessages(context),
+        ),
+        ListTile(
+          leading: _isRestoring
+              ? const SizedBox(
+                  width: 24,
+                  height: 24,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.cloud_download),
+          title: const Text('Restore Messages'),
+          subtitle: const Text('Download messages from DHT backup'),
+          trailing: _isRestoring ? null : const Icon(Icons.chevron_right),
+          onTap: _isBackingUp || _isRestoring ? null : () => _restoreMessages(context),
+        ),
+      ],
     );
   }
 }

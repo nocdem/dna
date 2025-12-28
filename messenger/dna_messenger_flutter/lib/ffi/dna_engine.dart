@@ -535,6 +535,21 @@ class DebugLogEntry {
       '${timestamp.toIso8601String()} [$levelString] $tag: $message';
 }
 
+/// Result of message backup/restore operations
+class BackupResult {
+  final int processedCount;
+  final int skippedCount;
+  final bool success;
+  final String? errorMessage;
+
+  BackupResult({
+    required this.processedCount,
+    required this.skippedCount,
+    required this.success,
+    this.errorMessage,
+  });
+}
+
 /// User profile information (synced with DHT dna_unified_identity_t)
 class UserProfile {
   // Cellframe wallets
@@ -3654,6 +3669,107 @@ class DnaEngine {
   /// Returns true on success, false on error
   bool debugLogExport(String filepath) {
     return _bindings.dna_engine_debug_log_export(filepath) == 0;
+  }
+
+  // ---------------------------------------------------------------------------
+  // MESSAGE BACKUP/RESTORE
+  // ---------------------------------------------------------------------------
+
+  /// Result of a backup or restore operation
+  /// [processedCount] - Number of messages backed up or restored
+  /// [skippedCount] - Number of duplicates skipped (restore only)
+  /// [success] - True if operation completed successfully
+  /// [errorMessage] - Error message if operation failed
+
+  /// Backup all messages to DHT
+  /// Returns the number of messages backed up
+  /// Throws [DnaEngineException] on error
+  Future<BackupResult> backupMessages() async {
+    final completer = Completer<BackupResult>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, int processedCount, int skippedCount, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete(BackupResult(
+          processedCount: processedCount,
+          skippedCount: skippedCount,
+          success: true,
+        ));
+      } else {
+        completer.complete(BackupResult(
+          processedCount: 0,
+          skippedCount: 0,
+          success: false,
+          errorMessage: error == -2 ? 'No backup found' : 'Backup failed (error: $error)',
+        ));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaBackupResultCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_backup_messages(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit backup request');
+    }
+
+    return completer.future;
+  }
+
+  /// Restore messages from DHT
+  /// Returns the number of messages restored and skipped duplicates
+  /// Throws [DnaEngineException] on error
+  Future<BackupResult> restoreMessages() async {
+    final completer = Completer<BackupResult>();
+    final localId = _nextLocalId++;
+
+    void onComplete(int requestId, int error, int processedCount, int skippedCount, Pointer<Void> userData) {
+      if (error == 0) {
+        completer.complete(BackupResult(
+          processedCount: processedCount,
+          skippedCount: skippedCount,
+          success: true,
+        ));
+      } else if (error == -2) {
+        completer.complete(BackupResult(
+          processedCount: 0,
+          skippedCount: 0,
+          success: false,
+          errorMessage: 'No backup found in DHT',
+        ));
+      } else {
+        completer.complete(BackupResult(
+          processedCount: 0,
+          skippedCount: 0,
+          success: false,
+          errorMessage: 'Restore failed (error: $error)',
+        ));
+      }
+      _cleanupRequest(localId);
+    }
+
+    final callback = NativeCallable<DnaBackupResultCbNative>.listener(onComplete);
+    _pendingRequests[localId] = _PendingRequest(callback: callback);
+
+    final requestId = _bindings.dna_engine_restore_messages(
+      _engine,
+      callback.nativeFunction.cast(),
+      nullptr,
+    );
+
+    if (requestId == 0) {
+      _cleanupRequest(localId);
+      throw DnaEngineException(-1, 'Failed to submit restore request');
+    }
+
+    return completer.future;
   }
 
   // ---------------------------------------------------------------------------

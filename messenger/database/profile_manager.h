@@ -31,6 +31,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include "dht/client/dna_profile.h"
+#include "dht/core/dht_context.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -115,6 +116,21 @@ int profile_manager_get_stats(int *total_out, int *expired_out);
  * @return Number of profiles prefetched, or -1 on error
  */
 int profile_manager_prefetch_local_identities(const char *data_dir);
+
+/**
+ * Get display name for fingerprint
+ * Tries reverse lookup first (fast), then full profile, then fallback to shortened fingerprint
+ *
+ * @param dht_ctx DHT context (can be NULL, will skip reverse lookup)
+ * @param fingerprint Fingerprint (128 hex chars)
+ * @param display_name_out Output display name (caller must free)
+ * @return 0 on success, -1 on error
+ */
+int dna_get_display_name(
+    dht_context_t *dht_ctx,
+    const char *fingerprint,
+    char **display_name_out
+);
 
 /**
  * Close profile manager

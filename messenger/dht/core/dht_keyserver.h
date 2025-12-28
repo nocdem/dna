@@ -273,21 +273,6 @@ int dna_lookup_by_name(
 bool dna_is_name_expired(const dna_unified_identity_t *identity);
 
 /**
- * Get display name for fingerprint
- * Returns registered name if available, otherwise shortened fingerprint
- *
- * @param dht_ctx: DHT context
- * @param fingerprint: Fingerprint (128 hex chars)
- * @param display_name_out: Output display name (caller must free)
- * @return: 0 on success, -1 on error
- */
-int dna_get_display_name(
-    dht_context_t *dht_ctx,
-    const char *fingerprint,
-    char **display_name_out
-);
-
-/**
  * Resolve DNA name to wallet address
  * Combines name lookup + wallet address extraction
  *

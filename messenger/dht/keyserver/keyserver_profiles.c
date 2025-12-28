@@ -6,7 +6,6 @@
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
 #include "crypto/utils/qgp_log.h"
-#include "database/profile_cache.h"
 
 #define LOG_TAG "KEYSERVER"
 
@@ -229,72 +228,5 @@ int dna_load_identity(
     }
 
     *identity_out = identity;
-    return 0;
-}
-
-// Get display name for fingerprint
-// Optimized: Try reverse lookup first (small, fast) before loading full profile
-int dna_get_display_name(
-    dht_context_t *dht_ctx,
-    const char *fingerprint,
-    char **display_name_out
-) {
-    if (!fingerprint || !display_name_out) {
-        return -1;
-    }
-
-    int ret;
-
-    // 1. Try reverse lookup first (fingerprint:reverse key) - fast, small payload
-    if (dht_ctx) {
-        char *registered_name = NULL;
-        ret = dht_keyserver_reverse_lookup(dht_ctx, fingerprint, &registered_name);
-        if (ret == 0 && registered_name && registered_name[0] != '\0') {
-            *display_name_out = registered_name;
-            QGP_LOG_INFO(LOG_TAG, "✓ Display name: %s (from reverse lookup)\n", registered_name);
-            return 0;
-        }
-        if (registered_name) {
-            free(registered_name);
-        }
-    }
-
-    // 2. Reverse lookup failed - try full profile as fallback
-    // This is slower but may have name in older profiles without reverse key
-    dna_unified_identity_t *identity = NULL;
-    ret = dna_load_identity(dht_ctx, fingerprint, &identity);
-
-    if (ret == 0 && identity) {
-        // Cache the full profile (including avatar) for later use
-        profile_cache_add_or_update(fingerprint, identity);
-
-        // Check if name is registered and not expired
-        if (identity->has_registered_name && !dna_is_name_expired(identity)) {
-            // Return registered name
-            char *display = strdup(identity->registered_name);
-            dna_identity_free(identity);
-
-            if (!display) {
-                return -1;
-            }
-
-            *display_name_out = display;
-            QGP_LOG_INFO(LOG_TAG, "✓ Display name: %s (from profile)\n", display);
-            return 0;
-        }
-
-        dna_identity_free(identity);
-    }
-
-    // 3. Fallback: Return shortened fingerprint (first 16 chars + "...")
-    char *display = malloc(32);
-    if (!display) {
-        return -1;
-    }
-
-    snprintf(display, 32, "%.16s...", fingerprint);
-    *display_name_out = display;
-
-    QGP_LOG_INFO(LOG_TAG, "Display name: %s (fingerprint)\n", display);
     return 0;
 }

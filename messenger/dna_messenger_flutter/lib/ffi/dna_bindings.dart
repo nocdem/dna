@@ -668,6 +668,16 @@ typedef DnaPresenceCbNative = Void Function(
 );
 typedef DnaPresenceCb = NativeFunction<DnaPresenceCbNative>;
 
+/// Backup result callback - Native
+typedef DnaBackupResultCbNative = Void Function(
+  Uint64 request_id,
+  Int32 error,
+  Int32 processed_count,
+  Int32 skipped_count,
+  Pointer<Void> user_data,
+);
+typedef DnaBackupResultCb = NativeFunction<DnaBackupResultCbNative>;
+
 /// Event callback - Native
 typedef DnaEventCbNative = Void Function(
   Pointer<dna_event_t> event,
@@ -833,6 +843,14 @@ typedef DnaPresenceCbDart = void Function(
   int requestId,
   int error,
   int lastSeen,
+  Pointer<Void> userData,
+);
+
+typedef DnaBackupResultCbDart = void Function(
+  int requestId,
+  int error,
+  int processedCount,
+  int skippedCount,
   Pointer<Void> userData,
 );
 
@@ -2280,6 +2298,50 @@ class DnaBindings {
     final result = _dna_engine_debug_log_export(pathPtr);
     malloc.free(pathPtr);
     return result;
+  }
+
+  // ===========================================================================
+  // MESSAGE BACKUP/RESTORE
+  // ===========================================================================
+
+  late final _dna_engine_backup_messages = _lib.lookupFunction<
+      Uint64 Function(
+        Pointer<dna_engine_t>,
+        Pointer<DnaBackupResultCb>,
+        Pointer<Void>,
+      ),
+      int Function(
+        Pointer<dna_engine_t>,
+        Pointer<DnaBackupResultCb>,
+        Pointer<Void>,
+      )>('dna_engine_backup_messages');
+
+  int dna_engine_backup_messages(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaBackupResultCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_backup_messages(engine, callback, user_data);
+  }
+
+  late final _dna_engine_restore_messages = _lib.lookupFunction<
+      Uint64 Function(
+        Pointer<dna_engine_t>,
+        Pointer<DnaBackupResultCb>,
+        Pointer<Void>,
+      ),
+      int Function(
+        Pointer<dna_engine_t>,
+        Pointer<DnaBackupResultCb>,
+        Pointer<Void>,
+      )>('dna_engine_restore_messages');
+
+  int dna_engine_restore_messages(
+    Pointer<dna_engine_t> engine,
+    Pointer<DnaBackupResultCb> callback,
+    Pointer<Void> user_data,
+  ) {
+    return _dna_engine_restore_messages(engine, callback, user_data);
   }
 }
 

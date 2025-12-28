@@ -62,6 +62,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "dht/core/dht_keyserver.h"
 #include "dht/core/dht_listen.h"
 #include "dht/client/dht_contactlist.h"
+#include "dht/client/dht_message_backup.h"
 #include "dht/client/dna_feed.h"
 #include "dht/client/dna_profile.h"
 #include "dht/shared/dht_chunked.h"
@@ -6241,4 +6242,234 @@ void dna_engine_debug_log_message(const char *tag, const char *message) {
 int dna_engine_debug_log_export(const char *filepath) {
     if (!filepath) return -1;
     return qgp_log_export_to_file(filepath);
+}
+
+/* ============================================================================
+ * MESSAGE BACKUP/RESTORE IMPLEMENTATION
+ * ============================================================================ */
+
+dna_request_id_t dna_engine_backup_messages(
+    dna_engine_t *engine,
+    dna_backup_result_cb callback,
+    void *user_data)
+{
+    if (!engine || !callback) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for backup_messages");
+        return 0;
+    }
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        QGP_LOG_ERROR(LOG_TAG, "No identity loaded for backup");
+        callback(0, -1, 0, 0, user_data);
+        return 0;
+    }
+
+    dna_request_id_t request_id = dna_next_request_id(engine);
+
+    // Get DHT context
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available for backup");
+        callback(request_id, -1, 0, 0, user_data);
+        return request_id;
+    }
+
+    // Get message backup context
+    message_backup_context_t *msg_ctx = engine->messenger->backup_ctx;
+    if (!msg_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Message backup context not available");
+        callback(request_id, -1, 0, 0, user_data);
+        return request_id;
+    }
+
+    // Load keys (same pattern as messenger_sync_contacts_to_dht)
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory");
+        callback(request_id, -1, 0, 0, user_data);
+        return request_id;
+    }
+
+    // Load Kyber keypair
+    char kyber_path[1024];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem",
+             data_dir, engine->fingerprint, engine->fingerprint);
+
+    qgp_key_t *kyber_key = NULL;
+    if (engine->session_password) {
+        if (qgp_key_load_encrypted(kyber_path, engine->session_password, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted Kyber key");
+            callback(request_id, -1, 0, 0, user_data);
+            return request_id;
+        }
+    } else {
+        if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key");
+            callback(request_id, -1, 0, 0, user_data);
+            return request_id;
+        }
+    }
+
+    // Load Dilithium keypair
+    char dilithium_path[1024];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s/keys/%s.dsa",
+             data_dir, engine->fingerprint, engine->fingerprint);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (engine->session_password) {
+        if (qgp_key_load_encrypted(dilithium_path, engine->session_password, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted Dilithium key");
+            qgp_key_free(kyber_key);
+            callback(request_id, -1, 0, 0, user_data);
+            return request_id;
+        }
+    } else {
+        if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key");
+            qgp_key_free(kyber_key);
+            callback(request_id, -1, 0, 0, user_data);
+            return request_id;
+        }
+    }
+
+    // Perform backup
+    int message_count = 0;
+    int result = dht_message_backup_publish(
+        dht_ctx,
+        msg_ctx,
+        engine->fingerprint,
+        kyber_key->public_key,
+        kyber_key->private_key,
+        dilithium_key->public_key,
+        dilithium_key->private_key,
+        &message_count
+    );
+
+    qgp_key_free(kyber_key);
+    qgp_key_free(dilithium_key);
+
+    if (result == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Message backup completed: %d messages", message_count);
+        callback(request_id, 0, message_count, 0, user_data);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "Message backup failed: %d", result);
+        callback(request_id, result, 0, 0, user_data);
+    }
+
+    return request_id;
+}
+
+dna_request_id_t dna_engine_restore_messages(
+    dna_engine_t *engine,
+    dna_backup_result_cb callback,
+    void *user_data)
+{
+    if (!engine || !callback) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid parameters for restore_messages");
+        return 0;
+    }
+
+    if (!engine->identity_loaded || !engine->messenger) {
+        QGP_LOG_ERROR(LOG_TAG, "No identity loaded for restore");
+        callback(0, -1, 0, 0, user_data);
+        return 0;
+    }
+
+    dna_request_id_t request_id = dna_next_request_id(engine);
+
+    // Get DHT context
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT not available for restore");
+        callback(request_id, -1, 0, 0, user_data);
+        return request_id;
+    }
+
+    // Get message backup context
+    message_backup_context_t *msg_ctx = engine->messenger->backup_ctx;
+    if (!msg_ctx) {
+        QGP_LOG_ERROR(LOG_TAG, "Message backup context not available");
+        callback(request_id, -1, 0, 0, user_data);
+        return request_id;
+    }
+
+    // Load keys
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory");
+        callback(request_id, -1, 0, 0, user_data);
+        return request_id;
+    }
+
+    // Load Kyber keypair (only need private key for decryption)
+    char kyber_path[1024];
+    snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem",
+             data_dir, engine->fingerprint, engine->fingerprint);
+
+    qgp_key_t *kyber_key = NULL;
+    if (engine->session_password) {
+        if (qgp_key_load_encrypted(kyber_path, engine->session_password, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted Kyber key");
+            callback(request_id, -1, 0, 0, user_data);
+            return request_id;
+        }
+    } else {
+        if (qgp_key_load(kyber_path, &kyber_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Kyber key");
+            callback(request_id, -1, 0, 0, user_data);
+            return request_id;
+        }
+    }
+
+    // Load Dilithium keypair (only need public key for signature verification)
+    char dilithium_path[1024];
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s/keys/%s.dsa",
+             data_dir, engine->fingerprint, engine->fingerprint);
+
+    qgp_key_t *dilithium_key = NULL;
+    if (engine->session_password) {
+        if (qgp_key_load_encrypted(dilithium_path, engine->session_password, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted Dilithium key");
+            qgp_key_free(kyber_key);
+            callback(request_id, -1, 0, 0, user_data);
+            return request_id;
+        }
+    } else {
+        if (qgp_key_load(dilithium_path, &dilithium_key) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to load Dilithium key");
+            qgp_key_free(kyber_key);
+            callback(request_id, -1, 0, 0, user_data);
+            return request_id;
+        }
+    }
+
+    // Perform restore
+    int restored_count = 0;
+    int skipped_count = 0;
+    int result = dht_message_backup_restore(
+        dht_ctx,
+        msg_ctx,
+        engine->fingerprint,
+        kyber_key->private_key,
+        dilithium_key->public_key,
+        &restored_count,
+        &skipped_count
+    );
+
+    qgp_key_free(kyber_key);
+    qgp_key_free(dilithium_key);
+
+    if (result == 0) {
+        QGP_LOG_INFO(LOG_TAG, "Message restore completed: %d restored, %d skipped",
+                     restored_count, skipped_count);
+        callback(request_id, 0, restored_count, skipped_count, user_data);
+    } else if (result == -2) {
+        QGP_LOG_INFO(LOG_TAG, "No message backup found in DHT");
+        callback(request_id, -2, 0, 0, user_data);
+    } else {
+        QGP_LOG_ERROR(LOG_TAG, "Message restore failed: %d", result);
+        callback(request_id, result, 0, 0, user_data);
+    }
+
+    return request_id;
 }

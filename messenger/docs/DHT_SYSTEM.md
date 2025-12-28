@@ -1,6 +1,6 @@
 # DHT System Documentation
 
-**Last Updated:** 2025-12-24
+**Last Updated:** 2025-12-28
 **Phase:** 14 (DHT-Only Messaging)
 
 Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system, covering both client operations and the dna-nodus bootstrap server.
@@ -519,6 +519,83 @@ This enables seamless contact list restore when logging in on a new device.
 
 ---
 
+### 4.4 dht_message_backup.h/c
+
+Manual message backup/restore for multi-device sync via DHT.
+
+- **DHT Key**: `SHA3-512(fingerprint + ":message_backup")`
+- **TTL**: 7 days (`DHT_CHUNK_TTL_7DAY`)
+- **Encryption**: Self-encrypted using identity's own Kyber1024 pubkey
+- **Signature**: Dilithium5 signed for authenticity
+- **Storage**: Uses chunked layer for large backups
+
+#### Binary Blob Format
+
+```
+[4B magic "MSGB"][1B version][8B timestamp][8B expiry]
+[4B payload_len][encrypted_payload][4B sig_len][signature]
+```
+
+#### JSON Payload (before encryption)
+
+```json
+{
+  "version": 1,
+  "fingerprint": "abc123...",
+  "timestamp": 1703894400,
+  "message_count": 150,
+  "messages": [
+    {
+      "sender": "abc...",
+      "recipient": "def...",
+      "encrypted_message_base64": "...",
+      "encrypted_len": 1234,
+      "timestamp": 1703894000,
+      "is_outgoing": true,
+      "status": 1,
+      "group_id": 0,
+      "message_type": 0
+    }
+  ]
+}
+```
+
+#### API
+
+```c
+// Backup all messages to DHT (self-encrypted)
+int dht_message_backup_publish(
+    dht_context_t *dht_ctx,
+    message_backup_context_t *msg_ctx,
+    const char *fingerprint,
+    const uint8_t *kyber_pubkey,
+    const uint8_t *kyber_privkey,
+    const uint8_t *dilithium_pubkey,
+    const uint8_t *dilithium_privkey,
+    int *message_count_out
+);
+
+// Restore messages from DHT backup
+int dht_message_backup_restore(
+    dht_context_t *dht_ctx,
+    message_backup_context_t *msg_ctx,
+    const char *fingerprint,
+    const uint8_t *kyber_privkey,
+    const uint8_t *dilithium_pubkey,
+    int *restored_count_out,
+    int *skipped_count_out
+);
+```
+
+#### Usage Notes
+
+- **Backup triggers**: Manual only (Settings → Data → Backup Messages)
+- **Restore triggers**: Manual only (Settings → Data → Restore Messages)
+- **Duplicate handling**: Uses `message_backup_exists_ciphertext()` to skip existing messages
+- **Expiry**: User must restore within 7 days of backup
+
+---
+
 ## 5. DHT Shared (`dht/shared/`)
 
 ### 5.1 dht_value_storage.h/cpp
@@ -923,6 +1000,7 @@ Stats printed every 60 seconds:
 | Offline Messages | 7 days | `SHA3-512(sender:outbox:recipient)` | No | Spillway outbox |
 | **Watermarks** | 30 days | `SHA3-512(recipient:watermark:sender)` | No | Delivery ack (8-byte seq_num) |
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
+| **Message Backup** | 7 days | `SHA3-512(fingerprint:message_backup)` | No | Self-encrypted, manual sync |
 | **Contact Requests** | 7 days | `SHA3-512(fingerprint:requests)` | No | ICQ-style contact request inbox |
 | **Identity** | 365 days | `SHA3-512(fingerprint:profile)` | Yes | Unified: keys + name + profile |
 | **Name Lookup** | 365 days | `SHA3-512(name:lookup)` | Yes | Name → fingerprint |
@@ -1068,6 +1146,7 @@ await engine.blockUser(fingerprint, "spam");
 | `dht/client/` | `dht_singleton.c`, `dht_singleton.h` | Global singleton |
 | `dht/client/` | `dht_identity.cpp`, `dht_identity.h` | Identity management |
 | `dht/client/` | `dht_contactlist.c`, `dht_contactlist.h` | Contact list storage |
+| `dht/client/` | `dht_message_backup.c`, `dht_message_backup.h` | Message backup/restore |
 | `dht/shared/` | `dht_value_storage.cpp`, `dht_value_storage.h` | SQLite persistence |
 | `dht/shared/` | `dht_offline_queue.c`, `dht_offline_queue.h` | Offline messaging |
 | `dht/shared/` | `dht_groups.c`, `dht_groups.h` | Group metadata |

@@ -2230,6 +2230,63 @@ void dna_engine_debug_log_message(const char *tag, const char *message);
  */
 int dna_engine_debug_log_export(const char *filepath);
 
+/* ============================================================================
+ * MESSAGE BACKUP/RESTORE API
+ * ============================================================================ */
+
+/**
+ * Backup result callback
+ *
+ * Called when backup or restore operation completes.
+ *
+ * @param request_id     Request ID from original call
+ * @param error          0 on success, negative on error, -2 if not found (restore)
+ * @param processed_count Number of messages backed up or restored
+ * @param skipped_count   Number of duplicates skipped (restore only, 0 for backup)
+ * @param user_data      User data from original call
+ */
+typedef void (*dna_backup_result_cb)(
+    dna_request_id_t request_id,
+    int error,
+    int processed_count,
+    int skipped_count,
+    void *user_data
+);
+
+/**
+ * Backup all messages to DHT
+ *
+ * Uploads all messages from SQLite to DHT with 7-day TTL.
+ * Messages are encrypted with self-encryption (only owner can decrypt).
+ *
+ * @param engine     Engine instance
+ * @param callback   Called on completion with message count
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_backup_messages(
+    dna_engine_t *engine,
+    dna_backup_result_cb callback,
+    void *user_data
+);
+
+/**
+ * Restore messages from DHT
+ *
+ * Downloads messages from DHT and imports to SQLite.
+ * Duplicate messages are automatically skipped.
+ *
+ * @param engine     Engine instance
+ * @param callback   Called on completion with restored/skipped counts
+ * @param user_data  User data for callback
+ * @return           Request ID (0 on immediate error)
+ */
+dna_request_id_t dna_engine_restore_messages(
+    dna_engine_t *engine,
+    dna_backup_result_cb callback,
+    void *user_data
+);
+
 #ifdef __cplusplus
 }
 #endif
