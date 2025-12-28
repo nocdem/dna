@@ -96,14 +96,16 @@ struct dht_context {
     dht_status_callback_t status_callback;
     void *status_callback_user_data;
     std::mutex status_callback_mutex;
+    bool prev_connected;  // Track connection state per-context (not static!)
 
-    dht_context() : running(false), storage(nullptr),
+    dht_context() : running(false), storage(nullptr), owned_identity(nullptr),
                     // Initialize with default values (configured properly in start())
                     type_7day(0, "", std::chrono::hours(0)),
                     type_30day(0, "", std::chrono::hours(0)),
                     type_365day(0, "", std::chrono::hours(0)),
                     status_callback(nullptr),
-                    status_callback_user_data(nullptr) {
+                    status_callback_user_data(nullptr),
+                    prev_connected(false) {
         memset(&config, 0, sizeof(config));
     }
 };
@@ -630,21 +632,32 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
     QGP_LOG_INFO("DHT", "Status callback registered");
 
     // Register with OpenDHT's status change notification
-    // The callback fires when either IPv4 or IPv6 status changes
-    // We report connected when new_status is Connected (meaning at least one family connected)
+    // IMPORTANT: OpenDHT fires this callback for EACH address family (IPv4/IPv6) separately
+    // We only use IPv4, so we must check actual node stats instead of trusting the status parameter
     ctx->runner.setOnStatusChanged([ctx](dht::NodeStatus old_status, dht::NodeStatus new_status) {
         // Log EVERY status change for debugging
-        QGP_LOG_WARN("DHT", ">>> STATUS CHANGE: %s -> %s (ctx=%p, running=%d)",
-            dht::statusToStr(old_status), dht::statusToStr(new_status),
-            (void*)ctx, ctx ? ctx->running : -1);
+        QGP_LOG_DEBUG("DHT", ">>> RAW STATUS: %s -> %s (ctx=%p)",
+            dht::statusToStr(old_status), dht::statusToStr(new_status), (void*)ctx);
 
-        bool was_connected = (old_status == dht::NodeStatus::Connected);
-        bool is_connected = (new_status == dht::NodeStatus::Connected);
+        if (!ctx || !ctx->running) {
+            QGP_LOG_DEBUG("DHT", "Ignoring status change - context not running");
+            return;
+        }
 
-        // Only notify on actual transitions
-        if (was_connected != is_connected) {
-            QGP_LOG_INFO("DHT", "Status changed: %s -> %s",
-                dht::statusToStr(old_status), dht::statusToStr(new_status));
+        // Check ACTUAL IPv4 node stats (we don't use IPv6)
+        // This prevents false "disconnected" when only IPv6 fails
+        auto stats_v4 = ctx->runner.getNodesStats(AF_INET);
+        bool actually_connected = (stats_v4.good_nodes > 0);
+
+        QGP_LOG_INFO("DHT", "Status check: IPv4 good_nodes=%zu, actually_connected=%d",
+            stats_v4.good_nodes, actually_connected);
+
+        // Only notify on actual transitions (use per-context state, not static!)
+        if (ctx->prev_connected != actually_connected) {
+            QGP_LOG_INFO("DHT", "Connection state changed: %s -> %s",
+                ctx->prev_connected ? "connected" : "disconnected",
+                actually_connected ? "connected" : "disconnected");
+            ctx->prev_connected = actually_connected;
 
             // Get callback info (thread-safe)
             dht_status_callback_t cb = nullptr;
@@ -656,7 +669,7 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
             }
 
             if (cb) {
-                cb(is_connected, ud);
+                cb(actually_connected, ud);
             }
         }
     });
