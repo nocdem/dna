@@ -531,12 +531,13 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
     if (!ctx) return;
 
     try {
+        QGP_LOG_WARN("DHT", ">>> STOP called (ctx=%p, running=%d) <<<", (void*)ctx, ctx->running);
         if (ctx->running) {
-            QGP_LOG_INFO("DHT", "Stopping node...");
-            QGP_LOG_INFO("DHT", "Shutting down DHT runner (this will persist state to disk)...");
+            QGP_LOG_WARN("DHT", ">>> STOP: calling runner.shutdown()...");
             ctx->runner.shutdown();
+            QGP_LOG_WARN("DHT", ">>> STOP: calling runner.join()...");
             ctx->runner.join();
-            QGP_LOG_INFO("DHT", "DHT shutdown complete");
+            QGP_LOG_WARN("DHT", ">>> STOP: runner stopped");
 
             // Cleanup value storage
             if (ctx->storage) {

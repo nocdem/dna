@@ -205,10 +205,12 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 void dht_singleton_cleanup(void)
 {
     if (g_dht_context) {
-        QGP_LOG_INFO(LOG_TAG, "Shutting down global DHT context...");
+        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP START (ctx=%p) <<<", (void*)g_dht_context);
         dht_context_free(g_dht_context);
         g_dht_context = NULL;
-        QGP_LOG_INFO(LOG_TAG, "DHT shutdown complete");
+        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP DONE <<<");
+    } else {
+        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP: no context to clean <<<");
     }
 }
 
