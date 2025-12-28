@@ -160,12 +160,15 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
 
   Future<void> loadIdentity(String fingerprint) async {
     final engine = await ref.read(engineProvider.future);
+    engine.debugLog('IDENTITY', 'loadIdentity START fp=${fingerprint.substring(0, 16)}...');
     await engine.loadIdentity(fingerprint);
+    engine.debugLog('IDENTITY', 'loadIdentity DONE - setting currentFingerprintProvider');
     // Set fingerprint AFTER identity is loaded - this triggers UI rebuild
     // via identityLoadedProvider which watches currentFingerprintProvider
     // NOTE: Do NOT invalidate engineProvider here - it would destroy the engine
     // and lose the loaded identity state
     ref.read(currentFingerprintProvider.notifier).state = fingerprint;
+    engine.debugLog('IDENTITY', 'loadIdentity - currentFingerprintProvider set');
   }
 
   /// Register a nickname for the current identity
