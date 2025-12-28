@@ -1495,16 +1495,12 @@ void dna_handle_get_profile(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
+    /* Get DHT context (needed for auto-publish later if wallet changed) */
     dht_context_t *dht = dna_get_dht_ctx(engine);
-    if (!dht) {
-        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] get_profile: no DHT context\n");
-        error = DNA_ENGINE_ERROR_NETWORK;
-        goto done;
-    }
 
-    /* Load identity from DHT */
+    /* Get own identity (cache first, then DHT via profile_manager) */
     dna_unified_identity_t *identity = NULL;
-    int rc = dna_load_identity(dht, engine->fingerprint, &identity);
+    int rc = profile_manager_get_profile(engine->fingerprint, &identity);
 
     if (rc != 0 || !identity) {
         if (rc == -2) {
@@ -1665,9 +1661,9 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    /* Load identity from DHT */
+    /* Get identity (cache first, then DHT via profile_manager) */
     dna_unified_identity_t *identity = NULL;
-    int rc = dna_load_identity(dht, fingerprint, &identity);
+    int rc = profile_manager_get_profile(fingerprint, &identity);
 
     if (rc != 0 || !identity) {
         if (rc == -2) {
@@ -1815,11 +1811,10 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     if (rc != 0) {
         error = DNA_ENGINE_ERROR_NETWORK;
     } else {
-        /* Update avatar cache for identity selector */
-        if (p->avatar_base64[0] != '\0') {
-            keyserver_cache_put_avatar(engine->fingerprint, p->avatar_base64);
-            QGP_LOG_INFO(LOG_TAG, "Avatar cached after profile save: %.16s...\n", engine->fingerprint);
-        }
+        /* Refresh profile cache with the updated profile from DHT
+         * This ensures the cache has the signed profile data */
+        profile_manager_refresh_profile(engine->fingerprint, NULL);
+        QGP_LOG_INFO(LOG_TAG, "Profile cached after DHT update: %.16s...\n", engine->fingerprint);
     }
 
 done:

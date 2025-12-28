@@ -95,6 +95,17 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
         return -2;
     }
 
+    if (result == -3) {
+        // Signature verification failed - security issue
+        QGP_LOG_WARN(LOG_TAG, "Signature verification failed: %s\n", user_fingerprint);
+        // Delete from cache since profile is invalid
+        profile_cache_delete(user_fingerprint);
+        if (cached_identity) {
+            dna_identity_free(cached_identity);
+        }
+        return -3;  // Pass through for security handling
+    }
+
     if (result != 0) {
         // DHT error
         QGP_LOG_ERROR(LOG_TAG, "DHT fetch failed: %s\n", user_fingerprint);
