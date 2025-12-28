@@ -139,7 +139,6 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `dna_request_id_t dna_engine_sync_contacts_to_dht(...)` | Sync contacts to DHT |
 | `dna_request_id_t dna_engine_sync_contacts_from_dht(...)` | Sync contacts from DHT |
 | `dna_request_id_t dna_engine_sync_groups(...)` | Sync groups from DHT |
-| `dna_request_id_t dna_engine_subscribe_to_contacts(...)` | Subscribe to contacts for push |
 | `int dna_engine_request_turn_credentials(dna_engine_t*, int)` | Request TURN relay credentials |
 | `dna_request_id_t dna_engine_get_registered_name(...)` | Get registered name for current identity |
 
@@ -1855,7 +1854,6 @@ Internal DNA engine implementation with async task queue.
 | `void dna_handle_sync_contacts_to_dht(dna_engine_t*, dna_task_t*)` | Handle sync to DHT |
 | `void dna_handle_sync_contacts_from_dht(dna_engine_t*, dna_task_t*)` | Handle sync from DHT |
 | `void dna_handle_sync_groups(dna_engine_t*, dna_task_t*)` | Handle sync groups |
-| `void dna_handle_subscribe_to_contacts(dna_engine_t*, dna_task_t*)` | Handle subscribe |
 | `void dna_handle_get_registered_name(dna_engine_t*, dna_task_t*)` | Handle get name |
 
 #### Task Handlers - Feed

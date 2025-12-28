@@ -540,9 +540,6 @@ void dna_execute_task(dna_engine_t *engine, dna_task_t *task) {
         case TASK_SYNC_GROUPS:
             dna_handle_sync_groups(engine, task);
             break;
-        case TASK_SUBSCRIBE_TO_CONTACTS:
-            dna_handle_subscribe_to_contacts(engine, task);
-            break;
         case TASK_GET_REGISTERED_NAME:
             dna_handle_get_registered_name(engine, task);
             break;
@@ -4696,19 +4693,6 @@ dna_request_id_t dna_engine_sync_groups(
     return dna_submit_task(engine, TASK_SYNC_GROUPS, NULL, cb, user_data);
 }
 
-dna_request_id_t dna_engine_subscribe_to_contacts(
-    dna_engine_t *engine,
-    dna_completion_cb callback,
-    void *user_data
-) {
-    if (!engine || !callback) {
-        return DNA_REQUEST_ID_INVALID;
-    }
-
-    dna_task_callback_t cb = { .completion = callback };
-    return dna_submit_task(engine, TASK_SUBSCRIBE_TO_CONTACTS, NULL, cb, user_data);
-}
-
 dna_request_id_t dna_engine_get_registered_name(
     dna_engine_t *engine,
     dna_display_name_cb callback,
@@ -5259,24 +5243,6 @@ void dna_handle_sync_groups(dna_engine_t *engine, dna_task_t *task) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
         if (messenger_sync_groups(engine->messenger) != 0) {
-            error = DNA_ENGINE_ERROR_NETWORK;
-        }
-    }
-
-    if (task->callback.completion) {
-        task->callback.completion(task->request_id, error, task->user_data);
-    }
-}
-
-void dna_handle_subscribe_to_contacts(dna_engine_t *engine, dna_task_t *task) {
-    if (task->cancelled) return;
-
-    int error = DNA_OK;
-
-    if (!engine->messenger) {
-        error = DNA_ENGINE_ERROR_NO_IDENTITY;
-    } else {
-        if (messenger_p2p_subscribe_to_contacts(engine->messenger) != 0) {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
     }

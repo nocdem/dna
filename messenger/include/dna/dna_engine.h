@@ -1612,22 +1612,6 @@ dna_request_id_t dna_engine_sync_groups(
 );
 
 /**
- * Subscribe to contacts for push notifications
- *
- * Enables real-time message delivery via DHT.
- *
- * @param engine    Engine instance
- * @param callback  Called on completion
- * @param user_data User data for callback
- * @return          Request ID (0 on immediate error)
- */
-dna_request_id_t dna_engine_subscribe_to_contacts(
-    dna_engine_t *engine,
-    dna_completion_cb callback,
-    void *user_data
-);
-
-/**
  * Request TURN relay credentials from DNA Nodus
  *
  * Forces a TURN credential request even if not needed for current NAT type.
