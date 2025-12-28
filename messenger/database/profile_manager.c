@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
 #include "crypto/utils/qgp_log.h"
 
 #define LOG_TAG "DB_PROFILE"
@@ -21,16 +22,16 @@ static dht_context_t *g_dht_ctx = NULL;
 static bool g_initialized = false;
 
 /**
- * Initialize profile manager
+ * Initialize profile manager (global, no identity required)
  */
-int profile_manager_init(dht_context_t *dht_ctx, const char *owner_identity) {
-    if (!dht_ctx || !owner_identity) {
+int profile_manager_init(dht_context_t *dht_ctx) {
+    if (!dht_ctx) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid parameters\n");
         return -1;
     }
 
-    // Initialize cache
-    if (profile_cache_init(owner_identity) != 0) {
+    // Initialize global cache
+    if (profile_cache_init() != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize cache\n");
         return -1;
     }
@@ -38,7 +39,7 @@ int profile_manager_init(dht_context_t *dht_ctx, const char *owner_identity) {
     g_dht_ctx = dht_ctx;
     g_initialized = true;
 
-    QGP_LOG_INFO(LOG_TAG, "Initialized for %s\n", owner_identity);
+    QGP_LOG_INFO(LOG_TAG, "Initialized (global)\n");
     return 0;
 }
 
@@ -311,6 +312,67 @@ int profile_manager_get_stats(int *total_out, int *expired_out) {
     }
 
     return 0;
+}
+
+/**
+ * Prefetch profiles for local identities from DHT
+ * Called when DHT connects to populate cache for identity selection screen
+ */
+int profile_manager_prefetch_local_identities(const char *data_dir) {
+    if (!g_initialized || !g_dht_ctx) {
+        QGP_LOG_DEBUG(LOG_TAG, "Not initialized, skipping prefetch\n");
+        return -1;
+    }
+
+    if (!data_dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Invalid data_dir\n");
+        return -1;
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Prefetching local identity profiles from DHT...\n");
+
+    // List .identity files in data directory
+    DIR *dir = opendir(data_dir);
+    if (!dir) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to open data directory: %s\n", data_dir);
+        return -1;
+    }
+
+    int prefetch_count = 0;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        // Look for files ending in .identity
+        const char *name = entry->d_name;
+        size_t len = strlen(name);
+        if (len > 9 && strcmp(name + len - 9, ".identity") == 0) {
+            // Extract fingerprint (filename without .identity suffix)
+            char fingerprint[256];
+            size_t fp_len = len - 9;
+            if (fp_len > 128) fp_len = 128;  // Fingerprints are 128 chars
+            strncpy(fingerprint, name, fp_len);
+            fingerprint[fp_len] = '\0';
+
+            // Prefetch profile (uses cache if available)
+            QGP_LOG_DEBUG(LOG_TAG, "Prefetching profile: %.16s...\n", fingerprint);
+            dna_unified_identity_t *identity = NULL;
+            int result = profile_manager_get_profile(fingerprint, &identity);
+            if (result == 0 && identity) {
+                QGP_LOG_DEBUG(LOG_TAG, "Prefetched: %.16s... name='%s'\n",
+                            fingerprint, identity->display_name);
+                dna_identity_free(identity);
+                prefetch_count++;
+            } else if (result == -2) {
+                QGP_LOG_DEBUG(LOG_TAG, "Not found in DHT: %.16s...\n", fingerprint);
+            } else {
+                QGP_LOG_DEBUG(LOG_TAG, "Prefetch failed: %.16s...\n", fingerprint);
+            }
+        }
+    }
+
+    closedir(dir);
+
+    QGP_LOG_INFO(LOG_TAG, "Prefetched %d identity profiles\n", prefetch_count);
+    return prefetch_count;
 }
 
 /**

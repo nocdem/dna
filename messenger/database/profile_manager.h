@@ -3,13 +3,14 @@
  * Smart profile fetching layer (cache + DHT)
  *
  * Architecture:
+ * - GLOBAL cache (shared across identities, profiles are public)
  * - Tries local cache first (instant)
  * - Falls back to DHT if not cached or expired (>7 days)
  * - Automatically updates cache after DHT fetch
- * - Provides background refresh for expired profiles
+ * - Can be initialized before identity is loaded (for prefetching)
  *
  * Usage:
- * 1. Initialize: profile_manager_init(dht_ctx, owner_identity)
+ * 1. Initialize: profile_manager_init(dht_ctx) - at engine startup
  * 2. Get profile: profile_manager_get_profile(fingerprint, &profile)
  *    - Returns cached if fresh
  *    - Fetches from DHT if expired/missing
@@ -19,6 +20,7 @@
  * @file profile_manager.h
  * @author DNA Messenger Team
  * @date 2025-11-12
+ * @updated 2025-12-28 (Global cache for prefetching)
  */
 
 #ifndef PROFILE_MANAGER_H
@@ -35,14 +37,13 @@ extern "C" {
 #endif
 
 /**
- * Initialize profile manager
- * Opens cache database and stores DHT context
+ * Initialize profile manager (global, no identity required)
+ * Opens global cache database and stores DHT context
  *
  * @param dht_ctx DHT context (must remain valid)
- * @param owner_identity Identity who owns this cache
  * @return 0 on success, -1 on error
  */
-int profile_manager_init(dht_context_t *dht_ctx, const char *owner_identity);
+int profile_manager_init(dht_context_t *dht_ctx);
 
 /**
  * Get user profile (smart fetch: cache first, then DHT)
@@ -105,6 +106,15 @@ int profile_manager_delete_cached(const char *user_fingerprint);
  * @return 0 on success, -1 on error
  */
 int profile_manager_get_stats(int *total_out, int *expired_out);
+
+/**
+ * Prefetch profiles for local identities from DHT
+ * Called when DHT connects to populate cache for identity selection screen
+ *
+ * @param data_dir Path to data directory (e.g., ~/.dna)
+ * @return Number of profiles prefetched, or -1 on error
+ */
+int profile_manager_prefetch_local_identities(const char *data_dir);
 
 /**
  * Close profile manager

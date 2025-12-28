@@ -1,12 +1,13 @@
 /**
  * Profile Cache Database
- * Local SQLite cache for user profiles (per-identity)
+ * GLOBAL SQLite cache for user profiles (shared across all identities)
  *
  * Architecture:
- * - Per-identity database: ~/.dna/<owner_identity>_profiles.db
+ * - Global database: ~/.dna/profile_cache.db
  * - 7-day TTL: Profiles expire after 7 days, auto-refresh from DHT
  * - Cache all fetched profiles (not just contacts)
- * - Reduces DHT queries while keeping profiles reasonably fresh
+ * - Shared across identities (profiles are public DHT data)
+ * - Can be initialized before identity is loaded (for prefetching)
  *
  * Database Schema (Phase 5: Unified Identity):
  * CREATE TABLE profiles (
@@ -18,7 +19,7 @@
  * @file profile_cache.h
  * @author DNA Messenger Team
  * @date 2025-11-12
- * @updated 2025-11-16 (Phase 5: Unified profile system)
+ * @updated 2025-12-28 (Global cache for prefetching)
  */
 
 #ifndef PROFILE_CACHE_H
@@ -57,13 +58,12 @@ typedef struct {
 } profile_cache_list_t;
 
 /**
- * Initialize profile cache for a specific identity
- * Creates database file at ~/.dna/<owner_identity>_profiles.db if it doesn't exist
+ * Initialize global profile cache
+ * Creates database file at ~/.dna/profile_cache.db if it doesn't exist
  *
- * @param owner_identity Identity who owns this cache (e.g., "alice_fingerprint")
  * @return 0 on success, -1 on error
  */
-int profile_cache_init(const char *owner_identity);
+int profile_cache_init(void);
 
 /**
  * Add or update profile in cache (Phase 5: Unified Identity)

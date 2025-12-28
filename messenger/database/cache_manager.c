@@ -47,45 +47,37 @@ int cache_manager_init(const char *identity) {
         return -1;
     }
 
-    // 2. Per-identity caches (if identity provided)
+    // 2. Global profile cache (no identity needed - initialized in engine)
+    QGP_LOG_INFO(LOG_TAG, "[2/4] Profile cache is global (initialized in engine)\n");
+
+    // 3. Per-identity caches (if identity provided)
     if (identity && strlen(identity) > 0) {
         strncpy(g_current_identity, identity, sizeof(g_current_identity) - 1);
-
-        QGP_LOG_INFO(LOG_TAG, "[2/4] Initializing profile cache for identity: %s\n", identity);
-        if (profile_cache_init(identity) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to initialize profile cache\n");
-            keyserver_cache_cleanup();
-            pthread_mutex_unlock(&g_init_mutex);
-            return -1;
-        }
 
         QGP_LOG_INFO(LOG_TAG, "[3/4] Initializing contacts database for identity: %s\n", identity);
         if (contacts_db_init(identity) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to initialize contacts database\n");
-            profile_cache_close();
             keyserver_cache_cleanup();
             pthread_mutex_unlock(&g_init_mutex);
             return -1;
         }
     } else {
-        QGP_LOG_INFO(LOG_TAG, "[2/4] Skipping profile cache (no identity provided)\n");
         QGP_LOG_INFO(LOG_TAG, "[3/4] Skipping contacts database (no identity provided)\n");
     }
 
-    // 3. In-memory caches last
+    // 4. In-memory caches last
     QGP_LOG_INFO(LOG_TAG, "[4/4] Initializing presence cache (in-memory)...\n");
     if (presence_cache_init() != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to initialize presence cache\n");
         if (identity && strlen(identity) > 0) {
             contacts_db_close();
-            profile_cache_close();
         }
         keyserver_cache_cleanup();
         pthread_mutex_unlock(&g_init_mutex);
         return -1;
     }
 
-    // 4. Run startup eviction (clean expired entries from previous run)
+    // 5. Run startup eviction (clean expired entries from previous run)
     QGP_LOG_INFO(LOG_TAG, "Running startup eviction...\n");
     int evicted = cache_manager_evict_expired();
     if (evicted >= 0) {
@@ -117,8 +109,9 @@ void cache_manager_cleanup(void) {
 
     if (strlen(g_current_identity) > 0) {
         contacts_db_close();
-        profile_cache_close();
     }
+
+    /* Profile cache is global - closed by profile_manager_close() */
 
     keyserver_cache_cleanup();
 

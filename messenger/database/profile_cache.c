@@ -1,6 +1,9 @@
 /**
  * Profile Cache Database Implementation
- * Local SQLite cache for user profiles (per-identity)
+ * GLOBAL SQLite cache for user profiles (not per-identity)
+ *
+ * Profiles are public DHT data - no reason to cache per-identity.
+ * Global cache allows prefetching before identity is loaded.
  *
  * @file profile_cache.c
  * @author DNA Messenger Team
@@ -28,46 +31,31 @@
 #define LOG_TAG "DB_PROFILE"
 
 static sqlite3 *g_db = NULL;
-static char g_owner_identity[256] = {0};  // Current database owner
 
-// Get database path for specific identity
-static int get_db_path(const char *owner_identity, char *path_out, size_t path_size) {
-    if (!owner_identity || strlen(owner_identity) == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity\n");
-        return -1;
-    }
-
+// Get global database path
+static int get_db_path(char *path_out, size_t path_size) {
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
         return -1;
     }
 
-    snprintf(path_out, path_size, "%s/%s_profiles.db", data_dir, owner_identity);
+    snprintf(path_out, path_size, "%s/profile_cache.db", data_dir);
     return 0;
 }
 
 /**
- * Initialize profile cache
+ * Initialize global profile cache
  */
-int profile_cache_init(const char *owner_identity) {
-    if (!owner_identity || strlen(owner_identity) == 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Invalid owner_identity\n");
-        return -1;
-    }
-
-    // Close existing database if open
+int profile_cache_init(void) {
+    // Already initialized
     if (g_db) {
-        // Check if same owner
-        if (strcmp(g_owner_identity, owner_identity) == 0) {
-            return 0;  // Already initialized for this owner
-        }
-        profile_cache_close();
+        return 0;
     }
 
-    // Get database path
+    // Get global database path
     char db_path[1024];
-    if (get_db_path(owner_identity, db_path, sizeof(db_path)) != 0) {
+    if (get_db_path(db_path, sizeof(db_path)) != 0) {
         return -1;
     }
 
@@ -128,11 +116,7 @@ int profile_cache_init(const char *owner_identity) {
         // Non-fatal, continue
     }
 
-    // Store owner identity
-    strncpy(g_owner_identity, owner_identity, sizeof(g_owner_identity) - 1);
-    g_owner_identity[sizeof(g_owner_identity) - 1] = '\0';
-
-    QGP_LOG_INFO(LOG_TAG, "Initialized for owner: %s\n", owner_identity);
+    QGP_LOG_INFO(LOG_TAG, "Global profile cache initialized\n");
     return 0;
 }
 
@@ -553,7 +537,6 @@ void profile_cache_close(void) {
     if (g_db) {
         sqlite3_close(g_db);
         g_db = NULL;
-        g_owner_identity[0] = '\0';
         QGP_LOG_INFO(LOG_TAG, "Closed database\n");
     }
 }

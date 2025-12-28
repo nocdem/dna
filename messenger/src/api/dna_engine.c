@@ -145,6 +145,11 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
     if (is_connected) {
         QGP_LOG_WARN(LOG_TAG, "DHT connected (bootstrap complete, ready for operations)");
         event.type = DNA_EVENT_DHT_CONNECTED;
+
+        /* Prefetch profiles for local identities (for identity selection screen) */
+        if (engine->data_dir) {
+            profile_manager_prefetch_local_identities(engine->data_dir);
+        }
     } else {
         /* DHT disconnection can happen during:
          * 1. Initial bootstrap (network not ready yet)
@@ -650,6 +655,12 @@ dna_engine_t* dna_engine_create(const char *data_dir) {
     /* Initialize global keyserver cache (for display names before login) */
     keyserver_cache_init(NULL);
 
+    /* Initialize global profile cache + manager (for profile prefetching) */
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (dht_ctx) {
+        profile_manager_init(dht_ctx);
+    }
+
     /* Start worker threads */
     if (dna_start_workers(engine) != 0) {
         g_dht_callback_engine = NULL;
@@ -729,6 +740,7 @@ void dna_engine_destroy(dna_engine_t *engine) {
     pthread_cond_destroy(&engine->task_cond);
 
     /* Cleanup global caches */
+    profile_manager_close();
     keyserver_cache_cleanup();
 
     /* Securely clear session password */
@@ -1024,17 +1036,7 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         /* Non-fatal - continue, contacts will be initialized on first access */
     }
 
-    /* Initialize profile cache for storing/fetching contact profiles */
-    if (profile_cache_init(fingerprint) != 0) {
-        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize profile cache\n");
-        /* Non-fatal - continue, profiles will still work via DHT */
-    }
-
-    /* Initialize profile manager (smart fetch layer: cache + DHT) */
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (dht_ctx && profile_manager_init(dht_ctx, fingerprint) != 0) {
-        QGP_LOG_INFO(LOG_TAG, "Warning: Failed to initialize profile manager\n");
-    }
+    /* Profile cache is now global - initialized in dna_engine_create() */
 
     /* Sync contacts from DHT (restore on new device)
      * This must happen BEFORE subscribing to contacts for push notifications.
