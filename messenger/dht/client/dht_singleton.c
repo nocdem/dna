@@ -197,6 +197,12 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 
     if (dht_context_is_ready(g_dht_context)) {
         QGP_LOG_WARN(LOG_TAG, "DHT connected after %d00ms", wait_count);
+        // Fire connected callback manually - OpenDHT's setOnStatusChanged doesn't
+        // reliably fire for disconnected->connected transitions
+        if (g_status_callback) {
+            QGP_LOG_WARN(LOG_TAG, "Firing connected callback");
+            g_status_callback(true, g_status_callback_user_data);
+        }
     } else {
         QGP_LOG_WARN(LOG_TAG, "DHT not connected after 5s (will retry in background)");
     }
