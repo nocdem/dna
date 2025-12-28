@@ -662,16 +662,17 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
     });
 
     // Check if already connected (callback registered after DHT started)
-    // Use OpenDHT's actual status, not good_nodes count which can be stale
+    // Check BOTH IPv4 and IPv6 - original code only checked IPv4
     try {
-        dht::NodeStatus current_status = ctx->runner.getStatus();
-        if (current_status == dht::NodeStatus::Connected) {
-            QGP_LOG_WARN("DHT", "Already connected (status=%s) - firing callback",
-                         dht::statusToStr(current_status));
+        auto stats_v4 = ctx->runner.getNodesStats(AF_INET);
+        auto stats_v6 = ctx->runner.getNodesStats(AF_INET6);
+        size_t total_good = stats_v4.good_nodes + stats_v6.good_nodes;
+        if (total_good > 0) {
+            QGP_LOG_WARN("DHT", "Already connected (%zu nodes: v4=%u, v6=%u) - firing callback",
+                         total_good, stats_v4.good_nodes, stats_v6.good_nodes);
             callback(true, user_data);
         } else {
-            QGP_LOG_INFO("DHT", "Not yet connected (status=%s) - waiting for event",
-                         dht::statusToStr(current_status));
+            QGP_LOG_INFO("DHT", "Not yet connected (0 good nodes) - waiting for event");
         }
     } catch (const std::exception& e) {
         QGP_LOG_WARN("DHT", "Status check failed: %s - waiting for event", e.what());
