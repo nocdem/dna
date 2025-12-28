@@ -62,9 +62,7 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       // Poll for offline messages that may have arrived while backgrounded
       print('AppLifecycle: Checking for offline messages');
       await engine.checkOfflineMessages();
-
-      // Refresh contacts to update UI
-      ref.invalidate(contactsProvider);
+      // Note: Don't invalidate contactsProvider here - it's already updated by events
     } catch (e) {
       print('AppLifecycle: Error during resume - $e');
     }
