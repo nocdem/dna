@@ -1081,15 +1081,20 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
             QGP_LOG_INFO(LOG_TAG, "Warning: Failed to check offline messages\n");
         }
 
-        /* 2. Start outbox listeners for Flutter events (DNA_EVENT_OUTBOX_UPDATED)
-         * When DHT value changes, fires event -> Flutter polls + refreshes UI */
+    }
+
+    /* Mark identity as loaded BEFORE starting listeners (they check this flag) */
+    engine->identity_loaded = true;
+    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, identity_loaded flag set to true");
+
+    /* 2. Start outbox listeners for Flutter events (DNA_EVENT_OUTBOX_UPDATED)
+     * When DHT value changes, fires event -> Flutter polls + refreshes UI
+     * Must be AFTER identity_loaded=true since listeners check this flag */
+    if (engine->messenger && engine->messenger->p2p_enabled) {
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: starting outbox listeners...");
         int listener_count = dna_engine_listen_all_contacts(engine);
         QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity load: started %d listeners", listener_count);
     }
-
-    engine->identity_loaded = true;
-    QGP_LOG_WARN(LOG_TAG, "[LISTEN] Identity loaded, identity_loaded flag set to true");
 
     /* Silent background: Create any missing blockchain wallets
      * This uses the encrypted seed stored during identity creation.
