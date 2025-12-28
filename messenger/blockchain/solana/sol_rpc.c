@@ -124,14 +124,13 @@ static int sol_rpc_call(
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, (void *)&resp_buf);
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 30L);
 
-    /* Configure SSL CA bundle (required for Android) */
+    /* Configure SSL CA bundle (required for Android, system certs used on Linux/Windows) */
     const char *ca_bundle = qgp_platform_ca_bundle_path();
     if (ca_bundle) {
         QGP_LOG_DEBUG(LOG_TAG, "Using CA bundle: %s", ca_bundle);
         curl_easy_setopt(curl, CURLOPT_CAINFO, ca_bundle);
-    } else {
-        QGP_LOG_WARN(LOG_TAG, "No CA bundle - SSL verification may fail");
     }
+    /* On Linux/Windows: NULL is normal, curl uses system certificate store */
 
     QGP_LOG_INFO(LOG_TAG, "RPC call: %s -> %s", method, sol_rpc_get_endpoint());
 

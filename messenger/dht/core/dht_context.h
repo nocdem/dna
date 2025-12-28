@@ -98,6 +98,18 @@ void dht_context_free(dht_context_t *ctx);
 bool dht_context_is_ready(dht_context_t *ctx);
 
 /**
+ * Check if DHT context is running (not stopped/cleaned up)
+ *
+ * This is a simpler check than dht_context_is_ready() - it only checks
+ * if the context is running, not if it's connected to peers.
+ * Use this to detect if DHT is being cleaned up during reinit.
+ *
+ * @param ctx DHT context
+ * @return true if running, false if stopped/NULL
+ */
+bool dht_context_is_running(dht_context_t *ctx);
+
+/**
  * Status change callback type
  *
  * @param is_connected true if DHT is now connected, false if disconnected

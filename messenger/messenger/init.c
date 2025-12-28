@@ -335,20 +335,24 @@ int messenger_load_dht_identity(const char *fingerprint) {
     qgp_key_free(kyber_key);
 
     // Reinitialize DHT singleton with permanent identity
-    QGP_LOG_INFO(LOG_TAG_DHT, "Reinitializing DHT with permanent identity...");
+    QGP_LOG_INFO(LOG_TAG_DHT, ">>> DHT REINIT START <<<");
 
     // Cleanup old DHT (ephemeral identity)
+    QGP_LOG_INFO(LOG_TAG_DHT, ">>> Calling dht_singleton_cleanup...");
     dht_singleton_cleanup();
+    QGP_LOG_INFO(LOG_TAG_DHT, ">>> dht_singleton_cleanup DONE");
 
     // Init with permanent identity
+    QGP_LOG_INFO(LOG_TAG_DHT, ">>> Calling dht_singleton_init_with_identity...");
     if (dht_singleton_init_with_identity(dht_identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to reinitialize DHT singleton");
         dht_identity_free(dht_identity);
         return -1;
     }
+    QGP_LOG_INFO(LOG_TAG_DHT, ">>> dht_singleton_init_with_identity DONE");
 
     // Don't free dht_identity here - it's owned by DHT singleton now
-    QGP_LOG_INFO(LOG_TAG_DHT, "DHT reinitialized with permanent identity");
+    QGP_LOG_INFO(LOG_TAG_DHT, ">>> DHT REINIT COMPLETE <<<");
 
     return 0;
 }

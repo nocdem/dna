@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <unistd.h>
 
 #define LOG_TAG "DHT"
 
@@ -88,6 +89,33 @@ int dht_singleton_init(void)
 
 dht_context_t* dht_singleton_get(void)
 {
+    // Debug: log every call
+    bool ctx_exists = (g_dht_context != NULL);
+    bool ctx_running = ctx_exists ? dht_context_is_running(g_dht_context) : false;
+    QGP_LOG_DEBUG(LOG_TAG, "dht_singleton_get: ctx=%p exists=%d running=%d",
+                  (void*)g_dht_context, ctx_exists, ctx_running);
+
+    // If DHT doesn't exist or is stopped, wait for it to become ready
+    // This handles race conditions during DHT reinit (identity loading)
+    if (!g_dht_context || !dht_context_is_running(g_dht_context)) {
+        QGP_LOG_INFO(LOG_TAG, "dht_singleton_get: DHT not ready, waiting...");
+        // Wait up to 5 seconds for DHT to become ready
+        int wait_count = 0;
+        while (wait_count < 50) {
+            if (g_dht_context && dht_context_is_running(g_dht_context)) {
+                QGP_LOG_INFO(LOG_TAG, "DHT became ready after %d00ms wait", wait_count);
+                break;
+            }
+            usleep(100000);  // 100ms
+            wait_count++;
+        }
+
+        // Still not ready after timeout
+        if (!g_dht_context || !dht_context_is_running(g_dht_context)) {
+            QGP_LOG_WARN(LOG_TAG, "DHT not available after 5s wait (ctx=%p)", (void*)g_dht_context);
+            return NULL;
+        }
+    }
     return g_dht_context;
 }
 
@@ -150,14 +178,33 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
         return -1;
     }
 
-    // Non-blocking: DHT bootstraps in its own background threads
-    // Operations will wait/retry as needed when DHT becomes ready
-    QGP_LOG_INFO(LOG_TAG, "DHT started with identity (bootstrapping in background)");
-
     // Re-register stored status callback on new context
     if (g_status_callback) {
         dht_context_set_status_callback(g_dht_context, g_status_callback, g_status_callback_user_data);
-        QGP_LOG_INFO(LOG_TAG, "Re-registered status callback on new context");
+        QGP_LOG_WARN(LOG_TAG, "Re-registered status callback on new context");
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "No status callback to re-register");
+    }
+
+    // Wait for DHT to connect (max 5 seconds)
+    // This prevents "Broken promise" errors from operations starting before DHT is ready
+    QGP_LOG_WARN(LOG_TAG, "Waiting for DHT connection...");
+    int wait_count = 0;
+    while (!dht_context_is_ready(g_dht_context) && wait_count < 50) {
+        usleep(100000);  // 100ms
+        wait_count++;
+    }
+
+    if (dht_context_is_ready(g_dht_context)) {
+        QGP_LOG_WARN(LOG_TAG, "DHT connected after %d00ms", wait_count);
+        // Fire connected callback manually - OpenDHT's setOnStatusChanged doesn't
+        // reliably fire for disconnected->connected transitions
+        if (g_status_callback) {
+            QGP_LOG_WARN(LOG_TAG, "Firing connected callback");
+            g_status_callback(true, g_status_callback_user_data);
+        }
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "DHT not connected after 5s (will retry in background)");
     }
 
     return 0;
@@ -166,10 +213,12 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
 void dht_singleton_cleanup(void)
 {
     if (g_dht_context) {
-        QGP_LOG_INFO(LOG_TAG, "Shutting down global DHT context...");
+        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP START (ctx=%p) <<<", (void*)g_dht_context);
         dht_context_free(g_dht_context);
         g_dht_context = NULL;
-        QGP_LOG_INFO(LOG_TAG, "DHT shutdown complete");
+        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP DONE <<<");
+    } else {
+        QGP_LOG_WARN(LOG_TAG, ">>> CLEANUP: no context to clean <<<");
     }
 }
 

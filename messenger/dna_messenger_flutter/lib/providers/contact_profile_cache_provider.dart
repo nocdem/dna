@@ -91,9 +91,17 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
 
   /// Fetch profile from DHT and save to cache
   Future<UserProfile?> _fetchFromDht(String fingerprint) async {
+    // Skip if no identity loaded (DHT may not be available)
+    final currentFp = _ref.read(currentFingerprintProvider);
+    if (currentFp == null) {
+      return null;
+    }
+
     try {
       final engine = await _ref.read(engineProvider.future);
+      engine.debugLog('PROFILE_CACHE', '_fetchFromDht START fp=${fingerprint.substring(0, 16)}...');
       final profile = await engine.lookupProfile(fingerprint);
+      engine.debugLog('PROFILE_CACHE', '_fetchFromDht DONE fp=${fingerprint.substring(0, 16)}... profile=${profile != null}');
 
       if (profile != null) {
         // Update in-memory cache
@@ -124,6 +132,12 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
 
   /// Prefetch profiles for multiple contacts in parallel
   Future<void> prefetchProfiles(List<String> fingerprints) async {
+    // Skip if no identity loaded (DHT may not be available)
+    final currentFp = _ref.read(currentFingerprintProvider);
+    if (currentFp == null) {
+      return;
+    }
+
     // Filter out already cached
     final toFetch = fingerprints.where((fp) => !state.containsKey(fp)).toList();
     if (toFetch.isEmpty) return;
@@ -143,28 +157,38 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
     // Fetch remaining from DHT
     try {
       final engine = await _ref.read(engineProvider.future);
+      engine.debugLog('PROFILE_CACHE', 'prefetchProfiles: ${toFetch.length} profiles to fetch from DHT');
 
       // Fetch in parallel with a limit to avoid overloading
       const batchSize = 5;
       for (var i = 0; i < toFetch.length; i += batchSize) {
+        // Re-check identity before each batch (may have been unloaded)
+        if (_ref.read(currentFingerprintProvider) == null) {
+          engine.debugLog('PROFILE_CACHE', 'prefetchProfiles: identity unloaded, stopping');
+          return;
+        }
+
         final batch = toFetch.skip(i).take(batchSize).toList();
+        engine.debugLog('PROFILE_CACHE', 'prefetchProfiles: fetching batch ${i ~/ batchSize + 1}');
         await Future.wait(
           batch.map((fp) async {
             try {
+              engine.debugLog('PROFILE_CACHE', 'prefetchProfiles: lookupProfile(${fp.substring(0, 16)}...)');
               final profile = await engine.lookupProfile(fp);
               if (profile != null && mounted) {
                 state = {...state, fp: profile};
                 // Persist to SQLite (fire and forget)
                 _db.saveProfile(fp, profile);
               }
-            } catch (_) {
-              // Ignore individual failures
+            } catch (e) {
+              engine.debugLog('PROFILE_CACHE', 'prefetchProfiles: FAILED ${fp.substring(0, 16)}... error=$e');
             }
           }),
         );
       }
-    } catch (_) {
-      // Engine not available
+      engine.debugLog('PROFILE_CACHE', 'prefetchProfiles: DONE');
+    } catch (e) {
+      // Engine not available - can't log without engine
     }
   }
 

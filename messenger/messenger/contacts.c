@@ -58,7 +58,7 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Syncing contacts to DHT for '%s'\n", ctx->identity);
+    QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] messenger_sync_contacts_to_dht called for %.16s...\n", ctx->identity);
 
     // Load user's keys
     const char *data_dir = qgp_platform_app_data_dir();
@@ -252,7 +252,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         // Not found in DHT - check if we have local contacts to publish
         int local_count = contacts_db_count();
         if (local_count > 0) {
-            QGP_LOG_INFO(LOG_TAG, "DHT empty but local has %d contacts - publishing to DHT\n", local_count);
+            QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] sync_from_dht: DHT empty, publishing %d local contacts\n", local_count);
             return messenger_sync_contacts_to_dht(ctx);
         }
         QGP_LOG_INFO(LOG_TAG, "No contacts in DHT or local (first time user)\n");
@@ -288,8 +288,8 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     // If local has MORE contacts than DHT, abort (DHT is stale or incomplete)
     // Only sync from DHT if it has MORE or EQUAL contacts
     if (local_count > 0 && count < (size_t)local_count) {
-        QGP_LOG_INFO(LOG_TAG, "SAFETY: Local has %d contacts but DHT has %zu\n", local_count, count);
-        QGP_LOG_INFO(LOG_TAG, "SAFETY: DHT appears stale - using MERGE mode instead of REPLACE\n");
+        QGP_LOG_WARN(LOG_TAG, "SAFETY CHECK 3 TRIGGERED: Local=%d, DHT=%zu\n", local_count, count);
+        QGP_LOG_WARN(LOG_TAG, "DHT has fewer contacts - using MERGE mode (may re-add deleted contacts!)\n");
 
         // MERGE mode: only ADD contacts from DHT that don't exist locally
         size_t added = 0;
@@ -300,14 +300,14 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
                 continue;
             }
             if (!contacts_db_exists(contacts[i])) {
+                QGP_LOG_WARN(LOG_TAG, "MERGE: Re-adding contact from DHT: %.16s... (WAS DELETED?)\n", contacts[i]);
                 if (contacts_db_add(contacts[i], NULL) == 0) {
                     added++;
-                    QGP_LOG_INFO(LOG_TAG, "MERGE: Added new contact from DHT: %s\n", contacts[i]);
                 }
             }
         }
         dht_contactlist_free_contacts(contacts, count);
-        QGP_LOG_INFO(LOG_TAG, "MERGE sync complete: added %zu new contacts from DHT\n", added);
+        QGP_LOG_WARN(LOG_TAG, "MERGE sync complete: re-added %zu contacts from DHT\n", added);
         return 0;
     }
 
@@ -368,6 +368,6 @@ int messenger_contacts_auto_sync(messenger_context_t *ctx) {
     }
 
     // If DHT fetch failed or not found, publish local contacts to DHT
-    QGP_LOG_INFO(LOG_TAG, "Auto-sync: Publishing local contacts to DHT\n");
+    QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] auto_sync: DHT fetch failed, publishing local contacts\n");
     return messenger_sync_contacts_to_dht(ctx);
 }

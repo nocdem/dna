@@ -9,10 +9,22 @@
 
 #include "keyserver_core.h"
 #include "../core/dht_keyserver.h"
+#include "../core/dht_context.h"
 #include "../client/dna_profile.h"
 #include "crypto/utils/qgp_log.h"
 
+#ifdef _WIN32
+#include <windows.h>
+#define SLEEP_MS(ms) Sleep((DWORD)(ms))
+#else
+#include <unistd.h>
+#define SLEEP_MS(ms) usleep((useconds_t)((ms) * 1000))
+#endif
+
 #define LOG_TAG "KEYSERVER"
+
+// Maximum time to wait for DHT to be ready (in seconds)
+#define DHT_READY_TIMEOUT_SECONDS 10
 
 // Publish identity to DHT (NAME-FIRST architecture)
 // Creates dna_unified_identity_t and stores at fingerprint:profile
@@ -28,13 +40,29 @@ int dht_keyserver_publish(
     const char *eth_address,     // Optional - Ethereum wallet address
     const char *sol_address      // Optional - Solana wallet address
 ) {
-    QGP_LOG_INFO(LOG_TAG, "Publishing identity: name=%s, fingerprint=%.16s...\n",
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] dht_keyserver_publish called: name=%s, fp=%.16s...\n",
            name, fingerprint);
 
     // Validate required arguments
     if (!dht_ctx || !fingerprint || !name || !dilithium_pubkey || !kyber_pubkey || !dilithium_privkey) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments (all fields required)\n");
         return -1;
+    }
+
+    // Wait for DHT to be ready (connected to network)
+    // This prevents publishing to a DHT that hasn't bootstrapped yet
+    if (!dht_context_is_ready(dht_ctx)) {
+        QGP_LOG_INFO(LOG_TAG, "Waiting for DHT to connect (max %d seconds)...\n", DHT_READY_TIMEOUT_SECONDS);
+        int wait_seconds = 0;
+        while (!dht_context_is_ready(dht_ctx) && wait_seconds < DHT_READY_TIMEOUT_SECONDS) {
+            SLEEP_MS(1000);  // Sleep 1 second
+            wait_seconds++;
+        }
+        if (!dht_context_is_ready(dht_ctx)) {
+            QGP_LOG_ERROR(LOG_TAG, "DHT not ready after %d seconds - cannot publish identity\n", DHT_READY_TIMEOUT_SECONDS);
+            return -3;  // DHT not ready
+        }
+        QGP_LOG_INFO(LOG_TAG, "DHT connected after %d seconds\n", wait_seconds);
     }
 
     // Validate fingerprint format
@@ -140,7 +168,7 @@ int dht_keyserver_publish(
     char profile_base_key[256];
     snprintf(profile_base_key, sizeof(profile_base_key), "%s:profile", fingerprint);
 
-    QGP_LOG_INFO(LOG_TAG, "Publishing to DHT key: %s\n", profile_base_key);
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] Publishing to DHT key: %s\n", profile_base_key);
 
     int ret = dht_chunked_publish(dht_ctx, profile_base_key,
                                   (uint8_t*)json, strlen(json),

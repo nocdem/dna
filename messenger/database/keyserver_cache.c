@@ -67,7 +67,7 @@ static int get_default_cache_path(char *path_out, size_t path_size) {
 // Initialize keyserver cache
 int keyserver_cache_init(const char *db_path) {
     if (g_cache_db) {
-        QGP_LOG_ERROR(LOG_TAG, "Already initialized\n");
+        QGP_LOG_DEBUG(LOG_TAG, "Already initialized (this is normal)\n");
         return 0;
     }
 

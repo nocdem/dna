@@ -85,6 +85,7 @@ struct dht_context {
     dht_config_t config;
     bool running;
     dht_value_storage_t *storage;  // Value persistence (NULL for user nodes)
+    dht_identity_t *owned_identity;  // User-provided identity (freed on cleanup)
 
     // ValueTypes with lambda-captured context (eliminates global storage pointer)
     dht::ValueType type_7day;
@@ -95,14 +96,16 @@ struct dht_context {
     dht_status_callback_t status_callback;
     void *status_callback_user_data;
     std::mutex status_callback_mutex;
+    bool prev_connected;  // Track connection state per-context (not static!)
 
-    dht_context() : running(false), storage(nullptr),
+    dht_context() : running(false), storage(nullptr), owned_identity(nullptr),
                     // Initialize with default values (configured properly in start())
                     type_7day(0, "", std::chrono::hours(0)),
                     type_30day(0, "", std::chrono::hours(0)),
                     type_365day(0, "", std::chrono::hours(0)),
                     status_callback(nullptr),
-                    status_callback_user_data(nullptr) {
+                    status_callback_user_data(nullptr),
+                    prev_connected(false) {
         memset(&config, 0, sizeof(config));
     }
 };
@@ -342,6 +345,7 @@ extern "C" dht_context_t* dht_context_new(const dht_config_t *config) {
     try {
         auto ctx = new dht_context();
         memcpy(&ctx->config, config, sizeof(dht_config_t));
+        ctx->owned_identity = nullptr;
 
         QGP_LOG_INFO("DHT", "Created context for node: %s", config->identity);
         QGP_LOG_INFO("DHT", "Requested port: %d%s", config->port, config->port == 0 ? " (auto-assign)" : "");
@@ -497,6 +501,9 @@ extern "C" int dht_context_start_with_identity(dht_context_t *ctx, dht_identity_
         // Use provided identity instead of generating one
         dht::crypto::Identity& identity = user_identity->identity;
 
+        // Take ownership of identity for cleanup
+        ctx->owned_identity = user_identity;
+
         QGP_LOG_INFO("DHT", "Using user-provided DHT identity");
 
         // User nodes always run memory-only (no disk persistence)
@@ -526,12 +533,12 @@ extern "C" void dht_context_stop(dht_context_t *ctx) {
     if (!ctx) return;
 
     try {
+        QGP_LOG_INFO("DHT", "Stopping DHT context...");
         if (ctx->running) {
-            QGP_LOG_INFO("DHT", "Stopping node...");
-            QGP_LOG_INFO("DHT", "Shutting down DHT runner (this will persist state to disk)...");
+            ctx->running = false;
             ctx->runner.shutdown();
             ctx->runner.join();
-            QGP_LOG_INFO("DHT", "DHT shutdown complete");
+            QGP_LOG_INFO("DHT", "DHT runner stopped");
 
             // Cleanup value storage
             if (ctx->storage) {
@@ -555,6 +562,13 @@ extern "C" void dht_context_free(dht_context_t *ctx) {
 
     try {
         dht_context_stop(ctx);
+
+        // Free owned identity (if any)
+        if (ctx->owned_identity) {
+            delete ctx->owned_identity;
+            ctx->owned_identity = nullptr;
+        }
+
         delete ctx;
         QGP_LOG_INFO("DHT", "Context freed");
     } catch (const std::exception& e) {
@@ -585,6 +599,18 @@ extern "C" bool dht_context_is_ready(dht_context_t *ctx) {
 }
 
 /**
+ * Check if DHT context is running (not stopped/cleaned up)
+ *
+ * This is a simpler check than dht_context_is_ready() - it only checks
+ * if the context is running, not if it's connected to peers.
+ * Use this to detect if DHT is being cleaned up during reinit.
+ */
+extern "C" bool dht_context_is_running(dht_context_t *ctx) {
+    if (!ctx) return false;
+    return ctx->running;
+}
+
+/**
  * Set callback for DHT connection status changes
  */
 extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_callback_t callback, void *user_data) {
@@ -605,16 +631,18 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
     QGP_LOG_INFO("DHT", "Status callback registered");
 
     // Register with OpenDHT's status change notification
-    // The callback fires when either IPv4 or IPv6 status changes
-    // We report connected when new_status is Connected (meaning at least one family connected)
+    // NOTE: This callback is called from OpenDHT's internal thread - do NOT call
+    // runner methods from here (like getNodesStats) as it causes deadlock!
     ctx->runner.setOnStatusChanged([ctx](dht::NodeStatus old_status, dht::NodeStatus new_status) {
+        QGP_LOG_WARN("DHT", "OpenDHT status: %s -> %s",
+            dht::statusToStr(old_status), dht::statusToStr(new_status));
+
         bool was_connected = (old_status == dht::NodeStatus::Connected);
         bool is_connected = (new_status == dht::NodeStatus::Connected);
 
         // Only notify on actual transitions
         if (was_connected != is_connected) {
-            QGP_LOG_INFO("DHT", "Status changed: %s -> %s",
-                dht::statusToStr(old_status), dht::statusToStr(new_status));
+            QGP_LOG_WARN("DHT", "Status transition: connected=%d", is_connected ? 1 : 0);
 
             // Get callback info (thread-safe)
             dht_status_callback_t cb = nullptr;
@@ -627,9 +655,23 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
 
             if (cb) {
                 cb(is_connected, ud);
+            } else {
+                QGP_LOG_WARN("DHT", "No callback registered!");
             }
         }
     });
+
+    // Check if already connected (callback registered after DHT started)
+    // This is safe to call here since we're not inside an OpenDHT callback
+    try {
+        auto stats_v4 = ctx->runner.getNodesStats(AF_INET);
+        if (stats_v4.good_nodes > 0) {
+            QGP_LOG_WARN("DHT", "Already connected (%zu nodes) - firing callback", stats_v4.good_nodes);
+            callback(true, user_data);
+        }
+    } catch (...) {
+        // Ignore - DHT might not be ready yet
+    }
 }
 
 /**
@@ -853,13 +895,14 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         // This allows subsequent PUTs with same ID to replace old values
         dht_value->id = value_id;
 
-        QGP_LOG_INFO("DHT", "PUT_SIGNED: %s (%zu bytes, TTL=%us, type=0x%x, id=%lu)", hash.toString().c_str(), value_len, ttl_seconds, dht_value->type, value_id);
-
-        // Debug: show which DHT identity is signing this value
-        auto my_pk = ctx->runner.getPublicKey();
-        if (my_pk) {
-            QGP_LOG_INFO("DHT", "PUT_SIGNED: signer=%s...", my_pk->getLongId().toString().substr(0, 16).c_str());
+        // Debug: show key and value info for each PUT attempt
+        char key_hex_start[41];
+        for (int i = 0; i < 20 && i < (int)key_len; i++) {
+            sprintf(&key_hex_start[i * 2], "%02x", key[i]);
         }
+        key_hex_start[40] = '\0';
+        QGP_LOG_WARN("DHT", "PUT_SIGNED: key=%s... (%zu bytes, TTL=%us, type=0x%x, id=%lu)",
+                     key_hex_start, value_len, ttl_seconds, dht_value->type, value_id);
 
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)

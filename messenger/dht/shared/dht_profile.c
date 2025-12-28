@@ -324,6 +324,8 @@ int dht_profile_publish(
         return -1;
     }
 
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] dht_profile_publish called for %.16s...\n", user_fingerprint);
+
     // Store in DHT using chunked layer (handles compression, chunking, signing)
     int result = dht_chunked_publish(dht_ctx, base_key, blob, blob_size, DHT_CHUNK_TTL_365DAY);
     free(blob);

@@ -59,12 +59,8 @@ class AppLifecycleObserver extends WidgetsBindingObserver {
       print('AppLifecycle: Refreshing presence');
       await engine.refreshPresence();
 
-      // Poll for offline messages that may have arrived while backgrounded
-      print('AppLifecycle: Checking for offline messages');
-      await engine.checkOfflineMessages();
-
-      // Refresh contacts to update UI
-      ref.invalidate(contactsProvider);
+      // Note: Offline messages are handled by C-side push notification callback
+      // (messenger_push_notification_callback) which triggers poll on DHT listen events
     } catch (e) {
       print('AppLifecycle: Error during resume - $e');
     }

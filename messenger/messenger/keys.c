@@ -240,6 +240,7 @@ int messenger_store_pubkey(
     }
 
     // Publish to DHT (FINGERPRINT-FIRST)
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] messenger_publish_pubkeys calling dht_keyserver_publish");
     int ret = dht_keyserver_publish(
         dht_ctx,
         fingerprint,

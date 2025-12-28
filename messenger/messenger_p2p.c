@@ -1310,11 +1310,12 @@ int messenger_p2p_subscribe_to_contacts(messenger_context_t *ctx)
         return 0;
     }
 
-    QGP_LOG_DEBUG("P2P", "Found %zu contacts\n", contacts->count);
+    size_t total_contacts = contacts->count;
+    QGP_LOG_DEBUG("P2P", "Found %zu contacts\n", total_contacts);
 
     // Subscribe to each contact
     size_t success_count = 0;
-    for (size_t i = 0; i < contacts->count; i++) {
+    for (size_t i = 0; i < total_contacts; i++) {
         const char *contact_fp = contacts->contacts[i].identity;
 
         if (messenger_p2p_subscribe_to_contact(ctx, contact_fp) == 0) {
@@ -1324,7 +1325,7 @@ int messenger_p2p_subscribe_to_contacts(messenger_context_t *ctx)
 
     contacts_db_free_list(contacts);
 
-    QGP_LOG_INFO("P2P", "Subscribed to %zu/%zu contacts\n", success_count, contacts->count);
+    QGP_LOG_INFO("P2P", "Subscribed to %zu/%zu contacts\n", success_count, total_contacts);
     return 0;
 }
 

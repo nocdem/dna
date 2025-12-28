@@ -99,8 +99,8 @@ int dna_update_profile(
     char base_key[256];
     snprintf(base_key, sizeof(base_key), "%s:profile", fingerprint);
 
-    QGP_LOG_INFO(LOG_TAG, "Updating profile for fingerprint %.16s...\n", fingerprint);
-    QGP_LOG_INFO(LOG_TAG, "Base key: %s\n", base_key);
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] dna_update_profile called for %.16s...\n", fingerprint);
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] Base key: %s\n", base_key);
 
     // Store in DHT via chunked layer (permanent storage)
     ret = dht_chunked_publish(dht_ctx, base_key,
@@ -150,14 +150,6 @@ int dna_load_identity(
 
     QGP_LOG_INFO(LOG_TAG, "Loaded profile (%zu bytes), verifying...\n", value_len);
 
-    // DEBUG: Check if avatar_base64 key exists in raw JSON
-    {
-        const char *avatar_key = "\"avatar_base64\"";
-        const char *found = strstr((char*)value, avatar_key);
-        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] Raw JSON has avatar_base64 key: %s\n",
-                     found ? "YES" : "NO");
-    }
-
     // Create null-terminated copy for JSON parsing
     char *json_str = (char*)malloc(value_len + 1);
     if (!json_str) {
@@ -168,6 +160,14 @@ int dna_load_identity(
     memcpy(json_str, value, value_len);
     json_str[value_len] = '\0';
     free(value);
+
+    // DEBUG: Check if avatar_base64 key exists in raw JSON (must use null-terminated string)
+    {
+        const char *avatar_key = "\"avatar_base64\"";
+        const char *found = strstr(json_str, avatar_key);
+        QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] Raw JSON has avatar_base64 key: %s\n",
+                     found ? "YES" : "NO");
+    }
 
     // Parse JSON
     dna_unified_identity_t *identity = NULL;
@@ -196,13 +196,19 @@ int dna_load_identity(
     int sig_result = qgp_dsa87_verify(identity->signature, sizeof(identity->signature),
                                        (uint8_t*)json_unsigned, strlen(json_unsigned),
                                        identity->dilithium_pubkey);
-    free(json_unsigned);
 
     if (sig_result != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "✗ Signature verification failed (JSON-based)\n");
+        QGP_LOG_ERROR(LOG_TAG, "✗ Signature verification failed for profile: name=%s, fp=%.16s...\n",
+                      identity->has_registered_name ? identity->registered_name : "(none)",
+                      identity->fingerprint);
+        QGP_LOG_DEBUG(LOG_TAG, "Verification details: json_len=%zu, sig_result=%d, version=%u\n",
+                      strlen(json_unsigned), sig_result, identity->version);
+        QGP_LOG_DEBUG(LOG_TAG, "Possible causes: 1) Stale profile in DHT, 2) Key rotation, 3) Profile edited after signing\n");
+        free(json_unsigned);
         dna_identity_free(identity);
         return -3;  // Verification failed
     }
+    free(json_unsigned);
 
     // Verify fingerprint matches
     char computed_fingerprint[129];

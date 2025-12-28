@@ -32,6 +32,7 @@
 #include "../blockchain/solana/sol_wallet.h"
 #include "../blockchain/cellframe/cellframe_wallet.h"
 #include "../blockchain/blockchain_wallet.h"
+#include "../blockchain/tron/trx_wallet.h"
 #include "../crypto/utils/seed_storage.h"
 
 // Network byte order conversion
@@ -551,71 +552,72 @@ int messenger_register_name(
         return -1;
     }
 
-    // Find wallet addresses for this identity
+    // Derive wallet addresses from mnemonic (on-demand derivation)
+    // Wallet files are no longer stored - addresses are derived when needed
     char wallet_address[128] = {0};
     char eth_address[48] = {0};
     char sol_address[48] = {0};
-    char wallets_path[512];
-    snprintf(wallets_path, sizeof(wallets_path), "%s/%s/wallets", data_dir, fingerprint);
+    char trx_address[48] = {0};
+    char identity_dir[512];
+    snprintf(identity_dir, sizeof(identity_dir), "%s/%s", data_dir, fingerprint);
 
-    QGP_LOG_DEBUG(LOG_TAG, "Scanning wallets directory: %s", wallets_path);
+    // Check if mnemonic exists and derive wallet addresses
+    if (mnemonic_storage_exists(identity_dir)) {
+        char mnemonic[512] = {0};
 
-    DIR *wdir = opendir(wallets_path);
-    if (wdir) {
-        QGP_LOG_DEBUG(LOG_TAG, "Wallets directory opened successfully");
-        struct dirent *wentry;
-        while ((wentry = readdir(wdir)) != NULL) {
-            QGP_LOG_DEBUG(LOG_TAG, "Found file: %s", wentry->d_name);
+        // Decrypt mnemonic using Kyber private key
+        if (mnemonic_storage_load(mnemonic, sizeof(mnemonic),
+                                   enc_key->private_key, identity_dir) == 0) {
+            QGP_LOG_DEBUG(LOG_TAG, "Mnemonic loaded for wallet derivation");
 
-            // Cellframe wallet
-            if (strstr(wentry->d_name, ".dwallet") && wallet_address[0] == '\0') {
-                char wpath[768];
-                snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
-                QGP_LOG_DEBUG(LOG_TAG, "Loading Cellframe wallet: %s", wpath);
-                cellframe_wallet_t *wallet = NULL;
-                if (wallet_read_cellframe_path(wpath, &wallet) == 0 && wallet) {
-                    if (wallet->address[0]) {
-                        strncpy(wallet_address, wallet->address, sizeof(wallet_address) - 1);
-                        QGP_LOG_DEBUG(LOG_TAG, "Cellframe wallet loaded: %s", wallet_address);
-                    } else {
-                        QGP_LOG_WARN(LOG_TAG, "Cellframe wallet has empty address");
-                    }
-                    wallet_free(wallet);
-                } else {
-                    QGP_LOG_ERROR(LOG_TAG, "Failed to load Cellframe wallet: %s", wpath);
-                }
-            }
-            // ETH wallet
-            if (strstr(wentry->d_name, ".eth.json") && eth_address[0] == '\0') {
-                char wpath[768];
-                snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
-                QGP_LOG_DEBUG(LOG_TAG, "Loading ETH wallet: %s", wpath);
+            // Convert mnemonic to 64-byte master seed for ETH/SOL
+            uint8_t master_seed[64];
+            if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
+
+                // Derive ETH address
                 eth_wallet_t eth_wallet;
-                if (eth_wallet_load(wpath, &eth_wallet) == 0) {
+                if (eth_wallet_generate(master_seed, 64, &eth_wallet) == 0) {
                     strncpy(eth_address, eth_wallet.address_hex, sizeof(eth_address) - 1);
-                    QGP_LOG_DEBUG(LOG_TAG, "ETH wallet loaded: %s", eth_address);
-                } else {
-                    QGP_LOG_ERROR(LOG_TAG, "Failed to load ETH wallet: %s", wpath);
+                    eth_wallet_clear(&eth_wallet);
+                    QGP_LOG_DEBUG(LOG_TAG, "Derived ETH address: %s", eth_address);
                 }
-            }
-            // SOL wallet
-            if (strstr(wentry->d_name, ".sol.json") && sol_address[0] == '\0') {
-                char wpath[768];
-                snprintf(wpath, sizeof(wpath), "%s/%s", wallets_path, wentry->d_name);
-                QGP_LOG_DEBUG(LOG_TAG, "Loading SOL wallet: %s", wpath);
+
+                // Derive SOL address
                 sol_wallet_t sol_wallet;
-                if (sol_wallet_load(wpath, &sol_wallet) == 0) {
+                if (sol_wallet_generate(master_seed, 64, &sol_wallet) == 0) {
                     strncpy(sol_address, sol_wallet.address, sizeof(sol_address) - 1);
-                    QGP_LOG_DEBUG(LOG_TAG, "SOL wallet loaded: %s", sol_address);
                     sol_wallet_clear(&sol_wallet);
-                } else {
-                    QGP_LOG_ERROR(LOG_TAG, "Failed to load SOL wallet: %s", wpath);
+                    QGP_LOG_DEBUG(LOG_TAG, "Derived SOL address: %s", sol_address);
                 }
+
+                // Derive TRX address
+                trx_wallet_t trx_wallet;
+                if (trx_wallet_generate(master_seed, 64, &trx_wallet) == 0) {
+                    strncpy(trx_address, trx_wallet.address, sizeof(trx_address) - 1);
+                    trx_wallet_clear(&trx_wallet);
+                    QGP_LOG_DEBUG(LOG_TAG, "Derived TRX address: %s", trx_address);
+                }
+
+                // Clear master seed
+                memset(master_seed, 0, sizeof(master_seed));
             }
+
+            // Derive Cellframe address (uses SHA3-256 of mnemonic, not BIP39 seed)
+            uint8_t cf_seed[CF_WALLET_SEED_SIZE];
+            if (cellframe_derive_seed_from_mnemonic(mnemonic, cf_seed) == 0) {
+                if (cellframe_wallet_derive_address(cf_seed, wallet_address) == 0) {
+                    QGP_LOG_DEBUG(LOG_TAG, "Derived Cellframe address: %s", wallet_address);
+                }
+                memset(cf_seed, 0, sizeof(cf_seed));
+            }
+
+            // Clear mnemonic from memory
+            memset(mnemonic, 0, sizeof(mnemonic));
+        } else {
+            QGP_LOG_WARN(LOG_TAG, "Failed to decrypt mnemonic for wallet derivation");
         }
-        closedir(wdir);
     } else {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to open wallets directory: %s", wallets_path);
+        QGP_LOG_WARN(LOG_TAG, "No mnemonic found - wallet addresses will be empty");
     }
 
     // Log final wallet addresses before publishing
@@ -623,8 +625,11 @@ int messenger_register_name(
     QGP_LOG_INFO(LOG_TAG, "  Cellframe: %s", wallet_address[0] ? wallet_address : "(none)");
     QGP_LOG_INFO(LOG_TAG, "  ETH: %s", eth_address[0] ? eth_address : "(none)");
     QGP_LOG_INFO(LOG_TAG, "  SOL: %s", sol_address[0] ? sol_address : "(none)");
+    QGP_LOG_INFO(LOG_TAG, "  TRX: %s", trx_address[0] ? trx_address : "(none)");
+    (void)trx_address;  // TRX not yet in dht_keyserver_publish, but derived for future use
 
     // Publish identity to DHT (unified: creates fingerprint:profile and name:lookup)
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] keygen calling dht_keyserver_publish for new identity");
     int publish_result = dht_keyserver_publish(
         dht_ctx,
         fingerprint,
@@ -639,6 +644,11 @@ int messenger_register_name(
 
     if (publish_result == -2) {
         QGP_LOG_ERROR(LOG_TAG, "Name '%s' is already taken", desired_name);
+        qgp_key_free(sign_key);
+        qgp_key_free(enc_key);
+        return -1;
+    } else if (publish_result == -3) {
+        QGP_LOG_ERROR(LOG_TAG, "DHT network not ready - cannot register name '%s'", desired_name);
         qgp_key_free(sign_key);
         qgp_key_free(enc_key);
         return -1;

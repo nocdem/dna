@@ -20,7 +20,9 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     }
 
     final engine = await ref.watch(engineProvider.future);
+    engine.debugLog('CONTACTS', 'build() - fetching contacts');
     final contacts = await engine.getContacts();
+    engine.debugLog('CONTACTS', 'Got ${contacts.length} contacts');
 
     // Sort by name initially (presence will update sort order later)
     final sortedContacts = List<Contact>.from(contacts);
@@ -29,6 +31,7 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     // Prefetch contact profiles in background (for avatars, display names)
     if (sortedContacts.isNotEmpty) {
       final fingerprints = sortedContacts.map((c) => c.fingerprint).toList();
+      engine.debugLog('CONTACTS', 'Prefetching ${fingerprints.length} profiles');
       ref.read(contactProfileCacheProvider.notifier).prefetchProfiles(fingerprints);
     }
 

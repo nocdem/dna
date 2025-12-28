@@ -71,6 +71,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 #include "database/keyserver_cache.h"
 #include "database/profile_cache.h"
 #include "database/profile_manager.h"
+#include "database/contacts_db.h"
 #include "crypto/utils/qgp_types.h"
 #include "crypto/utils/qgp_platform.h"
 #include "crypto/utils/key_encryption.h"
@@ -141,10 +142,15 @@ static void dna_dht_status_callback(bool is_connected, void *user_data) {
 
     dna_event_t event = {0};
     if (is_connected) {
-        QGP_LOG_INFO(LOG_TAG, "DHT connected");
+        QGP_LOG_WARN(LOG_TAG, "DHT connected (bootstrap complete, ready for operations)");
         event.type = DNA_EVENT_DHT_CONNECTED;
     } else {
-        QGP_LOG_WARN(LOG_TAG, "DHT disconnected");
+        /* DHT disconnection can happen during:
+         * 1. Initial bootstrap (network not ready yet)
+         * 2. Network interface changes (WiFi->mobile, etc.)
+         * 3. All bootstrap nodes unreachable
+         * The DHT will automatically attempt to reconnect */
+        QGP_LOG_WARN(LOG_TAG, "DHT disconnected (will auto-reconnect when network available)");
         event.type = DNA_EVENT_DHT_DISCONNECTED;
     }
     dna_dispatch_event(engine, &event);
@@ -167,6 +173,7 @@ const char* dna_engine_error_string(int error) {
     if (error == DNA_ENGINE_ERROR_PERMISSION) return "Permission denied";
     if (error == DNA_ENGINE_ERROR_PASSWORD_REQUIRED) return "Password required for encrypted keys";
     if (error == DNA_ENGINE_ERROR_WRONG_PASSWORD) return "Incorrect password";
+    if (error == DNA_ENGINE_ERROR_INVALID_SIGNATURE) return "Profile signature verification failed (corrupted or stale DHT data)";
     /* Fall back to base dna_api.h error strings */
     if (error == DNA_ERROR_INVALID_ARG) return "Invalid argument";
     if (error == DNA_ERROR_NOT_FOUND) return "Not found";
@@ -1101,6 +1108,150 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
         }
     }
 
+    /* Check if DHT profile exists and has wallet addresses - auto-republish if needed */
+    /* Track if we already published to avoid redundant PUTs */
+    bool profile_published = false;
+    {
+        dht_context_t *dht = dna_get_dht_ctx(engine);
+        if (dht) {
+            /* Lookup own profile from DHT */
+            dna_unified_identity_t *identity = NULL;
+            int lookup_rc = dht_keyserver_lookup(dht, fingerprint, &identity);
+
+            if (lookup_rc != 0 || !identity) {
+                /* Profile NOT found in DHT - this is the bug we're fixing!
+                 * Identity was created locally but never published to DHT.
+                 * Try to republish using cached name. */
+                char cached_name[64] = {0};
+                if (keyserver_cache_get_name(fingerprint, cached_name, sizeof(cached_name)) == 0 &&
+                    cached_name[0] != '\0') {
+                    QGP_LOG_WARN(LOG_TAG, "Profile not found in DHT - republishing for '%s'", cached_name);
+
+                    /* Load keys for republishing */
+                    qgp_key_t *sign_key = dna_load_private_key(engine);
+                    if (sign_key) {
+                        qgp_key_t *enc_key = dna_load_encryption_key(engine);
+                        if (enc_key) {
+                            /* Get wallet addresses for republish */
+                            char cf_addr[128] = {0}, eth_addr[48] = {0}, sol_addr[48] = {0};
+                            blockchain_wallet_list_t *bc_wallets = NULL;
+                            if (blockchain_list_wallets(fingerprint, &bc_wallets) == 0 && bc_wallets) {
+                                for (size_t i = 0; i < bc_wallets->count; i++) {
+                                    blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
+                                    switch (w->type) {
+                                        case BLOCKCHAIN_ETHEREUM:
+                                            strncpy(eth_addr, w->address, sizeof(eth_addr) - 1);
+                                            break;
+                                        case BLOCKCHAIN_SOLANA:
+                                            strncpy(sol_addr, w->address, sizeof(sol_addr) - 1);
+                                            break;
+                                        case BLOCKCHAIN_CELLFRAME:
+                                            strncpy(cf_addr, w->address, sizeof(cf_addr) - 1);
+                                            break;
+                                        default:
+                                            break;
+                                    }
+                                }
+                                blockchain_wallet_list_free(bc_wallets);
+                            }
+
+                            /* Republish identity to DHT */
+                            QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] load_identity: profile NOT in DHT, republishing");
+                            int publish_rc = dht_keyserver_publish(dht, fingerprint, cached_name,
+                                sign_key->public_key, enc_key->public_key, sign_key->private_key,
+                                cf_addr[0] ? cf_addr : NULL,
+                                eth_addr[0] ? eth_addr : NULL,
+                                sol_addr[0] ? sol_addr : NULL);
+
+                            if (publish_rc == 0) {
+                                QGP_LOG_INFO(LOG_TAG, "Profile republished to DHT successfully");
+                                profile_published = true;
+                            } else if (publish_rc == -2) {
+                                QGP_LOG_WARN(LOG_TAG, "Name '%s' already taken by another user", cached_name);
+                            } else if (publish_rc == -3) {
+                                QGP_LOG_WARN(LOG_TAG, "DHT not ready - will retry on next login");
+                            } else {
+                                QGP_LOG_WARN(LOG_TAG, "Failed to republish profile to DHT: %d", publish_rc);
+                            }
+                            qgp_key_free(enc_key);
+                        }
+                        qgp_key_free(sign_key);
+                    }
+                } else {
+                    QGP_LOG_WARN(LOG_TAG, "Profile not in DHT and no cached name - cannot republish");
+                }
+            } else {
+                /* Profile found in DHT - check if wallet addresses need updating */
+                blockchain_wallet_list_t *bc_wallets = NULL;
+                if (blockchain_list_wallets(fingerprint, &bc_wallets) == 0 && bc_wallets && bc_wallets->count > 0) {
+                    bool need_publish = false;
+                    char eth_addr[48] = {0}, sol_addr[48] = {0}, trx_addr[48] = {0}, cf_addr[128] = {0};
+
+                    for (size_t i = 0; i < bc_wallets->count; i++) {
+                        blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
+                        switch (w->type) {
+                            case BLOCKCHAIN_ETHEREUM:
+                                strncpy(eth_addr, w->address, sizeof(eth_addr) - 1);
+                                if (identity->wallets.eth[0] == '\0' && w->address[0]) need_publish = true;
+                                break;
+                            case BLOCKCHAIN_SOLANA:
+                                strncpy(sol_addr, w->address, sizeof(sol_addr) - 1);
+                                if (identity->wallets.sol[0] == '\0' && w->address[0]) need_publish = true;
+                                break;
+                            case BLOCKCHAIN_TRON:
+                                strncpy(trx_addr, w->address, sizeof(trx_addr) - 1);
+                                if (identity->wallets.trx[0] == '\0' && w->address[0]) need_publish = true;
+                                break;
+                            case BLOCKCHAIN_CELLFRAME:
+                                strncpy(cf_addr, w->address, sizeof(cf_addr) - 1);
+                                if (identity->wallets.backbone[0] == '\0' && w->address[0]) need_publish = true;
+                                break;
+                            default:
+                                break;
+                        }
+                    }
+
+                    if (need_publish && !profile_published) {
+                        QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] load_identity: DHT profile has empty wallet addresses");
+
+                        /* Load keys for signing */
+                        qgp_key_t *sign_key = dna_load_private_key(engine);
+                        if (sign_key) {
+                            qgp_key_t *enc_key = dna_load_encryption_key(engine);
+                            if (enc_key) {
+                                /* Build profile data with wallet addresses */
+                                dna_profile_data_t profile_data = {0};
+                                strncpy(profile_data.wallets.backbone, cf_addr[0] ? cf_addr : identity->wallets.backbone, sizeof(profile_data.wallets.backbone) - 1);
+                                strncpy(profile_data.wallets.eth, eth_addr[0] ? eth_addr : identity->wallets.eth, sizeof(profile_data.wallets.eth) - 1);
+                                strncpy(profile_data.wallets.sol, sol_addr[0] ? sol_addr : identity->wallets.sol, sizeof(profile_data.wallets.sol) - 1);
+                                strncpy(profile_data.wallets.trx, trx_addr[0] ? trx_addr : identity->wallets.trx, sizeof(profile_data.wallets.trx) - 1);
+                                strncpy(profile_data.socials.telegram, identity->socials.telegram, sizeof(profile_data.socials.telegram) - 1);
+                                strncpy(profile_data.socials.x, identity->socials.x, sizeof(profile_data.socials.x) - 1);
+                                strncpy(profile_data.socials.github, identity->socials.github, sizeof(profile_data.socials.github) - 1);
+                                strncpy(profile_data.bio, identity->bio, sizeof(profile_data.bio) - 1);
+                                strncpy(profile_data.avatar_base64, identity->avatar_base64, sizeof(profile_data.avatar_base64) - 1);
+
+                                int update_rc = dna_update_profile(dht, fingerprint, &profile_data,
+                                                                   sign_key->private_key, sign_key->public_key,
+                                                                   enc_key->public_key);
+                                if (update_rc == 0) {
+                                    QGP_LOG_INFO(LOG_TAG, "Profile auto-published with wallet addresses on login");
+                                    profile_published = true;
+                                } else {
+                                    QGP_LOG_WARN(LOG_TAG, "Failed to auto-publish profile on login: %d", update_rc);
+                                }
+                                qgp_key_free(enc_key);
+                            }
+                            qgp_key_free(sign_key);
+                        }
+                    }
+                    blockchain_wallet_list_free(bc_wallets);
+                }
+                dna_identity_free(identity);
+            }
+        }
+    }
+
     /* Dispatch identity loaded event */
     dna_event_t event = {0};
     event.type = DNA_EVENT_IDENTITY_LOADED;
@@ -1445,7 +1596,7 @@ populate_wallets:
 
         /* Auto-publish profile if wallets were populated */
         if (wallets_changed) {
-            QGP_LOG_INFO(LOG_TAG, "Auto-publishing profile with populated wallet addresses");
+            QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] get_profile: wallets changed, auto-publishing");
 
             /* Load keys for signing */
             qgp_key_t *sign_key = dna_load_private_key(engine);
@@ -1521,6 +1672,12 @@ void dna_handle_lookup_profile(dna_engine_t *engine, dna_task_t *task) {
         if (rc == -2) {
             /* Profile not found */
             error = DNA_ENGINE_ERROR_NOT_FOUND;
+        } else if (rc == -3) {
+            /* Signature verification failed - corrupted or stale DHT data
+             * Auto-remove this contact since their profile is invalid */
+            QGP_LOG_WARN(LOG_TAG, "Invalid signature for %.16s... - auto-removing from contacts", fingerprint);
+            contacts_db_remove(fingerprint);
+            error = DNA_ENGINE_ERROR_INVALID_SIGNATURE;
         } else {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
@@ -1621,6 +1778,8 @@ void dna_handle_update_profile(dna_engine_t *engine, dna_task_t *task) {
     size_t src_len = p->avatar_base64[0] ? strlen(p->avatar_base64) : 0;
     size_t dst_len = profile_data.avatar_base64[0] ? strlen(profile_data.avatar_base64) : 0;
     QGP_LOG_DEBUG(LOG_TAG, "[AVATAR_DEBUG] update_profile: src_len=%zu, dst_len=%zu\n", src_len, dst_len);
+
+    QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] update_profile: user-initiated save");
 
     /* Update profile in DHT */
     int rc = dna_update_profile(dht, engine->fingerprint, &profile_data,
@@ -1768,6 +1927,7 @@ void dna_handle_add_contact(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Sync to DHT */
+    QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] add_contact: calling sync");
     messenger_sync_contacts_to_dht(engine->messenger);
 
 done:
@@ -1776,6 +1936,9 @@ done:
 
 void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
     int error = DNA_OK;
+    const char *fp = task->params.remove_contact.fingerprint;
+
+    QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Request to remove %.16s...\n", fp ? fp : "(null)");
 
     if (!engine->identity_loaded) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
@@ -1788,13 +1951,23 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
         goto done;
     }
 
-    if (contacts_db_remove(task->params.remove_contact.fingerprint) != 0) {
+    int db_result = contacts_db_remove(fp);
+    if (db_result != 0) {
+        QGP_LOG_WARN(LOG_TAG, "REMOVE_CONTACT: contacts_db_remove failed (rc=%d) for %.16s...\n", db_result, fp);
         error = DNA_ERROR_NOT_FOUND;
+    } else {
+        QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Successfully removed %.16s... from local DB\n", fp);
     }
 
     /* Sync to DHT */
     if (error == DNA_OK) {
-        messenger_sync_contacts_to_dht(engine->messenger);
+        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] remove_contact: calling sync");
+        int sync_result = messenger_sync_contacts_to_dht(engine->messenger);
+        if (sync_result != 0) {
+            QGP_LOG_WARN(LOG_TAG, "REMOVE_CONTACT: DHT sync failed (rc=%d) - contact may reappear on next sync!\n", sync_result);
+        } else {
+            QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: DHT sync successful\n");
+        }
     }
 
 done:
@@ -1882,6 +2055,7 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
 
     /* First, fetch new requests from DHT and store them */
     dht_context_t *dht_ctx = dna_get_dht_ctx(engine);
+    bool contacts_changed = false;  /* Track if we need to sync */
     if (dht_ctx) {
         dht_contact_request_t *dht_requests = NULL;
         size_t dht_count = 0;
@@ -1904,10 +2078,7 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                         dht_requests[i].sender_fingerprint,
                         dht_requests[i].sender_name
                     );
-                    /* Sync to DHT */
-                    if (engine->messenger) {
-                        messenger_sync_contacts_to_dht(engine->messenger);
-                    }
+                    contacts_changed = true;  /* Mark for sync AFTER loop */
                 } else {
                     /* Regular request - add to pending */
                     contacts_db_add_incoming_request(
@@ -1920,6 +2091,12 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
             }
             dht_contact_requests_free(dht_requests, dht_count);
         }
+    }
+
+    /* Sync contacts to DHT ONCE after processing all requests */
+    if (contacts_changed && engine->messenger) {
+        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] auto_accept_requests: syncing ONCE after loop");
+        messenger_sync_contacts_to_dht(engine->messenger);
     }
 
     /* Get all pending requests from database */
@@ -2022,6 +2199,7 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
 
     /* Sync contacts to DHT */
     if (engine->messenger) {
+        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] accept_contact_request: calling sync");
         messenger_sync_contacts_to_dht(engine->messenger);
     }
 
@@ -5125,6 +5303,7 @@ void dna_handle_sync_contacts_to_dht(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
+        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] sync_contacts_to_dht handler: calling sync");
         if (messenger_sync_contacts_to_dht(engine->messenger) != 0) {
             error = DNA_ENGINE_ERROR_NETWORK;
         }
