@@ -339,9 +339,10 @@ DNA Messenger is developed by a **collaborative team**. When working on this pro
 
 1. **Security First** - Never modify crypto primitives without review
 2. **Simplicity** - Keep code simple and focused
-3. **Cross-Platform** - Test Linux and Windows
-4. **Documentation** - Update docs with changes
-5. **Team Workflow** - Use merge commits, communicate changes
+3. **Clean Code** - ALWAYS prefer modifying existing functions over adding new ones. Reuse existing code paths. Don't bloat the codebase with redundant methods.
+4. **Cross-Platform** - Test Linux and Windows
+5. **Documentation** - Update docs with changes
+6. **Team Workflow** - Use merge commits, communicate changes
 
 ---
 
