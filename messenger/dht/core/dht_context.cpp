@@ -895,13 +895,14 @@ extern "C" int dht_put_signed(dht_context_t *ctx,
         // This allows subsequent PUTs with same ID to replace old values
         dht_value->id = value_id;
 
-        QGP_LOG_INFO("DHT", "PUT_SIGNED: %s (%zu bytes, TTL=%us, type=0x%x, id=%lu)", hash.toString().c_str(), value_len, ttl_seconds, dht_value->type, value_id);
-
-        // Debug: show which DHT identity is signing this value
-        auto my_pk = ctx->runner.getPublicKey();
-        if (my_pk) {
-            QGP_LOG_INFO("DHT", "PUT_SIGNED: signer=%s...", my_pk->getLongId().toString().substr(0, 16).c_str());
+        // Debug: show key and value info for each PUT attempt
+        char key_hex_start[41];
+        for (int i = 0; i < 20 && i < (int)key_len; i++) {
+            sprintf(&key_hex_start[i * 2], "%02x", key[i]);
         }
+        key_hex_start[40] = '\0';
+        QGP_LOG_WARN("DHT", "PUT_SIGNED: key=%s... (%zu bytes, TTL=%us, type=0x%x, id=%lu)",
+                     key_hex_start, value_len, ttl_seconds, dht_value->type, value_id);
 
         // Use putSigned() instead of put() to enable editing/replacement
         // Note: putSigned() doesn't support creation_time parameter (uses current time)
