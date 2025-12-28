@@ -632,6 +632,11 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
     // The callback fires when either IPv4 or IPv6 status changes
     // We report connected when new_status is Connected (meaning at least one family connected)
     ctx->runner.setOnStatusChanged([ctx](dht::NodeStatus old_status, dht::NodeStatus new_status) {
+        // Log EVERY status change for debugging
+        QGP_LOG_WARN("DHT", ">>> STATUS CHANGE: %s -> %s (ctx=%p, running=%d)",
+            dht::statusToStr(old_status), dht::statusToStr(new_status),
+            (void*)ctx, ctx ? ctx->running : -1);
+
         bool was_connected = (old_status == dht::NodeStatus::Connected);
         bool is_connected = (new_status == dht::NodeStatus::Connected);
 
