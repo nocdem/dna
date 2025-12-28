@@ -43,6 +43,7 @@ int profile_manager_init(void) {
 
 /**
  * Get user profile (smart fetch) - Phase 5: Unified Identity
+ * Check cache FIRST, then DHT only if needed. Returns cached data when DHT unavailable.
  */
 int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identity_t **identity_out) {
     if (!g_initialized) {
@@ -55,14 +56,7 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
         return -1;
     }
 
-    // Get current DHT context (handles reinit)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_ERROR(LOG_TAG, "DHT not available\n");
-        return -1;
-    }
-
-    // Step 1: Check cache
+    // Step 1: Check cache FIRST (before requiring DHT)
     uint64_t cached_at = 0;
     dna_unified_identity_t *cached_identity = NULL;
     int result = profile_cache_get(user_fingerprint, &cached_identity, &cached_at);
@@ -82,14 +76,27 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
             return 0;
         } else {
             // Cache hit but expired - keep for fallback
-            QGP_LOG_INFO(LOG_TAG, "Cache hit (expired): %.16s..., refreshing from DHT\n", user_fingerprint);
+            QGP_LOG_INFO(LOG_TAG, "Cache hit (expired): %.16s..., will try DHT refresh\n", user_fingerprint);
         }
     } else {
         // Not in cache
-        QGP_LOG_INFO(LOG_TAG, "Cache miss: %.16s..., fetching from DHT\n", user_fingerprint);
+        QGP_LOG_DEBUG(LOG_TAG, "Cache miss: %.16s...\n", user_fingerprint);
     }
 
-    // Step 2: Fetch from DHT (using keyserver)
+    // Step 2: Get DHT context for refresh (only needed if cache miss or expired)
+    dht_context_t *dht_ctx = dht_singleton_get();
+    if (!dht_ctx) {
+        // DHT not available - return cached data if we have it (stale > nothing)
+        if (cached_identity) {
+            QGP_LOG_INFO(LOG_TAG, "DHT unavailable, returning cached profile: %.16s...\n", user_fingerprint);
+            *identity_out = cached_identity;
+            return 0;
+        }
+        QGP_LOG_DEBUG(LOG_TAG, "DHT unavailable and no cache for: %.16s...\n", user_fingerprint);
+        return -1;
+    }
+
+    // Step 3: Fetch from DHT (using keyserver)
     dna_unified_identity_t *fresh_identity = NULL;
     result = dna_load_identity(dht_ctx, user_fingerprint, &fresh_identity);
 
@@ -132,7 +139,7 @@ int profile_manager_get_profile(const char *user_fingerprint, dna_unified_identi
         return -1;
     }
 
-    // Step 3: Update cache with fresh data - log full profile
+    // Step 4: Update cache with fresh data - log full profile
     {
         size_t avatar_len = fresh_identity->avatar_base64[0] ? strlen(fresh_identity->avatar_base64) : 0;
         QGP_LOG_DEBUG(LOG_TAG, "Fetched from DHT: %.16s...\n", user_fingerprint);

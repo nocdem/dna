@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-28 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** App v0.2.106 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** App v0.2.107 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -181,7 +181,8 @@ Before ANY action, I MUST:
 ### CHECKPOINT 2: DOCUMENTATION RESEARCH
 I MUST search and read relevant documentation:
 1. **READ** relevant files in `docs/` directory
-2. **STATE**: "CHECKPOINT 2 COMPLETE - Documentation reviewed: [list files read]"
+2. **READ** check for relevant functions in 'docs/FUNCTIONS.MD'
+3. **STATE**: "CHECKPOINT 2 COMPLETE - Documentation reviewed: [list files read]"
 
 ### CHECKPOINT 3: PLAN CONFIRMATION
 I MUST explicitly state my plan:
@@ -322,7 +323,7 @@ Post-quantum E2E encrypted messenger with cpunk wallet. **NIST Category 5 securi
 
 **Crypto:** Kyber1024 (ML-KEM-1024), Dilithium5 (ML-DSA-87), AES-256-GCM, SHA3-512
 
-**Key Features:** E2E encrypted messaging • GSK group encryption (200x faster) • DHT groups • Per-identity contacts • User profiles • Wall posts • cpunk wallet • P2P + DHT • ICE NAT traversal • Offline queueing (7d) • BIP39 recovery • SQLite • ImGui GUI • Android SDK (JNI)
+**Key Features:** E2E encrypted messaging • GSK group encryption • DHT groups • Per-identity contacts • User profiles • Wall posts • cpunk wallet • P2P + DHT • ICE NAT traversal • Offline queueing (7d) • BIP39 recovery • SQLite • ImGui GUI • Android SDK (JNI)
 
 
 ---
