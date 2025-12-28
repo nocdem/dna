@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../ffi/dna_engine.dart';
 import '../services/cache_database.dart';
 import 'engine_provider.dart';
+import 'identity_provider.dart';
 
 /// Cache staleness threshold - refetch profiles older than this
 const _cacheMaxAge = Duration(hours: 24);
@@ -91,6 +92,12 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
 
   /// Fetch profile from DHT and save to cache
   Future<UserProfile?> _fetchFromDht(String fingerprint) async {
+    // Skip if no identity loaded (DHT may not be available)
+    final currentFp = _ref.read(currentFingerprintProvider);
+    if (currentFp == null) {
+      return null;
+    }
+
     try {
       final engine = await _ref.read(engineProvider.future);
       engine.debugLog('PROFILE_CACHE', '_fetchFromDht START fp=${fingerprint.substring(0, 16)}...');
@@ -126,6 +133,12 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
 
   /// Prefetch profiles for multiple contacts in parallel
   Future<void> prefetchProfiles(List<String> fingerprints) async {
+    // Skip if no identity loaded (DHT may not be available)
+    final currentFp = _ref.read(currentFingerprintProvider);
+    if (currentFp == null) {
+      return;
+    }
+
     // Filter out already cached
     final toFetch = fingerprints.where((fp) => !state.containsKey(fp)).toList();
     if (toFetch.isEmpty) return;
@@ -150,6 +163,12 @@ class ContactProfileCacheNotifier extends StateNotifier<Map<String, UserProfile>
       // Fetch in parallel with a limit to avoid overloading
       const batchSize = 5;
       for (var i = 0; i < toFetch.length; i += batchSize) {
+        // Re-check identity before each batch (may have been unloaded)
+        if (_ref.read(currentFingerprintProvider) == null) {
+          engine.debugLog('PROFILE_CACHE', 'prefetchProfiles: identity unloaded, stopping');
+          return;
+        }
+
         final batch = toFetch.skip(i).take(batchSize).toList();
         engine.debugLog('PROFILE_CACHE', 'prefetchProfiles: fetching batch ${i ~/ batchSize + 1}');
         await Future.wait(
