@@ -360,6 +360,8 @@ git push gitlab main    # GitLab (primary)
 git push origin main    # GitHub (mirror)
 ```
 
+**NOTE:** If user is `mika` (check with `whoami`), only push to `origin main` - mika only has access to origin (which is GitLab for this user).
+
 **Commit format:**
 ```
 Short summary (<50 chars)

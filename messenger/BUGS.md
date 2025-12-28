@@ -15,7 +15,6 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 - [ ] Messages not synced between devices - need cross-platform message sync via DHT (P2)
 - [ ] Contact requests reappear after restart even when already accepted multiple times (P3)
 - [ ] Remove Contact button in chat doesn't work (P3)
-- [ ] Send CPUNK in chat fails - says contact has no Backbone wallet even when they do (P2)
 - [ ] Show QR Code button in chat doesn't show anything (P4)
 - [ ] Take a Selfie button doesn't work on Linux desktop (P4)
 - [ ] Profile wallet address fields redundant - app auto-generates wallets from seed (P4)
@@ -24,6 +23,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Send CPUNK fails "no Backbone wallet" - derive address from Dilithium pubkey (v0.2.89)
 - [x] DHT status always shows "Disconnected" in menu drawer - sync status on event handler init (v0.2.88)
 - [x] DHT operations during reinit - dht_singleton_get now waits for DHT to be ready (v0.2.62)
 - [x] DHT "Broken promise" errors - operations started before DHT connected after reinit (v0.2.60)
