@@ -1927,6 +1927,7 @@ void dna_handle_add_contact(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Sync to DHT */
+    QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] add_contact: calling sync");
     messenger_sync_contacts_to_dht(engine->messenger);
 
 done:
@@ -1960,7 +1961,7 @@ void dna_handle_remove_contact(dna_engine_t *engine, dna_task_t *task) {
 
     /* Sync to DHT */
     if (error == DNA_OK) {
-        QGP_LOG_INFO(LOG_TAG, "REMOVE_CONTACT: Syncing updated contact list to DHT...\n");
+        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] remove_contact: calling sync");
         int sync_result = messenger_sync_contacts_to_dht(engine->messenger);
         if (sync_result != 0) {
             QGP_LOG_WARN(LOG_TAG, "REMOVE_CONTACT: DHT sync failed (rc=%d) - contact may reappear on next sync!\n", sync_result);
@@ -2078,6 +2079,7 @@ void dna_handle_get_contact_requests(dna_engine_t *engine, dna_task_t *task) {
                     );
                     /* Sync to DHT */
                     if (engine->messenger) {
+                        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] auto_accept_request: calling sync");
                         messenger_sync_contacts_to_dht(engine->messenger);
                     }
                 } else {
@@ -2194,6 +2196,7 @@ void dna_handle_approve_contact_request(dna_engine_t *engine, dna_task_t *task) 
 
     /* Sync contacts to DHT */
     if (engine->messenger) {
+        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] accept_contact_request: calling sync");
         messenger_sync_contacts_to_dht(engine->messenger);
     }
 
@@ -5297,6 +5300,7 @@ void dna_handle_sync_contacts_to_dht(dna_engine_t *engine, dna_task_t *task) {
     if (!engine->messenger) {
         error = DNA_ENGINE_ERROR_NO_IDENTITY;
     } else {
+        QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] sync_contacts_to_dht handler: calling sync");
         if (messenger_sync_contacts_to_dht(engine->messenger) != 0) {
             error = DNA_ENGINE_ERROR_NETWORK;
         }

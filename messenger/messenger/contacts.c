@@ -58,7 +58,7 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Syncing contacts to DHT for '%s'\n", ctx->identity);
+    QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] messenger_sync_contacts_to_dht called for %.16s...\n", ctx->identity);
 
     // Load user's keys
     const char *data_dir = qgp_platform_app_data_dir();
@@ -252,7 +252,7 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
         // Not found in DHT - check if we have local contacts to publish
         int local_count = contacts_db_count();
         if (local_count > 0) {
-            QGP_LOG_INFO(LOG_TAG, "DHT empty but local has %d contacts - publishing to DHT\n", local_count);
+            QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] sync_from_dht: DHT empty, publishing %d local contacts\n", local_count);
             return messenger_sync_contacts_to_dht(ctx);
         }
         QGP_LOG_INFO(LOG_TAG, "No contacts in DHT or local (first time user)\n");
@@ -368,6 +368,6 @@ int messenger_contacts_auto_sync(messenger_context_t *ctx) {
     }
 
     // If DHT fetch failed or not found, publish local contacts to DHT
-    QGP_LOG_INFO(LOG_TAG, "Auto-sync: Publishing local contacts to DHT\n");
+    QGP_LOG_WARN(LOG_TAG, "[CONTACTLIST_PUBLISH] auto_sync: DHT fetch failed, publishing local contacts\n");
     return messenger_sync_contacts_to_dht(ctx);
 }
