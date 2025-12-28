@@ -181,12 +181,14 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     // Re-register stored status callback on new context
     if (g_status_callback) {
         dht_context_set_status_callback(g_dht_context, g_status_callback, g_status_callback_user_data);
-        QGP_LOG_INFO(LOG_TAG, "Re-registered status callback on new context");
+        QGP_LOG_WARN(LOG_TAG, "Re-registered status callback on new context");
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "No status callback to re-register");
     }
 
     // Wait for DHT to connect (max 5 seconds)
     // This prevents "Broken promise" errors from operations starting before DHT is ready
-    QGP_LOG_INFO(LOG_TAG, "Waiting for DHT connection...");
+    QGP_LOG_WARN(LOG_TAG, "Waiting for DHT connection...");
     int wait_count = 0;
     while (!dht_context_is_ready(g_dht_context) && wait_count < 50) {
         usleep(100000);  // 100ms
@@ -194,7 +196,7 @@ int dht_singleton_init_with_identity(dht_identity_t *user_identity)
     }
 
     if (dht_context_is_ready(g_dht_context)) {
-        QGP_LOG_INFO(LOG_TAG, "DHT connected after %d00ms", wait_count);
+        QGP_LOG_WARN(LOG_TAG, "DHT connected after %d00ms", wait_count);
     } else {
         QGP_LOG_WARN(LOG_TAG, "DHT not connected after 5s (will retry in background)");
     }
