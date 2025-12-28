@@ -6,7 +6,6 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
 import '../../providers/providers.dart';
-import '../../providers/event_handler.dart';
 import '../../theme/dna_theme.dart';
 
 class IdentitySelectionScreen extends ConsumerWidget {
@@ -15,7 +14,6 @@ class IdentitySelectionScreen extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final identities = ref.watch(identitiesProvider);
-    final dhtState = ref.watch(dhtConnectionStateProvider);
     final theme = Theme.of(context);
 
     return Scaffold(
@@ -49,7 +47,7 @@ class IdentitySelectionScreen extends ConsumerWidget {
               // Identity list or loading
               Expanded(
                 child: identities.when(
-                  data: (list) => _buildIdentityListOrConnecting(context, ref, list, dhtState),
+                  data: (list) => _buildIdentityList(context, ref, list),
                   loading: () => const Center(
                     child: CircularProgressIndicator(),
                   ),
@@ -104,46 +102,6 @@ class IdentitySelectionScreen extends ConsumerWidget {
         ),
       ),
     );
-  }
-
-  /// Build identity list or connecting state based on DHT connection
-  Widget _buildIdentityListOrConnecting(
-    BuildContext context,
-    WidgetRef ref,
-    List<String> identities,
-    DhtConnectionState dhtState,
-  ) {
-    final theme = Theme.of(context);
-
-    // If no identities, show empty state regardless of DHT
-    if (identities.isEmpty) {
-      return _buildIdentityList(context, ref, identities);
-    }
-
-    // If DHT not connected, show connecting state
-    if (dhtState != DhtConnectionState.connected) {
-      return Center(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 24),
-            Text(
-              'Connecting to network...',
-              style: theme.textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Loading identity profiles',
-              style: theme.textTheme.bodySmall,
-            ),
-          ],
-        ),
-      );
-    }
-
-    // DHT connected - show identity list
-    return _buildIdentityList(context, ref, identities);
   }
 
   Widget _buildIdentityList(BuildContext context, WidgetRef ref, List<String> identities) {
