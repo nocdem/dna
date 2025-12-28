@@ -743,6 +743,12 @@ int contacts_db_add_incoming_request(
         return -1;
     }
 
+    // Check if already a contact (prevents reappearing requests after restart)
+    if (contacts_db_exists(fingerprint)) {
+        QGP_LOG_INFO(LOG_TAG, "Skipping request from %s - already a contact\n", fingerprint);
+        return -3;
+    }
+
     const char *sql = "INSERT INTO contact_requests (fingerprint, display_name, message, requested_at, status) "
                       "VALUES (?, ?, ?, ?, 0);";
     sqlite3_stmt *stmt = NULL;

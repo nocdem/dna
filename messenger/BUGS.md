@@ -12,8 +12,6 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 - [ ] Emoji picker overflows on full-sized window - RenderFlex overflow in search view (P3)
 - [ ] Emoji picker shows only ~4 emojis on large screens - should scale with window size (P3)
 - [ ] Emoji picker search button turns box gray - looks broken even though it works (P4)
-- [ ] Messages not synced between devices - need cross-platform message sync via DHT (P2)
-- [ ] Contact requests reappear after restart even when already accepted multiple times (P3)
 - [ ] Remove Contact button in chat doesn't work (P3)
 - [ ] Show QR Code button in chat doesn't show anything (P4)
 - [ ] Take a Selfie button doesn't work on Linux desktop (P4)
@@ -23,6 +21,8 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Contact requests reappear after restart - skip if already a contact (v0.2.108)
+- [x] Messages not synced between devices - message backup/restore via DHT (v0.2.106)
 - [x] Username/avatar not showing on identity selection - use lookupProfile (single DHT call) (v0.2.93)
 - [x] Send CPUNK fails "no Backbone wallet" - derive address from Dilithium pubkey (v0.2.89)
 - [x] DHT status always shows "Disconnected" in menu drawer - sync status on event handler init (v0.2.88)
