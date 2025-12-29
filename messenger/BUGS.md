@@ -9,7 +9,6 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 ## Open Bugs
 
 - [ ] Show QR Code button in chat doesn't show anything (P4)
-- [ ] Profile wallet address fields redundant - app auto-generates wallets from seed (P4)
 
 
 ## Fixed Bugs
