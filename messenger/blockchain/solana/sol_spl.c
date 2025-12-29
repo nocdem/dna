@@ -240,7 +240,7 @@ int sol_spl_get_balance(
 
     /* Format balance with decimals */
     if (total_amount == 0) {
-        snprintf(balance_out, balance_size, "0");
+        snprintf(balance_out, balance_size, "0.0");
     } else {
         /* Calculate divisor based on decimals */
         uint64_t divisor = 1;
@@ -252,7 +252,7 @@ int sol_spl_get_balance(
         uint64_t frac = total_amount % divisor;
 
         if (frac == 0) {
-            snprintf(balance_out, balance_size, "%llu", (unsigned long long)whole);
+            snprintf(balance_out, balance_size, "%llu.0", (unsigned long long)whole);
         } else {
             /* Format with appropriate decimal places */
             char frac_str[32];

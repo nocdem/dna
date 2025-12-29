@@ -563,9 +563,22 @@ int blockchain_get_balance(
             if (sol_rpc_get_balance(address, &lamports) != 0) {
                 return -1;
             }
-            /* Convert lamports to SOL */
-            double sol = (double)lamports / 1000000000.0;
-            snprintf(balance_out->balance, sizeof(balance_out->balance), "%.9f", sol);
+            /* Convert lamports to SOL (9 decimals) */
+            uint64_t whole = lamports / 1000000000ULL;
+            uint64_t frac = lamports % 1000000000ULL;
+
+            if (frac == 0) {
+                snprintf(balance_out->balance, sizeof(balance_out->balance), "%llu.0", (unsigned long long)whole);
+            } else {
+                /* Format with 9 decimal places, then trim trailing zeros */
+                char frac_str[16];
+                snprintf(frac_str, sizeof(frac_str), "%09llu", (unsigned long long)frac);
+                int len = 9;
+                while (len > 1 && frac_str[len - 1] == '0') {
+                    frac_str[--len] = '\0';
+                }
+                snprintf(balance_out->balance, sizeof(balance_out->balance), "%llu.%s", (unsigned long long)whole, frac_str);
+            }
             return 0;
         }
 

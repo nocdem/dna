@@ -97,7 +97,7 @@ static int sun_to_trx_string(uint64_t sun, char *trx_out, size_t trx_size) {
     }
 
     if (sun == 0) {
-        snprintf(trx_out, trx_size, "0.0 TRX");
+        snprintf(trx_out, trx_size, "0.0");
         return 0;
     }
 
@@ -105,7 +105,7 @@ static int sun_to_trx_string(uint64_t sun, char *trx_out, size_t trx_size) {
     uint64_t trx_frac = sun % SUN_PER_TRX;
 
     if (trx_frac == 0) {
-        snprintf(trx_out, trx_size, "%llu.0 TRX", (unsigned long long)trx_whole);
+        snprintf(trx_out, trx_size, "%llu.0", (unsigned long long)trx_whole);
     } else {
         /* Format with up to 6 decimal places, trim trailing zeros */
         char frac_str[8];
@@ -118,7 +118,7 @@ static int sun_to_trx_string(uint64_t sun, char *trx_out, size_t trx_size) {
         }
         frac_str[last_nonzero + 1] = '\0';
 
-        snprintf(trx_out, trx_size, "%llu.%s TRX", (unsigned long long)trx_whole, frac_str);
+        snprintf(trx_out, trx_size, "%llu.%s", (unsigned long long)trx_whole, frac_str);
     }
 
     return 0;
