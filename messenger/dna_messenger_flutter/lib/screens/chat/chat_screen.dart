@@ -24,6 +24,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   final _focusNode = FocusNode();
   bool _showEmojiPicker = false;
   bool _isCheckingOffline = false;
+  bool _justInsertedEmoji = false;
 
   @override
   void initState() {
@@ -64,6 +65,11 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
   }
 
   void _onTextChanged() {
+    // Close emoji picker when user types (but not when emoji was just inserted)
+    if (_showEmojiPicker && !_justInsertedEmoji) {
+      _showEmojiPicker = false;
+    }
+    _justInsertedEmoji = false;
     // Rebuild to update send button enabled state
     setState(() {});
   }
@@ -573,6 +579,8 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       selection.end,
       emoji.emoji,
     );
+    // Flag to prevent closing picker when this text change fires
+    _justInsertedEmoji = true;
     _messageController.value = TextEditingValue(
       text: newText,
       selection: TextSelection.collapsed(
