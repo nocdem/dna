@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
 
@@ -241,14 +242,14 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                         label: 'Location',
                         controller: _locationController,
                         hint: 'City, Country',
-                        prefixIcon: Icons.location_on,
+                        prefixIcon: FontAwesomeIcons.locationDot,
                         onChanged: (v) => notifier.updateField('location', v),
                       ),
                       _buildTextField(
                         label: 'Website',
                         controller: _websiteController,
                         hint: 'https://yourwebsite.com',
-                        prefixIcon: Icons.language,
+                        prefixIcon: FontAwesomeIcons.globe,
                         onChanged: (v) => notifier.updateField('website', v),
                       ),
                     ],
@@ -301,46 +302,49 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                         label: 'Telegram',
                         controller: _telegramController,
                         hint: '@username',
-                        prefixIcon: Icons.telegram,
+                        prefixIcon: FontAwesomeIcons.telegram,
                         onChanged: (v) => notifier.updateField('telegram', v),
                       ),
                       _buildTextField(
                         label: 'X (Twitter)',
                         controller: _twitterController,
                         hint: '@username',
+                        prefixIcon: FontAwesomeIcons.xTwitter,
                         onChanged: (v) => notifier.updateField('twitter', v),
                       ),
                       _buildTextField(
                         label: 'GitHub',
                         controller: _githubController,
                         hint: 'username',
-                        prefixIcon: Icons.code,
+                        prefixIcon: FontAwesomeIcons.github,
                         onChanged: (v) => notifier.updateField('github', v),
                       ),
                       _buildTextField(
                         label: 'Facebook',
                         controller: _facebookController,
                         hint: 'username',
-                        prefixIcon: Icons.facebook,
+                        prefixIcon: FontAwesomeIcons.facebook,
                         onChanged: (v) => notifier.updateField('facebook', v),
                       ),
                       _buildTextField(
                         label: 'Instagram',
                         controller: _instagramController,
                         hint: '@username',
+                        prefixIcon: FontAwesomeIcons.instagram,
                         onChanged: (v) => notifier.updateField('instagram', v),
                       ),
                       _buildTextField(
                         label: 'LinkedIn',
                         controller: _linkedinController,
                         hint: 'profile URL or username',
+                        prefixIcon: FontAwesomeIcons.linkedin,
                         onChanged: (v) => notifier.updateField('linkedin', v),
                       ),
                       _buildTextField(
                         label: 'Google',
                         controller: _googleController,
                         hint: 'email@gmail.com',
-                        prefixIcon: Icons.email,
+                        prefixIcon: FontAwesomeIcons.google,
                         onChanged: (v) => notifier.updateField('google', v),
                       ),
                     ],
