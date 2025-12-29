@@ -159,15 +159,31 @@ class EventHandler {
       case OutboxUpdatedEvent(contactFingerprint: final contactFp):
         // Contact's outbox has new messages - fetch them
         print('[EVENT] OutboxUpdatedEvent received for: ${contactFp.length > 16 ? contactFp.substring(0, 16) : contactFp}...');
+
+        // Check if chat is open for this contact BEFORE fetching
+        final selectedContact = _ref.read(selectedContactProvider);
+        final isChatOpen = selectedContact != null &&
+            selectedContact.fingerprint == contactFp;
+        print('[EVENT] isChatOpen for this contact: $isChatOpen');
+
         // Trigger offline message check, then refresh UI AFTER messages are in DB
         _ref.read(engineProvider).whenData((engine) async {
           print('[EVENT] Calling checkOfflineMessages...');
           await engine.checkOfflineMessages();
-          print('[EVENT] checkOfflineMessages complete, invalidating providers...');
-          // Now invalidate to refresh UI with new messages
+          print('[EVENT] checkOfflineMessages complete');
+
+          // If chat is open, mark messages as read immediately
+          // This prevents unread badge from showing for messages user is viewing
+          if (isChatOpen) {
+            print('[EVENT] Chat is open, marking messages as read');
+            await engine.markConversationRead(contactFp);
+            _ref.read(unreadCountsProvider.notifier).clearCount(contactFp);
+          }
+
+          // Refresh conversation UI
           _ref.invalidate(conversationProvider(contactFp));
-          _ref.invalidate(contactsProvider);
-          print('[EVENT] Providers invalidated');
+          _ref.read(conversationRefreshTriggerProvider.notifier).state++;
+          print('[EVENT] Conversation refreshed');
         });
         break;
 

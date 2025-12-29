@@ -11,6 +11,11 @@ final contactsProvider = AsyncNotifierProvider<ContactsNotifier, List<Contact>>(
 );
 
 class ContactsNotifier extends AsyncNotifier<List<Contact>> {
+  // Debounce timer for batching presence updates
+  Timer? _presenceDebounceTimer;
+  // Pending presence updates to apply
+  final Map<String, DateTime> _pendingPresenceUpdates = {};
+
   @override
   Future<List<Contact>> build() async {
     // Only fetch if identity is loaded
@@ -74,24 +79,50 @@ class ContactsNotifier extends AsyncNotifier<List<Contact>> {
     }
   }
 
-  /// Update a single contact's presence and re-sort the list
+  /// Queue a presence update and debounce the re-sort
   void _updateContactPresence(String fingerprint, DateTime lastSeen) {
+    // Collect the update
+    _pendingPresenceUpdates[fingerprint] = lastSeen;
+
+    // Cancel existing timer and start a new one
+    _presenceDebounceTimer?.cancel();
+    _presenceDebounceTimer = Timer(const Duration(milliseconds: 300), () {
+      _applyPendingPresenceUpdates();
+    });
+  }
+
+  /// Apply all pending presence updates and re-sort once
+  void _applyPendingPresenceUpdates() {
+    if (_pendingPresenceUpdates.isEmpty) return;
+
     final currentState = state.valueOrNull;
-    if (currentState == null) return;
+    if (currentState == null) {
+      _pendingPresenceUpdates.clear();
+      return;
+    }
 
-    final index = currentState.indexWhere((c) => c.fingerprint == fingerprint);
-    if (index == -1) return;
-
-    final contact = currentState[index];
     final updated = List<Contact>.from(currentState);
-    updated[index] = Contact(
-      fingerprint: contact.fingerprint,
-      displayName: contact.displayName,
-      isOnline: contact.isOnline,
-      lastSeen: lastSeen,
-    );
 
-    // Re-sort: by last seen (most recent first), then by name
+    // Apply all pending updates
+    for (final entry in _pendingPresenceUpdates.entries) {
+      final fingerprint = entry.key;
+      final lastSeen = entry.value;
+
+      final index = updated.indexWhere((c) => c.fingerprint == fingerprint);
+      if (index != -1) {
+        final contact = updated[index];
+        updated[index] = Contact(
+          fingerprint: contact.fingerprint,
+          displayName: contact.displayName,
+          isOnline: contact.isOnline,
+          lastSeen: lastSeen,
+        );
+      }
+    }
+
+    _pendingPresenceUpdates.clear();
+
+    // Re-sort once: by last seen (most recent first), then by name
     updated.sort((a, b) {
       final lastSeenCompare = b.lastSeen.compareTo(a.lastSeen);
       if (lastSeenCompare != 0) {
