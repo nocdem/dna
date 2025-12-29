@@ -14,6 +14,14 @@ Source of truth is the sourcecode and documentation
 Always ask user what to do if unsure
 Anything against protocol mode breaks the blockchain / encryption.
 
+## NO ASSUMPTIONS - INVESTIGATE FIRST
+**NEVER assume external libraries or dependencies are buggy without proof.**
+- When something doesn't work as expected, investigate the ACTUAL cause
+- Check our own code for bugs FIRST before blaming external libraries
+- If you suspect an external library issue, find documentation or source code to confirm
+- Don't make statements like "X library doesn't work reliably" without evidence
+- When uncertain, say "I don't know" and investigate rather than guess
+
 ## BUG TRACKING
 **ALWAYS check `BUGS.md`** at the start of a session for open bugs to fix.
 - Open bugs are marked with `- [ ]`

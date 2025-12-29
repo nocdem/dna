@@ -631,18 +631,24 @@ extern "C" void dht_context_set_status_callback(dht_context_t *ctx, dht_status_c
     QGP_LOG_INFO("DHT", "Status callback registered");
 
     // Register with OpenDHT's status change notification
+    // NOTE: Callback params are (status_ipv4, status_ipv6), NOT (old, new)!
     // NOTE: This callback is called from OpenDHT's internal thread - do NOT call
     // runner methods from here (like getNodesStats) as it causes deadlock!
-    ctx->runner.setOnStatusChanged([ctx](dht::NodeStatus old_status, dht::NodeStatus new_status) {
-        QGP_LOG_WARN("DHT", "OpenDHT status: %s -> %s",
-            dht::statusToStr(old_status), dht::statusToStr(new_status));
+    ctx->runner.setOnStatusChanged([ctx](dht::NodeStatus status4, dht::NodeStatus status6) {
+        // Combined status: connected if either IPv4 or IPv6 is connected
+        bool is_connected = (status4 == dht::NodeStatus::Connected ||
+                             status6 == dht::NodeStatus::Connected);
 
-        bool was_connected = (old_status == dht::NodeStatus::Connected);
-        bool is_connected = (new_status == dht::NodeStatus::Connected);
+        QGP_LOG_INFO("DHT", "OpenDHT status: v4=%s, v6=%s, combined=%s",
+            dht::statusToStr(status4), dht::statusToStr(status6),
+            is_connected ? "connected" : "disconnected");
 
-        // Only notify on actual transitions
-        if (was_connected != is_connected) {
-            QGP_LOG_WARN("DHT", "Status transition: connected=%d", is_connected ? 1 : 0);
+        // Only notify on actual transitions (track previous state per-context)
+        if (ctx->prev_connected != is_connected) {
+            QGP_LOG_WARN("DHT", "Status transition: %s -> %s",
+                         ctx->prev_connected ? "connected" : "disconnected",
+                         is_connected ? "connected" : "disconnected");
+            ctx->prev_connected = is_connected;
 
             // Get callback info (thread-safe)
             dht_status_callback_t cb = nullptr;
