@@ -8,8 +8,6 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] Emoji picker overflows on full-sized window - RenderFlex overflow in search view (P3)
-- [ ] Emoji picker shows only ~4 emojis on large screens - should scale with window size (P3)
 - [ ] Emoji picker search button turns box gray - looks broken even though it works (P4)
 - [ ] Show QR Code button in chat doesn't show anything (P4)
 - [ ] Take a Selfie button doesn't work on Linux desktop (P4)
@@ -19,6 +17,8 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Emoji picker overflows on full-sized window - responsive sizing + SearchViewConfig (v0.2.119)
+- [x] Emoji picker shows only ~4 emojis on large screens - dynamic columns based on width (v0.2.119)
 - [x] Wallet balance formatting inconsistent: SOL extra zeros, USDT plain "0", TRX shows symbol after amount (v0.2.118)
 - [x] Remove Contact button in chat doesn't work - implement confirmation dialog (v0.2.110)
 - [x] DHT push notifications not working - use event-based listeners (v0.2.111)
