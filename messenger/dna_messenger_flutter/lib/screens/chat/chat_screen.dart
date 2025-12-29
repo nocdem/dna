@@ -204,72 +204,91 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
           ),
         ],
       ),
-      body: Column(
+      body: Stack(
         children: [
-          // Messages list
-          Expanded(
-            child: messages.when(
-              data: (list) => _buildMessageList(context, list),
-              loading: () => const Center(child: CircularProgressIndicator()),
-              error: (error, stack) => Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.error_outline, color: DnaColors.textWarning),
-                    const SizedBox(height: 8),
-                    Text('Failed to load messages'),
-                    TextButton(
-                      onPressed: () => ref.invalidate(
-                        conversationProvider(contact.fingerprint),
-                      ),
-                      child: const Text('Retry'),
+          // Main content column
+          Column(
+            children: [
+              // Messages list
+              Expanded(
+                child: messages.when(
+                  data: (list) => _buildMessageList(context, list),
+                  loading: () => const Center(child: CircularProgressIndicator()),
+                  error: (error, stack) => Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.error_outline, color: DnaColors.textWarning),
+                        const SizedBox(height: 8),
+                        Text('Failed to load messages'),
+                        TextButton(
+                          onPressed: () => ref.invalidate(
+                            conversationProvider(contact.fingerprint),
+                          ),
+                          child: const Text('Retry'),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
                 ),
               ),
-            ),
+              // Input area
+              _buildInputArea(context, contact),
+            ],
           ),
 
-          // Emoji picker (fixed size, fits minimum window 400x300)
+          // Floating emoji picker (bottom-left, above input area)
           if (_showEmojiPicker)
-            Material(
-              elevation: 4,
-              color: theme.colorScheme.surface,
-              child: SizedBox(
-                width: 360,
-                height: 250,
-                child: EmojiPicker(
-                  onEmojiSelected: (category, emoji) {
-                    _onEmojiSelected(emoji);
-                  },
-                  config: Config(
-                    checkPlatformCompatibility: true,
-                    emojiViewConfig: EmojiViewConfig(
-                      columns: 8,
-                      emojiSizeMax: 28,
-                      backgroundColor: theme.colorScheme.surface,
-                    ),
-                    categoryViewConfig: CategoryViewConfig(
-                      indicatorColor: theme.colorScheme.primary,
-                      iconColorSelected: theme.colorScheme.primary,
-                      iconColor: DnaColors.textMuted,
-                      backgroundColor: theme.colorScheme.surface,
-                    ),
-                    bottomActionBarConfig: BottomActionBarConfig(
-                      backgroundColor: theme.colorScheme.surface,
-                      buttonColor: theme.colorScheme.primary,
-                    ),
-                    searchViewConfig: SearchViewConfig(
-                      backgroundColor: theme.colorScheme.surface,
-                      buttonIconColor: theme.colorScheme.primary,
+            Positioned(
+              left: 8,
+              bottom: 70,
+              child: Material(
+                elevation: 8,
+                borderRadius: BorderRadius.circular(12),
+                color: theme.colorScheme.surface,
+                child: Container(
+                  width: 360,
+                  height: 280,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: DnaColors.border),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(8),
+                      child: EmojiPicker(
+                        onEmojiSelected: (category, emoji) {
+                          _onEmojiSelected(emoji);
+                        },
+                        config: Config(
+                          checkPlatformCompatibility: true,
+                          emojiViewConfig: EmojiViewConfig(
+                            columns: 8,
+                            emojiSizeMax: 28,
+                            backgroundColor: theme.colorScheme.surface,
+                          ),
+                          categoryViewConfig: CategoryViewConfig(
+                            indicatorColor: theme.colorScheme.primary,
+                            iconColorSelected: theme.colorScheme.primary,
+                            iconColor: DnaColors.textMuted,
+                            backgroundColor: theme.colorScheme.surface,
+                          ),
+                          bottomActionBarConfig: BottomActionBarConfig(
+                            backgroundColor: theme.colorScheme.surface,
+                            buttonColor: theme.colorScheme.primary,
+                          ),
+                          searchViewConfig: SearchViewConfig(
+                            backgroundColor: theme.colorScheme.surface,
+                            buttonIconColor: theme.colorScheme.primary,
+                          ),
+                        ),
+                      ),
                     ),
                   ),
                 ),
               ),
             ),
-
-          // Input area
-          _buildInputArea(context, contact),
         ],
       ),
     );
