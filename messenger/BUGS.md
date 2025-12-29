@@ -8,13 +8,13 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Open Bugs
 
-- [ ] Emoji picker search button turns box gray - looks broken even though it works (P4)
 - [ ] Show QR Code button in chat doesn't show anything (P4)
 - [ ] Profile wallet address fields redundant - app auto-generates wallets from seed (P4)
 
 
 ## Fixed Bugs
 
+- [x] Emoji picker search button turns box gray - fixed with SearchViewConfig (v0.2.119)
 - [x] Social media icons missing - added Font Awesome icons for all social fields (v0.2.125)
 - [x] Take a Selfie button doesn't work on desktop - hidden, opens gallery directly (v0.2.124)
 - [x] Emoji picker overflows on full-sized window - responsive sizing + SearchViewConfig (v0.2.119)
