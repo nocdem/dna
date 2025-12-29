@@ -230,52 +230,41 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
           ),
 
-          // Emoji picker (inline above input area when visible)
+          // Emoji picker (fixed size, fits minimum window 400x300)
           if (_showEmojiPicker)
-            Builder(
-              builder: (context) {
-                final screenWidth = MediaQuery.of(context).size.width;
-                final screenHeight = MediaQuery.of(context).size.height;
-                // Calculate columns based on width (min 6, max 12)
-                final columns = (screenWidth / 45).clamp(6, 12).toInt();
-                // Calculate height as 35% of screen (min 200, max 400)
-                final pickerHeight = (screenHeight * 0.35).clamp(200.0, 400.0);
-
-                return Material(
-                  elevation: 4,
-                  color: theme.colorScheme.surface,
-                  child: SizedBox(
-                    height: pickerHeight,
-                    child: EmojiPicker(
-                      onEmojiSelected: (category, emoji) {
-                        _onEmojiSelected(emoji);
-                      },
-                      config: Config(
-                        checkPlatformCompatibility: true,
-                        emojiViewConfig: EmojiViewConfig(
-                          columns: columns,
-                          emojiSizeMax: 28,
-                          backgroundColor: theme.colorScheme.surface,
-                        ),
-                        categoryViewConfig: CategoryViewConfig(
-                          indicatorColor: theme.colorScheme.primary,
-                          iconColorSelected: theme.colorScheme.primary,
-                          iconColor: DnaColors.textMuted,
-                          backgroundColor: theme.colorScheme.surface,
-                        ),
-                        bottomActionBarConfig: BottomActionBarConfig(
-                          backgroundColor: theme.colorScheme.surface,
-                          buttonColor: theme.colorScheme.primary,
-                        ),
-                        searchViewConfig: SearchViewConfig(
-                          backgroundColor: theme.colorScheme.surface,
-                          buttonIconColor: theme.colorScheme.primary,
-                        ),
-                      ),
+            Material(
+              elevation: 4,
+              color: theme.colorScheme.surface,
+              child: SizedBox(
+                height: 250,
+                child: EmojiPicker(
+                  onEmojiSelected: (category, emoji) {
+                    _onEmojiSelected(emoji);
+                  },
+                  config: Config(
+                    checkPlatformCompatibility: true,
+                    emojiViewConfig: EmojiViewConfig(
+                      columns: 8,
+                      emojiSizeMax: 28,
+                      backgroundColor: theme.colorScheme.surface,
+                    ),
+                    categoryViewConfig: CategoryViewConfig(
+                      indicatorColor: theme.colorScheme.primary,
+                      iconColorSelected: theme.colorScheme.primary,
+                      iconColor: DnaColors.textMuted,
+                      backgroundColor: theme.colorScheme.surface,
+                    ),
+                    bottomActionBarConfig: BottomActionBarConfig(
+                      backgroundColor: theme.colorScheme.surface,
+                      buttonColor: theme.colorScheme.primary,
+                    ),
+                    searchViewConfig: SearchViewConfig(
+                      backgroundColor: theme.colorScheme.surface,
+                      buttonIconColor: theme.colorScheme.primary,
                     ),
                   ),
-                );
-              },
+                ),
+              ),
             ),
 
           // Input area
