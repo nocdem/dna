@@ -236,6 +236,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               elevation: 4,
               color: theme.colorScheme.surface,
               child: SizedBox(
+                width: 360,
                 height: 250,
                 child: EmojiPicker(
                   onEmojiSelected: (category, emoji) {
