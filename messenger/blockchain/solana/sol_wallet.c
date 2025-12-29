@@ -279,9 +279,10 @@ int sol_wallet_save(
 
     json_object_object_add(root, "created_at", json_object_new_int64(time(NULL)));
 
-    /* Build file path */
+    /* v0.3.0: Build file path - flat structure */
+    (void)name;  // Unused in v0.3.0 flat structure
     char filepath[512];
-    snprintf(filepath, sizeof(filepath), "%s/%s.sol.json", wallet_dir, name);
+    snprintf(filepath, sizeof(filepath), "%s/wallet.sol.json", wallet_dir);
 
     /* Write to file */
     FILE *f = fopen(filepath, "w");

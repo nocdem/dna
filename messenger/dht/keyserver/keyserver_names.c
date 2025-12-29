@@ -81,11 +81,11 @@ int dna_register_name(
         // Note: Keys must be set separately
     }
 
-    // Update name registration
+    // Update name registration (PERMANENT - never expires)
     identity->has_registered_name = true;
     strncpy(identity->registered_name, name, sizeof(identity->registered_name) - 1);
     identity->name_registered_at = time(NULL);
-    identity->name_expires_at = identity->name_registered_at + (365 * 24 * 60 * 60);  // +365 days
+    identity->name_expires_at = 0;  // 0 = permanent (never expires)
     identity->name_version = 1;
     identity->timestamp = time(NULL);
     identity->version++;
@@ -103,7 +103,7 @@ int dna_register_name(
 
     ret = dht_chunked_publish(dht_ctx, base_key,
                               (uint8_t*)json, strlen(json),
-                              DHT_CHUNK_TTL_365DAY);
+                              DHT_CHUNK_TTL_PERMANENT);
     free(json);
 
     if (ret != DHT_CHUNK_OK) {
@@ -127,7 +127,7 @@ int dna_register_name(
 
     ret = dht_chunked_publish(dht_ctx, name_base_key,
                               (uint8_t*)fingerprint, 128,
-                              DHT_CHUNK_TTL_365DAY);
+                              DHT_CHUNK_TTL_PERMANENT);
 
     if (ret != DHT_CHUNK_OK) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to store name mapping in DHT: %s\n", dht_chunked_strerror(ret));
@@ -135,11 +135,10 @@ int dna_register_name(
         return -1;
     }
 
-    uint64_t expires_at = identity->name_expires_at;
     dna_identity_free(identity);
 
     QGP_LOG_INFO(LOG_TAG, "✓ Name registered: %s → %.16s...\n", name, fingerprint);
-    QGP_LOG_INFO(LOG_TAG, "Expires: %lu (365 days)\n", expires_at);
+    QGP_LOG_INFO(LOG_TAG, "Registration: PERMANENT (never expires)\n");
     return 0;
 }
 
@@ -190,8 +189,9 @@ int dna_renew_name(
 
     QGP_LOG_INFO(LOG_TAG, "✓ Renewal transaction verified successfully\n");
 
-    // Update renewal info
-    identity->name_expires_at += (365 * 24 * 60 * 60);  // Extend by 365 days
+    // Note: Names are now PERMANENT (v0.3.0+), renewal just re-publishes
+    // Update version for re-publication
+    identity->name_expires_at = 0;  // 0 = permanent (never expires)
     identity->name_version++;
     identity->timestamp = time(NULL);
     identity->version++;
@@ -209,7 +209,7 @@ int dna_renew_name(
 
     int ret = dht_chunked_publish(dht_ctx, base_key,
                                   (uint8_t*)json, strlen(json),
-                                  DHT_CHUNK_TTL_365DAY);
+                                  DHT_CHUNK_TTL_PERMANENT);
     free(json);
 
     if (ret != DHT_CHUNK_OK) {
@@ -218,8 +218,8 @@ int dna_renew_name(
         return -1;
     }
 
-    QGP_LOG_INFO(LOG_TAG, "✓ Name renewed: %s\n", identity->registered_name);
-    QGP_LOG_INFO(LOG_TAG, "New expiration: %lu (+365 days)\n", identity->name_expires_at);
+    QGP_LOG_INFO(LOG_TAG, "✓ Name re-published: %s\n", identity->registered_name);
+    QGP_LOG_INFO(LOG_TAG, "Status: PERMANENT (never expires)\n");
 
     dna_identity_free(identity);
     return 0;
@@ -285,11 +285,18 @@ int dna_lookup_by_name(
 }
 
 // Check if DNA name has expired
+// Note: v0.3.0+ names are permanent (expires_at = 0 means never expires)
 bool dna_is_name_expired(const dna_unified_identity_t *identity) {
     if (!identity || !identity->has_registered_name) {
         return false;  // No name registered = not expired
     }
 
+    // expires_at = 0 means permanent (never expires)
+    if (identity->name_expires_at == 0) {
+        return false;
+    }
+
+    // Legacy check for pre-v0.3.0 registrations with expiry
     uint64_t now = time(NULL);
     return (now >= identity->name_expires_at);
 }

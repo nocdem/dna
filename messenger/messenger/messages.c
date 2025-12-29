@@ -337,9 +337,10 @@ int messenger_send_message(
     }
 
     // Load sender's private signing key from filesystem
+    // v0.3.0: Flat structure - keys/identity.dsa
     const char *data_dir = qgp_platform_app_data_dir();
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s/keys/%s.dsa", data_dir, ctx->identity, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
 
     qgp_key_t *sender_sign_key = NULL;
     if (qgp_key_load(dilithium_path, &sender_sign_key) != 0) {
@@ -625,9 +626,10 @@ int messenger_read_message(messenger_context_t *ctx, int message_id) {
     printf("========================================\n\n");
 
     // Load recipient's private Kyber1024 key (ML-KEM-1024) from filesystem
+    // v0.3.0: Flat structure - keys/identity.kem
     const char *home_kyber1 = qgp_platform_app_data_dir();
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem", home_kyber1, ctx->identity, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", home_kyber1);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0) {
@@ -779,9 +781,10 @@ int messenger_decrypt_message(messenger_context_t *ctx, int message_id,
     size_t ciphertext_len = target_msg->encrypted_len;
 
     // Load recipient's private Kyber1024 key (ML-KEM-1024) from filesystem
+    // v0.3.0: Flat structure - keys/identity.kem
     const char *home_kyber2 = qgp_platform_app_data_dir();
     char kyber_path2[512];
-    snprintf(kyber_path2, sizeof(kyber_path2), "%s/%s/keys/%s.kem", home_kyber2, ctx->identity, ctx->identity);
+    snprintf(kyber_path2, sizeof(kyber_path2), "%s/keys/identity.kem", home_kyber2);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path2, &kyber_key) != 0) {

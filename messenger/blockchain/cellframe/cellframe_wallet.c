@@ -515,9 +515,10 @@ int wallet_list_for_identity(const char *fingerprint, wallet_list_t **list_out) 
         return -1;
     }
 
-    // Build path: <data_dir>/<fingerprint>/wallets/
+    // v0.3.0: Build path: <data_dir>/wallets/ (flat structure)
+    (void)fingerprint;  // Unused in v0.3.0 flat structure
     char wallets_dir[1024];
-    snprintf(wallets_dir, sizeof(wallets_dir), "%s/%s/wallets", data_dir, fingerprint);
+    snprintf(wallets_dir, sizeof(wallets_dir), "%s/wallets", data_dir);
 
 #ifdef _WIN32
     WIN32_FIND_DATA wallet_data;

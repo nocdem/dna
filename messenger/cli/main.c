@@ -62,17 +62,15 @@ static void print_usage(const char *prog_name) {
     printf("Usage: %s [OPTIONS] <command> [args...]\n\n", prog_name);
     printf("Options:\n");
     printf("  -d, --data-dir <path>   Data directory (default: ~/.dna)\n");
-    printf("  -i, --identity <fp>     Use specific identity (fingerprint prefix)\n");
     printf("  -q, --quiet             Suppress banner/status messages\n");
     printf("  -h, --help              Show this help\n");
     printf("  -v, --version           Show version\n");
     printf("\n");
-    printf("IDENTITY COMMANDS:\n");
+    printf("IDENTITY COMMANDS (v0.3.0 single-user model):\n");
     printf("  create <name>               Create new identity\n");
     printf("  restore <mnemonic...>       Restore identity from 24-word mnemonic\n");
-    printf("  delete <fingerprint>        Delete an identity\n");
-    printf("  list                        List all identities\n");
-    printf("  load <fingerprint>          Load an identity\n");
+    printf("  delete                      Delete identity and all data\n");
+    printf("  load                        Load identity (auto-detected)\n");
     printf("  whoami                      Show current identity\n");
     printf("  register <name>             Register a name on DHT\n");
     printf("  name                        Show registered name\n");
@@ -109,12 +107,11 @@ static void print_usage(const char *prog_name) {
     printf("Examples:\n");
     printf("  %s create alice\n", prog_name);
     printf("  %s restore abandon ability able about ...\n", prog_name);
-    printf("  %s list\n", prog_name);
-    printf("  %s load db73e609\n", prog_name);
+    printf("  %s whoami\n", prog_name);
     printf("  %s contacts\n", prog_name);
-    printf("  %s send 5e6d7c8b \"Hello!\"\n", prog_name);
-    printf("  %s messages 5e6d7c8b\n", prog_name);
-    printf("  %s -q list\n", prog_name);
+    printf("  %s send nox \"Hello!\"\n", prog_name);
+    printf("  %s messages nox\n", prog_name);
+    printf("  %s -q contacts\n", prog_name);
 }
 
 /* Helper to join remaining args into a single string */
@@ -181,51 +178,25 @@ static int wait_for_dht(int quiet, int timeout_sec) {
  * ============================================================================ */
 
 /**
- * Auto-load an identity. If identity_hint is provided, load that one.
- * Otherwise, if there's exactly one identity, load it automatically.
+ * Auto-load identity (v0.3.0 single-user model)
+ *
+ * Checks if identity exists (keys/identity.dsa) and loads it.
+ * The identity_hint parameter is kept for backward compatibility but ignored.
  */
 static int auto_load_identity(dna_engine_t *engine, const char *identity_hint, int quiet) {
-    /* If explicit identity provided, load it */
-    if (identity_hint) {
-        if (!quiet) {
-            fprintf(stderr, "Loading identity %s...\n", identity_hint);
-        }
-        return cmd_load(engine, identity_hint);
-    }
+    (void)identity_hint;  /* v0.3.0: Ignored - only one identity per app */
 
-    /* List identities to see what's available */
-    char **fingerprints = NULL;
-    int count = 0;
-
-    int rc = cli_list_identities(engine, &fingerprints, &count);
-    if (rc != 0 || count == 0) {
-        fprintf(stderr, "Error: No identities found. Create one first with 'create <name>'\n");
+    /* v0.3.0: Check if identity exists using flat structure */
+    if (!dna_engine_has_identity(engine)) {
+        fprintf(stderr, "Error: No identity found. Create one first with 'create <name>'\n");
         return -1;
     }
 
-    if (count == 1) {
-        /* Auto-load the only identity */
-        if (!quiet) {
-            fprintf(stderr, "Auto-loading identity %.16s...\n", fingerprints[0]);
-        }
-        rc = cmd_load(engine, fingerprints[0]);
-
-        /* Free fingerprints */
-        for (int i = 0; i < count; i++) {
-            free(fingerprints[i]);
-        }
-        free(fingerprints);
-        return rc;
+    /* Load the single identity (fingerprint computed internally) */
+    if (!quiet) {
+        fprintf(stderr, "Loading identity...\n");
     }
-
-    /* Multiple identities - require explicit selection */
-    fprintf(stderr, "Error: Multiple identities found. Use -i <fingerprint> to select one:\n");
-    for (int i = 0; i < count; i++) {
-        fprintf(stderr, "  %d. %.16s...\n", i + 1, fingerprints[i]);
-        free(fingerprints[i]);
-    }
-    free(fingerprints);
-    return -1;
+    return cmd_load(engine, NULL);  /* NULL = auto-compute fingerprint */
 }
 
 /* ============================================================================

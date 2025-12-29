@@ -22,7 +22,7 @@
 #include "../dht/core/dht_keyserver.h"
 #include "../dht/core/dht_context.h"
 #include "../dht/client/dht_singleton.h"
-#include "../dht/client/dht_identity_backup.h"
+#include "../dht/client/dht_identity.h"
 #include "../database/keyserver_cache.h"
 #include "../p2p/p2p_transport.h"
 #include "../dna_config.h"
@@ -216,31 +216,20 @@ int messenger_generate_keys_from_seeds(
     char fingerprint[129];
     dna_compute_fingerprint(dilithium_pk, fingerprint);
 
-    // Directory is always fingerprint-based (deterministic, never changes)
-    const char *dir_name = fingerprint;
-
-    // Create directory structure: <data_dir>/<fingerprint>/keys/ and <data_dir>/<fingerprint>/wallets/
-    char identity_dir[512];
+    // v0.3.0: Single-user flat storage (no fingerprint in path)
+    // Create directory structure: <data_dir>/keys/, <data_dir>/wallets/, <data_dir>/db/
     char keys_dir[512];
     char wallets_dir[512];
+    char db_dir[512];
 
-    snprintf(identity_dir, sizeof(identity_dir), "%s/%s", data_dir, dir_name);
-    snprintf(keys_dir, sizeof(keys_dir), "%s/%s/keys", data_dir, dir_name);
-    snprintf(wallets_dir, sizeof(wallets_dir), "%s/%s/wallets", data_dir, dir_name);
+    snprintf(keys_dir, sizeof(keys_dir), "%s/keys", data_dir);
+    snprintf(wallets_dir, sizeof(wallets_dir), "%s/wallets", data_dir);
+    snprintf(db_dir, sizeof(db_dir), "%s/db", data_dir);
 
     // Create base data dir if needed
     if (!qgp_platform_is_directory(data_dir)) {
         if (qgp_platform_mkdir(data_dir) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", data_dir);
-            qgp_key_free(sign_key);
-            return -1;
-        }
-    }
-
-    // Create identity directory
-    if (!qgp_platform_is_directory(identity_dir)) {
-        if (qgp_platform_mkdir(identity_dir) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", identity_dir);
             qgp_key_free(sign_key);
             return -1;
         }
@@ -264,14 +253,24 @@ int messenger_generate_keys_from_seeds(
         }
     }
 
-    QGP_LOG_INFO(LOG_TAG, "Creating identity '%s' in %s\n", dir_name, identity_dir);
+    // Create db directory
+    if (!qgp_platform_is_directory(db_dir)) {
+        if (qgp_platform_mkdir(db_dir) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Cannot create directory: %s", db_dir);
+            qgp_key_free(sign_key);
+            return -1;
+        }
+    }
+
+    QGP_LOG_INFO(LOG_TAG, "Creating identity (fingerprint: %.16s...) in %s\n", fingerprint, data_dir);
 
     printf("✓ ML-DSA-87 signing key generated from seed\n");
     printf("  Fingerprint: %s\n", fingerprint);
 
     // Save to keys directory (optionally encrypted with password)
+    // v0.3.0: Flat structure - keys/identity.dsa instead of keys/<fingerprint>.dsa
     char dilithium_path[512];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s.dsa", keys_dir, fingerprint);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/identity.dsa", keys_dir);
 
     if (qgp_key_save_encrypted(sign_key, dilithium_path, password) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to save signing key");
@@ -332,8 +331,9 @@ int messenger_generate_keys_from_seeds(
     enc_key->private_key_size = 3168;  // Kyber1024 secret key size
 
     // Save to keys directory (optionally encrypted with password)
+    // v0.3.0: Flat structure - keys/identity.kem instead of keys/<fingerprint>.kem
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s.kem", keys_dir, fingerprint);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/identity.kem", keys_dir);
 
     if (qgp_key_save_encrypted(enc_key, kyber_path, password) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to save encryption key");
@@ -361,39 +361,74 @@ int messenger_generate_keys_from_seeds(
     memcpy(kyber_pubkey_copy, enc_key->public_key, enc_key->public_key_size);
     size_t kyber_pubkey_size = enc_key->public_key_size;
 
-    // Create DHT identity backup (for BIP39 recovery)
-    printf("[DHT Identity] Creating random DHT identity for signing...\n");
+    // Create DHT identity from master seed (deterministic - same seed = same DHT identity)
+    // This eliminates the need for DHT identity backup - just derive from BIP39 seed
+    if (master_seed) {
+        printf("[DHT Identity] Deriving deterministic DHT identity from master seed...\n");
 
-    // Get DHT context (global singleton)
-    dht_context_t *dht_ctx = dht_singleton_get();
-    if (!dht_ctx) {
-        QGP_LOG_WARN(LOG_TAG, "DHT not initialized, skipping DHT identity backup");
-        
-    } else {
-        // Create random DHT identity + encrypted backup (local + DHT)
-        dht_identity_t *dht_identity = NULL;
-        if (dht_identity_create_and_backup(fingerprint, kyber_pk, dht_ctx, &dht_identity) != 0) {
-            QGP_LOG_WARN(LOG_TAG, "Failed to create DHT identity backup");
-            
+        // Derive dht_seed = SHA3-512(master_seed + "dht_identity")[0:32]
+        // Use SHA3-512 truncated to 32 bytes (cryptographically sound)
+        uint8_t dht_seed[32];
+        uint8_t full_hash[64];
+        uint8_t seed_input[64 + 12];  // 64-byte master_seed + "dht_identity" (12 bytes)
+        memcpy(seed_input, master_seed, 64);
+        memcpy(seed_input + 64, "dht_identity", 12);
+
+        if (qgp_sha3_512(seed_input, sizeof(seed_input), full_hash) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to derive DHT seed from master seed");
         } else {
-            printf("[DHT Identity] ✓ Random DHT identity created and backed up\n");
-            printf("[DHT Identity] ✓ Encrypted backup saved locally and published to DHT\n");
+            // Truncate to 32 bytes for DHT seed
+            memcpy(dht_seed, full_hash, 32);
+            memset(full_hash, 0, sizeof(full_hash));
 
-            // Free the identity (will be loaded later on login)
-            dht_identity_free(dht_identity);
+            // Generate DHT identity deterministically from derived seed
+            dht_identity_t *dht_identity = NULL;
+            if (dht_identity_generate_from_seed(dht_seed, &dht_identity) != 0) {
+                QGP_LOG_WARN(LOG_TAG, "Failed to create deterministic DHT identity");
+            } else {
+                printf("[DHT Identity] ✓ Deterministic DHT identity derived from master seed\n");
+                printf("[DHT Identity] ✓ Same seed will always produce same DHT identity\n");
+
+                // Export and save DHT identity locally for faster loading
+                // v0.3.0: Flat structure - dht_identity.bin in root data dir
+                uint8_t *dht_id_buffer = NULL;
+                size_t dht_id_size = 0;
+                if (dht_identity_export_to_buffer(dht_identity, &dht_id_buffer, &dht_id_size) == 0) {
+                    char dht_id_path[512];
+                    snprintf(dht_id_path, sizeof(dht_id_path), "%s/dht_identity.bin", data_dir);
+                    FILE *f = fopen(dht_id_path, "wb");
+                    if (f) {
+                        fwrite(dht_id_buffer, 1, dht_id_size, f);
+                        fclose(f);
+                        QGP_LOG_INFO(LOG_TAG, "DHT identity saved to %s", dht_id_path);
+                    }
+                    free(dht_id_buffer);
+                }
+
+                // Free the identity (will be derived again on login)
+                dht_identity_free(dht_identity);
+            }
+
+            // Securely wipe seed data
+            memset(dht_seed, 0, sizeof(dht_seed));
+            memset(seed_input, 0, sizeof(seed_input));
         }
-
-        // NOTE: DHT publishing is now done via dht_keyserver_publish() with a name
-        // Name-first architecture: identities are only published when a DNA name is registered
-        // Keys are saved locally here, but not published to DHT until name registration
-        QGP_LOG_INFO(LOG_TAG, "Keys saved locally. DHT publish requires DNA name registration.\n");
+    } else {
+        QGP_LOG_WARN(LOG_TAG, "No master_seed provided - DHT identity not created");
+        QGP_LOG_WARN(LOG_TAG, "DHT operations will use random identity (not recoverable)");
     }
+
+    // NOTE: DHT publishing is now done via dht_keyserver_publish() with a name
+    // Name-first architecture: identities are only published when a DNA name is registered
+    // Keys are saved locally here, but not published to DHT until name registration
+    QGP_LOG_INFO(LOG_TAG, "Keys saved locally. DHT publish requires DNA name registration.\n");
 
     // Save encrypted mnemonic for recovery and on-demand wallet derivation
     // Wallet private keys are NOT stored - they are derived when needed for transactions
     // This reduces attack surface: only mnemonic.enc needs to be protected
+    // v0.3.0: Flat structure - mnemonic.enc in root data dir
     if (mnemonic && strlen(mnemonic) > 0) {
-        if (mnemonic_storage_save(mnemonic, kyber_pk, identity_dir) == 0) {
+        if (mnemonic_storage_save(mnemonic, kyber_pk, data_dir) == 0) {
             QGP_LOG_INFO(LOG_TAG, "✓ Encrypted mnemonic saved (wallet keys derived on-demand)\n");
         } else {
             QGP_LOG_WARN(LOG_TAG, "Warning: Failed to save encrypted mnemonic\n");
@@ -401,8 +436,6 @@ int messenger_generate_keys_from_seeds(
     } else {
         QGP_LOG_WARN(LOG_TAG, "No mnemonic provided - wallet recovery will not be possible\n");
     }
-
-    (void)master_seed;  /* No longer stored - derived from mnemonic when needed */
 
     qgp_key_free(enc_key);
 
@@ -425,38 +458,25 @@ int messenger_generate_keys_from_seeds(
 }
 
 /**
- * Find the path to a key file (.dsa or .kem) for a given fingerprint
- * Searches through all <data_dir>/<name>/keys/ directories
+ * Get the path to a key file (.dsa or .kem)
+ * v0.3.0: Flat structure - always keys/identity.{dsa,kem}
+ * fingerprint parameter kept for API compatibility but ignored
  */
 static int keygen_find_key_path(const char *data_dir, const char *fingerprint,
                                 const char *extension, char *path_out) {
-    DIR *base_dir = opendir(data_dir);
-    if (!base_dir) {
-        return -1;
+    (void)fingerprint;  // Unused in v0.3.0 flat structure
+
+    char test_path[512];
+    snprintf(test_path, sizeof(test_path), "%s/keys/identity%s", data_dir, extension);
+
+    FILE *f = fopen(test_path, "r");
+    if (f) {
+        fclose(f);
+        strncpy(path_out, test_path, 511);
+        path_out[511] = '\0';
+        return 0;
     }
 
-    struct dirent *identity_entry;
-    while ((identity_entry = readdir(base_dir)) != NULL) {
-        if (strcmp(identity_entry->d_name, ".") == 0 ||
-            strcmp(identity_entry->d_name, "..") == 0) {
-            continue;
-        }
-
-        char test_path[512];
-        snprintf(test_path, sizeof(test_path), "%s/%s/keys/%s%s",
-                 data_dir, identity_entry->d_name, fingerprint, extension);
-
-        FILE *f = fopen(test_path, "r");
-        if (f) {
-            fclose(f);
-            strncpy(path_out, test_path, 511);
-            path_out[511] = '\0';
-            closedir(base_dir);
-            return 0;
-        }
-    }
-
-    closedir(base_dir);
     return -1;
 }
 

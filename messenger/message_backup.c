@@ -73,30 +73,22 @@ static const char *SCHEMA_SQL =
 
 /**
  * Get database path
+ * v0.3.0: Flat structure - db/messages.db
  */
 static int get_db_path(const char *identity, char *path_out, size_t path_len) {
+    (void)identity;  // Unused in v0.3.0 flat structure
+
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to get data directory\n");
         return -1;
     }
 
-    // Create <data_dir>/<identity> directory if it doesn't exist
-    char identity_dir[512];
-    snprintf(identity_dir, sizeof(identity_dir), "%s/%s", data_dir, identity);
+    // v0.3.0: Create <data_dir>/db directory if it doesn't exist
+    char db_dir[512];
+    snprintf(db_dir, sizeof(db_dir), "%s/db", data_dir);
 
     struct stat st = {0};
-    if (stat(identity_dir, &st) == -1) {
-        if (qgp_platform_mkdir(identity_dir) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to create %s: %s\n", identity_dir, strerror(errno));
-            return -1;
-        }
-    }
-
-    // Create <data_dir>/<identity>/db directory if it doesn't exist
-    char db_dir[512];
-    snprintf(db_dir, sizeof(db_dir), "%s/%s/db", data_dir, identity);
-
     if (stat(db_dir, &st) == -1) {
         if (qgp_platform_mkdir(db_dir) != 0) {
             QGP_LOG_ERROR(LOG_TAG, "Failed to create %s: %s\n", db_dir, strerror(errno));
@@ -104,7 +96,7 @@ static int get_db_path(const char *identity, char *path_out, size_t path_len) {
         }
     }
 
-    // Database path: <data_dir>/<identity>/db/messages.db (per-identity)
+    // v0.3.0: Database path: <data_dir>/db/messages.db (flat structure)
     snprintf(path_out, path_len, "%s/messages.db", db_dir);
     return 0;
 }

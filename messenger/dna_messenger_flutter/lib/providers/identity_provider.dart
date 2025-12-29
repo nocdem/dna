@@ -5,6 +5,8 @@ import 'engine_provider.dart';
 import 'identity_profile_cache_provider.dart';
 
 /// List of available identities (fingerprints)
+/// v0.3.0: In single-user model, this returns at most 1 identity.
+/// Still used by IdentitySelectionScreen for onboarding UI.
 final identitiesProvider = AsyncNotifierProvider<IdentitiesNotifier, List<String>>(
   IdentitiesNotifier.new,
 );
@@ -158,16 +160,38 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     return fingerprint;
   }
 
-  Future<void> loadIdentity(String fingerprint) async {
+  /// Check if an identity exists (v0.3.0 single-user model)
+  ///
+  /// Returns true if keys/identity.dsa exists in the data directory.
+  /// Use this to determine if onboarding is needed.
+  Future<bool> hasIdentity() async {
     final engine = await ref.read(engineProvider.future);
-    engine.debugLog('IDENTITY', 'loadIdentity START fp=${fingerprint.substring(0, 16)}...');
-    await engine.loadIdentity(fingerprint);
-    engine.debugLog('IDENTITY', 'loadIdentity DONE - setting currentFingerprintProvider');
+    return engine.hasIdentity();
+  }
+
+  /// Load identity (v0.3.0 single-user model)
+  ///
+  /// [fingerprint] - Optional. If not provided, fingerprint is computed from flat key file.
+  Future<void> loadIdentity([String? fingerprint]) async {
+    final engine = await ref.read(engineProvider.future);
+
+    if (fingerprint != null) {
+      engine.debugLog('IDENTITY', 'loadIdentity START fp=${fingerprint.substring(0, 16)}...');
+    } else {
+      engine.debugLog('IDENTITY', 'loadIdentity START (auto-detect fingerprint)');
+    }
+
+    await engine.loadIdentity(fingerprint: fingerprint);
+
+    // Get actual fingerprint after loading (important when auto-detected)
+    final loadedFp = engine.fingerprint;
+    engine.debugLog('IDENTITY', 'loadIdentity DONE - loaded fp=${loadedFp?.substring(0, 16) ?? "null"}');
+
     // Set fingerprint AFTER identity is loaded - this triggers UI rebuild
     // via identityLoadedProvider which watches currentFingerprintProvider
     // NOTE: Do NOT invalidate engineProvider here - it would destroy the engine
     // and lose the loaded identity state
-    ref.read(currentFingerprintProvider.notifier).state = fingerprint;
+    ref.read(currentFingerprintProvider.notifier).state = loadedFp;
     engine.debugLog('IDENTITY', 'loadIdentity - currentFingerprintProvider set');
   }
 
@@ -188,6 +212,8 @@ class IdentitiesNotifier extends AsyncNotifier<List<String>> {
     ref.invalidate(userProfileProvider);
   }
 
+  /// v0.3.0: Deprecated - in single-user model, unloading is only used
+  /// for account deletion, which clears fingerprint and returns to onboarding.
   void unloadIdentity() {
     ref.read(currentFingerprintProvider.notifier).state = null;
     ref.invalidate(engineProvider);
@@ -261,7 +287,7 @@ final userProfileProvider = FutureProvider<UserProfile?>((ref) async {
 });
 
 /// Cache for identity display names (fingerprint -> registered name)
-/// This is used by the identity selection screen to show names instead of fingerprints
+/// v0.3.0: Still used for profile display in drawer and settings
 final identityNameCacheProvider = StateProvider<Map<String, String>>((ref) => {});
 
 /// Cache for identity avatars (fingerprint -> base64 avatar)

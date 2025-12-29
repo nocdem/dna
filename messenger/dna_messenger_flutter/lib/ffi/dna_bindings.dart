@@ -1013,6 +1013,16 @@ class DnaBindings {
     return _dna_engine_delete_identity_sync(engine, fingerprint);
   }
 
+  late final _dna_engine_has_identity = _lib.lookupFunction<
+      Bool Function(Pointer<dna_engine_t>),
+      bool Function(Pointer<dna_engine_t>)>('dna_engine_has_identity');
+
+  /// Check if an identity exists (v0.3.0 single-user model)
+  /// Returns true if keys/identity.dsa exists
+  bool dna_engine_has_identity(Pointer<dna_engine_t> engine) {
+    return _dna_engine_has_identity(engine);
+  }
+
   late final _dna_engine_load_identity = _lib.lookupFunction<
       Uint64 Function(Pointer<dna_engine_t>, Pointer<Utf8>, Pointer<Utf8>,
           Pointer<DnaCompletionCb>, Pointer<Void>),

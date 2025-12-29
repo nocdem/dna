@@ -77,9 +77,9 @@ static int load_my_dilithium_pubkey(
         return -1;
     }
 
+    /* v0.3.0: Flat structure - keys/identity.dsa */
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa",
-             data_dir, ctx->identity, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {
@@ -194,9 +194,9 @@ static int load_my_privkey(
         return -1;
     }
 
+    /* v0.3.0: Flat structure - keys/identity.dsa */
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa",
-             data_dir, ctx->identity, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {
@@ -248,9 +248,9 @@ static int load_my_kyber_key(
         return -1;
     }
 
+    /* v0.3.0: Flat structure - keys/identity.kem */
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.kem",
-             data_dir, ctx->identity, ctx->identity);
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.kem", data_dir);
 
     FILE *f = fopen(key_path, "rb");
     if (!f) {

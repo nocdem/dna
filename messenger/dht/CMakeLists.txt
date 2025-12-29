@@ -32,7 +32,6 @@ set(DHT_COMMON_SOURCES
     client/dht_singleton.c
     client/dht_contactlist.c
     client/dht_message_backup.c
-    client/dht_identity_backup.c
     client/dna_profile.c
     client/dna_message_wall.c
     client/dna_wall_votes.c

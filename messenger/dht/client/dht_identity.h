@@ -30,6 +30,19 @@ typedef struct dht_identity dht_identity_t;
 int dht_identity_generate_dilithium5(dht_identity_t **identity_out);
 
 /**
+ * Generate DHT identity from 32-byte seed (Dilithium5 - ML-DSA-87)
+ *
+ * Deterministic: same seed always produces the same identity
+ * Used for deriving DHT identity from BIP39 master seed
+ * FIPS 204 compliant, NIST Category 5 security level
+ *
+ * @param seed 32-byte seed for deterministic key generation
+ * @param identity_out Output pointer for new identity
+ * @return 0 on success, -1 on error
+ */
+int dht_identity_generate_from_seed(const uint8_t *seed, dht_identity_t **identity_out);
+
+/**
  * Generate random DHT identity (legacy wrapper)
  *
  * DEPRECATED: This function now generates Dilithium5 identities instead of RSA

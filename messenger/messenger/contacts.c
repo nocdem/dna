@@ -68,8 +68,9 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
     }
 
     // Load Kyber keypair (try encrypted if password available, fallback to unencrypted)
+    // v0.3.0: Flat structure - keys/identity.kem
     char kyber_path[1024];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem", data_dir, ctx->identity, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
 
     qgp_key_t *kyber_key = NULL;
     if (ctx->session_password) {
@@ -87,8 +88,9 @@ int messenger_sync_contacts_to_dht(messenger_context_t *ctx) {
     }
 
     // Load Dilithium keypair (try encrypted if password available, fallback to unencrypted)
+    // v0.3.0: Flat structure - keys/identity.dsa
     char dilithium_path[1024];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s/keys/%s.dsa", data_dir, ctx->identity, ctx->identity);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
 
     qgp_key_t *dilithium_key = NULL;
     if (ctx->session_password) {
@@ -197,8 +199,9 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     }
 
     // Load Kyber private key for decryption (try encrypted if password available)
+    // v0.3.0: Flat structure - keys/identity.kem
     char kyber_path2[1024];
-    snprintf(kyber_path2, sizeof(kyber_path2), "%s/%s/keys/%s.kem", data_dir2, ctx->identity, ctx->identity);
+    snprintf(kyber_path2, sizeof(kyber_path2), "%s/keys/identity.kem", data_dir2);
 
     qgp_key_t *kyber_key = NULL;
     if (ctx->session_password) {
@@ -214,8 +217,9 @@ int messenger_sync_contacts_from_dht(messenger_context_t *ctx) {
     }
 
     // Load Dilithium public key for signature verification (try encrypted if password available)
+    // v0.3.0: Flat structure - keys/identity.dsa
     char dilithium_path2[1024];
-    snprintf(dilithium_path2, sizeof(dilithium_path2), "%s/%s/keys/%s.dsa", data_dir2, ctx->identity, ctx->identity);
+    snprintf(dilithium_path2, sizeof(dilithium_path2), "%s/keys/identity.dsa", data_dir2);
 
     qgp_key_t *dilithium_key = NULL;
     if (ctx->session_password) {

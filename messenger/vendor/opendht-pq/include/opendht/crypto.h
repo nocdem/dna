@@ -252,6 +252,14 @@ struct OPENDHT_PUBLIC PrivateKey
      */
     static PrivateKey generate();
 
+    /**
+     * Generate a Dilithium5 key pair from a 32-byte seed (deterministic)
+     * Same seed always produces the same keypair - used for DHT identity derivation
+     * @param seed 32-byte seed for deterministic key generation
+     * @returns New PrivateKey with generated Dilithium5 keypair
+     */
+    static PrivateKey generateFromSeed(const uint8_t* seed);
+
 private:
     // Dilithium5 secret key: 4896 bytes (FIPS 204 / ML-DSA-87)
     uint8_t dilithium_sk_[pqcrystals_dilithium5_SECRETKEYBYTES];
@@ -571,6 +579,7 @@ OPENDHT_PUBLIC Identity loadIdentity(const std::string &path,const std::string &
 
 // NEW: Dilithium5 identity generation functions
 OPENDHT_PUBLIC Identity generateDilithiumIdentity(const std::string& name = "dhtnode");
+OPENDHT_PUBLIC Identity generateDilithiumIdentityFromSeed(const uint8_t* seed, const std::string& name = "dhtnode");
 OPENDHT_PUBLIC void saveDilithiumIdentity(const Identity& id, const std::string& path);
 OPENDHT_PUBLIC Identity loadDilithiumIdentity(const std::string& path);
 

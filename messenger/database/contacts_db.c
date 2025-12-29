@@ -82,7 +82,9 @@ static int get_db_path(const char *owner_identity, char *path_out, size_t path_s
         return -1;
     }
 
-    snprintf(path_out, path_size, "%s/%s/db/contacts.db", data_dir, owner_identity);
+    // v0.3.0: Flat structure - db/contacts.db
+    (void)owner_identity;  // Unused in v0.3.0 flat structure
+    snprintf(path_out, path_size, "%s/db/contacts.db", data_dir);
     return 0;
 }
 

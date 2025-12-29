@@ -59,45 +59,31 @@ static size_t keys_curl_write_cb(void *contents, size_t size, size_t nmemb, void
 // ============================================================================
 
 /**
- * Find the path to a key file (.dsa or .kem) for a given fingerprint
- * Searches through all <data_dir>/<name>/keys/ directories
- * @param data_dir Base data directory (from qgp_platform_app_data_dir())
- * @param fingerprint The 128-char hex fingerprint
+ * Get the path to a key file (.dsa or .kem)
+ * v0.3.0: Flat structure - always keys/identity.{dsa,kem}
+ * fingerprint parameter kept for API compatibility but ignored
+ * @param dna_dir Base data directory (from qgp_platform_app_data_dir())
+ * @param fingerprint Ignored in v0.3.0 flat structure
  * @param extension The file extension (e.g., ".dsa" or ".kem")
  * @param path_out Output buffer for found path (must be at least 512 bytes)
  * @return 0 on success, -1 if not found
  */
 static int find_key_path(const char *dna_dir, const char *fingerprint,
                          const char *extension, char *path_out) {
-    DIR *base_dir = opendir(dna_dir);
-    if (!base_dir) {
-        return -1;
+    (void)fingerprint;  // Unused in v0.3.0 flat structure
+
+    char test_path[512];
+    snprintf(test_path, sizeof(test_path), "%s/keys/identity%s", dna_dir, extension);
+
+    /* Check if file exists */
+    FILE *f = fopen(test_path, "r");
+    if (f) {
+        fclose(f);
+        strncpy(path_out, test_path, 511);
+        path_out[511] = '\0';
+        return 0;
     }
 
-    struct dirent *identity_entry;
-    while ((identity_entry = readdir(base_dir)) != NULL) {
-        if (strcmp(identity_entry->d_name, ".") == 0 ||
-            strcmp(identity_entry->d_name, "..") == 0) {
-            continue;
-        }
-
-        /* Build path to potential key file */
-        char test_path[512];
-        snprintf(test_path, sizeof(test_path), "%s/%s/keys/%s%s",
-                 dna_dir, identity_entry->d_name, fingerprint, extension);
-
-        /* Check if file exists */
-        FILE *f = fopen(test_path, "r");
-        if (f) {
-            fclose(f);
-            strncpy(path_out, test_path, 511);
-            path_out[511] = '\0';
-            closedir(base_dir);
-            return 0;
-        }
-    }
-
-    closedir(base_dir);
     return -1;
 }
 

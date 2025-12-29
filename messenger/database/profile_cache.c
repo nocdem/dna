@@ -40,7 +40,8 @@ static int get_db_path(char *path_out, size_t path_size) {
         return -1;
     }
 
-    snprintf(path_out, path_size, "%s/profile_cache.db", data_dir);
+    // v0.3.0: Flat structure - db/profiles.db
+    snprintf(path_out, path_size, "%s/db/profiles.db", data_dir);
     return 0;
 }
 

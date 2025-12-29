@@ -276,9 +276,10 @@ int cellframe_wallet_create_from_seed(
     /* Create wallet directory if it doesn't exist */
     mkdir_portable(wallet_dir);
 
-    /* Build wallet file path */
+    /* v0.3.0: Build wallet file path - flat structure */
+    (void)wallet_name;  // Unused in v0.3.0 flat structure
     char wallet_path[512];
-    snprintf(wallet_path, sizeof(wallet_path), "%s/%s.dwallet", wallet_dir, wallet_name);
+    snprintf(wallet_path, sizeof(wallet_path), "%s/wallet.dwallet", wallet_dir);
 
     /* Write wallet file */
     if (write_dwallet_file(wallet_path, wallet_name,

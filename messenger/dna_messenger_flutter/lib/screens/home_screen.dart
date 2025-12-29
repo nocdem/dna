@@ -5,7 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../providers/providers.dart';
 import '../providers/event_handler.dart';
 import '../theme/dna_theme.dart';
-import 'identity/identity_selection_screen.dart';
+// v0.3.0: IdentitySelectionScreen import removed - single-user model
 // Feed disabled - will be reimplemented in the future
 // import 'feed/feed_screen.dart';
 import 'contacts/contacts_screen.dart';
@@ -16,18 +16,15 @@ import 'settings/settings_screen.dart';
 /// Current tab index (0=Chats, 1=Groups, 2=Wallet, 3=Settings)
 final currentTabProvider = StateProvider<int>((ref) => 0);
 
+/// v0.3.0: Single-user model - HomeScreen always shows main navigation
+/// Identity check moved to _AppLoader in main.dart
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final identityLoaded = ref.watch(identityLoadedProvider);
-
-    // Show identity selection if no identity loaded
-    if (!identityLoaded) {
-      return const IdentitySelectionScreen();
-    }
-
+    // v0.3.0: Identity is always loaded before reaching HomeScreen
+    // See _AppLoader._checkAndLoadIdentity() in main.dart
     return const _MainNavigation();
   }
 }
@@ -267,17 +264,7 @@ class _DrawerHeader extends ConsumerWidget {
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
-          const SizedBox(height: 12),
-          // Switch Identity button
-          OutlinedButton.icon(
-            onPressed: () => _showSwitchIdentityDialog(context, ref),
-            icon: const Icon(Icons.switch_account, size: 18),
-            label: const Text('Switch Identity'),
-            style: OutlinedButton.styleFrom(
-              minimumSize: const Size.fromHeight(36),
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-            ),
-          ),
+          // v0.3.0: Switch Identity button removed - single-user model
         ],
       ),
     );
@@ -349,30 +336,5 @@ class _DrawerHeader extends ConsumerWidget {
     );
   }
 
-  void _showSwitchIdentityDialog(BuildContext context, WidgetRef ref) {
-    showDialog(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Switch Identity'),
-        content: const Text(
-          'This will log you out and return to identity selection.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              Navigator.pop(ctx); // Close dialog
-              Navigator.pop(context); // Close drawer
-              // Unload identity - set fingerprint to null which triggers identityLoadedProvider
-              ref.read(currentFingerprintProvider.notifier).state = null;
-            },
-            child: const Text('Switch'),
-          ),
-        ],
-      ),
-    );
-  }
+  // v0.3.0: _showSwitchIdentityDialog removed - single-user model
 }

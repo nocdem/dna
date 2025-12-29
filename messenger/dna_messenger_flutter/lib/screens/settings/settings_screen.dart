@@ -1109,14 +1109,14 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
               );
             },
           ),
-        // Delete Identity option
+        // v0.3.0: Delete Account (renamed from Delete Identity - single-user model)
         ListTile(
           leading: Icon(Icons.delete_forever, color: DnaColors.textWarning),
           title: Text(
-            'Delete Identity',
+            'Delete Account',
             style: TextStyle(color: DnaColors.textWarning),
           ),
-          subtitle: const Text('Permanently delete this identity from device'),
+          subtitle: const Text('Permanently delete all data from device'),
           trailing: _isDeleting
               ? const SizedBox(
                   width: 24,
@@ -1141,7 +1141,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
           children: [
             Icon(Icons.warning_amber, color: DnaColors.textWarning),
             const SizedBox(width: 8),
-            const Text('Delete Identity?'),
+            const Text('Delete Account?'),
           ],
         ),
         content: Column(
@@ -1149,7 +1149,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             const Text(
-              'This will permanently delete all local data for this identity:',
+              'This will permanently delete all local data:',
             ),
             const SizedBox(height: 12),
             _buildBulletPoint('Private keys'),
@@ -1231,13 +1231,12 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
           if (mounted) {
             ScaffoldMessenger.of(context).showSnackBar(
               SnackBar(
-                content: const Text('Identity deleted successfully'),
+                content: const Text('Account deleted successfully'),
                 backgroundColor: DnaColors.snackbarSuccess,
               ),
             );
 
-            // Clear current fingerprint - this triggers identityLoadedProvider to return false
-            // which causes HomeScreen to show IdentitySelectionScreen
+            // v0.3.0: Clear fingerprint - app will restart to onboarding
             ref.read(currentFingerprintProvider.notifier).state = null;
           }
         },
@@ -1252,7 +1251,7 @@ class _IdentitySectionState extends ConsumerState<_IdentitySection> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Failed to delete identity: $e'),
+            content: Text('Failed to delete account: $e'),
             backgroundColor: DnaColors.snackbarError,
           ),
         );

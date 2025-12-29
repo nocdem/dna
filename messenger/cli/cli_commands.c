@@ -481,12 +481,13 @@ int cmd_load(dna_engine_t *engine, const char *fingerprint) {
         return -1;
     }
 
-    if (!fingerprint || strlen(fingerprint) == 0) {
-        printf("Error: Fingerprint required\n");
-        return -1;
+    /* v0.3.0: fingerprint is optional - computed internally from flat key file */
+    if (fingerprint && strlen(fingerprint) > 0) {
+        printf("Loading identity %s...\n", fingerprint);
+    } else {
+        printf("Loading identity...\n");
+        fingerprint = "";  /* Pass empty string to trigger auto-compute */
     }
-
-    printf("Loading identity %s...\n", fingerprint);
 
     cli_wait_t wait;
     cli_wait_init(&wait);

@@ -51,6 +51,32 @@ extern "C" int dht_identity_generate_dilithium5(dht_identity_t **identity_out) {
 }
 
 /**
+ * Generate DHT identity from 32-byte seed (Dilithium5 - ML-DSA-87)
+ * Deterministic: same seed always produces the same identity
+ * Used for deriving DHT identity from BIP39 master seed
+ */
+extern "C" int dht_identity_generate_from_seed(const uint8_t *seed, dht_identity_t **identity_out) {
+    if (!seed || !identity_out) {
+        QGP_LOG_ERROR(LOG_TAG, "NULL parameter in generate_from_seed");
+        return -1;
+    }
+
+    try {
+        // Generate Dilithium5 (ML-DSA-87) identity deterministically from seed
+        auto id = dht::crypto::generateDilithiumIdentityFromSeed(seed, "dht_node");
+
+        *identity_out = new dht_identity(id);
+
+        QGP_LOG_INFO(LOG_TAG, "Generated Dilithium5 identity from seed (deterministic)");
+        QGP_LOG_INFO(LOG_TAG, "FIPS 204 - NIST Category 5 (256-bit quantum)");
+        return 0;
+    } catch (const std::exception& e) {
+        QGP_LOG_ERROR(LOG_TAG, "Exception generating identity from seed: %s", e.what());
+        return -1;
+    }
+}
+
+/**
  * Export identity to buffer (binary format: Dilithium5 keys)
  *
  * Format: [key_size(4)][dilithium5_key][cert_size(4)][dilithium5_cert]

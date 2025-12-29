@@ -1,7 +1,7 @@
 # DNA Messenger Function Reference
 
-**Version:** 0.2.105
-**Generated:** 2025-12-28
+**Version:** 0.3.0
+**Generated:** 2025-12-30
 **Scope:** All functions (public + static/internal)
 
 This document provides a comprehensive reference for all functions in the DNA Messenger codebase, organized by module.
@@ -61,6 +61,7 @@ The main public API for DNA Messenger. All UI/FFI bindings use these functions.
 | `int dna_engine_create_identity_sync(...)` | Create identity synchronously (blocking) |
 | `int dna_engine_restore_identity_sync(...)` | Restore identity from BIP39 seeds without DHT name |
 | `int dna_engine_delete_identity_sync(...)` | Delete identity and all local data |
+| `bool dna_engine_has_identity(...)` | Check if identity exists (v0.3.0 single-user) |
 | `dna_request_id_t dna_engine_load_identity(...)` | Load and activate identity, bootstrap DHT |
 | `dna_request_id_t dna_engine_register_name(...)` | Register human-readable name in DHT |
 | `dna_request_id_t dna_engine_get_display_name(...)` | Lookup display name for fingerprint |
@@ -760,6 +761,7 @@ Internal Dilithium5 (ML-DSA-87) implementation from pq-crystals reference.
 | Function | Description |
 |----------|-------------|
 | `int crypto_sign_keypair(uint8_t *pk, uint8_t *sk)` | Generate signing keypair |
+| `int crypto_sign_keypair_from_seed(uint8_t *pk, uint8_t *sk, const uint8_t *seed)` | Generate keypair from 32-byte seed (deterministic, v0.3.0+) |
 | `int crypto_sign_signature(uint8_t *sig, size_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*)` | Create detached signature |
 | `int crypto_sign(uint8_t *sm, size_t*, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*)` | Sign message (attached) |
 | `int crypto_sign_verify(const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*, size_t, const uint8_t*)` | Verify detached signature |
@@ -1180,22 +1182,19 @@ High-level DHT client operations including singleton management, identity backup
 |----------|-------------|
 | `int dht_identity_generate_dilithium5(dht_identity_t**)` | Generate Dilithium5 DHT identity |
 | `int dht_identity_generate_random(dht_identity_t**)` | Generate random DHT identity (legacy) |
+| `int dht_identity_generate_from_seed(const uint8_t* seed, dht_identity_t**)` | Generate DHT identity deterministically from 32-byte seed (v0.3.0+) |
 | `int dht_identity_export_to_buffer(dht_identity_t*, uint8_t**, size_t*)` | Export identity to binary buffer |
 | `int dht_identity_import_from_buffer(const uint8_t*, size_t, dht_identity_t**)` | Import identity from buffer |
 | `void dht_identity_free(dht_identity_t*)` | Free DHT identity |
 
-### 11.3 Identity Backup (`dht_identity_backup.h`)
+### 11.3 Identity Backup - REMOVED (v0.3.0)
 
-| Function | Description |
-|----------|-------------|
-| `int dht_identity_create_and_backup(const char*, const uint8_t*, dht_context_t*, dht_identity_t**)` | Create identity and save encrypted backup |
-| `int dht_identity_load_from_local(const char*, const uint8_t*, dht_identity_t**)` | Load identity from local backup |
-| `int dht_identity_fetch_from_dht(const char*, const uint8_t*, dht_context_t*, dht_identity_t**)` | Fetch identity from DHT (recovery) |
-| `int dht_identity_publish_backup(const char*, const uint8_t*, size_t, dht_context_t*)` | Publish encrypted backup to DHT |
-| `bool dht_identity_local_exists(const char*)` | Check if local backup exists |
-| `bool dht_identity_dht_exists(const char*, dht_context_t*)` | Check if DHT backup exists |
-| `void dht_identity_free(dht_identity_t*)` | Free DHT identity |
-| `int dht_identity_get_local_path(const char*, char*)` | Get local backup file path |
+**Note:** As of v0.3.0, DHT identity is derived deterministically from the BIP39 master seed.
+The backup system is no longer needed. Same mnemonic = same DHT identity.
+
+Files removed:
+- `dht/client/dht_identity_backup.c`
+- `dht/client/dht_identity_backup.h`
 
 ### 11.4 Contact List (`dht_contactlist.h`)
 

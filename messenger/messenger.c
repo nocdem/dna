@@ -39,7 +39,6 @@
 #include "crypto/utils/qgp_kyber.h"
 #include "crypto/utils/qgp_sha3.h"  // For SHA3-512 fingerprint computation
 #include "dht/client/dht_singleton.h"  // Global DHT singleton
-#include "dht/client/dht_identity_backup.h"  // DHT identity encrypted backup
 #include "crypto/utils/qgp_types.h"  // For qgp_key_load, qgp_key_free
 #include "qgp.h"  // For cmd_gen_key_from_seed, cmd_export_pubkey
 #include "crypto/bip39/bip39.h"  // For BIP39_MAX_MNEMONIC_LENGTH, bip39_validate_mnemonic, qgp_derive_seeds_from_mnemonic

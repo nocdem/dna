@@ -1278,15 +1278,27 @@ class DnaEngine {
     }
   }
 
-  /// Load and activate identity
+  /// Check if an identity exists (v0.3.0 single-user model)
   ///
-  /// [fingerprint] - Identity fingerprint (128 hex chars)
+  /// Returns true if keys/identity.dsa exists in the data directory.
+  /// Use this to determine if onboarding is needed.
+  bool hasIdentity() {
+    return _bindings.dna_engine_has_identity(_engine);
+  }
+
+  /// Load and activate identity (v0.3.0 single-user model)
+  ///
+  /// [fingerprint] - Optional identity fingerprint (empty string = auto-detect)
   /// [password] - Optional password for encrypted keys (null if unencrypted)
-  Future<void> loadIdentity(String fingerprint, {String? password}) async {
+  ///
+  /// In v0.3.0 single-user model, fingerprint is optional. If not provided,
+  /// the fingerprint will be computed from the flat key file.
+  Future<void> loadIdentity({String? fingerprint, String? password}) async {
     final completer = Completer<void>();
     final localId = _nextLocalId++;
 
-    final fpPtr = fingerprint.toNativeUtf8();
+    // v0.3.0: Empty string triggers auto-compute of fingerprint from flat key file
+    final fpPtr = (fingerprint ?? '').toNativeUtf8();
     final pwPtr = password?.toNativeUtf8();
 
     void onComplete(int requestId, int error, Pointer<Void> userData) {

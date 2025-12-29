@@ -965,9 +965,22 @@ void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
 }
 
 void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
-    const char *fingerprint = task->params.load_identity.fingerprint;
     const char *password = task->params.load_identity.password;
     int error = DNA_OK;
+
+    /* v0.3.0: Compute fingerprint from flat key file if not provided */
+    char fingerprint_buf[129] = {0};
+    const char *fingerprint = task->params.load_identity.fingerprint;
+    if (!fingerprint || fingerprint[0] == '\0' || strlen(fingerprint) != 128) {
+        /* Compute from identity.dsa */
+        if (messenger_compute_identity_fingerprint(NULL, fingerprint_buf) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "No identity found - cannot compute fingerprint");
+            error = DNA_ENGINE_ERROR_NO_IDENTITY;
+            goto done;
+        }
+        fingerprint = fingerprint_buf;
+        QGP_LOG_INFO(LOG_TAG, "v0.3.0: Computed fingerprint from flat key file");
+    }
 
     /* Free existing session password if any */
     if (engine->session_password) {
@@ -986,10 +999,10 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     }
 
     /* Check if keys are encrypted and validate password */
+    /* v0.3.0: Flat structure - keys/identity.kem */
     {
         char kem_path[512];
-        snprintf(kem_path, sizeof(kem_path), "%s/%s/keys/%s.kem",
-                 engine->data_dir, fingerprint, fingerprint);
+        snprintf(kem_path, sizeof(kem_path), "%s/keys/identity.kem", engine->data_dir);
 
         bool is_encrypted = qgp_key_file_is_encrypted(kem_path);
         engine->keys_encrypted = is_encrypted;
@@ -1098,11 +1111,11 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
 
     /* Silent background: Create any missing blockchain wallets
      * This uses the encrypted seed stored during identity creation.
-     * Non-fatal if seed doesn't exist or wallet creation fails. */
+     * Non-fatal if seed doesn't exist or wallet creation fails.
+     * v0.3.0: Flat structure - keys/identity.kem */
     {
         char kyber_path[512];
-        snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem",
-                 engine->data_dir, fingerprint, fingerprint);
+        snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", engine->data_dir);
 
         qgp_key_t *kem_key = NULL;
         int load_rc;
@@ -3646,54 +3659,67 @@ int dna_engine_delete_identity_sync(
     int errors = 0;
 
     QGP_LOG_INFO(LOG_TAG, "Deleting identity: %.16s...", fingerprint);
+    (void)fingerprint;  // Unused in v0.3.0 flat structure
 
-    /* 1. Delete identity directory: <data_dir>/<fingerprint>/ */
-    char *identity_dir = qgp_platform_join_path(data_dir, fingerprint);
-    if (identity_dir) {
-        if (qgp_platform_file_exists(identity_dir)) {
-            if (qgp_platform_rmdir_recursive(identity_dir) != 0) {
-                QGP_LOG_ERROR(LOG_TAG, "Failed to delete identity directory: %s", identity_dir);
-                errors++;
-            } else {
-                QGP_LOG_DEBUG(LOG_TAG, "Deleted identity directory: %s", identity_dir);
-            }
-        }
-        free(identity_dir);
-    }
+    /* v0.3.0: Flat structure - delete keys/, db/, wallets/ directories and root files */
 
-    /* 2. Delete contacts database: <data_dir>/<fingerprint>_contacts.db */
-    char contacts_db[512];
-    snprintf(contacts_db, sizeof(contacts_db), "%s/%s_contacts.db", data_dir, fingerprint);
-    if (qgp_platform_file_exists(contacts_db)) {
-        if (remove(contacts_db) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to delete contacts database: %s", contacts_db);
+    /* 1. Delete keys directory: <data_dir>/keys/ */
+    char keys_dir[512];
+    snprintf(keys_dir, sizeof(keys_dir), "%s/keys", data_dir);
+    if (qgp_platform_file_exists(keys_dir)) {
+        if (qgp_platform_rmdir_recursive(keys_dir) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete keys directory: %s", keys_dir);
             errors++;
         } else {
-            QGP_LOG_DEBUG(LOG_TAG, "Deleted contacts database: %s", contacts_db);
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted keys directory: %s", keys_dir);
         }
     }
 
-    /* 3. Delete profiles cache: <data_dir>/<fingerprint>_profiles.db */
-    char profiles_db[512];
-    snprintf(profiles_db, sizeof(profiles_db), "%s/%s_profiles.db", data_dir, fingerprint);
-    if (qgp_platform_file_exists(profiles_db)) {
-        if (remove(profiles_db) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to delete profiles cache: %s", profiles_db);
+    /* 2. Delete db directory: <data_dir>/db/ */
+    char db_dir[512];
+    snprintf(db_dir, sizeof(db_dir), "%s/db", data_dir);
+    if (qgp_platform_file_exists(db_dir)) {
+        if (qgp_platform_rmdir_recursive(db_dir) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete db directory: %s", db_dir);
             errors++;
         } else {
-            QGP_LOG_DEBUG(LOG_TAG, "Deleted profiles cache: %s", profiles_db);
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted db directory: %s", db_dir);
         }
     }
 
-    /* 4. Delete groups database: <data_dir>/<fingerprint>_groups.db */
-    char groups_db[512];
-    snprintf(groups_db, sizeof(groups_db), "%s/%s_groups.db", data_dir, fingerprint);
-    if (qgp_platform_file_exists(groups_db)) {
-        if (remove(groups_db) != 0) {
-            QGP_LOG_ERROR(LOG_TAG, "Failed to delete groups database: %s", groups_db);
+    /* 3. Delete wallets directory: <data_dir>/wallets/ */
+    char wallets_dir[512];
+    snprintf(wallets_dir, sizeof(wallets_dir), "%s/wallets", data_dir);
+    if (qgp_platform_file_exists(wallets_dir)) {
+        if (qgp_platform_rmdir_recursive(wallets_dir) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete wallets directory: %s", wallets_dir);
             errors++;
         } else {
-            QGP_LOG_DEBUG(LOG_TAG, "Deleted groups database: %s", groups_db);
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted wallets directory: %s", wallets_dir);
+        }
+    }
+
+    /* 4. Delete mnemonic file: <data_dir>/mnemonic.enc */
+    char mnemonic_path[512];
+    snprintf(mnemonic_path, sizeof(mnemonic_path), "%s/mnemonic.enc", data_dir);
+    if (qgp_platform_file_exists(mnemonic_path)) {
+        if (remove(mnemonic_path) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete mnemonic: %s", mnemonic_path);
+            errors++;
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted mnemonic: %s", mnemonic_path);
+        }
+    }
+
+    /* 5. Delete DHT identity file: <data_dir>/dht_identity.bin */
+    char dht_id_path[512];
+    snprintf(dht_id_path, sizeof(dht_id_path), "%s/dht_identity.bin", data_dir);
+    if (qgp_platform_file_exists(dht_id_path)) {
+        if (remove(dht_id_path) != 0) {
+            QGP_LOG_ERROR(LOG_TAG, "Failed to delete DHT identity: %s", dht_id_path);
+            errors++;
+        } else {
+            QGP_LOG_DEBUG(LOG_TAG, "Deleted DHT identity: %s", dht_id_path);
         }
     }
 
@@ -3704,6 +3730,21 @@ int dna_engine_delete_identity_sync(
 
     QGP_LOG_INFO(LOG_TAG, "Identity deleted successfully: %.16s...", fingerprint);
     return DNA_OK;
+}
+
+/**
+ * Check if an identity exists (v0.3.0 single-user model)
+ *
+ * Checks if keys/identity.dsa exists in the data directory.
+ */
+bool dna_engine_has_identity(dna_engine_t *engine) {
+    if (!engine || !engine->data_dir) {
+        return false;
+    }
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/keys/identity.dsa", engine->data_dir);
+    return qgp_platform_file_exists(path);
 }
 
 dna_request_id_t dna_engine_load_identity(
@@ -3902,16 +3943,14 @@ int dna_engine_change_password_sync(
     }
 
     /* Build paths to key files */
+    /* v0.3.0: Flat structure - keys/identity.{dsa,kem}, mnemonic.enc in root */
     char dsa_path[512];
     char kem_path[512];
     char mnemonic_path[512];
 
-    snprintf(dsa_path, sizeof(dsa_path), "%s/%s/keys/%s.dsa",
-             engine->data_dir, engine->fingerprint, engine->fingerprint);
-    snprintf(kem_path, sizeof(kem_path), "%s/%s/keys/%s.kem",
-             engine->data_dir, engine->fingerprint, engine->fingerprint);
-    snprintf(mnemonic_path, sizeof(mnemonic_path), "%s/%s/mnemonic.enc",
-             engine->data_dir, engine->fingerprint);
+    snprintf(dsa_path, sizeof(dsa_path), "%s/keys/identity.dsa", engine->data_dir);
+    snprintf(kem_path, sizeof(kem_path), "%s/keys/identity.kem", engine->data_dir);
+    snprintf(mnemonic_path, sizeof(mnemonic_path), "%s/mnemonic.enc", engine->data_dir);
 
     /* Verify old password is correct by trying to load a key */
     if (engine->keys_encrypted || old_password) {
@@ -4589,10 +4628,9 @@ int dna_engine_request_turn_credentials(dna_engine_t *engine, int timeout_ms) {
         return -1;
     }
 
-    // Build path to signing key
+    // Build path to signing key (v0.3.0: flat structure)
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa",
-             data_dir, engine->fingerprint, engine->fingerprint);
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
 
     // Load signing key (handle encrypted keys)
     qgp_key_t *sign_key = NULL;
@@ -5570,9 +5608,9 @@ static qgp_key_t* dna_load_private_key(dna_engine_t *engine) {
         return NULL;
     }
 
+    /* v0.3.0: Flat structure - keys/identity.dsa */
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa",
-             engine->data_dir, engine->fingerprint, engine->fingerprint);
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", engine->data_dir);
 
     qgp_key_t *key = NULL;
     int load_rc;
@@ -5593,9 +5631,9 @@ static qgp_key_t* dna_load_encryption_key(dna_engine_t *engine) {
         return NULL;
     }
 
+    /* v0.3.0: Flat structure - keys/identity.kem */
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.kem",
-             engine->data_dir, engine->fingerprint, engine->fingerprint);
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.kem", engine->data_dir);
 
     qgp_key_t *key = NULL;
     int load_rc;
@@ -6315,9 +6353,9 @@ dna_request_id_t dna_engine_backup_messages(
     }
 
     // Load Kyber keypair
+    /* v0.3.0: Flat structure - keys/identity.kem */
     char kyber_path[1024];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem",
-             data_dir, engine->fingerprint, engine->fingerprint);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
 
     qgp_key_t *kyber_key = NULL;
     if (engine->session_password) {
@@ -6334,10 +6372,9 @@ dna_request_id_t dna_engine_backup_messages(
         }
     }
 
-    // Load Dilithium keypair
+    // Load Dilithium keypair (v0.3.0: flat structure)
     char dilithium_path[1024];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s/keys/%s.dsa",
-             data_dir, engine->fingerprint, engine->fingerprint);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
 
     qgp_key_t *dilithium_key = NULL;
     if (engine->session_password) {
@@ -6426,9 +6463,9 @@ dna_request_id_t dna_engine_restore_messages(
     }
 
     // Load Kyber keypair (only need private key for decryption)
+    /* v0.3.0: Flat structure - keys/identity.kem */
     char kyber_path[1024];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem",
-             data_dir, engine->fingerprint, engine->fingerprint);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
 
     qgp_key_t *kyber_key = NULL;
     if (engine->session_password) {
@@ -6445,10 +6482,9 @@ dna_request_id_t dna_engine_restore_messages(
         }
     }
 
-    // Load Dilithium keypair (only need public key for signature verification)
+    // Load Dilithium keypair (v0.3.0: flat structure)
     char dilithium_path[1024];
-    snprintf(dilithium_path, sizeof(dilithium_path), "%s/%s/keys/%s.dsa",
-             data_dir, engine->fingerprint, engine->fingerprint);
+    snprintf(dilithium_path, sizeof(dilithium_path), "%s/keys/identity.dsa", data_dir);
 
     qgp_key_t *dilithium_key = NULL;
     if (engine->session_password) {

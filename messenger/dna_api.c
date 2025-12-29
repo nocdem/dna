@@ -1205,7 +1205,9 @@ dna_error_t dna_sign_message(
         fprintf(stderr, "[DNA API] Failed to get data directory\n");
         return DNA_ERROR_INTERNAL;
     }
-    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa", data_dir, signer_key_name, signer_key_name);
+    /* v0.3.0: Flat structure - keys/identity.dsa (signer_key_name ignored) */
+    (void)signer_key_name;  // Unused in v0.3.0 flat structure
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
 
     // Load signing key
     qgp_key_t *sign_key = NULL;

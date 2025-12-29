@@ -684,8 +684,9 @@ int messenger_sync_groups(messenger_context_t *ctx) {
         free(contacts);
         return -1;
     }
+    // v0.3.0: Flat structure - keys/identity.kem
     char kyber_path[512];
-    snprintf(kyber_path, sizeof(kyber_path), "%s/%s/keys/%s.kem", data_dir, ctx->identity, ctx->identity);
+    snprintf(kyber_path, sizeof(kyber_path), "%s/keys/identity.kem", data_dir);
 
     qgp_key_t *kyber_key = NULL;
     if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {

@@ -20,17 +20,20 @@
 
 /**
  * Compute fingerprint from Dilithium5 public key in a key file
+ * v0.3.0: Flat structure - identity parameter ignored, always uses keys/identity.dsa
  */
 int messenger_compute_identity_fingerprint(const char *identity, char *fingerprint_out) {
-    if (!identity || !fingerprint_out) {
+    (void)identity;  // Unused in v0.3.0 flat structure
+
+    if (!fingerprint_out) {
         QGP_LOG_ERROR(LOG_TAG, "Invalid arguments to messenger_compute_identity_fingerprint");
         return -1;
     }
 
-    // Load Dilithium key file
+    // Load Dilithium key file (v0.3.0: flat structure)
     const char *data_dir = qgp_platform_app_data_dir();
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa", data_dir, identity, identity);
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
 
     qgp_key_t *key = NULL;
     if (qgp_key_load(key_path, &key) != 0 || !key) {

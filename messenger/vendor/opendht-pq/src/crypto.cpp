@@ -1459,6 +1459,27 @@ PrivateKey::generate()
     return key;
 }
 
+// DILITHIUM5: Generate Dilithium5 key pair from 32-byte seed (deterministic)
+// Same seed always produces the same keypair - used for DHT identity derivation
+PrivateKey
+PrivateKey::generateFromSeed(const uint8_t* seed)
+{
+    PrivateKey key;
+    uint8_t pk[pqcrystals_dilithium5_PUBLICKEYBYTES];
+
+    // Generate Dilithium5 key pair deterministically from seed
+    int result = pqcrystals_dilithium5_ref_keypair_from_seed(pk, key.dilithium_sk_, seed);
+    if (result != 0)
+        throw CryptoException("Dilithium5 key generation from seed failed");
+
+    key.valid_ = true;
+
+    // Cache the public key
+    key.publicKey_ = std::make_shared<PublicKey>(pk, pqcrystals_dilithium5_PUBLICKEYBYTES);
+
+    return key;
+}
+
 #if 0  // REMOVED: Old RSA/EC key generation - now using Dilithium5
 PrivateKey
 PrivateKey::generate(unsigned key_length, gnutls_pk_algorithm_t algo)
@@ -1525,6 +1546,17 @@ Identity
 generateDilithiumIdentity(const std::string& name)
 {
     auto key = std::make_shared<PrivateKey>(PrivateKey::generate());
+    auto cert = std::make_shared<Certificate>(key->getPublicKey());
+    cert->setName(name);
+    return {std::move(key), std::move(cert)};
+}
+
+// DILITHIUM5: Generate Dilithium5 identity from 32-byte seed (deterministic)
+// Same seed always produces the same identity - used for DHT identity derivation from BIP39
+Identity
+generateDilithiumIdentityFromSeed(const uint8_t* seed, const std::string& name)
+{
+    auto key = std::make_shared<PrivateKey>(PrivateKey::generateFromSeed(seed));
     auto cert = std::make_shared<Certificate>(key->getPublicKey());
     cert->setName(name);
     return {std::move(key), std::move(cert)};

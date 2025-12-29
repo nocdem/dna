@@ -68,6 +68,7 @@ extern "C" {
 #define DHT_CHUNK_TTL_7DAY      (7 * 24 * 3600)      // 604800
 #define DHT_CHUNK_TTL_30DAY     (30 * 24 * 3600)     // 2592000
 #define DHT_CHUNK_TTL_365DAY    (365 * 24 * 3600)    // 31536000
+#define DHT_CHUNK_TTL_PERMANENT UINT32_MAX           // 4294967295 (~136 years, treated as permanent)
 
 /*============================================================================
  * Error Codes

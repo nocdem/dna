@@ -753,6 +753,17 @@ int dna_engine_delete_identity_sync(
 );
 
 /**
+ * Check if an identity exists (v0.3.0 single-user model)
+ *
+ * Checks if keys/identity.dsa exists in the data directory.
+ * Use this to determine if onboarding is needed.
+ *
+ * @param engine Engine instance
+ * @return       true if identity exists, false otherwise
+ */
+bool dna_engine_has_identity(dna_engine_t *engine);
+
+/**
  * Load and activate identity
  *
  * Loads keypairs, bootstraps DHT, registers presence,

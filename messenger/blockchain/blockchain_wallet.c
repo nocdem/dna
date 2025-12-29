@@ -230,20 +230,22 @@ static void blockchain_secure_memzero(void *ptr, size_t len) {
  * Check if wallet file exists for a blockchain type
  */
 static bool wallet_file_exists(const char *wallet_dir, const char *fingerprint, blockchain_type_t type) {
+    (void)fingerprint;  // Unused in v0.3.0 flat structure
     char path[BLOCKCHAIN_WALLET_PATH_MAX];
 
+    /* v0.3.0: Flat structure - wallet.{dwallet,eth.json,sol.json,trx.json} */
     switch (type) {
         case BLOCKCHAIN_CELLFRAME:
-            snprintf(path, sizeof(path), "%s/%s.dwallet", wallet_dir, fingerprint);
+            snprintf(path, sizeof(path), "%s/wallet.dwallet", wallet_dir);
             break;
         case BLOCKCHAIN_ETHEREUM:
-            snprintf(path, sizeof(path), "%s/%s.eth.json", wallet_dir, fingerprint);
+            snprintf(path, sizeof(path), "%s/wallet.eth.json", wallet_dir);
             break;
         case BLOCKCHAIN_SOLANA:
-            snprintf(path, sizeof(path), "%s/%s.sol.json", wallet_dir, fingerprint);
+            snprintf(path, sizeof(path), "%s/wallet.sol.json", wallet_dir);
             break;
         case BLOCKCHAIN_TRON:
-            snprintf(path, sizeof(path), "%s/%s.trx.json", wallet_dir, fingerprint);
+            snprintf(path, sizeof(path), "%s/wallet.trx.json", wallet_dir);
             break;
         default:
             return false;
@@ -278,14 +280,13 @@ int blockchain_create_missing_wallets(
         return -1;
     }
 
-    /* Build paths */
-    char identity_dir[512];
+    /* v0.3.0: Flat structure - wallets/ in data_dir */
+    (void)fingerprint;  // Unused in v0.3.0 flat structure
     char wallet_dir[512];
-    snprintf(identity_dir, sizeof(identity_dir), "%s/%s", data_dir, fingerprint);
-    snprintf(wallet_dir, sizeof(wallet_dir), "%s/%s/wallets", data_dir, fingerprint);
+    snprintf(wallet_dir, sizeof(wallet_dir), "%s/wallets", data_dir);
 
     /* Check if encrypted seed exists */
-    if (!seed_storage_exists(identity_dir)) {
+    if (!seed_storage_exists(data_dir)) {
         QGP_LOG_DEBUG(LOG_TAG, "No encrypted seed file - cannot create missing wallets");
         return 0;  /* Not an error, just no seed available */
     }
@@ -303,9 +304,9 @@ int blockchain_create_missing_wallets(
     QGP_LOG_INFO(LOG_TAG, "Missing wallets detected: ETH=%d SOL=%d TRX=%d",
                  need_eth, need_sol, need_trx);
 
-    /* Load encrypted seed */
+    /* v0.3.0: Load encrypted seed from data_dir (flat structure) */
     uint8_t master_seed[64];
-    if (seed_storage_load(master_seed, kem_privkey, identity_dir) != 0) {
+    if (seed_storage_load(master_seed, kem_privkey, data_dir) != 0) {
         QGP_LOG_ERROR(LOG_TAG, "Failed to load encrypted seed");
         return -1;
     }
@@ -373,8 +374,10 @@ int blockchain_list_wallets(
         return -1;
     }
 
+    /* v0.3.0: Flat structure - wallets/ in data_dir */
+    (void)fingerprint;  // Unused in v0.3.0 flat structure
     char wallet_dir[512];
-    snprintf(wallet_dir, sizeof(wallet_dir), "%s/%s/wallets", data_dir, fingerprint);
+    snprintf(wallet_dir, sizeof(wallet_dir), "%s/wallets", data_dir);
 
     /* Check if directory exists */
     if (!qgp_platform_is_directory(wallet_dir)) {

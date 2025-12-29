@@ -17,8 +17,11 @@
 #include "../crypto/utils/qgp_types.h"
 #include "../message_backup.h"
 #include "../database/keyserver_cache.h"
-#include "../dht/client/dht_identity_backup.h"
+#include "../dht/client/dht_identity.h"
 #include "../dht/client/dht_singleton.h"
+#include "../crypto/utils/qgp_sha3.h"
+#include "../crypto/utils/seed_storage.h"
+#include "../crypto/bip39/bip39.h"
 #include "../dht/client/dna_group_outbox.h"
 #include "../dht/shared/dht_groups.h"
 
@@ -33,47 +36,34 @@ static bool file_exists(const char *path) {
 }
 
 /**
- * Find the path to a key file (.dsa or .kem) for a given fingerprint
- * Searches through all <data_dir>/<name>/keys/ directories
+ * Get the path to a key file (.dsa or .kem)
+ * v0.3.0: Flat structure - always keys/identity.{dsa,kem}
+ * fingerprint parameter kept for API compatibility but ignored
  */
 static int init_find_key_path(const char *data_dir, const char *fingerprint,
                               const char *extension, char *path_out) {
-    DIR *base_dir = opendir(data_dir);
-    if (!base_dir) {
-        return -1;
+    (void)fingerprint;  // Unused in v0.3.0 flat structure
+
+    char test_path[512];
+    snprintf(test_path, sizeof(test_path), "%s/keys/identity%s", data_dir, extension);
+
+    if (file_exists(test_path)) {
+        strncpy(path_out, test_path, 511);
+        path_out[511] = '\0';
+        return 0;
     }
 
-    struct dirent *identity_entry;
-    while ((identity_entry = readdir(base_dir)) != NULL) {
-        if (strcmp(identity_entry->d_name, ".") == 0 ||
-            strcmp(identity_entry->d_name, "..") == 0) {
-            continue;
-        }
-
-        char test_path[512];
-        snprintf(test_path, sizeof(test_path), "%s/%s/keys/%s%s",
-                 data_dir, identity_entry->d_name, fingerprint, extension);
-
-        if (file_exists(test_path)) {
-            strncpy(path_out, test_path, 511);
-            path_out[511] = '\0';
-            closedir(base_dir);
-            return 0;
-        }
-    }
-
-    closedir(base_dir);
     return -1;
 }
 
 /**
  * Resolve identity to fingerprint
  *
- * This function supports the transition to fingerprint-first identities:
+ * v0.3.0 Single-user model:
  * - If input is 128 hex chars → already a fingerprint, return as-is
- * - If input is a name → check if key file exists, compute fingerprint
+ * - Otherwise → compute fingerprint from flat keys/identity.dsa
  *
- * @param identity_input: Name or fingerprint
+ * @param identity_input: Fingerprint or any string (ignored in flat model)
  * @param fingerprint_out: Output buffer (129 bytes)
  * @return: 0 on success, -1 on error
  */
@@ -89,10 +79,10 @@ static int resolve_identity_to_fingerprint(const char *identity_input, char *fin
         return 0;
     }
 
-    // Input is a name, compute fingerprint from key file
+    // v0.3.0: Flat structure - compute fingerprint from keys/identity.dsa
     const char *data_dir = qgp_platform_app_data_dir();
     char key_path[512];
-    snprintf(key_path, sizeof(key_path), "%s/%s/keys/%s.dsa", data_dir, identity_input, identity_input);
+    snprintf(key_path, sizeof(key_path), "%s/keys/identity.dsa", data_dir);
 
     // Check if key file exists (no error message - expected for new identities)
     if (!file_exists(key_path)) {
@@ -100,8 +90,9 @@ static int resolve_identity_to_fingerprint(const char *identity_input, char *fin
     }
 
     // Compute fingerprint from key file
-    if (messenger_compute_identity_fingerprint(identity_input, fingerprint_out) != 0) {
-        QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint for '%s'", identity_input);
+    // Note: messenger_compute_identity_fingerprint needs updating too
+    if (messenger_compute_identity_fingerprint(NULL, fingerprint_out) != 0) {
+        QGP_LOG_ERROR(LOG_TAG, "Failed to compute fingerprint");
         return -1;
     }
 
@@ -196,9 +187,9 @@ messenger_context_t* messenger_init(const char *identity) {
         // Non-fatal - continue without cache
     }
 
-    // Initialize DHT groups database (per-identity)
+    // v0.3.0: Initialize DHT groups database (flat structure)
     char groups_db_path[512];
-    snprintf(groups_db_path, sizeof(groups_db_path), "%s/%s/db/groups.db", qgp_platform_app_data_dir(), identity);
+    snprintf(groups_db_path, sizeof(groups_db_path), "%s/db/groups.db", qgp_platform_app_data_dir());
     if (dht_groups_init(groups_db_path) != 0) {
         QGP_LOG_WARN(LOG_TAG, "Failed to initialize DHT groups database");
         // Non-fatal - continue without groups support
@@ -269,6 +260,13 @@ void messenger_set_session_password(messenger_context_t *ctx, const char *passwo
 
 /**
  * Load DHT identity and reinitialize DHT singleton with permanent identity
+ *
+ * v0.3.0+: DHT identity is derived deterministically from BIP39 master seed.
+ * No network dependency - same seed always produces same DHT identity.
+ *
+ * Load order:
+ * 1. Try cached dht_identity.bin (fast path)
+ * 2. Derive from mnemonic.enc → master_seed → dht_seed (restore path)
  */
 int messenger_load_dht_identity(const char *fingerprint) {
     if (!fingerprint || strlen(fingerprint) != 128) {
@@ -278,78 +276,128 @@ int messenger_load_dht_identity(const char *fingerprint) {
 
     QGP_LOG_INFO(LOG_TAG_DHT, "Loading DHT identity for %.16s...", fingerprint);
 
-    // Load Kyber1024 private key (for decryption)
     const char *data_dir = qgp_platform_app_data_dir();
     if (!data_dir) {
         QGP_LOG_ERROR(LOG_TAG_DHT, "Cannot get data directory");
         return -1;
     }
 
-    // Find key in <data_dir>/*/keys/ structure
-    char kyber_path[512];
-    if (init_find_key_path(data_dir, fingerprint, ".kem", kyber_path) != 0) {
-        QGP_LOG_ERROR(LOG_TAG_DHT, "Kyber key not found for fingerprint: %.16s...", fingerprint);
-        return -1;
-    }
-
-    qgp_key_t *kyber_key = NULL;
-    if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
-        QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to load Kyber key from %s", kyber_path);
-        return -1;
-    }
-
-    if (kyber_key->private_key_size != 3168) {
-        QGP_LOG_ERROR(LOG_TAG_DHT, "Invalid Kyber private key size: %zu (expected 3168)",
-                kyber_key->private_key_size);
-        qgp_key_free(kyber_key);
-        return -1;
-    }
-
-    // Try to load from local file first
+    // v0.3.0: Flat structure - all files in root data_dir
     dht_identity_t *dht_identity = NULL;
-    if (dht_identity_load_from_local(fingerprint, kyber_key->private_key, &dht_identity) == 0) {
-        QGP_LOG_INFO(LOG_TAG_DHT, "Loaded from local file");
-    } else {
-        QGP_LOG_INFO(LOG_TAG_DHT, "Local file not found, fetching from DHT...");
 
-        // Get DHT context (for fetching)
-        dht_context_t *dht_ctx = dht_singleton_get();
-        if (!dht_ctx) {
-            QGP_LOG_ERROR(LOG_TAG_DHT, "DHT not initialized, cannot fetch from DHT");
-            qgp_key_free(kyber_key);
-            return -1;
+    // Method 1: Try to load cached dht_identity.bin (fast path)
+    char dht_id_path[512];
+    snprintf(dht_id_path, sizeof(dht_id_path), "%s/dht_identity.bin", data_dir);
+
+    FILE *f = fopen(dht_id_path, "rb");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        size_t file_size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+
+        uint8_t *buffer = malloc(file_size);
+        if (buffer && fread(buffer, 1, file_size, f) == file_size) {
+            if (dht_identity_import_from_buffer(buffer, file_size, &dht_identity) == 0) {
+                QGP_LOG_INFO(LOG_TAG_DHT, "Loaded from cached dht_identity.bin");
+            }
+            free(buffer);
         }
-
-        // Try to fetch from DHT
-        if (dht_identity_fetch_from_dht(fingerprint, kyber_key->private_key, dht_ctx, &dht_identity) != 0) {
-            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to fetch from DHT");
-            QGP_LOG_ERROR(LOG_TAG_DHT, "No DHT identity found (local or DHT)");
-            QGP_LOG_WARN(LOG_TAG_DHT, "DHT operations may accumulate values");
-            qgp_key_free(kyber_key);
-            return -1;
-        }
-
-        QGP_LOG_INFO(LOG_TAG_DHT, "Fetched from DHT and saved locally");
+        fclose(f);
     }
 
-    qgp_key_free(kyber_key);
+    // Method 2: Derive from mnemonic if not cached (restore path)
+    if (!dht_identity) {
+        QGP_LOG_INFO(LOG_TAG_DHT, "Cached identity not found, deriving from mnemonic...");
+
+        // Load Kyber private key (for mnemonic decryption)
+        char kyber_path[512];
+        if (init_find_key_path(data_dir, fingerprint, ".kem", kyber_path) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Kyber key not found for fingerprint: %.16s...", fingerprint);
+            return -1;
+        }
+
+        qgp_key_t *kyber_key = NULL;
+        if (qgp_key_load(kyber_path, &kyber_key) != 0 || !kyber_key) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to load Kyber key from %s", kyber_path);
+            return -1;
+        }
+
+        // Load and decrypt mnemonic (v0.3.0: flat structure - mnemonic.enc in root data_dir)
+        char mnemonic[512] = {0};
+        if (mnemonic_storage_load(mnemonic, sizeof(mnemonic),
+                                   kyber_key->private_key, data_dir) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to load mnemonic - cannot derive DHT identity");
+            qgp_key_free(kyber_key);
+            return -1;
+        }
+
+        qgp_key_free(kyber_key);
+
+        // Convert mnemonic to master seed
+        uint8_t master_seed[64];
+        if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to convert mnemonic to master seed");
+            memset(mnemonic, 0, sizeof(mnemonic));
+            return -1;
+        }
+        memset(mnemonic, 0, sizeof(mnemonic));
+
+        // Derive dht_seed = SHA3-512(master_seed + "dht_identity")[0:32]
+        // Use SHA3-512 truncated to 32 bytes (cryptographically sound)
+        uint8_t dht_seed[32];
+        uint8_t full_hash[64];
+        uint8_t seed_input[64 + 12];  // 64-byte master_seed + "dht_identity" (12 bytes)
+        memcpy(seed_input, master_seed, 64);
+        memcpy(seed_input + 64, "dht_identity", 12);
+        memset(master_seed, 0, sizeof(master_seed));
+
+        if (qgp_sha3_512(seed_input, sizeof(seed_input), full_hash) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to derive DHT seed");
+            memset(seed_input, 0, sizeof(seed_input));
+            return -1;
+        }
+        memset(seed_input, 0, sizeof(seed_input));
+
+        // Truncate to 32 bytes for DHT seed
+        memcpy(dht_seed, full_hash, 32);
+        memset(full_hash, 0, sizeof(full_hash));
+
+        // Generate DHT identity from derived seed
+        if (dht_identity_generate_from_seed(dht_seed, &dht_identity) != 0) {
+            QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to generate DHT identity from seed");
+            memset(dht_seed, 0, sizeof(dht_seed));
+            return -1;
+        }
+        memset(dht_seed, 0, sizeof(dht_seed));
+
+        QGP_LOG_INFO(LOG_TAG_DHT, "Derived DHT identity from mnemonic (deterministic)");
+
+        // Cache for next time
+        uint8_t *dht_id_buffer = NULL;
+        size_t dht_id_size = 0;
+        if (dht_identity_export_to_buffer(dht_identity, &dht_id_buffer, &dht_id_size) == 0) {
+            FILE *cache_f = fopen(dht_id_path, "wb");
+            if (cache_f) {
+                fwrite(dht_id_buffer, 1, dht_id_size, cache_f);
+                fclose(cache_f);
+                QGP_LOG_INFO(LOG_TAG_DHT, "Cached DHT identity for future loads");
+            }
+            free(dht_id_buffer);
+        }
+    }
 
     // Reinitialize DHT singleton with permanent identity
     QGP_LOG_INFO(LOG_TAG_DHT, ">>> DHT REINIT START <<<");
 
     // Cleanup old DHT (ephemeral identity)
-    QGP_LOG_INFO(LOG_TAG_DHT, ">>> Calling dht_singleton_cleanup...");
     dht_singleton_cleanup();
-    QGP_LOG_INFO(LOG_TAG_DHT, ">>> dht_singleton_cleanup DONE");
 
     // Init with permanent identity
-    QGP_LOG_INFO(LOG_TAG_DHT, ">>> Calling dht_singleton_init_with_identity...");
     if (dht_singleton_init_with_identity(dht_identity) != 0) {
         QGP_LOG_ERROR(LOG_TAG_DHT, "Failed to reinitialize DHT singleton");
         dht_identity_free(dht_identity);
         return -1;
     }
-    QGP_LOG_INFO(LOG_TAG_DHT, ">>> dht_singleton_init_with_identity DONE");
 
     // Don't free dht_identity here - it's owned by DHT singleton now
     QGP_LOG_INFO(LOG_TAG_DHT, ">>> DHT REINIT COMPLETE <<<");

@@ -1,7 +1,8 @@
 # DHT System Documentation
 
-**Last Updated:** 2025-12-28
+**Last Updated:** 2025-12-30
 **Phase:** 14 (DHT-Only Messaging)
+**Version:** 0.3.0
 
 Comprehensive documentation of the DNA Messenger DHT (Distributed Hash Table) system, covering both client operations and the dna-nodus bootstrap server.
 
@@ -202,8 +203,11 @@ Three custom ValueTypes with specific TTLs:
 | Type ID | Name | TTL | Use Case |
 |---------|------|-----|----------|
 | 0x1001 | DNA_7DAY | 7 days | Messages, offline queue, contact lists |
-| 0x1002 | DNA_365DAY | 365 days | Name registrations, profiles |
+| 0x1002 | DNA_365DAY | 365 days | Profiles (legacy) |
 | 0x1003 | DNA_30DAY | 30 days | Group metadata, message walls |
+| PERMANENT | DHT_CHUNK_TTL_PERMANENT | ~136 years | Name registrations, profiles (v0.3.0+) |
+
+**v0.3.0 Change:** Name registrations and profiles now use `DHT_CHUNK_TTL_PERMANENT` (UINT32_MAX = 4294967295 seconds ≈ 136 years). Once a name is registered (with blockchain tx verification), it never expires.
 
 ValueTypes are registered on startup and handle automatic persistence to SQLite on bootstrap nodes.
 
@@ -477,12 +481,35 @@ void dht_singleton_cleanup(void);
 
 Dilithium5 identity management for DHT operations.
 
+**v0.3.0 Change: Deterministic DHT Identity**
+
+As of v0.3.0, DHT identity is derived deterministically from the BIP39 master seed:
+
+```
+BIP39 mnemonic → master_seed (64 bytes)
+                    │
+                    └─> dht_seed = SHA3-512(master_seed + "dht_identity")[0:32]
+                              │
+                              └─> crypto_sign_keypair_from_seed(pk, sk, dht_seed)
+                                        │
+                                        └─> DHT Dilithium5 identity
+```
+
+**Benefits:**
+- Same mnemonic = same DHT identity (always recoverable)
+- No network dependency for recovery
+- No encrypted backup needed
+- Eliminates `dht_identity_backup.c/h` (removed in v0.3.0)
+
 ```c
 // Opaque identity structure (wraps dht::crypto::Identity)
 typedef struct dht_identity dht_identity_t;
 
-// Generate new Dilithium5 identity
+// Generate new Dilithium5 identity (random)
 dht_identity_t* dht_identity_generate(const char *name);
+
+// Generate deterministically from 32-byte seed (v0.3.0+)
+int dht_identity_generate_from_seed(const uint8_t *seed, dht_identity_t **out);
 
 // Load from binary files (.dsa, .pub, .cert)
 dht_identity_t* dht_identity_load(const char *base_path);
@@ -1002,8 +1029,8 @@ Stats printed every 60 seconds:
 | Contact Lists | 7 days | `SHA3-512(identity:contactlist)` | No | Self-encrypted |
 | **Message Backup** | 7 days | `SHA3-512(fingerprint:message_backup)` | No | Self-encrypted, manual sync |
 | **Contact Requests** | 7 days | `SHA3-512(fingerprint:requests)` | No | ICQ-style contact request inbox |
-| **Identity** | 365 days | `SHA3-512(fingerprint:profile)` | Yes | Unified: keys + name + profile |
-| **Name Lookup** | 365 days | `SHA3-512(name:lookup)` | Yes | Name → fingerprint |
+| **Identity** | PERMANENT | `SHA3-512(fingerprint:profile)` | Yes | Unified: keys + name + profile (v0.3.0+) |
+| **Name Lookup** | PERMANENT | `SHA3-512(name:lookup)` | Yes | Name → fingerprint (v0.3.0+) |
 | Group Metadata | 30 days | `SHA3-512(group_uuid)` | Yes | |
 | Message Wall | 30 days | `SHA3-512(fingerprint:message_wall)` | Yes | DNA Board |
 | Bootstrap Registry | 7 days | `SHA3-512("dna:bootstrap:registry")` | Special | Self-healing |

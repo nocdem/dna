@@ -48,6 +48,7 @@ class DnaMessengerApp extends ConsumerWidget {
 
 /// App loader - initializes engine and shows loading screen
 /// Phase 14: Added lifecycle observer for resume/pause handling
+/// v0.3.0: Single-user model - auto-loads identity if exists, shows onboarding if not
 class _AppLoader extends ConsumerStatefulWidget {
   const _AppLoader();
 
@@ -57,6 +58,8 @@ class _AppLoader extends ConsumerStatefulWidget {
 
 class _AppLoaderState extends ConsumerState<_AppLoader> {
   AppLifecycleObserver? _lifecycleObserver;
+  bool _identityCheckDone = false;
+  bool _hasIdentity = false;
 
   @override
   void initState() {
@@ -76,6 +79,31 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     super.dispose();
   }
 
+  Future<void> _checkAndLoadIdentity() async {
+    if (_identityCheckDone) return;
+
+    final engine = ref.read(engineProvider).valueOrNull;
+    if (engine == null) return;
+
+    _identityCheckDone = true;
+
+    // v0.3.0: Check if identity exists and auto-load
+    final hasIdentity = engine.hasIdentity();
+    if (hasIdentity) {
+      engine.debugLog('STARTUP', 'v0.3.0: Identity exists, auto-loading...');
+      await ref.read(identitiesProvider.notifier).loadIdentity();
+      engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
+    } else {
+      engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
+    }
+
+    if (mounted) {
+      setState(() {
+        _hasIdentity = hasIdentity;
+      });
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final engine = ref.watch(engineProvider);
@@ -90,7 +118,19 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     ref.watch(foregroundServiceProvider);
 
     return engine.when(
-      data: (_) => const HomeScreen(),
+      data: (_) {
+        // Trigger identity check on first build
+        if (!_identityCheckDone) {
+          _checkAndLoadIdentity();
+          return const _LoadingScreen();
+        }
+        // v0.3.0: Route based on identity existence
+        if (_hasIdentity) {
+          return const HomeScreen();
+        } else {
+          return const IdentitySelectionScreen();
+        }
+      },
       loading: () => const _LoadingScreen(),
       error: (error, stack) => _ErrorScreen(error: error),
     );
