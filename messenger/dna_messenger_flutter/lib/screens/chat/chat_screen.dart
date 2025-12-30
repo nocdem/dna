@@ -156,6 +156,17 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
       );
     }
 
+    // Get cached profile for display name fallback
+    final profileCache = ref.watch(contactProfileCacheProvider);
+    final cachedProfile = profileCache[contact.fingerprint];
+
+    // Use cached display name if contact.displayName is empty (fallback chain)
+    final displayName = contact.displayName.isNotEmpty
+        ? contact.displayName
+        : (cachedProfile?.displayName.isNotEmpty == true
+            ? cachedProfile!.displayName
+            : _shortenFingerprint(contact.fingerprint));
+
     return Scaffold(
       appBar: AppBar(
         titleSpacing: 0,
@@ -168,9 +179,7 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    contact.displayName.isNotEmpty
-                        ? contact.displayName
-                        : _shortenFingerprint(contact.fingerprint),
+                    displayName,
                     style: theme.textTheme.titleMedium,
                   ),
                   Text(

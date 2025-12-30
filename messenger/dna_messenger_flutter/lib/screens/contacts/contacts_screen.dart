@@ -175,10 +175,17 @@ class _ContactTile extends ConsumerWidget {
       orElse: () => 0,
     );
 
-    // Get cached avatar
+    // Get cached profile (for avatar and display name)
     final profileCache = ref.watch(contactProfileCacheProvider);
     final cachedProfile = profileCache[contact.fingerprint];
     final avatarBytes = cachedProfile?.decodeAvatar();
+
+    // Use cached display name if contact.displayName is empty (fallback chain)
+    final displayName = contact.displayName.isNotEmpty
+        ? contact.displayName
+        : (cachedProfile?.displayName.isNotEmpty == true
+            ? cachedProfile!.displayName
+            : _shortenFingerprint(contact.fingerprint));
 
     // Trigger fetch if not cached (fire and forget)
     if (cachedProfile == null) {
@@ -192,7 +199,7 @@ class _ContactTile extends ConsumerWidget {
         children: [
           _ContactAvatar(
             avatarBytes: avatarBytes,
-            displayName: contact.displayName,
+            displayName: displayName,
             theme: theme,
           ),
           Positioned(
@@ -216,9 +223,7 @@ class _ContactTile extends ConsumerWidget {
         ],
       ),
       title: Text(
-        contact.displayName.isNotEmpty
-            ? contact.displayName
-            : _shortenFingerprint(contact.fingerprint),
+        displayName,
         style: unreadCount > 0
             ? const TextStyle(fontWeight: FontWeight.bold)
             : null,
