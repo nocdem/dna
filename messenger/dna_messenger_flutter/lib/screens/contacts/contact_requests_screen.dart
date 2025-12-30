@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
-import '../../providers/contact_requests_provider.dart';
 import '../../theme/dna_theme.dart';
 
 class ContactRequestsScreen extends ConsumerWidget {
@@ -237,7 +236,7 @@ class ContactRequestsScreen extends ConsumerWidget {
   }
 }
 
-class _RequestTile extends StatelessWidget {
+class _RequestTile extends ConsumerWidget {
   final ContactRequest request;
   final VoidCallback onApprove;
   final VoidCallback onDeny;
@@ -251,11 +250,19 @@ class _RequestTile extends StatelessWidget {
   });
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
+
+    // Get cached profile for display name fallback (same pattern as contacts_screen.dart)
+    final profileCache = ref.watch(contactProfileCacheProvider);
+    final cachedProfile = profileCache[request.fingerprint];
+
+    // Fallback chain: request.displayName -> cached profile displayName -> fingerprint
     final displayName = request.displayName.isNotEmpty
         ? request.displayName
-        : _shortenFingerprint(request.fingerprint);
+        : (cachedProfile?.displayName.isNotEmpty == true
+            ? cachedProfile!.displayName
+            : _shortenFingerprint(request.fingerprint));
 
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
