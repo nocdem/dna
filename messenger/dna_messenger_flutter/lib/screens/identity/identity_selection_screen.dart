@@ -312,9 +312,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             contentPadding: EdgeInsets.zero,
           ),
           const SizedBox(height: 16),
-          ElevatedButton(
-            onPressed: _seedConfirmed ? _processSeed : null,
-            child: const Text('Continue'),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: _seedConfirmed ? _processSeed : null,
+              child: const Text('Continue'),
+            ),
           ),
         ],
       ),
@@ -421,9 +424,12 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
             ),
             Padding(
               padding: const EdgeInsets.all(24.0),
-              child: ElevatedButton(
-                onPressed: _allWordsFilled() ? _processSeed : null,
-                child: const Text('Continue'),
+              child: SizedBox(
+                width: double.infinity,
+                child: ElevatedButton(
+                  onPressed: _allWordsFilled() ? _processSeed : null,
+                  child: const Text('Continue'),
+                ),
               ),
             ),
           ],

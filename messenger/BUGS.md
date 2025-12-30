@@ -13,6 +13,7 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 
 ## Fixed Bugs
 
+- [x] Seed phrase screen Continue button not full width (v0.99.1)
 - [x] Restore flow shows "Creating your identity" instead of "Loading identity" for returning users (v0.3.22)
 - [x] Emoji picker search button turns box gray - fixed with SearchViewConfig (v0.2.119)
 - [x] Social media icons missing - added Font Awesome icons for all social fields (v0.2.125)
