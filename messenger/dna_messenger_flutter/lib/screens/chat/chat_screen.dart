@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:intl/intl.dart';
 import 'package:emoji_picker_flutter/emoji_picker_flutter.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 import '../../ffi/dna_engine.dart';
 import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
@@ -648,7 +649,10 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
               title: const Text('Show QR Code'),
               onTap: () {
                 Navigator.pop(context);
-                // TODO: Show QR
+                final contact = ref.read(selectedContactProvider);
+                if (contact != null) {
+                  _showQrCodeDialog(contact);
+                }
               },
             ),
             ListTile(
@@ -667,6 +671,71 @@ class _ChatScreenState extends ConsumerState<ChatScreen> {
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  void _showQrCodeDialog(Contact contact) {
+    final theme = Theme.of(context);
+    final displayName = contact.displayName.isNotEmpty
+        ? contact.displayName
+        : '${contact.fingerprint.substring(0, 8)}...';
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Row(
+          children: [
+            const FaIcon(FontAwesomeIcons.qrcode),
+            const SizedBox(width: 8),
+            Expanded(child: Text(displayName, overflow: TextOverflow.ellipsis)),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(16),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: QrImageView(
+                data: contact.fingerprint,
+                version: QrVersions.auto,
+                size: 200,
+                backgroundColor: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Scan to add contact',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                contact.fingerprint,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'NotoSansMono',
+                  fontSize: 10,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
       ),
     );
   }

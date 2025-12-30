@@ -7,14 +7,13 @@ Priorities: `P1` = Critical, `P2` = High, `P3` = Medium, `P4` = Low
 ---
 
 ## Open Bugs
-
-- [ ] Show QR Code button in chat doesn't show anything (P4)
 - [ ] AddressSanitizer: ~4KB memory leak in Dilithium key cleanup during identity creation - `dap_return_if_pass` macro inverted in `dap_crypto_common.h`, delete functions return early without freeing. Debug build only. (P4)
 - [ ] AddressSanitizer: 16 byte leak in `contacts_db_list()` - debug build only (P4)
 
 
 ## Fixed Bugs
 
+- [x] Show QR Code button in chat doesn't show anything - implemented QR dialog with contact fingerprint (v0.3.34)
 - [x] Contact requests show fingerprint instead of username - _RequestTile now uses cached profile displayName fallback (v0.3.32)
 - [x] Contacts list shows fingerprint even when registered_name exists - C code now checks identity->registered_name after display_name (v0.3.31)
 - [x] Contacts list and chat header show fingerprint instead of username - Flutter now uses cached profile displayName as fallback (v0.3.30)
