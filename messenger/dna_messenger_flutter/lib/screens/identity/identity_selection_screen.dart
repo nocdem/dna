@@ -581,6 +581,24 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         throw Exception('Invalid seed phrase. Please check your words.');
       }
 
+      final engine = ref.read(engineProvider).valueOrNull;
+      if (engine == null) {
+        throw Exception('Engine not ready');
+      }
+
+      // Check if identity already exists locally
+      if (engine.hasIdentity()) {
+        // Identity already exists - just load it and go to home
+        // (User restored same seed, or we're in an edge case)
+        final existingFp = await ref.read(identitiesProvider.notifier).loadExistingIdentity();
+        if (existingFp != null) {
+          if (mounted) {
+            Navigator.of(context).popUntil((route) => route.isFirst);
+          }
+          return;
+        }
+      }
+
       // Restore/create identity locally (derives keys, stores mnemonic)
       final fingerprint = await ref.read(identitiesProvider.notifier)
           .restoreIdentityFromMnemonic(mnemonic);
@@ -588,11 +606,6 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
       _fingerprint = fingerprint;
 
       // Check DHT for existing profile
-      final engine = ref.read(engineProvider).valueOrNull;
-      if (engine == null) {
-        throw Exception('Engine not ready');
-      }
-
       String displayName;
       try {
         displayName = await engine.getDisplayName(fingerprint);
