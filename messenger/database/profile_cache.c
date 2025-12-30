@@ -60,6 +60,14 @@ int profile_cache_init(void) {
         return -1;
     }
 
+    // v0.3.0: Ensure db/ directory exists
+    const char *data_dir = qgp_platform_app_data_dir();
+    if (data_dir) {
+        char db_dir[1024];
+        snprintf(db_dir, sizeof(db_dir), "%s/db", data_dir);
+        mkdir(db_dir, 0755);
+    }
+
     QGP_LOG_INFO(LOG_TAG, "Opening database: %s\n", db_path);
 
     // Open database
