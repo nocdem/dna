@@ -108,15 +108,6 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
   Widget build(BuildContext context) {
     final engine = ref.watch(engineProvider);
 
-    // Activate event handler when engine is ready
-    ref.watch(eventHandlerActiveProvider);
-
-    // Activate background tasks (DHT offline message polling)
-    ref.watch(backgroundTasksActiveProvider);
-
-    // Activate foreground service on Android (Phase 14)
-    ref.watch(foregroundServiceProvider);
-
     return engine.when(
       data: (_) {
         // Trigger identity check on first build
@@ -124,8 +115,13 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
           _checkAndLoadIdentity();
           return const _LoadingScreen();
         }
+
         // v0.3.0: Route based on identity existence
         if (_hasIdentity) {
+          // Only activate providers AFTER identity is loaded
+          ref.watch(eventHandlerActiveProvider);
+          ref.watch(backgroundTasksActiveProvider);
+          ref.watch(foregroundServiceProvider);
           return const HomeScreen();
         } else {
           return const IdentitySelectionScreen();
