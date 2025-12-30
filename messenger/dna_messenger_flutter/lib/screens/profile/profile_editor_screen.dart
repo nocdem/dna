@@ -8,9 +8,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:font_awesome_flutter/font_awesome_flutter.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:image/image.dart' as img;
+import 'package:qr_flutter/qr_flutter.dart';
 
 import '../../ffi/dna_engine.dart' show decodeBase64WithPadding;
-import '../../providers/profile_provider.dart';
+import '../../providers/providers.dart';
 import '../../theme/dna_theme.dart';
 
 class ProfileEditorScreen extends ConsumerStatefulWidget {
@@ -220,6 +221,10 @@ class _ProfileEditorScreenState extends ConsumerState<ProfileEditorScreen> {
                     onPickImage: () => _pickAvatar(notifier),
                     onRemoveImage: () => notifier.removeAvatar(),
                   ),
+                  const SizedBox(height: 24),
+
+                  // QR Code section - share your identity
+                  _QrCodeSection(),
                   const SizedBox(height: 24),
 
                   // Profile Info section
@@ -653,6 +658,80 @@ class _AvatarSection extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+/// QR Code section - displays user's fingerprint as scannable QR code
+class _QrCodeSection extends ConsumerWidget {
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final fingerprint = ref.watch(currentFingerprintProvider);
+
+    if (fingerprint == null || fingerprint.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          children: [
+            Row(
+              children: [
+                FaIcon(
+                  FontAwesomeIcons.qrcode,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  'Share My QR Code',
+                  style: theme.textTheme.titleMedium,
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Container(
+              width: 200,
+              height: 200,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: QrImageView(
+                data: fingerprint,
+                version: QrVersions.auto,
+                size: 176,
+                backgroundColor: Colors.white,
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Scan to add me as a contact',
+              style: theme.textTheme.bodySmall,
+            ),
+            const SizedBox(height: 8),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                fingerprint,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  fontFamily: 'NotoSansMono',
+                  fontSize: 8,
+                ),
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
