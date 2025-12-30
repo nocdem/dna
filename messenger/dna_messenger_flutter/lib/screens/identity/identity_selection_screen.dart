@@ -28,6 +28,7 @@ enum _OnboardingStep {
   confirmProfile,   // Profile found in DHT - confirm
   enterNickname,    // Profile NOT in DHT - enter nickname
   creating,         // Publishing to DHT
+  loading,          // Loading existing identity (post-confirm)
 }
 
 class OnboardingScreen extends ConsumerStatefulWidget {
@@ -116,6 +117,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         return 'Choose Your Name';
       case _OnboardingStep.creating:
         return 'Creating Identity';
+      case _OnboardingStep.loading:
+        return 'Loading...';
     }
   }
 
@@ -167,6 +170,8 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
         return _buildEnterNicknameStep();
       case _OnboardingStep.creating:
         return _buildCreatingStep();
+      case _OnboardingStep.loading:
+        return _buildLoadingStep();
     }
   }
 
@@ -728,7 +733,7 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Future<void> _confirmAndLoad() async {
     if (_fingerprint == null) return;
 
-    setState(() => _step = _OnboardingStep.creating);
+    setState(() => _step = _OnboardingStep.loading);
     await Future.delayed(Duration.zero);
 
     try {
@@ -919,6 +924,25 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
           Text(
             'Publishing to the network',
             style: theme.textTheme.bodySmall,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // ==================== STEP 6: Loading (existing identity) ====================
+  Widget _buildLoadingStep() {
+    final theme = Theme.of(context);
+
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const CircularProgressIndicator(),
+          const SizedBox(height: 24),
+          Text(
+            'Loading identity...',
+            style: theme.textTheme.titleMedium,
           ),
         ],
       ),
