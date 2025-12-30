@@ -251,46 +251,36 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **IMPORTANT:** Documentation is the source of truth. Code changes without documentation updates violate protocol mode.
 
 ### CHECKPOINT 8: VERSION UPDATE (MANDATORY ON EVERY PUSH)
-**EVERY successful build that will be pushed MUST increment the version.**
+**EVERY successful build that will be pushed MUST increment the appropriate version.**
 
-**Version Files:**
-| Component | Version File | Current |
-|-----------|--------------|---------|
-| App (CLI + C lib) | `include/dna/version.h` | v0.3.9 |
-| Flutter/Android | `dna_messenger_flutter/pubspec.yaml` | v0.3.9+309 |
-| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 |
+**Version Files (INDEPENDENT - do NOT keep in sync):**
+| Component | Version File | Current | Bump When |
+|-----------|--------------|---------|-----------|
+| C Library + CLI | `include/dna/version.h` | v0.3.22 | C code changes (src/, dht/, messenger/, p2p/, crypto/) |
+| Flutter App | `dna_messenger_flutter/pubspec.yaml` | v0.3.22+322 | Flutter/Dart code changes only |
+| Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 | Nodus server changes |
 
-**IMPORTANT:** Keep versions in sync:
-- `version.h` - C library and CLI version (e.g., `0.2.47`)
-- `pubspec.yaml` - Flutter version, format: `0.2.47+247` (version+versionCode)
-  - versionCode = MAJOR*10000 + MINOR*100 + PATCH (e.g., 0*10000 + 2*100 + 47 = 247)
-- Flutter reads native version via `dna_engine_get_version()` FFI call
-- Android APK uses pubspec.yaml version for Play Store
+**IMPORTANT: Versions are INDEPENDENT**
+- C library and Flutter app have **separate version numbers**
+- Do NOT bump `version.h` for Flutter-only changes
+- Do NOT bump `pubspec.yaml` for C-only changes
+- Flutter app displays **both versions** in Settings:
+  - App version: from `pubspec.yaml`
+  - Library version: via `dna_engine_get_version()` FFI call
 
-**When to Bump Which Component:**
-- **App version**: Any changes to CLI, Flutter, dna_lib, p2p, dht client code
-- **Nodus version**: Any changes to dna-nodus server, turn_credential_udp, nodus_config
+**pubspec.yaml format:** `X.Y.Z+NNN` where NNN = versionCode for Android Play Store
+- versionCode = MAJOR×10000 + MINOR×100 + PATCH (e.g., 0.3.22 → 322)
 
 **Which Number to Bump:**
-- **PATCH** (0.2.X → 0.2.6): Default for all changes (bug fixes, features, improvements)
-- **MINOR** (0.X.0 → 0.3.0): Major new features, significant API changes
+- **PATCH** (0.3.X → 0.3.23): Bug fixes, small features, improvements
+- **MINOR** (0.X.0 → 0.4.0): Major new features, significant API changes
 - **MAJOR** (X.0.0 → 1.0.0): Breaking changes, production release
 
 **Procedure:**
-1. **BUILD** succeeds - ready to commit and push
-2. **BUMP** version in `include/dna/version.h`:
-   ```c
-   #define DNA_VERSION_MAJOR 0
-   #define DNA_VERSION_MINOR 2
-   #define DNA_VERSION_PATCH 47
-   #define DNA_VERSION_STRING "0.2.47"
-   ```
-3. **BUMP** version in `dna_messenger_flutter/pubspec.yaml`:
-   ```yaml
-   version: 0.2.47+247
-   ```
-4. **UPDATE** the "Current" column in CLAUDE.md (this section)
-5. **UPDATE** the version in CLAUDE.md header line
+1. **IDENTIFY** which component(s) changed
+2. **BUMP** only the affected version file(s)
+3. **UPDATE** the "Current" column in this section
+4. **UPDATE** the version in CLAUDE.md header line (use C library version)
 6. **COMMIT** with version in commit message
 7. **STATE**: "CHECKPOINT 8 COMPLETE - Version bumped: [component] [old] -> [new]"
 
