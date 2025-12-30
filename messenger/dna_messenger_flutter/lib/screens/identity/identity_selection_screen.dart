@@ -372,47 +372,58 @@ class _OnboardingScreenState extends ConsumerState<OnboardingScreen> {
   Widget _buildEnterSeedStep() {
     final theme = Theme.of(context);
 
-    return Column(
-      children: [
-        Expanded(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24.0),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Enter your 24-word recovery phrase:',
-                  style: theme.textTheme.bodyMedium,
+    // Wrap with CallbackShortcuts to handle Ctrl+V for paste
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.keyV, control: true): _pasteFromClipboard,
+        // Also support Cmd+V on macOS
+        const SingleActivator(LogicalKeyboardKey.keyV, meta: true): _pasteFromClipboard,
+      },
+      child: Focus(
+        autofocus: true,
+        child: Column(
+          children: [
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.all(24.0),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Enter your 24-word recovery phrase:',
+                      style: theme.textTheme.bodyMedium,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'You can paste all words at once (Ctrl+V).',
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurface.withAlpha(179),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+                    // Word grid - responsive layout
+                    _buildMnemonicInputGrid(theme),
+                    const SizedBox(height: 16),
+                    // Paste button
+                    OutlinedButton.icon(
+                      onPressed: _pasteFromClipboard,
+                      icon: const Icon(Icons.paste, size: 18),
+                      label: const Text('Paste from Clipboard'),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'You can paste all words at once.',
-                  style: theme.textTheme.bodySmall?.copyWith(
-                    color: theme.colorScheme.onSurface.withAlpha(179),
-                  ),
-                ),
-                const SizedBox(height: 16),
-                // Word grid - responsive layout
-                _buildMnemonicInputGrid(theme),
-                const SizedBox(height: 16),
-                // Paste button
-                OutlinedButton.icon(
-                  onPressed: _pasteFromClipboard,
-                  icon: const Icon(Icons.paste, size: 18),
-                  label: const Text('Paste from Clipboard'),
-                ),
-              ],
+              ),
             ),
-          ),
+            Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: ElevatedButton(
+                onPressed: _allWordsFilled() ? _processSeed : null,
+                child: const Text('Continue'),
+              ),
+            ),
+          ],
         ),
-        Padding(
-          padding: const EdgeInsets.all(24.0),
-          child: ElevatedButton(
-            onPressed: _allWordsFilled() ? _processSeed : null,
-            child: const Text('Continue'),
-          ),
-        ),
-      ],
+      ),
     );
   }
 
