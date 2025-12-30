@@ -383,6 +383,10 @@ int cmd_create(dna_engine_t *engine, const char *name) {
         return -1;
     }
 
+    // Start DHT early (same as Flutter)
+    printf("Connecting to DHT network...\n");
+    dna_engine_prepare_dht_from_mnemonic(engine, mnemonic);
+
     printf("Creating identity '%s'...\n", name);
 
     char fingerprint[129];

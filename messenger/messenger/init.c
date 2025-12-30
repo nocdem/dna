@@ -456,15 +456,8 @@ int messenger_load_dht_identity(const char *fingerprint) {
         }
     }
 
-    // Check if DHT is already running (from prepareDhtFromMnemonic)
-    if (dht_singleton_is_initialized()) {
-        QGP_LOG_INFO(LOG_TAG_DHT, "DHT already running (from early preparation), skipping reinit");
-        dht_identity_free(dht_identity);
-        return 0;
-    }
-
-    // Reinitialize DHT singleton with permanent identity
-    QGP_LOG_INFO(LOG_TAG_DHT, ">>> DHT REINIT START <<<");
+    // Initialize DHT singleton with permanent identity
+    QGP_LOG_INFO(LOG_TAG_DHT, ">>> DHT INIT START <<<");
 
     // Cleanup old DHT (ephemeral identity)
     dht_singleton_cleanup();
@@ -477,7 +470,7 @@ int messenger_load_dht_identity(const char *fingerprint) {
     }
 
     // Don't free dht_identity here - it's owned by DHT singleton now
-    QGP_LOG_INFO(LOG_TAG_DHT, ">>> DHT REINIT COMPLETE <<<");
+    QGP_LOG_INFO(LOG_TAG_DHT, ">>> DHT INIT COMPLETE <<<");
 
     return 0;
 }

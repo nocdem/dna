@@ -3564,10 +3564,9 @@ int dna_engine_create_identity_sync(
         return DNA_ERROR_INTERNAL;
     }
 
-    /* Step 3: Start DHT with identity (idempotent - skips if already running) */
-    messenger_load_dht_identity(fingerprint_out);
+    /* DHT already started by prepare_dht_from_mnemonic() (both CLI and Flutter) */
 
-    /* Step 4: Register name on DHT (atomic - if this fails, cleanup) */
+    /* Step 3: Register name on DHT (atomic - if this fails, cleanup) */
     rc = messenger_register_name(temp_ctx, fingerprint_out, name);
     messenger_free(temp_ctx);
 
