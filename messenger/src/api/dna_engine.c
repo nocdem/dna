@@ -80,6 +80,7 @@ static char* win_strptime(const char* s, const char* format, struct tm* tm) {
 
 /* Blockchain/Wallet includes for send_tokens */
 #include "cellframe_wallet.h"
+#include "cellframe_wallet_create.h"
 #include "cellframe_rpc.h"
 #include "cellframe_tx_builder.h"
 #include "cellframe_sign.h"
@@ -820,6 +821,8 @@ void dna_handle_create_identity(dna_engine_t *engine, dna_task_t *task) {
     } else {
         /* Allocate on heap - caller must free via dna_free_string */
         fingerprint = strdup(fingerprint_buf);
+        /* Mark profile as just published - skip DHT verification in load_identity */
+        engine->profile_published_at = time(NULL);
     }
 
     task->callback.identity_created(
@@ -1008,8 +1011,17 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
     /* Track if we already published to avoid redundant PUTs */
     bool profile_published = false;
     {
+        /* Skip DHT verification if profile was just published (within last 30 seconds)
+         * DHT propagation takes time - immediate lookup after publish often fails */
+        time_t now = time(NULL);
+        if (engine->profile_published_at > 0 && (now - engine->profile_published_at) < 30) {
+            QGP_LOG_INFO(LOG_TAG, "Skipping DHT profile check (published %ld seconds ago)",
+                         (long)(now - engine->profile_published_at));
+            profile_published = true;  /* Assume it's there, don't verify */
+        }
+
         dht_context_t *dht = dna_get_dht_ctx(engine);
-        if (dht) {
+        if (dht && !profile_published) {
             /* Lookup own profile from DHT */
             dna_unified_identity_t *identity = NULL;
             int lookup_rc = dht_keyserver_lookup(dht, fingerprint, &identity);
@@ -1028,27 +1040,37 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                     if (sign_key) {
                         qgp_key_t *enc_key = dna_load_encryption_key(engine);
                         if (enc_key) {
-                            /* Get wallet addresses for republish */
+                            /* Derive wallet addresses from mnemonic (like keygen.c) */
                             char cf_addr[128] = {0}, eth_addr[48] = {0}, sol_addr[48] = {0};
-                            blockchain_wallet_list_t *bc_wallets = NULL;
-                            if (blockchain_list_wallets(fingerprint, &bc_wallets) == 0 && bc_wallets) {
-                                for (size_t i = 0; i < bc_wallets->count; i++) {
-                                    blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
-                                    switch (w->type) {
-                                        case BLOCKCHAIN_ETHEREUM:
-                                            strncpy(eth_addr, w->address, sizeof(eth_addr) - 1);
-                                            break;
-                                        case BLOCKCHAIN_SOLANA:
-                                            strncpy(sol_addr, w->address, sizeof(sol_addr) - 1);
-                                            break;
-                                        case BLOCKCHAIN_CELLFRAME:
-                                            strncpy(cf_addr, w->address, sizeof(cf_addr) - 1);
-                                            break;
-                                        default:
-                                            break;
+
+                            if (mnemonic_storage_exists(engine->data_dir)) {
+                                char mnemonic[512] = {0};
+                                if (mnemonic_storage_load(mnemonic, sizeof(mnemonic),
+                                                         enc_key->private_key, engine->data_dir) == 0) {
+                                    /* Derive ETH/SOL from BIP39 master seed */
+                                    uint8_t master_seed[64];
+                                    if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
+                                        eth_wallet_t eth_wallet;
+                                        if (eth_wallet_generate(master_seed, 64, &eth_wallet) == 0) {
+                                            strncpy(eth_addr, eth_wallet.address_hex, sizeof(eth_addr) - 1);
+                                            eth_wallet_clear(&eth_wallet);
+                                        }
+                                        sol_wallet_t sol_wallet;
+                                        if (sol_wallet_generate(master_seed, 64, &sol_wallet) == 0) {
+                                            strncpy(sol_addr, sol_wallet.address, sizeof(sol_addr) - 1);
+                                            sol_wallet_clear(&sol_wallet);
+                                        }
+                                        memset(master_seed, 0, sizeof(master_seed));
                                     }
+                                    /* Derive Cellframe address from mnemonic (different derivation) */
+                                    uint8_t cf_seed[CF_WALLET_SEED_SIZE];
+                                    if (cellframe_derive_seed_from_mnemonic(mnemonic, cf_seed) == 0) {
+                                        cellframe_wallet_derive_address(cf_seed, cf_addr);
+                                        memset(cf_seed, 0, sizeof(cf_seed));
+                                    }
+                                    memset(mnemonic, 0, sizeof(mnemonic));
+                                    QGP_LOG_INFO(LOG_TAG, "Derived wallet addresses from mnemonic for republish");
                                 }
-                                blockchain_wallet_list_free(bc_wallets);
                             }
 
                             /* Republish identity to DHT */
@@ -1078,36 +1100,51 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                 }
             } else {
                 /* Profile found in DHT - check if wallet addresses need updating */
-                blockchain_wallet_list_t *bc_wallets = NULL;
-                if (blockchain_list_wallets(fingerprint, &bc_wallets) == 0 && bc_wallets && bc_wallets->count > 0) {
-                    bool need_publish = false;
-                    char eth_addr[48] = {0}, sol_addr[48] = {0}, trx_addr[48] = {0}, cf_addr[128] = {0};
+                /* Derive wallet addresses from mnemonic (like keygen.c) */
+                bool need_publish = false;
+                char eth_addr[48] = {0}, sol_addr[48] = {0}, trx_addr[48] = {0}, cf_addr[128] = {0};
 
-                    for (size_t i = 0; i < bc_wallets->count; i++) {
-                        blockchain_wallet_info_t *w = &bc_wallets->wallets[i];
-                        switch (w->type) {
-                            case BLOCKCHAIN_ETHEREUM:
-                                strncpy(eth_addr, w->address, sizeof(eth_addr) - 1);
-                                if (identity->wallets.eth[0] == '\0' && w->address[0]) need_publish = true;
-                                break;
-                            case BLOCKCHAIN_SOLANA:
-                                strncpy(sol_addr, w->address, sizeof(sol_addr) - 1);
-                                if (identity->wallets.sol[0] == '\0' && w->address[0]) need_publish = true;
-                                break;
-                            case BLOCKCHAIN_TRON:
-                                strncpy(trx_addr, w->address, sizeof(trx_addr) - 1);
-                                if (identity->wallets.trx[0] == '\0' && w->address[0]) need_publish = true;
-                                break;
-                            case BLOCKCHAIN_CELLFRAME:
-                                strncpy(cf_addr, w->address, sizeof(cf_addr) - 1);
-                                if (identity->wallets.backbone[0] == '\0' && w->address[0]) need_publish = true;
-                                break;
-                            default:
-                                break;
+                qgp_key_t *enc_key_check = dna_load_encryption_key(engine);
+                if (enc_key_check && mnemonic_storage_exists(engine->data_dir)) {
+                    char mnemonic[512] = {0};
+                    if (mnemonic_storage_load(mnemonic, sizeof(mnemonic),
+                                             enc_key_check->private_key, engine->data_dir) == 0) {
+                        /* Derive ETH/SOL from BIP39 master seed */
+                        uint8_t master_seed[64];
+                        if (bip39_mnemonic_to_seed(mnemonic, "", master_seed) == 0) {
+                            eth_wallet_t eth_wallet;
+                            if (eth_wallet_generate(master_seed, 64, &eth_wallet) == 0) {
+                                strncpy(eth_addr, eth_wallet.address_hex, sizeof(eth_addr) - 1);
+                                eth_wallet_clear(&eth_wallet);
+                                if (identity->wallets.eth[0] == '\0' && eth_addr[0]) need_publish = true;
+                            }
+                            sol_wallet_t sol_wallet;
+                            if (sol_wallet_generate(master_seed, 64, &sol_wallet) == 0) {
+                                strncpy(sol_addr, sol_wallet.address, sizeof(sol_addr) - 1);
+                                sol_wallet_clear(&sol_wallet);
+                                if (identity->wallets.sol[0] == '\0' && sol_addr[0]) need_publish = true;
+                            }
+                            trx_wallet_t trx_wallet;
+                            if (trx_wallet_generate(master_seed, 64, &trx_wallet) == 0) {
+                                strncpy(trx_addr, trx_wallet.address, sizeof(trx_addr) - 1);
+                                trx_wallet_clear(&trx_wallet);
+                                if (identity->wallets.trx[0] == '\0' && trx_addr[0]) need_publish = true;
+                            }
+                            memset(master_seed, 0, sizeof(master_seed));
                         }
+                        /* Derive Cellframe address from mnemonic */
+                        uint8_t cf_seed[CF_WALLET_SEED_SIZE];
+                        if (cellframe_derive_seed_from_mnemonic(mnemonic, cf_seed) == 0) {
+                            cellframe_wallet_derive_address(cf_seed, cf_addr);
+                            memset(cf_seed, 0, sizeof(cf_seed));
+                            if (identity->wallets.backbone[0] == '\0' && cf_addr[0]) need_publish = true;
+                        }
+                        memset(mnemonic, 0, sizeof(mnemonic));
                     }
+                    qgp_key_free(enc_key_check);
+                }
 
-                    if (need_publish && !profile_published) {
+                if (need_publish && !profile_published) {
                         QGP_LOG_WARN(LOG_TAG, "[PROFILE_PUBLISH] load_identity: DHT profile has empty wallet addresses");
 
                         /* Load keys for signing */
@@ -1140,8 +1177,6 @@ void dna_handle_load_identity(dna_engine_t *engine, dna_task_t *task) {
                             }
                             qgp_key_free(sign_key);
                         }
-                    }
-                    blockchain_wallet_list_free(bc_wallets);
                 }
                 dna_identity_free(identity);
             }

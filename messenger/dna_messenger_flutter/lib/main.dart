@@ -58,8 +58,7 @@ class _AppLoader extends ConsumerStatefulWidget {
 
 class _AppLoaderState extends ConsumerState<_AppLoader> {
   AppLifecycleObserver? _lifecycleObserver;
-  bool _identityCheckDone = false;
-  bool _hasIdentity = false;
+  bool _autoLoadAttempted = false;
 
   @override
   void initState() {
@@ -79,11 +78,12 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     super.dispose();
   }
 
-  Future<void> _checkAndLoadIdentity(dynamic engine) async {
-    if (_identityCheckDone) return;
+  /// Try to auto-load identity if one exists on disk (runs once at startup)
+  Future<void> _tryAutoLoadIdentity(dynamic engine) async {
+    if (_autoLoadAttempted) return;
     if (engine == null) return;
 
-    _identityCheckDone = true;
+    _autoLoadAttempted = true;
 
     // v0.3.0: Check if identity exists and auto-load
     final hasIdentity = engine.hasIdentity();
@@ -96,30 +96,28 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     } else {
       engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
     }
-
-    if (mounted) {
-      setState(() {
-        _hasIdentity = hasIdentity;
-      });
-    }
   }
 
   @override
   Widget build(BuildContext context) {
     final engine = ref.watch(engineProvider);
+    // Watch currentFingerprintProvider to reactively update when identity is loaded
+    // This is set by loadIdentity() after successful load, and by createIdentity() path
+    final currentFingerprint = ref.watch(currentFingerprintProvider);
 
     return engine.when(
       data: (eng) {
-        // Trigger identity check AFTER build completes (setState during build is ignored)
-        if (!_identityCheckDone) {
+        // Trigger auto-load once at startup (for existing identities)
+        if (!_autoLoadAttempted) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
-            _checkAndLoadIdentity(eng);
+            _tryAutoLoadIdentity(eng);
           });
           return const _LoadingScreen();
         }
 
-        // v0.3.0: Route based on identity existence
-        if (_hasIdentity) {
+        // v0.3.0: Route based on whether identity is loaded (reactive)
+        // currentFingerprint is non-null when identity is loaded
+        if (currentFingerprint != null) {
           // Only activate providers AFTER identity is loaded
           ref.watch(eventHandlerActiveProvider);
           ref.watch(backgroundTasksActiveProvider);
