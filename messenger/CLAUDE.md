@@ -2,7 +2,7 @@
 
 **Last Updated:** 2025-12-29 | **Phase:** 7 (Flutter UI) | **Complete:** 4, 5.1-5.9, 6 (Android SDK), 7.1-7.3 (Flutter Foundation + Core Screens + Full Features), 8, 9.1-9.6, 10.1-10.4, 11, 12, 13, 14 (DHT-Only Messaging)
 
-**Versions:** App v0.3.8 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
+**Versions:** App v0.3.9 (`include/dna/version.h`) | Nodus v0.4.3 (`vendor/opendht-pq/tools/nodus_version.h`)
 
 ---
 
@@ -256,8 +256,8 @@ When changes are made to ANY of the following topics, I MUST update the relevant
 **Version Files:**
 | Component | Version File | Current |
 |-----------|--------------|---------|
-| App (CLI + C lib) | `include/dna/version.h` | v0.3.8 |
-| Flutter/Android | `dna_messenger_flutter/pubspec.yaml` | v0.3.8+308 |
+| App (CLI + C lib) | `include/dna/version.h` | v0.3.9 |
+| Flutter/Android | `dna_messenger_flutter/pubspec.yaml` | v0.3.9+309 |
 | Nodus Server | `vendor/opendht-pq/tools/nodus_version.h` | v0.4.3 |
 
 **IMPORTANT:** Keep versions in sync:

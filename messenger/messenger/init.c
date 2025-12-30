@@ -456,6 +456,13 @@ int messenger_load_dht_identity(const char *fingerprint) {
         }
     }
 
+    // Check if DHT is already running (from prepareDhtFromMnemonic)
+    if (dht_singleton_is_initialized()) {
+        QGP_LOG_INFO(LOG_TAG_DHT, "DHT already running (from early preparation), skipping reinit");
+        dht_identity_free(dht_identity);
+        return 0;
+    }
+
     // Reinitialize DHT singleton with permanent identity
     QGP_LOG_INFO(LOG_TAG_DHT, ">>> DHT REINIT START <<<");
 
