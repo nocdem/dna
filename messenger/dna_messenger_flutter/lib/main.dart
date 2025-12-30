@@ -58,7 +58,8 @@ class _AppLoader extends ConsumerStatefulWidget {
 
 class _AppLoaderState extends ConsumerState<_AppLoader> {
   AppLifecycleObserver? _lifecycleObserver;
-  bool _autoLoadAttempted = false;
+  bool _autoLoadStarted = false;
+  bool _autoLoadComplete = false;
 
   @override
   void initState() {
@@ -80,10 +81,10 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
 
   /// Try to auto-load identity if one exists on disk (runs once at startup)
   Future<void> _tryAutoLoadIdentity(dynamic engine) async {
-    if (_autoLoadAttempted) return;
+    if (_autoLoadStarted) return;
     if (engine == null) return;
 
-    _autoLoadAttempted = true;
+    _autoLoadStarted = true;
 
     // v0.3.0: Check if identity exists and auto-load
     final hasIdentity = engine.hasIdentity();
@@ -95,6 +96,13 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
       engine.debugLog('STARTUP', 'v0.3.0: Identity auto-loaded');
     } else {
       engine.debugLog('STARTUP', 'v0.3.0: No identity, showing onboarding');
+    }
+
+    // Trigger rebuild after check completes
+    if (mounted) {
+      setState(() {
+        _autoLoadComplete = true;
+      });
     }
   }
 
@@ -108,10 +116,15 @@ class _AppLoaderState extends ConsumerState<_AppLoader> {
     return engine.when(
       data: (eng) {
         // Trigger auto-load once at startup (for existing identities)
-        if (!_autoLoadAttempted) {
+        if (!_autoLoadStarted) {
           WidgetsBinding.instance.addPostFrameCallback((_) {
             _tryAutoLoadIdentity(eng);
           });
+          return const _LoadingScreen();
+        }
+
+        // Still loading - wait for check to complete
+        if (!_autoLoadComplete) {
           return const _LoadingScreen();
         }
 
